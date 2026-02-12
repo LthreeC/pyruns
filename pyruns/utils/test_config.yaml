@@ -1,0 +1,16 @@
+model:
+  layers:
+  - 50
+  - 60
+  name: resnet50
+  params:
+    activation: relu
+    dropout: 0.5
+training:
+  batch_size: 32
+  optimizers:
+  - lr: 0.001
+    type: adam
+  - lr: 0.01
+    type: sgd
+use_gpu: true

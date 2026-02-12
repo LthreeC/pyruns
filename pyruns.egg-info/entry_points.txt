@@ -1,0 +1,3 @@
+[console_scripts]
+pyr = pyruns.cli:pyr
+pyrun = pyruns.cli:pyr
