@@ -28,8 +28,7 @@ _GLOBAL_CSS = """
 .readonly-cm .cm-content { cursor: default; }
 .readonly-cm .cm-gutters { cursor: default; }
 
-/* ── dialog: bulletproof flex chain from card → tab-panels → panel → content ── */
-/* Every level must be a flex column container with min-height:0 to allow shrinking */
+/* ── dialog: flex chain  card → tab-panels → panel → content ── */
 .task-detail-card .q-tab-panels {
     padding: 0 !important;
     display: flex !important;
@@ -37,6 +36,7 @@ _GLOBAL_CSS = """
     flex: 1 1 0 !important;
     min-height: 0 !important;
     overflow: hidden !important;
+    background: #1e1e1e !important;
 }
 /* Quasar wraps panels in an intermediate <div> — make it flex too */
 .task-detail-card .q-tab-panels > div {
@@ -56,7 +56,9 @@ _GLOBAL_CSS = """
 }
 
 /* ── codemirror: fill remaining flex space ── */
-.task-detail-card .nicegui-codemirror {
+/* .readonly-cm = class we add; nicegui-codemirror = custom-element tag */
+.task-detail-card .readonly-cm,
+.task-detail-card nicegui-codemirror {
     flex: 1 1 0 !important;
     min-height: 0 !important;
     overflow: hidden !important;
@@ -158,12 +160,13 @@ def readonly_code_viewer(content: str, mode: str = "text") -> None:
     _ensure_css()
 
     lang = _LANG_MAP.get(mode)
-    # log mode: use CodeMirror (dark, no language) — reliable flex layout
     theme = "vscodeDark" if mode in ("json", "yaml", "log") else "vscodeLight"
     return ui.codemirror(
         value=content, language=lang, theme=theme,
         line_wrapping=True,
-    ).classes("w-full readonly-cm")
+    ).classes("w-full readonly-cm").style(
+        "flex:1 1 0; min-height:0; overflow:hidden;"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -284,4 +287,3 @@ def section_header(title: str, icon: str = "list", extra_classes: str = "") -> N
     with ui.row().classes(f"items-center gap-2 {extra_classes}"):
         ui.icon(icon, size="16px").classes("text-slate-400")
         ui.label(title).classes("text-xs font-bold text-slate-500 uppercase tracking-wider")
-

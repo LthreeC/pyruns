@@ -354,22 +354,33 @@ class TaskManager:
     # ─── Scheduler Logic ─────────────────────────────────────────
 
     def _ensure_executor(self):
+        """确保执行器已初始化，按需切换 Thread / Process 模式。
+
+        Thread 模式（推荐）: 因为实际计算在子进程 (subprocess) 中执行，
+            工作线程只负责 `proc.wait()`，开销极小。
+        Process 模式: 将 run_task_worker 放到独立进程中执行，
+            需要函数参数可序列化 (pickle)。
+        """
         with self._executor_lock:
             workers = max(1, int(self.max_workers))
             changes = (self._executor_mode != self.execution_mode) or (self._executor_workers != workers)
-            
+
             if self._executor and not changes:
                 return
-            
+
             if self._executor:
-                try: self._executor.shutdown(wait=False) 
-                except: pass
-            
+                try:
+                    self._executor.shutdown(wait=False)
+                except Exception:
+                    pass
+
             if self.execution_mode == "process":
                 self._executor = ProcessPoolExecutor(max_workers=workers)
+                logger.info(f"[TaskManager] Created ProcessPoolExecutor(workers={workers})")
             else:
                 self._executor = ThreadPoolExecutor(max_workers=workers)
-                
+                logger.info(f"[TaskManager] Created ThreadPoolExecutor(workers={workers})")
+
             self._executor_mode = self.execution_mode
             self._executor_workers = workers
 

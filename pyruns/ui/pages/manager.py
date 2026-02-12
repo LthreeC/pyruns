@@ -97,12 +97,12 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             )
 
             mode_sel = ui.select(
-                ["thread", "process"], value=state["execution_mode"], label="Mode",
+                ["thread pool", "process pool"], value=state["execution_mode"], label="Mode",
             ).props(INPUT_PROPS + " options-dense").classes("w-32")
             mode_sel.on_value_change(lambda e: state.update({"execution_mode": e.value}))
 
             col_sel = ui.select(
-                list(range(2, 10)), value=state.get("manager_columns", 4), label="Columns",
+                list(range(1, 10)), value=state.get("manager_columns", 4), label="Columns",
             ).props(INPUT_PROPS + " options-dense").classes("w-28")
             col_sel.on_value_change(
                 lambda e: (state.update({"manager_columns": int(e.value)}), task_list.refresh())

@@ -7,7 +7,7 @@ from nicegui import ui
 from typing import Dict, Any
 
 from pyruns._config import LOG_FILENAME, RERUN_LOG_DIR
-from pyruns.utils.config_utils import load_yaml, load_task_info, save_task_info
+from pyruns.utils.config_utils import load_task_info, save_task_info
 from pyruns.ui.theme import STATUS_ICONS
 from pyruns.ui.widgets import (
     status_badge, readonly_code_viewer, env_var_editor,
@@ -105,7 +105,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                     "w-full bg-slate-50 border-b border-slate-200 flex-none"
                 ) as tabs:
                     ui.tab("task_info", label="Task Info", icon="info")
-                    ui.tab("config", label="Config", icon="settings")
+                    ui.tab("config", label="Config", icon="tune")
                     ui.tab("run.log", label="Run Log", icon="terminal")
                     ui.tab("notes", label="Notes", icon="edit_note")
                     ui.tab("env", label="Env Vars", icon="vpn_key")
@@ -155,27 +155,11 @@ def _build_tab_task_info(info_obj):
 
 
 def _build_tab_config(t):
-    """Config tab — readonly YAML viewer."""
-    import yaml as _yaml
-
-    class _StrQuoteDumper(_yaml.SafeDumper):
-        pass
-
-    _StrQuoteDumper.add_representer(
-        str,
-        lambda dumper, data: dumper.represent_scalar(
-            "tag:yaml.org,2002:str", data, style='"'
-        ),
-    )
-
+    """Config tab — readonly YAML viewer (raw file content, preserves original formatting)."""
     cfg_path = os.path.join(t["dir"], "config.yaml")
     try:
-        cfg_data = load_yaml(cfg_path)
-        cfg_text = _yaml.dump(
-            cfg_data, Dumper=_StrQuoteDumper,
-            default_flow_style=False,
-            allow_unicode=True, sort_keys=False,
-        ) if cfg_data else "# Empty config"
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg_text = f.read().strip() or "# Empty config"
     except Exception:
         cfg_text = "# No config.yaml"
 
@@ -235,11 +219,13 @@ def _build_tab_run_log(t):
             except Exception:
                 initial_content = f"Cannot read {log_names[0]}"
 
-            # CodeMirror — flex fills remaining space via global CSS
+            # CodeMirror — flex fills remaining space
             log_cm_ref[0] = ui.codemirror(
                 value=initial_content, language=None, theme="vscodeDark",
                 line_wrapping=True,
-            ).classes("w-full readonly-cm")
+            ).classes("w-full readonly-cm").style(
+                "flex:1 1 0; min-height:0; overflow:hidden;"
+            )
 
 
 def _build_tab_notes(t, info_obj):
