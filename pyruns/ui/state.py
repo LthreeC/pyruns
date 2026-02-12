@@ -13,13 +13,12 @@ class AppState:
     
     # Generator Settings
     task_name_input: str = ""
-    use_timestamp_name: bool = True
     
     # Manager Settings
     max_workers: int = 1
     execution_mode: str = "thread"
     selected_task_ids: List[str] = field(default_factory=list)
-    manager_columns: int = 5
+    manager_columns: int = 4
     
     # System
     refresh_interval: float = 4.0

@@ -11,7 +11,21 @@ from pyruns.ui.theme import (
     INPUT_PROPS, BTN_CLASS,
     STATUS_BADGE_STYLES, STATUS_ICONS, STATUS_ICON_COLORS,
 )
-from pyruns.ui.helpers import choose_directory
+
+def choose_directory(initial_dir: str = "") -> str | None:
+    """Open a native folder picker dialog."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askdirectory(initialdir=initial_dir)
+        root.destroy()
+        return path if path else None
+    except Exception:
+        ui.notify("Folder picker unavailable in this environment.", type="warning")
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -66,6 +80,30 @@ _GLOBAL_CSS = """
 .task-detail-card .cm-editor {
     height: 100% !important;
     border: none !important;
+}
+
+/* ── Monitor: terminal-like log viewer ── */
+.monitor-log-pre {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 8px 12px;
+    margin: 0;
+}
+
+/* ── Monitor: task list item ── */
+.monitor-task-item {
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-left: 3px solid transparent;
+}
+.monitor-task-item:hover { background: #f1f5f9; }
+.monitor-task-item.active {
+    background: #eef2ff;
+    border-left-color: #6366f1;
 }
 """
 

@@ -5,6 +5,7 @@ import yaml
 from typing import Dict, Any, Optional, Tuple
 
 from ..utils import get_logger
+from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 logger = get_logger(__name__)
 
@@ -117,10 +118,10 @@ def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
 def generate_config_file(filepath: str, params: Dict[str, Dict[str, Any]]) -> str:
     """生成配置文件"""
     file_dir = os.path.dirname(os.path.abspath(filepath))
-    pyruns_dir = os.path.join(file_dir, "_pyruns_")
+    pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
     os.makedirs(pyruns_dir, exist_ok=True)
 
-    config_file = os.path.join(pyruns_dir, "config_default.yaml")
+    config_file = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)
     
     with open(config_file, "w", encoding="utf-8") as f:
         f.write(f"# Auto-generated for {os.path.basename(filepath)}\n\n")

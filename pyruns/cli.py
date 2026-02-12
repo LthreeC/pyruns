@@ -3,6 +3,7 @@ import sys
 import traceback
 
 from .utils import get_logger
+from ._config import ENV_ROOT, ENV_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 logger = get_logger(__name__)
 
@@ -32,14 +33,14 @@ def pyr():
         mode, extra = detect_config_source_fast(filepath)
         
         file_dir = os.path.dirname(filepath)
-        pyruns_dir = os.path.join(file_dir, "_pyruns_")  # 固定路径
+        pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
         config_file = None
         
         if mode == "argparse":
             # AST 解析只在这里执行
             params = extract_argparse_params(filepath)
             generate_config_file(filepath, params)  # 生成到 pyruns_dir
-            config_file = os.path.join(pyruns_dir, "config_default.yaml")
+            config_file = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)
             logger.info(f"[pyruns] argparse: {len(params)} params")
             
         elif mode == "pyruns_read":
@@ -61,8 +62,8 @@ def pyr():
             logger.info(f"[pyruns] Created {pyruns_dir}")
 
         # 3. 设置环境变量
-        os.environ["PYRUNS_ROOT"] = pyruns_dir
-        os.environ["PYRUNS_SCRIPT"] = filepath
+        os.environ[ENV_ROOT] = pyruns_dir
+        os.environ[ENV_SCRIPT] = filepath
         
         logger.info(f"[pyruns] ROOT: {pyruns_dir}")
 

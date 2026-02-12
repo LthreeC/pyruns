@@ -4,7 +4,7 @@ import json
 import datetime
 from typing import Dict, Any, List
 
-from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME
+from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME, ENV_SCRIPT
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.task_utils import validate_task_name  # re-export for backward compat
 
@@ -74,7 +74,7 @@ class TaskGenerator:
         # ── Write files ──
         # task_info.json
         info = {k: v for k, v in task_obj.items() if k not in ["dir", "config", "log"]}
-        env_script = os.environ.get("PYRUNS_SCRIPT")
+        env_script = os.environ.get(ENV_SCRIPT)
         if env_script:
             info["script"] = env_script
         with open(os.path.join(task_dir, INFO_FILENAME), "w", encoding="utf-8") as f:

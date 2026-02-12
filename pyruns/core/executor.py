@@ -6,8 +6,8 @@ import time
 import datetime
 from typing import Dict, Any, Optional
 
-from pyruns._config import INFO_FILENAME, LOG_FILENAME, RERUN_LOG_DIR
-from pyruns.core.log import append_log
+from pyruns._config import INFO_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME
+from pyruns.core.log_io import append_log
 
 def _update_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     info_path = os.path.join(task_dir, INFO_FILENAME)
@@ -23,20 +23,17 @@ def _update_task_info(task_dir: str, info: Dict[str, Any]) -> None:
         json.dump(base, f, indent=4, ensure_ascii=False)
 
 def _prepare_env(
-    gpu_id: Optional[int],
     extra_env: Optional[Dict[str, str]] = None,
     task_dir: Optional[str] = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
-    if gpu_id is not None:
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     # 强制子进程使用 UTF-8 输出，避免 Windows 下 GBK 编码问题
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    # pyr 模式: 设置 PYRUNS_CONFIG 让 pyruns.read() 自动找到任务的 config.yaml
+    # pyr 模式: 设置 ENV_CONFIG 让 pyruns.read() 自动找到任务的 config.yaml
     if task_dir:
-        from pyruns._config import CONFIG_FILENAME
-        env["PYRUNS_CONFIG"] = os.path.join(task_dir, CONFIG_FILENAME)
+        env[ENV_CONFIG] = os.path.join(task_dir, CONFIG_FILENAME)
+    # GPU 等设置全部通过 env_vars 传入 (如 CUDA_VISIBLE_DEVICES)
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
     return env
@@ -65,7 +62,6 @@ def run_task_worker(
     name: str,
     created_at: str,
     config: Dict[str, Any],
-    gpu_id: Optional[int],
     env_vars: Optional[Dict[str, str]] = None,
     rerun_index: int = 0,
 ) -> Dict[str, Any]:
@@ -73,6 +69,7 @@ def run_task_worker(
     Worker function executed in a separate thread/process.
     config: 纯用户参数 (来自 config.yaml)
     script / cmd / workdir: 从 task_info.json 读取
+    GPU 等硬件设置通过 env_vars 传入 (如 CUDA_VISIBLE_DEVICES)
     rerun_index: 0=首次运行, >0=第N次重跑
     """
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -152,7 +149,7 @@ def run_task_worker(
     progress = 0.0
     try:
         if command:
-            env = _prepare_env(gpu_id, env_vars, task_dir=task_dir)
+            env = _prepare_env(env_vars, task_dir=task_dir)
             with open(log_path, "a", encoding="utf-8") as f:
                 proc = subprocess.Popen(
                     command,

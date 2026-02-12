@@ -64,9 +64,9 @@ def render_generator_page(state: Dict[str, Any], task_generator, task_manager) -
                 return
             val = file_select.value
             if val.startswith(".."):
-                path = os.path.abspath(os.path.join(state["tasks_dir"], val))
+                 path = os.path.abspath(os.path.join(state["tasks_dir"], val))
             else:
-                path = os.path.join(state["tasks_dir"], val)
+                 path = os.path.join(state["tasks_dir"], val)
 
             # Show lock icon for config_default.yaml
             tpl_lock.set_visibility("config_default" in val)
@@ -277,7 +277,7 @@ def render_generator_page(state: Dict[str, Any], task_generator, task_manager) -
                         # Single task → generate directly
                         tasks = task_generator.create_tasks(configs, prefix)
                         task_manager.add_tasks(tasks)
-                        ui.notify("Generated 1 task", type="positive", icon="add_circle")
+                        ui.notify(f"Generated {n} tasks", type="positive", icon="add_circle")
                     else:
                         # Multiple tasks → show confirmation dialog
                         _show_batch_confirm(

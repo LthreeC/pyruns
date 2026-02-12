@@ -6,8 +6,9 @@ import json
 from nicegui import ui
 from typing import Dict, Any
 
-from pyruns._config import LOG_FILENAME, RERUN_LOG_DIR
+from pyruns._config import CONFIG_FILENAME
 from pyruns.utils.config_utils import load_task_info, save_task_info
+from pyruns.core.report import get_log_options
 from pyruns.ui.theme import STATUS_ICONS
 from pyruns.ui.widgets import (
     status_badge, readonly_code_viewer, env_var_editor,
@@ -37,25 +38,6 @@ _DRAG_JS = """(e) => {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
 }"""
-
-
-def get_log_options(task_dir: str) -> Dict[str, str]:
-    """Return {display_name: file_path} for run.log + rerun logs."""
-    options = {}
-    run_log = os.path.join(task_dir, LOG_FILENAME)
-    if os.path.exists(run_log):
-        options["run.log"] = run_log
-
-    rerun_dir = os.path.join(task_dir, RERUN_LOG_DIR)
-    if os.path.isdir(rerun_dir):
-        rerun_files = sorted(
-            [f for f in os.listdir(rerun_dir) if f.startswith("rerun") and f.endswith(".log")],
-            key=lambda x: int("".join(filter(str.isdigit, x)) or "0"),
-        )
-        for f in rerun_files:
-            options[f] = os.path.join(rerun_dir, f)
-
-    return options
 
 
 def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
@@ -156,7 +138,7 @@ def _build_tab_task_info(info_obj):
 
 def _build_tab_config(t):
     """Config tab — readonly YAML viewer (raw file content, preserves original formatting)."""
-    cfg_path = os.path.join(t["dir"], "config.yaml")
+    cfg_path = os.path.join(t["dir"], CONFIG_FILENAME)
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg_text = f.read().strip() or "# Empty config"

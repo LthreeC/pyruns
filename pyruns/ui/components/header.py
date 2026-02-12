@@ -140,7 +140,7 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
 
                     stat("CPU", f"{m['cpu_percent']:.0f}%", "memory")
                     stat("RAM", f"{m['mem_percent']:.0f}%", "memory")
-
+                    
                     # ── GPU section ──
                     gpus: List[Dict[str, Any]] = m.get("gpus") or []
                     n_gpus = len(gpus)
@@ -163,7 +163,7 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
                         with ui.row().classes(
                             "items-center gap-2 bg-white/5 px-2.5 py-1 "
                             "rounded-lg border border-white/10"
-                        ):
+                            ):
                             ui.icon("developer_board", size="14px").classes("text-gray-400")
                             ui.label(f"{n_gpus} GPUs").classes(
                                 "text-[10px] font-bold text-gray-300 uppercase"
@@ -183,7 +183,7 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
                         with ui.grid(columns=grid_cols).classes("w-full gap-1.5"):
                             for gpu in gpus:
                                 _gpu_bar(gpu, compact=True)
-
+                
                 ui.timer(state["refresh_interval"], metrics_row.refresh, once=True)
 
             # Expand/collapse button (visibility controlled inside metrics_row)

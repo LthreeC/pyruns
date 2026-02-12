@@ -5,6 +5,8 @@ import itertools
 import yaml
 from typing import Dict, Any, List, Optional, Tuple
 
+from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, INFO_FILENAME
+
 
 def safe_filename(name: str) -> str:
     """Sanitize a string to be safe for filenames."""
@@ -83,8 +85,8 @@ def list_template_files(tasks_dir: str) -> Dict[str, str]:
     options: Dict[str, str] = {}
 
     # config_default.yaml in tasks_dir
-    if os.path.exists(os.path.join(tasks_dir, "config_default.yaml")):
-        options["config_default.yaml"] = "config_default"
+    if os.path.exists(os.path.join(tasks_dir, CONFIG_DEFAULT_FILENAME)):
+        options[CONFIG_DEFAULT_FILENAME] = "config_default"
 
     # config.yaml inside each task subfolder (use dir name, skip task_info I/O)
     try:
@@ -94,9 +96,9 @@ def list_template_files(tasks_dir: str) -> Dict[str, str]:
             task_dir = os.path.join(tasks_dir, dir_name)
             if not os.path.isdir(task_dir):
                 continue
-            cfg_path = os.path.join(task_dir, "config.yaml")
+            cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
             if os.path.exists(cfg_path):
-                options[os.path.join(dir_name, "config.yaml")] = dir_name
+                options[os.path.join(dir_name, CONFIG_FILENAME)] = dir_name
     except OSError:
         pass
 
@@ -137,7 +139,7 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
 
 def load_task_info(task_dir: str) -> Dict[str, Any]:
     """Load task_info.json from a task directory."""
-    info_path = os.path.join(task_dir, "task_info.json")
+    info_path = os.path.join(task_dir, INFO_FILENAME)
     if not os.path.exists(info_path):
         return {}
     try:
@@ -149,7 +151,7 @@ def load_task_info(task_dir: str) -> Dict[str, Any]:
 
 def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     """Save task_info.json to a task directory."""
-    info_path = os.path.join(task_dir, "task_info.json")
+    info_path = os.path.join(task_dir, INFO_FILENAME)
     with open(info_path, "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2, ensure_ascii=False)
 

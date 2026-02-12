@@ -1,5 +1,8 @@
+"""
+Low-level log file I/O helpers (append, read).
+"""
 import os
-from contextlib import contextmanager
+
 
 def append_log(log_path: str, message: str) -> None:
     """Append text to a log file safely."""
@@ -8,6 +11,7 @@ def append_log(log_path: str, message: str) -> None:
             f.write(message)
     except Exception:
         pass
+
 
 def read_log(log_path: str) -> str:
     """Read log content safely (handles mixed encodings gracefully)."""
@@ -18,3 +22,4 @@ def read_log(log_path: str) -> str:
             return f.read()
     except Exception:
         return ""
+

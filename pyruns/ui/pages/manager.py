@@ -97,8 +97,9 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             )
 
             mode_sel = ui.select(
-                ["thread pool", "process pool"], value=state["execution_mode"], label="Mode",
-            ).props(INPUT_PROPS + " options-dense").classes("w-32")
+                {"thread": "Thread Pool", "process": "Process Pool"},
+                value=state["execution_mode"], label="Mode",
+            ).props(INPUT_PROPS + " options-dense").classes("w-36")
             mode_sel.on_value_change(lambda e: state.update({"execution_mode": e.value}))
 
             col_sel = ui.select(
@@ -179,8 +180,13 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     filter_status.on_value_change(lambda _: task_list.refresh())
     search_input.on_value_change(lambda _: task_list.refresh())
 
-    logger.info("[ManagerPage] Initial scan...")
-    task_manager.scan_disk()
+    # Only full-scan when tasks list is empty (first load); otherwise quick refresh
+    if not task_manager.tasks:
+        logger.info("[ManagerPage] First load – full scan...")
+        task_manager.scan_disk()
+    else:
+        logger.info("[ManagerPage] Tab switch – quick refresh...")
+        task_manager.refresh_from_disk()
     task_list()
 
     # Periodic polling (2s)

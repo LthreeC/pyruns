@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, Future
 from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, TRASH_DIR
 from pyruns.utils.config_utils import load_yaml
 from pyruns.core.executor import run_task_worker
-from pyruns.core.monitor import GpuAllocator
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -24,8 +23,6 @@ class TaskManager:
         self.is_processing = False
         self.execution_mode = "thread"
         self.max_workers = 1
-        self.gpu_policy = "auto"
-        self.fixed_gpu_id = 0
         
         # Executors
         self._executor = None
@@ -33,8 +30,6 @@ class TaskManager:
         self._executor_workers = None
         self._executor_lock = threading.Lock()
         self._running_ids = set()
-
-        self._gpu_allocator = GpuAllocator()
 
         # Startup
         self.scan_disk()
@@ -384,11 +379,6 @@ class TaskManager:
             self._executor_mode = self.execution_mode
             self._executor_workers = workers
 
-    def _allocate_gpu(self) -> Optional[int]:
-        if self.gpu_policy == "none": return None
-        if self.gpu_policy == "fixed": return int(self.fixed_gpu_id)
-        return self._gpu_allocator.reserve()
-
     def _scheduler_loop(self):
         while True:
             try:
@@ -425,9 +415,7 @@ class TaskManager:
                     f"(id={target_task['id']}, rerun={rerun_index})"
                 )
 
-                # Launch
-                gpu_id = self._allocate_gpu()
-
+                # Launch (GPU 等设置通过 env vars 传入，无需单独分配)
                 try:
                     future = self._executor.submit(
                         run_task_worker,
@@ -436,20 +424,17 @@ class TaskManager:
                         target_task["name"],
                         target_task["created_at"],
                         target_task["config"],
-                        gpu_id,
                         target_task.get("env", {}),
                         rerun_index,
                     )
                     future.add_done_callback(
-                        lambda f, tid=target_task["id"], gid=gpu_id: self._on_task_done(f, tid, gid)
+                        lambda f, tid=target_task["id"]: self._on_task_done(f, tid)
                     )
                 except Exception as submit_err:
                     logger.error(f"[Scheduler] Failed to submit task {target_task['name']}: {submit_err}")
-                    # Rollback: mark task as failed so it doesn't stay stuck in 'running'
                     with self._lock:
                         target_task["status"] = "failed"
                         self._running_ids.discard(target_task["id"])
-                    self._gpu_allocator.release(gpu_id)
 
                 time.sleep(0.1)
 
@@ -457,8 +442,7 @@ class TaskManager:
                 logger.error(f"[Scheduler] Unexpected error in scheduler loop: {loop_err}", exc_info=True)
                 time.sleep(1)  # Avoid tight error loop
 
-    def _on_task_done(self, future: Future, task_id: str, gpu_id: Optional[int]):
-        self._gpu_allocator.release(gpu_id)
+    def _on_task_done(self, future: Future, task_id: str):
 
         # Check if the worker raised an unhandled exception
         worker_error = None

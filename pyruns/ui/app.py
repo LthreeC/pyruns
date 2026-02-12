@@ -4,10 +4,11 @@ from dataclasses import asdict
 from pyruns.ui.state import AppState
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
-from pyruns.core.monitor import SystemMonitor
+from pyruns.core.system_metrics import SystemMonitor
 from pyruns.ui.layout import render_main_layout
 from pyruns.ui.pages.generator import render_generator_page
 from pyruns.ui.pages.manager import render_manager_page
+from pyruns.ui.pages.monitor import render_monitor_page
 
 # Global Singletons
 task_generator = TaskGenerator()
@@ -24,6 +25,8 @@ def main_page():
             render_generator_page(state, task_generator, task_manager)
         elif state["active_tab"] == "manager":
             render_manager_page(state, task_manager)
+        elif state["active_tab"] == "monitor":
+            render_monitor_page(state, task_manager)
             
     render_main_layout(state, task_manager, metrics_sampler, page_router)
 

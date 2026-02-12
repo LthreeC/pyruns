@@ -7,6 +7,16 @@ All style strings, color maps, and CSS classes live here.
 INPUT_PROPS = "outlined dense rounded bg-white text-slate-800"
 BTN_CLASS = "transition-all duration-200"
 
+# ─── Shared Panel Styles ──────────────────────────────────
+PANEL_CARD = "bg-white rounded-xl shadow-sm border border-slate-100"
+PANEL_HEADER_INDIGO = (
+    "bg-gradient-to-r from-indigo-600 to-indigo-700"
+)
+PANEL_HEADER_DARK = (
+    "bg-gradient-to-r from-slate-800 to-slate-900 border-b border-slate-700"
+)
+DARK_BG = "#0d1117"
+
 # ─── Task Status Colors ────────────────────────────────────
 STATUS_CARD_STYLES = {
     "pending":     "border-slate-200 bg-white",
@@ -38,5 +48,11 @@ STATUS_ICON_COLORS = {
     "running":     "text-amber-500",
     "completed":   "text-emerald-500",
     "failed":      "text-rose-500",
+}
+
+# ─── Status sort order (shared by manager + monitor) ──────
+STATUS_ORDER = {
+    "running": 0, "queued": 1, "pending": 2,
+    "failed": 3, "completed": 4,
 }
 
