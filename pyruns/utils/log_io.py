@@ -1,5 +1,7 @@
 """
 Low-level log file I/O helpers (append, read).
+
+Moved from core/ to utils/ — these are pure I/O utilities, not business logic.
 """
 import os
 

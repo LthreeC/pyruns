@@ -7,8 +7,8 @@ from nicegui import ui
 from typing import Dict, Any
 
 from pyruns._config import CONFIG_FILENAME
-from pyruns.utils.config_utils import load_task_info, save_task_info
-from pyruns.core.report import get_log_options
+from pyruns.utils.task_io import load_task_info, save_task_info
+from pyruns.utils.task_io import get_log_options
 from pyruns.ui.theme import STATUS_ICONS
 from pyruns.ui.widgets import (
     status_badge, readonly_code_viewer, env_var_editor,

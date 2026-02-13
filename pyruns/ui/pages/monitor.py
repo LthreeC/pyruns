@@ -13,9 +13,8 @@ from typing import Dict, Any, Optional
 
 from nicegui import ui
 
-# 请确保这些导入路径在你项目中是正确的，如果报错请调整为你实际的路径
-from pyruns.core.log_io import read_log
-from pyruns.core.report import load_monitor_data, get_log_options
+from pyruns.utils.log_io import read_log
+from pyruns.utils.task_io import get_log_options, resolve_log_path
 from pyruns.ui.theme import (
     STATUS_ICONS, STATUS_ICON_COLORS, STATUS_ORDER,
     PANEL_HEADER_INDIGO, PANEL_HEADER_DARK, DARK_BG,
@@ -26,6 +25,18 @@ from pyruns.utils.ansi_utils import ansi_to_html, tail_lines
 
 # Header height in px (py-2 ≈ 16px padding + ~36px content)
 _HEADER_H = 52
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Lightweight snapshot — O(n) memory, zero I/O
+# ═══════════════════════════════════════════════════════════════
+
+def _task_snap(task_manager) -> Dict[str, tuple]:
+    """Return {id: (status, progress, monitor_count)} for quick diff."""
+    return {
+        t["id"]: (t["status"], t.get("progress", 0), t.get("monitor_count", 0))
+        for t in task_manager.tasks
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -56,15 +67,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         task = _get_task(sel["task_id"])
         if not task:
             return None
-        opts = get_log_options(task["dir"])
-        name = sel.get("log_file_name") or (list(opts.keys())[0] if opts else None)
-        return opts.get(name) if name else None
-
-    # ── Load data FIRST (before building UI) ──
-    if not task_manager.tasks:
-        task_manager.scan_disk()
-    else:
-        task_manager.refresh_from_disk()
+        return resolve_log_path(task["dir"], sel.get("log_file_name"))
 
     # ═════════════════════════════════════════════════════════
     #  Two-column layout — explicit height via calc()
@@ -187,13 +190,53 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     sel["_toggle_export"] = _toggle_export
 
     # ----------------------------------------------------------
-    #  1-second poll
+    #  Snapshot-based polling  (avoids redundant UI rebuilds)
     # ----------------------------------------------------------
+    _snap: Dict[str, Any] = {"data": {}, "n": 0}
+
+    def _refresh_panel():
+        panel = sel.get("_task_list_panel")
+        if panel:
+            panel.refresh()
+
+    # ── Initial data guarantee ──
+    # Deferred to a once-timer so that the full NiceGUI element tree
+    # is committed before we mutate task_manager.tasks and refresh().
+    # This is the key fix for the "must visit Manager first" bug:
+    # calling scan_disk() synchronously inside a @ui.refreshable
+    # render cycle can leave the nested @ui.refreshable in an
+    # inconsistent state.
+    def _initial_load():
+        if not task_manager.tasks:
+            task_manager.scan_disk()
+        else:
+            task_manager.refresh_from_disk()
+        _snap["data"] = _task_snap(task_manager)
+        _refresh_panel()
+
+    ui.timer(0.1, _initial_load, once=True)
+
+    # ── 1-second poll ──
     def _poll():
+        _snap["n"] += 1
+
+        # Full rescan every ~30 s to detect newly added / deleted tasks
+        if _snap["n"] % 30 == 0:
+            task_manager.scan_disk()
+        else:
+            task_manager.refresh_from_disk()
+
+        # Only rebuild the left panel when the snapshot actually changes
+        new = _task_snap(task_manager)
+        if new != _snap["data"]:
+            _snap["data"] = new
+            _refresh_panel()
+
+        # ── Right panel: update log / header for the selected task ──
         task = _get_task(sel["task_id"])
         if not task:
             return
-        task_manager.refresh_from_disk()
+
         opts = get_log_options(task["dir"])
         new_names = list(opts.keys())
         if new_names != list(log_select_el.options or []):
@@ -201,7 +244,8 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
             log_select_el.set_visibility(len(new_names) > 1)
             log_select_el.update()
         _push_log()
-        # update status icon
+
+        # Update status icon in header
         fresh = _get_task(sel["task_id"])
         if fresh:
             new_icon = STATUS_ICONS.get(fresh["status"], "help")
@@ -211,16 +255,8 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                     replace=STATUS_ICON_COLORS.get(fresh["status"], "text-slate-400")
                 )
                 header_icon_el.update()
-        task_list_panel = sel.get("_task_list_panel")
-        if task_list_panel:
-            task_list_panel.refresh()
 
     ui.timer(1.0, _poll)
-
-    # Refresh task list panel after data loading (in case new tasks appeared)
-    task_list_panel = sel.get("_task_list_panel")
-    if task_list_panel:
-        task_list_panel.refresh()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -291,9 +327,6 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             "w-full items-center gap-2 px-2 py-2 flex-none "
             "border-t border-slate-200 bg-slate-50"
         ):
-            # 【修改 1】：让按钮变高
-            # - 删除了 'dense' 和 'size=sm' (props)
-            # - 添加了 'h-10' (classes) 来强制设定高度为 40px (之前约为 28px)
             ui.button(
                 "Export Reports", icon="download",
                 on_click=lambda: show_export_dialog(task_manager, sel["export_ids"]),
@@ -311,7 +344,6 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
     icon_cls = STATUS_ICON_COLORS.get(status, "text-slate-400")
     active_cls = "active" if is_active else ""
 
-    # 获取任务名
     task_name = t.get("name", "unnamed")
 
     with ui.row().classes(
@@ -347,9 +379,10 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
                     "font-size: 9px; color: #94a3b8; line-height: 1.25;"
                 )
 
-            mon = load_monitor_data(t["dir"])
-            if mon:
-                ui.badge(str(len(mon))).props(
+            # Use cached monitor_count (set by TaskManager) — no per-task I/O
+            mon_count = t.get("monitor_count", 0)
+            if mon_count:
+                ui.badge(str(mon_count)).props(
                     "color=indigo-2 text-color=indigo-8 rounded"
                 ).classes("flex-none text-[9px]")
 

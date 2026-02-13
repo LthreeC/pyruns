@@ -7,7 +7,7 @@ import datetime
 from typing import Dict, Any, Optional
 
 from pyruns._config import INFO_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME
-from pyruns.core.log_io import append_log
+from pyruns.utils.log_io import append_log
 
 def _update_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     info_path = os.path.join(task_dir, INFO_FILENAME)

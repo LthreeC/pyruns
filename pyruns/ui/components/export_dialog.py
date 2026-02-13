@@ -5,8 +5,8 @@ from typing import Dict, Any, List, Set
 
 from nicegui import ui
 
+from pyruns.utils.task_io import load_monitor_data
 from pyruns.core.report import (
-    load_monitor_data,
     build_export_csv,
     build_export_json,
     export_timestamp,

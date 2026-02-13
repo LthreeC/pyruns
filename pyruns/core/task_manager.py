@@ -6,7 +6,7 @@ import shutil
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, Future
 
-from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, TRASH_DIR
+from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, TRASH_DIR, MONITOR_KEY
 from pyruns.utils.config_utils import load_yaml
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger
@@ -116,6 +116,7 @@ class TaskManager:
                         "rerun_at": info.get("rerun_at", []),
                         "run_pid": info.get("run_pid"),
                         "rerun_pid": info.get("rerun_pid", []),
+                        "monitor_count": len(info.get(MONITOR_KEY, [])),
                     }
                     # Restore persisted _rerun_index (for scan_disk race safety)
                     if "_rerun_index" in info:
@@ -195,6 +196,7 @@ class TaskManager:
                 t["rerun_at"] = info.get("rerun_at", t.get("rerun_at", []))
                 t["run_pid"] = info.get("run_pid", t.get("run_pid"))
                 t["rerun_pid"] = info.get("rerun_pid", t.get("rerun_pid", []))
+                t["monitor_count"] = len(info.get(MONITOR_KEY, []))
             except Exception:
                 pass
 
@@ -457,6 +459,7 @@ class TaskManager:
                     t["rerun_at"] = info.get("rerun_at", t.get("rerun_at", []))
                     t["run_pid"] = info.get("run_pid")
                     t["rerun_pid"] = info.get("rerun_pid", [])
+                    t["monitor_count"] = len(info.get(MONITOR_KEY, []))
                 except Exception:
                     pass
 

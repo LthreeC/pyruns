@@ -1,11 +1,10 @@
 import os
 import ast
-import json
 import itertools
 import yaml
 from typing import Dict, Any, List, Optional, Tuple
 
-from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, INFO_FILENAME
+from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
 
 
 def safe_filename(name: str) -> str:
@@ -137,23 +136,8 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
     return result
 
 
-def load_task_info(task_dir: str) -> Dict[str, Any]:
-    """Load task_info.json from a task directory."""
-    info_path = os.path.join(task_dir, INFO_FILENAME)
-    if not os.path.exists(info_path):
-        return {}
-    try:
-        with open(info_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
-    """Save task_info.json to a task directory."""
-    info_path = os.path.join(task_dir, INFO_FILENAME)
-    with open(info_path, "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=2, ensure_ascii=False)
+# Backward compatibility: re-export from task_io (canonical location)
+from pyruns.utils.task_io import load_task_info, save_task_info  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -38,7 +38,7 @@ def render_generator_page(state: Dict[str, Any], task_generator, task_manager) -
     #  Row 1: Config Loading Bar
     # ══════════════════════════════════════════════════════════════
     with ui.row().classes(
-        "w-full items-center gap-4 mb-6 bg-white p-4 "
+        "w-full items-center gap-4 mb-4 bg-white p-4 "
         "rounded-xl shadow-sm border border-slate-100"
     ):
         tasks_dir_input = dir_picker(
@@ -89,7 +89,7 @@ def render_generator_page(state: Dict[str, Any], task_generator, task_manager) -
             if file_select.value:
                 on_file_select_change()
 
-        ui.button(icon="refresh", on_click=refresh_files).props("flat round color=slate")
+        ui.button(icon="refresh", on_click=refresh_files).props("flat round dense color=slate")
 
         if not file_select.options:
             refresh_files()
@@ -189,7 +189,7 @@ def render_generator_page(state: Dict[str, Any], task_generator, task_manager) -
         # ── RIGHT: Settings & Generate Button ──
         with ui.column().classes("w-96 flex-none sticky top-4"):
             with ui.card().classes(
-                "w-full p-6 shadow-md rounded-2xl bg-white border border-slate-100"
+                "w-full p-6 shadow-sm rounded-xl bg-white border border-slate-100"
             ):
                 ui.label("Generation Settings").classes(
                     "text-lg font-bold mb-4 text-slate-800"

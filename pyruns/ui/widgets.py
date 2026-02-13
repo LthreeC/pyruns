@@ -32,7 +32,7 @@ def choose_directory(initial_dir: str = "") -> str | None:
 #  Global CSS (injected once)
 # ═══════════════════════════════════════════════════════════════
 
-_CSS_INJECTED = False
+_CSS_CLIENTS: set = set()  # track which NiceGUI clients already have the CSS
 
 _GLOBAL_CSS = """
 /* ── readonly codemirror ── */
@@ -119,10 +119,14 @@ _GLOBAL_CSS = """
 
 
 def _ensure_css():
-    global _CSS_INJECTED
-    if not _CSS_INJECTED:
+    """Inject global CSS once per NiceGUI client (survives tab switches + browser refresh)."""
+    try:
+        cid = ui.context.client.id
+    except Exception:
+        cid = "__default__"
+    if cid not in _CSS_CLIENTS:
+        _CSS_CLIENTS.add(cid)
         ui.add_css(_GLOBAL_CSS)
-        _CSS_INJECTED = True
 
 
 # ═══════════════════════════════════════════════════════════════

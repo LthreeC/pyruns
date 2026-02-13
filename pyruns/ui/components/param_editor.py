@@ -22,20 +22,24 @@ _INPUT_COMPACT = (
     "--q-field-dense-control-height: 24px; "  # shrink control height
 )
 
-_EDITOR_CSS_INJECTED = False
+_EDITOR_CSS_CLIENTS: set = set()
+
+_EDITOR_CSS = """
+.param-input .q-field__control { min-height: 26px !important; height: 26px !important; }
+.param-input .q-field__marginal { height: 26px !important; }
+.param-input .q-field__native { padding: 2px 8px !important; font-size: 12px; }
+.param-input input { font-size: 12px !important; }
+"""
 
 def _ensure_editor_css():
-    """Inject one-time CSS to shrink Quasar input boxes inside param editor."""
-    global _EDITOR_CSS_INJECTED
-    if _EDITOR_CSS_INJECTED:
-        return
-    _EDITOR_CSS_INJECTED = True
-    ui.add_css("""
-    .param-input .q-field__control { min-height: 26px !important; height: 26px !important; }
-    .param-input .q-field__marginal { height: 26px !important; }
-    .param-input .q-field__native { padding: 2px 8px !important; font-size: 12px; }
-    .param-input input { font-size: 12px !important; }
-    """)
+    """Inject CSS to shrink Quasar input boxes (once per NiceGUI client)."""
+    try:
+        cid = ui.context.client.id
+    except Exception:
+        cid = "__default__"
+    if cid not in _EDITOR_CSS_CLIENTS:
+        _EDITOR_CSS_CLIENTS.add(cid)
+        ui.add_css(_EDITOR_CSS)
 
 
 def _get_type_key(value) -> str:
