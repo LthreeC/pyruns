@@ -63,6 +63,12 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         name = sel.get("log_file_name") or (list(opts.keys())[0] if opts else None)
         return opts.get(name) if name else None
 
+    # ── Load data FIRST (before building UI) ──
+    if not task_manager.tasks:
+        task_manager.scan_disk()
+    else:
+        task_manager.refresh_from_disk()
+
     # ═════════════════════════════════════════════════════════
     #  Two-column layout — explicit height via calc()
     # ═════════════════════════════════════════════════════════
@@ -214,11 +220,10 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     ui.timer(1.0, _poll)
 
-    # Initial data
-    if not task_manager.tasks:
-        task_manager.scan_disk()
-    else:
-        task_manager.refresh_from_disk()
+    # Refresh task list panel after data loading (in case new tasks appeared)
+    task_list_panel = sel.get("_task_list_panel")
+    if task_list_panel:
+        task_list_panel.refresh()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -308,39 +313,40 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
     icon_name = STATUS_ICONS.get(status, "help")
     icon_cls = STATUS_ICON_COLORS.get(status, "text-slate-400")
     active_cls = "active" if is_active else ""
-    
+
     # 获取任务名
     task_name = t.get("name", "unnamed")
 
     with ui.row().classes(
-        f"w-full items-center gap-1.5 px-2 py-1.5 cursor-pointer "
+        f"w-full items-center gap-1.5 px-2 py-1.5 "
         f"monitor-task-item {active_cls} border-b border-slate-50 flex-nowrap"
-    ).on("click", lambda _: sel.get("_select_task", lambda x: None)(tid)):
-        
+    ):
+        # Checkbox: independent click target for export toggle
         ui.checkbox(
             value=tid in sel["export_ids"],
-            on_change=lambda e: sel.get("_toggle_export", lambda x, y: None)(tid, e.value),
+            on_change=lambda e, _tid=tid: sel.get("_toggle_export", lambda x, y: None)(_tid, e.value),
         ).props("dense size=xs color=indigo").classes("flex-none")
 
-        ui.icon(icon_name, size="14px").classes(f"{icon_cls} flex-none")
+        # Clickable area for task selection (icon + name + status)
+        with ui.row().classes(
+            "flex-grow min-w-0 items-center gap-1.5 cursor-pointer"
+        ).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
+            ui.icon(icon_name, size="14px").classes(f"{icon_cls} flex-none")
 
-        with ui.column().classes("flex-grow min-w-0 gap-0"):
-            # 【修改 2】：处理长文件名 + Tooltip
-            # truncate 类（已经有了）负责省略号显示
-            # .tooltip(task_name) 负责鼠标移上去显示全名
-            ui.label(task_name).classes(
-                "text-[11px] font-semibold text-slate-700 truncate leading-tight"
-            ).tooltip(task_name)
-            
-            ui.label(status.upper()).classes(
-                "text-[9px] text-slate-400 truncate leading-tight"
-            )
+            with ui.column().classes("flex-grow min-w-0 gap-0 overflow-hidden"):
+                ui.label(task_name).classes(
+                    "text-[11px] font-semibold text-slate-700 truncate leading-tight w-full"
+                ).tooltip(task_name)
 
-        mon = load_monitor_data(t["dir"])
-        if mon:
-            ui.badge(str(len(mon))).props(
-                "color=indigo-2 text-color=indigo-8 rounded"
-            ).classes("flex-none text-[9px]")
+                ui.label(status.upper()).classes(
+                    "text-[9px] text-slate-400 truncate leading-tight"
+                )
+
+            mon = load_monitor_data(t["dir"])
+            if mon:
+                ui.badge(str(len(mon))).props(
+                    "color=indigo-2 text-color=indigo-8 rounded"
+                ).classes("flex-none text-[9px]")
 
 
 # ═══════════════════════════════════════════════════════════════

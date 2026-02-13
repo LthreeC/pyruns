@@ -20,6 +20,4 @@ class AppState:
     selected_task_ids: List[str] = field(default_factory=list)
     manager_columns: int = 4
     
-    # System
-    refresh_interval: float = 4.0
-    metrics_expanded: bool = False
+    # System (metrics refresh is fixed at 3s in header.py)
