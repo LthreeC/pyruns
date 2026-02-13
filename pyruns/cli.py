@@ -2,10 +2,7 @@ import os
 import sys
 import traceback
 
-from .utils import get_logger
 from ._config import ENV_ROOT, ENV_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
-
-logger = get_logger(__name__)
 
 
 def pyr():
@@ -41,31 +38,21 @@ def pyr():
             params = extract_argparse_params(filepath)
             generate_config_file(filepath, params)  # 生成到 pyruns_dir
             config_file = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)
-            logger.info(f"[pyruns] argparse: {len(params)} params")
-            
+
         elif mode == "pyruns_read":
             if extra:  # 如果指定了配置文件路径
                 config_file = resolve_config_path(extra, file_dir)
                 if not config_file:
-                    logger.error(f"Error: Config '{extra}' not found.")
+                    print(f"Error: Config '{extra}' not found.")
                     sys.exit(1)
-                logger.info(f"[pyruns] config: {extra}")
-            else:
-                logger.info("[pyruns] pyruns.read() called with no config path")
-            
-        else:
-            logger.info(f"[pyruns] mode: {mode}")
 
         # 确保目录存在
         if not os.path.exists(pyruns_dir):
             os.makedirs(pyruns_dir, exist_ok=True)
-            logger.info(f"[pyruns] Created {pyruns_dir}")
 
         # 3. 设置环境变量
         os.environ[ENV_ROOT] = pyruns_dir
         os.environ[ENV_SCRIPT] = filepath
-        
-        logger.info(f"[pyruns] ROOT: {pyruns_dir}")
 
         # 4. 启动 UI
         sys.argv = [sys.argv[0]]

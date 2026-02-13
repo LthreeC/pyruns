@@ -4,10 +4,7 @@ import re
 import yaml
 from typing import Dict, Any, Optional, Tuple
 
-from ..utils import get_logger
 from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
-
-logger = get_logger(__name__)
 
 
 # ===================== 快速检测（正则） ===================== #
@@ -94,9 +91,6 @@ def argparse_params_to_dict(params: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
 # ===================== 文件路径处理 ===================== #
 
 def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
-
-    logger.info(f"{config_path}-{script_dir}")
-
     """解析配置文件路径"""
     # 尝试相对于脚本目录
     script_relative = os.path.join(script_dir, config_path)

@@ -99,11 +99,21 @@ _GLOBAL_CSS = """
     cursor: pointer;
     transition: all 0.15s ease;
     border-left: 3px solid transparent;
+    flex-wrap: nowrap !important;
+    overflow: hidden;
 }
 .monitor-task-item:hover { background: #f1f5f9; }
 .monitor-task-item.active {
     background: #eef2ff;
     border-left-color: #6366f1;
+}
+/* Force label text in task items to never wrap */
+.monitor-task-item .nicegui-label,
+.monitor-task-item label,
+.monitor-task-item span {
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
 }
 """
 

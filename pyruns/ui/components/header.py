@@ -7,7 +7,7 @@ _METRICS_REFRESH_INTERVAL = 3
 
 
 def _gpu_chip(gpu: Dict[str, Any]) -> None:
-    """Render a single GPU chip: utilization + current/total VRAM (text only, no bars)."""
+    """Render a single GPU chip: utilization + current/total VRAM (text only)."""
     util = gpu["util"]
     mem_used = gpu["mem_used"]
     mem_total = gpu["mem_total"]
@@ -60,33 +60,12 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
                     stat("CPU", f"{m['cpu_percent']:.0f}%", "memory")
                     stat("RAM", f"{m['mem_percent']:.0f}%", "memory")
 
-                    # ── GPU section (text only, no color bars) ──
+                    # ── GPU section: ALWAYS show every GPU individually ──
                     gpus: List[Dict[str, Any]] = m.get("gpus") or []
-                    n_gpus = len(gpus)
 
-                    if n_gpus == 0:
-                        pass
-                    elif n_gpus <= 4:
+                    if gpus:
                         for gpu in gpus:
                             _gpu_chip(gpu)
-                    else:
-                        # >4 GPUs: compact aggregate
-                        avg_util = sum(g["util"] for g in gpus) / n_gpus
-                        total_mem = sum(g["mem_total"] for g in gpus)
-                        used_mem = sum(g["mem_used"] for g in gpus)
-                        with ui.row().classes(
-                            "items-center gap-2 bg-white/5 px-2.5 py-0.5 "
-                            "rounded border border-white/10"
-                        ):
-                            ui.label(f"{n_gpus}×GPU").classes(
-                                "text-[9px] font-bold text-gray-400 font-mono"
-                            )
-                            ui.label(f"{avg_util:.0f}%").classes(
-                                "text-[10px] font-mono text-white/90"
-                            )
-                            ui.label(f"{used_mem:.0f}/{total_mem:.0f}M").classes(
-                                "text-[9px] font-mono text-white/60"
-                            )
 
                 ui.timer(_METRICS_REFRESH_INTERVAL, metrics_row.refresh, once=True)
 

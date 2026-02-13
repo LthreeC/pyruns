@@ -38,7 +38,6 @@ class TaskManager:
     # ─── Disk Scanning ───────────────────────────────────────────
 
     def scan_disk(self) -> None:
-        logger.info(f"[TaskManager] Scanning tasks in: {self.root_dir}")
         with self._lock:
             self.tasks = []
 
@@ -51,7 +50,6 @@ class TaskManager:
                 if os.path.isdir(os.path.join(self.root_dir, d)) and d != TRASH_DIR
             ]
             subdirs.sort(key=lambda x: os.path.getmtime(os.path.join(self.root_dir, x)), reverse=True)
-            logger.info(f"[TaskManager] Found {len(subdirs)} subdirectories: {subdirs}")
 
             for d in subdirs:
                 task_dir = os.path.join(self.root_dir, d)
@@ -123,7 +121,6 @@ class TaskManager:
                     if "_rerun_index" in info:
                         task["_rerun_index"] = info["_rerun_index"]
                     self.tasks.append(task)
-                    logger.info(f"[TaskManager] Loaded task: {task['name']} (status: {task['status']})")
                     
                 except Exception as e:
                     logger.error(f"[TaskManager] Error loading {d}: {e}")
@@ -337,7 +334,6 @@ class TaskManager:
                         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                         dest = os.path.join(trash_dir, f"{folder_name}_{ts}")
                     shutil.move(target["dir"], dest)
-                    logger.info(f"[TaskManager] Moved task '{target.get('name', 'unknown')}' to trash: {dest}")
                 except Exception as e:
                     logger.error(f"[TaskManager] Error moving task to trash: {e}")
                     # 兜底: 如果 move 失败, 尝试真删除
@@ -371,10 +367,8 @@ class TaskManager:
 
             if self.execution_mode == "process":
                 self._executor = ProcessPoolExecutor(max_workers=workers)
-                logger.info(f"[TaskManager] Created ProcessPoolExecutor(workers={workers})")
             else:
                 self._executor = ThreadPoolExecutor(max_workers=workers)
-                logger.info(f"[TaskManager] Created ThreadPoolExecutor(workers={workers})")
 
             self._executor_mode = self.execution_mode
             self._executor_workers = workers
@@ -409,11 +403,6 @@ class TaskManager:
                 if not target_task:
                     time.sleep(0.2)
                     continue
-
-                logger.info(
-                    f"[Scheduler] Launching task: {target_task['name']} "
-                    f"(id={target_task['id']}, rerun={rerun_index})"
-                )
 
                 # Launch (GPU 等设置通过 env vars 传入，无需单独分配)
                 try:
@@ -484,4 +473,3 @@ class TaskManager:
                     except Exception:
                         pass
 
-                logger.info(f"[Scheduler] Task done: {t['name']} → {t['status']}")

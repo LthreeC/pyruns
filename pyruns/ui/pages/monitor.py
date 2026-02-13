@@ -23,9 +23,6 @@ from pyruns.ui.theme import (
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
 from pyruns.utils.ansi_utils import ansi_to_html, tail_lines
-from pyruns.utils import get_logger
-
-logger = get_logger(__name__)
 
 # Header height in px (py-2 ≈ 16px padding + ~36px content)
 _HEADER_H = 52
@@ -319,8 +316,8 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
 
     with ui.row().classes(
         f"w-full items-center gap-1.5 px-2 py-1.5 "
-        f"monitor-task-item {active_cls} border-b border-slate-50 flex-nowrap"
-    ):
+        f"monitor-task-item {active_cls} border-b border-slate-50"
+    ).style("flex-wrap: nowrap;"):
         # Checkbox: independent click target for export toggle
         ui.checkbox(
             value=tid in sel["export_ids"],
@@ -329,17 +326,25 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
 
         # Clickable area for task selection (icon + name + status)
         with ui.row().classes(
-            "flex-grow min-w-0 items-center gap-1.5 cursor-pointer"
+            "items-center gap-1.5 cursor-pointer"
+        ).style(
+            "flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden;"
         ).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
             ui.icon(icon_name, size="14px").classes(f"{icon_cls} flex-none")
 
-            with ui.column().classes("flex-grow min-w-0 gap-0 overflow-hidden"):
-                ui.label(task_name).classes(
-                    "text-[11px] font-semibold text-slate-700 truncate leading-tight w-full"
+            with ui.element("div").style(
+                "flex: 1 1 0; min-width: 0; overflow: hidden; "
+                "display: flex; flex-direction: column; gap: 0;"
+            ):
+                ui.label(task_name).style(
+                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
+                    "font-size: 11px; font-weight: 600; color: #334155; line-height: 1.25; "
+                    "display: block; width: 100%;"
                 ).tooltip(task_name)
 
-                ui.label(status.upper()).classes(
-                    "text-[9px] text-slate-400 truncate leading-tight"
+                ui.label(status.upper()).style(
+                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
+                    "font-size: 9px; color: #94a3b8; line-height: 1.25;"
                 )
 
             mon = load_monitor_data(t["dir"])

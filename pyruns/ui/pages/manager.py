@@ -9,9 +9,6 @@ from pyruns.ui.theme import INPUT_PROPS, BTN_CLASS, STATUS_ICONS, STATUS_ICON_CO
 from pyruns.ui.widgets import dir_picker, section_header
 from pyruns.ui.components.task_card import render_card_grid
 from pyruns.ui.components.task_dialog import build_task_dialog
-from pyruns.utils import get_logger
-
-logger = get_logger(__name__)
 
 ALL_STATUSES = ["pending", "queued", "running", "completed", "failed"]
 
@@ -82,34 +79,38 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         )).props("flat round dense color=slate")
 
     # ══════════════════════════════════════════════════════════════
-    #  Row 2: Execution controls + Batch actions
+    #  Row 2: [Cols] ←──────────────────→ [Workers Mode RUN DELETE]
     # ══════════════════════════════════════════════════════════════
     with ui.row().classes(
         "w-full items-center justify-between bg-white px-5 py-3 mb-4 "
         "rounded-xl shadow-sm border border-slate-100"
     ):
-        with ui.row().classes("items-center gap-4"):
+        # ── Left: Columns selector ──
+        with ui.row().classes("items-center gap-1.5"):
+            ui.icon("grid_view", size="18px").classes("text-slate-400")
+            col_sel = ui.select(
+                {n: f"{n} cols" for n in range(1, 10)},
+                value=state.get("manager_columns", 5), label="Columns",
+            ).props(INPUT_PROPS + " options-dense").classes("w-24")
+            col_sel.on_value_change(
+                lambda e: (state.update({"manager_columns": int(e.value)}), task_list.refresh())
+            )
+
+        # ── Right: Workers + Mode + RUN + DELETE ──
+        with ui.row().classes("items-center gap-3"):
             w_input = ui.number(
                 value=state["max_workers"], min=1, max=32, step=1, label="Workers",
-            ).props(INPUT_PROPS).classes("w-28")
+            ).props(INPUT_PROPS).classes("w-20")
             w_input.on_value_change(
                 lambda e: state.update({"max_workers": int(e.value) if e.value else 1})
             )
 
             mode_sel = ui.select(
-                {"thread": "Thread Pool", "process": "Process Pool"},
+                {"thread": "Thread", "process": "Process"},
                 value=state["execution_mode"], label="Mode",
-            ).props(INPUT_PROPS + " options-dense").classes("w-36")
+            ).props(INPUT_PROPS + " options-dense").classes("w-28")
             mode_sel.on_value_change(lambda e: state.update({"execution_mode": e.value}))
 
-            col_sel = ui.select(
-                list(range(1, 10)), value=state.get("manager_columns", 4), label="Columns",
-            ).props(INPUT_PROPS + " options-dense").classes("w-28")
-            col_sel.on_value_change(
-                lambda e: (state.update({"manager_columns": int(e.value)}), task_list.refresh())
-            )
-
-        with ui.row().classes("items-center gap-3"):
             def run_selected():
                 ids = state.get("selected_task_ids", [])
                 if not ids:
@@ -119,11 +120,11 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
                 ui.notify(f"Started {len(ids)} task(s)", type="positive", icon="play_arrow")
                 refresh_tasks()
 
-            ui.button("RUN", icon="play_arrow", on_click=run_selected).props(
-                "unelevated no-caps"
+            ui.button("RUN SELECTED", icon="play_arrow", on_click=run_selected).props(
+                "unelevated no-caps color=green-8"
             ).classes(
-                f"font-bold px-5 py-2 text-white bg-emerald-600 hover:bg-emerald-700 "
-                f"shadow-sm rounded-lg {BTN_CLASS}"
+                f"font-bold px-6 py-2.5 text-white text-sm "
+                f"shadow-md rounded-lg {BTN_CLASS}"
             )
 
             def delete_selected():
@@ -137,8 +138,10 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
                 refresh_tasks()
 
             ui.button(icon="delete_outline", on_click=delete_selected).props(
-                "flat round dense"
-            ).classes("text-rose-400 hover:text-rose-600 hover:bg-rose-50")
+                "unelevated dense color=red-7"
+            ).classes(
+                f"text-white rounded-lg {BTN_CLASS}"
+            )
 
     # ══════════════════════════════════════════════════════════════
     #  Task Card Grid (refreshable)
@@ -148,7 +151,6 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         all_tasks = task_manager.tasks
         mode = filter_status.value
         query = (search_input.value or "").strip().lower()
-        logger.info(f"[ManagerPage] Refreshing. Total={len(all_tasks)}, Filter={mode}, Search='{query}'")
 
         # 1. 状态过滤
         visible_tasks = [
@@ -182,10 +184,8 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     # Only full-scan when tasks list is empty (first load); otherwise quick refresh
     if not task_manager.tasks:
-        logger.info("[ManagerPage] First load – full scan...")
         task_manager.scan_disk()
     else:
-        logger.info("[ManagerPage] Tab switch – quick refresh...")
         task_manager.refresh_from_disk()
     task_list()
 

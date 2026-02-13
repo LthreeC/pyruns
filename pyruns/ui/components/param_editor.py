@@ -1,5 +1,5 @@
 """
-Recursive parameter editor – ultra-compact multi-column form for config dicts.
+Recursive parameter editor – compact multi-column form for config dicts.
 Supports: adjustable columns, expand/collapse all, star (pin) important params.
 """
 from nicegui import ui
@@ -9,13 +9,33 @@ from pyruns.ui.theme import INPUT_PROPS
 
 # ── Type → icon / color ──
 _TYPE_INFO = {
-    "bool":   ("toggle_on",    "text-indigo-500",  "bg-indigo-50"),
-    "number": ("tag",          "text-blue-500",    "bg-blue-50"),
-    "list":   ("data_array",   "text-purple-500",  "bg-purple-50"),
-    "string": ("text_fields",  "text-slate-400",   "bg-slate-100"),
+    "bool":   ("check_circle",  "text-indigo-500",  "bg-indigo-50"),
+    "number": ("tag",           "text-blue-500",    "bg-blue-50"),
+    "list":   ("data_array",    "text-purple-500",  "bg-purple-50"),
+    "string": ("text_fields",   "text-slate-400",   "bg-slate-50"),
 }
 
 _TINY = "outlined dense rounded bg-white hide-bottom-space"
+# Force Quasar input control to be short
+_INPUT_COMPACT = (
+    "font-size: 12px; "
+    "--q-field-dense-control-height: 24px; "  # shrink control height
+)
+
+_EDITOR_CSS_INJECTED = False
+
+def _ensure_editor_css():
+    """Inject one-time CSS to shrink Quasar input boxes inside param editor."""
+    global _EDITOR_CSS_INJECTED
+    if _EDITOR_CSS_INJECTED:
+        return
+    _EDITOR_CSS_INJECTED = True
+    ui.add_css("""
+    .param-input .q-field__control { min-height: 26px !important; height: 26px !important; }
+    .param-input .q-field__marginal { height: 26px !important; }
+    .param-input .q-field__native { padding: 2px 8px !important; font-size: 12px; }
+    .param-input input { font-size: 12px !important; }
+    """)
 
 
 def _get_type_key(value) -> str:
@@ -40,14 +60,9 @@ def recursive_param_editor(
     key_prefix: str = "",
     on_star_toggle: Any = None,
 ) -> None:
-    """Build a compact form editor for a (possibly nested) config dict.
+    """Build a compact form editor for a (possibly nested) config dict."""
+    _ensure_editor_css()
 
-    Args:
-        expansions: shared list to collect ui.expansion refs for expand/collapse all.
-        starred: shared set of starred param full-key paths.
-        key_prefix: dot-separated path prefix for unique star keys.
-        on_star_toggle: callback function to invoke when a star is toggled (e.g. refresh editor).
-    """
     if expansions is None:
         expansions = []
     if starred is None:
@@ -62,7 +77,7 @@ def recursive_param_editor(
 
         if simple_keys:
             items = list(simple_keys.items())
-            with ui.grid(columns=columns).classes("w-full gap-1"):
+            with ui.grid(columns=columns).classes("w-full gap-1.5"):
                 for key, value in items:
                     full_key = f"{key_prefix}{key}" if key_prefix else key
                     _param_cell(data, key, value, full_key, starred, state, on_star_toggle)
@@ -71,15 +86,15 @@ def recursive_param_editor(
             exp = ui.expansion(
                 f"{key}", icon="folder_open", value=True,
             ).classes(
-                "w-full mt-1 border border-slate-200 rounded-md "
+                "w-full mt-2 border border-slate-200 rounded-lg "
                 "overflow-hidden bg-white shadow-sm"
             ).props(
                 "dense header-class='bg-slate-50 text-slate-600 "
-                "font-bold tracking-wide text-[11px] py-0.5'"
+                "font-bold tracking-wide text-xs py-1'"
             )
             expansions.append(exp)
             with exp:
-                with ui.column().classes("w-full px-1 py-1 border-t border-slate-100"):
+                with ui.column().classes("w-full px-1.5 py-1.5 border-t border-slate-100"):
                     recursive_param_editor(
                         ui.column().classes("w-full gap-0"),
                         value, state, task_manager,
@@ -95,36 +110,33 @@ def _param_cell(
     starred: Set[str], state: Dict[str, Any],
     on_star_toggle: Any = None,
 ) -> None:
-    """Ultra-compact param cell with star toggle."""
+    """Compact param cell with star toggle."""
     tk = _get_type_key(value)
     icon_name, icon_color, icon_bg = _TYPE_INFO[tk]
     is_starred = full_key in starred
 
-    # Card styling based on star state
     if is_starred:
         card_cls = (
-            "w-full border-2 border-amber-300 rounded-md "
-            "px-1.5 py-1 transition-all duration-100 gap-0"
+            "w-full border-2 border-amber-300 rounded-lg "
+            "px-2 py-0.5 transition-all duration-100 gap-0"
         )
-        card_bg = "background:#fffbeb"  # warm amber tint
+        card_bg = "background:#fffbeb"
     else:
         card_cls = (
-            "w-full border border-slate-100 rounded-md "
-            "px-1.5 py-1 hover:border-indigo-200 "
+            "w-full border border-slate-150 rounded-lg "
+            "px-2 py-0.5 hover:border-indigo-200 hover:shadow-sm "
             "transition-all duration-100 gap-0"
         )
         card_bg = "background:#fafbfc"
 
-    with ui.column().classes(card_cls).style(card_bg) as cell:
+    with ui.column().classes(card_cls).style(card_bg):
         # Key row: star btn + type icon + label
-        with ui.row().classes("w-full items-center gap-0.5"):
-            # Star toggle button
+        with ui.row().classes("w-full items-center gap-1"):
             def toggle_star(fk=full_key):
                 if fk in starred:
                     starred.discard(fk)
                 else:
                     starred.add(fk)
-                # Use the callback passed from the parent
                 if on_star_toggle:
                     try:
                         on_star_toggle()
@@ -137,21 +149,19 @@ def _param_cell(
             ui.button(icon=star_icon, on_click=toggle_star).props(
                 "flat dense round size=xs padding=0"
             ).classes(f"{star_color} min-w-0").style(
-                "width:16px; height:16px;"
+                "width:18px; height:18px;"
             ).tooltip(star_tip)
 
-            # Type icon
             with ui.element("div").classes(
-                f"w-4 h-4 rounded flex items-center justify-center {icon_bg} flex-none"
+                f"w-4.5 h-4.5 rounded flex items-center justify-center {icon_bg} flex-none"
             ):
-                ui.icon(icon_name, size="10px").classes(icon_color)
+                ui.icon(icon_name, size="11px").classes(icon_color)
 
-            # Key label
             ui.label(key).classes(
-                "text-[10px] font-semibold text-slate-500 font-mono truncate leading-none"
+                "text-xs font-semibold text-slate-600 font-mono truncate leading-none"
             ).tooltip(f"{key} ({tk})")
 
-        # Value input
+        # Value input — ultra-compact with .param-input CSS class
         def on_change(e, d=data, k=key):
             d[k] = parse_value(e.value)
 
@@ -159,13 +169,13 @@ def _param_cell(
             ui.switch(value=value, on_change=on_change).props("dense color=indigo")
         elif isinstance(value, list):
             ui.input(value=str(value), on_change=on_change).props(_TINY).classes(
-                "w-full font-mono text-[10px] text-purple-700"
+                "w-full font-mono text-xs text-purple-700 param-input"
             ).tooltip("[1, 2, 3]")
         elif isinstance(value, (int, float)):
             ui.input(value=str(value), on_change=on_change).props(_TINY).classes(
-                "w-full font-mono text-[10px] text-blue-700"
+                "w-full font-mono text-xs text-blue-700 param-input"
             )
         else:
             ui.input(value=str(value), on_change=on_change).props(_TINY).classes(
-                "w-full font-mono text-[10px] text-slate-700"
+                "w-full font-mono text-xs text-slate-700 param-input"
             )

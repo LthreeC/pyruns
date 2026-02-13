@@ -21,9 +21,6 @@ from pyruns.utils.config_utils import (
 from pyruns.ui.components.param_editor import recursive_param_editor
 from pyruns.ui.theme import INPUT_PROPS, BTN_CLASS
 from pyruns.ui.widgets import dir_picker, _ensure_css
-from pyruns.utils import get_logger
-
-logger = get_logger(__name__)
 
 
 def render_generator_page(state: Dict[str, Any], task_generator, task_manager) -> None:
