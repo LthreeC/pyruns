@@ -1,3 +1,4 @@
+"""Pyruns — lightweight Python experiment management."""
 import os
 import json
 import time
@@ -6,6 +7,8 @@ from typing import Any, Dict, Optional
 
 from .core.config_manager import ConfigManager
 from ._config import ROOT_DIR, ENV_CONFIG, CONFIG_DEFAULT_FILENAME, INFO_FILENAME, MONITOR_KEY
+
+__version__ = "0.0.1"
 
 
 _global_config_manager_ = ConfigManager()
@@ -32,6 +35,17 @@ def read(file_path: str = None):
 
 
 def load():
+    """Return the loaded config (auto-reads under ``pyr`` if not yet loaded)."""
+    if _global_config_manager_._root is None:
+        # Auto-read when running under pyr (ENV_CONFIG is set by executor)
+        pyr_config = os.environ.get(ENV_CONFIG)
+        if pyr_config:
+            _global_config_manager_.read(pyr_config)
+        else:
+            # Fallback: try default config path
+            default_path = os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
+            if os.path.exists(default_path):
+                _global_config_manager_.read(default_path)
     return _global_config_manager_.load()
 
 

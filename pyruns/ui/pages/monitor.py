@@ -44,6 +44,7 @@ def _task_snap(task_manager) -> Dict[str, tuple]:
 # ═══════════════════════════════════════════════════════════════
 
 def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
+    from pyruns.utils.settings import get as _get_setting
     _ensure_css()  # shared CSS includes .monitor-log-pre etc.
 
     # ── per-session state ──
@@ -216,7 +217,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     ui.timer(0.1, _initial_load, once=True)
 
-    # ── 1-second poll ──
+    # ── Periodic poll (interval from workspace settings) ──
     def _poll():
         _snap["n"] += 1
 
@@ -256,7 +257,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                 )
                 header_icon_el.update()
 
-    ui.timer(1.0, _poll)
+    ui.timer(float(_get_setting("monitor_poll_interval", 1)), _poll)
 
 
 # ═══════════════════════════════════════════════════════════════

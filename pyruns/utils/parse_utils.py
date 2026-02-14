@@ -12,22 +12,29 @@ from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
     """
     快速检测配置来源（使用正则，< 1ms）
-    
+
     Returns:
-        ("argparse", None) | ("pyruns_read", "config.yaml") | ("unknown", None)
+        ("argparse", None)
+        ("pyruns_read", "config.yaml" | None)
+        ("pyruns_load", None)          ← script uses pyruns.load() only
+        ("unknown", None)
     """
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
-    
-    # 修改后的正则
+
+    # pyruns.read("path") or pyruns.read()
     match = re.search(r'pyruns\.read\s*\(\s*(?:["\']([^"\']+)["\']\s*)?\)', content)
     if match:
         return ("pyruns_read", match.group(1))
-    
-    # 检测 argparse
+
+    # pyruns.load() — auto-read mode (no explicit read required under pyr)
+    if re.search(r'pyruns\.load\s*\(', content):
+        return ("pyruns_load", None)
+
+    # argparse
     if re.search(r'\.add_argument\s*\(', content):
         return ("argparse", None)
-    
+
     return ("unknown", None)
 
 
