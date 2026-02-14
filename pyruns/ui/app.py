@@ -26,16 +26,17 @@ def main_page():
     """Per-session page — creates mutable state and routes to the active tab."""
     state = asdict(AppState(_settings=_settings))
 
-    def page_router():
-        tab = state["active_tab"]
-        if tab == "generator":
-            render_generator_page(state, task_generator, task_manager)
-        elif tab == "manager":
-            render_manager_page(state, task_manager)
-        elif tab == "monitor":
-            render_monitor_page(state, task_manager)
+    # Each renderer is called at most once (on first visit).
+    # Subsequent tab switches just toggle CSS visibility — instant.
+    page_renderers = {
+        "generator": lambda: render_generator_page(
+            state, task_generator, task_manager,
+        ),
+        "manager": lambda: render_manager_page(state, task_manager),
+        "monitor": lambda: render_monitor_page(state, task_manager),
+    }
 
-    render_main_layout(state, task_manager, metrics_sampler, page_router)
+    render_main_layout(state, task_manager, metrics_sampler, page_renderers)
 
 
 def main():

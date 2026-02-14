@@ -4,7 +4,7 @@ Manager Page — task card grid with filters, batch controls, and polling.
 Layout:
   Row 1: directory picker + status filter + search
   Row 2: columns selector (left) | workers + mode + run + delete (right)
-  Body:  refreshable card grid with summary bar
+  Body:  refreshable card grid with summary bar + pagination
 """
 import copy
 from nicegui import ui
@@ -19,17 +19,23 @@ from pyruns.ui.components.task_dialog import build_task_dialog
 
 ALL_STATUSES = ["pending", "queued", "running", "completed", "failed"]
 
-
 def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     """Entry point for the Manager tab."""
     from pyruns.utils.settings import get as _get_setting
+
+    # Maximum cards rendered per page (0 = show all)
+    _PAGE_SIZE: int = int(_get_setting("manager_page_size", 50)) or 0
 
     selected = {"task": None, "tab": "task_info"}
     build_task_dialog(selected, state, task_manager)
     open_task_dialog = selected["_open_fn"]
 
+    # ── Pagination state ──
+    _page = {"value": 0}
+
     # ── Snapshot for smart polling ──
     _last_snap: Dict[str, tuple] = {}
+    _needs_refresh = {"flag": False}
 
     def _take_snap() -> Dict[str, tuple]:
         return {
@@ -52,16 +58,31 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         nonlocal _last_snap
         task_manager.scan_disk()
         _last_snap = _take_snap()
+        _page["value"] = 0
         task_list.refresh()
 
     def poll_changes():
         """Periodic: re-render only when the snapshot changes."""
         nonlocal _last_snap
+
+        # Catch up immediately when switching back to this tab
+        if _needs_refresh["flag"] and state.get("active_tab") == "manager":
+            _needs_refresh["flag"] = False
+            task_manager.refresh_from_disk()
+            _last_snap = _take_snap()
+            task_list.refresh()
+            return
+
         task_manager.refresh_from_disk()
         snap = _take_snap()
         if snap != _last_snap:
             _last_snap = snap
-            task_list.refresh()
+            # Skip DOM rebuild when page is hidden — mark as stale so
+            # we rebuild on the next poll cycle when the tab is active.
+            if state.get("active_tab") == "manager":
+                task_list.refresh()
+            else:
+                _needs_refresh["flag"] = True
 
     # ══════════════════════════════════════════════════════════
     #  Row 1 — Directory picker + Filter + Search
@@ -153,8 +174,12 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             )
 
     # ══════════════════════════════════════════════════════════
-    #  Card grid (refreshable)
+    #  Card grid (refreshable) with pagination
     # ══════════════════════════════════════════════════════════
+
+    def _reset_page_and_refresh():
+        _page["value"] = 0
+        task_list.refresh()
 
     @ui.refreshable
     def task_list() -> None:
@@ -165,45 +190,56 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         )
 
         if not tasks:
+            _page["value"] = 0
             _empty_state()
             return
 
-        _summary_bar(tasks, state, task_list)
-
+        # Combine pinned-first then others, then paginate
         pinned = [t for t in tasks if t.get("pinned")]
         others = [t for t in tasks if not t.get("pinned")]
+        ordered = pinned + others
 
-        if pinned:
+        total = len(ordered)
+        if _PAGE_SIZE > 0:
+            total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+            page = min(_page["value"], total_pages - 1)
+            _page["value"] = page
+            start = page * _PAGE_SIZE
+            end = min(start + _PAGE_SIZE, total)
+            page_slice = ordered[start:end]
+        else:
+            total_pages = 1
+            page_slice = ordered
+
+        _summary_bar(tasks, state, task_list, _page, total_pages)
+
+        # Split the page slice back into pinned / non-pinned groups
+        p_pinned = [t for t in page_slice if t.get("pinned")]
+        p_others = [t for t in page_slice if not t.get("pinned")]
+
+        if p_pinned:
             section_header("Pinned", icon="push_pin", extra_classes="mt-4 mb-1")
             render_card_grid(
-                pinned, state, task_manager,
+                p_pinned, state, task_manager,
                 open_task_dialog, refresh_tasks, refresh_ui,
             )
-        if others:
-            if pinned:
+        if p_others:
+            if p_pinned:
                 section_header(
                     "All Tasks", icon="list", extra_classes="mt-4 mb-1",
                 )
             render_card_grid(
-                others, state, task_manager,
+                p_others, state, task_manager,
                 open_task_dialog, refresh_tasks, refresh_ui,
             )
 
-    filter_status.on_value_change(lambda _: task_list.refresh())
-    search_input.on_value_change(lambda _: task_list.refresh())
+    filter_status.on_value_change(lambda _: _reset_page_and_refresh())
+    search_input.on_value_change(lambda _: _reset_page_and_refresh())
 
-    # Deferred initial load — avoids blocking the UI render cycle
-    def _initial_load():
-        nonlocal _last_snap
-        if not task_manager.tasks:
-            task_manager.scan_disk()
-        else:
-            task_manager.refresh_from_disk()
-        _last_snap = _take_snap()
-        task_list.refresh()
-
-    task_list()  # render empty skeleton immediately
-    ui.timer(0.05, _initial_load, once=True)
+    # Render immediately — tasks already in memory (TaskManager.__init__ ran
+    # scan_disk).  No deferred timer needed; this avoids a costly double render.
+    task_list()
+    _last_snap = _take_snap()
 
     # Periodic polling (from workspace settings)
     ui.timer(float(_get_setting("manager_poll_interval", 2)), poll_changes)
@@ -266,7 +302,10 @@ def _empty_state() -> None:
         ).classes("text-sm text-slate-400 mt-1")
 
 
-def _summary_bar(visible_tasks, state, task_list_refreshable) -> None:
+def _summary_bar(
+    visible_tasks, state, task_list_refreshable,
+    page_state=None, total_pages=1,
+) -> None:
     with ui.row().classes(
         "w-full px-4 py-2 bg-white rounded-xl border border-slate-100 "
         "items-center justify-between shadow-sm"
@@ -307,3 +346,36 @@ def _summary_bar(visible_tasks, state, task_list_refreshable) -> None:
                     ui.label(str(c)).classes(
                         f"text-[11px] font-bold {icon_cls}"
                     )
+
+            # ── Pagination controls (only when multiple pages) ──
+            if page_state is not None and total_pages > 1:
+                cur = page_state["value"]
+
+                def _prev():
+                    if page_state["value"] > 0:
+                        page_state["value"] -= 1
+                        task_list_refreshable.refresh()
+
+                def _next():
+                    if page_state["value"] < total_pages - 1:
+                        page_state["value"] += 1
+                        task_list_refreshable.refresh()
+
+                with ui.row().classes(
+                    "items-center gap-1 ml-2 pl-2 border-l border-slate-200"
+                ):
+                    b_prev = ui.button(icon="chevron_left", on_click=_prev).props(
+                        "flat dense round size=sm"
+                    ).classes("text-slate-500")
+                    if cur == 0:
+                        b_prev.props(add="disable")
+
+                    ui.label(f"{cur + 1}/{total_pages}").classes(
+                        "text-[11px] font-mono font-bold text-slate-500 min-w-[2rem] text-center"
+                    )
+
+                    b_next = ui.button(icon="chevron_right", on_click=_next).props(
+                        "flat dense round size=sm"
+                    ).classes("text-slate-500")
+                    if cur >= total_pages - 1:
+                        b_next.props(add="disable")

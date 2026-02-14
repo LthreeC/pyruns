@@ -207,18 +207,35 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     # calling scan_disk() synchronously inside a @ui.refreshable
     # render cycle can leave the nested @ui.refreshable in an
     # inconsistent state.
+    #
+    # Note: TaskManager.__init__ already ran scan_disk(), so tasks are
+    # usually present.  We still need the deferred timer for the edge
+    # case where Monitor is the *first* tab rendered (before the
+    # element tree is committed) — a direct scan_disk+refresh inside
+    # the render cycle would corrupt the refreshable state.
     def _initial_load():
         if not task_manager.tasks:
             task_manager.scan_disk()
-        else:
-            task_manager.refresh_from_disk()
         _snap["data"] = _task_snap(task_manager)
         _refresh_panel()
 
-    ui.timer(0.1, _initial_load, once=True)
+    # Only fire the deferred loader if the task list is actually empty
+    # (i.e. Monitor was opened before any tab loaded tasks).  Otherwise
+    # the initial task_list_panel() render already shows correct data.
+    if not task_manager.tasks:
+        ui.timer(0.1, _initial_load, once=True)
+    else:
+        _snap["data"] = _task_snap(task_manager)
 
     # ── Periodic poll (interval from workspace settings) ──
+    _mon_stale = {"flag": False}
+
     def _poll():
+        # Skip expensive UI updates when the monitor tab is hidden.
+        # Data refresh (disk I/O) is still done so we're ready
+        # to display immediately when the tab becomes visible.
+        is_active = state.get("active_tab") == "monitor"
+
         _snap["n"] += 1
 
         # Full rescan every ~30 s to detect newly added / deleted tasks
@@ -231,7 +248,18 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         new = _task_snap(task_manager)
         if new != _snap["data"]:
             _snap["data"] = new
+            if is_active:
+                _refresh_panel()
+            else:
+                _mon_stale["flag"] = True
+
+        # Catch up when we just became visible again
+        if is_active and _mon_stale["flag"]:
+            _mon_stale["flag"] = False
             _refresh_panel()
+
+        if not is_active:
+            return  # skip right-panel updates while hidden
 
         # ── Right panel: update log / header for the selected task ──
         task = _get_task(sel["task_id"])

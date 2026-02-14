@@ -11,8 +11,14 @@ _TABS = [
 ]
 
 
-def render_sidebar(state: Dict[str, Any], refresh_content: Callable) -> None:
-    """Render the left navigation drawer."""
+def render_sidebar(state: Dict[str, Any], switch_tab: Callable) -> None:
+    """Render the left navigation drawer.
+
+    Parameters
+    ----------
+    switch_tab : Callable[[str], None]
+        Callback that toggles container visibility (no DOM rebuild).
+    """
     with ui.left_drawer(value=True).classes(
         "bg-white border-r border-slate-100 "
         "shadow-[4px_0_24px_rgba(0,0,0,0.02)] print:hidden"
@@ -25,7 +31,7 @@ def render_sidebar(state: Dict[str, Any], refresh_content: Callable) -> None:
         def menu() -> None:
             with ui.column().classes("w-full gap-0"):
                 for name, icon, tab in _TABS:
-                    _nav_item(name, icon, tab, state, refresh_content, menu)
+                    _nav_item(name, icon, tab, state, switch_tab, menu)
 
         menu()
 
@@ -35,7 +41,7 @@ def render_sidebar(state: Dict[str, Any], refresh_content: Callable) -> None:
 
 def _nav_item(
     name: str, icon: str, tab: str,
-    state: dict, refresh_content: Callable, menu_refreshable,
+    state: dict, switch_tab: Callable, menu_refreshable,
 ) -> None:
     """Single navigation button."""
     active = state["active_tab"] == tab
@@ -58,8 +64,7 @@ def _nav_item(
 
     with ui.button(
         on_click=lambda: (
-            state.update({"active_tab": tab}),
-            refresh_content(),
+            switch_tab(tab),
             menu_refreshable.refresh(),
         ),
     ).props("flat no-caps").classes(cls):

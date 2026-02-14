@@ -8,7 +8,11 @@ from typing import Any, Dict, Optional
 from .core.config_manager import ConfigManager
 from ._config import ROOT_DIR, ENV_CONFIG, CONFIG_DEFAULT_FILENAME, INFO_FILENAME, MONITOR_KEY
 
-__version__ = "0.0.1"
+from importlib.metadata import version, PackageNotFoundError
+try:
+    __version__ = version("pyruns")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 
 _global_config_manager_ = ConfigManager()
