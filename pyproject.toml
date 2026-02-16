@@ -51,6 +51,7 @@ dependencies = [
 [project.scripts]
 pyr = "pyruns.cli:pyr"
 pyrun = "pyruns.cli:pyr"
+pyruns = "pyruns.cli:pyr"
 
 [tool.setuptools.packages.find]
 where = ["."]

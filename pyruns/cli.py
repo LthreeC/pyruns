@@ -1,6 +1,7 @@
 """
 CLI entry point — ``pyr <script.py>`` or ``pyr help``.
 """
+
 import os
 import sys
 import textwrap
@@ -11,7 +12,8 @@ from . import __version__ as _VERSION
 
 # ─── Help text ────────────────────────────────────────────────
 
-_HELP = textwrap.dedent(f"""\
+_HELP = textwrap.dedent(
+    f"""\
     pyruns v{_VERSION} — lightweight Python experiment management UI
 
     USAGE
@@ -58,7 +60,8 @@ _HELP = textwrap.dedent(f"""\
           │   ├── config.yaml
           │   └── run.log
           └── .trash/                ← soft-deleted tasks
-""")
+"""
+)
 
 
 def _print_help():
@@ -72,6 +75,7 @@ def _print_version():
 
 
 # ─── Main entry ───────────────────────────────────────────────
+
 
 def pyr():
     """``pyr <script.py>`` — launch the experiment management UI."""
@@ -139,6 +143,7 @@ def pyr():
         # ── Launch UI ──
         sys.argv = [sys.argv[0]]
         from pyruns.ui.app import main
+
         main()
 
     except SystemExit:

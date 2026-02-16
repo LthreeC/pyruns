@@ -9,6 +9,7 @@ the initial load stays fast.
 This eliminates the multi-second lag when switching tabs — the DOM
 tree for already-visited pages is preserved across switches.
 """
+
 from nicegui import ui
 from typing import Dict, Any, Callable
 
@@ -37,9 +38,7 @@ def render_main_layout(
             # Monitor manages its own height / overflow — no padding wrapper
             c = ui.column().classes("w-full gap-0")
         else:
-            c = ui.column().classes(
-                f"w-full px-5 py-4 {BG_COLOR} min-h-screen"
-            )
+            c = ui.column().classes(f"w-full px-5 py-4 {BG_COLOR} min-h-screen")
         c.set_visibility(False)
         containers[tab] = c
 

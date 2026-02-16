@@ -1,6 +1,7 @@
 """
 Application entry point — initialises singletons and starts the NiceGUI server.
 """
+
 import os
 from nicegui import ui
 from dataclasses import asdict
@@ -30,7 +31,9 @@ def main_page():
     # Subsequent tab switches just toggle CSS visibility — instant.
     page_renderers = {
         "generator": lambda: render_generator_page(
-            state, task_generator, task_manager,
+            state,
+            task_generator,
+            task_manager,
         ),
         "manager": lambda: render_manager_page(state, task_manager),
         "monitor": lambda: render_monitor_page(state, task_manager),
@@ -46,11 +49,13 @@ def main():
     # Re-read ROOT_DIR from env at runtime (cli.py may have set it after
     # _config.py was first imported).
     import pyruns._config as _cfg
+
     fresh_root = os.getenv(_cfg.ENV_ROOT, _cfg.ROOT_DIR)
     _cfg.ROOT_DIR = fresh_root
 
     # Load workspace settings
     from pyruns.utils.settings import load_settings, ensure_settings_file
+
     ensure_settings_file(fresh_root)
     _settings = load_settings(fresh_root)
 
@@ -61,7 +66,10 @@ def main():
     port = int(_settings.get("ui_port", 8080))
     ui.run(
         title="Pyruns Experiment Lab",
-        port=port, show=True, reload=False, favicon="🧪",
+        port=port,
+        show=True,
+        reload=False,
+        favicon="🧪",
     )
 
 
