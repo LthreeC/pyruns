@@ -18,6 +18,7 @@ from pyruns.ui.theme import (
     STATUS_ICONS, STATUS_ICON_COLORS, STATUS_ORDER,
     PANEL_HEADER_INDIGO, PANEL_HEADER_DARK, DARK_BG,
 )
+from pyruns._config import MONITOR_PANEL_WIDTH
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
 from pyruns.utils.ansi_utils import ansi_to_html, tail_lines
@@ -309,7 +310,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
     """Task list + search + export button."""
     with ui.column().classes(
         "flex-none border-r border-slate-200 bg-white gap-0 overflow-hidden"
-    ).style("width: 210px; height: 100%;"):
+    ).style(f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"):
         # header
         with ui.row().classes(
             f"w-full items-center gap-1.5 px-2.5 py-2 flex-none {PANEL_HEADER_INDIGO}"
@@ -328,19 +329,50 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 "flat dense round size=xs"
             ).classes("text-white/70 hover:text-white")
 
-        # search
+        # search + select all
         search_ref = {"val": ""}
+
+        def _toggle_select_all():
+            # 1. Start with all tasks
+            tasks = list(task_manager.tasks)
+            # 2. Apply current filter
+            q = search_ref["val"]
+            if q:
+                tasks = [t for t in tasks if q in t.get("name", "").lower()]
+            
+            if not tasks:
+                return
+
+            visible_ids = {t["id"] for t in tasks}
+            # 3. Toggle: if all visible are selected -> deselect all visible
+            #            else -> select all visible
+            if visible_ids.issubset(sel["export_ids"]):
+                sel["export_ids"] -= visible_ids
+                ui.notify(f"Deselected {len(visible_ids)} tasks")
+            else:
+                sel["export_ids"] |= visible_ids
+                ui.notify(f"Selected {len(visible_ids)} tasks")
+            
+            # 4. Refresh list to update checkboxes
+            if sel.get("_task_list_panel"):
+                sel["_task_list_panel"].refresh()
+
         with ui.row().classes(
-            "w-full px-2 py-1 flex-none border-b border-slate-100"
+            "w-full px-2 py-1 flex-none border-b border-slate-100 items-center gap-1 no-wrap"
         ):
             si = ui.input(placeholder="Search...").props(
                 "dense outlined bg-white clearable"
-            ).classes("w-full text-xs")
+            ).classes("flex-grow text-xs") # flex-grow to share space
             si.on("keyup.enter", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
             si.on("clear", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
             si.on_value_change(
                 lambda e: search_ref.update({"val": (e.value or "").strip().lower()})
             )
+            
+            ui.checkbox(on_change=_toggle_select_all).props(
+                "dense size=sm color=indigo"
+            ).tooltip("Select/Deselect All Visible")
+
 
         # scrollable task list
         @ui.refreshable
@@ -359,8 +391,9 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                         ui.label("No tasks").classes("text-[10px] text-slate-400")
                     return
 
-                for t in tasks:
-                    _task_list_item(t, sel)
+                with ui.column().classes("w-full gap-0"): 
+                    for t in tasks:
+                        _task_list_item(t, sel)
 
         sel["_task_list_panel"] = task_list_panel
         task_list_panel()
@@ -372,7 +405,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 on_click=lambda: show_export_dialog(task_manager, sel["export_ids"]),
             ).props("unelevated icon=download").classes(
                 "w-full bg-indigo-600 text-white text-sm font-bold tracking-wide "
-                "py-2 "  # 这里的 py-2 控制高度，flex-grow 必须去掉
+                "py-1 "  # 这里的 py-2 控制高度，flex-grow 必须去掉
                 "hover:bg-indigo-700 shadow-md hover:shadow-lg rounded"
             )
 

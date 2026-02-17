@@ -32,3 +32,7 @@ SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
 # ═══════════════════════════════════════════════════════════════
 THEME_COLOR = "indigo"
 HEADER_GRADIENT = "bg-gradient-to-r from-[#0f172a] to-[#312e81]"
+
+# ── UI Layout ───────────────────────────────────────────────
+SIDEBAR_WIDTH = "12%"
+MONITOR_PANEL_WIDTH = "13%"

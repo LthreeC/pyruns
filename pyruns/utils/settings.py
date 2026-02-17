@@ -42,7 +42,7 @@ _TEMPLATE = """\
 # ═══════════════════════════════════════════════════════════════
 
 # ── Server ──────────────────────────────────────────────────
-ui_port: 8080                      # web UI port
+ui_port: 8099                      # web UI port
 
 # ── Header ──────────────────────────────────────────────────
 header_refresh_interval: 3         # metrics refresh (seconds)
@@ -59,10 +59,10 @@ manager_poll_interval: 1           # polling interval (seconds)
 manager_page_size: 50              # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────
-monitor_poll_interval: 1           # polling interval (seconds)
+monitor_poll_interval: 0.5           # polling interval (seconds)
 
 # ── Logging ─────────────────────────────────────────────────
-log_enabled: true                  # false to disable all pyruns internal logs
+log_enabled: false                  # false to disable all pyruns internal logs
 log_level: INFO                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
 """
 

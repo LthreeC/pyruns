@@ -168,7 +168,8 @@ def _param_cell(
                 ui.icon(icon_name, size="11px").classes(icon_color)
 
             ui.label(key).classes(
-                "text-xs font-semibold text-slate-600 font-mono truncate leading-none"
+                "text-xs font-semibold text-slate-600 font-mono truncate leading-none "
+                "flex-1 min-w-0"
             ).tooltip(f"{key} ({tk})")
 
         # Value input — ultra-compact with .param-input CSS class

@@ -261,7 +261,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     _last_snap = _take_snap()
 
     # Periodic polling (from workspace settings)
-    ui.timer(float(_get_setting("manager_poll_interval", 2)), poll_changes)
+    ui.timer(float(_get_setting("manager_poll_interval", 1)), poll_changes)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -330,7 +330,7 @@ def _summary_bar(
     page_state=None, total_pages=1,
 ) -> None:
     with ui.row().classes(
-        "w-full px-3 py-1.5 bg-white border-b border-slate-200 "
+        "w-full px-3 py-1.5 bg-white border-b border-slate-200 mb-2 "
         "items-center justify-between shadow-sm"
     ):
         with ui.row().classes("items-center gap-3"):

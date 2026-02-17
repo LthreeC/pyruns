@@ -29,6 +29,8 @@ def render_main_layout(
     """Assemble the full page: header, sidebar, and lazy content panels."""
     render_header(state, metrics_sampler)
 
+    ui.context.client.content.classes("p-0 gap-0")
+
     # ── Flex row: sidebar (15%) + content (85%) ──
     with ui.row().classes("w-full flex-nowrap gap-0").style("height: calc(100vh - 52px); overflow: hidden;"):
         # Sidebar column

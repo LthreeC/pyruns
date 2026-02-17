@@ -4,7 +4,7 @@ All style strings, color maps, and CSS classes live here.
 """
 
 # ─── Layout ─────────────────────────────────────────────────
-SIDEBAR_WIDTH = "15%"
+from pyruns._config import SIDEBAR_WIDTH
 
 # ─── Input / Form ───────────────────────────────────────────
 INPUT_PROPS = "outlined dense bg-white text-slate-800"

@@ -172,7 +172,7 @@ def _editor_toolbar(
     state, yaml_holder, editor_area,
 ) -> None:
     with ui.row().classes(
-        "w-full items-center justify-between px-3 py-1.5 mb-1 "
+        "w-full items-center justify-between px-3 py-1 mb-0 "
         "bg-white border-b border-slate-200 shadow-sm"
     ):
         with ui.row().classes("items-center gap-2"):
