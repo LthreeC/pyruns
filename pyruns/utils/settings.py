@@ -108,7 +108,18 @@ def load_settings(root_dir: str) -> Dict[str, Any]:
 
 
 def get(key: str, default: Any = None) -> Any:
-    """Quick accessor for a single setting (uses cache)."""
+    """Quick accessor for a single setting (uses cache).
+
+    If the cache is empty (e.g. called before ``load_settings``), we
+    attempt to load from disk using the current ROOT_DIR so that early
+    callers (like ``log_utils``) still see user-configured values.
+    """
+    if not _cached:
+        try:
+            import pyruns._config as _cfg
+            load_settings(_cfg.ROOT_DIR)
+        except Exception:
+            pass
     if not _cached:
         return _DEFAULTS.get(key, default)
     return _cached.get(key, _DEFAULTS.get(key, default))
@@ -120,20 +131,57 @@ def reload_settings(root_dir: str) -> Dict[str, Any]:
 
 
 def save_setting(key: str, value: Any) -> None:
-    """Persist a single setting to ``_pyruns_.yaml`` (read-modify-write)."""
+    """Persist a single setting to ``_pyruns_settings.yaml``.
+
+    Uses text-level replacement to preserve YAML comments and formatting.
+    Falls back to appending the key if it isn't found in the file.
+    """
+    import re
     import pyruns._config as _cfg
     root = _cfg.ROOT_DIR
     path = _settings_path(root)
     try:
+        # Serialize the value to a YAML-friendly string
+        if isinstance(value, bool):
+            val_str = "true" if value else "false"
+        elif isinstance(value, list):
+            if not value:
+                val_str = "[]"
+            else:
+                # Block-style list items, indented under the key
+                items = yaml.dump(value, default_flow_style=False,
+                                  allow_unicode=True).rstrip("\n")
+                val_str = "\n" + items
+        elif value is None:
+            val_str = "null"
+        else:
+            val_str = str(value)
+
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                text = f.read()
+
+            # Match the key line + any continuation lines that start with
+            # "- " (for YAML list items).  This ensures we replace the
+            # *entire* block for list-valued keys like starred_params.
+            pattern = re.compile(
+                rf"^{re.escape(key)}\s*:.*(?:\n[ \t]*-[ \t]+.*)*",
+                re.MULTILINE,
+            )
+            if pattern.search(text):
+                new_text = pattern.sub(f"{key}: {val_str}", text)
+            else:
+                # Key not found — append
+                new_text = text.rstrip("\n") + f"\n{key}: {val_str}\n"
+
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_text)
         else:
-            data = {}
-        data[key] = value
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False,
-                      allow_unicode=True, sort_keys=False)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"{key}: {val_str}\n")
+
         _cached[key] = value
     except Exception:
         pass  # best-effort — don't crash UI on write failure
+

@@ -50,6 +50,7 @@ def configure_project_root_logger(
             _LIBRARY_ROOT_LOGGER.setLevel(logging.CRITICAL + 1)
             return
 
+
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(logging.Formatter(
             log_config["console"]["format"],

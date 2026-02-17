@@ -65,6 +65,12 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
 
     Returns (command, workdir) where command may be a list, a string,
     or None (simulation mode).
+
+    When the script uses ``pyruns.load()`` / ``pyruns.read()``, config is
+    passed via the ``PYRUNS_CONFIG`` environment variable (set by
+    ``_prepare_env``), so NO CLI arguments are appended — only
+    ``[python, script]``.  CLI arguments are only built for argparse
+    scripts.
     """
     from typing import List
 
@@ -74,44 +80,57 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
     if not command and script_path:
         cmd_list: List[str] = [sys.executable, script_path]
 
-        # Detect positional vs optional argparse args from the script source
-        positional_order: List[str] = []
+        # Detect how the script reads its config
+        config_source = "unknown"
         try:
-            from pyruns.utils.parse_utils import extract_argparse_params
-            ap_params = extract_argparse_params(script_path)
-            for dest, info in ap_params.items():
-                raw_name = info.get("name", "")
-                if isinstance(raw_name, (list, tuple)):
-                    raw_name = raw_name[0] if raw_name else ""
-                if not str(raw_name).startswith("-"):
-                    positional_order.append(dest)
+            from pyruns.utils.parse_utils import detect_config_source_fast
+            config_source, _ = detect_config_source_fast(script_path)
         except Exception:
-            pass  # fallback: treat everything as optional
+            pass
 
-        # Positional args first (bare values, in definition order)
-        for k in positional_order:
-            if k in config and config[k] is not None:
-                v = config[k]
-                if isinstance(v, list):
+        if config_source == "argparse":
+            # ── argparse mode: append CLI args ──
+            positional_order: List[str] = []
+            try:
+                from pyruns.utils.parse_utils import extract_argparse_params
+                ap_params = extract_argparse_params(script_path)
+                for dest, info in ap_params.items():
+                    raw_name = info.get("name", "")
+                    if isinstance(raw_name, (list, tuple)):
+                        raw_name = raw_name[0] if raw_name else ""
+                    if not str(raw_name).startswith("-"):
+                        positional_order.append(dest)
+            except Exception:
+                pass  # fallback: treat everything as optional
+
+            # Positional args first (bare values, in definition order)
+            for k in positional_order:
+                if k in config and config[k] is not None:
+                    v = config[k]
+                    if isinstance(v, list):
+                        for item in v:
+                            cmd_list.append(str(item))
+                    else:
+                        cmd_list.append(str(v))
+
+            # Optional / remaining args with --prefix
+            for k, v in config.items():
+                if k in positional_order:
+                    continue
+                if isinstance(v, bool):
+                    if v:
+                        cmd_list.append(f"--{k}")
+                elif isinstance(v, list):
                     for item in v:
+                        cmd_list.append(f"--{k}")
                         cmd_list.append(str(item))
-                else:
+                elif v is not None:
+                    cmd_list.append(f"--{k}")
                     cmd_list.append(str(v))
-
-        # Optional / remaining args with --prefix
-        for k, v in config.items():
-            if k in positional_order:
-                continue
-            if isinstance(v, bool):
-                if v:
-                    cmd_list.append(f"--{k}")
-            elif isinstance(v, list):
-                for item in v:
-                    cmd_list.append(f"--{k}")
-                    cmd_list.append(str(item))
-            elif v is not None:
-                cmd_list.append(f"--{k}")
-                cmd_list.append(str(v))
+        else:
+            # pyruns_load / pyruns_read / unknown:
+            # Config is passed via PYRUNS_CONFIG env var, no CLI args needed
+            logger.debug("Script uses %s mode — skipping CLI args", config_source)
 
         command = cmd_list
         if not workdir:
@@ -191,6 +210,7 @@ def run_task_worker(
     command, workdir = _build_command(
         meta_cmd, script_path, meta_workdir, config
     )
+
     logger.debug("Built command: %s  workdir=%s", command, workdir)
 
     # 3. Execute
