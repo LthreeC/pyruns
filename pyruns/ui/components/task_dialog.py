@@ -47,7 +47,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
     with ui.dialog().props("no-backdrop-dismiss") as task_dialog:
         with ui.card().classes(
             "task-detail-card w-[1100px] max-w-[92vw] "
-            "p-0 flex flex-col rounded-2xl overflow-hidden shadow-2xl"
+            "p-0 flex flex-col overflow-hidden shadow-2xl"
         ).style("height: 80vh; max-height: 80vh;"):
 
             @ui.refreshable
@@ -188,7 +188,7 @@ def _build_tab_run_log(t):
                     ui.select(
                         log_names, value=log_names[0],
                         on_change=_switch_log,
-                    ).props("outlined dense dark rounded").classes("w-48")
+                    ).props("outlined dense dark").classes("w-48")
                 else:
                     ui.label(log_names[0]).classes("text-xs text-slate-400 font-mono")
 
@@ -235,7 +235,7 @@ def _build_tab_notes(t, info_obj):
 
             ui.button("Save", icon="save", on_click=save_notes).props(
                 "unelevated dense no-caps size=sm"
-            ).classes("bg-indigo-600 text-white px-4 rounded-lg")
+            ).classes("bg-indigo-600 text-white px-4")
 
         # Textarea
         with ui.column().classes("w-full flex-grow overflow-auto px-4 py-3 bg-white"):

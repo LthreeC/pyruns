@@ -29,7 +29,7 @@ def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
     n_with_data = sum(1 for t in selected_tasks if load_monitor_data(t["dir"]))
 
     with ui.dialog() as dlg, ui.card().classes(
-        "p-0 min-w-[400px] max-w-[500px] rounded-2xl overflow-hidden shadow-2xl"
+        "p-0 min-w-[400px] max-w-[500px] overflow-hidden shadow-2xl"
     ):
         # ── Header ──
         with ui.row().classes(
@@ -40,7 +40,7 @@ def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
             ui.label("Export Reports").classes("text-sm font-bold text-white")
             ui.space()
             ui.badge(f"{len(selected_tasks)} tasks").props(
-                "color=white text-color=emerald-8 rounded"
+                "color=white text-color=emerald-8"
             )
 
         # ── Body ──
@@ -84,7 +84,7 @@ def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
                         )
                         if mon:
                             ui.badge(f"{len(mon)}").props(
-                                "color=emerald-1 text-color=emerald-8 rounded"
+                                "color=emerald-1 text-color=emerald-8"
                             ).classes("text-[8px]")
 
         # ── Footer ──
@@ -123,12 +123,12 @@ def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
             ui.button("CSV", icon="table_chart", on_click=_do_csv).props(
                 "unelevated no-caps"
             ).classes(
-                f"bg-emerald-600 text-white px-4 rounded-lg font-bold {BTN_CLASS}"
+                f"bg-emerald-600 text-white px-4 font-bold {BTN_CLASS}"
             )
             ui.button("JSON", icon="data_object", on_click=_do_json).props(
                 "unelevated no-caps"
             ).classes(
-                f"bg-indigo-600 text-white px-4 rounded-lg font-bold {BTN_CLASS}"
+                f"bg-indigo-600 text-white px-4 font-bold {BTN_CLASS}"
             )
 
     dlg.open()

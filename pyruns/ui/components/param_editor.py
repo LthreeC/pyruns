@@ -15,7 +15,7 @@ _TYPE_INFO = {
     "string": ("text_fields",   "text-slate-400",   "bg-slate-50"),
 }
 
-_TINY = "outlined dense rounded bg-white hide-bottom-space"
+_TINY = "outlined dense bg-white hide-bottom-space"
 # Force Quasar input control to be short
 _INPUT_COMPACT = (
     "font-size: 12px; "
@@ -70,7 +70,10 @@ def recursive_param_editor(
     if expansions is None:
         expansions = []
     if starred is None:
-        starred = state.setdefault("starred_params", set())
+        # Load from persisted settings on first call
+        from pyruns.utils.settings import get as _get_setting
+        saved = _get_setting("starred_params", [])
+        starred = state.setdefault("starred_params", set(saved))
 
     with container:
         simple_keys = {
@@ -81,7 +84,7 @@ def recursive_param_editor(
 
         if simple_keys:
             items = list(simple_keys.items())
-            with ui.grid(columns=columns).classes("w-full gap-1.5"):
+            with ui.grid(columns=columns).classes("w-full gap-1"):
                 for key, value in items:
                     full_key = f"{key_prefix}{key}" if key_prefix else key
                     _param_cell(data, key, value, full_key, starred, state, on_star_toggle)
@@ -90,15 +93,15 @@ def recursive_param_editor(
             exp = ui.expansion(
                 f"{key}", icon="folder_open", value=True,
             ).classes(
-                "w-full mt-2 border border-slate-200 rounded-lg "
-                "overflow-hidden bg-white shadow-sm"
+                "w-full mt-1 border border-slate-200 "
+                "overflow-hidden bg-white"
             ).props(
                 "dense header-class='bg-slate-50 text-slate-600 "
-                "font-bold tracking-wide text-xs py-1'"
+                "font-bold tracking-wide text-xs py-0.5'"
             )
             expansions.append(exp)
             with exp:
-                with ui.column().classes("w-full px-1.5 py-1.5 border-t border-slate-100"):
+                with ui.column().classes("w-full px-1 py-1 border-t border-slate-100"):
                     recursive_param_editor(
                         ui.column().classes("w-full gap-0"),
                         value, state, task_manager,
@@ -121,14 +124,14 @@ def _param_cell(
 
     if is_starred:
         card_cls = (
-            "w-full border-2 border-amber-300 rounded-lg "
-            "px-2 py-0.5 transition-all duration-100 gap-0"
+            "w-full border-2 border-amber-300 "
+            "px-1.5 py-0.5 transition-all duration-100 gap-0"
         )
         card_bg = "background:#fffbeb"
     else:
         card_cls = (
-            "w-full border border-slate-150 rounded-lg "
-            "px-2 py-0.5 hover:border-indigo-200 hover:shadow-sm "
+            "w-full border border-slate-150 "
+            "px-1.5 py-0.5 hover:border-indigo-200 hover:shadow-sm "
             "transition-all duration-100 gap-0"
         )
         card_bg = "background:#fafbfc"
@@ -141,6 +144,9 @@ def _param_cell(
                     starred.discard(fk)
                 else:
                     starred.add(fk)
+                # Persist to _pyruns_.yaml
+                from pyruns.utils.settings import save_setting
+                save_setting("starred_params", list(starred))
                 if on_star_toggle:
                     try:
                         on_star_toggle()
@@ -157,7 +163,7 @@ def _param_cell(
             ).tooltip(star_tip)
 
             with ui.element("div").classes(
-                f"w-4.5 h-4.5 rounded flex items-center justify-center {icon_bg} flex-none"
+                f"w-4.5 h-4.5 flex items-center justify-center {icon_bg} flex-none"
             ):
                 ui.icon(icon_name, size="11px").classes(icon_color)
 

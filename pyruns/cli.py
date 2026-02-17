@@ -18,6 +18,7 @@ _HELP = textwrap.dedent(
 
     USAGE
       pyr <script.py>            Launch web UI for the given script
+      pyr dev <script.py>        Launch with hot-reload (development)
       pyr help | -h | --help     Show this message
       pyr version | -v           Show version
 
@@ -91,6 +92,14 @@ def pyr():
     if arg in ("version", "-v", "--version"):
         _print_version()
 
+    # ── Dev mode: pyr dev <script.py> ──
+    if arg == "dev":
+        if len(sys.argv) < 3:
+            print("Usage: pyr dev <script.py>")
+            sys.exit(1)
+        _launch_dev(sys.argv[2])
+        return
+
     # ── Resolve script path ──
     filepath = os.path.abspath(arg)
     if not os.path.exists(filepath):
@@ -98,47 +107,7 @@ def pyr():
         sys.exit(1)
 
     try:
-        from pyruns.utils.parse_utils import (
-            detect_config_source_fast,
-            extract_argparse_params,
-            generate_config_file,
-            resolve_config_path,
-        )
-        from pyruns.utils.settings import ensure_settings_file
-
-        # ── Detect config source ──
-        mode, extra = detect_config_source_fast(filepath)
-
-        file_dir = os.path.dirname(filepath)
-        pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
-
-        if mode == "argparse":
-            # Auto-extract params → generate config_default.yaml
-            params = extract_argparse_params(filepath)
-            generate_config_file(filepath, params)
-
-        elif mode == "pyruns_read":
-            # pyruns.read("path") — resolve the explicit config
-            if extra:
-                config_file = resolve_config_path(extra, file_dir)
-                if not config_file:
-                    print(f"Error: Config '{extra}' not found.")
-                    sys.exit(1)
-            # pyruns.read() with no arg → will use config_default.yaml at runtime
-
-        # mode == "pyruns_load" or "unknown":
-        #   No special handling needed — pyruns.load() auto-reads
-        #   config_default.yaml when ENV_CONFIG is set by the executor.
-
-        # Ensure workspace directory exists
-        os.makedirs(pyruns_dir, exist_ok=True)
-
-        # Auto-generate _pyruns_.yaml settings if absent
-        ensure_settings_file(pyruns_dir)
-
-        # ── Set environment ──
-        os.environ[ENV_ROOT] = pyruns_dir
-        os.environ[ENV_SCRIPT] = filepath
+        _setup_env(filepath)
 
         # ── Launch UI ──
         sys.argv = [sys.argv[0]]
@@ -153,5 +122,60 @@ def pyr():
         sys.exit(1)
 
 
+def _setup_env(filepath: str) -> str:
+    """Detect config source, ensure workspace, set env vars.
+
+    Returns the pyruns root directory path.
+    """
+    from pyruns.utils.parse_utils import (
+        detect_config_source_fast,
+        extract_argparse_params,
+        generate_config_file,
+        resolve_config_path,
+    )
+    from pyruns.utils.settings import ensure_settings_file
+
+    # ── Detect config source ──
+    mode, extra = detect_config_source_fast(filepath)
+
+    file_dir = os.path.dirname(filepath)
+    pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
+
+    if mode == "argparse":
+        params = extract_argparse_params(filepath)
+        generate_config_file(filepath, params)
+
+    elif mode == "pyruns_read":
+        if extra:
+            config_file = resolve_config_path(extra, file_dir)
+            if not config_file:
+                print(f"Error: Config '{extra}' not found.")
+                sys.exit(1)
+
+    os.makedirs(pyruns_dir, exist_ok=True)
+    ensure_settings_file(pyruns_dir)
+
+    # ── Set environment ──
+    os.environ[ENV_ROOT] = pyruns_dir
+    os.environ[ENV_SCRIPT] = filepath
+    return pyruns_dir
+
+
+def _launch_dev(script_arg: str):
+    """Launch UI in dev mode with hot-reload via subprocess."""
+    import subprocess as _sp
+
+    filepath = os.path.abspath(script_arg)
+    if not os.path.exists(filepath):
+        print(f"Error: '{script_arg}' not found.")
+        sys.exit(1)
+
+    _setup_env(filepath)
+    print(f"[pyruns dev] Hot-reload enabled — editing .py files will auto-restart")
+    print(f"[pyruns dev] Script: {filepath}")
+    _sp.run([sys.executable, "-m", "pyruns.ui.app"])
+
+
 if __name__ == "__main__":
     pyr()
+

@@ -16,6 +16,10 @@ from pyruns.ui.theme import (
 from pyruns.ui.widgets import dir_picker, section_header
 from pyruns.ui.components.task_card import render_card_grid
 from pyruns.ui.components.task_dialog import build_task_dialog
+from pyruns.utils.sort_utils import task_sort_key
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 ALL_STATUSES = ["pending", "queued", "running", "completed", "failed"]
 
@@ -60,10 +64,18 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         _last_snap = _take_snap()
         _page["value"] = 0
         task_list.refresh()
+        logger.debug("Full rescan completed, %d tasks", len(task_manager.tasks))
 
     def poll_changes():
         """Periodic: re-render only when the snapshot changes."""
         nonlocal _last_snap
+
+        # Instant refresh when generator creates new tasks
+        if state.get("_manager_dirty"):
+            state["_manager_dirty"] = False
+            _last_snap = _take_snap()
+            task_list.refresh()
+            return
 
         # Catch up immediately when switching back to this tab
         if _needs_refresh["flag"] and state.get("active_tab") == "manager":
@@ -88,8 +100,8 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     #  Row 1 — Directory picker + Filter + Search
     # ══════════════════════════════════════════════════════════
     with ui.row().classes(
-        "w-full items-center gap-4 mb-4 bg-white p-4 "
-        "rounded-xl shadow-sm border border-slate-100"
+        "w-full items-center gap-2 mb-2 px-3 py-1.5 bg-white "
+        "border-b border-slate-200 shadow-sm"
     ):
         tasks_dir_input = dir_picker(
             value=state.get("tasks_dir", task_manager.root_dir),
@@ -120,8 +132,8 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     #  Row 2 — [Cols] ←──────→ [Workers Mode RUN DELETE]
     # ══════════════════════════════════════════════════════════
     with ui.row().classes(
-        "w-full items-center justify-between bg-white px-5 py-3 mb-4 "
-        "rounded-xl shadow-sm border border-slate-100"
+        "w-full items-center justify-between bg-white px-3 py-1.5 mb-2 "
+        "border-b border-slate-200 shadow-sm"
     ):
         # Left: columns
         with ui.row().classes("items-center gap-1.5"):
@@ -163,14 +175,14 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
                 on_click=lambda: _run_selected(state, task_manager, refresh_tasks),
             ).props("unelevated no-caps color=green-8").classes(
                 f"font-bold px-6 py-2.5 text-white text-sm "
-                f"shadow-md rounded-lg {BTN_CLASS}"
+                f"shadow-md {BTN_CLASS}"
             )
 
             ui.button(
                 icon="delete_outline",
                 on_click=lambda: _delete_selected(state, task_manager, refresh_tasks),
             ).props("unelevated dense color=red-7").classes(
-                f"text-white rounded-lg {BTN_CLASS}"
+                f"text-white {BTN_CLASS}"
             )
 
     # ══════════════════════════════════════════════════════════
@@ -194,9 +206,15 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             _empty_state()
             return
 
-        # Combine pinned-first then others, then paginate
-        pinned = [t for t in tasks if t.get("pinned")]
-        others = [t for t in tasks if not t.get("pinned")]
+        # Combine pinned-first then others, sort each group by latest activity
+        pinned = sorted(
+            [t for t in tasks if t.get("pinned")],
+            key=task_sort_key, reverse=True,
+        )
+        others = sorted(
+            [t for t in tasks if not t.get("pinned")],
+            key=task_sort_key, reverse=True,
+        )
         ordered = pinned + others
 
         total = len(ordered)
@@ -250,6 +268,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 # ═══════════════════════════════════════════════════════════
 
 def _apply_dir(path: str, state, task_manager, full_rescan) -> None:
+    logger.info("Switching tasks root to: %s", path)
     state["tasks_dir"] = path
     task_manager.root_dir = path
     full_rescan()
@@ -263,6 +282,8 @@ def _run_selected(state, task_manager, refresh_tasks) -> None:
     task_manager.start_batch_tasks(
         ids, state["execution_mode"], state["max_workers"],
     )
+    logger.info("Started %d task(s)  mode=%s  workers=%d",
+                len(ids), state["execution_mode"], state["max_workers"])
     ui.notify(
         f"Started {len(ids)} task(s)", type="positive", icon="play_arrow",
     )
@@ -276,6 +297,7 @@ def _delete_selected(state, task_manager, refresh_tasks) -> None:
     for tid in ids:
         task_manager.delete_task(tid)
     state["selected_task_ids"] = []
+    logger.info("Deleted %d task(s) to trash", len(ids))
     ui.notify(
         f"Moved {len(ids)} task(s) to trash", type="warning", icon="delete",
     )
@@ -307,7 +329,7 @@ def _summary_bar(
     page_state=None, total_pages=1,
 ) -> None:
     with ui.row().classes(
-        "w-full px-4 py-2 bg-white rounded-xl border border-slate-100 "
+        "w-full px-3 py-1.5 bg-white border-b border-slate-200 "
         "items-center justify-between shadow-sm"
     ):
         with ui.row().classes("items-center gap-3"):
@@ -340,7 +362,7 @@ def _summary_bar(
                 icon_cls = STATUS_ICON_COLORS.get(s, "text-slate-400")
                 icon_name = STATUS_ICONS.get(s, "help")
                 with ui.row().classes(
-                    "items-center gap-1 bg-slate-50 px-2 py-0.5 rounded-full"
+                    "items-center gap-1 bg-slate-50 px-2 py-0.5"
                 ):
                     ui.icon(icon_name, size="13px").classes(icon_cls)
                     ui.label(str(c)).classes(

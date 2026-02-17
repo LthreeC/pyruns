@@ -39,7 +39,7 @@ def render_task_card(
     highlight = "ring-2 ring-indigo-400 ring-offset-1" if is_selected else ""
 
     card = ui.card().classes(
-        f"w-full border {card_style} {highlight} rounded-xl shadow-sm "
+        f"w-full border {card_style} {highlight} shadow-sm "
         f"hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden"
     ).style("min-height: 148px")
 
@@ -152,7 +152,7 @@ def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
             "unelevated no-caps dense size=sm"
         ).classes(
             f"text-white text-[11px] px-3 bg-emerald-600 hover:bg-emerald-700 "
-            f"rounded-lg shadow-sm {BTN_CLASS}"
+            f"shadow-sm {BTN_CLASS}"
         )
 
     elif status in ("running", "queued"):
@@ -171,7 +171,7 @@ def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
                 "unelevated no-caps dense size=sm"
             ).classes(
                 f"text-white text-[11px] px-3 bg-rose-600 hover:bg-rose-700 "
-                f"rounded-lg shadow-sm {BTN_CLASS}"
+                f"shadow-sm {BTN_CLASS}"
             )
 
     elif status == "completed":
@@ -189,6 +189,6 @@ def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
                 "unelevated no-caps dense size=sm"
             ).classes(
                 f"text-white text-[11px] px-3 bg-indigo-600 hover:bg-indigo-700 "
-                f"rounded-lg shadow-sm {BTN_CLASS}"
+                f"shadow-sm {BTN_CLASS}"
             )
 

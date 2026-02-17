@@ -13,7 +13,7 @@
 | **Generator** | Load YAML configs, edit parameters in a structured form or raw YAML editor, batch-generate tasks with product (`\|`) and zip (`(\|)`) syntax |
 | **Manager** | Card-grid overview of all tasks with status filters, search, batch run/delete, adjustable columns |
 | **Monitor** | Real-time ANSI-colored log viewer, task list with live status, export reports to CSV/JSON |
-| **System Metrics** | Live CPU, RAM, and per-GPU utilization displayed in the header |
+| **System Metrics** | Live CPU, RAM, and GPU summary (count × avg utilization) in the header |
 | **Auto Config Detection** | `pyr script.py` detects `argparse` parameters or `pyruns.read()` calls automatically |
 | **Workspace Settings** | Customise UI defaults (refresh intervals, grid columns, workers) via `_pyruns_.yaml` |
 
@@ -37,6 +37,7 @@ pip install pyruns
 
 ```bash
 pyr your_script.py       # Launch UI for your script
+pyr dev your_script.py   # Launch with hot-reload (for development)
 pyr help                 # Show usage instructions
 ```
 
@@ -119,7 +120,7 @@ MIT
 | **Generator** | 加载 YAML 配置，结构化表单 / 原始 YAML 编辑，支持 `\|` 笛卡尔积和 `(\|)` 配对批量生成 |
 | **Manager** | 卡片网格管理任务，状态过滤、搜索、批量运行/删除 |
 | **Monitor** | 实时 ANSI 彩色日志查看，任务状态监控，导出 CSV/JSON |
-| **系统指标** | 顶栏实时显示 CPU、RAM、每张 GPU 利用率 |
+| **系统指标** | 顶栏实时显示 CPU、RAM、GPU 概览（数量 × 平均利用率） |
 | **自动检测** | `pyr script.py` 自动提取 argparse 参数或检测 `pyruns.read()` |
 | **工作区配置** | 通过 `_pyruns_.yaml` 自定义刷新间隔、网格列数、并行数等 |
 
@@ -133,6 +134,7 @@ pip install pyruns
 
 ```bash
 pyr your_script.py       # 启动 UI
+pyr dev your_script.py   # 热加载模式（开发调试用）
 pyr help                 # 查看使用说明
 ```
 

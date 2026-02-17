@@ -33,14 +33,32 @@ def configure_project_root_logger(
         if _LIBRARY_ROOT_LOGGER:
             return
 
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(logging.Formatter(log_config["console"]["format"], datefmt=log_config["console"].get("datefmt", None)))
-        console_handler.setLevel(log_config["console"]["level"])
+        # Read logging settings from workspace config
+        try:
+            from pyruns.utils.settings import get as _get_setting
+            log_enabled = _get_setting("log_enabled", True)
+            log_level = _get_setting("log_level", "INFO").upper()
+        except Exception:
+            log_enabled = True
+            log_level = "INFO"
 
         _LIBRARY_ROOT_LOGGER = logging.getLogger(get_library_root())
+        _LIBRARY_ROOT_LOGGER.propagate = False
+
+        if not log_enabled:
+            # Disable all output — log calls short-circuit after int compare
+            _LIBRARY_ROOT_LOGGER.setLevel(logging.CRITICAL + 1)
+            return
+
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(logging.Formatter(
+            log_config["console"]["format"],
+            datefmt=log_config["console"].get("datefmt"),
+        ))
+        console_handler.setLevel(log_level)
+
         _LIBRARY_ROOT_LOGGER.addHandler(console_handler)
         _LIBRARY_ROOT_LOGGER.setLevel("DEBUG")
-        _LIBRARY_ROOT_LOGGER.propagate = False
 
 
 def attach_file_handler(log_path: str, log_config: str = None) -> None:

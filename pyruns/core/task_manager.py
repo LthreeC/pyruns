@@ -55,6 +55,8 @@ class TaskManager:
 
         # Startup
         self.scan_disk()
+        logger.info("TaskManager initialised  root=%s  tasks=%d",
+                    root_dir, len(self.tasks))
         threading.Thread(target=self._scheduler_loop, daemon=True).start()
 
     # ──────────────────────────────────────────────────────────
@@ -84,6 +86,8 @@ class TaskManager:
                 task = self._load_task_dir(d)
                 if task is not None:
                     self.tasks.append(task)
+
+            logger.debug("scan_disk completed: %d tasks found", len(self.tasks))
 
     def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
         """Parse a single task directory into a task dict (or ``None``)."""
@@ -211,6 +215,7 @@ class TaskManager:
                     self._sync_status_to_disk(t, "queued", rerun_index=0)
 
         self.is_processing = True
+        logger.info("Queued %d task(s) for execution", len(task_ids))
 
     def rerun_task(self, task_id: str) -> bool:
         """Re-run a completed/failed task."""
@@ -244,6 +249,7 @@ class TaskManager:
 
             target["status"] = "failed"
             self._mark_failed_on_disk(target)
+            logger.info("Cancelled task %s", task_id[:8])
             return True
 
     def delete_task(self, task_id: str) -> None:
@@ -299,6 +305,7 @@ class TaskManager:
                     target["created_at"], target["config"],
                     target.get("env", {}), rerun_index,
                 )
+                logger.debug("Submitted task %s to executor", target["name"])
                 future.add_done_callback(
                     lambda f, tid=target["id"]: self._on_task_done(f, tid)
                 )

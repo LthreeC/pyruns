@@ -13,7 +13,7 @@ tree for already-visited pages is preserved across switches.
 from nicegui import ui
 from typing import Dict, Any, Callable
 
-from pyruns._config import BG_COLOR
+
 from pyruns.ui.components.header import render_header
 from pyruns.ui.components.sidebar import render_sidebar
 
@@ -29,18 +29,20 @@ def render_main_layout(
     """Assemble the full page: header, sidebar, and lazy content panels."""
     render_header(state, metrics_sampler)
 
-    # ── Create one container per page ──
-    containers: Dict[str, ui.element] = {}
-    rendered: set = set()
+    # ── Flex row: sidebar (15%) + content (85%) ──
+    with ui.row().classes("w-full flex-nowrap gap-0").style("height: calc(100vh - 52px); overflow: hidden;"):
+        # Sidebar column
+        render_sidebar(state, lambda tab: switch_tab(tab))
 
-    for tab in _TAB_NAMES:
-        if tab == "monitor":
-            # Monitor manages its own height / overflow — no padding wrapper
-            c = ui.column().classes("w-full gap-0")
-        else:
-            c = ui.column().classes(f"w-full px-5 py-4 {BG_COLOR} min-h-screen")
-        c.set_visibility(False)
-        containers[tab] = c
+        # Content column — fills the remaining space
+        with ui.column().classes("flex-grow min-w-0 gap-0"):
+            containers: Dict[str, ui.element] = {}
+            rendered: set = set()
+
+            for tab in _TAB_NAMES:
+                c = ui.column().classes(f"w-full gap-0 flex-grow overflow-y-auto")
+                c.set_visibility(False)
+                containers[tab] = c
 
     def switch_tab(tab: str) -> None:
         """Show *tab* and hide the rest; lazy-render on first visit."""
@@ -62,5 +64,3 @@ def render_main_layout(
     containers[initial].set_visibility(True)
     with containers[initial]:
         page_renderers[initial]()
-
-    render_sidebar(state, switch_tab)

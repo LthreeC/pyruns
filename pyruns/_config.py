@@ -26,11 +26,10 @@ LOG_FILENAME = "run.log"
 RERUN_LOG_DIR = "rerun_logs"
 TRASH_DIR = ".trash"
 MONITOR_KEY = "monitor"            # task_info.json 中存放监控数据的字段名
-SETTINGS_FILENAME = "_pyruns_.yaml"  # workspace-level UI settings
+SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
 
 # ═══════════════════════════════════════════════════════════════
 #  UI Theme Constants
 # ═══════════════════════════════════════════════════════════════
 THEME_COLOR = "indigo"
 HEADER_GRADIENT = "bg-gradient-to-r from-[#0f172a] to-[#312e81]"
-BG_COLOR = "bg-slate-50"

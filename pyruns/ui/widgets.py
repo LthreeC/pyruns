@@ -20,85 +20,9 @@ from pyruns.ui.theme import (
 
 _CSS_CLIENTS: set = set()
 
-_GLOBAL_CSS = """
-/* ── readonly codemirror ── */
-.readonly-cm .cm-focused { outline: none !important; }
-.readonly-cm .cm-cursor { display: none !important; }
-.readonly-cm .cm-activeLine { background: transparent !important; }
-.readonly-cm .cm-content { cursor: default; }
-.readonly-cm .cm-gutters { cursor: default; }
-
-/* ── dialog: flex chain  card → tab-panels → panel → content ── */
-.task-detail-card .q-tab-panels {
-    padding: 0 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-    background: #1e1e1e !important;
-}
-.task-detail-card .q-tab-panels > div {
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-}
-.task-detail-card .q-tab-panel {
-    padding: 0 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-}
-
-/* ── codemirror: fill remaining flex space ── */
-.task-detail-card .readonly-cm,
-.task-detail-card nicegui-codemirror {
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-}
-.task-detail-card .cm-editor {
-    height: 100% !important;
-    border: none !important;
-}
-
-/* ── Monitor: terminal-like log viewer ── */
-.monitor-log-pre {
-    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
-    font-size: 12px;
-    line-height: 1.6;
-    color: #d4d4d4;
-    white-space: pre-wrap;
-    word-break: break-all;
-    padding: 8px 12px;
-    margin: 0;
-}
-
-/* ── Monitor: task list item ── */
-.monitor-task-item {
-    cursor: pointer;
-    transition: all 0.15s ease;
-    border-left: 3px solid transparent;
-    flex-wrap: nowrap !important;
-    overflow: hidden;
-}
-.monitor-task-item:hover { background: #f1f5f9; }
-.monitor-task-item.active {
-    background: #eef2ff;
-    border-left-color: #6366f1;
-}
-.monitor-task-item .nicegui-label,
-.monitor-task-item label,
-.monitor-task-item span {
-    white-space: nowrap !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
-}
-"""
+_CSS_PATH = os.path.join(os.path.dirname(__file__), "pyruns.css")
+with open(_CSS_PATH, "r", encoding="utf-8") as _f:
+    _GLOBAL_CSS = _f.read()
 
 
 def _ensure_css() -> None:
@@ -174,7 +98,7 @@ def status_badge(status: str, size: str = "sm") -> None:
 
     if size == "sm":
         with ui.row().classes(
-            f"items-center gap-1 {badge_cls} px-2 py-0.5 rounded-full"
+            f"items-center gap-1 {badge_cls} px-2 py-0.5"
         ):
             ui.icon(icon_name, size="12px")
             ui.label(status.upper()).classes(
@@ -182,7 +106,7 @@ def status_badge(status: str, size: str = "sm") -> None:
             )
     else:
         with ui.row().classes(
-            f"items-center gap-1.5 {badge_cls} px-3 py-1 rounded-full"
+            f"items-center gap-1.5 {badge_cls} px-3 py-1"
         ):
             ui.icon(icon_name, size="16px")
             ui.label(status.upper()).classes(

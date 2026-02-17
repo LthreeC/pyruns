@@ -8,6 +8,9 @@ from typing import Dict, Any, Optional
 
 from pyruns._config import INFO_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME
 from pyruns.utils.log_io import append_log
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 def _update_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     info_path = os.path.join(task_dir, INFO_FILENAME)
@@ -56,6 +59,67 @@ def _get_log_path(task_dir: str, rerun_index: int) -> str:
         os.makedirs(log_dir, exist_ok=True)
         return os.path.join(log_dir, f"rerun{rerun_index}.log")
 
+
+def _build_command(meta_cmd, script_path, meta_workdir, config):
+    """Build the subprocess command list from task metadata + config.
+
+    Returns (command, workdir) where command may be a list, a string,
+    or None (simulation mode).
+    """
+    from typing import List
+
+    command = meta_cmd or config.get("command")
+    workdir = meta_workdir
+
+    if not command and script_path:
+        cmd_list: List[str] = [sys.executable, script_path]
+
+        # Detect positional vs optional argparse args from the script source
+        positional_order: List[str] = []
+        try:
+            from pyruns.utils.parse_utils import extract_argparse_params
+            ap_params = extract_argparse_params(script_path)
+            for dest, info in ap_params.items():
+                raw_name = info.get("name", "")
+                if isinstance(raw_name, (list, tuple)):
+                    raw_name = raw_name[0] if raw_name else ""
+                if not str(raw_name).startswith("-"):
+                    positional_order.append(dest)
+        except Exception:
+            pass  # fallback: treat everything as optional
+
+        # Positional args first (bare values, in definition order)
+        for k in positional_order:
+            if k in config and config[k] is not None:
+                v = config[k]
+                if isinstance(v, list):
+                    for item in v:
+                        cmd_list.append(str(item))
+                else:
+                    cmd_list.append(str(v))
+
+        # Optional / remaining args with --prefix
+        for k, v in config.items():
+            if k in positional_order:
+                continue
+            if isinstance(v, bool):
+                if v:
+                    cmd_list.append(f"--{k}")
+            elif isinstance(v, list):
+                for item in v:
+                    cmd_list.append(f"--{k}")
+                    cmd_list.append(str(item))
+            elif v is not None:
+                cmd_list.append(f"--{k}")
+                cmd_list.append(str(v))
+
+        command = cmd_list
+        if not workdir:
+            workdir = os.path.dirname(script_path)
+
+    return command, workdir
+
+
 def run_task_worker(
     task_dir: str,
     task_id: str,
@@ -72,6 +136,7 @@ def run_task_worker(
     GPU 等硬件设置通过 env_vars 传入 (如 CUDA_VISIBLE_DEVICES)
     rerun_index: 0=首次运行, >0=第N次重跑
     """
+    logger.info("Task %s (%s) starting  rerun=%d", name, task_id[:8], rerun_index)
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
@@ -123,26 +188,10 @@ def run_task_worker(
     append_log(log_path, f"[{now_str}] SYSTEM: {run_label} Execution Started.\n")
 
     # 2. Build Command
-    command = meta_cmd or config.get("command")
-    workdir = meta_workdir
-
-    if not command and script_path:
-        cmd_list = [sys.executable, script_path]
-
-        for k, v in config.items():
-            if isinstance(v, bool):
-                if v: cmd_list.append(f"--{k}")
-            elif isinstance(v, list):
-                for item in v:
-                    cmd_list.append(f"--{k}")
-                    cmd_list.append(str(item))
-            elif v is not None:
-                cmd_list.append(f"--{k}")
-                cmd_list.append(str(v))
-
-        command = cmd_list
-        if not workdir:
-            workdir = os.path.dirname(script_path)
+    command, workdir = _build_command(
+        meta_cmd, script_path, meta_workdir, config
+    )
+    logger.debug("Built command: %s  workdir=%s", command, workdir)
 
     # 3. Execute
     status = "failed"
@@ -211,6 +260,7 @@ def run_task_worker(
             final_info["rerun_pid"] = rp_list
 
         _update_task_info(task_dir, final_info)
+        logger.info("Task %s finished  status=%s", name, status)
         return {"status": status, "progress": progress}
 
     except Exception as e:
@@ -232,4 +282,5 @@ def run_task_worker(
             fail_info["rerun_pid"] = rp_list
 
         _update_task_info(task_dir, fail_info)
+        logger.error("Task %s failed with exception: %s", name, e)
         return {"status": "failed", "progress": 0.0, "error": str(e)}

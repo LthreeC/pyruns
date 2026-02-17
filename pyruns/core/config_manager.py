@@ -1,7 +1,11 @@
+import os
 import json
 import yaml
-from pathlib import Path
 from typing import Any, Union, Dict, List, Optional
+
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class ConfigNode:
@@ -46,27 +50,29 @@ class ConfigManager:
         self._root: Optional[ConfigNode] = None
 
     def read(self, file_path: str):
-        path = Path(file_path)
-        if not path.exists():
+        if not os.path.exists(file_path):
             raise FileNotFoundError(f"Config file not found: {file_path}")
+        ext = os.path.splitext(file_path)[1].lower()
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                if path.suffix.lower() in [".yaml", ".yml"]:
+            with open(file_path, "r", encoding="utf-8") as f:
+                if ext in (".yaml", ".yml"):
                     data = yaml.safe_load(f)
-                elif path.suffix.lower() == ".json":
+                elif ext == ".json":
                     data = json.load(f)
                 else:
-                    raise ValueError(f"Unsupported format: {path.suffix}")
+                    raise ValueError(f"Unsupported format: {ext}")
             # 处理根节点是列表的情况
             if isinstance(data, list):
                 self._root = [ConfigNode(item) if isinstance(item, dict) else item for item in data]
             else:
                 self._root = ConfigNode(data or {})
-            print(f"[Config] Loaded: {file_path}")
+            logger.info("Config loaded: %s", file_path)
         except Exception as e:
+            logger.error("Failed to parse config %s: %s", file_path, e)
             raise RuntimeError(f"Failed to parse config: {e}")
 
     def load(self) -> Union[ConfigNode, List, None]:
         if self._root is None:
             raise RuntimeError("Config not loaded. Call read() first.")
         return self._root
+

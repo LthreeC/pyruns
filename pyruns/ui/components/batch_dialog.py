@@ -16,6 +16,7 @@ def show_batch_confirm(
     base_config: Dict[str, Any],
     task_generator,
     task_manager,
+    state: Dict[str, Any] = None,
 ) -> None:
     """Open a dialog that summarises the batch and lets the user confirm."""
     n = len(configs)
@@ -39,7 +40,7 @@ def show_batch_confirm(
 
     # ── Dialog ──
     with ui.dialog() as dlg, ui.card().classes(
-        "p-0 min-w-[520px] max-w-[680px] rounded-2xl overflow-hidden shadow-2xl"
+        "p-0 min-w-[520px] max-w-[680px] overflow-hidden shadow-2xl"
     ):
         _dialog_header(n)
 
@@ -51,7 +52,7 @@ def show_batch_confirm(
                 _zip_section(zip_params)
             _total_formula(product_params, zip_params, n)
 
-        _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager)
+        _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state)
 
     dlg.open()
 
@@ -67,7 +68,7 @@ def _dialog_header(n: int) -> None:
         ui.icon("batch_prediction", size="24px", color="white")
         ui.label("批量生成确认").classes("text-lg font-bold text-white")
         ui.space()
-        ui.badge(f"{n} tasks").props("color=white text-color=indigo-8 rounded")
+        ui.badge(f"{n} tasks").props("color=white text-color=indigo-8")
 
 
 def _naming_preview(prefix: str, n: int) -> None:
@@ -80,7 +81,7 @@ def _naming_preview(prefix: str, n: int) -> None:
         fmt_str = f"{prefix}-[1-of-{n}]  ~  {prefix}-[{n}-of-{n}]"
         ui.label(fmt_str).classes(
             "text-xs font-mono text-slate-500 bg-slate-50 "
-            "px-3 py-1.5 rounded-md border border-slate-100"
+            "px-3 py-1.5 border border-slate-100"
         )
 
 
@@ -110,10 +111,10 @@ def _product_section(product_params: Dict[str, List[str]], product_total: int) -
             ui.badge(
                 " × ".join(str(len(v)) for v in product_params.values())
                 + f" = {product_total}"
-            ).props("color=indigo-1 text-color=indigo-8 rounded").classes("text-[10px]")
+            ).props("color=indigo-1 text-color=indigo-8").classes("text-[10px]")
         with ui.column().classes(
             "gap-1 max-h-[140px] overflow-auto "
-            "bg-indigo-50/50 rounded-lg px-3 py-2 border border-indigo-100"
+            "bg-indigo-50/50 px-3 py-2 border border-indigo-100"
         ):
             _param_row_list(product_params, "indigo")
 
@@ -127,11 +128,11 @@ def _zip_section(zip_params: Dict[str, List[str]]) -> None:
                 "text-[11px] font-bold text-purple-600 uppercase tracking-wider"
             )
             ui.badge(f"× {zip_count}").props(
-                "color=purple-1 text-color=purple-8 rounded"
+                "color=purple-1 text-color=purple-8"
             ).classes("text-[10px]")
         with ui.column().classes(
             "gap-1 max-h-[140px] overflow-auto "
-            "bg-purple-50/50 rounded-lg px-3 py-2 border border-purple-100"
+            "bg-purple-50/50 px-3 py-2 border border-purple-100"
         ):
             _param_row_list(zip_params, "purple")
 
@@ -142,7 +143,7 @@ def _total_formula(
     n: int,
 ) -> None:
     with ui.row().classes(
-        "items-center gap-2 bg-slate-50 rounded-lg px-4 py-2 border border-slate-200"
+        "items-center gap-2 bg-slate-50 px-4 py-2 border border-slate-200"
     ):
         ui.icon("calculate", size="16px").classes("text-slate-500")
         parts = []
@@ -156,7 +157,7 @@ def _total_formula(
         )
 
 
-def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager) -> None:
+def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state=None) -> None:
     with ui.row().classes(
         "w-full justify-end gap-3 px-6 py-4 bg-slate-50 border-t border-slate-100"
     ):
@@ -167,6 +168,8 @@ def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager) -> Non
         def do_generate():
             tasks = task_generator.create_tasks(configs, prefix)
             task_manager.add_tasks(tasks)
+            if state is not None:
+                state["_manager_dirty"] = True
             ui.notify(
                 f"Generated {n} tasks: {prefix}-[1-of-{n}] ~ {prefix}-[{n}-of-{n}]",
                 type="positive",

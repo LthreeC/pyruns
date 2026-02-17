@@ -4,6 +4,8 @@ Left sidebar navigation — Generator / Manager / Monitor tabs.
 from nicegui import ui
 from typing import Dict, Any, Callable
 
+from pyruns.ui.theme import SIDEBAR_WIDTH
+
 _TABS = [
     ("Generator", "add_circle", "generator"),
     ("Manager", "dns", "manager"),
@@ -12,31 +14,28 @@ _TABS = [
 
 
 def render_sidebar(state: Dict[str, Any], switch_tab: Callable) -> None:
-    """Render the left navigation drawer.
+    """Render the left navigation column.
 
     Parameters
     ----------
     switch_tab : Callable[[str], None]
         Callback that toggles container visibility (no DOM rebuild).
     """
-    with ui.left_drawer(value=True).classes(
-        "bg-white border-r border-slate-100 "
+    with ui.column().classes(
+        "flex-none bg-white border-r border-slate-100 gap-0 "
         "shadow-[4px_0_24px_rgba(0,0,0,0.02)] print:hidden"
-    ).style("width: 110px; min-width: 110px;"):
+    ).style(f"width: {SIDEBAR_WIDTH}; min-height: 100%;"):
         ui.label("MENU").classes(
             "text-[9px] font-bold text-slate-400 px-2 mt-5 mb-2 tracking-wider"
         )
 
         @ui.refreshable
         def menu() -> None:
-            with ui.column().classes("w-full gap-0"):
+            with ui.column().classes("w-full gap-0 px-1.5"):
                 for name, icon, tab in _TABS:
                     _nav_item(name, icon, tab, state, switch_tab, menu)
 
         menu()
-
-        with ui.column().classes("absolute bottom-3 w-full px-2"):
-            ui.label("v0.1").classes("text-[9px] text-slate-300 font-mono")
 
 
 def _nav_item(
@@ -46,8 +45,8 @@ def _nav_item(
     """Single navigation button."""
     active = state["active_tab"] == tab
     base = (
-        "w-full px-2 py-1.5 rounded-r-full transition-all duration-200 "
-        "flex items-center gap-1 text-[20px] font-medium mr-0.5"
+        "w-full px-2.5 py-1.5 transition-all duration-200 "
+        "flex items-center gap-2 text-[18px] font-medium"
     )
     if active:
         cls = (
@@ -70,3 +69,4 @@ def _nav_item(
     ).props("flat no-caps").classes(cls):
         ui.icon(icon).classes(f"{icon_color} text-sm")
         ui.label(name).classes("truncate")
+

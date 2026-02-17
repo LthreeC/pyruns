@@ -3,12 +3,15 @@ Centralized UI theme constants for Pyruns.
 All style strings, color maps, and CSS classes live here.
 """
 
+# ─── Layout ─────────────────────────────────────────────────
+SIDEBAR_WIDTH = "15%"
+
 # ─── Input / Form ───────────────────────────────────────────
-INPUT_PROPS = "outlined dense rounded bg-white text-slate-800"
+INPUT_PROPS = "outlined dense bg-white text-slate-800"
 BTN_CLASS = "transition-all duration-200"
 
 # ─── Shared Panel Styles ──────────────────────────────────
-PANEL_CARD = "bg-white rounded-xl shadow-sm border border-slate-100"
+PANEL_CARD = "bg-white shadow-sm border border-slate-100"
 PANEL_HEADER_INDIGO = (
     "bg-gradient-to-r from-indigo-600 to-indigo-700"
 )

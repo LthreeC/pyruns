@@ -1,0 +1,77 @@
+/* ── readonly codemirror ── */
+.readonly-cm .cm-focused { outline: none !important; }
+.readonly-cm .cm-cursor { display: none !important; }
+.readonly-cm .cm-activeLine { background: transparent !important; }
+.readonly-cm .cm-content { cursor: default; }
+.readonly-cm .cm-gutters { cursor: default; }
+
+/* ── dialog: flex chain  card → tab-panels → panel → content ── */
+.task-detail-card .q-tab-panels {
+    padding: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    background: #1e1e1e !important;
+}
+.task-detail-card .q-tab-panels > div {
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+.task-detail-card .q-tab-panel {
+    padding: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
+/* ── codemirror: fill remaining flex space ── */
+.task-detail-card .readonly-cm,
+.task-detail-card nicegui-codemirror {
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+.task-detail-card .cm-editor {
+    height: 100% !important;
+    border: none !important;
+}
+
+/* ── Monitor: terminal-like log viewer ── */
+.monitor-log-pre {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #d4d4d4;
+    white-space: pre-wrap;
+    word-break: break-all;
+    padding: 8px 12px;
+    margin: 0;
+}
+
+/* ── Monitor: task list item ── */
+.monitor-task-item {
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-left: 3px solid transparent;
+    flex-wrap: nowrap !important;
+    overflow: hidden;
+}
+.monitor-task-item:hover { background: #f1f5f9; }
+.monitor-task-item.active {
+    background: #eef2ff;
+    border-left-color: #6366f1;
+}
+.monitor-task-item .nicegui-label,
+.monitor-task-item label,
+.monitor-task-item span {
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+}

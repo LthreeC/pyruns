@@ -8,8 +8,8 @@ import os
 import yaml
 from typing import Any, Dict
 
-# ── Setting keys & defaults ──────────────────────────────────
-SETTINGS_FILENAME = "_pyruns_.yaml"
+from pyruns._config import SETTINGS_FILENAME
+
 
 _DEFAULTS: Dict[str, Any] = {
     # Server
@@ -27,6 +27,11 @@ _DEFAULTS: Dict[str, Any] = {
     "manager_page_size": 50,            # cards per page (0 = show all)
     # Monitor
     "monitor_poll_interval": 1,         # seconds
+    # Logging
+    "log_enabled": True,                # enable/disable pyruns internal logging
+    "log_level": "INFO",                # DEBUG | INFO | WARNING | ERROR | CRITICAL
+    # State (persisted across sessions)
+    "starred_params": [],               # list of dotted param keys
 }
 
 _TEMPLATE = """\
@@ -55,6 +60,10 @@ manager_page_size: 50              # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────
 monitor_poll_interval: 1           # polling interval (seconds)
+
+# ── Logging ─────────────────────────────────────────────────
+log_enabled: true                  # false to disable all pyruns internal logs
+log_level: INFO                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
 """
 
 # ── Module-level cache ───────────────────────────────────────
@@ -91,9 +100,7 @@ def load_settings(root_dir: str) -> Dict[str, Any]:
             with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             if isinstance(data, dict):
-                for k, v in data.items():
-                    if k in _DEFAULTS:
-                        merged[k] = v
+                merged.update(data)
         except Exception:
             pass  # fall back to defaults silently
     _cached = merged
@@ -110,3 +117,23 @@ def get(key: str, default: Any = None) -> Any:
 def reload_settings(root_dir: str) -> Dict[str, Any]:
     """Force reload from disk."""
     return load_settings(root_dir)
+
+
+def save_setting(key: str, value: Any) -> None:
+    """Persist a single setting to ``_pyruns_.yaml`` (read-modify-write)."""
+    import pyruns._config as _cfg
+    root = _cfg.ROOT_DIR
+    path = _settings_path(root)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        else:
+            data = {}
+        data[key] = value
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False,
+                      allow_unicode=True, sort_keys=False)
+        _cached[key] = value
+    except Exception:
+        pass  # best-effort — don't crash UI on write failure

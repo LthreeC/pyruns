@@ -10,7 +10,6 @@ Design:
 """
 import os
 from typing import Dict, Any, Optional
-
 from nicegui import ui
 
 from pyruns.utils.log_io import read_log
@@ -22,6 +21,10 @@ from pyruns.ui.theme import (
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
 from pyruns.utils.ansi_utils import ansi_to_html, tail_lines
+
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 # Header height in px (py-2 ≈ 16px padding + ~36px content)
 _HEADER_H = 52
@@ -101,7 +104,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         log_select_el = ui.select(
             [], value=None,
             on_change=lambda e: _on_log_select_change(e.value),
-        ).props("outlined dense dark rounded options-dense").classes("w-36")
+        ).props("outlined dense dark options-dense").classes("w-36")
         log_select_el.set_visibility(False)
 
     with log_container:
@@ -123,6 +126,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                 return
             log_path = _current_log_path()
             if not log_path or not os.path.exists(log_path):
+                logger.warning("Log file not found for task %s", sel["task_id"][:8] if sel.get("task_id") else "?")
                 _no_log_placeholder()
                 return
             raw = read_log(log_path)
@@ -169,6 +173,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         sel["task_id"] = tid
         sel["log_file_name"] = None
         sel["_log_len"] = 0
+        logger.debug("Monitor: selected task %s", tid[:8] if tid else None)
         # refresh left panel highlight
         task_list_panel = sel.get("_task_list_panel")
         if task_list_panel:
@@ -321,7 +326,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             "w-full px-2 py-1 flex-none border-b border-slate-100"
         ):
             si = ui.input(placeholder="Search...").props(
-                "dense outlined rounded bg-white clearable"
+                "dense outlined bg-white clearable"
             ).classes("w-full text-xs")
             si.on("keyup.enter", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
             si.on("clear", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
@@ -332,11 +337,12 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         # scrollable task list
         @ui.refreshable
         def task_list_panel():
+            from pyruns.utils.sort_utils import task_sort_key
             tasks = list(task_manager.tasks)
             q = search_ref["val"]
             if q:
                 tasks = [t for t in tasks if q in t.get("name", "").lower()]
-            tasks.sort(key=lambda t: STATUS_ORDER.get(t["status"], 9))
+            tasks.sort(key=task_sort_key, reverse=True)
 
             with ui.scroll_area().classes("flex-grow"):
                 if not tasks:
@@ -352,16 +358,16 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         task_list_panel()
 
         # export button
-        with ui.row().classes(
-            "w-full items-center gap-2 px-2 py-2 flex-none "
-            "border-t border-slate-200 bg-slate-50"
-        ):
+        with ui.row().classes("w-full p-2 flex-none mt-auto"): 
             ui.button(
-                "Export Reports", icon="download",
+                "Export Reports", 
                 on_click=lambda: show_export_dialog(task_manager, sel["export_ids"]),
-            ).props("flat no-caps").classes(
-                "text-indigo-600 hover:bg-indigo-50 flex-grow h-15"
+            ).props("unelevated icon=download").classes(
+                "w-full bg-indigo-600 text-white text-sm font-bold tracking-wide "
+                "py-2 "  # 这里的 py-2 控制高度，flex-grow 必须去掉
+                "hover:bg-indigo-700 shadow-md hover:shadow-lg rounded"
             )
+
 
 
 def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
@@ -412,7 +418,7 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
             mon_count = t.get("monitor_count", 0)
             if mon_count:
                 ui.badge(str(mon_count)).props(
-                    "color=indigo-2 text-color=indigo-8 rounded"
+                    "color=indigo-2 text-color=indigo-8"
                 ).classes("flex-none text-[9px]")
 
 

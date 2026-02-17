@@ -7,6 +7,9 @@ from typing import Dict, Any, List
 from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME, ENV_SCRIPT
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.task_utils import validate_task_name  # re-export for backward compat
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 def create_task_object(task_id: str, task_dir: str, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -87,6 +90,7 @@ class TaskGenerator:
         with open(os.path.join(task_dir, LOG_FILENAME), "w", encoding="utf-8") as f:
             f.write(f"[{info['created_at']}] Task initialized.\n")
 
+        logger.debug("Created task '%s' at %s", display_name, task_dir)
         return task_obj
 
     def create_tasks(

@@ -14,6 +14,9 @@ from pyruns.ui.layout import render_main_layout
 from pyruns.ui.pages.generator import render_generator_page
 from pyruns.ui.pages.manager import render_manager_page
 from pyruns.ui.pages.monitor import render_monitor_page
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 # Global singletons (initialised lazily in main())
 task_generator: TaskGenerator = None  # type: ignore
@@ -25,6 +28,7 @@ _settings: dict = {}  # workspace settings from _pyruns_.yaml
 @ui.page("/")
 def main_page():
     """Per-session page — creates mutable state and routes to the active tab."""
+    logger.debug("Creating new session page")
     state = asdict(AppState(_settings=_settings))
 
     # Each renderer is called at most once (on first visit).
@@ -42,8 +46,16 @@ def main_page():
     render_main_layout(state, task_manager, metrics_sampler, page_renderers)
 
 
-def main():
-    """Bootstrap the app: read env vars, create singletons, start server."""
+def main(*, reload: bool = False):
+    """Bootstrap the app: read env vars, create singletons, start server.
+
+    Parameters
+    ----------
+    reload : bool
+        Enable NiceGUI hot-reload (dev mode).  Only works when the module
+        is executed directly (``python -m pyruns.ui.app``), NOT via the
+        ``pyr`` CLI entry point.
+    """
     global task_generator, task_manager, metrics_sampler, _settings
 
     # Re-read ROOT_DIR from env at runtime (cli.py may have set it after
@@ -62,16 +74,21 @@ def main():
     task_generator = TaskGenerator(root_dir=fresh_root)
     task_manager = TaskManager(root_dir=fresh_root)
     metrics_sampler = SystemMonitor()
+    logger.info("Pyruns initialised  root=%s  port=%s", fresh_root, _settings.get("ui_port", 8080))
 
     port = int(_settings.get("ui_port", 8080))
+    # In dev mode, tell uvicorn to watch the pyruns source tree for changes.
+    pkg_dir = os.path.dirname(os.path.dirname(__file__))  # …/pyruns/
     ui.run(
         title="Pyruns Experiment Lab",
         port=port,
         show=True,
-        reload=False,
+        reload=reload,
+        uvicorn_reload_dirs=pkg_dir if reload else ".",
         favicon="🧪",
     )
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    main()
+    main(reload=True)
+
