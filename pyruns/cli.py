@@ -59,7 +59,9 @@ _HELP = textwrap.dedent(
           ├── my-task/               ← generated task folder
           │   ├── task_info.json
           │   ├── config.yaml
-          │   └── run.log
+          │   └── run_logs/
+          │       ├── run1.log
+          │       └── run2.log   ← each run gets its own log
           └── .trash/                ← soft-deleted tasks
 """
 )

@@ -23,12 +23,12 @@ _DEFAULTS: Dict[str, Any] = {
     "manager_columns": 5,               # 1-9
     "manager_max_workers": 1,
     "manager_execution_mode": "thread", # thread | process
-    "manager_poll_interval": 2,         # seconds
+    "manager_poll_interval": 1,         # seconds
     "manager_page_size": 50,            # cards per page (0 = show all)
     # Monitor
     "monitor_poll_interval": 1,         # seconds
     # Logging
-    "log_enabled": True,                # enable/disable pyruns internal logging
+    "log_enabled": False,                # enable/disable pyruns internal logging
     "log_level": "INFO",                # DEBUG | INFO | WARNING | ERROR | CRITICAL
     # State (persisted across sessions)
     "starred_params": [],               # list of dotted param keys
@@ -55,7 +55,7 @@ generator_auto_timestamp: true     # auto-name tasks with timestamp
 manager_columns: 5                 # task card grid columns (1-9)
 manager_max_workers: 1             # parallel worker count
 manager_execution_mode: thread     # thread | process
-manager_poll_interval: 2           # polling interval (seconds)
+manager_poll_interval: 1           # polling interval (seconds)
 manager_page_size: 50              # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────

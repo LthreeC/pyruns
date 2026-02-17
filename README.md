@@ -81,7 +81,7 @@ generator_auto_timestamp: true     # auto-name tasks with timestamp
 manager_columns: 5                 # task card grid columns
 manager_max_workers: 1             # parallel worker count
 manager_execution_mode: thread     # thread | process
-manager_poll_interval: 2           # Manager polling (seconds)
+manager_poll_interval: 1           # Manager polling (seconds)
 monitor_poll_interval: 1           # Monitor polling (seconds)
 ```
 
@@ -169,7 +169,7 @@ generator_auto_timestamp: true     # 自动时间戳命名
 manager_columns: 5                 # 任务卡片网格列数
 manager_max_workers: 1             # 默认并行数
 manager_execution_mode: thread     # thread | process
-manager_poll_interval: 2           # Manager 轮询间隔（秒）
+manager_poll_interval: 1           # Manager 轮询间隔（秒）
 monitor_poll_interval: 1           # Monitor 轮询间隔（秒）
 ```
 

@@ -9,7 +9,6 @@ Batch syntax (per-parameter):
 Total = ∏(product counts) × zip_length
 """
 import os
-import datetime
 import yaml
 from nicegui import ui
 from typing import Dict, Any
@@ -18,6 +17,7 @@ from pyruns.utils.config_utils import (
     load_yaml, generate_batch_configs,
     list_template_files, strip_batch_pipes,
 )
+from pyruns.utils import get_logger, get_now_str
 from pyruns.ui.components.param_editor import recursive_param_editor
 from pyruns.ui.components.batch_dialog import show_batch_confirm
 from pyruns.ui.theme import INPUT_PROPS, BTN_CLASS
@@ -272,9 +272,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager)
             prefix = state["task_name_input"].strip()
             if not prefix:
                 if use_ts_chk.value:
-                    prefix = (
-                        f"task_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}"
-                    )
+                    prefix = f"task_{get_now_str()}"
                 else:
                     ui.notify(
                         "请输入任务名称，或勾选自动时间戳命名",

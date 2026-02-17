@@ -93,18 +93,19 @@ def render_task_card(
         with ui.row().classes("w-full px-3 py-0.5"):
             status_badge(status, size="sm")
 
-        # ── Config preview + rerun count ──
+        # ── Config preview + run count ──
         with ui.column().classes("w-full px-3 py-1.5 gap-0.5 flex-grow"):
             line = preview_config_line(t.get("config", {}))
             ui.label(line if line else "\u2014").classes(
                 "text-[11px] text-slate-500 truncate w-full font-mono leading-relaxed"
             )
 
-            rerun_count = len(t.get("rerun_at", []))
-            if rerun_count > 0:
+            starts = t.get("start_times") or []
+            run_count = len(starts)
+            if run_count > 1:
                 with ui.row().classes("items-center gap-1 mt-0.5"):
                     ui.icon("replay", size="12px").classes("text-indigo-400")
-                    ui.label(f"{rerun_count} rerun(s)").classes(
+                    ui.label(f"{run_count} run(s)").classes(
                         "text-[10px] font-mono text-indigo-400"
                     )
 

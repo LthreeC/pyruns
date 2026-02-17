@@ -271,6 +271,14 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         if not task:
             return
 
+        # Auto-recover: if log_html_el is None but a log file now exists,
+        # rebuild the right panel to create the viewer
+        if not log_html_el:
+            log_path = _current_log_path()
+            if log_path and os.path.exists(log_path):
+                _rebuild_right()
+            return
+
         opts = get_log_options(task["dir"])
         new_names = list(opts.keys())
         if new_names != list(log_select_el.options or []):
@@ -439,9 +447,9 @@ def _update_header(task, icon_el, label_el, select_el, sel):
         names = list(opts.keys())
         select_el.options = names
         if names:
-            cur = sel.get("log_file_name") or names[0]
+            cur = sel.get("log_file_name") or names[-1]
             if cur not in names:
-                cur = names[0]
+                cur = names[-1]
             sel["log_file_name"] = cur
             select_el.value = cur
             select_el.set_visibility(len(names) > 1)

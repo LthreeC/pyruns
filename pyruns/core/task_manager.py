@@ -4,9 +4,12 @@ Task Manager — scans disk, manages task lifecycle, schedules execution.
 Responsibilities:
   • ``scan_disk()``         – full directory scan, build in-memory task list
   • ``refresh_from_disk()`` – lightweight status update for active tasks only
-  • CRUD operations         – add / start / rerun / cancel / delete
+  • CRUD operations         – add / start / run again / cancel / delete
   • Scheduler loop          – picks queued tasks and submits them to an executor
 """
+import os
+import json
+import time
 import os
 import json
 import time
@@ -17,12 +20,12 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, Future
 
 from pyruns._config import (
     ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME,
-    LOG_FILENAME, RERUN_LOG_DIR, TRASH_DIR, MONITOR_KEY,
+    TRASH_DIR, MONITOR_KEY,
 )
 from pyruns.utils.config_utils import load_yaml
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.core.executor import run_task_worker
-from pyruns.utils import get_logger
+from pyruns.utils import get_logger, get_now_str
 
 logger = get_logger(__name__)
 
@@ -123,7 +126,13 @@ class TaskManager:
             pid = self._latest_pid(info)
             if not (pid and is_pid_running(pid)):
                 info["status"] = "failed"
-                info["run_pid"] = None
+                # We do NOT clear the PID anymore.
+                # If finish_times < start_times, append a fail time.
+                starts = info.get("start_times", [])
+                finishes = info.get("finish_times", [])
+                if len(finishes) < len(starts):
+                    finishes.append(get_now_str())
+                    info["finish_times"] = finishes
                 self._write_info(info_path, info)
                 logger.warning(
                     "%s: running but process gone — marked FAILED", dir_name,
@@ -147,14 +156,13 @@ class TaskManager:
             "env": info.get("env", {}),
             "pinned": info.get("pinned", False),
             "script": info.get("script"),
-            "run_at": info.get("run_at"),
-            "rerun_at": info.get("rerun_at", []),
-            "run_pid": info.get("run_pid"),
-            "rerun_pid": info.get("rerun_pid", []),
-            "monitor_count": len(info.get(MONITOR_KEY, [])),
+            "start_times": info.get("start_times", []),
+            "finish_times": info.get("finish_times", []),
+            "pids": info.get("pids", []),
+            "monitors": len(info.get("monitors", [])),
         }
-        if "_rerun_index" in info:
-            task["_rerun_index"] = info["_rerun_index"]
+        if "_run_index" in info:
+            task["_run_index"] = info["_run_index"]
         return task
 
     def refresh_from_disk(self) -> None:
@@ -173,13 +181,10 @@ class TaskManager:
                     info = json.load(f)
                 t["status"] = info.get("status", t["status"])
                 t["progress"] = info.get("progress", t.get("progress", 0.0))
-                t["run_at"] = info.get("run_at", t.get("run_at"))
-                t["rerun_at"] = info.get("rerun_at", t.get("rerun_at", []))
-                t["run_pid"] = info.get("run_pid", t.get("run_pid"))
-                t["rerun_pid"] = info.get(
-                    "rerun_pid", t.get("rerun_pid", [])
-                )
-                t["monitor_count"] = len(info.get(MONITOR_KEY, []))
+                t["start_times"] = info.get("start_times", [])
+                t["finish_times"] = info.get("finish_times", [])
+                t["pids"] = info.get("pids", [])
+                t["monitor_count"] = len(info.get("monitors", []))
             except Exception:
                 pass
 
@@ -211,24 +216,27 @@ class TaskManager:
             for t in self.tasks:
                 if t["id"] in task_ids:
                     t["status"] = "queued"
-                    t["_rerun_index"] = 0
-                    self._sync_status_to_disk(t, "queued", rerun_index=0)
+                    # First run: run_index = 1
+                    starts = t.get("start_times", [])
+                    t["_run_index"] = len(starts) + 1
+                    self._sync_status_to_disk(t, "queued", run_index=t["_run_index"])
 
         self.is_processing = True
         logger.info("Queued %d task(s) for execution", len(task_ids))
 
     def rerun_task(self, task_id: str) -> bool:
-        """Re-run a completed/failed task."""
+        """Run again a completed/failed task."""
         with self._lock:
             target = self._find(task_id)
             if not target or target["status"] not in ("completed", "failed"):
                 return False
 
-            rerun_index = len(target.get("rerun_at", [])) + 1
+            starts = target.get("start_times", [])
+            run_index = len(starts) + 1
             target["status"] = "queued"
-            target["_rerun_index"] = rerun_index
+            target["_run_index"] = run_index
             self._sync_status_to_disk(
-                target, "queued", rerun_index=rerun_index,
+                target, "queued", run_index=run_index,
             )
 
         self.is_processing = True
@@ -266,8 +274,7 @@ class TaskManager:
             folder = os.path.basename(target["dir"])
             dest = os.path.join(trash_dir, folder)
             if os.path.exists(dest):
-                import datetime
-                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                ts = get_now_str()
                 dest = os.path.join(trash_dir, f"{folder}_{ts}")
             shutil.move(target["dir"], dest)
         except Exception as exc:
@@ -294,7 +301,7 @@ class TaskManager:
                     time.sleep(0.1)
                     continue
 
-                target, rerun_index = self._pick_queued_task()
+                target, run_index = self._pick_queued_task()
                 if not target:
                     time.sleep(0.2)
                     continue
@@ -303,7 +310,7 @@ class TaskManager:
                     run_task_worker,
                     target["dir"], target["id"], target["name"],
                     target["created_at"], target["config"],
-                    target.get("env", {}), rerun_index,
+                    target.get("env", {}), run_index,
                 )
                 logger.debug("Submitted task %s to executor", target["name"])
                 future.add_done_callback(
@@ -341,11 +348,11 @@ class TaskManager:
         with self._lock:
             for t in self.tasks:
                 if t["status"] == "queued":
-                    rerun_index = t.pop("_rerun_index", 0)
+                    run_index = t.pop("_run_index", 1)
                     t["status"] = "running"
                     self._running_ids.add(t["id"])
-                    return t, rerun_index
-        return None, 0
+                    return t, run_index
+        return None, 1
 
     def _on_task_done(self, future: Future, task_id: str) -> None:
         worker_error = None
@@ -371,21 +378,25 @@ class TaskManager:
                     info = json.load(f)
                 t["status"] = info.get("status", "completed")
                 t["progress"] = info.get("progress", 1.0)
-                t["run_at"] = info.get("run_at", t.get("run_at"))
-                t["rerun_at"] = info.get("rerun_at", t.get("rerun_at", []))
-                t["run_pid"] = info.get("run_pid")
-                t["rerun_pid"] = info.get("rerun_pid", [])
-                t["monitor_count"] = len(info.get(MONITOR_KEY, []))
+                t["start_times"] = info.get("start_times", [])
+                t["finish_times"] = info.get("finish_times", [])
+                t["pids"] = info.get("pids", [])
+                t["monitor_count"] = len(info.get("monitors", []))
             except Exception:
                 pass
 
             if worker_error and t["status"] in ("running", "queued"):
                 t["status"] = "failed"
-                self._write_info(info_path, {
-                    **self._read_info(info_path),
-                    "status": "failed",
-                    "run_pid": None,
-                })
+                disk_info = self._read_info(info_path)
+                # Ensure we record a finish time for failure
+                starts = disk_info.get("start_times", [])
+                finishes = disk_info.get("finish_times", [])
+                if len(finishes) < len(starts):
+                    finishes.append(get_now_str())
+                    disk_info["finish_times"] = finishes
+
+                disk_info["status"] = "failed"
+                self._write_info(info_path, disk_info)
 
     # ──────────────────────────────────────────────────────────
     #  Internal helpers
@@ -398,10 +409,10 @@ class TaskManager:
     @staticmethod
     def _latest_pid(info: dict):
         """Return the most relevant PID from an info dict."""
-        rerun_pids = info.get("rerun_pid", [])
-        if rerun_pids and rerun_pids[-1]:
-            return rerun_pids[-1]
-        return info.get("run_pid")
+        pids = info.get("pids", [])
+        if isinstance(pids, list) and pids:
+            return pids[-1]
+        return None
 
     def _latest_pid_from_disk(self, task: dict):
         info = self._read_info(
@@ -426,14 +437,14 @@ class TaskManager:
             pass
 
     def _sync_status_to_disk(
-        self, task: dict, status: str, rerun_index: int = 0,
+        self, task: dict, status: str, run_index: int = 1,
     ) -> None:
         info_path = os.path.join(task["dir"], INFO_FILENAME)
         info = self._read_info(info_path)
         if not info:
             return
         info["status"] = status
-        info["_rerun_index"] = rerun_index
+        info["_run_index"] = run_index
         self._write_info(info_path, info)
 
     def _mark_failed_on_disk(self, task: dict) -> None:
@@ -442,9 +453,11 @@ class TaskManager:
         if not info:
             return
         info["status"] = "failed"
-        info["run_pid"] = None
-        rp = info.get("rerun_pid", [])
-        if rp and rp[-1] is not None:
-            rp[-1] = None
-            info["rerun_pid"] = rp
+        # We don't clear PID anymore.
+        # Ensure finish time matches failure.
+        starts = info.get("start_times", [])
+        finishes = info.get("finish_times", [])
+        if len(finishes) < len(starts):
+            finishes.append(get_now_str())
+            info["finish_times"] = finishes
         self._write_info(info_path, info)

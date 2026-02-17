@@ -1,20 +1,19 @@
 import os
 import time
 import json
-import datetime
 from typing import Dict, Any, List
 
-from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, LOG_FILENAME, ENV_SCRIPT
+from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.task_utils import validate_task_name  # re-export for backward compat
-from pyruns.utils import get_logger
+from pyruns.utils import get_logger, get_now_str, get_now_str_us
 
 logger = get_logger(__name__)
 
 
 def create_task_object(task_id: str, task_dir: str, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Create the in-memory dictionary representing a task."""
-    created_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_at = get_now_str()
     return {
         "id": task_id,
         "dir": task_dir,
@@ -26,10 +25,9 @@ def create_task_object(task_id: str, task_dir: str, name: str, config: Dict[str,
         "created_at": created_at,
         "env": {},
         "pinned": False,
-        "run_at": None,
-        "rerun_at": [],
-        "run_pid": None,
-        "rerun_pid": [],
+        "run_at": [],
+        "run_pid": [],
+        "monitor": [],
     }
 
 
@@ -44,7 +42,7 @@ class TaskGenerator:
         config: Dict[str, Any],
         group_index: str = "",
     ) -> Dict[str, Any]:
-        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        ts = get_now_str()
 
         # ── Folder name = user-provided task name ──
         base_name = name_prefix.strip() if name_prefix else ""
@@ -62,7 +60,12 @@ class TaskGenerator:
         task_dir = os.path.join(self.root_dir, folder_name)
         os.makedirs(task_dir, exist_ok=True)
 
-        task_id = f"{ts}_{int(time.time() * 1000)}"
+        # Task ID — microsecond-level timestamp, prefixed for batch tasks
+        ts_us = get_now_str_us()
+        if group_index:
+            task_id = f"{group_index}_{ts_us}"
+        else:
+            task_id = ts_us
 
         # Display name = folder name (readable)
         display_name = base_name
@@ -75,20 +78,32 @@ class TaskGenerator:
         task_obj = create_task_object(task_id, task_dir, display_name, clean_config)
 
         # ── Write files ──
-        # task_info.json
-        info = {k: v for k, v in task_obj.items() if k not in ["dir", "config", "log"]}
+        # task_info.json — ordered fields
+        info = {
+            "id": task_obj["id"],
+            "name": task_obj["name"],
+            "status": task_obj["status"],
+            "progress": task_obj["progress"],
+            "created_at": task_obj["created_at"],
+            "pinned": task_obj["pinned"],
+        }
         env_script = os.environ.get(ENV_SCRIPT)
         if env_script:
             info["script"] = env_script
+        # Array fields at the end
+        info["start_times"] = []
+        info["finish_times"] = []
+        info["pids"] = []
+        info["monitors"] = []
+
         with open(os.path.join(task_dir, INFO_FILENAME), "w", encoding="utf-8") as f:
             json.dump(info, f, indent=4, ensure_ascii=False)
 
         # config.yaml: only clean parameters
         save_yaml(os.path.join(task_dir, CONFIG_FILENAME), clean_config)
 
-        # run.log: initial entry
-        with open(os.path.join(task_dir, LOG_FILENAME), "w", encoding="utf-8") as f:
-            f.write(f"[{info['created_at']}] Task initialized.\n")
+        # Create run_logs/ directory (empty, logs created on first run)
+        os.makedirs(os.path.join(task_dir, RUN_LOG_DIR), exist_ok=True)
 
         logger.debug("Created task '%s' at %s", display_name, task_dir)
         return task_obj
@@ -104,3 +119,4 @@ class TaskGenerator:
             group_index = f"[{idx + 1}-of-{total}]" if total > 1 else ""
             tasks.append(self.create_task(name_prefix, cfg, group_index))
         return tasks
+

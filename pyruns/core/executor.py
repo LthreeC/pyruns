@@ -1,29 +1,23 @@
 import os
 import sys
-import json
 import subprocess
 import time
-import datetime
 from typing import Dict, Any, Optional
 
-from pyruns._config import INFO_FILENAME, LOG_FILENAME, RERUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME
+from pyruns._config import RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME
 from pyruns.utils.log_io import append_log
-from pyruns.utils import get_logger
+from pyruns.utils.task_io import load_task_info, save_task_info
+from pyruns.utils import get_logger, get_now_str
 
 logger = get_logger(__name__)
 
-def _update_task_info(task_dir: str, info: Dict[str, Any]) -> None:
-    info_path = os.path.join(task_dir, INFO_FILENAME)
-    base = {}
-    if os.path.exists(info_path):
-        try:
-            with open(info_path, "r", encoding="utf-8") as f:
-                base = json.load(f)
-        except Exception:
-            base = {}
-    base.update(info)
-    with open(info_path, "w", encoding="utf-8") as f:
-        json.dump(base, f, indent=4, ensure_ascii=False)
+
+def _merge_task_info(task_dir: str, updates: Dict[str, Any]) -> None:
+    """Read task_info.json, merge *updates*, and write back."""
+    info = load_task_info(task_dir)
+    info.update(updates)
+    save_task_info(task_dir, info)
+
 
 def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
@@ -33,6 +27,8 @@ def _prepare_env(
     # 强制子进程使用 UTF-8 输出，避免 Windows 下 GBK 编码问题
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    # 禁用 stdout 缓冲，让 print() 实时刷新到日志文件
+    env["PYTHONUNBUFFERED"] = "1"
     # pyr 模式: 设置 ENV_CONFIG 让 pyruns.read() 自动找到任务的 config.yaml
     if task_dir:
         env[ENV_CONFIG] = os.path.join(task_dir, CONFIG_FILENAME)
@@ -41,23 +37,12 @@ def _prepare_env(
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
     return env
 
-def _load_task_meta(task_dir: str) -> Dict[str, Any]:
-    """从 task_info.json 读取任务元数据 (script / cmd / workdir 等)"""
-    info_path = os.path.join(task_dir, INFO_FILENAME)
-    try:
-        with open(info_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
 
-def _get_log_path(task_dir: str, rerun_index: int) -> str:
-    """返回日志文件路径。rerun_index=0 表示首次运行 (run.log)，>0 表示重跑。"""
-    if rerun_index <= 0:
-        return os.path.join(task_dir, LOG_FILENAME)
-    else:
-        log_dir = os.path.join(task_dir, RERUN_LOG_DIR)
-        os.makedirs(log_dir, exist_ok=True)
-        return os.path.join(log_dir, f"rerun{rerun_index}.log")
+def _get_log_path(task_dir: str, run_index: int) -> str:
+    """返回日志文件路径: run_logs/runN.log (1-based)."""
+    log_dir = os.path.join(task_dir, RUN_LOG_DIR)
+    os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, f"run{run_index}.log")
 
 
 def _build_command(meta_cmd, script_path, meta_workdir, config):
@@ -146,65 +131,36 @@ def run_task_worker(
     created_at: str,
     config: Dict[str, Any],
     env_vars: Optional[Dict[str, str]] = None,
-    rerun_index: int = 0,
+    run_index: int = 1,
 ) -> Dict[str, Any]:
     """
     Worker function executed in a separate thread/process.
-    config: 纯用户参数 (来自 config.yaml)
-    script / cmd / workdir: 从 task_info.json 读取
-    GPU 等硬件设置通过 env_vars 传入 (如 CUDA_VISIBLE_DEVICES)
-    rerun_index: 0=首次运行, >0=第N次重跑
-    """
-    logger.info("Task %s (%s) starting  rerun=%d", name, task_id[:8], rerun_index)
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        log_path = _get_log_path(task_dir, rerun_index)
-    except Exception:
-        log_path = os.path.join(task_dir, LOG_FILENAME)
+    run_index: 1-based run number (1 = first run, 2 = second run, …)
+    """
+    logger.info("Task %s starting  run=#%d", name, run_index)
+    now_str = get_now_str()
+
+    log_path = _get_log_path(task_dir, run_index)
 
     # ── 从 task_info.json 读取内部元数据 ──
-    task_meta = _load_task_meta(task_dir)
+    task_meta = load_task_info(task_dir)
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
     meta_workdir = task_meta.get("workdir")
 
-    # 1. Update Status to Running + 记录时间
-    running_info = {
-        "id": task_id,
-        "name": name,
+    # 1. Update Status to Running + append start_times
+    start_times = task_meta.get("start_times", [])
+    start_times.append(now_str)
+
+    # Remove persisted _run_index (no longer needed once running)
+    task_meta.pop("_run_index", None)
+    task_meta.update({
         "status": "running",
-        "created_at": created_at,
         "progress": 0.0,
-    }
-    if script_path:
-        running_info["script"] = script_path
-
-    if rerun_index <= 0:
-        # 首次运行
-        running_info["run_at"] = now_str
-    else:
-        # 重跑：追加到 rerun_at 列表
-        rerun_at_list = task_meta.get("rerun_at", [])
-        rerun_at_list.append(now_str)
-        running_info["rerun_at"] = rerun_at_list
-
-    _update_task_info(task_dir, running_info)
-
-    # Clean up persisted _rerun_index (no longer needed once running)
-    try:
-        info_path = os.path.join(task_dir, INFO_FILENAME)
-        with open(info_path, "r", encoding="utf-8") as f:
-            _info = json.load(f)
-        if "_rerun_index" in _info:
-            del _info["_rerun_index"]
-            with open(info_path, "w", encoding="utf-8") as f:
-                json.dump(_info, f, indent=4, ensure_ascii=False)
-    except Exception:
-        pass
-
-    run_label = f"Rerun #{rerun_index}" if rerun_index > 0 else "Run"
-    append_log(log_path, f"[{now_str}] SYSTEM: {run_label} Execution Started.\n")
+        "start_times": start_times,
+    })
+    save_task_info(task_dir, task_meta)
 
     # 2. Build Command
     command, workdir = _build_command(
@@ -228,16 +184,11 @@ def run_task_worker(
                     cwd=workdir,
                     env=env,
                 )
-                # 存储 PID
-                pid_info = {}
-                if rerun_index <= 0:
-                    pid_info["run_pid"] = proc.pid
-                else:
-                    meta_fresh = _load_task_meta(task_dir)
-                    rerun_pid_list = meta_fresh.get("rerun_pid", [])
-                    rerun_pid_list.append(proc.pid)
-                    pid_info["rerun_pid"] = rerun_pid_list
-                _update_task_info(task_dir, pid_info)
+                # Store PID — append to pids array
+                meta_fresh = load_task_info(task_dir)
+                pids = meta_fresh.get("pids", [])
+                pids.append(proc.pid)
+                _merge_task_info(task_dir, {"pids": pids})
 
                 ret = proc.wait()
             status = "completed" if ret == 0 else "failed"
@@ -251,56 +202,39 @@ def run_task_worker(
                 msg = f"Epoch {i+1}/{total_steps} | Simulated Step\n"
                 append_log(log_path, msg)
                 if i % 10 == 0:
-                    _update_task_info(task_dir, {
-                        "id": task_id, "name": name, "status": "running",
-                        "created_at": created_at, "progress": progress,
+                    _merge_task_info(task_dir, {
+                        "status": "running",
+                        "progress": progress,
                     })
             status = "completed"
             progress = 1.0
 
-        end_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        append_log(log_path, f"[{end_str}] SYSTEM: Task {status}.\n")
+        end_str = get_now_str()
 
-        # 4. Final update: clear current PID
-        final_info = {
-            "id": task_id,
-            "name": name,
+        # 4. Final update — append finish_times, set final status
+        meta_final = load_task_info(task_dir)
+        finish_times = meta_final.get("finish_times", [])
+        finish_times.append(end_str)
+
+        meta_final.update({
             "status": status,
-            "created_at": created_at,
             "progress": progress,
-        }
-        if rerun_index <= 0:
-            final_info["run_pid"] = None
-        else:
-            # 把 rerun_pid 最后一项置为 None 表示已结束
-            meta_final = _load_task_meta(task_dir)
-            rp_list = meta_final.get("rerun_pid", [])
-            if rp_list:
-                rp_list[-1] = None
-            final_info["rerun_pid"] = rp_list
-
-        _update_task_info(task_dir, final_info)
+            "finish_times": finish_times,
+        })
+        save_task_info(task_dir, meta_final)
         logger.info("Task %s finished  status=%s", name, status)
         return {"status": status, "progress": progress}
 
     except Exception as e:
-        append_log(log_path, f"ERROR: {str(e)}\n")
-        fail_info = {
-            "id": task_id,
-            "name": name,
-            "status": "failed",
-            "created_at": created_at,
-            "progress": 0.0,
-        }
-        if rerun_index <= 0:
-            fail_info["run_pid"] = None
-        else:
-            meta_err = _load_task_meta(task_dir)
-            rp_list = meta_err.get("rerun_pid", [])
-            if rp_list:
-                rp_list[-1] = None
-            fail_info["rerun_pid"] = rp_list
+        meta_err = load_task_info(task_dir)
+        finish_times = meta_err.get("finish_times", [])
+        finish_times.append(get_now_str())
 
-        _update_task_info(task_dir, fail_info)
+        meta_err.update({
+            "status": "failed",
+            "progress": 0.0,
+            "finish_times": finish_times,
+        })
+        save_task_info(task_dir, meta_err)
         logger.error("Task %s failed with exception: %s", name, e)
         return {"status": "failed", "progress": 0.0, "error": str(e)}

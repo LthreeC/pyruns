@@ -80,8 +80,8 @@ d = config.to_dict()
 
 **行为**：
 
-- 自动附加时间戳字段 `_ts`
-- 数据追加到 `task_info.json` 的 `"monitor"` 列表中
+- 数据按 **Run** 聚合。同一次 Run 内的多次调用会合并到同一个字典中
+- 数据追加到 `task_info.json` 的 `"monitors"` 列表中
 - 如果不在 `pyr` 管理的任务中运行（无 `PYRUNS_CONFIG` 环境变量），调用被静默忽略
 - 写入失败时自动重试最多 5 次
 
@@ -102,30 +102,18 @@ pyruns.add_monitor({"base_loss": 0.5}, epoch=10, lr=0.001)
 
 ```json
 {
-    "monitor": [
+    "monitors": [
         {
             "epoch": 10,
             "loss": 0.234,
-            "acc": 95.2,
-            "_ts": "2026-02-13 10:30:45"
+            "acc": 95.2
         }
     ]
 }
 ```
 
----
-
-### `pyruns.get_monitor_data(task_dir)`
-
-读取指定任务目录的监控数据列表（供内部 UI 使用）。
-
-**参数**：
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `task_dir` | `str` | 任务目录的绝对路径 |
-
-**返回值**：`list[dict]` — 监控数据条目列表，失败时返回空列表。
+**异常**：
+- `TypeError`：`data` 参数不是 `dict` 类型
 
 ---
 
@@ -214,7 +202,7 @@ flatten_dict({"a": {"b": 1, "c": 2}})
 
 #### `get_log_options(task_dir) → dict[str, str]`
 
-返回 `{显示名: 文件路径}` 映射，包含 `run.log` 和所有 `rerunN.log`。
+返回 `{显示名: 文件路径}` 映射，包含 `run_logs/` 目录下所有 `runN.log` 文件。
 
 #### `resolve_log_path(task_dir, log_file_name=None) → str?`
 

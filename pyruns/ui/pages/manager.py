@@ -73,6 +73,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         # Instant refresh when generator creates new tasks
         if state.get("_manager_dirty"):
             state["_manager_dirty"] = False
+            task_manager.refresh_from_disk()
             _last_snap = _take_snap()
             task_list.refresh()
             return

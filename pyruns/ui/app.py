@@ -85,10 +85,10 @@ def main(*, reload: bool = False):
         show=True,
         reload=reload,
         uvicorn_reload_dirs=pkg_dir if reload else ".",
+        uvicorn_reload_excludes="task_info.json,*.log,*.yaml,run_logs,*.lock,**/*.json,**/run_logs/**",
         favicon="🧪",
     )
 
 
 if __name__ in {"__main__", "__mp_main__"}:
     main(reload=True)
-

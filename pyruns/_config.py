@@ -22,10 +22,9 @@ if not os.path.exists(ROOT_DIR):
 INFO_FILENAME = "task_info.json"
 CONFIG_FILENAME = "config.yaml"
 CONFIG_DEFAULT_FILENAME = "config_default.yaml"
-LOG_FILENAME = "run.log"
-RERUN_LOG_DIR = "rerun_logs"
+RUN_LOG_DIR = "run_logs"           # unified log directory: run1.log, run2.log, …
 TRASH_DIR = ".trash"
-MONITOR_KEY = "monitor"            # task_info.json 中存放监控数据的字段名
+MONITOR_KEY = "monitors"           # Use "monitors" array key for stats
 SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
 
 # ═══════════════════════════════════════════════════════════════

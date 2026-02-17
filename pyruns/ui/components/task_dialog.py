@@ -149,7 +149,7 @@ def _build_tab_config(t):
 
 
 def _build_tab_run_log(t):
-    """Run Log tab — log viewer with dropdown for run.log / rerunX.log."""
+    """Run Log tab — log viewer with dropdown for run1.log, run2.log, etc."""
     with ui.tab_panel("run.log"):
         log_options = get_log_options(t["dir"])
         log_names = list(log_options.keys())
@@ -186,14 +186,14 @@ def _build_tab_run_log(t):
                 ui.space()
                 if len(log_names) > 1:
                     ui.select(
-                        log_names, value=log_names[0],
+                        log_names, value=log_names[-1],
                         on_change=_switch_log,
                     ).props("outlined dense dark").classes("w-48")
                 else:
                     ui.label(log_names[0]).classes("text-xs text-slate-400 font-mono")
 
-            # Read initial content
-            initial_path = log_options[log_names[0]]
+            # Read initial content (default = latest log)
+            initial_path = log_options[log_names[-1]]
             try:
                 with open(initial_path, "r", encoding="utf-8", errors="replace") as lf:
                     initial_content = lf.read()
@@ -211,11 +211,16 @@ def _build_tab_run_log(t):
 
 def _build_tab_notes(t, info_obj):
     """Notes tab — editable textarea with save button."""
-    with ui.tab_panel("notes"):
+    # 1. 在 tab_panel 层级去除 padding (p-0) 和间距 (gap-0)
+    # 使用 flex-col 让其垂直排列，h-full 撑满高度
+    with ui.tab_panel("notes").classes("p-0 gap-0 flex flex-col h-full w-full"):
+        
         notes_val = info_obj.get("notes", "") if isinstance(info_obj, dict) else ""
-        notes_holder = {"text": notes_val}
+        # 使用字典来存储引用，以便回调函数能访问到最新的值
+        notes_holder = {"text": notes_val} 
 
-        # Toolbar
+        # ── Toolbar ──
+        # 保持原有逻辑，border-b 稍微保留一点分割线感觉，或者你可以去掉
         with ui.row().classes(
             "w-full items-center justify-between px-5 py-2 flex-none "
             "bg-gradient-to-r from-indigo-50 to-slate-50 "
@@ -237,14 +242,26 @@ def _build_tab_notes(t, info_obj):
                 "unelevated dense no-caps size=sm"
             ).classes("bg-indigo-600 text-white px-4")
 
-        # Textarea
-        with ui.column().classes("w-full flex-grow overflow-auto px-4 py-3 bg-white"):
+        # ── Textarea ──
+        # 2. 这里的容器去掉 padding (p-0)，背景设为白色
+        with ui.column().classes("w-full flex-grow p-0 m-0 bg-white overflow-hidden"):
             notes_input = ui.textarea(
                 value=notes_val,
                 placeholder="Record experiment results, parameter notes, observations...",
-            ).props("outlined autogrow").classes(
-                "w-full font-mono text-sm"
-            ).style("line-height: 1.8; min-height: 260px;")
+            ).props(
+                # 3. 关键修改：
+                # borderless: 去掉输入框自带的边框
+                # full-width: 宽度铺满
+                # no-resize: 禁止拖拽右下角
+                "borderless full-width no-resize"
+            ).classes(
+                # 给文字一些内边距 (px-4 py-3)，否则文字会贴着边缘
+                "w-full h-full font-mono text-sm px-5 py-4 outline-none focus:outline-none"
+            ).style(
+                "line-height: 1.6; height: 100%;"
+            )
+            
+            # 绑定数据更新
             notes_input.on_value_change(
                 lambda e: notes_holder.update({"text": e.value})
             )

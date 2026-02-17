@@ -7,11 +7,11 @@ pyruns.utils.task_io. This module only contains export business logic.
 import io
 import csv
 import json
-import datetime
 from typing import Dict, Any, List
 
 # Re-export from utils.task_io for backward compatibility
 from pyruns.utils.task_io import load_monitor_data, get_log_options  # noqa: F401
+from pyruns.utils import get_now_str
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -19,21 +19,50 @@ from pyruns.utils.task_io import load_monitor_data, get_log_options  # noqa: F40
 # ═══════════════════════════════════════════════════════════════
 
 def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
-    """Build CSV string from monitor data of multiple tasks."""
+    """Build CSV string — one row per task per run.
+
+    Columns: name, id, status, run, start_time, finish_time, pid,
+             plus any monitor data keys.
+    """
     all_rows: List[Dict[str, Any]] = []
     all_keys: set = set()
+
     for t in tasks:
+        name = t.get("name", "")
+        tid = t.get("id", "")
+        status = t.get("status", "")
+        starts = t.get("start_times") or []
+        finishes = t.get("finish_times") or []
+        pids = t.get("pids") or []
         data = load_monitor_data(t["dir"])
-        for entry in data:
-            row = {"_task_name": t.get("name", ""), "_task_id": t.get("id", "")}
-            row.update(entry)
+
+        n_runs = max(len(starts), 1)  # at least 1 row even if never run
+
+        for i in range(n_runs):
+            row: Dict[str, Any] = {
+                "name": name,
+                "id": tid,
+                "status": status,
+                "run": i + 1,
+                "start_time": starts[i] if i < len(starts) else "",
+                "finish_time": finishes[i] if i < len(finishes) else "",
+                "pid": pids[i] if i < len(pids) else "",
+            }
+
+            # Attach monitor entries that belong to this run (by index).
+            # If there are fewer monitor entries than runs, leave blank.
+            if i < len(data):
+                entry = data[i]
+                for k, v in entry.items():
+                    row[k] = v
+
             all_rows.append(row)
             all_keys.update(row.keys())
 
     if not all_rows:
         return ""
 
-    priority = ["_task_name", "_task_id", "_ts"]
+    priority = ["name", "id", "status", "run", "start_time", "finish_time", "pid"]
     cols = [c for c in priority if c in all_keys]
     cols += sorted(all_keys - set(priority))
 
@@ -61,4 +90,4 @@ def build_export_json(tasks: List[Dict[str, Any]]) -> str:
 
 def export_timestamp() -> str:
     """Return a timestamp string for export filenames."""
-    return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return get_now_str()

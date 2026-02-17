@@ -23,17 +23,13 @@ class TestCreateTaskObject:
         assert obj["status"] == "pending"
         assert obj["config"] == {"lr": 0.01}
         assert obj["env"] == {}
-        assert obj["run_at"] is None
-        assert obj["rerun_at"] == []
-        assert obj["run_pid"] is None
-        assert obj["rerun_pid"] == []
 
     def test_created_at_format(self):
         obj = create_task_object("x", "/tmp", "t", {})
         # Should be like "2026-02-12 15:30:00"
         assert len(obj["created_at"]) == 19
         assert "-" in obj["created_at"]
-        assert ":" in obj["created_at"]
+        assert "_" in obj["created_at"]  # 2026-02-12_15-30-00
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -78,15 +74,14 @@ class TestTaskGeneratorCreateTask:
         assert loaded["lr"] == 0.01
         assert loaded["model"]["name"] == "resnet"
 
-    def test_writes_run_log(self, tmp_path):
+    def test_creates_run_logs_dir(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         task = gen.create_task("exp3", {"x": 1})
 
-        log_path = os.path.join(task["dir"], "run.log")
-        assert os.path.exists(log_path)
-        with open(log_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "Task initialized" in content
+        log_dir = os.path.join(task["dir"], "run_logs")
+        assert os.path.isdir(log_dir)
+        # Log file is NOT created until execution starts
+        assert not os.path.exists(os.path.join(log_dir, "run1.log"))
 
     def test_meta_keys_stripped_from_config(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
