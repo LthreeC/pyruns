@@ -23,6 +23,7 @@ INFO_FILENAME = "task_info.json"
 CONFIG_FILENAME = "config.yaml"
 CONFIG_DEFAULT_FILENAME = "config_default.yaml"
 RUN_LOG_DIR = "run_logs"           # unified log directory: run1.log, run2.log, …
+ERROR_LOG_FILENAME = "error.log"   # Global error log for failed runs
 TRASH_DIR = ".trash"
 MONITOR_KEY = "monitors"           # Use "monitors" array key for stats
 SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings

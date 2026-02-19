@@ -20,7 +20,7 @@ from pyruns.ui.theme import (
 
 _CSS_CLIENTS: set = set()
 
-_CSS_PATH = os.path.join(os.path.dirname(__file__), "pyruns.css")
+_CSS_PATH = os.path.join(os.path.dirname(__file__), "static", "pyruns.css")
 with open(_CSS_PATH, "r", encoding="utf-8") as _f:
     _GLOBAL_CSS = _f.read()
 

@@ -42,6 +42,12 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     _needs_refresh = {"flag": False}
 
     def _take_snap() -> Dict[str, tuple]:
+        """
+        Create a lightweight snapshot of task states.
+        
+        Used for O(N) diffing to avoid expensive DOM re-renders.
+        Returns: {task_id: (status, progress)}
+        """
         return {
             t["id"]: (t["status"], t.get("progress", 0))
             for t in task_manager.tasks
@@ -67,7 +73,16 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         logger.debug("Full rescan completed, %d tasks", len(task_manager.tasks))
 
     def poll_changes():
-        """Periodic: re-render only when the snapshot changes."""
+        """
+        Periodic poller (default 1s).
+        
+        Strategy:
+        1. Fast check: has state['_manager_dirty'] been set by other tabs?
+        2. Disk sync: task_manager.refresh_from_disk() (fast JSON read)
+        3. Snapshot diff: Compare new states vs last render.
+           - If identical: DO NOTHING (Zero DOM overhead).
+           - If changed: Trigger task_list.refresh().
+        """
         nonlocal _last_snap
 
         # Instant refresh when generator creates new tasks
@@ -98,93 +113,17 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
                 _needs_refresh["flag"] = True
 
     # ══════════════════════════════════════════════════════════
-    #  Row 1 — Directory picker + Filter + Search
+    #  Row 1: Filter & Search
     # ══════════════════════════════════════════════════════════
-    with ui.row().classes(
-        "w-full items-center gap-2 mb-2 px-3 py-1.5 bg-white "
-        "border-b border-slate-200 shadow-sm"
-    ):
-        tasks_dir_input = dir_picker(
-            value=state.get("tasks_dir", task_manager.root_dir),
-            label="Tasks Root",
-            on_change=lambda p: _apply_dir(p, state, task_manager, full_rescan),
-            input_classes="flex-grow",
-        )
-
-        filter_status = ui.select(
-            {"All": "All", **{s: s.capitalize() for s in ALL_STATUSES}},
-            value="All", label="Filter",
-        ).props(INPUT_PROPS).classes("w-48")
-
-        search_input = ui.input(
-            value="", label="Search", placeholder="Task name...",
-        ).props(INPUT_PROPS + " clearable").classes("w-56")
-        search_input.on("keyup.enter", lambda _: task_list.refresh())
-        search_input.on("clear", lambda _: task_list.refresh())
-
-        ui.button(
-            icon="refresh",
-            on_click=lambda: _apply_dir(
-                tasks_dir_input.value, state, task_manager, full_rescan,
-            ),
-        ).props("flat round dense color=slate")
+    tasks_dir_input, filter_status, search_input = _render_filter_row(
+        state, task_manager, full_rescan, lambda: task_list.refresh()
+    )
 
     # ══════════════════════════════════════════════════════════
-    #  Row 2 — [Cols] ←──────→ [Workers Mode RUN DELETE]
+    #  Row 2: Batch Actions & View Settings
     # ══════════════════════════════════════════════════════════
-    with ui.row().classes(
-        "w-full items-center justify-between bg-white px-3 py-1.5 mb-2 "
-        "border-b border-slate-200 shadow-sm"
-    ):
-        # Left: columns
-        with ui.row().classes("items-center gap-1.5"):
-            ui.icon("grid_view", size="18px").classes("text-slate-400")
-            col_sel = ui.select(
-                {n: f"{n} cols" for n in range(1, 10)},
-                value=state.get("manager_columns", 5),
-                label="Columns",
-            ).props(INPUT_PROPS + " options-dense").classes("w-24")
-            col_sel.on_value_change(
-                lambda e: (
-                    state.update({"manager_columns": int(e.value)}),
-                    task_list.refresh(),
-                )
-            )
+    _render_action_row(state, task_manager, refresh_tasks, lambda: task_list.refresh())
 
-        # Right: workers + mode + run + delete
-        with ui.row().classes("items-center gap-3"):
-            w_input = ui.number(
-                value=state["max_workers"], min=1, max=32, step=1,
-                label="Workers",
-            ).props(INPUT_PROPS).classes("w-20")
-            w_input.on_value_change(
-                lambda e: state.update({
-                    "max_workers": int(e.value) if e.value else 1
-                })
-            )
-
-            mode_sel = ui.select(
-                {"thread": "Thread", "process": "Process"},
-                value=state["execution_mode"], label="Mode",
-            ).props(INPUT_PROPS + " options-dense").classes("w-28")
-            mode_sel.on_value_change(
-                lambda e: state.update({"execution_mode": e.value})
-            )
-
-            ui.button(
-                "RUN SELECTED", icon="play_arrow",
-                on_click=lambda: _run_selected(state, task_manager, refresh_tasks),
-            ).props("unelevated no-caps color=green-8").classes(
-                f"font-bold px-6 py-2.5 text-white text-sm "
-                f"shadow-md {BTN_CLASS}"
-            )
-
-            ui.button(
-                icon="delete_outline",
-                on_click=lambda: _delete_selected(state, task_manager, refresh_tasks),
-            ).props("unelevated dense color=red-7").classes(
-                f"text-white {BTN_CLASS}"
-            )
 
     # ══════════════════════════════════════════════════════════
     #  Card grid (refreshable) with pagination
@@ -402,3 +341,99 @@ def _summary_bar(
                     ).classes("text-slate-500")
                     if cur >= total_pages - 1:
                         b_next.props(add="disable")
+
+
+# ═══════════════════════════════════════════════════════════
+#  UI Components (Rows)
+# ═══════════════════════════════════════════════════════════
+
+def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
+    """Render the top bar: Directory Picker | Filter | Search."""
+    with ui.row().classes(
+        "w-full items-center gap-2 mb-2 px-3 py-1.5 bg-white "
+        "border-b border-slate-200 shadow-sm"
+    ):
+        tasks_dir_input = dir_picker(
+            value=state.get("tasks_dir", task_manager.root_dir),
+            label="Tasks Root",
+            on_change=lambda p: _apply_dir(p, state, task_manager, full_rescan),
+            input_classes="flex-grow",
+        )
+
+        filter_status = ui.select(
+            {"All": "All", **{s: s.capitalize() for s in ALL_STATUSES}},
+            value="All", label="Filter",
+        ).props(INPUT_PROPS).classes("w-48")
+
+        search_input = ui.input(
+            value="", label="Search", placeholder="Task name...",
+        ).props(INPUT_PROPS + " clearable").classes("w-56")
+        
+        # Bind refresh events
+        search_input.on("keyup.enter", lambda _: refresh_fn())
+        search_input.on("clear", lambda _: refresh_fn())
+
+        ui.button(
+            icon="refresh",
+            on_click=lambda: _apply_dir(
+                tasks_dir_input.value, state, task_manager, full_rescan,
+            ),
+        ).props("flat round dense color=slate")
+        
+        return tasks_dir_input, filter_status, search_input
+
+
+def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
+    """Render the second bar: Columns | Workers | Mode | Run | Delete."""
+    with ui.row().classes(
+        "w-full items-center justify-between bg-white px-3 py-1.5 mb-2 "
+        "border-b border-slate-200 shadow-sm"
+    ):
+        # Left: columns
+        with ui.row().classes("items-center gap-1.5"):
+            col_sel = ui.select(
+                {n: f"{n} cols" for n in range(1, 10)},
+                value=state.get("manager_columns", 5),
+                label="Columns",
+            ).props(INPUT_PROPS + " options-dense").classes("w-24")
+            col_sel.on_value_change(
+                lambda e: (
+                    state.update({"manager_columns": int(e.value)}),
+                    ui_refresh_fn(),
+                )
+            )
+
+        # Right: workers + mode + run + delete
+        with ui.row().classes("items-center gap-3"):
+            w_input = ui.number(
+                value=state["max_workers"], min=1, max=32, step=1,
+                label="Workers",
+            ).props(INPUT_PROPS).classes("w-20")
+            w_input.on_value_change(
+                lambda e: state.update({
+                    "max_workers": int(e.value) if e.value else 1
+                })
+            )
+
+            mode_sel = ui.select(
+                {"thread": "Thread", "process": "Process"},
+                value=state["execution_mode"], label="Mode",
+            ).props(INPUT_PROPS + " options-dense").classes("w-28")
+            mode_sel.on_value_change(
+                lambda e: state.update({"execution_mode": e.value})
+            )
+
+            ui.button(
+                "RUN SELECTED", icon="play_arrow",
+                on_click=lambda: _run_selected(state, task_manager, batch_refresh_fn),
+            ).props("unelevated no-caps color=green-8").classes(
+                f"font-bold px-6 py-2.5 text-white text-sm "
+                f"shadow-md {BTN_CLASS}"
+            )
+
+            ui.button(
+                icon="delete_outline",
+                on_click=lambda: _delete_selected(state, task_manager, batch_refresh_fn),
+            ).props("unelevated dense color=red-7").classes(
+                f"text-white {BTN_CLASS}"
+            )

@@ -165,28 +165,59 @@ class TaskManager:
             task["_run_index"] = info["_run_index"]
         return task
 
-    def refresh_from_disk(self) -> None:
-        """Lightweight update — only re-read running/queued tasks."""
+    def refresh_from_disk(
+        self,
+        task_ids: List[str] = None,
+        force_all: bool = False,
+    ) -> None:
+        """
+        Refresh in-memory task states from disk.
+
+        By default, only refreshes tasks that are 'running' or 'queued'.
+        Use *task_ids* or *force_all* to refresh others (e.g. manually edited).
+        """
         with self._lock:
+            # Copy list to avoid modification during iteration
             current = list(self.tasks)
 
+        target_ids = set(task_ids) if task_ids else None
+
         for t in current:
-            if t["status"] not in ("running", "queued"):
+            # Decide whether to refresh this task
+            should_refresh = False
+            if force_all:
+                should_refresh = True
+            elif target_ids and t["id"] in target_ids:
+                should_refresh = True
+            elif t["status"] in ("running", "queued"):
+                should_refresh = True
+
+            if not should_refresh:
                 continue
+
             info_path = os.path.join(t["dir"], INFO_FILENAME)
             if not os.path.exists(info_path):
+                # If folder gone, strictly speaking we might want to remove it,
+                # but for now just skip updating.
                 continue
+
             try:
                 with open(info_path, "r", encoding="utf-8") as f:
                     info = json.load(f)
+                
+                # Update fields
                 t["status"] = info.get("status", t["status"])
                 t["progress"] = info.get("progress", t.get("progress", 0.0))
                 t["start_times"] = info.get("start_times", [])
                 t["finish_times"] = info.get("finish_times", [])
                 t["pids"] = info.get("pids", [])
                 t["monitor_count"] = len(info.get("monitors", []))
+                
+                # If we refreshed a task that thinks it's running but has no PID,
+                # logic elsewhere (scan_disk) handles the cleanup, or the monitor page loops.
             except Exception:
                 pass
+
 
     # ──────────────────────────────────────────────────────────
     #  CRUD
@@ -261,28 +292,40 @@ class TaskManager:
             return True
 
     def delete_task(self, task_id: str) -> None:
-        """Soft-delete: move task folder to ``.trash``."""
+        """Soft-delete: move task folder to ``.trash`` (with retry)."""
         with self._lock:
             target = self._find(task_id)
             if not target:
                 return
             self.tasks.remove(target)
 
-        try:
-            trash_dir = os.path.join(self.root_dir, TRASH_DIR)
-            os.makedirs(trash_dir, exist_ok=True)
-            folder = os.path.basename(target["dir"])
-            dest = os.path.join(trash_dir, folder)
-            if os.path.exists(dest):
-                ts = get_now_str()
-                dest = os.path.join(trash_dir, f"{folder}_{ts}")
-            shutil.move(target["dir"], dest)
-        except Exception as exc:
-            logger.error("Error moving task to trash: %s", exc)
+        # Retry logic for Windows file locking
+        max_retries = 3
+        for i in range(max_retries):
             try:
-                shutil.rmtree(target["dir"])
-            except Exception:
-                pass
+                trash_dir = os.path.join(self.root_dir, TRASH_DIR)
+                os.makedirs(trash_dir, exist_ok=True)
+                
+                folder = os.path.basename(target["dir"])
+                dest = os.path.join(trash_dir, folder)
+                
+                if os.path.exists(dest):
+                    ts = get_now_str()
+                    dest = os.path.join(trash_dir, f"{folder}_{ts}")
+                
+                shutil.move(target["dir"], dest)
+                return  # Success
+            except Exception as exc:
+                if i < max_retries - 1:
+                    time.sleep(0.2)
+                else:
+                    logger.error("Error moving task to trash after retries: %s", exc)
+                    # Last ditch effort: delete
+                    try:
+                        shutil.rmtree(target["dir"])
+                    except Exception:
+                        pass
+
 
     # ──────────────────────────────────────────────────────────
     #  Scheduler
@@ -303,19 +346,32 @@ class TaskManager:
 
                 target, run_index = self._pick_queued_task()
                 if not target:
-                    time.sleep(0.2)
+                    time.sleep(0.1)
                     continue
 
-                future = self._executor.submit(
-                    run_task_worker,
-                    target["dir"], target["id"], target["name"],
-                    target["created_at"], target["config"],
-                    target.get("env", {}), run_index,
-                )
-                logger.debug("Submitted task %s to executor", target["name"])
-                future.add_done_callback(
-                    lambda f, tid=target["id"]: self._on_task_done(f, tid)
-                )
+                try:
+                    future = self._executor.submit(
+                        run_task_worker,
+                        target["dir"], target["id"], target["name"],
+                        target["created_at"], target["config"],
+                        target.get("env", {}), run_index,
+                    )
+                    logger.debug("Submitted task %s to executor (running=%d/%d)", 
+                                 target["name"], len(self._running_ids), self.max_workers)
+                    future.add_done_callback(
+                        lambda f, tid=target["id"]: self._on_task_done(f, tid)
+                    )
+                except Exception as exc:
+                    # CRITICAL: If submit fails, we must remove the ID from running_ids
+                    # or it will block a slot forever.
+                    with self._lock:
+                        self._running_ids.discard(target["id"])
+                        target["status"] = "failed"
+                        self._mark_failed_on_disk(target)
+                        
+                    logger.error("Failed to submit task %s: %s", target["name"], exc)
+
+                    
             except Exception as exc:
                 logger.error("Scheduler error: %s", exc, exc_info=True)
                 time.sleep(1)

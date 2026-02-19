@@ -23,10 +23,12 @@ _DEFAULTS: Dict[str, Any] = {
     "manager_columns": 5,               # 1-9
     "manager_max_workers": 1,
     "manager_execution_mode": "thread", # thread | process
-    "manager_poll_interval": 1,         # seconds
+    "manager_poll_interval": 0.2,       # seconds
     "manager_page_size": 50,            # cards per page (0 = show all)
     # Monitor
-    "monitor_poll_interval": 1,         # seconds
+    "monitor_poll_interval": 0.03,      # seconds
+    "monitor_chunk_size": 50000,        # bytes per chunk
+    "monitor_scrollback": 100000,       # max lines in history
     # Logging
     "log_enabled": False,                # enable/disable pyruns internal logging
     "log_level": "INFO",                # DEBUG | INFO | WARNING | ERROR | CRITICAL
@@ -55,11 +57,13 @@ generator_auto_timestamp: true     # auto-name tasks with timestamp
 manager_columns: 5                 # task card grid columns (1-9)
 manager_max_workers: 1             # parallel worker count
 manager_execution_mode: thread     # thread | process
-manager_poll_interval: 1           # polling interval (seconds)
+manager_poll_interval: 0.2         # polling interval (seconds)
 manager_page_size: 50              # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────
-monitor_poll_interval: 0.5           # polling interval (seconds)
+monitor_poll_interval: 0.03          # polling interval (seconds)
+monitor_chunk_size: 50000            # bytes per chunk
+monitor_scrollback: 100000           # max lines in history
 
 # ── Logging ─────────────────────────────────────────────────
 log_enabled: false                  # false to disable all pyruns internal logs

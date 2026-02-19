@@ -52,6 +52,7 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
     # ── New scheme: run_logs/run1.log, run2.log, … ──
     run_dir = os.path.join(task_dir, RUN_LOG_DIR)
     if os.path.isdir(run_dir):
+        # 1. Standard run logs
         files = sorted(
             [f for f in os.listdir(run_dir)
              if f.startswith("run") and f.endswith(".log")],
@@ -59,6 +60,12 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         )
         for f in files:
             opts[f] = os.path.join(run_dir, f)
+            
+        # 2. Error log (if exists)
+        from pyruns._config import ERROR_LOG_FILENAME
+        err_path = os.path.join(run_dir, ERROR_LOG_FILENAME)
+        if os.path.exists(err_path):
+            opts[ERROR_LOG_FILENAME] = err_path
 
     return opts
 
@@ -73,8 +80,10 @@ def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Opti
     opts = get_log_options(task_dir)
     if log_file_name:
         return opts.get(log_file_name)
-    # Default: latest log (last key in the ordered dict)
+    # Default: latest log based on modification time
     if opts:
-        latest = list(opts.keys())[-1]
-        return opts[latest]
+        # Sort by mtime descending
+        cached = [(f, p, os.path.getmtime(p)) for f, p in opts.items()]
+        cached.sort(key=lambda x: x[2], reverse=True)
+        return cached[0][1]
     return None

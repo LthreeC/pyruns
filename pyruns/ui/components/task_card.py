@@ -19,7 +19,7 @@ def render_card_grid(
 ):
     """Render a grid of task cards."""
     try:
-        with ui.grid(columns=state.get("manager_columns", 4)).classes("w-full gap-3 mt-1"):
+        with ui.grid(columns=state.get("manager_columns", 4)).classes("w-full pl-2 gap-3 mt-1"):
             for t in tasks:
                 render_task_card(t, state, task_manager, open_task_dialog, refresh_tasks, refresh_ui)
     except Exception as e:

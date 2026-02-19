@@ -8,11 +8,10 @@ from typing import Dict, Any
 
 from pyruns._config import CONFIG_FILENAME
 from pyruns.utils.task_io import load_task_info, save_task_info
-from pyruns.utils.task_io import get_log_options
+from pyruns.utils.task_io import get_log_options, resolve_log_path
 from pyruns.ui.theme import STATUS_ICONS
 from pyruns.ui.widgets import status_badge, readonly_code_viewer
 from pyruns.ui.components.env_editor import env_var_editor
-
 
 # ── Drag JS for movable dialog ──
 _DRAG_JS = """(e) => {
@@ -159,6 +158,12 @@ def _build_tab_run_log(t):
                 ui.icon("article", size="48px").classes("text-slate-200")
                 ui.label("No log files found.").classes("text-slate-400 mt-2")
         else:
+            # Resolve best log (by mtime)
+            best_path = resolve_log_path(t["dir"])
+            # Find the key (filename) for this path
+            initial_name = next((n for n, p in log_options.items() if p == best_path), log_names[-1])
+            initial_path = log_options[initial_name]
+
             # Forward reference: dropdown callback needs to update CodeMirror
             log_cm_ref = [None]
 
@@ -186,19 +191,18 @@ def _build_tab_run_log(t):
                 ui.space()
                 if len(log_names) > 1:
                     ui.select(
-                        log_names, value=log_names[-1],
+                        log_names, value=initial_name,
                         on_change=_switch_log,
                     ).props("outlined dense dark").classes("w-48")
                 else:
-                    ui.label(log_names[0]).classes("text-xs text-slate-400 font-mono")
+                    ui.label(initial_name).classes("text-xs text-slate-400 font-mono")
 
-            # Read initial content (default = latest log)
-            initial_path = log_options[log_names[-1]]
+            # Read initial content
             try:
                 with open(initial_path, "r", encoding="utf-8", errors="replace") as lf:
                     initial_content = lf.read()
             except Exception:
-                initial_content = f"Cannot read {log_names[0]}"
+                initial_content = f"Cannot read {initial_name}"
 
             # CodeMirror — flex fills remaining space
             log_cm_ref[0] = ui.codemirror(

@@ -15,8 +15,13 @@ from pyruns.ui.pages.generator import render_generator_page
 from pyruns.ui.pages.manager import render_manager_page
 from pyruns.ui.pages.monitor import render_monitor_page
 from pyruns.utils import get_logger
+from nicegui import app
 
 logger = get_logger(__name__)
+
+# Serve static files (JS, CSS)
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+app.add_static_files("/static", static_dir)
 
 # Global singletons (initialised lazily in main())
 task_generator: TaskGenerator = None  # type: ignore

@@ -12,8 +12,10 @@ import os
 from typing import Dict, Any, Optional
 from nicegui import ui
 
-from pyruns.utils.log_io import read_log
+# Direct safe-read logic moved to utils/log_io.py for robustness
 from pyruns.utils.task_io import get_log_options, resolve_log_path
+from pyruns.utils.log_io import safe_read_log
+from pyruns.utils.settings import get as get_setting
 from pyruns.ui.theme import (
     STATUS_ICONS, STATUS_ICON_COLORS, STATUS_ORDER,
     PANEL_HEADER_INDIGO, PANEL_HEADER_DARK, DARK_BG,
@@ -21,7 +23,6 @@ from pyruns.ui.theme import (
 from pyruns._config import MONITOR_PANEL_WIDTH
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
-from pyruns.utils.ansi_utils import ansi_to_html, tail_lines
 
 from pyruns.utils import get_logger
 
@@ -47,6 +48,11 @@ def _task_snap(task_manager) -> Dict[str, tuple]:
 #  Entrypoint
 # ═══════════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Entrypoint
+# ═══════════════════════════════════════════════════════════════
+
 def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     from pyruns.utils.settings import get as _get_setting
     _ensure_css()  # shared CSS includes .monitor-log-pre etc.
@@ -57,7 +63,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         "log_file_name": None,
         "auto_scroll": True,
         "export_ids": set(),
-        "_log_len": 0,
+        "_log_offset": 0,
     }
 
     # ----------------------------------------------------------
@@ -85,17 +91,42 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
         # ── RIGHT panel skeleton ──
         with ui.column().classes(
-            "flex-grow min-w-0 gap-0 overflow-hidden"
+            "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1e1e]"
         ).style("height: 100%;"):
+            
             header_row = ui.row().classes(
                 f"w-full items-center gap-2 px-3 py-1.5 flex-none {PANEL_HEADER_DARK}"
             )
-            log_container = ui.column().classes(
-                "w-full flex-grow overflow-auto"
-            ).style(f"min-height: 0; background: {DARK_BG};")
+            
+            # Load settings
+            CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
+            SCROLLBACK = int(get_setting("monitor_scrollback", 100000))
+
+            # Layout fix: use standard flex flow (min-w/h=0) instead of absolute pos
+            with ui.column().classes(
+                "w-full flex-grow overflow-hidden pr-2"
+            ).style("min-height: 0; min-width: 0;"):
+                
+                terminal = ui.xterm({
+                    'cursorBlink': True, 
+                    'scrollback': SCROLLBACK,
+                    'theme': {'background': '#1e1e1e'},
+                    'disableStdin': True,      # Crucial: lets browser handle Ctrl+C
+                    'rightClickSelectsWord': True, 
+                    'cursorInactiveStyle': 'none',
+                }).classes(
+                    "w-full h-full pl-2 pt-1"
+                ).style("min-height: 0; min-width: 0;")
+                
+                # 动态监听大小变化，触发终端排版重计算
+                ui.element('q-resize-observer').on('resize', terminal.fit)
+                sel["_terminal"] = terminal
+
+                # 🛠️ JS HACK: Allow Ctrl+C to copy (logic moved to static/monitor_hacks.js)
+                ui.add_head_html('<script src="/static/monitor_hacks.js"></script>', shared=True)
+                ui.run_javascript(f"enableXtermCopy({terminal.id});")
 
     # ── header + placeholder ──
-    log_html_el = None
     with header_row:
         header_icon_el = ui.icon("monitor_heart", size="14px").classes("text-slate-500")
         header_label_el = ui.label("Select a task").classes(
@@ -108,74 +139,94 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         ).props("outlined dense dark options-dense").classes("w-36")
         log_select_el.set_visibility(False)
 
-    with log_container:
-        _placeholder()
-
     # ----------------------------------------------------------
     #  Core update helpers
     # ----------------------------------------------------------
     def _rebuild_right():
-        nonlocal log_html_el
         task = _get_task(sel["task_id"])
         _update_header(task, header_icon_el, header_label_el, log_select_el, sel)
-        sel["_log_len"] = 0
-        log_container.clear()
+        sel["_log_offset"] = 0
+        
+        term = sel.get("_terminal")
+        if not term: return
 
-        with log_container:
-            if not task:
-                _placeholder()
-                return
-            log_path = _current_log_path()
-            if not log_path or not os.path.exists(log_path):
-                logger.warning("Log file not found for task %s", sel["task_id"][:8] if sel.get("task_id") else "?")
-                _no_log_placeholder()
-                return
-            raw = read_log(log_path)
-            text = tail_lines(raw, 3000)
-            sel["_log_len"] = len(raw)
-            log_html_el = ui.html(
-                f'<pre class="monitor-log-pre">{ansi_to_html(text)}</pre>',
-                sanitize=False,
-            ).classes("w-full").style("min-height: 100%;")
-        _scroll_bottom(log_container)
+        if not task:
+            term.write('\033c')
+            term.write("Select a task to view live logs\r\n")
+            return
+
+        log_path = _current_log_path()
+        if not log_path or not os.path.exists(log_path):
+             term.write('\033c')
+             term.write(f"Log file not found: {log_path}\r\n")
+             return
+
+        # Reset terminal
+        term.write('\033c')
+
+        # Prevent browser freeze on huge logs: initial load limited to last N bytes
+        # (defined by monitor_chunk_size * 2)
+        # PERFORMANCE NOTE: uses seek() + read(chunk), so it is O(1) and safe for any file size.
+        CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
+        
+        file_size = os.path.getsize(log_path)
+        start_offset = max(0, file_size - (CHUNK_SIZE * 2)) 
+        
+        # 如果不是从头读，可能会切掉半行，所以必须寻找下一个 \n
+        if start_offset > 0:
+            with open(log_path, 'rb') as f:
+                f.seek(start_offset)
+                f.readline()  # 丢弃被切断的残行
+                start_offset = f.tell()
+                
+        current_offset = start_offset
+        
+        # 安全读取并写入
+        while current_offset < file_size:
+            chunk, new_off = safe_read_log(log_path, current_offset, max_bytes=CHUNK_SIZE)
+            if not chunk:
+                break
+            term.write(chunk)
+            current_offset = new_off
+            
+        sel["_log_offset"] = current_offset
 
     def _push_log():
-        nonlocal log_html_el
-        if not log_html_el:
-            return
+        if not sel["task_id"]:
+             return
+
+        term = sel.get("_terminal")
+        if not term: return
+
         log_path = _current_log_path()
         if not log_path or not os.path.exists(log_path):
             return
-        raw = read_log(log_path)
-        prev = sel.get("_log_len", 0)
-        if len(raw) == prev:
-            return
-        if len(raw) < prev:
-            sel["_log_len"] = 0
-            _rebuild_right()
-            return
-        new_html = ansi_to_html(raw[prev:])
-        sel["_log_len"] = len(raw)
-        safe = new_html.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-        ui.run_javascript(f'''
-            (() => {{
-                const el = document.getElementById("c{log_html_el.id}");
-                if (!el) return;
-                const pre = el.querySelector("pre");
-                if (pre) pre.innerHTML += `{safe}`;
-            }})();
-        ''')
-        _scroll_bottom(log_container)
+            
+        file_size = os.path.getsize(log_path)
+        offset = sel.get("_log_offset", 0)
+        
+        if file_size < offset:
+             # 文件被截断/重写了
+             sel["_log_offset"] = 0
+             _rebuild_right()
+             return
 
-    # ----------------------------------------------------------
-    #  Event handlers
-    # ----------------------------------------------------------
+        if file_size == offset:
+            return
+
+        # 增量读取新日志 (Incremental Read)
+        CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
+        new_text, new_offset = safe_read_log(log_path, offset, max_bytes=CHUNK_SIZE)
+        
+        if new_text:
+            term.write(new_text)
+            sel["_log_offset"] = new_offset
+
     def _select_task(tid: str):
         sel["task_id"] = tid
         sel["log_file_name"] = None
-        sel["_log_len"] = 0
+        sel["_log_offset"] = 0
         logger.debug("Monitor: selected task %s", tid[:8] if tid else None)
-        # refresh left panel highlight
         task_list_panel = sel.get("_task_list_panel")
         if task_list_panel:
             task_list_panel.refresh()
@@ -189,15 +240,14 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     def _on_log_select_change(name: str):
         sel["log_file_name"] = name
-        sel["_log_len"] = 0
+        sel["_log_offset"] = 0
         _rebuild_right()
 
-    # Wire callbacks into sel so left panel can use them
     sel["_select_task"] = _select_task
     sel["_toggle_export"] = _toggle_export
 
     # ----------------------------------------------------------
-    #  Snapshot-based polling  (avoids redundant UI rebuilds)
+    #  Snapshot-based polling 
     # ----------------------------------------------------------
     _snap: Dict[str, Any] = {"data": {}, "n": 0}
 
@@ -206,51 +256,28 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         if panel:
             panel.refresh()
 
-    # ── Initial data guarantee ──
-    # Deferred to a once-timer so that the full NiceGUI element tree
-    # is committed before we mutate task_manager.tasks and refresh().
-    # This is the key fix for the "must visit Manager first" bug:
-    # calling scan_disk() synchronously inside a @ui.refreshable
-    # render cycle can leave the nested @ui.refreshable in an
-    # inconsistent state.
-    #
-    # Note: TaskManager.__init__ already ran scan_disk(), so tasks are
-    # usually present.  We still need the deferred timer for the edge
-    # case where Monitor is the *first* tab rendered (before the
-    # element tree is committed) — a direct scan_disk+refresh inside
-    # the render cycle would corrupt the refreshable state.
     def _initial_load():
         if not task_manager.tasks:
             task_manager.scan_disk()
         _snap["data"] = _task_snap(task_manager)
         _refresh_panel()
 
-    # Only fire the deferred loader if the task list is actually empty
-    # (i.e. Monitor was opened before any tab loaded tasks).  Otherwise
-    # the initial task_list_panel() render already shows correct data.
     if not task_manager.tasks:
         ui.timer(0.1, _initial_load, once=True)
     else:
         _snap["data"] = _task_snap(task_manager)
 
-    # ── Periodic poll (interval from workspace settings) ──
     _mon_stale = {"flag": False}
 
     def _poll():
-        # Skip expensive UI updates when the monitor tab is hidden.
-        # Data refresh (disk I/O) is still done so we're ready
-        # to display immediately when the tab becomes visible.
         is_active = state.get("active_tab") == "monitor"
-
         _snap["n"] += 1
 
-        # Full rescan every ~30 s to detect newly added / deleted tasks
         if _snap["n"] % 30 == 0:
             task_manager.scan_disk()
         else:
             task_manager.refresh_from_disk()
 
-        # Only rebuild the left panel when the snapshot actually changes
         new = _task_snap(task_manager)
         if new != _snap["data"]:
             _snap["data"] = new
@@ -259,25 +286,15 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
             else:
                 _mon_stale["flag"] = True
 
-        # Catch up when we just became visible again
         if is_active and _mon_stale["flag"]:
             _mon_stale["flag"] = False
             _refresh_panel()
 
         if not is_active:
-            return  # skip right-panel updates while hidden
+            return 
 
-        # ── Right panel: update log / header for the selected task ──
         task = _get_task(sel["task_id"])
         if not task:
-            return
-
-        # Auto-recover: if log_html_el is None but a log file now exists,
-        # rebuild the right panel to create the viewer
-        if not log_html_el:
-            log_path = _current_log_path()
-            if log_path and os.path.exists(log_path):
-                _rebuild_right()
             return
 
         opts = get_log_options(task["dir"])
@@ -285,10 +302,19 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         if new_names != list(log_select_el.options or []):
             log_select_el.options = new_names
             log_select_el.set_visibility(len(new_names) > 1)
+            
+            # Auto-switch to latest log on file list change (e.g. new run started)
+            best_path = resolve_log_path(task["dir"], None)
+            best_name = next((n for n, p in opts.items() if p == best_path), None)
+            
+            if best_name and best_name != sel.get("log_file_name"):
+                 log_select_el.value = best_name
+                 _on_log_select_change(best_name) # Reset offset & rebuild view
+            
             log_select_el.update()
+            
         _push_log()
 
-        # Update status icon in header
         fresh = _get_task(sel["task_id"])
         if fresh:
             new_icon = STATUS_ICONS.get(fresh["status"], "help")
@@ -307,11 +333,10 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
-    """Task list + search + export button."""
     with ui.column().classes(
         "flex-none border-r border-slate-200 bg-white gap-0 overflow-hidden"
     ).style(f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"):
-        # header
+        
         with ui.row().classes(
             f"w-full items-center gap-1.5 px-2.5 py-2 flex-none {PANEL_HEADER_INDIGO}"
         ):
@@ -320,22 +345,20 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             ui.space()
 
             def _manual_refresh():
-                task_manager.refresh_from_disk()
+                task_manager.refresh_from_disk(force_all=True)
                 tl = sel.get("_task_list_panel")
                 if tl:
                     tl.refresh()
+                ui.notify("Refreshed all tasks")
 
             ui.button(icon="refresh", on_click=_manual_refresh).props(
                 "flat dense round size=xs"
-            ).classes("text-white/70 hover:text-white")
+            ).classes("text-white/70 hover:text-white").tooltip("Refresh List")
 
-        # search + select all
         search_ref = {"val": ""}
 
         def _toggle_select_all():
-            # 1. Start with all tasks
             tasks = list(task_manager.tasks)
-            # 2. Apply current filter
             q = search_ref["val"]
             if q:
                 tasks = [t for t in tasks if q in t.get("name", "").lower()]
@@ -344,8 +367,6 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 return
 
             visible_ids = {t["id"] for t in tasks}
-            # 3. Toggle: if all visible are selected -> deselect all visible
-            #            else -> select all visible
             if visible_ids.issubset(sel["export_ids"]):
                 sel["export_ids"] -= visible_ids
                 ui.notify(f"Deselected {len(visible_ids)} tasks")
@@ -353,7 +374,6 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 sel["export_ids"] |= visible_ids
                 ui.notify(f"Selected {len(visible_ids)} tasks")
             
-            # 4. Refresh list to update checkboxes
             if sel.get("_task_list_panel"):
                 sel["_task_list_panel"].refresh()
 
@@ -362,7 +382,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         ):
             si = ui.input(placeholder="Search...").props(
                 "dense outlined bg-white clearable"
-            ).classes("flex-grow text-xs") # flex-grow to share space
+            ).classes("flex-grow text-xs")
             si.on("keyup.enter", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
             si.on("clear", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
             si.on_value_change(
@@ -373,8 +393,6 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 "dense size=sm color=indigo"
             ).tooltip("Select/Deselect All Visible")
 
-
-        # scrollable task list
         @ui.refreshable
         def task_list_panel():
             from pyruns.utils.sort_utils import task_sort_key
@@ -398,41 +416,35 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         sel["_task_list_panel"] = task_list_panel
         task_list_panel()
 
-        # export button
         with ui.row().classes("w-full p-2 flex-none mt-auto"): 
             ui.button(
                 "Export Reports", 
                 on_click=lambda: show_export_dialog(task_manager, sel["export_ids"]),
             ).props("unelevated icon=download").classes(
                 "w-full bg-indigo-600 text-white text-sm font-bold tracking-wide "
-                "py-1 "  # 这里的 py-2 控制高度，flex-grow 必须去掉
-                "hover:bg-indigo-700 shadow-md hover:shadow-lg rounded"
+                "py-1 hover:bg-indigo-700 shadow-md hover:shadow-lg rounded"
             )
 
 
-
 def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
-    """Single task row in the left panel."""
     tid = t["id"]
     is_active = tid == sel["task_id"]
     status = t["status"]
     icon_name = STATUS_ICONS.get(status, "help")
     icon_cls = STATUS_ICON_COLORS.get(status, "text-slate-400")
     active_cls = "active" if is_active else ""
-
     task_name = t.get("name", "unnamed")
 
     with ui.row().classes(
         f"w-full items-center gap-1.5 px-2 py-1.5 "
         f"monitor-task-item {active_cls} border-b border-slate-50"
     ).style("flex-wrap: nowrap;"):
-        # Checkbox: independent click target for export toggle
+        
         ui.checkbox(
             value=tid in sel["export_ids"],
             on_change=lambda e, _tid=tid: sel.get("_toggle_export", lambda x, y: None)(_tid, e.value),
         ).props("dense size=xs color=indigo").classes("flex-none")
 
-        # Clickable area for task selection (icon + name + status)
         with ui.row().classes(
             "items-center gap-1.5 cursor-pointer"
         ).style(
@@ -455,7 +467,6 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
                     "font-size: 9px; color: #94a3b8; line-height: 1.25;"
                 )
 
-            # Use cached monitor_count (set by TaskManager) — no per-task I/O
             mon_count = t.get("monitor_count", 0)
             if mon_count:
                 ui.badge(str(mon_count)).props(
@@ -468,7 +479,6 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def _update_header(task, icon_el, label_el, select_el, sel):
-    """Sync header bar elements with the current task."""
     if task:
         st = task["status"]
         icon_el._props["name"] = STATUS_ICONS.get(st, "help")
@@ -498,33 +508,3 @@ def _update_header(task, icon_el, label_el, select_el, sel):
         label_el.update()
         select_el.set_visibility(False)
         select_el.update()
-
-
-def _placeholder():
-    with ui.column().classes("w-full items-center justify-center gap-3").style(
-        f"height: 100%; background: {DARK_BG};"
-    ):
-        ui.icon("monitor_heart", size="56px").classes("text-slate-700")
-        ui.label("Select a task to view live logs").classes(
-            "text-sm text-slate-500 font-medium"
-        )
-        ui.label("Running tasks are shown at the top").classes(
-            "text-xs text-slate-600"
-        )
-
-
-def _no_log_placeholder():
-    with ui.column().classes("w-full items-center justify-center gap-2").style(
-        f"height: 100%; background: {DARK_BG};"
-    ):
-        ui.icon("article", size="48px").classes("text-slate-600")
-        ui.label("No log file available").classes("text-sm text-slate-500")
-
-
-def _scroll_bottom(container):
-    ui.run_javascript(f'''
-        (() => {{
-            const el = document.getElementById("c{container.id}");
-            if (el) el.scrollTop = el.scrollHeight;
-        }})();
-    ''')

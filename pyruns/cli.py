@@ -13,57 +13,29 @@ from . import __version__ as _VERSION
 # ─── Help text ────────────────────────────────────────────────
 
 _HELP = textwrap.dedent(
-    f"""\
-    pyruns v{_VERSION} — lightweight Python experiment management UI
+    f"""
+pyruns v{_VERSION}
 
-    USAGE
-      pyr <script.py>            Launch web UI for the given script
-      pyr dev <script.py>        Launch with hot-reload (development)
-      pyr help | -h | --help     Show this message
-      pyr version | -v           Show version
+USAGE
+    pyr <script.py>        Start UI for script (e.g. `pyr train.py`)
+    pyr -h | -v            Show help / version
 
-    ZERO CONFIG (argparse)
-      If your script uses argparse, pyr extracts parameters
-      automatically — no extra setup needed:
+MODE 1: ARGPARSE (Zero Config)
+    If your script uses `argparse`, just run it! Params are auto-detected.
+    $ pyr train.py
 
-        $ pyr train.py           # that's it!
+MODE 2: MANUAL CONFIG
+    If not using argparse, you must provide a default config file:
 
-    MANUAL CONFIG (pyruns)
-      Place a config file next to your script:
+    project/
+    ├── {DEFAULT_ROOT_NAME}/
+    │   └── {CONFIG_DEFAULT_FILENAME}   <-- Your params (YAML)
+    └── train.py
 
-        your_project/
-        └── {DEFAULT_ROOT_NAME}/
-            └── {CONFIG_DEFAULT_FILENAME}   ← your parameters
-
-      Then in your script:
-        import pyruns
-        config = pyruns.load()   # auto-reads config under pyr
-        print(config.lr)
-
-    API MODES
-      • pyr mode:    config = pyruns.load()           # just works
-      • manual mode: pyruns.read("path/to/cfg.yaml")  # explicit path
-                     config = pyruns.load()
-
-    WORKSPACE SETTINGS
-      On first launch, pyr creates  {DEFAULT_ROOT_NAME}/_pyruns_.yaml
-      Edit it to customise: UI port, refresh intervals, grid columns,
-      default workers, execution mode, etc.
-
-    WORKSPACE LAYOUT
-      your_project/
-      ├── train.py
-      └── {DEFAULT_ROOT_NAME}/
-          ├── _pyruns_.yaml          ← UI settings (auto-generated)
-          ├── {CONFIG_DEFAULT_FILENAME}    ← parameter template
-          ├── my-task/               ← generated task folder
-          │   ├── task_info.json
-          │   ├── config.yaml
-          │   └── run_logs/
-          │       ├── run1.log
-          │       └── run2.log   ← each run gets its own log
-          └── .trash/                ← soft-deleted tasks
-"""
+    Then in your script:
+    import pyruns
+    args = pyruns.load()  # Returns params from UI or config_default.yaml
+    """.strip()
 )
 
 
