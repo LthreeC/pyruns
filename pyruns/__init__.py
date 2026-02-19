@@ -113,14 +113,7 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
 
             if MONITOR_KEY not in info:
                 info[MONITOR_KEY] = []
-            
-            monitors = info[MONITOR_KEY]
-
-            # Ensure list is long enough to hold data for current run
-            # e.g. for Run 2, we need monitors[1] to exist
-            while len(monitors) < run_index:
-                monitors.append({})
-            
+                        
             # Merge data into the current run's slot
             monitors[run_index - 1].update(update_data)
 

@@ -4,7 +4,7 @@ import subprocess
 import time
 from typing import Dict, Any, Optional
 
-from pyruns._config import RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME
+from pyruns._config import RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME, MONITOR_KEY
 from pyruns.utils.log_io import append_log
 from pyruns.utils.task_io import load_task_info, save_task_info
 from pyruns.utils import get_logger, get_now_str
@@ -215,11 +215,18 @@ def run_task_worker(
         meta_final = load_task_info(task_dir)
         finish_times = meta_final.get("finish_times", [])
         finish_times.append(end_str)
+        
+        # 5. Ensure list is long enough to hold data for current run
+        # e.g. for Run 2, we need monitors[1] to exist
+        monitors = meta_final.get(MONITOR_KEY, [])
+        while len(monitors) < run_index:
+            monitors.append({})
 
         meta_final.update({
             "status": status,
             "progress": progress,
             "finish_times": finish_times,
+            "monitors": monitors,
         })
         save_task_info(task_dir, meta_final)
         logger.info("Task %s finished  status=%s", name, status)
