@@ -112,8 +112,6 @@ def _setup_env(filepath: str) -> str:
 
     # ── Detect config source ──
     mode, extra = detect_config_source_fast(filepath)
-    
-    print("mode", mode, extra)
 
     file_dir = os.path.dirname(filepath)
     pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
@@ -125,15 +123,14 @@ def _setup_env(filepath: str) -> str:
     elif mode == "pyruns_read":
         if extra:
             config_file = resolve_config_path(extra, file_dir)
-            print(extra, file_dir, config_file)
 
             if not config_file:
                 print(f"Error: Config '{extra}' not found.")
                 sys.exit(1)
 
     os.makedirs(pyruns_dir, exist_ok=True)
-    ensure_settings_file()
-    ensure_config_default()
+    ensure_settings_file(pyruns_dir)
+    ensure_config_default(pyruns_dir)
     
 
     # ── Set environment ──

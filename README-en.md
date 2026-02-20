@@ -58,9 +58,9 @@ print(f"Loading config items: {config.learning_rate}")
 A clean, card-grid overview of all your generated tasks. Filter by status (Queued, Running, Failed), search by name, and bulk-run your experiments utilizing multiple background workers.  
 > **[Place Screenshot of Manager Page Here - showing the grid of task cards]**
 
-### 3. Monitor: Live Logs & Charts
-Click into any running task to view real-time ANSI-colored terminal logs. Use `pyruns.add_monitor()` in your scripts to automatically plot live training metrics directly within the UI.
-> **[Place Screenshot of Monitor Page Here - showing the terminal and metrics charts]**
+### 3. Monitor: Live Logs & Metrics Logging
+Click into any running task to view real-time ANSI-colored terminal logs. Use `pyruns.add_monitor()` in your scripts to record training metrics, making it easy to export bulk CSV reports later!
+> **[Place Screenshot of Monitor Page Here - showing the terminal log view]**
 
 **Advanced Usage: Logging Metrics**
 See `examples/3_metrics_logging/train.py`. Add one line of code to easily track model loss, accuracy, and epochs during training! 
@@ -71,7 +71,7 @@ import pyruns
 for epoch in range(100):
     loss, accuracy = train_one_epoch()
     
-    # Send variables directly to the Pyruns UI Monitor Tab
+    # Track metrics for easy JSON/CSV report bulk exportation later
     pyruns.add_monitor(epoch=epoch, loss=loss, accuracy=accuracy)
 ```
 

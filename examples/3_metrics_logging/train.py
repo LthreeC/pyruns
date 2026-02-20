@@ -3,8 +3,8 @@ Advanced Example: Metrics Logging
 ============================================
 
 Showcases how to integrate pyruns metrics logging.
-When you use `pyruns.add_monitor()`, the variables are automatically extracted
-and plotted in the pyruns UI as live charts!
+When you use `pyruns.add_monitor()`, the variables are tracked 
+and safely stored in JSON for bulk CSV report exportation later.
 
 Run with: `pyr train.py`
 """
@@ -44,8 +44,8 @@ def train():
         
         print(f"[Epoch {epoch:02d}] Loss: {current_loss:.4f} | Acc: {current_acc:.2f}%")
         
-        # 👉 LOG METRICS TO PYRUNS UI
-        # These variables will automatically appear in the pyruns UI monitor tab.
+        # 👉 TRACK METRICS IN JSON
+        # These variables are tracked so they can be exported to a bulk CSV data report.
         pyruns.add_monitor(epoch=epoch, loss=current_loss, accuracy=current_acc)
 
     print("Finished training.")

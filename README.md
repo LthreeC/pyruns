@@ -59,9 +59,9 @@ print(f"Loading config items: {config.learning_rate}")
 以清晰的卡片网格形式展现所有生成的任务。按状态（Queued、Running、Failed）过滤，按名称搜索，利用多个后台 Worker 进程并行运行实验！  
 > **[此处放置 Manager 页面截图 - 展示任务卡片网格]**
 
-### 3. Monitor: 实时日志与图表
-点击任意运行中的任务即可查看实时 ANSI 彩色终端日志。在代码中调用 `pyruns.add_monitor()`，即可在 UI 中自动绘制实时训练指标图表。
-> **[此处放置 Monitor 页面截图 - 展示终端与指标图表]**
+### 3. Monitor: 实时日志与指标记录
+点击任意运行中的任务即可查看实时 ANSI 彩色终端日志。在代码中调用 `pyruns.add_monitor()`，即可轻松记录训练指标，并在实验结束后一键导出为 CSV 任务报告。
+> **[此处放置 Monitor 页面截图 - 展示终端日志视图]**
 
 **进阶用法：记录训练指标**
 参考 `examples/3_metrics_logging/train.py`。只需在代码中加一行，即可在 UI 中追踪模型损失 (loss)、准确率 (accuracy) 和 epochs！
@@ -72,7 +72,7 @@ import pyruns
 for epoch in range(100):
     loss, accuracy = train_one_epoch()
     
-    # 将变量直接发送到 Pyruns 界面的 Monitor 图表中
+    # 记录每个 epoch 的指标，便于实验后批量导出 CSV 报告
     pyruns.add_monitor(epoch=epoch, loss=loss, accuracy=accuracy)
 ```
 
