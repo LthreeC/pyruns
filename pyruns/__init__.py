@@ -52,7 +52,17 @@ def load():
                 _global_config_manager_.read(default_path)
     return _global_config_manager_.load()
 
+def ensure_config_default():
+    """Create ``config_default.yaml`` with defaults if it doesn't exist.
 
+    Returns the file path.
+    """
+    path = os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
+    if not os.path.exists(path):
+        os.makedirs(ROOT_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# task config here")
+    return path
 
 
 # ═══════════════════════════════════════════════════════════════

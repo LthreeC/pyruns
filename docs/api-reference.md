@@ -224,12 +224,13 @@ flatten_dict({"a": {"b": 1, "c": 2}})
 
 #### `extract_argparse_params(filepath) → dict[str, dict]`
 
-通过 AST 解析提取 `add_argument()` 调用的所有参数信息：
+通过 AST 解析提取 `add_argument()` 调用的所有参数信息。当同时提供短参数和长参数名时（如 `-b, --batch_size`），会优先使用长参数名作为字典的键。
 
 ```python
 {
     "lr": {"name": "--lr", "type": float, "default": 0.001, "help": "学习率"},
     "epochs": {"name": "--epochs", "type": int, "default": 10},
+    "batch_size": {"name": "--batch_size", "type": int, "default": 32, "help": "批大小"},
 }
 ```
 

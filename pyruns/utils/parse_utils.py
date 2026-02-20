@@ -7,43 +7,55 @@ from typing import Dict, Any, Optional, Tuple
 from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 
-# ===================== 快速检测（正则） ===================== #
-
 def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
-    """
-    快速检测配置来源（使用正则，< 1ms）
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+        tree = ast.parse(content, filename=filepath)
+    except Exception:
+        return ("unknown", None)
 
-    Returns:
-        ("argparse", None)
-        ("pyruns_read", "config.yaml" | None)
-        ("pyruns_load", None)          ← script uses pyruns.load() only
-        ("unknown", None)
-    """
-    with open(filepath, "r", encoding="utf-8") as f:
-        content = f.read()
+    has_pyruns_load = False
+    has_argparse = False
 
-    # pyruns.read("path") or pyruns.read()
-    match = re.search(r'pyruns\.read\s*\(\s*(?:["\']([^"\']+)["\']\s*)?\)', content)
-    if match:
-        return ("pyruns_read", match.group(1))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "read":
+                    arg_val = None
+                    if node.args:
+                        arg = node.args[0]
+                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                            arg_val = arg.value
+                        elif hasattr(ast, 'Str') and isinstance(arg, getattr(ast, 'Str')):
+                            arg_val = arg.s
+                    return ("pyruns_read", arg_val)
 
-    # pyruns.load() — auto-read mode (no explicit read required under pyr)
-    if re.search(r'pyruns\.load\s*\(', content):
+                if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "load":
+                    has_pyruns_load = True
+
+                if node.func.attr == "add_argument":
+                    has_argparse = True
+
+    if has_pyruns_load:
         return ("pyruns_load", None)
-
-    # argparse
-    if re.search(r'\.add_argument\s*\(', content):
+    
+    if has_argparse:
         return ("argparse", None)
 
     return ("unknown", None)
 
 
-# ===================== AST 解析（仅在需要时调用） ===================== #
-
 def _extract_value(node: ast.AST) -> Any:
-    """从 AST 节点提取值"""
     if isinstance(node, ast.Constant):
         return node.value
+    if hasattr(ast, 'Str') and isinstance(node, getattr(ast, 'Str')):
+        return node.s
+    if hasattr(ast, 'Num') and isinstance(node, getattr(ast, 'Num')):
+        return node.n
+    if hasattr(ast, 'NameConstant') and isinstance(node, getattr(ast, 'NameConstant')):
+        return node.value
+
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.List):
@@ -56,9 +68,11 @@ def _extract_value(node: ast.AST) -> Any:
 
 
 def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
-    """解析 argparse 参数（仅 argparse 模式调用）"""
-    with open(filepath, "r", encoding="utf-8") as f:
-        tree = ast.parse(f.read(), filename=filepath)
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=filepath)
+    except Exception:
+        return {}
 
     params: Dict[str, Dict[str, Any]] = {}
     
@@ -73,15 +87,17 @@ def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
         info: Dict[str, Any] = {}
         
         if node.args:
-            info["name"] = _extract_value(node.args[0])
+            flags = [_extract_value(a) for a in node.args]
+            flags = [str(f) for f in flags if isinstance(f, str)]
+            if flags:
+                long_flags = [f for f in flags if f.startswith("--")]
+                info["name"] = long_flags[0] if long_flags else flags[0]
 
         for kw in node.keywords:
             if kw.arg:
                 info[kw.arg] = _extract_value(kw.value)
 
         name = info.get("name")
-        if isinstance(name, (list, tuple)):
-            name = name[0] if name else ""
         dest = str(name).lstrip("-").replace("-", "_") if name else ""
         
         if dest:
@@ -91,24 +107,17 @@ def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
 
 
 def argparse_params_to_dict(params: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """argparse 参数转简单字典"""
     return {key: info.get("default") for key, info in params.items()}
 
 
-# ===================== 文件路径处理 ===================== #
-
 def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
-    """解析配置文件路径"""
-    # 尝试相对于脚本目录
     script_relative = os.path.join(script_dir, config_path)
     if os.path.exists(script_relative):
         return os.path.abspath(script_relative)
     
-    # 尝试绝对路径
     if os.path.isabs(config_path) and os.path.exists(config_path):
         return config_path
     
-    # 尝试相对于当前目录
     cwd_relative = os.path.join(os.getcwd(), config_path)
     if os.path.exists(cwd_relative):
         return os.path.abspath(cwd_relative)
@@ -117,7 +126,6 @@ def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
 
 
 def generate_config_file(filepath: str, params: Dict[str, Dict[str, Any]]) -> str:
-    """生成配置文件"""
     file_dir = os.path.dirname(os.path.abspath(filepath))
     pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
     os.makedirs(pyruns_dir, exist_ok=True)

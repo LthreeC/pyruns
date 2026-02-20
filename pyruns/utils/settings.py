@@ -8,7 +8,7 @@ import os
 import yaml
 from typing import Any, Dict
 
-from pyruns._config import SETTINGS_FILENAME
+from pyruns._config import SETTINGS_FILENAME, ROOT_DIR
 
 
 _DEFAULTS: Dict[str, Any] = {
@@ -74,11 +74,11 @@ log_level: INFO                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
 _cached: Dict[str, Any] = {}
 
 
-def _settings_path(root_dir: str) -> str:
+def _settings_path(root_dir: str = ROOT_DIR) -> str:
     return os.path.join(root_dir, SETTINGS_FILENAME)
 
 
-def ensure_settings_file(root_dir: str) -> str:
+def ensure_settings_file(root_dir: str = ROOT_DIR) -> str:
     """Create ``_pyruns_.yaml`` with defaults if it doesn't exist.
 
     Returns the file path.
@@ -91,8 +91,8 @@ def ensure_settings_file(root_dir: str) -> str:
     return path
 
 
-def load_settings(root_dir: str) -> Dict[str, Any]:
-    """Load settings from ``_pyruns_.yaml``, falling back to defaults.
+def load_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
+    """Load settings from _pyruns_, falling back to defaults.
 
     Result is cached in-process; call ``reload_settings`` to refresh.
     """
@@ -120,8 +120,7 @@ def get(key: str, default: Any = None) -> Any:
     """
     if not _cached:
         try:
-            import pyruns._config as _cfg
-            load_settings(_cfg.ROOT_DIR)
+            load_settings(ROOT_DIR)
         except Exception:
             pass
     if not _cached:
@@ -129,7 +128,7 @@ def get(key: str, default: Any = None) -> Any:
     return _cached.get(key, _DEFAULTS.get(key, default))
 
 
-def reload_settings(root_dir: str) -> Dict[str, Any]:
+def reload_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
     """Force reload from disk."""
     return load_settings(root_dir)
 
@@ -141,8 +140,7 @@ def save_setting(key: str, value: Any) -> None:
     Falls back to appending the key if it isn't found in the file.
     """
     import re
-    import pyruns._config as _cfg
-    root = _cfg.ROOT_DIR
+    root = ROOT_DIR
     path = _settings_path(root)
     try:
         # Serialize the value to a YAML-friendly string

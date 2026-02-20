@@ -52,14 +52,14 @@ parser.add_argument('-b', '--batch-size', default=32)
     p_script.write_text(code, encoding="utf-8")
     
     params = extract_argparse_params(str(p_script))
-    assert list(params.keys()) == ["lr", "epochs", "b"]
+    assert list(params.keys()) == ["lr", "epochs", "batch_size"]
     
     assert params["lr"]["name"] == "--lr"
     assert params["lr"]["default"] == 0.01
     assert params["lr"]["help"] == "learning rate"
     
-    assert params["b"]["name"] == "-b"
-    assert params["b"]["default"] == 32
+    assert params["batch_size"]["name"] == "--batch-size"
+    assert params["batch_size"]["default"] == 32
 
 
 def test_argparse_params_to_dict():
@@ -416,7 +416,7 @@ def test_get():
     settings._cached.clear()
     # It attempts to load from ROOT_DIR. To avoid actual IO in tests that mock ROOT_DIR,
     # we just intercept ROOT_DIR or let it fallback to _DEFAULTS silently
-    with patch("pyruns._config.ROOT_DIR", "/fake/dir"):
+    with patch("pyruns.utils.settings.ROOT_DIR", "/fake/dir"):
         assert settings.get("ui_port") == settings._DEFAULTS["ui_port"]
 
 
@@ -424,7 +424,7 @@ def test_save_setting(tmp_path):
     root_dir = str(tmp_path)
     file_path = os.path.join(root_dir, SETTINGS_FILENAME)
     
-    with patch("pyruns._config.ROOT_DIR", root_dir):
+    with patch("pyruns.utils.settings.ROOT_DIR", root_dir):
         # 1. New file
         settings.save_setting("ui_port", 7777)
         assert os.path.exists(file_path)
