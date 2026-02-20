@@ -3,8 +3,15 @@ Centralized UI theme constants for Pyruns.
 All style strings, color maps, and CSS classes live here.
 """
 
-# ─── Layout ─────────────────────────────────────────────────
-from pyruns._config import SIDEBAR_WIDTH
+# ─── Layout Widths ──────────────────────────────────────────
+SIDEBAR_WIDTH = "10%"            # Left navigation sidebar width
+MONITOR_PANEL_WIDTH = "16%"      # Monitor page task list panel width
+
+# ═══════════════════════════════════════════════════════════════
+#  UI Theme Constants
+# ═══════════════════════════════════════════════════════════════
+HEADER_GRADIENT = "bg-gradient-to-r from-[#0f172a] to-[#312e81]"
+
 
 # ─── Input / Form ───────────────────────────────────────────
 INPUT_PROPS = "outlined dense bg-white text-slate-800"

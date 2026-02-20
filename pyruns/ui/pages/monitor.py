@@ -17,10 +17,10 @@ from pyruns.utils.task_io import get_log_options, resolve_log_path
 from pyruns.utils.log_io import safe_read_log
 from pyruns.utils.settings import get as get_setting
 from pyruns.ui.theme import (
-    STATUS_ICONS, STATUS_ICON_COLORS, STATUS_ORDER,
-    PANEL_HEADER_INDIGO, PANEL_HEADER_DARK, DARK_BG,
+    STATUS_ICONS, STATUS_ICON_COLORS,
+    PANEL_HEADER_INDIGO, PANEL_HEADER_DARK,
 )
-from pyruns._config import MONITOR_PANEL_WIDTH
+from pyruns.ui.theme import MONITOR_PANEL_WIDTH
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
 
@@ -43,10 +43,6 @@ def _task_snap(task_manager) -> Dict[str, tuple]:
         for t in task_manager.tasks
     }
 
-
-# ═══════════════════════════════════════════════════════════════
-#  Entrypoint
-# ═══════════════════════════════════════════════════════════════
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -89,17 +85,16 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         # ── LEFT panel ──
         _build_left_panel(sel, task_manager, _get_task)
 
-        # ── RIGHT panel skeleton ──
+            # ── RIGHT panel skeleton ──
         with ui.column().classes(
             "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1e1e]"
         ).style("height: 100%;"):
             
             header_row = ui.row().classes(
-                f"w-full items-center gap-2 px-3 py-1.5 flex-none {PANEL_HEADER_DARK}"
+                f"w-full items-center gap-2 px-2 py-1.5 flex-none {PANEL_HEADER_DARK}"
             )
             
             # Load settings
-            CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
             SCROLLBACK = int(get_setting("monitor_scrollback", 100000))
 
             # Layout fix: use standard flex flow (min-w/h=0) instead of absolute pos
@@ -122,9 +117,34 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                 ui.element('q-resize-observer').on('resize', terminal.fit)
                 sel["_terminal"] = terminal
 
-                # 🛠️ JS HACK: Allow Ctrl+C to copy (logic moved to static/monitor_hacks.js)
-                ui.add_head_html('<script src="/static/monitor_hacks.js"></script>', shared=True)
-                ui.run_javascript(f"enableXtermCopy({terminal.id});")
+                # 🛠️ JS HACK: Allow Ctrl+C to copy 
+                # Embedded directly to avoid browser caching issues with external static scripts
+                js_hack = f"""
+                setTimeout(() => {{
+                    const getEl = window.getElement || ((id) => document.getElementById("c" + id));
+                    const widget = getEl({terminal.id});
+                    let term = null;
+                    if (widget && widget.terminal) term = widget.terminal;
+                    else if (widget && widget.$refs && widget.$refs.terminal) term = widget.$refs.terminal;
+                    else if (widget && typeof widget.getSelection === 'function') term = widget;
+
+                    if (term) {{
+                        term.attachCustomKeyEventHandler((e) => {{
+                            if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C') && term.hasSelection()) {{
+                                const text = term.getSelection();
+                                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                                    navigator.clipboard.writeText(text).catch(() => document.execCommand('copy'));
+                                }} else {{
+                                    document.execCommand('copy');
+                                }}
+                                return false; 
+                            }}
+                            return true;
+                        }});
+                    }}
+                }}, 800);
+                """
+                ui.run_javascript(js_hack)
 
     # ── header + placeholder ──
     with header_row:
@@ -325,8 +345,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                 )
                 header_icon_el.update()
 
-    ui.timer(float(_get_setting("monitor_poll_interval", 1)), _poll)
-
+    ui.timer(float(get_setting("monitor_poll_interval", 1)), _poll)
 
 # ═══════════════════════════════════════════════════════════════
 #  Left panel builder
@@ -338,7 +357,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
     ).style(f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"):
         
         with ui.row().classes(
-            f"w-full items-center gap-1.5 px-2.5 py-2 flex-none {PANEL_HEADER_INDIGO}"
+            f"w-full items-center gap-1 px-1 py-2 flex-none {PANEL_HEADER_INDIGO}"
         ):
             ui.icon("monitor_heart", size="16px", color="white")
             ui.label("Tasks").classes("text-xs font-bold text-white")
@@ -378,7 +397,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 sel["_task_list_panel"].refresh()
 
         with ui.row().classes(
-            "w-full px-2 py-1 flex-none border-b border-slate-100 items-center gap-1 no-wrap"
+            "w-full px-0 py-1 flex-none border-b border-slate-100 items-center gap-1 flex-nowrap overflow-hidden"
         ):
             si = ui.input(placeholder="Search...").props(
                 "dense outlined bg-white clearable"
@@ -402,14 +421,16 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 tasks = [t for t in tasks if q in t.get("name", "").lower()]
             tasks.sort(key=task_sort_key, reverse=True)
 
-            with ui.scroll_area().classes("flex-grow"):
+            # 🛠️ 终极修复 1：滚动区域本身必须限宽，防止内部元素把它撑开
+            with ui.scroll_area().classes("flex-grow w-full overflow-hidden"):
                 if not tasks:
                     with ui.column().classes("w-full items-center py-8 gap-2"):
                         ui.icon("search_off", size="32px").classes("text-slate-200")
                         ui.label("No tasks").classes("text-[10px] text-slate-400")
                     return
 
-                with ui.column().classes("w-full gap-0"): 
+                # 🛠️ 终极修复 2：加回 w-full 限制宽度，加上 p-0 m-0 消除 NiceGUI 默认可能带来的边距撑破
+                with ui.column().classes("w-full gap-0 p-0 m-0 overflow-hidden shrink-0"): 
                     for t in tasks:
                         _task_list_item(t, sel)
 
@@ -435,44 +456,35 @@ def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
     active_cls = "active" if is_active else ""
     task_name = t.get("name", "unnamed")
 
+    # 🛠️ 终极修复 3：加回 w-full 和 max-w-full！这告诉内部文本“宽度就这么多，超出的给我变成省略号”
     with ui.row().classes(
-        f"w-full items-center gap-1.5 px-2 py-1.5 "
-        f"monitor-task-item {active_cls} border-b border-slate-50"
-    ).style("flex-wrap: nowrap;"):
+        "w-full max-w-full items-center gap-0.5 flex-nowrap min-w-0 overflow-hidden border-b border-slate-50"
+    ):
         
+        # Checkbox 保持不变，独立于 Hover 效果之外
         ui.checkbox(
             value=tid in sel["export_ids"],
             on_change=lambda e, _tid=tid: sel.get("_toggle_export", lambda x, y: None)(_tid, e.value),
-        ).props("dense size=xs color=indigo").classes("flex-none")
+        ).props("dense size=xs color=indigo").classes("shrink-0")
 
+        # 内部可点击区域（Hover 背景变化只在这里生效）
         with ui.row().classes(
-            "items-center gap-1.5 cursor-pointer"
-        ).style(
-            "flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden;"
+            f"flex-1 w-0 min-w-0 items-center gap-1 cursor-pointer flex-nowrap overflow-hidden "
+            f"py-0.5 rounded monitor-task-item {active_cls} hover:bg-slate-100 transition-colors"
         ).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
-            ui.icon(icon_name, size="14px").classes(f"{icon_cls} flex-none")
 
-            with ui.element("div").style(
-                "flex: 1 1 0; min-width: 0; overflow: hidden; "
-                "display: flex; flex-direction: column; gap: 0;"
-            ):
-                ui.label(task_name).style(
-                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
-                    "font-size: 11px; font-weight: 600; color: #334155; line-height: 1.25; "
-                    "display: block; width: 100%;"
+            # 文本容器
+            with ui.element("div").classes("flex flex-col flex-1 w-0 min-w-0 gap-0 overflow-hidden"):
+                ui.label(task_name).classes(
+                    "truncate w-full text-[11px] font-semibold text-slate-700 leading-snug"
                 ).tooltip(task_name)
 
-                ui.label(status.upper()).style(
-                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
-                    "font-size: 9px; color: #94a3b8; line-height: 1.25;"
+                ui.label(status.upper()).classes(
+                    "truncate w-full text-[9px] text-slate-400 leading-snug"
                 )
-
-            mon_count = t.get("monitor_count", 0)
-            if mon_count:
-                ui.badge(str(mon_count)).props(
-                    "color=indigo-2 text-color=indigo-8"
-                ).classes("flex-none text-[9px]")
-
+                
+            ui.icon(icon_name, size="9px").classes(f"{icon_cls} shrink-0")
+            
 
 # ═══════════════════════════════════════════════════════════════
 #  Small helpers

@@ -6,7 +6,7 @@ Larger components (env_editor, param_editor, etc.) live in ``ui/components/``.
 """
 import os
 from nicegui import ui
-from typing import Dict, Optional, Callable
+from typing import Optional, Callable
 
 from pyruns.ui.theme import (
     INPUT_PROPS,

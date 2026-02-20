@@ -1,7 +1,7 @@
 import os
 import ast
 import yaml
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
 

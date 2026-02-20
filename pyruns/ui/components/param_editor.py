@@ -5,7 +5,6 @@ Supports: adjustable columns, expand/collapse all, star (pin) important params.
 from nicegui import ui
 from typing import Dict, Any, List, Set
 from pyruns.utils.config_utils import parse_value
-from pyruns.ui.theme import INPUT_PROPS
 
 # ── Type → icon / color ──
 _TYPE_INFO = {

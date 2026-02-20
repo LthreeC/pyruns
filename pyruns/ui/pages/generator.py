@@ -15,7 +15,7 @@ from typing import Dict, Any
 
 from pyruns.utils.config_utils import (
     load_yaml, generate_batch_configs,
-    list_template_files, strip_batch_pipes,
+    list_template_files,
 )
 from pyruns.utils import get_logger, get_now_str
 from pyruns.ui.components.param_editor import recursive_param_editor

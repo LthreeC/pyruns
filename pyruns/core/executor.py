@@ -12,12 +12,6 @@ from pyruns.utils import get_logger, get_now_str
 logger = get_logger(__name__)
 
 
-def _merge_task_info(task_dir: str, updates: Dict[str, Any]) -> None:
-    """Read task_info.json, merge *updates*, and write back."""
-    info = load_task_info(task_dir)
-    info.update(updates)
-    save_task_info(task_dir, info)
-
 
 def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
@@ -162,7 +156,6 @@ def run_task_worker(
         "progress": 0.0,
         "start_times": start_times,
     })
-    save_task_info(task_dir, task_meta)
 
     # 2. Build Command
     command, workdir = _build_command(
@@ -186,11 +179,13 @@ def run_task_worker(
                     cwd=workdir,
                     env=env,
                 )
-                # Store PID — append to pids array
-                meta_fresh = load_task_info(task_dir)
-                pids = meta_fresh.get("pids", [])
+                # Store PID — append to pids array immediately
+                pids = task_meta.get("pids", [])
                 pids.append(proc.pid)
-                _merge_task_info(task_dir, {"pids": pids})
+                task_meta["pids"] = pids
+                
+                # Single write to disk for "running" state + PID
+                save_task_info(task_dir, task_meta)
 
                 ret = proc.wait()
             status = "completed" if ret == 0 else "failed"

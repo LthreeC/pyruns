@@ -8,7 +8,7 @@ from pyruns.utils.config_utils import preview_config_line
 from pyruns.utils.task_io import load_task_info, save_task_info
 from pyruns.ui.theme import (
     BTN_CLASS,
-    STATUS_CARD_STYLES, STATUS_ICONS,
+    STATUS_CARD_STYLES,
 )
 from pyruns.ui.widgets import status_badge
 
@@ -19,7 +19,7 @@ def render_card_grid(
 ):
     """Render a grid of task cards."""
     try:
-        with ui.grid(columns=state.get("manager_columns", 4)).classes("w-full pl-2 gap-3 mt-1"):
+        with ui.grid(columns=state.get("manager_columns", 4)).classes("w-full gap-3 p-1"):
             for t in tasks:
                 render_task_card(t, state, task_manager, open_task_dialog, refresh_tasks, refresh_ui)
     except Exception as e:
@@ -47,7 +47,7 @@ def render_task_card(
 
     with card:
         # ── Header row: checkbox + name + pin ──
-        with ui.row().classes("w-full items-start px-3 pt-3 pb-1 gap-2"):
+        with ui.row().classes("w-full items-start px-3 pt-3 pb-1 gap-2 flex-nowrap"):
             def on_check(e, tid=t["id"]):
                 if e.value:
                     if tid not in state["selected_task_ids"]:
@@ -65,7 +65,7 @@ def render_task_card(
                 ui.label(t["name"]).classes(
                     "font-bold text-[13px] text-slate-800 group-hover:text-indigo-700 "
                     "transition-colors truncate leading-snug"
-                )
+                ).tooltip(t["name"])
                 ui.label(t.get("created_at", "")).classes(
                     "text-[10px] text-slate-400 font-mono leading-tight"
                 )

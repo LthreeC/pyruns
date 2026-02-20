@@ -27,13 +27,3 @@ ERROR_LOG_FILENAME = "error.log"   # Global error log for failed runs
 TRASH_DIR = ".trash"
 MONITOR_KEY = "monitors"           # Use "monitors" array key for stats
 SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
-
-# ═══════════════════════════════════════════════════════════════
-#  UI Theme Constants
-# ═══════════════════════════════════════════════════════════════
-THEME_COLOR = "indigo"
-HEADER_GRADIENT = "bg-gradient-to-r from-[#0f172a] to-[#312e81]"
-
-# ── UI Layout ───────────────────────────────────────────────
-SIDEBAR_WIDTH = "12%"
-MONITOR_PANEL_WIDTH = "13%"

@@ -8,10 +8,6 @@ Responsibilities:
   • Scheduler loop          – picks queued tasks and submits them to an executor
 """
 import os
-import json
-import time
-import os
-import json
 import time
 import threading
 import shutil
@@ -20,10 +16,11 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, Future
 
 from pyruns._config import (
     ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME,
-    TRASH_DIR, MONITOR_KEY,
+    TRASH_DIR,
 )
 from pyruns.utils.config_utils import load_yaml
 from pyruns.utils.process_utils import is_pid_running, kill_process
+from pyruns.utils.task_io import load_task_info, save_task_info
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger, get_now_str
 
@@ -111,8 +108,9 @@ class TaskManager:
             return None
 
         try:
-            with open(info_path, "r", encoding="utf-8") as f:
-                info = json.load(f)
+            info = load_task_info(task_dir)
+            if not info:
+                return None
         except Exception as exc:
             logger.error("Error loading info for %s: %s", dir_name, exc)
             return None
@@ -133,7 +131,7 @@ class TaskManager:
                 if len(finishes) < len(starts):
                     finishes.append(get_now_str())
                     info["finish_times"] = finishes
-                self._write_info(info_path, info)
+                save_task_info(task_dir, info)
                 logger.warning(
                     "%s: running but process gone — marked FAILED", dir_name,
                 )
@@ -160,6 +158,7 @@ class TaskManager:
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
             "monitors": len(info.get("monitors", [])),
+            "_mtime": os.path.getmtime(info_path),
         }
         if "_run_index" in info:
             task["_run_index"] = info["_run_index"]
@@ -202,8 +201,11 @@ class TaskManager:
                 continue
 
             try:
-                with open(info_path, "r", encoding="utf-8") as f:
-                    info = json.load(f)
+                mtime = os.path.getmtime(info_path)
+                if not force_all and t.get("_mtime") == mtime:
+                    continue
+                info = load_task_info(t["dir"])
+                t["_mtime"] = mtime
                 
                 # Update fields
                 t["status"] = info.get("status", t["status"])
@@ -428,10 +430,8 @@ class TaskManager:
             if not t:
                 return
 
-            info_path = os.path.join(t["dir"], INFO_FILENAME)
             try:
-                with open(info_path, "r", encoding="utf-8") as f:
-                    info = json.load(f)
+                info = load_task_info(t["dir"])
                 t["status"] = info.get("status", "completed")
                 t["progress"] = info.get("progress", 1.0)
                 t["start_times"] = info.get("start_times", [])
@@ -443,7 +443,7 @@ class TaskManager:
 
             if worker_error and t["status"] in ("running", "queued"):
                 t["status"] = "failed"
-                disk_info = self._read_info(info_path)
+                disk_info = load_task_info(t["dir"])
                 # Ensure we record a finish time for failure
                 starts = disk_info.get("start_times", [])
                 finishes = disk_info.get("finish_times", [])
@@ -452,7 +452,7 @@ class TaskManager:
                     disk_info["finish_times"] = finishes
 
                 disk_info["status"] = "failed"
-                self._write_info(info_path, disk_info)
+                save_task_info(t["dir"], disk_info)
 
     # ──────────────────────────────────────────────────────────
     #  Internal helpers
@@ -471,49 +471,27 @@ class TaskManager:
         return None
 
     def _latest_pid_from_disk(self, task: dict):
-        info = self._read_info(
-            os.path.join(task["dir"], INFO_FILENAME)
-        )
+        info = load_task_info(task["dir"])
         return self._latest_pid(info) if info else None
-
-    @staticmethod
-    def _read_info(info_path: str) -> dict:
-        try:
-            with open(info_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-
-    @staticmethod
-    def _write_info(info_path: str, data: dict) -> None:
-        try:
-            with open(info_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-        except Exception:
-            pass
 
     def _sync_status_to_disk(
         self, task: dict, status: str, run_index: int = 1,
     ) -> None:
-        info_path = os.path.join(task["dir"], INFO_FILENAME)
-        info = self._read_info(info_path)
+        info = load_task_info(task["dir"])
         if not info:
             return
         info["status"] = status
         info["_run_index"] = run_index
-        self._write_info(info_path, info)
+        save_task_info(task["dir"], info)
 
     def _mark_failed_on_disk(self, task: dict) -> None:
-        info_path = os.path.join(task["dir"], INFO_FILENAME)
-        info = self._read_info(info_path)
+        info = load_task_info(task["dir"])
         if not info:
             return
         info["status"] = "failed"
-        # We don't clear PID anymore.
-        # Ensure finish time matches failure.
         starts = info.get("start_times", [])
         finishes = info.get("finish_times", [])
         if len(finishes) < len(starts):
             finishes.append(get_now_str())
             info["finish_times"] = finishes
-        self._write_info(info_path, info)
+        save_task_info(task["dir"], info)

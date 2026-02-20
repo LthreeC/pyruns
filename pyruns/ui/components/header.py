@@ -4,7 +4,7 @@ Header component — app branding + live CPU/RAM/GPU summary.
 from nicegui import ui
 from typing import Dict, Any, List
 
-from pyruns._config import HEADER_GRADIENT
+from pyruns.ui.theme import HEADER_GRADIENT
 from pyruns.utils.settings import get as _get_setting
 
 

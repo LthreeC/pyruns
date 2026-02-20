@@ -35,8 +35,6 @@ def show_batch_confirm(
     product_total = 1
     for vals in product_params.values():
         product_total *= len(vals)
-    zip_len = list(zip_params.values())[0] if zip_params else []
-    zip_total = len(zip_len) if zip_len else 1
 
     # ── Dialog ──
     with ui.dialog() as dlg, ui.card().classes(

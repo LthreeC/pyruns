@@ -1,11 +1,10 @@
 import os
 import time
-import json
 from typing import Dict, Any, List
 
-from pyruns._config import ROOT_DIR, INFO_FILENAME, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
+from pyruns._config import ROOT_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
 from pyruns.utils.config_utils import save_yaml
-from pyruns.utils.task_utils import validate_task_name  # re-export for backward compat
+from pyruns.utils.task_io import save_task_info  # re-export for backward compat
 from pyruns.utils import get_logger, get_now_str, get_now_str_us
 
 logger = get_logger(__name__)
@@ -96,8 +95,7 @@ class TaskGenerator:
         info["pids"] = []
         info["monitors"] = []
 
-        with open(os.path.join(task_dir, INFO_FILENAME), "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=4, ensure_ascii=False)
+        save_task_info(task_dir, info)
 
         # config.yaml: only clean parameters
         save_yaml(os.path.join(task_dir, CONFIG_FILENAME), clean_config)

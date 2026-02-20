@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from .core.config_manager import ConfigManager
 from .utils.task_io import load_task_info, save_task_info
-from ._config import ROOT_DIR, ENV_CONFIG, CONFIG_DEFAULT_FILENAME, INFO_FILENAME, MONITOR_KEY
+from ._config import ROOT_DIR, ENV_CONFIG, CONFIG_DEFAULT_FILENAME, MONITOR_KEY
 
 from importlib.metadata import version, PackageNotFoundError
 try:
@@ -113,7 +113,11 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
 
             if MONITOR_KEY not in info:
                 info[MONITOR_KEY] = []
-                        
+            
+            monitors = info[MONITOR_KEY]
+            while len(monitors) < run_index:
+                monitors.append({})
+
             # Merge data into the current run's slot
             monitors[run_index - 1].update(update_data)
 

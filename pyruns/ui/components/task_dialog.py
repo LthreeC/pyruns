@@ -13,6 +13,9 @@ from pyruns.ui.theme import STATUS_ICONS
 from pyruns.ui.widgets import status_badge, readonly_code_viewer
 from pyruns.ui.components.env_editor import env_var_editor
 
+from pyruns.utils import get_logger
+logger = get_logger(__name__)
+
 # ── Drag JS for movable dialog ──
 _DRAG_JS = """(e) => {
     if (e.target.closest('button') || e.target.closest('.q-tab') || e.target.closest('input')) return;
@@ -69,9 +72,12 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                 header.on("mousedown", js_handler=_DRAG_JS)
 
                 with header:
-                    with ui.row().classes("items-center gap-3"):
+                    with ui.row().classes("items-center gap-3 flex-1 min-w-0 flex-nowrap"):
                         ui.icon(icon_name, size="22px", color="white")
-                        ui.label(t["name"]).classes("font-bold text-lg tracking-tight")
+                        # 给标题加上 truncate 和 tooltip
+                        ui.label(t["name"]).classes(
+                            "font-bold text-lg tracking-tight truncate"
+                        ).tooltip(t["name"])
                         ui.icon("drag_indicator", size="16px").classes("text-white/30 ml-1")
                     with ui.row().classes("items-center gap-3"):
                         status_badge(status, size="md")
@@ -80,15 +86,30 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                         ).classes("opacity-70 hover:opacity-100")
 
                 # ── Tabs ──
+                # tab_value = selected.get("tab", "task_info")
+                # with ui.tabs(value=tab_value).classes(
+                #     "w-full bg-slate-50 border-b border-slate-200 flex-none"
+                # ) as tabs:
+                #     ui.tab("task_info", label="Task Info", icon="info")
+                #     ui.tab("config", label="Config", icon="tune")
+                #     ui.tab("run.log", label="Run Log", icon="terminal")
+                #     ui.tab("notes", label="Notes", icon="edit_note")
+                #     ui.tab("env", label="Env Vars", icon="vpn_key")
+                    
+                # ── Tabs ──
                 tab_value = selected.get("tab", "task_info")
-                with ui.tabs(value=tab_value).classes(
-                    "w-full bg-slate-50 border-b border-slate-200 flex-none"
+
+
+                with ui.tabs(value=tab_value).props(
+                    "dense align=center no-caps active-color=indigo active-bg-color=indigo-50 indicator-color=indigo"
+                ).classes(
+                    "w-full bg-slate-100 text-slate-500 border-b border-slate-200 flex-none"
                 ) as tabs:
-                    ui.tab("task_info", label="Task Info", icon="info")
-                    ui.tab("config", label="Config", icon="tune")
-                    ui.tab("run.log", label="Run Log", icon="terminal")
-                    ui.tab("notes", label="Notes", icon="edit_note")
-                    ui.tab("env", label="Env Vars", icon="vpn_key")
+                    ui.tab("task_info", label="Task Info", icon="info").classes("px-4")
+                    ui.tab("config", label="Config", icon="tune").classes("px-4")
+                    ui.tab("run.log", label="Run Log", icon="terminal").classes("px-4")
+                    ui.tab("notes", label="Notes", icon="edit_note").classes("px-4")
+                    ui.tab("env", label="Env Vars", icon="vpn_key").classes("px-4")
 
                 with ui.tab_panels(tabs, value=tab_value).classes(
                     "w-full flex-grow overflow-hidden"
