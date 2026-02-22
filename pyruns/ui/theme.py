@@ -41,10 +41,16 @@ GENERATOR_WORKSPACE_CLASSES = "w-full gap-1 flex-nowrap items-start h-full"
 GENERATOR_LEFT_COL_CLASSES = "flex-grow gap-2 min-w-0 h-full"
 GENERATOR_RIGHT_COL_CLASSES = "w-96 flex-none sticky top-4"
 GENERATOR_TOOLBAR_CLASSES = (
-    "w-full items-center justify-between px-3 py-1 mb-0 "
+    "w-full items-center justify-between px-3 py-1 mb-1 "
     "bg-white border-b border-slate-200 shadow-sm"
 )
 GENERATOR_SETTINGS_CARD_CLASSES = "w-full p-3 shadow-sm bg-white border border-slate-100"
+
+PINNED_BLOCK_CLASSES = "w-full bg-indigo-50/30 border border-indigo-100 p-1 shadow-sm mb-0 gap-0"
+PINNED_HEADER_CLASSES = "w-full items-center gap-1 px-1 pb-0 border-b border-indigo-100/50 mb-0.5"
+PINNED_TITLE_CLASSES = "text-xs font-bold text-indigo-700 tracking-wide"
+PINNED_EMPTY_CLASSES = "text-xs text-indigo-400 italic px-2 py-1"
+
 
 def get_generator_batch_hint_html(separator: str, escape: str) -> str:
     # escape_html = escape.replace("\\", "\\\\")

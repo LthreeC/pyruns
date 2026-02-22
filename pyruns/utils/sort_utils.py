@@ -35,8 +35,16 @@ def task_sort_key(task: Dict[str, Any]) -> tuple:
     }
     priority = priorities.get(status, 0)
 
+    finishes = task.get("finish_times") or []
     starts = task.get("start_times") or []
-    ts_str = starts[-1] if isinstance(starts, list) and starts else task.get("created_at", "")
+    
+    # For inactive tasks: use latest finish time, fallback to start time, fallback to created_at
+    if isinstance(finishes, list) and len(finishes) > 0:
+        ts_str = finishes[-1]
+    elif isinstance(starts, list) and len(starts) > 0:
+        ts_str = starts[-1]
+    else:
+        ts_str = task.get("created_at", "")
 
     if priority >= 40:  # running or queued (earliest first)
         digits = "".join(filter(str.isdigit, ts_str))

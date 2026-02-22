@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import time
+import threading
 from typing import Dict, Any, Optional
 
 from pyruns._config import (
@@ -10,6 +11,7 @@ from pyruns._config import (
 )
 from pyruns.utils.log_io import append_log
 from pyruns.utils.task_io import load_task_info, save_task_info
+from pyruns.utils.events import log_emitter
 from pyruns.utils import get_logger, get_now_str
 
 logger = get_logger(__name__)
@@ -148,7 +150,9 @@ def run_task_worker(
     # 1. Update Status to Running + append start_times
     start_str = now_str
     
-    append_log(log_path, f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} started at {start_str} ⌘⌘⌘⌘⌘\n")
+    start_log = f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} started at {start_str} ⌘⌘⌘⌘⌘\n"
+    append_log(log_path, start_log)
+    log_emitter.emit(name, start_log.replace('\n', '\r\n'))
 
     # Remove persisted _run_index (no longer needed once running)
     task_meta.pop("_run_index", None)
@@ -170,24 +174,51 @@ def run_task_worker(
     try:
         if command:
             env = _prepare_env(env_vars, task_dir=task_dir)
-            with open(log_path, "a", encoding="utf-8") as f:
-                proc = subprocess.Popen(
-                    command,
-                    shell=isinstance(command, str),
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    cwd=workdir,
-                    env=env,
-                )
-                # Store PID — append to pids array immediately
-                pids = task_meta.get("pids", [])
-                pids.append(proc.pid)
-                task_meta["pids"] = pids
-                
-                # Single write to disk for "running" state + PID
-                save_task_info(task_dir, task_meta)
+            
+            # Avoid [WinError 267] Invalid directory name on Windows
+            # if the user deleted/moved the original script directory between reruns
+            if workdir and not os.path.isdir(workdir):
+                logger.warning("Workdir '%s' is invalid, falling back to task_dir '%s'", workdir, task_dir)
+                workdir = task_dir
 
-                ret = proc.wait()
+            proc = subprocess.Popen(
+                command,
+                shell=isinstance(command, str),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=workdir,
+                env=env,
+            )
+            # Store PID — append to pids array immediately
+            pids = task_meta.get("pids", [])
+            pids.append(proc.pid)
+            task_meta["pids"] = pids
+
+            # Single write to disk for "running" state + PID
+            save_task_info(task_dir, task_meta)
+
+            # Tee pattern: reader thread reads PIPE → file + emit
+            def _tee_output():
+                with open(log_path, "ab") as lf:
+                    # use read1 so it doesn't block waiting to fill 4096 bytes
+                    for chunk in iter(lambda: proc.stdout.read1(4096), b''):
+                        if not chunk:
+                            break
+                        # A. Persist to disk immediately
+                        lf.write(chunk)
+                        lf.flush()
+                        # B. Broadcast to subscribed UI sessions
+                        text = chunk.decode("utf-8", errors="replace")
+                        text = text.replace('\n', '\r\n')
+                        log_emitter.emit(name, text)
+
+            reader_thread = threading.Thread(
+                target=_tee_output, daemon=True,
+            )
+            reader_thread.start()
+            ret = proc.wait()
+            reader_thread.join(timeout=5)
+
             status = "completed" if ret == 0 else "failed"
             progress = 1.0 if ret == 0 else 0.0
         else:
@@ -199,7 +230,9 @@ def run_task_worker(
         # 4. Final update
         meta_final = load_task_info(task_dir)
         
-        append_log(log_path, f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} finished at {end_str} ⌘⌘⌘⌘⌘\n")
+        finish_log = f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} finished at {end_str} ⌘⌘⌘⌘⌘\n"
+        append_log(log_path, finish_log)
+        log_emitter.emit(name, finish_log.replace('\n', '\r\n'))
         
         # ERROR LOG LOGIC: If failed, move run log content to error.log
         if status == "failed":
@@ -270,7 +303,7 @@ def run_task_worker(
         try:
             err_log_path = os.path.join(task_dir, RUN_LOG_DIR, ERROR_LOG_FILENAME)
             timestamp = get_now_str()
-            separator = f"\n\n{'!'*40}\n[PYRUNS] INTERNAL ERROR at {timestamp}\n{'!'*40}\n"
+            separator = f"\n\n{'!'*40}\n[PYRUNS] INTERNAL ERROR at {timestamp}\n{task_dir=} {workdir=}\n{'!'*40}\n"
             with open(err_log_path, "w", encoding="utf-8") as f:
                 f.write(f"{separator}{str(e)}\n\n")
         except Exception:

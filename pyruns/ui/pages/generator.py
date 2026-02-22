@@ -151,7 +151,7 @@ def render_generator_page(
                         config_data, state, task_manager,
                         columns=form_cols["n"],
                         expansions=expansions_ref,
-                        on_star_toggle=lambda: editor_area.refresh(),
+                        on_pin_toggle=lambda: editor_area.refresh(),
                     )
                 else:
                     _render_yaml_view(yaml_holder)

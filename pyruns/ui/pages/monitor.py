@@ -3,8 +3,9 @@ Monitor Page – real-time ANSI-colored log viewer + export reports.
 
 Design:
   • Left panel : task list with search + export button at bottom
-  • Right panel: persistent log viewer updated via JS (no refreshable flicker)
-  • 1-second polling pushes only new log bytes
+  • Right panel: persistent log viewer updated via LogEmitter push (no polling)
+  • Running tasks: executor emits log chunks → _handle_live_log → term.write()
+  • Historical tasks: safe_read_log file read on select
   • Uses explicit calc(100vh - Xpx) height to avoid flex-chain issues
     with NiceGUI / Quasar intermediate wrapper divs.
 """
@@ -26,6 +27,7 @@ from pyruns.ui.theme import (
 )
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
+from pyruns.utils.events import log_emitter
 
 from pyruns.utils import get_logger
 
@@ -201,38 +203,19 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         except Exception as e:
             term.write(f"Error reading log: {e}\r\n")
 
-    def _push_log():
-        if not sel["task_id"]:
-             return
-
+    # ── Live log callback (called by LogEmitter from executor thread) ──
+    def _handle_live_log(chunk: str):
         term = sel.get("_terminal")
-        if not term: return
-
-        log_path = _current_log_path()
-        if not log_path or not os.path.exists(log_path):
+        if not term:
             return
-            
-        file_size = os.path.getsize(log_path)
-        offset = sel.get("_log_offset", 0)
-        
-        if file_size < offset:
-             # File truncated or overwritten
-             sel["_log_offset"] = 0
-             _rebuild_right()
-             return
-
-        if file_size == offset:
-            return
-
-        # Incremental Read
-        CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
-        new_text, new_offset = safe_read_log(log_path, offset, max_bytes=CHUNK_SIZE)
-        
-        if new_text:
-            term.write(new_text)
-            sel["_log_offset"] = new_offset
+        term.write(chunk)
 
     async def _select_task(tid: str):
+        # Unsubscribe from the old task first
+        old_tid = sel.get("task_id")
+        if old_tid:
+            log_emitter.unsubscribe(old_tid, _handle_live_log)
+
         sel["task_id"] = tid
         sel["log_file_name"] = None
         sel["_log_offset"] = 0
@@ -240,6 +223,10 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
         # Rebuild right panel first so the user sees "Loading..." instantly
         await _rebuild_right()
+
+        # Subscribe for live log push if a task is selected
+        if tid:
+            log_emitter.subscribe(tid, _handle_live_log)
 
         # Refresh the pinned task immediately as well
         if sel.get("_pinned_task_view"):
@@ -265,7 +252,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     sel["_toggle_export"] = _toggle_export
 
     # ----------------------------------------------------------
-    #  Reactive updates + Lightweight log polling
+    #  Reactive updates (status + log file list only, no log polling)
     # ----------------------------------------------------------
     import asyncio
     try:
@@ -324,38 +311,36 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                     )
                     header_icon_el.update()
 
-    # Check every 1s if we need a task list refresh (log polling is separate & faster)
-    _mon_timer = ui.timer(1.0, _check_mon_dirty)
-    client.on_disconnect(lambda *_: _mon_timer.cancel())
-
-    async def _poll_log():
-        if state.get("active_tab") != "monitor":
-            return 
-
+        # Refresh log file list (detect new runN.log appearing)
         task = _get_task(sel["task_id"])
-        if not task:
-            return
+        if task:
+            opts = get_log_options(task["dir"])
+            new_names = list(opts.keys())
+            if new_names != list(log_select_el.options or []):
+                log_select_el.options = new_names
+                log_select_el.set_visibility(len(new_names) > 1)
 
-        opts = get_log_options(task["dir"])
-        new_names = list(opts.keys())
-        if new_names != list(log_select_el.options or []):
-            log_select_el.options = new_names
-            log_select_el.set_visibility(len(new_names) > 1)
-            
-            # Auto-switch to latest log on file list change (e.g. new run started)
-            best_path = resolve_log_path(task["dir"], None)
-            best_name = next((n for n, p in opts.items() if p == best_path), None)
-            
-            if best_name and best_name != sel.get("log_file_name"):
-                 log_select_el.value = best_name
-                 await _on_log_select_change(best_name) # Reset offset & rebuild view
-            
-            log_select_el.update()
-            
-        _push_log()
+                # Auto-switch to latest log on file list change
+                best_path = resolve_log_path(task["dir"], None)
+                best_name = next((n for n, p in opts.items() if p == best_path), None)
 
-    _poll_timer = ui.timer(float(get_setting("monitor_poll_interval", 0.1)), _poll_log)
-    client.on_disconnect(lambda *_: _poll_timer.cancel())
+                if best_name and best_name != sel.get("log_file_name"):
+                    log_select_el.value = best_name
+                    await _on_log_select_change(best_name)
+
+                log_select_el.update()
+
+    # 1s timer for task list / status / log file list UI refresh (no log data polling)
+    _mon_timer = ui.timer(1.0, _check_mon_dirty)
+
+    def _cleanup_on_disconnect(*_):
+        _mon_timer.cancel()
+        # Unsubscribe from live log push to prevent memory leaks
+        current_tid = sel.get("task_id")
+        if current_tid:
+            log_emitter.unsubscribe(current_tid, _handle_live_log)
+
+    client.on_disconnect(_cleanup_on_disconnect)
 
 # ═══════════════════════════════════════════════════════════════
 #  Left panel builder

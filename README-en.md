@@ -43,8 +43,7 @@ pyr help                 # Show usage instructions
 We have provided an `examples/` directory to help you get started quickly. Pyruns provides three main tabs to manage the full lifecycle of your python experiments. 
 
 ### 1. Generator: Configure & Batch Tasks
-Load YAML configs or parse `argparse`, edit hyperparameters in a structured auto-generated form, and utilize powerful batch generation syntax to queue up hundreds of experiments instantly!
-
+Load YAML configs or parse `argparse`, edit hyperparameters in a structured auto-generated form, and utilize powerful batch generation syntax to queue up hundreds of experiments instantly! Supports **Pinning Parameters** to lock frequently modified inputs to the top of the UI.
 **Basic Usage: Argparse (No Code Changes)**
 See `examples/1_argparse_script/main.py`. Pyruns will automatically read your `argparse` definitions and build the Generator UI for you.
 > 💡 **Tip**: When both short and long arguments are defined (e.g., `-b, --batch_size`), Pyruns intelligently prioritizes the **long argument name** (`batch_size`) as the configuration key!
@@ -115,7 +114,6 @@ ui_port: 8099                      # Web UI port
 generator_form_columns: 2          # Grid columns in generator
 manager_max_workers: 4             # Number of scripts to run in parallel
 manager_execution_mode: thread     # Run using threads or processes
-monitor_poll_interval: 1.0         # Monitor log polling interval (seconds)
 log_enabled: false                 # Enable file logging
 ```
 

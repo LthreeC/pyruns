@@ -1,10 +1,14 @@
 """
 Recursive parameter editor – compact multi-column form for config dicts.
-Supports: adjustable columns, expand/collapse all, star (pin) important params.
+Supports: adjustable columns, expand/collapse all, pin important params to the top.
 """
 from nicegui import ui
-from typing import Dict, Any, List, Set
-from pyruns.utils.config_utils import parse_value
+from typing import Dict, Any, List
+from pyruns.utils.config_utils import parse_value, get_nested
+from pyruns.ui.theme import (
+    PINNED_BLOCK_CLASSES, PINNED_HEADER_CLASSES,
+    PINNED_TITLE_CLASSES, PINNED_EMPTY_CLASSES
+)
 
 # ── Type → icon / color ──
 _TYPE_INFO = {
@@ -15,11 +19,6 @@ _TYPE_INFO = {
 }
 
 _TINY = "outlined dense bg-white hide-bottom-space"
-# Force Quasar input control to be short
-_INPUT_COMPACT = (
-    "font-size: 12px; "
-    "--q-field-dense-control-height: 24px; "  # shrink control height
-)
 
 _EDITOR_CSS_CLIENTS: set = set()
 
@@ -59,35 +58,76 @@ def recursive_param_editor(
     columns: int = 2,
     depth: int = 0,
     expansions: List = None,
-    starred: Set[str] = None,
+    pinned: List[str] = None,
     key_prefix: str = "",
-    on_star_toggle: Any = None,
+    on_pin_toggle: Any = None,
+    is_root: bool = True,
+    full_data: Dict[str, Any] = None,
 ) -> None:
     """Build a compact form editor for a (possibly nested) config dict."""
     _ensure_editor_css()
 
     if expansions is None:
         expansions = []
-    if starred is None:
+    
+    if full_data is None:
+        full_data = data
+        
+    if pinned is None:
         # Load from persisted settings on first call
         from pyruns.utils.settings import get as _get_setting
-        saved = _get_setting("starred_params", [])
-        starred = state.setdefault("starred_params", set(saved))
+        saved = _get_setting("pinned_params", [])
+        pinned = state.setdefault("pinned_params", list(saved))
+
+    # Compatibility: generator.py passes on_star_toggle
+    if 'on_star_toggle' in state:
+        on_pin_toggle = state.pop('on_star_toggle')
 
     with container:
+        # Render the Pinned block at the root level only
+        if is_root:
+            valid_pinned = []
+            for pk in pinned:
+                pd, k, v = get_nested(full_data, pk)
+                if pd is not None:
+                    valid_pinned.append((pd, k, v, pk))
+            
+            if valid_pinned:
+                with ui.column().classes(PINNED_BLOCK_CLASSES):
+                    with ui.row().classes(PINNED_HEADER_CLASSES):
+                        ui.icon("push_pin", size="14px", color="indigo-500")
+                        ui.label("Pinned Parameters").classes(PINNED_TITLE_CLASSES)
+                    
+                    with ui.grid(columns=columns).classes("w-full gap-1 pt-0.5"):
+                        for pd, k, v, pk in valid_pinned:
+                            _param_cell(pd, k, v, pk, pinned, state, on_pin_toggle)
+                
+                # Subheading for "All Parameters"
+                with ui.row().classes("w-full items-center gap-1.5 px-0 mt-0 mb-0 pt-0 pb-0"):
+                    ui.icon("list", size="14px", color="slate-400")
+                    ui.label("All Parameters").classes("text-[11px] font-bold text-slate-400 tracking-widest")
+
+
+        # Process current level's dictionaries/values
         simple_keys = {
             k: v for k, v in data.items()
             if not isinstance(v, dict) and not k.startswith("_meta")
         }
         dict_keys = {k: v for k, v in data.items() if isinstance(v, dict)}
 
-        if simple_keys:
-            items = list(simple_keys.items())
-            with ui.grid(columns=columns).classes("w-full gap-1"):
-                for key, value in items:
-                    full_key = f"{key_prefix}{key}" if key_prefix else key
-                    _param_cell(data, key, value, full_key, starred, state, on_star_toggle)
+        # Render unpinned parameters for this level
+        unpinned_items = []
+        for key, value in simple_keys.items():
+            full_key = f"{key_prefix}{key}"
+            if full_key not in pinned:
+                unpinned_items.append((key, value, full_key))
 
+        if unpinned_items:
+            with ui.grid(columns=columns).classes("w-full gap-1"):
+                for key, value, full_key in unpinned_items:
+                    _param_cell(data, key, value, full_key, pinned, state, on_pin_toggle)
+
+        # Recursively render sub-dictionaries
         for key, value in dict_keys.items():
             exp = ui.expansion(
                 f"{key}", icon="folder_open", value=True,
@@ -105,62 +145,41 @@ def recursive_param_editor(
                         ui.column().classes("w-full gap-0"),
                         value, state, task_manager,
                         columns=columns, depth=depth + 1,
-                        expansions=expansions, starred=starred,
+                        expansions=expansions, pinned=pinned,
                         key_prefix=f"{key_prefix}{key}.",
-                        on_star_toggle=on_star_toggle,
+                        on_pin_toggle=on_pin_toggle,
+                        is_root=False,
+                        full_data=full_data,
                     )
 
 
 def _param_cell(
     data: dict, key: str, value, full_key: str,
-    starred: Set[str], state: Dict[str, Any],
-    on_star_toggle: Any = None,
+    pinned: List[str], state: Dict[str, Any],
+    on_pin_toggle: Any = None,
 ) -> None:
-    """Compact param cell with star toggle."""
+    """Compact param cell with pin toggle."""
     tk = _get_type_key(value)
     icon_name, icon_color, icon_bg = _TYPE_INFO[tk]
-    is_starred = full_key in starred
+    is_pinned = full_key in pinned
 
-    if is_starred:
+    if is_pinned:
         card_cls = (
-            "w-full border-2 border-amber-300 "
-            "px-1.5 py-0.5 transition-all duration-100 gap-0"
+            "w-full border-2 border-indigo-300 "
+            "px-1.5 py-0.5 transition-all duration-100 gap-0 group"
         )
-        card_bg = "background:#fffbeb"
+        card_bg = "background:#f5f3ff"  # extremely light indigo (indigo-50 is similar)
     else:
         card_cls = (
             "w-full border border-slate-150 "
             "px-1.5 py-0.5 hover:border-indigo-200 hover:shadow-sm "
-            "transition-all duration-100 gap-0"
+            "transition-all duration-100 gap-0 group"
         )
         card_bg = "background:#fafbfc"
 
     with ui.column().classes(card_cls).style(card_bg):
-        # Key row: star btn + type icon + label
+        # Key row: type icon + label + pin btn
         with ui.row().classes("w-full items-center gap-1"):
-            def toggle_star(fk=full_key):
-                if fk in starred:
-                    starred.discard(fk)
-                else:
-                    starred.add(fk)
-                # Persist to _pyruns_.yaml
-                from pyruns.utils.settings import save_setting
-                save_setting("starred_params", list(starred))
-                if on_star_toggle:
-                    try:
-                        on_star_toggle()
-                    except Exception:
-                        pass
-
-            star_icon = "star" if is_starred else "star_border"
-            star_color = "text-amber-400" if is_starred else "text-slate-300 hover:text-amber-300"
-            star_tip = "Unstar" if is_starred else "Star this parameter"
-            ui.button(icon=star_icon, on_click=toggle_star).props(
-                "flat dense round size=xs padding=0"
-            ).classes(f"{star_color} min-w-0").style(
-                "width:18px; height:18px;"
-            ).tooltip(star_tip)
-
             with ui.element("div").classes(
                 f"w-4.5 h-4.5 flex items-center justify-center {icon_bg} flex-none"
             ):
@@ -170,6 +189,33 @@ def _param_cell(
                 "text-xs font-semibold text-slate-600 font-mono truncate leading-none "
                 "flex-1 min-w-0"
             ).tooltip(f"{key} ({tk})")
+
+            def toggle_pin(fk=full_key):
+                if fk in pinned:
+                    pinned.remove(fk)
+                else:
+                    pinned.append(fk)
+                # Persist to _pyruns_.yaml
+                from pyruns.utils.settings import save_setting
+                save_setting("pinned_params", pinned)
+                if on_pin_toggle:
+                    try:
+                        on_pin_toggle()
+                    except Exception:
+                        pass
+
+            pin_cls = (
+                "text-indigo-500 opacity-100"
+                if is_pinned
+                else "text-slate-300 opacity-0 group-hover:opacity-60 hover:text-indigo-400"
+            )
+            star_tip = "Unpin" if is_pinned else "Pin this parameter"
+            
+            ui.button(icon="push_pin", on_click=toggle_pin).props(
+                "flat dense round size=xs padding=0"
+            ).classes(f"{pin_cls} min-w-0 transition-opacity duration-200 ml-auto").style(
+                "width:18px; height:18px;"
+            ).tooltip(star_tip)
 
         # Value input — ultra-compact with .param-input CSS class
         def on_change(e, d=data, k=key):

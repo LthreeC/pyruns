@@ -464,18 +464,18 @@ def test_save_setting(tmp_path):
             assert "7777" not in text
             
         # 3. List serialization
-        settings.save_setting("starred_params", ["a", "b"])
+        settings.save_setting("pinned_params", ["a", "b"])
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-            assert "starred_params: \n- a\n- b" in text
+            assert "pinned_params: \n- a\n- b" in text
             
-        assert settings._cached["starred_params"] == ["a", "b"]
+        assert settings._cached["pinned_params"] == ["a", "b"]
         
         # 4. Update the list again
-        settings.save_setting("starred_params", ["c"])
+        settings.save_setting("pinned_params", ["c"])
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-            assert "starred_params: \n- c" in text
+            assert "pinned_params: \n- c" in text
             assert "- a" not in text
 
 
@@ -664,6 +664,33 @@ class TestFlattenUnflatten:
     def test_unflatten_simple(self):
         flat = {"a.b": 1, "a.c": 2, "d": 3}
         assert unflatten_dict(flat) == {"a": {"b": 1, "c": 2}, "d": 3}
+
+    def test_get_nested(self):
+        from pyruns.utils.config_utils import get_nested
+        data = {"a": {"b": {"c": 1}}, "x": 2}
+        
+        # Exact match
+        pd, k, v = get_nested(data, "a.b.c")
+        assert k == "c"
+        assert v == 1
+        assert pd == {"c": 1}
+        
+        # Exact match single
+        pd, k, v = get_nested(data, "x")
+        assert k == "x"
+        assert v == 2
+        
+        # Missing key
+        pd, k, v = get_nested(data, "a.b.d")
+        assert pd is None
+
+        # Missing parent
+        pd, k, v = get_nested(data, "a.z.c")
+        assert pd is None
+
+        # Parent is not a dict
+        pd, k, v = get_nested(data, "x.y")
+        assert pd is None
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -25,14 +25,14 @@ _DEFAULTS: Dict[str, Any] = {
     "manager_execution_mode": "thread", # thread | process
     "ui_page_size": 50,                 # cards per page (0 = show all)
     # Monitor
-    "monitor_poll_interval": 0.03,      # seconds
+    "monitor_poll_interval": 0.03,      # (legacy) UI status refresh; logs use push
     "monitor_chunk_size": 50000,        # bytes per chunk
     "monitor_scrollback": 100000,       # max lines in history
     # Logging
     "log_enabled": False,                # enable/disable pyruns internal logging
     "log_level": "INFO",                # DEBUG | INFO | WARNING | ERROR | CRITICAL
     # State (persisted across sessions)
-    "starred_params": [],               # list of dotted param keys
+    "pinned_params": [],               # list of dotted param keys, ordered by pin
 }
 
 _TEMPLATE = """\
@@ -59,7 +59,6 @@ manager_execution_mode: thread     # thread | process
 ui_page_size: 50                   # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────
-monitor_poll_interval: 0.03          # polling interval (seconds)
 monitor_chunk_size: 50000            # bytes per chunk
 monitor_scrollback: 100000           # max lines in history
 
@@ -163,7 +162,7 @@ def save_setting(key: str, value: Any) -> None:
 
             # Match the key line + any continuation lines that start with
             # "- " (for YAML list items).  This ensures we replace the
-            # *entire* block for list-valued keys like starred_params.
+            # *entire* block for list-valued keys like pinned_params.
             pattern = re.compile(
                 rf"^{re.escape(key)}\s*:.*(?:\n[ \t]*-[ \t]+.*)*",
                 re.MULTILINE,

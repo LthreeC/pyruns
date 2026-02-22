@@ -43,7 +43,7 @@ pyr help                 # 查看帮助信息
 我们在 `examples/` 目录下提供了简单易懂的教程。Pyruns 提供三个核心页面来管理您的 Python 实验生命周期。
 
 ### 1. Generator: 参数配置与批量生成
-解析 YAML 配置或 `argparse`，并在结构化表单中编辑超参数。使用强大的批量生成语法瞬间创建数百个实验配置！
+解析 YAML 配置或 `argparse`，并在结构化表单中编辑超参数。支持**参数置顶 (Pinning)**，将高频修改的参数固定在界面顶端。使用强大的批量生成语法瞬间创建数百个实验配置！
 
 **基础用法：自动解析 Argparse（无需修改代码）**
 参考 `examples/1_argparse_script/main.py`。Pyruns 会自动读取你的 `argparse` 定义，并为你构建 Generator 表单界面。
@@ -116,7 +116,6 @@ ui_port: 8099                      # Web UI 服务端口
 generator_form_columns: 2          # Generator 表单的列数
 manager_max_workers: 4             # 并行运行的脚本进程数量
 manager_execution_mode: thread     # 运行模式: 线程 (thread) 或 进程 (process)
-monitor_poll_interval: 1.0         # Monitor 日志轮询间隔（秒）
 log_enabled: false                 # 是否启用文件日志
 ```
 

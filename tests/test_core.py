@@ -271,8 +271,9 @@ def test_build_command_non_argparse(mock_detect):
     assert cmd[1] == "train.py"
 
 
+@patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
-def test_run_task_worker_success(mock_popen, tmp_path):
+def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
     task_dir = str(tmp_path)
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
     
@@ -286,10 +287,12 @@ def test_run_task_worker_success(mock_popen, tmp_path):
     with open(os.path.join(task_dir, INFO_FILENAME), "w") as f:
         json.dump(task_info, f)
         
-    # Mock subprocess
+    # Mock subprocess with PIPE-style stdout
     mock_proc = MagicMock()
     mock_proc.pid = 9999
-    mock_proc.wait.return_value = 0 # Success
+    mock_proc.wait.return_value = 0  # Success
+    # stdout.read1 returns one chunk then empty bytes (EOF)
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"hello output\n", b''])
     mock_popen.return_value = mock_proc
     
     res = run_task_worker(
@@ -314,9 +317,19 @@ def test_run_task_worker_success(mock_popen, tmp_path):
     assert 9999 in info["pids"]
     assert len(info.get("monitors", [])) == 1
 
+    # Check log file was written by _tee_output
+    log_path = os.path.join(task_dir, "run_logs", "run1.log")
+    assert os.path.exists(log_path)
+    with open(log_path, "rb") as f:
+        assert b"hello output" in f.read()
 
+    # Check emit was called
+    assert mock_emit.called
+
+
+@patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
-def test_run_task_worker_failure(mock_popen, tmp_path):
+def test_run_task_worker_failure(mock_popen, mock_emit, tmp_path):
     task_dir = str(tmp_path)
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
     
@@ -328,15 +341,12 @@ def test_run_task_worker_failure(mock_popen, tmp_path):
     with open(os.path.join(task_dir, INFO_FILENAME), "w") as f:
         json.dump(task_info, f)
         
-    # Force mock log file to exist so it can be migrated
-    run_log = os.path.join(task_dir, "run_logs", "run1.log")
-    with open(run_log, "w", encoding="utf-8") as f:
-        f.write("Some log output")
-        
     mock_proc = MagicMock()
     mock_proc.pid = 8888
-    mock_proc.wait.return_value = 1 # Failed exit code
+    mock_proc.wait.return_value = 1  # Failed exit code
     mock_proc.returncode = 1
+    # stdout.read1 returns log content then EOF
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"Some log output", b''])
     mock_popen.return_value = mock_proc
     
     res = run_task_worker(
@@ -355,14 +365,67 @@ def test_run_task_worker_failure(mock_popen, tmp_path):
         info = json.load(f)
     assert info["status"] == "failed"
     
-    # Check log migration
-    assert not os.path.exists(run_log) # Should be deleted on Windows after moving
+    # Check log migration: run1.log content moved to error.log
+    run_log = os.path.join(task_dir, "run_logs", "run1.log")
+    assert not os.path.exists(run_log)  # Should be deleted after moving
     error_log = os.path.join(task_dir, "run_logs", "error.log")
     assert os.path.exists(error_log)
     with open(error_log, "r", encoding="utf-8") as f:
         content = f.read()
         assert "Some log output" in content
         assert "Reason: Exit Code 1" in content
+
+# ═══════════════════════════════════════════════════════════════
+#  LogEmitter — publish-subscribe event bus
+# ═══════════════════════════════════════════════════════════════
+
+from pyruns.utils.events import LogEmitter
+
+
+def test_log_emitter_subscribe_emit():
+    emitter = LogEmitter()
+    received = []
+    emitter.subscribe("task1", lambda chunk: received.append(chunk))
+    emitter.emit("task1", "hello\r\n")
+    emitter.emit("task1", "world\r\n")
+    assert received == ["hello\r\n", "world\r\n"]
+
+
+def test_log_emitter_unsubscribe():
+    emitter = LogEmitter()
+    received = []
+    cb = lambda chunk: received.append(chunk)
+    emitter.subscribe("task1", cb)
+    emitter.emit("task1", "before")
+    emitter.unsubscribe("task1", cb)
+    emitter.emit("task1", "after")
+    assert received == ["before"]
+
+
+def test_log_emitter_multiple_subscribers():
+    emitter = LogEmitter()
+    r1, r2 = [], []
+    emitter.subscribe("task1", lambda c: r1.append(c))
+    emitter.subscribe("task1", lambda c: r2.append(c))
+    emitter.emit("task1", "data")
+    assert r1 == ["data"]
+    assert r2 == ["data"]
+
+
+def test_log_emitter_no_subscribers():
+    """emit with no subscribers should not raise."""
+    emitter = LogEmitter()
+    emitter.emit("nonexistent_task", "should not crash")
+
+
+def test_log_emitter_isolation():
+    """Subscribers only receive events for their subscribed task."""
+    emitter = LogEmitter()
+    received = []
+    emitter.subscribe("task_A", lambda c: received.append(c))
+    emitter.emit("task_B", "wrong task")
+    emitter.emit("task_A", "right task")
+    assert received == ["right task"]
 
 
 # ═══════════════════════════════════════════════════════════════

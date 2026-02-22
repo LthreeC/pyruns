@@ -73,6 +73,20 @@ def unflatten_dict(d: Dict[str, Any], sep: str = '.') -> Dict[str, Any]:
     return result
 
 
+def get_nested(data: dict, full_key: str):
+    """Retrieve parent_dict, key, value for a dotted key path."""
+    parts = full_key.split('.')
+    d = data
+    for p in parts[:-1]:
+        if p not in d or not isinstance(d[p], dict):
+            return None, None, None
+        d = d[p]
+    k = parts[-1]
+    if k in d:
+        return d, k, d[k]
+    return None, None, None
+
+
 def list_template_files(tasks_dir: str) -> Dict[str, str]:
     """
     Scan a tasks directory for loadable YAML config files.
