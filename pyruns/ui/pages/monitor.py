@@ -19,29 +19,17 @@ from pyruns.utils.settings import get as get_setting
 from pyruns.ui.theme import (
     STATUS_ICONS, STATUS_ICON_COLORS,
     PANEL_HEADER_INDIGO, PANEL_HEADER_DARK,
+    MONITOR_PANEL_WIDTH, MONITOR_WORKSPACE_CLASSES,
+    MONITOR_TERMINAL_COL_CLASSES, MONITOR_HEADER_HEIGHT_PX,
+    MONITOR_EMPTY_COL_CLASSES, MONITOR_EMPTY_ICON_SIZE,
+    MONITOR_EMPTY_ICON_CLASSES, MONITOR_EMPTY_TEXT_CLASSES
 )
-from pyruns.ui.theme import MONITOR_PANEL_WIDTH
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
 
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
-
-# Header height in px (py-2 ≈ 16px padding + ~36px content)
-_HEADER_H = 52
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Lightweight snapshot — O(n) memory, zero I/O
-# ═══════════════════════════════════════════════════════════════
-
-def _task_snap(task_manager) -> Dict[str, tuple]:
-    """Return {id: (status, progress, monitor_count)} for quick diff."""
-    return {
-        t["id"]: (t["status"], t.get("progress", 0), t.get("monitor_count", 0))
-        for t in task_manager.tasks
-    }
 
 
 
@@ -50,7 +38,6 @@ def _task_snap(task_manager) -> Dict[str, tuple]:
 # ═══════════════════════════════════════════════════════════════
 
 def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
-    from pyruns.utils.settings import get as _get_setting
     _ensure_css()  # shared CSS includes .monitor-log-pre etc.
 
     # ── per-session state ──
@@ -68,7 +55,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     def _get_task(tid: Optional[str]) -> Optional[Dict[str, Any]]:
         if not tid:
             return None
-        return next((t for t in task_manager.tasks if t["id"] == tid), None)
+        return next((t for t in task_manager.tasks if t["name"] == tid), None)
 
     def _current_log_path() -> Optional[str]:
         task = _get_task(sel["task_id"])
@@ -79,16 +66,14 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     # ═════════════════════════════════════════════════════════
     #  Two-column layout — explicit height via calc()
     # ═════════════════════════════════════════════════════════
-    with ui.row().classes("w-full gap-0 flex-nowrap").style(
-        f"height: calc(100vh - {_HEADER_H}px); overflow: hidden;"
+    with ui.row().classes(MONITOR_WORKSPACE_CLASSES).style(
+        f"height: calc(100vh - {MONITOR_HEADER_HEIGHT_PX}px); overflow: hidden;"
     ):
         # ── LEFT panel ──
         _build_left_panel(sel, task_manager, _get_task)
 
             # ── RIGHT panel skeleton ──
-        with ui.column().classes(
-            "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1e1e]"
-        ).style("height: 100%;"):
+        with ui.column().classes(MONITOR_TERMINAL_COL_CLASSES).style("height: 100%;"):
             
             header_row = ui.row().classes(
                 f"w-full items-center gap-2 px-2 py-1.5 flex-none {PANEL_HEADER_DARK}"
@@ -113,7 +98,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                     "w-full h-full pl-2 pt-1"
                 ).style("min-height: 0; min-width: 0;")
                 
-                # 动态监听大小变化，触发终端排版重计算
+                # Dynamically listen to dimension changes to trigger terminal re-wrap
                 ui.element('q-resize-observer').on('resize', terminal.fit)
                 sel["_terminal"] = terminal
 
@@ -162,7 +147,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     # ----------------------------------------------------------
     #  Core update helpers
     # ----------------------------------------------------------
-    def _rebuild_right():
+    async def _rebuild_right():
         task = _get_task(sel["task_id"])
         _update_header(task, header_icon_el, header_label_el, log_select_el, sel)
         sel["_log_offset"] = 0
@@ -183,33 +168,38 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
         # Reset terminal
         term.write('\033c')
+        term.write("Loading logs...\r\n")
 
-        # Prevent browser freeze on huge logs: initial load limited to last N bytes
-        # (defined by monitor_chunk_size * 2)
-        # PERFORMANCE NOTE: uses seek() + read(chunk), so it is O(1) and safe for any file size.
-        CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
+        import asyncio
+        from nicegui import run
+        await asyncio.sleep(0.01)
         
-        file_size = os.path.getsize(log_path)
-        start_offset = max(0, file_size - (CHUNK_SIZE * 2)) 
-        
-        # 如果不是从头读，可能会切掉半行，所以必须寻找下一个 \n
-        if start_offset > 0:
-            with open(log_path, 'rb') as f:
-                f.seek(start_offset)
-                f.readline()  # 丢弃被切断的残行
-                start_offset = f.tell()
-                
-        current_offset = start_offset
-        
-        # 安全读取并写入
-        while current_offset < file_size:
-            chunk, new_off = safe_read_log(log_path, current_offset, max_bytes=CHUNK_SIZE)
-            if not chunk:
-                break
-            term.write(chunk)
-            current_offset = new_off
-            
-        sel["_log_offset"] = current_offset
+        def _read_initial():
+            CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
+            file_size = os.path.getsize(log_path)
+            start_offset = max(0, file_size - (CHUNK_SIZE * 2)) 
+            if start_offset > 0:
+                with open(log_path, 'rb') as f:
+                    f.seek(start_offset)
+                    f.readline()  # discard the partial line
+                    start_offset = f.tell()
+                    
+            current_offset = start_offset
+            chunks = []
+            while current_offset < file_size:
+                chunk, new_off = safe_read_log(log_path, current_offset, max_bytes=CHUNK_SIZE)
+                if not chunk: break
+                chunks.append(chunk)
+                current_offset = new_off
+            return chunks, current_offset
+
+        try:
+            chunks, cur_offset = await run.io_bound(_read_initial)
+            term.write('\033c')
+            for c in chunks: term.write(c)
+            sel["_log_offset"] = cur_offset
+        except Exception as e:
+            term.write(f"Error reading log: {e}\r\n")
 
     def _push_log():
         if not sel["task_id"]:
@@ -226,7 +216,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         offset = sel.get("_log_offset", 0)
         
         if file_size < offset:
-             # 文件被截断/重写了
+             # File truncated or overwritten
              sel["_log_offset"] = 0
              _rebuild_right()
              return
@@ -234,7 +224,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         if file_size == offset:
             return
 
-        # 增量读取新日志 (Incremental Read)
+        # Incremental Read
         CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
         new_text, new_offset = safe_read_log(log_path, offset, max_bytes=CHUNK_SIZE)
         
@@ -242,15 +232,23 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
             term.write(new_text)
             sel["_log_offset"] = new_offset
 
-    def _select_task(tid: str):
+    async def _select_task(tid: str):
         sel["task_id"] = tid
         sel["log_file_name"] = None
         sel["_log_offset"] = 0
         logger.debug("Monitor: selected task %s", tid[:8] if tid else None)
-        task_list_panel = sel.get("_task_list_panel")
-        if task_list_panel:
-            task_list_panel.refresh()
-        _rebuild_right()
+
+        # Rebuild right panel first so the user sees "Loading..." instantly
+        await _rebuild_right()
+
+        # Refresh the pinned task immediately as well
+        if sel.get("_pinned_task_view"):
+            sel["_pinned_task_view"].refresh()
+
+        # Defer the heavy left-panel DOM diffing (CSS highlight) to avoid
+        # blocking the terminal's immediate response
+        if sel.get("_task_list_items"):
+            ui.timer(0.05, lambda: sel["_task_list_items"].refresh(), once=True)
 
     def _toggle_export(tid: str, checked: bool):
         if checked:
@@ -258,59 +256,80 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         else:
             sel["export_ids"].discard(tid)
 
-    def _on_log_select_change(name: str):
+    async def _on_log_select_change(name: str):
         sel["log_file_name"] = name
         sel["_log_offset"] = 0
-        _rebuild_right()
+        await _rebuild_right()
 
     sel["_select_task"] = _select_task
     sel["_toggle_export"] = _toggle_export
 
     # ----------------------------------------------------------
-    #  Snapshot-based polling 
+    #  Reactive updates + Lightweight log polling
     # ----------------------------------------------------------
-    _snap: Dict[str, Any] = {"data": {}, "n": 0}
+    import asyncio
+    try:
+        main_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        main_loop = None
 
     def _refresh_panel():
-        panel = sel.get("_task_list_panel")
-        if panel:
-            panel.refresh()
+        pinned = sel.get("_pinned_task_view")
+        if pinned:
+            pinned.refresh()
+        items = sel.get("_task_list_items")
+        if items:
+            items.refresh()
+        pag = sel.get("_task_list_pagination")
+        if pag:
+            pag.refresh()
 
-    def _initial_load():
-        if not task_manager.tasks:
-            task_manager.scan_disk()
-        _snap["data"] = _task_snap(task_manager)
-        _refresh_panel()
+    _mon_dirty = {"flag": False}
+    # Capture the specific client context 
+    client = ui.context.client
 
-    if not task_manager.tasks:
-        ui.timer(0.1, _initial_load, once=True)
-    else:
-        _snap["data"] = _task_snap(task_manager)
-
-    _mon_stale = {"flag": False}
-
-    def _poll():
-        is_active = state.get("active_tab") == "monitor"
-        _snap["n"] += 1
-
-        if _snap["n"] % 30 == 0:
-            task_manager.scan_disk()
-        else:
-            task_manager.refresh_from_disk()
-
-        new = _task_snap(task_manager)
-        if new != _snap["data"]:
-            _snap["data"] = new
-            if is_active:
-                _refresh_panel()
+    def on_task_manager_change():
+        def _do_update():
+            if getattr(client, "has_socket_connection", False) is False:
+                return
+            with client:
+                # Throttle UI redraws: just set dirty flag for the 0.5s timer to pick up
+                _mon_dirty["flag"] = True
+                    
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                loop.call_soon_threadsafe(_do_update)
             else:
-                _mon_stale["flag"] = True
+                _do_update()
+        except RuntimeError:
+            _do_update()
 
-        if is_active and _mon_stale["flag"]:
-            _mon_stale["flag"] = False
+    task_manager.on_change(on_task_manager_change)
+
+    async def _check_mon_dirty():
+        if _mon_dirty["flag"]:
+            _mon_dirty["flag"] = False
             _refresh_panel()
+            
+            # also update header icon if current task changed
+            fresh = _get_task(sel["task_id"])
+            if fresh:
+                new_icon = STATUS_ICONS.get(fresh["status"], "help")
+                if header_icon_el._props.get("name") != new_icon:
+                    header_icon_el._props["name"] = new_icon
+                    header_icon_el.classes(
+                        replace=STATUS_ICON_COLORS.get(fresh["status"], "text-slate-400")
+                    )
+                    header_icon_el.update()
 
-        if not is_active:
+    # Check every 1s if we need a task list refresh (log polling is separate & faster)
+    _mon_timer = ui.timer(1.0, _check_mon_dirty)
+    client.on_disconnect(lambda *_: _mon_timer.cancel())
+
+    async def _poll_log():
+        if state.get("active_tab") != "monitor":
             return 
 
         task = _get_task(sel["task_id"])
@@ -329,23 +348,14 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
             
             if best_name and best_name != sel.get("log_file_name"):
                  log_select_el.value = best_name
-                 _on_log_select_change(best_name) # Reset offset & rebuild view
+                 await _on_log_select_change(best_name) # Reset offset & rebuild view
             
             log_select_el.update()
             
         _push_log()
 
-        fresh = _get_task(sel["task_id"])
-        if fresh:
-            new_icon = STATUS_ICONS.get(fresh["status"], "help")
-            if header_icon_el._props.get("name") != new_icon:
-                header_icon_el._props["name"] = new_icon
-                header_icon_el.classes(
-                    replace=STATUS_ICON_COLORS.get(fresh["status"], "text-slate-400")
-                )
-                header_icon_el.update()
-
-    ui.timer(float(get_setting("monitor_poll_interval", 1)), _poll)
+    _poll_timer = ui.timer(float(get_setting("monitor_poll_interval", 0.1)), _poll_log)
+    client.on_disconnect(lambda *_: _poll_timer.cancel())
 
 # ═══════════════════════════════════════════════════════════════
 #  Left panel builder
@@ -364,28 +374,25 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             ui.space()
 
             def _manual_refresh():
-                task_manager.refresh_from_disk(force_all=True)
-                tl = sel.get("_task_list_panel")
-                if tl:
-                    tl.refresh()
-                ui.notify("Refreshed all tasks")
+                task_manager.scan_disk_async()
+                ui.notify("Refreshing task list...")
 
             ui.button(icon="refresh", on_click=_manual_refresh).props(
                 "flat dense round size=xs"
             ).classes("text-white/70 hover:text-white").tooltip("Refresh List")
 
         search_ref = {"val": ""}
+        _page = {"value": 0}
+        _PAGE_SIZE = int(get_setting("ui_page_size", 50)) or 40
 
         def _toggle_select_all():
-            tasks = list(task_manager.tasks)
-            q = search_ref["val"]
-            if q:
-                tasks = [t for t in tasks if q in t.get("name", "").lower()]
+            from pyruns.utils.sort_utils import filter_tasks
+            tasks = filter_tasks(list(task_manager.tasks), search_ref["val"])
             
             if not tasks:
                 return
 
-            visible_ids = {t["id"] for t in tasks}
+            visible_ids = {t["name"] for t in tasks}
             if visible_ids.issubset(sel["export_ids"]):
                 sel["export_ids"] -= visible_ids
                 ui.notify(f"Deselected {len(visible_ids)} tasks")
@@ -393,97 +400,163 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 sel["export_ids"] |= visible_ids
                 ui.notify(f"Selected {len(visible_ids)} tasks")
             
-            if sel.get("_task_list_panel"):
-                sel["_task_list_panel"].refresh()
+            if sel.get("_task_list_items"):
+                sel["_task_list_items"].refresh()
 
         with ui.row().classes(
             "w-full px-0 py-1 flex-none border-b border-slate-100 items-center gap-1 flex-nowrap overflow-hidden"
         ):
-            si = ui.input(placeholder="Search...").props(
-                "dense outlined bg-white clearable"
-            ).classes("flex-grow text-xs")
-            si.on("keyup.enter", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
-            si.on("clear", lambda _: sel.get("_task_list_panel") and sel["_task_list_panel"].refresh())
-            si.on_value_change(
-                lambda e: search_ref.update({"val": (e.value or "").strip().lower()})
-            )
+            si = ui.textarea(placeholder="Search config / name...").props(
+                "dense outlined bg-white clearable autogrow"
+            ).classes("flex-grow text-xs font-mono").style("max-height: 80px; overflow-y: auto;")
+            si.on("keyup.enter", lambda _: (sel["_task_list_items"].refresh() if sel.get("_task_list_items") else None, sel["_task_list_pagination"].refresh() if sel.get("_task_list_pagination") else None))
+            si.on("clear", lambda _: (sel["_task_list_items"].refresh() if sel.get("_task_list_items") else None, sel["_task_list_pagination"].refresh() if sel.get("_task_list_pagination") else None))
+            
+            # Using a slight debounce for textarea to avoid lag on multi-line paste
+            search_timer = [None]
+            def _debounced_search(e):
+                search_ref["val"] = (e.value or "").strip().lower()
+                _page["value"] = 0
+                if sel.get("_task_list_items"):
+                    sel["_task_list_items"].refresh()
+                if sel.get("_task_list_pagination"):
+                    sel["_task_list_pagination"].refresh()
+
+            def _on_search(e):
+                if search_timer[0]:
+                    search_timer[0].cancel()
+                search_timer[0] = ui.timer(0.3, lambda: _debounced_search(e), once=True)
+
+            si.on_value_change(_on_search)
             
             ui.checkbox(on_change=_toggle_select_all).props(
                 "dense size=sm color=indigo"
             ).tooltip("Select/Deselect All Visible")
 
         @ui.refreshable
-        def task_list_panel():
-            from pyruns.utils.sort_utils import task_sort_key
-            tasks = list(task_manager.tasks)
-            q = search_ref["val"]
-            if q:
-                tasks = [t for t in tasks if q in t.get("name", "").lower()]
-            tasks.sort(key=task_sort_key, reverse=True)
+        def pinned_task_view():
+            if sel.get("task_id"):
+                t = _get_task(sel["task_id"])
+                if t:
+                    with ui.column().classes("w-full gap-0 p-0 m-0 border-b-2 border-indigo-200 bg-indigo-50/50 flex-none"):
+                        _task_list_item(t, sel, is_pinned=True)
 
-            # 🛠️ 终极修复 1：滚动区域本身必须限宽，防止内部元素把它撑开
-            with ui.scroll_area().classes("flex-grow w-full overflow-hidden"):
-                if not tasks:
-                    with ui.column().classes("w-full items-center py-8 gap-2"):
-                        ui.icon("search_off", size="32px").classes("text-slate-200")
-                        ui.label("No tasks").classes("text-[10px] text-slate-400")
+        sel["_pinned_task_view"] = pinned_task_view
+        pinned_task_view()
+
+        with ui.column().classes("flex-grow w-full overflow-y-auto").style("min-height: 0;"):
+            @ui.refreshable
+            def task_list_items():
+                from pyruns.utils.sort_utils import task_sort_key, filter_tasks
+                tasks = filter_tasks(list(task_manager.tasks), search_ref["val"])
+                tasks.sort(key=task_sort_key, reverse=True)
+
+                total_matches = len(tasks)
+                total_pages = max(1, (total_matches + _PAGE_SIZE - 1) // _PAGE_SIZE)
+                page = min(_page["value"], total_pages - 1)
+                _page["value"] = page
+
+                start = page * _PAGE_SIZE
+                end = min(start + _PAGE_SIZE, total_matches)
+                visible_tasks = tasks[start:end]
+
+                if not visible_tasks:
+                    with ui.column().classes(MONITOR_EMPTY_COL_CLASSES):
+                        ui.icon("search_off", size=MONITOR_EMPTY_ICON_SIZE).classes(MONITOR_EMPTY_ICON_CLASSES)
+                        ui.label("No tasks").classes(MONITOR_EMPTY_TEXT_CLASSES)
                     return
 
-                # 🛠️ 终极修复 2：加回 w-full 限制宽度，加上 p-0 m-0 消除 NiceGUI 默认可能带来的边距撑破
                 with ui.column().classes("w-full gap-0 p-0 m-0 overflow-hidden shrink-0"): 
-                    for t in tasks:
+                    for t in visible_tasks:
                         _task_list_item(t, sel)
 
-        sel["_task_list_panel"] = task_list_panel
-        task_list_panel()
+            sel["_task_list_items"] = task_list_items
+            task_list_items()
+
+        @ui.refreshable
+        def task_list_pagination():
+            from pyruns.utils.sort_utils import filter_tasks
+            tasks = filter_tasks(list(task_manager.tasks), search_ref["val"])
+            total_matches = len(tasks)
+            total_pages = max(1, (total_matches + _PAGE_SIZE - 1) // _PAGE_SIZE)
+            
+            if total_pages > 1:
+                from pyruns.ui.widgets import pagination_controls
+                pagination_controls(
+                    page_state=_page,
+                    total_pages=total_pages,
+                    on_change=lambda: sel.get("_task_list_items") and sel["_task_list_items"].refresh(),
+                    container_classes="px-1 py-1 bg-slate-50 border-t border-slate-200 flex-none",
+                    align="between",
+                    full_width=True,
+                    compact=True,
+                )
+
+        sel["_task_list_pagination"] = task_list_pagination
+        task_list_pagination()
 
         with ui.row().classes("w-full p-2 flex-none mt-auto"): 
+            from pyruns.ui.theme import BTN_PRIMARY
             ui.button(
                 "Export Reports", 
                 on_click=lambda: show_export_dialog(task_manager, sel["export_ids"]),
             ).props("unelevated icon=download").classes(
-                "w-full bg-indigo-600 text-white text-sm font-bold tracking-wide "
-                "py-1 hover:bg-indigo-700 shadow-md hover:shadow-lg rounded"
+                f"{BTN_PRIMARY} w-full text-sm font-bold tracking-wide py-1 rounded"
             )
 
 
-def _task_list_item(t: Dict[str, Any], sel: Dict) -> None:
-    tid = t["id"]
+def _task_list_item(t: Dict[str, Any], sel: Dict, is_pinned: bool = False) -> None:
+    tid = t["name"]
     is_active = tid == sel["task_id"]
     status = t["status"]
     icon_name = STATUS_ICONS.get(status, "help")
     icon_cls = STATUS_ICON_COLORS.get(status, "text-slate-400")
-    active_cls = "active" if is_active else ""
     task_name = t.get("name", "unnamed")
 
-    # 🛠️ 终极修复 3：加回 w-full 和 max-w-full！这告诉内部文本“宽度就这么多，超出的给我变成省略号”
+    # Sidebar-like active styling (matches sidebar.py _nav_item)
+    if is_pinned:
+        bg_cls = "bg-indigo-50 shadow-sm"
+        border_style = ""
+        name_cls = "text-indigo-800 font-bold"
+    elif is_active:
+        bg_cls = "bg-indigo-50"
+        border_style = "border-left: 4px solid #4f46e5;"
+        name_cls = "text-indigo-700 font-bold"
+    else:
+        bg_cls = "hover:bg-slate-50 transition-colors duration-200"
+        border_style = "border-left: 4px solid transparent;"
+        name_cls = "text-slate-700 font-semibold"
+
     with ui.row().classes(
-        "w-full max-w-full items-center gap-0.5 flex-nowrap min-w-0 overflow-hidden border-b border-slate-50"
+        "w-full max-w-full items-center gap-0.5 flex-nowrap min-w-0 overflow-hidden border-b border-slate-50 pr-2"
     ):
-        
-        # Checkbox 保持不变，独立于 Hover 效果之外
+
+        # Checkbox stays intact, independent of hover effects
         ui.checkbox(
             value=tid in sel["export_ids"],
             on_change=lambda e, _tid=tid: sel.get("_toggle_export", lambda x, y: None)(_tid, e.value),
-        ).props("dense size=xs color=indigo").classes("shrink-0")
+        ).props("dense size=xs color=indigo").classes("shrink-0 pl-1")
 
-        # 内部可点击区域（Hover 背景变化只在这里生效）
-        with ui.row().classes(
-            f"flex-1 w-0 min-w-0 items-center gap-1 cursor-pointer flex-nowrap overflow-hidden "
-            f"py-0.5 rounded monitor-task-item {active_cls} hover:bg-slate-100 transition-colors"
-        ).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
+        # Inner clickable area — sidebar-like active style
+        with ui.column().classes(
+            f"flex-1 w-0 min-w-0 justify-center gap-0 cursor-pointer overflow-hidden "
+            f"py-1 pl-1.5 rounded monitor-task-item {bg_cls}"
+        ).style(border_style).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
 
-            # 文本容器
-            with ui.element("div").classes("flex flex-col flex-1 w-0 min-w-0 gap-0 overflow-hidden"):
-                ui.label(task_name).classes(
-                    "truncate w-full text-[11px] font-semibold text-slate-700 leading-snug"
-                ).tooltip(task_name)
+            # Line 1: task name + icon
+            with ui.row().classes("w-full items-center justify-between gap-1 flex-nowrap"):
+                with ui.row().classes("items-center gap-1 flex-1 min-w-0 flex-nowrap"):
+                    if is_pinned:
+                        ui.icon("push_pin", size="10px").classes("text-indigo-500 shrink-0 transform -rotate-45")
+                    ui.label(task_name).classes(
+                        f"truncate flex-1 min-w-0 text-[11px] {name_cls} leading-snug task-name"
+                    ).tooltip(task_name)
+                ui.icon(icon_name, size="10px").classes(f"{icon_cls} shrink-0 pr-1")
 
-                ui.label(status.upper()).classes(
-                    "truncate w-full text-[9px] text-slate-400 leading-snug"
-                )
-                
-            ui.icon(icon_name, size="9px").classes(f"{icon_cls} shrink-0")
+            # Line 2: status label
+            ui.label(status.upper()).classes(
+                "truncate w-full text-[9px] text-slate-400 leading-snug"
+            )
             
 
 # ═══════════════════════════════════════════════════════════════
@@ -502,9 +575,10 @@ def _update_header(task, icon_el, label_el, select_el, sel):
         names = list(opts.keys())
         select_el.options = names
         if names:
-            cur = sel.get("log_file_name") or names[-1]
-            if cur not in names:
-                cur = names[-1]
+            cur = sel.get("log_file_name")
+            if not cur or cur not in names:
+                best_path = resolve_log_path(task["dir"], None)
+                cur = next((n for n, p in opts.items() if p == best_path), names[-1])
             sel["log_file_name"] = cur
             select_el.value = cur
             select_el.set_visibility(len(names) > 1)

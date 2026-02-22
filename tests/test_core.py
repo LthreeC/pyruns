@@ -1,12 +1,26 @@
 """
-Tests for pyruns.core.config_manager.
+Tests for pyruns.core — config_manager, system_metrics, executor,
+task_generator, and report.
 """
-import pytest
-import os
-import yaml
+import csv
+import io
 import json
+import os
+import sys
 
+import pytest
+import yaml
+from unittest.mock import patch, MagicMock
+
+from pyruns._config import (
+    ENV_CONFIG, CONFIG_FILENAME, INFO_FILENAME, MONITOR_KEY,
+)
 from pyruns.core.config_manager import ConfigNode, ConfigManager
+from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
+from pyruns.core.report import build_export_csv, build_export_json
+from pyruns.core.system_metrics import SystemMonitor
+from pyruns.core.task_generator import TaskGenerator, create_task_object
+from pyruns.utils.batch_utils import generate_batch_configs
 
 def test_config_node_init():
     data = {
@@ -139,12 +153,9 @@ def test_config_manager_parse_error(tmp_path, mock_logger):
     assert any("Failed to parse config" in msg for lvl, msg in mock_logger.logs if lvl == "ERROR")
 
 
-"""
-Tests for pyruns.core.system_metrics.
-"""
-from unittest.mock import patch, MagicMock
-from pyruns.core.system_metrics import SystemMonitor
-
+# ═══════════════════════════════════════════════════════════════
+#  SystemMonitor
+# ═══════════════════════════════════════════════════════════════
 
 @patch("pyruns.core.system_metrics.psutil")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
@@ -209,17 +220,9 @@ def test_system_monitor_gpu_empty(mock_subprocess):
     assert gpus == []
 
 
-"""
-Tests for pyruns.core.executor.
-"""
-import os
-import sys
-import json
-import pytest
-from unittest.mock import patch, MagicMock
-
-from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
-from pyruns._config import ENV_CONFIG, CONFIG_FILENAME, INFO_FILENAME
+# ═══════════════════════════════════════════════════════════════
+#  Executor
+# ═══════════════════════════════════════════════════════════════
 
 
 def test_prepare_env():
@@ -274,7 +277,6 @@ def test_run_task_worker_success(mock_popen, tmp_path):
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
     
     task_info = {
-        "id": "test-123",
         "name": "TestTask",
         "script": "script.py",
         "status": "queued",
@@ -292,7 +294,6 @@ def test_run_task_worker_success(mock_popen, tmp_path):
     
     res = run_task_worker(
         task_dir=task_dir,
-        task_id="test-123",
         name="TestTask",
         created_at="now",
         config={},
@@ -320,7 +321,6 @@ def test_run_task_worker_failure(mock_popen, tmp_path):
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
     
     task_info = {
-        "id": "test-fail",
         "name": "FailTask",
         "script": "script.py",
         "status": "queued",
@@ -341,7 +341,6 @@ def test_run_task_worker_failure(mock_popen, tmp_path):
     
     res = run_task_worker(
         task_dir=task_dir,
-        task_id="test-fail",
         name="FailTask",
         created_at="now",
         config={},
@@ -366,16 +365,9 @@ def test_run_task_worker_failure(mock_popen, tmp_path):
         assert "Reason: Exit Code 1" in content
 
 
-"""
-Tests for pyruns.core.task_generator — task creation and file writing.
-"""
-import os
-import json
-import yaml
-import pytest
-
-from pyruns.core.task_generator import TaskGenerator, create_task_object
-from pyruns.utils.config_utils import generate_batch_configs
+# ═══════════════════════════════════════════════════════════════
+#  TaskGenerator — task creation and file writing
+# ═══════════════════════════════════════════════════════════════
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -384,8 +376,7 @@ from pyruns.utils.config_utils import generate_batch_configs
 
 class TestCreateTaskObject:
     def test_basic_fields(self):
-        obj = create_task_object("id1", "/tmp/task1", "my-task", {"lr": 0.01})
-        assert obj["id"] == "id1"
+        obj = create_task_object("/tmp/task1", "my-task", {"lr": 0.01})
         assert obj["dir"] == "/tmp/task1"
         assert obj["name"] == "my-task"
         assert obj["status"] == "pending"
@@ -393,7 +384,7 @@ class TestCreateTaskObject:
         assert obj["env"] == {}
 
     def test_created_at_format(self):
-        obj = create_task_object("x", "/tmp", "t", {})
+        obj = create_task_object("/tmp", "t", {})
         # Should be like "2026-02-12 15:30:00"
         assert len(obj["created_at"]) == 19
         assert "-" in obj["created_at"]
@@ -468,12 +459,12 @@ class TestTaskGeneratorCreateTask:
         task = gen.create_task("batch-run", {"x": 1}, group_index="[3-of-10]")
 
         folder = os.path.basename(task["dir"])
-        assert "batch-run-[3-of-10]" in folder
+        assert "batch-run_[3-of-10]" in folder
 
     def test_display_name_with_group_index(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         task = gen.create_task("batch-run", {"x": 1}, group_index="[3-of-10]")
-        assert task["name"] == "batch-run-[3-of-10]"
+        assert task["name"] == "batch-run_[3-of-10]"
 
     def test_deduplication_on_name_clash(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
@@ -510,9 +501,9 @@ class TestTaskGeneratorCreateTasks:
         tasks = gen.create_tasks(configs, "batch")
 
         assert len(tasks) == 3
-        assert tasks[0]["name"] == "batch-[1-of-3]"
-        assert tasks[1]["name"] == "batch-[2-of-3]"
-        assert tasks[2]["name"] == "batch-[3-of-3]"
+        assert tasks[0]["name"] == "batch_[1-of-3]"
+        assert tasks[1]["name"] == "batch_[2-of-3]"
+        assert tasks[2]["name"] == "batch_[3-of-3]"
 
     def test_batch_with_pipe_configs(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
@@ -538,17 +529,9 @@ class TestTaskGeneratorCreateTasks:
         assert len(set(dirs)) == 5  # all unique
 
 
-"""
-Tests for pyruns.core.report — CSV and JSON export builders.
-"""
-import csv
-import io
-import json
-import os
-import pytest
-
-from pyruns._config import INFO_FILENAME, MONITOR_KEY
-from pyruns.core.report import build_export_csv, build_export_json
+# ═══════════════════════════════════════════════════════════════
+#  Report — CSV and JSON export
+# ═══════════════════════════════════════════════════════════════
 
 
 def _make_task(tmp_path, name, monitors=None, starts=None, finishes=None, pids=None):
@@ -568,7 +551,6 @@ def _make_task(tmp_path, name, monitors=None, starts=None, finishes=None, pids=N
         json.dump(info, f)
     return {
         "name": name,
-        "id": name,
         "status": "completed",
         "dir": task_dir,
         "start_times": info["start_times"],
@@ -616,7 +598,7 @@ class TestBuildExportCSV:
         reader = csv.DictReader(io.StringIO(csv_str))
         cols = reader.fieldnames
         # Priority columns should come first
-        assert cols[:4] == ["name", "id", "status", "run"]
+        assert cols[:4] == ["name", "status", "run", "start_time"]
 
 
 class TestBuildExportJSON:

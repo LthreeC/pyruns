@@ -50,9 +50,10 @@ def env_var_editor(
                     ui.button("Add", icon="add", on_click=_add).props(
                         "flat dense no-caps size=sm"
                     ).classes("text-indigo-600 hover:bg-indigo-100 px-2")
+                    from pyruns.ui.theme import BTN_PRIMARY
                     ui.button("Save", icon="save", on_click=_do_save).props(
                         "unelevated dense no-caps size=sm"
-                    ).classes("bg-indigo-600 text-white px-4")
+                    ).classes(f"{BTN_PRIMARY} px-4")
 
             # ── Table header ──
             with ui.row().classes(

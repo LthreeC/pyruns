@@ -12,11 +12,15 @@ from typing import Dict, Any
 
 from pyruns.ui.theme import (
     INPUT_PROPS, BTN_CLASS, STATUS_ICONS, STATUS_ICON_COLORS,
+    MANAGER_SUMMARY_BAR_CLASSES, MANAGER_ACTION_ROW_CLASSES,
+    MANAGER_FILTER_ROW_CLASSES, MANAGER_EMPTY_ICON_SIZE,
+    MANAGER_EMPTY_ICON_CLASSES, MANAGER_EMPTY_TITLE_CLASSES,
+    MANAGER_EMPTY_SUB_CLASSES
 )
 from pyruns.ui.widgets import dir_picker, section_header
 from pyruns.ui.components.task_card import render_card_grid
 from pyruns.ui.components.task_dialog import build_task_dialog
-from pyruns.utils.sort_utils import task_sort_key
+from pyruns.utils.sort_utils import task_sort_key, filter_tasks
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -28,7 +32,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     from pyruns.utils.settings import get as _get_setting
 
     # Maximum cards rendered per page (0 = show all)
-    _PAGE_SIZE: int = int(_get_setting("manager_page_size", 50)) or 0
+    _PAGE_SIZE: int = int(_get_setting("ui_page_size", 50)) or 0
 
     selected = {"task": None, "tab": "task_info"}
     build_task_dialog(selected, state, task_manager)
@@ -37,80 +41,23 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     # ── Pagination state ──
     _page = {"value": 0}
 
-    # ── Snapshot for smart polling ──
-    _last_snap: Dict[str, tuple] = {}
-    _needs_refresh = {"flag": False}
-
-    def _take_snap() -> Dict[str, tuple]:
-        """
-        Create a lightweight snapshot of task states.
-        
-        Used for O(N) diffing to avoid expensive DOM re-renders.
-        Returns: {task_id: (status, progress)}
-        """
-        return {
-            t["id"]: (t["status"], t.get("progress", 0))
-            for t in task_manager.tasks
-        }
-
     def refresh_ui():
         """Re-render cards without disk I/O."""
         task_list.refresh()
 
     def refresh_tasks():
-        """Sync from disk then re-render (used after user actions)."""
-        nonlocal _last_snap
+        """Sync from disk then re-render (used after manual user actions)."""
         task_manager.refresh_from_disk()
-        _last_snap = _take_snap()
         task_list.refresh()
 
     def full_rescan():
-        nonlocal _last_snap
+        """Full disk rescan to discover new task directories."""
         task_manager.scan_disk()
-        _last_snap = _take_snap()
         _page["value"] = 0
         task_list.refresh()
         logger.debug("Full rescan completed, %d tasks", len(task_manager.tasks))
 
-    def poll_changes():
-        """
-        Periodic poller (default 1s).
-        
-        Strategy:
-        1. Fast check: has state['_manager_dirty'] been set by other tabs?
-        2. Disk sync: task_manager.refresh_from_disk() (fast JSON read)
-        3. Snapshot diff: Compare new states vs last render.
-           - If identical: DO NOTHING (Zero DOM overhead).
-           - If changed: Trigger task_list.refresh().
-        """
-        nonlocal _last_snap
-
-        # Instant refresh when generator creates new tasks
-        if state.get("_manager_dirty"):
-            state["_manager_dirty"] = False
-            task_manager.refresh_from_disk()
-            _last_snap = _take_snap()
-            task_list.refresh()
-            return
-
-        # Catch up immediately when switching back to this tab
-        if _needs_refresh["flag"] and state.get("active_tab") == "manager":
-            _needs_refresh["flag"] = False
-            task_manager.refresh_from_disk()
-            _last_snap = _take_snap()
-            task_list.refresh()
-            return
-
-        task_manager.refresh_from_disk()
-        snap = _take_snap()
-        if snap != _last_snap:
-            _last_snap = snap
-            # Skip DOM rebuild when page is hidden — mark as stale so
-            # we rebuild on the next poll cycle when the tab is active.
-            if state.get("active_tab") == "manager":
-                task_list.refresh()
-            else:
-                _needs_refresh["flag"] = True
+    # polling logic removed since task_manager now pushes updates via events
 
     # ══════════════════════════════════════════════════════════
     #  Row 1: Filter & Search
@@ -135,10 +82,28 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     @ui.refreshable
     def task_list() -> None:
-        tasks = _filter_tasks(
-            task_manager.tasks,
-            filter_status.value,
-            (search_input.value or "").strip().lower(),
+        if state.get("_manager_is_loading", False):
+            with ui.column().classes("w-full items-center justify-center py-20 gap-4 mt-10"):
+                ui.spinner("dots", size="3em", color="indigo", thickness=0.3)
+                ui.label("Loading Tasks...").classes("text-slate-500 font-bold tracking-wider animate-pulse")
+            return
+
+        state["_manager_checkboxes"] = {}
+        state["_manager_cards"] = {}
+        # Apply filters
+        # 1. Directory filter
+        tasks = task_manager.tasks
+        if tasks_dir_input.value:
+            # Normalize paths for comparison to avoid backslash/slash issues
+            import os
+            td_val = os.path.normpath(tasks_dir_input.value)
+            tasks = [t for t in tasks if os.path.normpath(str(t.get("dir", ""))).startswith(td_val)]
+
+        # 2. & 3. Apply Search & Status filters
+        tasks = filter_tasks(
+            tasks, 
+            search_input.value or "", 
+            filter_status.value or "All"
         )
 
         if not tasks:
@@ -176,15 +141,17 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         p_others = [t for t in page_slice if not t.get("pinned")]
 
         if p_pinned:
-            section_header("Pinned", icon="push_pin", extra_classes="mt-4 mb-1")
+            # ## mt-0, mb-0: 强制去除标题的上下外边距，以保证和卡片的紧凑距离
+            section_header("Pinned", icon="push_pin", extra_classes="mt-0 mb-0")
             render_card_grid(
                 p_pinned, state, task_manager,
                 open_task_dialog, refresh_tasks, refresh_ui,
             )
         if p_others:
             if p_pinned:
+                # ## mt-0, mb-0: 同样去除“All Tasks”标题的外边距
                 section_header(
-                    "All Tasks", icon="list", extra_classes="mt-4 mb-1",
+                    "All Tasks", icon="list", extra_classes="mt-0 mb-0",
                 )
             render_card_grid(
                 p_others, state, task_manager,
@@ -194,13 +161,48 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     filter_status.on_value_change(lambda _: _reset_page_and_refresh())
     search_input.on_value_change(lambda _: _reset_page_and_refresh())
 
-    # Render immediately — tasks already in memory (TaskManager.__init__ ran
-    # scan_disk).  No deferred timer needed; this avoids a costly double render.
-    task_list()
-    _last_snap = _take_snap()
+    # Capture the specific client context immediately upon render to safely hook from bg thread.
+    client = ui.context.client
 
-    # Periodic polling (from workspace settings)
-    ui.timer(float(_get_setting("manager_poll_interval", 1)), poll_changes)
+    def _mark_dirty():
+        state["_manager_dirty"] = True
+
+    task_manager.on_change(_mark_dirty)
+
+    def _check_dirty():
+        # Only refresh if data is dirty AND user is actually looking at the manager tab
+        if state.get("_manager_dirty", False) and state.get("active_tab") == "manager":
+            state["_manager_dirty"] = False
+            task_manager.refresh_from_disk(check_all=True)
+            task_list.refresh()
+
+    ui.timer(1.0, _check_dirty)
+
+    # ── Static refresh: immediately update when user switches TO the manager tab ──
+    # This prevents the visual delay of waiting up to 1 second for the next timer tick.
+    async def _on_tab_switch(tab: str):
+        if tab == "manager":
+            if state.get("_manager_dirty", False):
+                # Put UI in loading state to prevent flash of empty space
+                state["_manager_is_loading"] = True
+                task_list.refresh()
+                
+                import asyncio
+                await asyncio.sleep(0.05)
+                
+                state["_manager_is_loading"] = False
+                state["_manager_dirty"] = False
+                task_manager.refresh_from_disk(check_all=True)
+                task_list.refresh()
+
+    cbs = state.setdefault("on_tab_change", [])
+    cbs.append(_on_tab_switch)
+
+
+    # ## px-1: 左右内边距1 (4px); pb-1: 底部内边距1; gap-0: 消除子元素（全选框和任务卡片）之间的默认16px大间距
+    # ## flex-grow: 高度填满剩余空间; overflow-y-auto: 允许原生下拉滚动
+    with ui.column().classes("w-full flex-grow px-1 pb-1 gap-1 overflow-y-auto").style("min-height: 0;"):
+        task_list()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -219,14 +221,15 @@ def _run_selected(state, task_manager, refresh_tasks) -> None:
     if not ids:
         ui.notify("No tasks selected", type="warning", icon="warning")
         return
+    ui.notify(f"Starting {len(ids)} tasks in background...", type="info", icon="hourglass_empty")
+
+    # We call this sync, and it now delegates the loop to a background thread natively.
     task_manager.start_batch_tasks(
         ids, state["execution_mode"], state["max_workers"],
     )
     logger.info("Started %d task(s)  mode=%s  workers=%d",
                 len(ids), state["execution_mode"], state["max_workers"])
-    ui.notify(
-        f"Started {len(ids)} task(s)", type="positive", icon="play_arrow",
-    )
+    state["selected_task_ids"] = []
     refresh_tasks()
 
 
@@ -234,44 +237,55 @@ def _delete_selected(state, task_manager, refresh_tasks) -> None:
     ids = copy.copy(state.get("selected_task_ids", []))
     if not ids:
         return
-    for tid in ids:
-        task_manager.delete_task(tid)
-    state["selected_task_ids"] = []
-    logger.info("Deleted %d task(s) to trash", len(ids))
-    ui.notify(
-        f"Moved {len(ids)} task(s) to trash", type="warning", icon="delete",
-    )
-    refresh_tasks()
 
-
-def _filter_tasks(all_tasks, mode, query):
-    """Apply status + search filters."""
-    tasks = [
-        t for t in all_tasks
-        if mode == "All" or mode.lower() == t["status"]
-    ]
-    if query:
-        tasks = [t for t in tasks if query in t.get("name", "").lower()]
-    return tasks
+    with ui.dialog() as dialog, ui.card().classes("p-6 w-96 rounded-2xl shadow-xl"):
+        with ui.row().classes("items-center gap-4 w-full mb-4 outline-none"):
+            ui.icon("delete_outline", size="28px").classes("text-red-500 bg-red-50 p-2 rounded-full")
+            ui.label(f"Delete {len(ids)} Task{'s' if len(ids)>1 else ''}").classes("text-lg font-bold text-slate-800")
+            
+        ui.label(
+            "Are you sure you want to move these tasks to the trash? "
+            "This action can only be reversed manually from the .trash folder."
+        ).classes("text-sm text-slate-600 mb-6 font-medium leading-relaxed")
+        
+        with ui.row().classes("w-full justify-end gap-3"):
+            ui.button("Cancel", on_click=dialog.close).props("flat no-caps").classes("text-slate-500 hover:bg-slate-100 font-bold")
+            
+            async def proceed():
+                dialog.close()
+                ui.notify(f"Moving {len(ids)} tasks to trash...", type="warning", icon="delete")
+                
+                # Clear visual selection immediately
+                state["selected_task_ids"] = []
+                refresh_tasks()
+                
+                # Offload to IO pool to avoid blocking the UI loop
+                from nicegui import run
+                await run.io_bound(task_manager.delete_tasks, ids)
+                
+                # Refresh again to reflect the removed tasks
+                refresh_tasks()
+                
+            ui.button("Move to Trash", on_click=proceed).props("unelevated color=red no-caps").classes("font-bold shadow-md shadow-red-500/20")
+            
+    dialog.open()
 
 
 def _empty_state() -> None:
     with ui.column().classes("w-full items-center justify-center py-20"):
-        ui.icon("inbox", size="72px").classes("text-slate-200 mb-3")
-        ui.label("No tasks found").classes("text-xl font-bold text-slate-400")
+        ui.icon("inbox", size=MANAGER_EMPTY_ICON_SIZE).classes(MANAGER_EMPTY_ICON_CLASSES)
+        ui.label("No tasks found").classes(MANAGER_EMPTY_TITLE_CLASSES)
         ui.label(
             "Generate tasks from the Generator page, or change the filter."
-        ).classes("text-sm text-slate-400 mt-1")
+        ).classes(MANAGER_EMPTY_SUB_CLASSES)
 
 
 def _summary_bar(
     visible_tasks, state, task_list_refreshable,
     page_state=None, total_pages=1,
 ) -> None:
-    with ui.row().classes(
-        "w-full px-3 py-1.5 bg-white border-b border-slate-200 mb-2 "
-        "items-center justify-between shadow-sm"
-    ):
+    # ## 布局由 theme.py 统一定义: MANAGER_SUMMARY_BAR_CLASSES 包含所有边距设计
+    with ui.row().classes(MANAGER_SUMMARY_BAR_CLASSES):
         with ui.row().classes("items-center gap-3"):
             all_selected = (
                 len(state.get("selected_task_ids", [])) == len(visible_tasks)
@@ -279,10 +293,15 @@ def _summary_bar(
             )
 
             def toggle_all(e):
+                is_checked = e.value
                 state["selected_task_ids"] = (
-                    [t["id"] for t in visible_tasks] if e.value else []
+                    [t["name"] for t in visible_tasks] if is_checked else []
                 )
-                task_list_refreshable.refresh()
+
+                # Instantly update visible checkboxes & cards without re-rendering the list
+                for cb in state.get("_manager_checkboxes", {}).values():
+                    if cb and cb.value != is_checked:
+                        cb.value = is_checked
 
             ui.checkbox(
                 value=all_selected, on_change=toggle_all,
@@ -302,7 +321,7 @@ def _summary_bar(
                 icon_cls = STATUS_ICON_COLORS.get(s, "text-slate-400")
                 icon_name = STATUS_ICONS.get(s, "help")
                 with ui.row().classes(
-                    "items-center gap-1 bg-slate-50 px-2 py-0.5"
+                    "items-center gap-1 bg-slate-50 px-2"
                 ):
                     ui.icon(icon_name, size="13px").classes(icon_cls)
                     ui.label(str(c)).classes(
@@ -311,36 +330,16 @@ def _summary_bar(
 
             # ── Pagination controls (only when multiple pages) ──
             if page_state is not None and total_pages > 1:
-                cur = page_state["value"]
-
-                def _prev():
-                    if page_state["value"] > 0:
-                        page_state["value"] -= 1
-                        task_list_refreshable.refresh()
-
-                def _next():
-                    if page_state["value"] < total_pages - 1:
-                        page_state["value"] += 1
-                        task_list_refreshable.refresh()
-
-                with ui.row().classes(
-                    "items-center gap-1 ml-2 pl-2 border-l border-slate-200"
-                ):
-                    b_prev = ui.button(icon="chevron_left", on_click=_prev).props(
-                        "flat dense round size=sm"
-                    ).classes("text-slate-500")
-                    if cur == 0:
-                        b_prev.props(add="disable")
-
-                    ui.label(f"{cur + 1}/{total_pages}").classes(
-                        "text-[11px] font-mono font-bold text-slate-500 min-w-[2rem] text-center"
-                    )
-
-                    b_next = ui.button(icon="chevron_right", on_click=_next).props(
-                        "flat dense round size=sm"
-                    ).classes("text-slate-500")
-                    if cur >= total_pages - 1:
-                        b_next.props(add="disable")
+                from pyruns.ui.widgets import pagination_controls
+                pagination_controls(
+                    page_state=page_state,
+                    total_pages=total_pages,
+                    on_change=lambda: task_list_refreshable.refresh(),
+                    container_classes="gap-2 ml-2 pl-4 border-l border-slate-200",
+                    align="center",
+                    full_width=False,
+                    compact=False,
+                )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -349,10 +348,8 @@ def _summary_bar(
 
 def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
     """Render the top bar: Directory Picker | Filter | Search."""
-    with ui.row().classes(
-        "w-full items-center gap-2 mb-2 px-3 py-1.5 bg-white "
-        "border-b border-slate-200 shadow-sm"
-    ):
+    # ## 布局由 theme.py 统一定义: MANAGER_FILTER_ROW_CLASSES 包含所有搜索栏边距
+    with ui.row().classes(MANAGER_FILTER_ROW_CLASSES):
         tasks_dir_input = dir_picker(
             value=state.get("tasks_dir", task_manager.root_dir),
             label="Tasks Root",
@@ -365,13 +362,25 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
             value="All", label="Filter",
         ).props(INPUT_PROPS).classes("w-48")
 
-        search_input = ui.input(
-            value="", label="Search", placeholder="Task name...",
-        ).props(INPUT_PROPS + " clearable").classes("w-56")
-        
+        search_input = ui.textarea(
+            value="", label="Search", placeholder="device: null...",
+        ).props(INPUT_PROPS + " clearable autogrow").classes("w-56 font-mono").style("max-height: 80px; overflow-y: auto;")
+
+        # Using a slight debounce for textarea to avoid lag on multi-line paste
+        search_timer = [None]
+        def _debounced_search():
+            refresh_fn()
+
+        def _on_search(_):
+            if search_timer[0]:
+                search_timer[0].cancel()
+            search_timer[0] = ui.timer(0.3, _debounced_search, once=True)
+
         # Bind refresh events
+        # We listen to keyup.enter so linebreaks insert normally, but we also manually trigger search refresh.
         search_input.on("keyup.enter", lambda _: refresh_fn())
         search_input.on("clear", lambda _: refresh_fn())
+        search_input.on_value_change(_on_search)
 
         ui.button(
             icon="refresh",
@@ -379,16 +388,14 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
                 tasks_dir_input.value, state, task_manager, full_rescan,
             ),
         ).props("flat round dense color=slate")
-        
+
         return tasks_dir_input, filter_status, search_input
 
 
 def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
     """Render the second bar: Columns | Workers | Mode | Run | Delete."""
-    with ui.row().classes(
-        "w-full items-center justify-between bg-white px-3 py-1.5 mb-2 "
-        "border-b border-slate-200 shadow-sm"
-    ):
+    # ## 布局由 theme.py 统一定义: MANAGER_ACTION_ROW_CLASSES
+    with ui.row().classes(MANAGER_ACTION_ROW_CLASSES):
         # Left: columns
         with ui.row().classes("items-center gap-1.5"):
             col_sel = ui.select(
@@ -406,7 +413,7 @@ def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
         # Right: workers + mode + run + delete
         with ui.row().classes("items-center gap-3"):
             w_input = ui.number(
-                value=state["max_workers"], min=1, max=32, step=1,
+                value=state["max_workers"], min=1, step=1,
                 label="Workers",
             ).props(INPUT_PROPS).classes("w-20")
             w_input.on_value_change(

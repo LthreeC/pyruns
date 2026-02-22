@@ -2,19 +2,18 @@ import os
 import time
 from typing import Dict, Any, List
 
-from pyruns._config import ROOT_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
+from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
 from pyruns.utils.config_utils import save_yaml
-from pyruns.utils.task_io import save_task_info  # re-export for backward compat
+from pyruns.utils.task_io import save_task_info
 from pyruns.utils import get_logger, get_now_str, get_now_str_us
 
 logger = get_logger(__name__)
 
 
-def create_task_object(task_id: str, task_dir: str, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+def create_task_object(task_dir: str, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Create the in-memory dictionary representing a task."""
     created_at = get_now_str()
     return {
-        "id": task_id,
         "dir": task_dir,
         "name": name,
         "status": "pending",
@@ -31,7 +30,11 @@ def create_task_object(task_id: str, task_dir: str, name: str, config: Dict[str,
 
 
 class TaskGenerator:
-    def __init__(self, root_dir: str = ROOT_DIR):
+    def __init__(self, root_dir: str = None):
+        if root_dir is None:
+            from pyruns._config import ROOT_DIR, TASKS_DIR
+            root_dir = os.path.join(ROOT_DIR, TASKS_DIR)
+            
         self.root_dir = root_dir
         os.makedirs(self.root_dir, exist_ok=True)
 
@@ -50,7 +53,7 @@ class TaskGenerator:
 
         folder_name = base_name
         if group_index:
-            folder_name += f"-{group_index}"  # e.g. "my-exp-[1-of-12]"
+            folder_name += f"_{group_index}"  # e.g. "my-exp-[1-of-12]"
 
         # Deduplicate: append millis if folder already exists
         if os.path.exists(os.path.join(self.root_dir, folder_name)):
@@ -59,27 +62,19 @@ class TaskGenerator:
         task_dir = os.path.join(self.root_dir, folder_name)
         os.makedirs(task_dir, exist_ok=True)
 
-        # Task ID — microsecond-level timestamp, prefixed for batch tasks
-        ts_us = get_now_str_us()
-        if group_index:
-            task_id = f"{group_index}_{ts_us}"
-        else:
-            task_id = ts_us
-
         # Display name = folder name (readable)
         display_name = base_name
         if group_index:
-            display_name += f"-{group_index}"
+            display_name += f"_{group_index}"
 
         # Clean config: remove internal _meta keys before saving
         clean_config = {k: v for k, v in config.items() if not k.startswith("_meta")}
 
-        task_obj = create_task_object(task_id, task_dir, display_name, clean_config)
+        task_obj = create_task_object(task_dir, display_name, clean_config)
 
         # ── Write files ──
         # task_info.json — ordered fields
         info = {
-            "id": task_obj["id"],
             "name": task_obj["name"],
             "status": task_obj["status"],
             "progress": task_obj["progress"],
@@ -111,6 +106,7 @@ class TaskGenerator:
         configs: List[Dict[str, Any]],
         name_prefix: str,
     ) -> List[Dict[str, Any]]:
+        """Create multiple tasks from a list of configs, adding group indices when > 1."""
         tasks: List[Dict[str, Any]] = []
         total = len(configs)
         for idx, cfg in enumerate(configs):

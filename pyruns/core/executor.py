@@ -4,7 +4,10 @@ import subprocess
 import time
 from typing import Dict, Any, Optional
 
-from pyruns._config import RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME, MONITOR_KEY
+from pyruns._config import (
+    RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME,
+    MONITOR_KEY, ERROR_LOG_FILENAME,
+)
 from pyruns.utils.log_io import append_log
 from pyruns.utils.task_io import load_task_info, save_task_info
 from pyruns.utils import get_logger, get_now_str
@@ -17,23 +20,24 @@ def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
     task_dir: Optional[str] = None,
 ) -> Dict[str, str]:
+    """Build a subprocess environment dict.
+
+    Sets UTF-8 encoding, unbuffered output, and optionally points
+    ``ENV_CONFIG`` at the task's config.yaml so ``pyruns.read()`` works.
+    """
     env = os.environ.copy()
-    # 强制子进程使用 UTF-8 输出，避免 Windows 下 GBK 编码问题
-    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONIOENCODING"] = "utf-8"    # 避免 Windows GBK 编码问题
     env["PYTHONUTF8"] = "1"
-    # 禁用 stdout 缓冲，让 print() 实时刷新到日志文件
-    env["PYTHONUNBUFFERED"] = "1"
-    # pyr 模式: 设置 ENV_CONFIG 让 pyruns.read() 自动找到任务的 config.yaml
+    env["PYTHONUNBUFFERED"] = "1"        # print() 实时刷新
     if task_dir:
         env[ENV_CONFIG] = os.path.join(task_dir, CONFIG_FILENAME)
-    # GPU 等设置全部通过 env_vars 传入 (如 CUDA_VISIBLE_DEVICES)
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
     return env
 
 
 def _get_log_path(task_dir: str, run_index: int) -> str:
-    """返回日志文件路径: run_logs/runN.log (1-based)."""
+    """Return log file path ``run_logs/runN.log`` (1-based), creating the directory if needed."""
     log_dir = os.path.join(task_dir, RUN_LOG_DIR)
     os.makedirs(log_dir, exist_ok=True)
     return os.path.join(log_dir, f"run{run_index}.log")
@@ -51,7 +55,6 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
     ``[python, script]``.  CLI arguments are only built for argparse
     scripts.
     """
-    from typing import List
 
     command = meta_cmd or config.get("command")
     workdir = meta_workdir
@@ -120,7 +123,6 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
 
 def run_task_worker(
     task_dir: str,
-    task_id: str,
     name: str,
     created_at: str,
     config: Dict[str, Any],
@@ -144,17 +146,15 @@ def run_task_worker(
     meta_workdir = task_meta.get("workdir")
 
     # 1. Update Status to Running + append start_times
-    start_times = task_meta.get("start_times", [])
-    start_times.append(now_str)
+    start_str = now_str
     
-    append_log(log_path, f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} started at {now_str} ⌘⌘⌘⌘⌘\n")
+    append_log(log_path, f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} started at {start_str} ⌘⌘⌘⌘⌘\n")
 
     # Remove persisted _run_index (no longer needed once running)
     task_meta.pop("_run_index", None)
     task_meta.update({
         "status": "running",
         "progress": 0.0,
-        "start_times": start_times,
     })
 
     # 2. Build Command
@@ -192,34 +192,16 @@ def run_task_worker(
             progress = 1.0 if ret == 0 else 0.0
         else:
             raise NotImplementedError("No command to run (simulation mode not implemented)")
-            # Simulation Mode (if no script provided)
-            # total_steps = 30
-            # for i in range(total_steps):
-            #     time.sleep(0.1)
-            #     progress = (i + 1) / total_steps
-            #     msg = f"Epoch {i+1}/{total_steps} | Simulated Step\n"
-            #     append_log(log_path, msg)
-            #     if i % 10 == 0:
-            #         _merge_task_info(task_dir, {
-            #             "status": "running",
-            #             "progress": progress,
-            #         })
-            # status = "completed"
-            # progress = 1.0
 
         end_str = get_now_str()
 
-    # ... (previous code)
 
-        # 4. Final update — append finish_times, set final status
+        # 4. Final update
         meta_final = load_task_info(task_dir)
-        finish_times = meta_final.get("finish_times", [])
-        finish_times.append(end_str)
         
         append_log(log_path, f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} finished at {end_str} ⌘⌘⌘⌘⌘\n")
         
-        # ERROR LOG LOGIC: If failed, move content to ERROR_LOG_FILENAME
-        from pyruns._config import ERROR_LOG_FILENAME
+        # ERROR LOG LOGIC: If failed, move run log content to error.log
         if status == "failed":
             try:
                 # Read runN.log content
@@ -249,16 +231,26 @@ def run_task_worker(
             except Exception as e:
                 logger.error("Failed to migrate error log: %s", e)
 
-        # 5. Ensure list is long enough...
-        monitors = meta_final.get(MONITOR_KEY, [])
-        while len(monitors) < run_index:
-            monitors.append({})
+        # ONLY update start/finish times if successful to increment run_index natively
+        if status == "completed":
+            start_times = meta_final.get("start_times", [])
+            start_times.append(start_str)
+            finish_times = meta_final.get("finish_times", [])
+            finish_times.append(end_str)
+            
+            monitors = meta_final.get(MONITOR_KEY, [])
+            while len(monitors) < run_index:
+                monitors.append({})
+
+            meta_final.update({
+                "start_times": start_times,
+                "finish_times": finish_times,
+                "monitors": monitors,
+            })
 
         meta_final.update({
             "status": status,
             "progress": progress,
-            "finish_times": finish_times,
-            "monitors": monitors,
         })
         save_task_info(task_dir, meta_final)
         logger.info("Task %s finished  status=%s", name, status)
@@ -266,20 +258,16 @@ def run_task_worker(
 
     except Exception as e:
         meta_err = load_task_info(task_dir)
-        finish_times = meta_err.get("finish_times", [])
-        finish_times.append(get_now_str())
 
         meta_err.update({
             "status": "failed",
             "progress": 0.0,
-            "finish_times": finish_times,
         })
         save_task_info(task_dir, meta_err)
         logger.error("Task %s failed with exception: %s", name, e)
         
         # Write exception to error.log
         try:
-            from pyruns._config import ERROR_LOG_FILENAME
             err_log_path = os.path.join(task_dir, RUN_LOG_DIR, ERROR_LOG_FILENAME)
             timestamp = get_now_str()
             separator = f"\n\n{'!'*40}\n[PYRUNS] INTERNAL ERROR at {timestamp}\n{'!'*40}\n"

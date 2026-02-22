@@ -154,7 +154,7 @@ def _param_cell(
 
             star_icon = "star" if is_starred else "star_border"
             star_color = "text-amber-400" if is_starred else "text-slate-300 hover:text-amber-300"
-            star_tip = "取消收藏" if is_starred else "收藏此参数"
+            star_tip = "Unstar" if is_starred else "Star this parameter"
             ui.button(icon=star_icon, on_click=toggle_star).props(
                 "flat dense round size=xs padding=0"
             ).classes(f"{star_color} min-w-0").style(

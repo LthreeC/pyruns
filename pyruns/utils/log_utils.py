@@ -6,12 +6,12 @@ from typing import Dict, Optional
 _LOG_CONFIG = {
     "console": {
         "level": "INFO",
-        "format": f"\033[32m%(asctime)s \033[33m[%(levelname)s] \033[34m%(name)s:%(lineno)d \033[0m%(message)s",
+        "format": "\033[32m%(asctime)s \033[33m[%(levelname)s] \033[34m%(name)s:%(lineno)d \033[0m%(message)s",
         "datefmt": "%Y-%m-%d %H:%M:%S"
     },
     "file": {
         "level": "DEBUG",
-        "format": f"%(asctime)s [%(levelname)s %(name)s:%(funcName)s:%(lineno)d] %(message)s"
+        "format": "%(asctime)s [%(levelname)s %(name)s:%(funcName)s:%(lineno)d] %(message)s"
     }
 }
 
@@ -62,7 +62,7 @@ def configure_project_root_logger(
         _LIBRARY_ROOT_LOGGER.setLevel("DEBUG")
 
 
-def attach_file_handler(log_path: str, log_config: str = None) -> None:
+def attach_file_handler(log_path: str, log_config: Optional[Dict] = None) -> None:
     global _LIBRARY_ROOT_LOGGER
     log_config = log_config or _LOG_CONFIG
 

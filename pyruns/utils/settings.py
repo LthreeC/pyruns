@@ -13,7 +13,7 @@ from pyruns._config import SETTINGS_FILENAME, ROOT_DIR
 
 _DEFAULTS: Dict[str, Any] = {
     # Server
-    "ui_port": 8080,
+    "ui_port": 8099,
     # Header
     "header_refresh_interval": 3,       # seconds
     # Generator
@@ -23,8 +23,7 @@ _DEFAULTS: Dict[str, Any] = {
     "manager_columns": 5,               # 1-9
     "manager_max_workers": 1,
     "manager_execution_mode": "thread", # thread | process
-    "manager_poll_interval": 0.2,       # seconds
-    "manager_page_size": 50,            # cards per page (0 = show all)
+    "ui_page_size": 50,                 # cards per page (0 = show all)
     # Monitor
     "monitor_poll_interval": 0.03,      # seconds
     "monitor_chunk_size": 50000,        # bytes per chunk
@@ -57,8 +56,7 @@ generator_auto_timestamp: true     # auto-name tasks with timestamp
 manager_columns: 5                 # task card grid columns (1-9)
 manager_max_workers: 1             # parallel worker count
 manager_execution_mode: thread     # thread | process
-manager_poll_interval: 0.2         # polling interval (seconds)
-manager_page_size: 50              # cards per page (0 = show all)
+ui_page_size: 50                   # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────
 monitor_poll_interval: 0.03          # polling interval (seconds)

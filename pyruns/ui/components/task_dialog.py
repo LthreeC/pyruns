@@ -59,7 +59,11 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                     ui.label("No task selected.").classes("p-8 text-slate-400 text-center")
                     return
 
-                info_obj = load_task_info(t["dir"])
+                is_loading = selected.get("loading", False)
+                info_obj = selected.get("info_obj", {})
+                cfg_text = selected.get("cfg_text", "")
+                log_options = selected.get("log_options", {})
+                log_content = selected.get("log_content", "")
                 status = t.get("status", "pending")
                 icon_name = STATUS_ICONS.get(status, "help")
 
@@ -74,7 +78,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                 with header:
                     with ui.row().classes("items-center gap-3 flex-1 min-w-0 flex-nowrap"):
                         ui.icon(icon_name, size="22px", color="white")
-                        # 给标题加上 truncate 和 tooltip
+                        # Add truncate and tooltip to title
                         ui.label(t["name"]).classes(
                             "font-bold text-lg tracking-tight truncate"
                         ).tooltip(t["name"])
@@ -112,21 +116,33 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                     ui.tab("env", label="Env Vars", icon="vpn_key").classes("px-4")
 
                 with ui.tab_panels(tabs, value=tab_value).classes(
-                    "w-full flex-grow overflow-hidden"
+                    "w-full flex-grow overflow-hidden relative"
                 ).style("padding: 0; min-height: 0;"):
 
+                    if is_loading:
+                        with ui.column().classes("absolute inset-0 items-center justify-center bg-white/70 z-10 gap-3"):
+                            ui.spinner('dots', size='3em', color='indigo')
+                            ui.label("Loading task details...").classes("text-slate-500 font-medium")
+
                     _build_tab_task_info(info_obj)
-                    _build_tab_config(t)
-                    _build_tab_run_log(t)
+                    _build_tab_config(t, cfg_text)
+                    _build_tab_run_log(t, log_options, log_content)
                     _build_tab_notes(t, info_obj)
                     _build_tab_env_vars(t, info_obj)
 
             dialog_body()
 
-    def open_task_dialog(task, tab="task_info"):
+    async def open_task_dialog(task, tab="task_info"):
         selected["task"] = task
         selected["tab"] = tab
-        dialog_body.refresh()
+        selected["loading"] = True
+        
+        # Reset data for instantaneous clean popup
+        selected["info_obj"] = {}
+        selected["cfg_text"] = ""
+        selected["log_options"] = {}
+        selected["log_content"] = ""
+        
         task_dialog.open()
         ui.run_javascript("""
             const card = document.querySelector('.task-detail-card');
@@ -136,6 +152,52 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                 card.dataset.dragY = 0;
             }
         """)
+
+        import asyncio
+        from nicegui import run
+        
+        # 1. Let browser paint the dialog instantly
+        await asyncio.sleep(0.01)
+        
+        # 2. Render the skeleton in the dialog body
+        dialog_body.refresh()
+        
+        # 3. Give UI a tick to draw the skeleton
+        await asyncio.sleep(0.01)
+
+        def fetch_data():
+            info = load_task_info(task["dir"])
+            
+            cfg_path = os.path.join(task["dir"], CONFIG_FILENAME)
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = f.read().strip() or "# Empty config"
+            except Exception:
+                cfg = "# No config.yaml"
+                
+            logs = get_log_options(task["dir"])
+            best_path = resolve_log_path(task["dir"]) if logs else None
+            content = "No log files found."
+            if best_path:
+                try:
+                    with open(best_path, "r", encoding="utf-8", errors="replace") as lf:
+                        content = lf.read()
+                except Exception:
+                    content = f"Cannot read {os.path.basename(best_path)}"
+            
+            return info, cfg, logs, content
+
+        try:
+            info, cfg, logs, content = await run.io_bound(fetch_data)
+            selected["info_obj"] = info
+            selected["cfg_text"] = cfg
+            selected["log_options"] = logs
+            selected["log_content"] = content
+        except Exception as e:
+            logger.error(f"Error async loading task dialog data: {e}")
+            
+        selected["loading"] = False
+        dialog_body.refresh()
 
     selected["_dialog"] = task_dialog
     selected["_open_fn"] = open_task_dialog
@@ -155,23 +217,15 @@ def _build_tab_task_info(info_obj):
         readonly_code_viewer(info_text, mode="json")
 
 
-def _build_tab_config(t):
+def _build_tab_config(t, cfg_text):
     """Config tab — readonly YAML viewer (raw file content, preserves original formatting)."""
-    cfg_path = os.path.join(t["dir"], CONFIG_FILENAME)
-    try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            cfg_text = f.read().strip() or "# Empty config"
-    except Exception:
-        cfg_text = "# No config.yaml"
-
     with ui.tab_panel("config"):
         readonly_code_viewer(cfg_text, mode="yaml")
 
 
-def _build_tab_run_log(t):
+def _build_tab_run_log(t, log_options, initial_content):
     """Run Log tab — log viewer with dropdown for run1.log, run2.log, etc."""
     with ui.tab_panel("run.log"):
-        log_options = get_log_options(t["dir"])
         log_names = list(log_options.keys())
 
         if not log_names:
@@ -183,7 +237,6 @@ def _build_tab_run_log(t):
             best_path = resolve_log_path(t["dir"])
             # Find the key (filename) for this path
             initial_name = next((n for n, p in log_options.items() if p == best_path), log_names[-1])
-            initial_path = log_options[initial_name]
 
             # Forward reference: dropdown callback needs to update CodeMirror
             log_cm_ref = [None]
@@ -218,13 +271,6 @@ def _build_tab_run_log(t):
                 else:
                     ui.label(initial_name).classes("text-xs text-slate-400 font-mono")
 
-            # Read initial content
-            try:
-                with open(initial_path, "r", encoding="utf-8", errors="replace") as lf:
-                    initial_content = lf.read()
-            except Exception:
-                initial_content = f"Cannot read {initial_name}"
-
             # CodeMirror — flex fills remaining space
             log_cm_ref[0] = ui.codemirror(
                 value=initial_content, language=None, theme="vscodeDark",
@@ -236,16 +282,16 @@ def _build_tab_run_log(t):
 
 def _build_tab_notes(t, info_obj):
     """Notes tab — editable textarea with save button."""
-    # 1. 在 tab_panel 层级去除 padding (p-0) 和间距 (gap-0)
-    # 使用 flex-col 让其垂直排列，h-full 撑满高度
+    # 1. Remove padding (p-0) and gap (gap-0) from tab_panel
+    # Use flex-col for vertical layout, h-full to fill height
     with ui.tab_panel("notes").classes("p-0 gap-0 flex flex-col h-full w-full"):
         
         notes_val = info_obj.get("notes", "") if isinstance(info_obj, dict) else ""
-        # 使用字典来存储引用，以便回调函数能访问到最新的值
+        # Use dict to store reference so callback can access latest value
         notes_holder = {"text": notes_val} 
 
         # ── Toolbar ──
-        # 保持原有逻辑，border-b 稍微保留一点分割线感觉，或者你可以去掉
+        # Keep original logic, border-b retains a slight divider feel
         with ui.row().classes(
             "w-full items-center justify-between px-5 py-2 flex-none "
             "bg-gradient-to-r from-indigo-50 to-slate-50 "
@@ -263,30 +309,31 @@ def _build_tab_notes(t, info_obj):
                 save_task_info(t["dir"], info)
                 ui.notify("Notes saved", type="positive", icon="check")
 
+            from pyruns.ui.theme import BTN_PRIMARY
             ui.button("Save", icon="save", on_click=save_notes).props(
                 "unelevated dense no-caps size=sm"
-            ).classes("bg-indigo-600 text-white px-4")
+            ).classes(f"{BTN_PRIMARY} px-4")
 
         # ── Textarea ──
-        # 2. 这里的容器去掉 padding (p-0)，背景设为白色
+        # 2. Remove padding (p-0) from this container, set background to white
         with ui.column().classes("w-full flex-grow p-0 m-0 bg-white overflow-hidden"):
             notes_input = ui.textarea(
                 value=notes_val,
                 placeholder="Record experiment results, parameter notes, observations...",
             ).props(
-                # 3. 关键修改：
-                # borderless: 去掉输入框自带的边框
-                # full-width: 宽度铺满
-                # no-resize: 禁止拖拽右下角
+                # 3. Key modifications:
+                # borderless: remove default input border
+                # full-width: fill width
+                # no-resize: disable bottom-right drag handle
                 "borderless full-width no-resize"
             ).classes(
-                # 给文字一些内边距 (px-4 py-3)，否则文字会贴着边缘
+                # Give text some padding (px-4 py-3) so it doesn't hug the edge
                 "w-full h-full font-mono text-sm px-5 py-4 outline-none focus:outline-none"
             ).style(
                 "line-height: 1.6; height: 100%;"
             )
             
-            # 绑定数据更新
+            # Bind data update
             notes_input.on_value_change(
                 lambda e: notes_holder.update({"text": e.value})
             )

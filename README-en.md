@@ -19,6 +19,16 @@ pip install pyruns
 
 ---
 
+## 📚 Documentation
+- 🚀 [Getting Started](docs/getting-started.md) — 5-minute setup guide
+- ⚙️ [Configuration Guide](docs/configuration.md) — Understanding `_pyruns_` structure and settings
+- 🧪 [Batch Syntax](docs/batch-syntax.md) — Deep dive into Product / Zip generation
+- 🖥️ [UI User Guide](docs/ui-guide.md) — Mastering Generator, Manager, and Monitor pages
+- 🛠️ [API Reference](docs/api-reference.md) — Deep integration within your scripts
+- 📐 [Architecture](docs/architecture.md) — Internal design and principles
+
+---
+
 ## 🚀 Quick Start
 
 No need to rewrite your code! Pyruns works out of the box with your existing `argparse` scripts. Simply prefix your python execution with `pyr`.
@@ -34,7 +44,6 @@ We have provided an `examples/` directory to help you get started quickly. Pyrun
 
 ### 1. Generator: Configure & Batch Tasks
 Load YAML configs or parse `argparse`, edit hyperparameters in a structured auto-generated form, and utilize powerful batch generation syntax to queue up hundreds of experiments instantly!
-> **[Place Screenshot of Generator Page Here - showing the form and batch syntax preview]**
 
 **Basic Usage: Argparse (No Code Changes)**
 See `examples/1_argparse_script/main.py`. Pyruns will automatically read your `argparse` definitions and build the Generator UI for you.
@@ -55,12 +64,10 @@ print(f"Loading config items: {config.learning_rate}")
 ```
 
 ### 2. Manager: Task Grid & Bulk Actions
-A clean, card-grid overview of all your generated tasks. Filter by status (Queued, Running, Failed), search by name, and bulk-run your experiments utilizing multiple background workers.  
-> **[Place Screenshot of Manager Page Here - showing the grid of task cards]**
+A clean, card-grid overview of all your generated tasks. Filter by status (Queued, Running, Failed), search by name, and bulk-run your experiments utilizing multiple background workers.
 
 ### 3. Monitor: Live Logs & Metrics Logging
 Click into any running task to view real-time ANSI-colored terminal logs. Use `pyruns.add_monitor()` in your scripts to record training metrics, making it easy to export bulk CSV reports later!
-> **[Place Screenshot of Monitor Page Here - showing the terminal log view]**
 
 **Advanced Usage: Logging Metrics**
 See `examples/3_metrics_logging/train.py`. Add one line of code to easily track model loss, accuracy, and epochs during training! 
@@ -100,14 +107,16 @@ experiment_name: (exp_a | exp_b | exp_c)
 ## ⚙️ Workspace Configuration
 
 When launched, `pyr` automatically initializes a `_pyruns_` workspace directory alongside your script. 
-Inside, you'll find `_pyruns_settings.yaml`. 
+Inside, you'll find `tasks/` (storing all task runs), `config_default.yaml`, and `_pyruns_settings.yaml`. 
 
 You can edit this file to modify UI layout, default port, parallel worker counts, and polling rates!
 ```yaml
-ui_port: 8080                      # Web UI port
+ui_port: 8099                      # Web UI port
 generator_form_columns: 2          # Grid columns in generator
 manager_max_workers: 4             # Number of scripts to run in parallel
 manager_execution_mode: thread     # Run using threads or processes
+monitor_poll_interval: 1.0         # Monitor log polling interval (seconds)
+log_enabled: false                 # Enable file logging
 ```
 
 ---

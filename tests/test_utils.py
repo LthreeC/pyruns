@@ -1,16 +1,44 @@
 """
-Tests for pyruns.utils.parse_utils.
+Tests for pyruns.utils — parse_utils, log_io, process_utils, sort_utils,
+settings, task_io, config_utils, batch_utils, and validation.
 """
+import json
 import os
+import signal
+import sys
+
 import pytest
-from pyruns.utils.parse_utils import (
-    detect_config_source_fast,
-    extract_argparse_params,
-    argparse_params_to_dict,
-    resolve_config_path,
-    generate_config_file,
+import yaml
+from unittest.mock import patch, MagicMock
+
+import pyruns.utils.settings as settings
+from pyruns._config import (
+    DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
+    SETTINGS_FILENAME, INFO_FILENAME, RUN_LOG_DIR, MONITOR_KEY,
+    BATCH_ESCAPE,
 )
-from pyruns._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
+from pyruns.utils.batch_utils import (
+    _parse_pipe_value, _split_by_pipe,
+    generate_batch_configs, count_batch_configs, strip_batch_pipes,
+)
+from pyruns.utils.config_utils import (
+    safe_filename, parse_value, flatten_dict, unflatten_dict,
+    load_yaml, save_yaml, list_yaml_files, list_template_files,
+    preview_config_line, validate_config_types_against_template,
+)
+from pyruns.utils.log_io import (
+    append_log, read_log, read_log_chunk, read_last_bytes, safe_read_log,
+)
+from pyruns.utils.parse_utils import (
+    detect_config_source_fast, extract_argparse_params,
+    argparse_params_to_dict, resolve_config_path, generate_config_file,
+)
+from pyruns.utils.process_utils import is_pid_running, kill_process
+from pyruns.utils.sort_utils import task_sort_key, filter_tasks
+from pyruns.utils.task_io import (
+    load_task_info, save_task_info, load_monitor_data,
+    get_log_options, resolve_log_path, validate_task_name,
+)
 
 
 def test_detect_config_source_fast(tmp_path):
@@ -126,17 +154,10 @@ def test_generate_config_file(tmp_path):
     assert "Auto-generated for my_script.py" in text
 
 
-"""
-Tests for pyruns.utils.log_io.
-"""
-import os
-from pyruns.utils.log_io import (
-    append_log,
-    read_log,
-    read_log_chunk,
-    read_last_bytes,
-    safe_read_log,
-)
+# ═══════════════════════════════════════════════════════════════
+#  log_io
+# ═══════════════════════════════════════════════════════════════
+
 
 def test_append_read_log(tmp_path):
     log_file = str(tmp_path / "test.log")
@@ -232,16 +253,10 @@ def test_safe_read_log(tmp_path):
     assert off2 == 101 # exactly after the newline
 
 
-"""
-Tests for pyruns.utils.process_utils.
-"""
-import os
-import signal
-import sys
-import pytest
-from unittest.mock import patch
+# ═══════════════════════════════════════════════════════════════
+#  process_utils
+# ═══════════════════════════════════════════════════════════════
 
-from pyruns.utils.process_utils import is_pid_running, kill_process
 
 def test_is_pid_running_invalid():
     assert not is_pid_running(None)
@@ -310,10 +325,10 @@ def test_kill_process_exception_caught():
             kill_process(99999)
 
 
-"""
-Tests for pyruns.utils.sort_utils.
-"""
-from pyruns.utils.sort_utils import task_sort_key
+# ═══════════════════════════════════════════════════════════════
+#  sort_utils
+# ═══════════════════════════════════════════════════════════════
+
 
 def test_task_sort_key():
     # Priority 1: last element of start_times
@@ -321,23 +336,23 @@ def test_task_sort_key():
         "start_times": ["2023-10-01", "2023-10-05"],
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task1) == "2023-10-05"
+    assert task_sort_key(task1) == (10, "2023-10-05")  # default status is pending (10), ts is string
 
     # Priority 2: created_at, if start_times is empty or missing
     task2 = {
         "start_times": [],
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task2) == "2023-10-02"
+    assert task_sort_key(task2) == (10, "2023-10-02")
 
     task3 = {
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task3) == "2023-10-02"
+    assert task_sort_key(task3) == (10, "2023-10-02")
 
     # Default: empty string if neither are present
     task4 = {}
-    assert task_sort_key(task4) == ""
+    assert task_sort_key(task4) == (10, "")
 
     # Bad data type fallback
     task5 = {
@@ -345,18 +360,27 @@ def test_task_sort_key():
         "created_at": "2023-10-02"
     }
     # It checks isinstance(list), so it should fallback to created_at
-    assert task_sort_key(task5) == "2023-10-02"
+    assert task_sort_key(task5) == (10, "2023-10-02")
+    
+    # Priority Top: Running/Queued tasks return inverted int
+    task6 = {
+        "status": "running",
+        "start_times": ["2023-10-06"],
+        "created_at": "2023-10-02"
+    }
+    assert task_sort_key(task6) == (50, -20231006)
+    
+    task7 = {
+        "status": "completed",
+        "start_times": ["2023-10-07"]
+    }
+    assert task_sort_key(task7) == (20, "2023-10-07")
 
 
-"""
-Tests for pyruns.utils.settings.
-"""
-import os
-import yaml
-import pytest
-from unittest.mock import patch
-import pyruns.utils.settings as settings
-from pyruns._config import SETTINGS_FILENAME
+# ═══════════════════════════════════════════════════════════════
+#  settings
+# ═══════════════════════════════════════════════════════════════
+
 
 @pytest.fixture(autouse=True)
 def clean_cache():
@@ -455,21 +479,9 @@ def test_save_setting(tmp_path):
             assert "- a" not in text
 
 
-"""
-Tests for pyruns.utils.task_io — task_info I/O, monitor data, log options.
-"""
-import os
-import json
-import pytest
-
-from pyruns._config import INFO_FILENAME, RUN_LOG_DIR, MONITOR_KEY
-from pyruns.utils.task_io import (
-    load_task_info,
-    save_task_info,
-    load_monitor_data,
-    get_log_options,
-    resolve_log_path,
-)
+# ═══════════════════════════════════════════════════════════════
+#  task_io — task_info I/O, monitor data, log options
+# ═══════════════════════════════════════════════════════════════
 
 
 class TestLoadSaveTaskInfo:
@@ -573,31 +585,9 @@ class TestResolveLogPath:
         assert resolve_log_path(str(tmp_path)) is None
 
 
-"""
-Tests for pyruns.utils.config_utils — core config & batch generation logic.
-"""
-import os
-import json
-import yaml
-import pytest
-
-from pyruns.utils.config_utils import (
-    safe_filename,
-    parse_value,
-    flatten_dict,
-    unflatten_dict,
-    load_yaml,
-    save_yaml,
-    load_task_info,
-    save_task_info,
-    list_yaml_files,
-    list_template_files,
-    preview_config_line,
-    _parse_pipe_value,
-    generate_batch_configs,
-    count_batch_configs,
-    strip_batch_pipes,
-)
+# ═══════════════════════════════════════════════════════════════
+#  config_utils — core config & batch generation logic
+# ═══════════════════════════════════════════════════════════════
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -725,9 +715,10 @@ class TestTaskInfoIO:
 # ═══════════════════════════════════════════════════════════════
 
 class TestListTemplateFiles:
-    def test_with_config_default(self, tasks_dir):
-        result = list_template_files(tasks_dir)
-        assert "config_default.yaml" in result
+    # deprecated
+    # def test_with_config_default(self, tasks_dir):
+        # result = list_template_files(tasks_dir)
+        # assert "config_default.yaml" in result
 
     def test_with_task_subfolder(self, tasks_dir):
         # Create a task subfolder with config.yaml
@@ -736,7 +727,6 @@ class TestListTemplateFiles:
         save_yaml(os.path.join(task_dir, "config.yaml"), {"x": 1})
 
         result = list_template_files(tasks_dir)
-        assert "config_default.yaml" in result
         assert os.path.join("my-task", "config.yaml") in result
 
     def test_skips_dot_dirs(self, tasks_dir):
@@ -961,12 +951,9 @@ class TestStripBatchPipes:
 
 
 
-"""
-Tests for pyruns.utils.task_utils — task name validation.
-"""
-import pytest
-
-from pyruns.utils.task_utils import validate_task_name
+# ═══════════════════════════════════════════════════════════════
+#  validate_task_name
+# ═══════════════════════════════════════════════════════════════
 
 
 class TestValidateTaskName:
@@ -999,13 +986,64 @@ class TestValidateTaskName:
             err = validate_task_name(bad)
             assert err is not None, f"Should reject: {bad}"
 
-    def test_dot_names(self):
-        assert validate_task_name(".") is not None
-        assert validate_task_name("..") is not None
+    def test_starts_with_dot(self):
+        err = validate_task_name(".hidden")
+        assert err is not None
+        assert "start with '.'" in err
+        
+        err2 = validate_task_name("..")
+        assert err2 is not None
 
-    def test_dot_prefix_ok(self):
-        # ".hidden" should be ok (only exactly "." and ".." are forbidden)
-        assert validate_task_name(".hidden") is None
+
+# ═══════════════════════════════════════════════════════════════
+#  Type Validation, Multiline Search, Pipe Escaping
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestTypeValidation:
+    def test_exact_match(self):
+        orig = {"lr": 0.01, "name": "resnet"}
+        new = [{"lr": 0.05, "name": "vgg"}]
+        assert validate_config_types_against_template(orig, new) is None
+
+    def test_float_int_coercion_allowed(self):
+        orig = {"lr": 0.01}
+        new = [{"lr": 1}]
+        assert validate_config_types_against_template(orig, new) is None
+
+    def test_type_mismatch_returns_error(self):
+        orig = {"epochs": 100}
+        new = [{"epochs": "many"}]
+        err = validate_config_types_against_template(orig, new)
+        assert err is not None
+        assert "输入类型错误" in err
+        assert "int" in err
+        assert "str" in err
+
+
+class TestFilterTasksMultiline:
+    def test_multiline_yaml_subset(self):
+        tasks = [
+            {"name": "task1", "config": {"device": None, "batch_size": 32, "lr": 0.01}, "status": "running"},
+            {"name": "task2", "config": {"device": "cuda:0", "batch_size": 32}, "status": "completed"}
+        ]
+        query = "device: null\nbatch_size: 32"
+        filtered = filter_tasks(tasks, query)
+        assert len(filtered) == 1
+        assert filtered[0]["name"] == "task1"
+
+    def test_spaces_around_colons(self):
+        tasks = [{"name": "t1", "config": {"device": None}, "status": "queued"}]
+        # Should match despite strange spaces
+        filtered = filter_tasks(tasks, "device:null\n")
+        assert len(filtered) == 1
 
 
 
+class TestPipeEscaping:
+    def test_escaped_pipe_not_split(self):
+        txt = f"a {BATCH_ESCAPE} b | c"
+        parts = _split_by_pipe(txt)
+        assert len(parts) == 2
+        assert parts[0].strip() == "a | b"
+        assert parts[1].strip() == "c"

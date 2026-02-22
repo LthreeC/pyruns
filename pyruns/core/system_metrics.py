@@ -3,13 +3,13 @@ System metrics collector – CPU, RAM, GPU via psutil + nvidia-smi.
 """
 import psutil
 import subprocess
-import threading
 from typing import List, Dict, Any
 
 
 class SystemMonitor:
+    """Collect CPU, RAM, and (optional) GPU utilisation metrics."""
+
     def __init__(self):
-        self._lock = threading.Lock()
         self._gpu_cache: List[Dict[str, Any]] = []
 
     def sample(self) -> Dict[str, Any]:

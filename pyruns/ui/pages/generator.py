@@ -13,16 +13,22 @@ import yaml
 from nicegui import ui
 from typing import Dict, Any
 
-from pyruns.utils.config_utils import (
-    load_yaml, generate_batch_configs,
-    list_template_files,
-)
+from pyruns.utils.config_utils import load_yaml, list_template_files
+from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils import get_logger, get_now_str
 from pyruns.ui.components.param_editor import recursive_param_editor
 from pyruns.ui.components.batch_dialog import show_batch_confirm
-from pyruns.ui.theme import INPUT_PROPS, BTN_CLASS
+from pyruns.ui.theme import (
+    INPUT_PROPS, BTN_CLASS,
+    GENERATOR_HEADER_CLASSES, GENERATOR_WORKSPACE_CLASSES,
+    GENERATOR_LEFT_COL_CLASSES, GENERATOR_RIGHT_COL_CLASSES,
+    GENERATOR_TOOLBAR_CLASSES, GENERATOR_SETTINGS_CARD_CLASSES,
+    EMPTY_STATE_COL_CLASSES, EMPTY_STATE_ICON_SIZE,
+    EMPTY_STATE_ICON_CLASSES, EMPTY_STATE_TEXT_CLASSES,
+    BATCH_HINT_BOX_CLASSES, BATCH_HINT_TITLE_CLASSES,
+    BATCH_HINT_FOOTER_CLASSES
+)
 from pyruns.ui.widgets import dir_picker, _ensure_css
-from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -46,10 +52,7 @@ def render_generator_page(
     # ══════════════════════════════════════════════════════════
     #  Row 1 — Config loading bar
     # ══════════════════════════════════════════════════════════
-    with ui.row().classes(
-        "w-full items-center gap-2 mb-2 px-3 py-1.5 bg-white "
-        "border-b border-slate-200 sticky top-0 z-10 shadow-sm"
-    ):
+    with ui.row().classes(GENERATOR_HEADER_CLASSES):
         tasks_dir_input = dir_picker(
             value=state["tasks_dir"],
             label="Tasks Root",
@@ -68,7 +71,7 @@ def render_generator_page(
         with ui.row().classes("items-center gap-1"):
             tpl_lock = ui.icon("lock", size="16px").classes("text-slate-300")
             tpl_lock.tooltip(
-                "模板只读 — 编辑不会修改 config_default.yaml 原始文件"
+                "Templates are read-only — edits will not modify original default config"
             )
             tpl_lock.set_visibility(False)
 
@@ -76,7 +79,9 @@ def render_generator_page(
             if not file_select.value:
                 return
             val = file_select.value
-            if val.startswith(".."):
+            if os.path.isabs(val):
+                path = val
+            elif val.startswith(".."):
                 path = os.path.abspath(
                     os.path.join(state["tasks_dir"], val)
                 )
@@ -117,11 +122,11 @@ def render_generator_page(
     # ══════════════════════════════════════════════════════════
     #  Row 2 — Main Workspace (Side-by-side)
     # ══════════════════════════════════════════════════════════
-    # 使用 h-[calc...] 确保在大屏上最大化利用空间
-    with ui.row().classes("w-full gap-1 flex-nowrap items-start h-full"):
+    # Use h-[calc...] to ensure maximum space utilization on large screens
+    with ui.row().classes(GENERATOR_WORKSPACE_CLASSES):
 
         # ── LEFT: Parameter editor (Flexible Width) ──
-        with ui.column().classes("flex-grow min-w-0 h-full"):
+        with ui.column().classes(GENERATOR_LEFT_COL_CLASSES):
 
             @ui.refreshable
             def editor_area() -> None:
@@ -155,7 +160,7 @@ def render_generator_page(
             _editor_area_ref[0] = editor_area
 
         # ── RIGHT: Settings & generate button ──
-        with ui.column().classes("w-96 flex-none sticky top-4"):
+        with ui.column().classes(GENERATOR_RIGHT_COL_CLASSES):
             _settings_panel(
                 state, view_mode, yaml_holder,
                 task_generator, task_manager,
@@ -171,10 +176,7 @@ def _editor_toolbar(
     view_mode, form_cols, expansions_ref,
     state, yaml_holder, editor_area,
 ) -> None:
-    with ui.row().classes(
-        "w-full items-center justify-between px-3 py-1 mb-0 "
-        "bg-white border-b border-slate-200 shadow-sm"
-    ):
+    with ui.row().classes(GENERATOR_TOOLBAR_CLASSES):
         with ui.row().classes("items-center gap-2"):
             ui.icon("tune", size="20px").classes("text-indigo-500")
             ui.label("Parameters").classes(
@@ -237,30 +239,28 @@ def _editor_toolbar(
 def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager):
     from pyruns.utils.settings import get as _get_ws_setting
 
-    with ui.card().classes(
-        "w-full p-3 shadow-sm bg-white border border-slate-100"
-    ):
+    with ui.card().classes(GENERATOR_SETTINGS_CARD_CLASSES):
         ui.label("Generation Settings").classes(
             "text-sm font-bold mb-2 text-slate-800"
         )
 
         ui.input(
             value=state["task_name_input"],
-            placeholder="e.g. baseline-run",
+            placeholder="task",
             label="Task Name (= Folder Name)",
         ).props(INPUT_PROPS).classes("w-full mb-1").on_value_change(
             lambda e: state.update({"task_name_input": e.value})
         )
 
         use_ts_chk = ui.checkbox(
-            "名称为空时自动使用时间戳命名",
+            "Append timestamp suffix to task name",
             value=bool(_get_ws_setting("generator_auto_timestamp", True)),
         ).props("dense color=indigo").classes("text-xs text-slate-500 mb-3")
 
         _batch_syntax_hint()
         ui.separator().classes("mb-2")
 
-        def handle_generate() -> None:
+        async def handle_generate():
             if view_mode["current"] == "yaml":
                 if not _sync_yaml_to_config(yaml_holder["text"], state):
                     return
@@ -271,17 +271,13 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager)
 
             prefix = state["task_name_input"].strip()
             if not prefix:
-                if use_ts_chk.value:
-                    prefix = f"task_{get_now_str()}"
-                else:
-                    ui.notify(
-                        "请输入任务名称，或勾选自动时间戳命名",
-                        type="warning", icon="warning",
-                    )
-                    return
+                prefix = "task"
+                
+            if use_ts_chk.value:
+                prefix = f"{prefix}_{get_now_str()}"
 
-            from pyruns.utils.task_utils import validate_task_name
-            err = validate_task_name(prefix)
+            from pyruns.utils.task_io import validate_task_name
+            err = validate_task_name(prefix, task_manager.root_dir)
             if err:
                 ui.notify(
                     f"Invalid task name: {err}",
@@ -296,32 +292,47 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager)
                 ui.notify(str(e), type="negative", icon="error")
                 return
 
+            # --- Type Checking against Original Template ---
+            if state.get("config_path") and os.path.exists(state["config_path"]):
+                from pyruns.utils.config_utils import load_yaml, validate_config_types_against_template
+                try:
+                    orig_config = load_yaml(state["config_path"])
+                    err_msg = validate_config_types_against_template(orig_config, configs)
+                    if err_msg:
+                        ui.notify(err_msg, type="negative", icon="error", multi_line=True, timeout=5000)
+                        return
+                except Exception as e:
+                    logger.warning(f"Type check failed to read template: {e}")
+            # ---------------------------------------------
+
             if len(configs) == 1:
-                tasks = task_generator.create_tasks(configs, prefix)
-                task_manager.add_tasks(tasks)
-                state["_manager_dirty"] = True
-                logger.info("Generated %d task(s) with prefix '%s'", len(configs), prefix)
-                ui.notify(
-                    f"Generated {len(configs)} task",
-                    type="positive", icon="add_circle",
-                )
+                try:
+                    from nicegui import run
+                    tasks = await run.io_bound(task_generator.create_tasks, configs, prefix)
+                    task_manager.add_tasks(tasks)
+                    logger.info("Generated %d task(s) with prefix '%s'", len(configs), prefix)
+                    ui.notify(
+                        f"Generated {len(configs)} task",
+                        type="positive", icon="add_circle",
+                    )
+                except Exception as e:
+                    ui.notify(f"Generation error: {e}", type="negative", icon="error")
             else:
                 show_batch_confirm(
                     configs, prefix, state["config_data"],
                     task_generator, task_manager, state,
                 )
 
+        from pyruns.ui.theme import BTN_PRIMARY
         ui.button(
             "GENERATE", on_click=handle_generate,
         ).props("unelevated icon=rocket_launch").classes(
-            f"w-full bg-indigo-600 text-white font-bold tracking-wide "
-            f"py-2 hover:bg-indigo-700 shadow-md hover:shadow-lg "
-            f"{BTN_CLASS} text-sm"
+            f"{BTN_PRIMARY} w-full text-sm font-bold py-2 tracking-wide rounded"
         )
 
         ui.label(
-            "无 | 语法 → 直接生成  ·  有 | 语法 → 确认后批量生成"
-        ).classes("text-[10px] text-slate-400 mt-3 text-center w-full")
+            "No | → Direct Gen  .  Given | → Batch Gen After Confirm"
+        ).classes(BATCH_HINT_FOOTER_CLASSES)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -336,11 +347,11 @@ def _set_cols(n: int, form_cols: dict, editor_area) -> None:
 
 def _toggle_btn(label: str, icon: str, active: bool, on_click) -> None:
     if active:
+        from pyruns.ui.theme import BTN_PRIMARY
         ui.button(label, icon=icon, on_click=on_click).props(
             "unelevated no-caps size=md"
         ).classes(
-            "bg-indigo-600 text-white font-bold px-5 py-1.5 "
-            "shadow-md text-sm tracking-wide"
+            f"{BTN_PRIMARY} px-5 py-1.5 font-bold text-sm tracking-wide rounded"
         )
     else:
         ui.button(label, icon=icon, on_click=on_click).props(
@@ -417,30 +428,20 @@ def _render_yaml_view(yaml_holder: dict) -> None:
 
 
 def _empty_editor_placeholder() -> None:
-    with ui.column().classes("w-full items-center justify-center py-20"):
-        ui.icon("description", size="48px").classes("text-slate-200")
-        ui.label("No config loaded").classes("text-slate-400 italic mt-2")
+    with ui.column().classes(EMPTY_STATE_COL_CLASSES):
+        ui.icon("description", size=EMPTY_STATE_ICON_SIZE).classes(EMPTY_STATE_ICON_CLASSES)
+        ui.label("No config loaded").classes(EMPTY_STATE_TEXT_CLASSES)
 
 
 def _batch_syntax_hint() -> None:
-    with ui.column().classes(
-        "w-full gap-1 mb-3 px-2 py-1.5 "
-        "bg-slate-50 border border-slate-100"
-    ):
+    with ui.column().classes(BATCH_HINT_BOX_CLASSES):
         with ui.row().classes("items-center gap-1"):
             ui.icon("info_outline", size="13px").classes("text-indigo-400")
-            ui.label("批量语法").classes(
-                "text-[10px] font-bold text-slate-600"
-            )
+            ui.label("Batch Syntax").classes(BATCH_HINT_TITLE_CLASSES)
+        from pyruns.ui.theme import get_generator_batch_hint_html
+        from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE
+        
         ui.html(
-            '<span style="font-family:monospace;font-size:10px;color:#475569;">'
-            '<b style="color:#6366f1;">Product</b>: '
-            '<code style="background:#e0e7ff;padding:0 3px;border-radius:2px;">'
-            "lr: 0.001 | 0.01 | 0.1</code><br>"
-            '<b style="color:#8b5cf6;">Zip</b>: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'
-            '<code style="background:#ede9fe;padding:0 3px;border-radius:2px;">'
-            "seed: (1 | 2 | 3)</code><br>"
-            '<span style="color:#94a3b8;">Total = ∏(product) × zip_len</span>'
-            "</span>",
+            get_generator_batch_hint_html(BATCH_SEPARATOR, BATCH_ESCAPE),
             sanitize=False,
         )

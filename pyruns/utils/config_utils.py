@@ -50,6 +50,7 @@ def parse_value(val_str: str) -> Any:
 
 
 def flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
+    """Flatten a nested dict using dotted keys: ``{a: {b: 1}}`` → ``{'a.b': 1}``."""
     items = []
     for k, v in d.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
@@ -61,6 +62,7 @@ def flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dic
 
 
 def unflatten_dict(d: Dict[str, Any], sep: str = '.') -> Dict[str, Any]:
+    """Reverse of ``flatten_dict``: ``{'a.b': 1}`` → ``{a: {b: 1}}``."""
     result = {}
     for k, v in d.items():
         parts = k.split(sep)
@@ -82,9 +84,10 @@ def list_template_files(tasks_dir: str) -> Dict[str, str]:
 
     options: Dict[str, str] = {}
 
-    # config_default.yaml in tasks_dir
-    if os.path.exists(os.path.join(tasks_dir, CONFIG_DEFAULT_FILENAME)):
-        options[CONFIG_DEFAULT_FILENAME] = "config_default"
+    from pyruns._config import ROOT_DIR
+    default_path = os.path.abspath(os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME))
+    if os.path.exists(default_path):
+        options[default_path] = "config_default"
 
     # config.yaml inside each task subfolder (use dir name, skip task_info I/O)
     try:
@@ -134,13 +137,33 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
         result = result[:max_len - 3] + "..."
     return result
 
-# Backward compatibility: re-export from task_io (canonical location)
-from pyruns.utils.task_io import load_task_info, save_task_info  # noqa: F401
 
-# Backward compatibility: re-export from batch_utils (canonical location)
-from pyruns.utils.batch_utils import (  # noqa: F401
-    _parse_pipe_value,
-    generate_batch_configs,
-    count_batch_configs,
-    strip_batch_pipes,
-)
+def validate_config_types_against_template(orig_config: Dict[str, Any], new_configs: List[Dict[str, Any]]) -> str | None:
+    """Ensure generated configs match the primitive types of the original template.
+    
+    Allows int -> float coercions, and permits strings where anything goes.
+    Returns an error message string if a mismatch is found, or None if fully valid.
+    """
+    flat_orig = flatten_dict(orig_config)
+    for config in new_configs:
+        flat_new = flatten_dict(config)
+        for k, v in flat_new.items():
+            if k in flat_orig:
+                ov = flat_orig[k]
+                if ov is None or isinstance(ov, str):
+                    continue  # strings or null are untyped wildcards
+                
+                t_o = type(ov)
+                t_n = type(v)
+                
+                if t_o == float and t_n == int:
+                    continue  # safe coercion
+                    
+                if t_o != t_n:
+                    return (
+                        f"输入类型错误!\n"
+                        f"参数 '{k}' 原本是 {t_o.__name__}，"
+                        f"但实际生成了 {t_n.__name__} 类型的 '{v}'。\n"
+                        f"请检查并在生成器中重新输入纯{t_o.__name__}内容。"
+                    )
+    return None

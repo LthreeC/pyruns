@@ -9,13 +9,29 @@ import itertools
 from typing import Dict, Any, List, Optional, Tuple
 
 from pyruns.utils.config_utils import flatten_dict, unflatten_dict, parse_value
+from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
 #  Pipe Parsing
 # ═══════════════════════════════════════════════════════════════
 
+def _split_by_pipe(text: str) -> List[str]:
+    """Split string by BATCH_SEPARATOR, ignoring escaped instances (BATCH_ESCAPE)."""
+    if not text:
+        return []
+    # Temporarily replace escaped separators with a null byte
+    temp_char = "\x00"
+    temp = text.replace(BATCH_ESCAPE, temp_char)
+    parts = temp.split(BATCH_SEPARATOR)
+    # Restore the separator in each part and strip whitespace
+    return [p.replace(temp_char, BATCH_SEPARATOR).strip() for p in parts if p.strip()]
+
 def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
+
     """Detect pipe syntax and determine mode per-value.
 
     Returns None if no pipe syntax found.
@@ -28,18 +44,50 @@ def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
     s = value.strip()
 
     # Zip syntax: (xxx | yyy | zzz)
-    if s.startswith("(") and s.endswith(")") and "|" in s:
+    if s.startswith("(") and s.endswith(")") and BATCH_SEPARATOR in s:
         inner = s[1:-1]
-        parts = [p.strip() for p in inner.split("|") if p.strip()]
+        parts = _split_by_pipe(inner)
         if len(parts) > 1:
             return (parts, "zip")
         return None
 
+    # Range syntax 1: (start, stop, step) or (start, stop)
+    if s.startswith("(") and s.endswith(")") and "," in s and BATCH_SEPARATOR not in s:
+        inner = s[1:-1]
+        parts = [p.strip() for p in inner.split(",")]
+        try:
+            int_parts = [int(p) for p in parts]
+            if len(int_parts) in (2, 3):
+                start = int_parts[0]
+                stop = int_parts[1]
+                step = int_parts[2] if len(int_parts) == 3 else 1
+                generated = [str(x) for x in range(start, stop, step)]
+                if generated:
+                    return (generated, "product")
+        except ValueError:
+            pass
+
+    # Range syntax 2: start:stop:step or start:stop
+    if ":" in s and BATCH_SEPARATOR not in s and "{" not in s and "[" not in s:
+        parts = [p.strip() for p in s.split(":")]
+        try:
+            int_parts = [int(p) for p in parts]
+            if len(int_parts) in (2, 3):
+                start = int_parts[0]
+                stop = int_parts[1]
+                step = int_parts[2] if len(int_parts) == 3 else 1
+                generated = [str(x) for x in range(start, stop, step)]
+
+                if generated:
+                    logger.debug("Parsed range: %s -> %d items (start=%s)", s, len(generated), generated[0])
+                    return (generated, "product")
+        except ValueError:
+            pass
+
     # Product syntax: xxx | yyy
-    if "|" in s:
-        parts = [p.strip() for p in s.split("|") if p.strip()]
-        if len(parts) > 1:
-            return (parts, "product")
+    parts = _split_by_pipe(s)
+    if len(parts) > 1:
+        return (parts, "product")
 
     return None
 

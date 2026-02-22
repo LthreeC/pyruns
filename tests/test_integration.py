@@ -4,17 +4,18 @@ Integration tests for the full batch generation flow:
 
 This tests the end-to-end flow that the Generator UI drives.
 """
-import os
 import json
-import yaml
-import pytest
+import os
 
-from pyruns.utils.config_utils import (
-    load_yaml,
-    save_yaml,
-    generate_batch_configs,
-    count_batch_configs,
-    strip_batch_pipes,
+import pytest
+import yaml
+
+from pyruns._config import (
+    DEFAULT_ROOT_NAME, INFO_FILENAME, MONITOR_KEY, ENV_CONFIG,
+)
+from pyruns.utils.config_utils import load_yaml, save_yaml
+from pyruns.utils.batch_utils import (
+    generate_batch_configs, count_batch_configs, strip_batch_pipes,
 )
 from pyruns.core.task_generator import TaskGenerator
 
@@ -26,7 +27,7 @@ class TestEndToEndBatchFlow:
     def test_full_product_flow(self, tmp_path):
         """User loads config_default, adds product pipes, generates."""
         # 1. Create a config_default.yaml
-        root = tmp_path / "_pyruns_"
+        root = tmp_path / DEFAULT_ROOT_NAME
         root.mkdir()
         original = {"lr": 0.001, "epochs": 100, "model": "resnet"}
         save_yaml(str(root / "config_default.yaml"), original)
@@ -52,7 +53,7 @@ class TestEndToEndBatchFlow:
         lr_values = set()
         model_values = set()
         for i, task in enumerate(tasks):
-            assert task["name"] == f"my-exp-[{i+1}-of-6]"
+            assert task["name"] == f"my-exp_[{i+1}-of-6]"
             cfg_path = os.path.join(task["dir"], "config.yaml")
             cfg = load_yaml(cfg_path)
             lr_values.add(cfg["lr"])
@@ -196,15 +197,9 @@ class TestEndToEndBatchFlow:
         assert stripped["fixed"] == "hello"
 
 
-
-"""
-Tests for pyruns.add_monitor — run-aggregated monitor data API.
-"""
-import os
-import json
-import pytest
-
-from pyruns._config import INFO_FILENAME, MONITOR_KEY
+# ═══════════════════════════════════════════════════════════════
+#  add_monitor
+# ═══════════════════════════════════════════════════════════════
 
 
 class TestAddMonitor:
@@ -230,7 +225,7 @@ class TestAddMonitor:
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
 
-        monkeypatch.setenv("PYRUNS_CONFIG", config_path)
+        monkeypatch.setenv(ENV_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor(epoch=1, loss=0.5)
@@ -247,7 +242,7 @@ class TestAddMonitor:
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv("PYRUNS_CONFIG", config_path)
+        monkeypatch.setenv(ENV_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor(epoch=1)
@@ -268,7 +263,7 @@ class TestAddMonitor:
         ])
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv("PYRUNS_CONFIG", config_path)
+        monkeypatch.setenv(ENV_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor(epoch=10, loss=0.1)
@@ -285,7 +280,7 @@ class TestAddMonitor:
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv("PYRUNS_CONFIG", config_path)
+        monkeypatch.setenv(ENV_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor({"a": 1}, b=2)
@@ -304,7 +299,7 @@ class TestAddMonitor:
 
     def test_silent_outside_pyr(self, monkeypatch):
         """add_monitor should silently return when PYRUNS_CONFIG is not set."""
-        monkeypatch.delenv("PYRUNS_CONFIG", raising=False)
+        monkeypatch.delenv(ENV_CONFIG, raising=False)
         import pyruns
         pyruns.add_monitor(epoch=1)  # should not raise
 
@@ -313,7 +308,7 @@ class TestAddMonitor:
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv("PYRUNS_CONFIG", config_path)
+        monkeypatch.setenv(ENV_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor()

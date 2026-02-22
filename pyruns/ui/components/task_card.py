@@ -35,31 +35,37 @@ def render_task_card(
     """Render one task card."""
     status = t.get("status", "pending")
     card_style = STATUS_CARD_STYLES.get(status, "border-slate-200 bg-white")
-    is_selected = t["id"] in state.get("selected_task_ids", [])
+    is_selected = t["name"] in state.get("selected_task_ids", [])
     highlight = "ring-2 ring-indigo-400 ring-offset-1" if is_selected else ""
 
     card = ui.card().classes(
         f"w-full border {card_style} {highlight} shadow-sm "
         f"hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden"
     ).style("min-height: 148px")
+    
+    state.setdefault("_manager_cards", {})[t["name"]] = card
 
     card.on("click", lambda _e=None, t=t: open_task_dialog(t))
 
     with card:
         # ── Header row: checkbox + name + pin ──
-        with ui.row().classes("w-full items-start px-3 pt-3 pb-1 gap-2 flex-nowrap"):
-            def on_check(e, tid=t["id"]):
-                if e.value:
+        with ui.row().classes("w-full items-start px-3 pt-3 pb-0 gap-2 flex-nowrap"):
+            def on_check(e, tid=t["name"]):
+                is_checked = e.value
+                if is_checked:
                     if tid not in state["selected_task_ids"]:
                         state["selected_task_ids"].append(tid)
+                    card.classes(add="ring-2 ring-indigo-400 ring-offset-1")
                 else:
                     if tid in state["selected_task_ids"]:
                         state["selected_task_ids"].remove(tid)
-                refresh_ui()
+                    card.classes(remove="ring-2 ring-indigo-400 ring-offset-1")
 
-            ui.checkbox(value=is_selected, on_change=on_check).props(
+            cb = ui.checkbox(value=is_selected, on_change=on_check).props(
                 "dense color=indigo size=xs"
-            ).classes("mt-0.5").on("click", js_handler="(e) => e.stopPropagation()")
+            ).classes("mt-0.5 task-checkbox").on("click", js_handler="(e) => e.stopPropagation()")
+            
+            state.setdefault("_manager_checkboxes", {})[t["name"]] = cb
 
             with ui.column().classes("flex-grow gap-0.5 min-w-0"):
                 ui.label(t["name"]).classes(
@@ -143,27 +149,29 @@ def _card_action_btn(icon: str, tooltip: str, on_click: Callable):
 
 
 def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
+    tid = t["name"]
     if status in ("pending", "failed"):
-        def run_single(tid=t["id"]):
+        def run_single(*args):
             task_manager.start_batch_tasks([tid], state.get("execution_mode", "thread"), 1)
             ui.notify("Started 1 task", type="positive", icon="play_arrow")
-            refresh_tasks()
+            # Don't call refresh_tasks() here — it does refresh_from_disk() which
+            # overwrites in-memory "queued" with on-disk "pending" (IO thread not done).
+            # trigger_update() in start_batch_tasks already fires observer callbacks.
 
         ui.button("RUN", icon="play_arrow", on_click=run_single).props(
             "unelevated no-caps dense size=sm"
         ).classes(
             f"text-white text-[11px] px-3 bg-emerald-600 hover:bg-emerald-700 "
             f"shadow-sm {BTN_CLASS}"
-        )
+        ).on("click", js_handler="(e) => e.stopPropagation()")
 
     elif status in ("running", "queued"):
-        def cancel_single(tid=t["id"]):
+        def cancel_single(*args):
             ok = task_manager.cancel_task(tid)
             if ok:
                 ui.notify("Task stopped", type="warning", icon="stop")
             else:
                 ui.notify("Cannot cancel this task", type="negative")
-            refresh_tasks()
 
         with ui.row().classes("items-center gap-1.5"):
             if status == "running":
@@ -173,23 +181,22 @@ def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
             ).classes(
                 f"text-white text-[11px] px-3 bg-rose-600 hover:bg-rose-700 "
                 f"shadow-sm {BTN_CLASS}"
-            )
+            ).on("click", js_handler="(e) => e.stopPropagation()")
 
     elif status == "completed":
-        def rerun_single(tid=t["id"]):
+        def rerun_single(*args):
             ok = task_manager.rerun_task(tid)
             if ok:
                 ui.notify("Rerun started", type="positive", icon="replay")
             else:
                 ui.notify("Cannot rerun this task", type="negative")
-            refresh_tasks()
 
         with ui.row().classes("items-center gap-1.5"):
             ui.icon("check_circle", size="20px").classes("text-emerald-500")
+            from pyruns.ui.theme import BTN_PRIMARY
             ui.button("RERUN", icon="replay", on_click=rerun_single).props(
                 "unelevated no-caps dense size=sm"
             ).classes(
-                f"text-white text-[11px] px-3 bg-indigo-600 hover:bg-indigo-700 "
-                f"shadow-sm {BTN_CLASS}"
-            )
+                f"{BTN_PRIMARY} px-3 text-[11px]"
+            ).on("click", js_handler="(e) => e.stopPropagation()")
 

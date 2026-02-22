@@ -69,6 +69,8 @@ def main(*, reload: bool = False):
 
     fresh_root = os.getenv(_cfg.ENV_ROOT, _cfg.ROOT_DIR)
     _cfg.ROOT_DIR = fresh_root
+    abs_tasks_dir = os.path.join(fresh_root, _cfg.TASKS_DIR)
+    os.makedirs(abs_tasks_dir, exist_ok=True)
 
     # Load workspace settings
     from pyruns.utils.settings import load_settings, ensure_settings_file
@@ -76,8 +78,14 @@ def main(*, reload: bool = False):
     ensure_settings_file(fresh_root)
     _settings = load_settings(fresh_root)
 
-    task_generator = TaskGenerator(root_dir=fresh_root)
-    task_manager = TaskManager(root_dir=fresh_root)
+    logger.debug("--- DIRECTORY DEBUG ---")
+    logger.debug(f"fresh_root: {fresh_root}")
+    logger.debug(f"_cfg.ROOT_DIR: {_cfg.ROOT_DIR}")
+    logger.debug(f"_cfg.TASKS_DIR: {_cfg.TASKS_DIR}")
+
+    task_generator = TaskGenerator(root_dir=abs_tasks_dir)
+    logger.debug(f"TaskGenerator instantiated with root_dir={task_generator.root_dir}")
+    task_manager = TaskManager(root_dir=abs_tasks_dir)
     metrics_sampler = SystemMonitor()
     logger.info("Pyruns initialised  root=%s  port=%s", fresh_root, _settings.get("ui_port", 8080))
 
@@ -90,7 +98,6 @@ def main(*, reload: bool = False):
         show=True,
         reload=reload,
         uvicorn_reload_dirs=pkg_dir if reload else ".",
-        uvicorn_reload_excludes="task_info.json,*.log,*.yaml,run_logs,*.lock,**/*.json,**/run_logs/**",
         favicon="🧪",
     )
 

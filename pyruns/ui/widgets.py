@@ -148,11 +148,84 @@ def readonly_code_viewer(content: str, mode: str = "text") -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def section_header(
-    title: str, icon: str = "list", extra_classes: str = ""
+    title: str, icon: str = "folder", extra_classes: str = ""
 ) -> None:
-    """Lightweight icon + title section divider."""
-    with ui.row().classes(f"items-center gap-2 {extra_classes}"):
-        ui.icon(icon, size="16px").classes("text-slate-400")
+    """Render a unified bold separator header."""
+    with ui.row().classes(f"w-full items-center gap-2 mt-2 mb-1 px-1 {extra_classes}"):
+        ui.icon(icon, size="16px").classes("text-indigo-600")
         ui.label(title).classes(
-            "text-xs font-bold text-slate-500 uppercase tracking-wider"
+            "text-sm font-black tracking-wide text-slate-700"
         )
+        ui.separator().classes("flex-grow")
+
+# ═══════════════════════════════════════════════════════════════
+#  Pagination widget
+# ═══════════════════════════════════════════════════════════════
+
+def pagination_controls(
+    page_state: dict,
+    total_pages: int,
+    on_change: Callable[[], None],
+    container_classes: str = "items-center gap-1",
+    align: str = "center", # 'center' or 'between' or 'end'
+    full_width: bool = False,
+    compact: bool = False,
+) -> None:
+    """Render a reusable page selector with Jump-to-Page input."""
+    if total_pages <= 1:
+        return
+
+    cur = page_state.get("value", 0)
+
+    def _prev():
+        if page_state["value"] > 0:
+            page_state["value"] -= 1
+            on_change()
+
+    def _next():
+        if page_state["value"] < total_pages - 1:
+            page_state["value"] += 1
+            on_change()
+
+    def _jump_page(e):
+        try:
+            target = int(e.value) - 1
+            if 0 <= target < total_pages:
+                if page_state["value"] != target:
+                    page_state["value"] = target
+                    on_change()
+            else:
+                e.sender.value = page_state["value"] + 1
+        except ValueError:
+            pass
+
+    width_cls = "w-full" if full_width else "w-auto"
+    wrap_cls = f"{width_cls} items-center justify-{align} {container_classes} flex-nowrap shrink-0"
+
+    btn_size = "xs" if compact else "sm"
+    btn_px = "px-1" if compact else "px-2"
+    num_w = "w-12" if compact else "w-14"
+    text_sz = "text-[10px]" if compact else "text-[11px]"
+
+    with ui.row().classes(wrap_cls):
+        b_prev = ui.button(icon="chevron_left", on_click=_prev).props(
+            f"outline dense size={btn_size} color=indigo"
+        ).classes(f"shadow-sm {btn_px} py-0 min-w-[20px] shrink-0")
+        if cur <= 0:
+            b_prev.props(add="disable")
+
+        with ui.row().classes("items-center gap-1 flex-nowrap shrink-0"):
+            ui.number(
+                value=cur + 1, min=1, max=total_pages, step=1, on_change=_jump_page
+            ).props('dense outlined debounce="500"').classes(
+                f"{num_w} text-center {text_sz}"
+            )
+            ui.label(f"/ {total_pages}").classes(
+                f"{text_sz} font-mono font-bold text-slate-600 shrink-0"
+            )
+
+        b_next = ui.button(icon="chevron_right", on_click=_next).props(
+            f"outline dense size={btn_size} color=indigo"
+        ).classes(f"shadow-sm {btn_px} py-0 min-w-[20px] shrink-0")
+        if cur >= total_pages - 1:
+            b_next.props(add="disable")

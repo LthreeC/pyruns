@@ -1,6 +1,5 @@
 import ast
 import os
-import re
 import yaml
 from typing import Dict, Any, Optional, Tuple
 
@@ -8,6 +7,7 @@ from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 
 def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
+    """Detect how a script reads its config: 'pyruns_read', 'pyruns_load', 'argparse', or 'unknown'."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
@@ -27,8 +27,6 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
                         arg = node.args[0]
                         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                             arg_val = arg.value
-                        elif hasattr(ast, 'Str') and isinstance(arg, getattr(ast, 'Str')):
-                            arg_val = arg.s
                     return ("pyruns_read", arg_val)
 
                 if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "load":
@@ -47,15 +45,9 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
 
 
 def _extract_value(node: ast.AST) -> Any:
+    """Extract a Python literal value from an AST node."""
     if isinstance(node, ast.Constant):
         return node.value
-    if hasattr(ast, 'Str') and isinstance(node, getattr(ast, 'Str')):
-        return node.s
-    if hasattr(ast, 'Num') and isinstance(node, getattr(ast, 'Num')):
-        return node.n
-    if hasattr(ast, 'NameConstant') and isinstance(node, getattr(ast, 'NameConstant')):
-        return node.value
-
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.List):
@@ -68,6 +60,7 @@ def _extract_value(node: ast.AST) -> Any:
 
 
 def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
+    """Parse a script's AST to extract ``add_argument`` calls and their metadata."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             tree = ast.parse(f.read(), filename=filepath)
@@ -107,10 +100,12 @@ def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
 
 
 def argparse_params_to_dict(params: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Convert extracted argparse params to a simple ``{key: default}`` dict."""
     return {key: info.get("default") for key, info in params.items()}
 
 
 def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
+    """Resolve a config path against script dir, absolute path, or cwd."""
     script_relative = os.path.join(script_dir, config_path)
     if os.path.exists(script_relative):
         return os.path.abspath(script_relative)
@@ -126,6 +121,7 @@ def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
 
 
 def generate_config_file(filepath: str, params: Dict[str, Dict[str, Any]]) -> str:
+    """Auto-generate ``config_default.yaml`` from argparse params. Returns the _pyruns_ directory."""
     file_dir = os.path.dirname(os.path.abspath(filepath))
     pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
     os.makedirs(pyruns_dir, exist_ok=True)

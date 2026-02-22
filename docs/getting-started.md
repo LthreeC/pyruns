@@ -130,18 +130,20 @@ pyr train.py
 
 运行 `pyr train.py` 后生成的文件结构：
 
-```
+```text
 your_project/
 ├── train.py                          # 你的脚本
-└── _pyruns_/                         # 任务根目录
+└── _pyruns_/                         # 工作区根目录
     ├── config_default.yaml           # 自动生成的默认配置
-    ├── baseline/                     # 任务目录
-    │   ├── task_info.json            # 任务元数据（状态、时间、PID）
-    │   ├── config.yaml               # 此任务的参数快照
-    │   └── run.log                   # 运行日志
-    ├── baseline-[1-of-3]/            # 批量任务
-    │   ├── ...
-    └── .trash/                       # 软删除的任务
+    ├── _pyruns_settings.yaml         # GUI 设置文件
+    └── tasks/                        # 任务根目录
+        ├── baseline/                 # 具体任务目录
+        │   ├── task_info.json        # 任务元数据（状态、时间、PID）
+        │   ├── config.yaml           # 此任务的参数快照
+        │   └── run.log               # 运行日志
+        ├── baseline-[1-of-3]/        # 批量任务
+        │   ├── ...
+        └── .trash/                   # 软删除的任务
 ```
 
 ## 环境变量

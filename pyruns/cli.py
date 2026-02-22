@@ -149,7 +149,7 @@ def _launch_dev(script_arg: str):
         sys.exit(1)
 
     _setup_env(filepath)
-    print(f"[pyruns dev] Hot-reload enabled — editing .py files will auto-restart")
+    print("[pyruns dev] Hot-reload enabled — editing .py files will auto-restart")
     print(f"[pyruns dev] Script: {filepath}")
     _sp.run([sys.executable, "-m", "pyruns.ui.app"])
 

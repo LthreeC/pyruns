@@ -6,6 +6,7 @@ They contain NO business logic (no status transitions, no scheduling, etc.).
 """
 import os
 import json
+import re
 from typing import Dict, Any, List, Optional
 
 from pyruns._config import (
@@ -44,8 +45,7 @@ def load_monitor_data(task_dir: str) -> List[Dict[str, Any]]:
 def get_log_options(task_dir: str) -> Dict[str, str]:
     """Return {display_name: file_path} for all available log files.
 
-    Scans the new ``run_logs/`` directory for ``runN.log`` files, and also
-    checks for legacy ``run.log`` / ``rerun_logs/`` for backward compat.
+    Scans the new ``run_logs/`` directory for ``runN.log`` files.
     """
     opts: Dict[str, str] = {}
 
@@ -86,4 +86,32 @@ def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Opti
         cached = [(f, p, os.path.getmtime(p)) for f, p in opts.items()]
         cached.sort(key=lambda x: x[2], reverse=True)
         return cached[0][1]
+    return None
+
+
+
+# Characters invalid in folder names (Windows + Unix)
+_INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[str]:
+    """
+    Validate whether a task name can be used as a folder name.
+    Returns None if valid, or an error message string if invalid.
+    """
+    if not name or not name.strip():
+        return "Task name cannot be empty"
+    name = name.strip()
+    if len(name) > 200:
+        return "Task name is too long (max 200 characters)"
+    bad = _INVALID_CHARS_RE.findall(name)
+    if bad:
+        return f"Task name contains invalid characters: {''.join(set(bad))}"
+    if name.startswith("."):
+        return "Task name cannot start with '.'"
+    
+    if root_dir:
+        if os.path.exists(os.path.join(root_dir, name)):
+            return f"Task name '{name}' already exists in the current workspace"
+            
     return None

@@ -36,23 +36,39 @@ def render_main_layout(
         # Sidebar column
         render_sidebar(state, lambda tab: switch_tab(tab))
 
-        # Content column — fills the remaining space
-        with ui.column().classes("flex-grow min-w-0 gap-0"):
+        # Content column — fills the remaining space (relative anchor for absolute children)
+        with ui.column().classes("flex-grow min-w-0 gap-0 h-full relative").style("height: 100%;"):
             containers: Dict[str, ui.element] = {}
             rendered: set = set()
 
             for tab in _TAB_NAMES:
-                c = ui.column().classes(f"w-full gap-0 flex-grow overflow-y-auto")
-                c.set_visibility(False)
+                c = ui.column().classes(
+                    "w-full h-full gap-0 flex-nowrap overflow-hidden absolute inset-0 "
+                    "transition-opacity duration-200 ease-in-out"
+                ).style("height: 100%; min-height: 0;")
+                c.classes("opacity-0 pointer-events-none")
                 containers[tab] = c
 
     def switch_tab(tab: str) -> None:
         """Show *tab* and hide the rest; lazy-render on first visit."""
         state["active_tab"] = tab
 
-        # Toggle visibility (instant CSS show/hide, no DOM rebuild)
+        # Notify tab change observers (if any)
+        for cb in state.get("on_tab_change", []):
+            try:
+                res = cb(tab)
+                if hasattr(res, "__await__"):
+                    from nicegui.background_tasks import create
+                    create(res)
+            except Exception:
+                pass
+
+        # Toggle opacity instead of v-if visibility to allow CSS transitions
         for name, c in containers.items():
-            c.set_visibility(name == tab)
+            if name == tab:
+                c.classes(remove="opacity-0 pointer-events-none", add="opacity-100 z-10")
+            else:
+                c.classes(remove="opacity-100 z-10", add="opacity-0 pointer-events-none")
 
         # Render content once, on first visit
         if tab not in rendered:
@@ -62,7 +78,15 @@ def render_main_layout(
 
     # Render & show the initial tab
     initial = state["active_tab"]
-    rendered.add(initial)
-    containers[initial].set_visibility(True)
-    with containers[initial]:
-        page_renderers[initial]()
+    
+    # We must mark ALL tabs as rendered so they pre-build into the HTML,
+    # otherwise the CSS opacity fade won't work on first click because 
+    # the DOM node doesn't exist yet.
+    for tab in _TAB_NAMES:
+        rendered.add(tab)
+        with containers[tab]:
+            page_renderers[tab]()
+            
+    containers[initial].classes(
+        remove="opacity-0 pointer-events-none", add="opacity-100 z-10"
+    )

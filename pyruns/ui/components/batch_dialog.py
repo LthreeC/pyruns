@@ -7,7 +7,8 @@ and displays a clear breakdown with value previews.
 from nicegui import ui
 from typing import Dict, Any, List
 
-from pyruns.utils.config_utils import flatten_dict, _parse_pipe_value
+from pyruns.utils.config_utils import flatten_dict
+from pyruns.utils.batch_utils import _parse_pipe_value
 
 
 def show_batch_confirm(
@@ -64,7 +65,7 @@ def _dialog_header(n: int) -> None:
         "bg-gradient-to-r from-indigo-600 to-indigo-700"
     ):
         ui.icon("batch_prediction", size="24px", color="white")
-        ui.label("批量生成确认").classes("text-lg font-bold text-white")
+        ui.label("Batch Generation Confirm").classes("text-lg font-bold text-white")
         ui.space()
         ui.badge(f"{n} tasks").props("color=white text-color=indigo-8")
 
@@ -73,10 +74,10 @@ def _naming_preview(prefix: str, n: int) -> None:
     with ui.column().classes("gap-1.5"):
         with ui.row().classes("items-center gap-2"):
             ui.icon("label", size="16px").classes("text-indigo-400")
-            ui.label(f"任务前缀: {prefix}").classes(
+            ui.label(f"Task Prefix: {prefix}").classes(
                 "text-sm text-slate-700 font-medium"
             )
-        fmt_str = f"{prefix}-[1-of-{n}]  ~  {prefix}-[{n}-of-{n}]"
+        fmt_str = f"{prefix}_[1-of-{n}]  ~  {prefix}_[{n}-of-{n}]"
         ui.label(fmt_str).classes(
             "text-xs font-mono text-slate-500 bg-slate-50 "
             "px-3 py-1.5 border border-slate-100"
@@ -103,7 +104,7 @@ def _product_section(product_params: Dict[str, List[str]], product_total: int) -
     with ui.column().classes("gap-2"):
         with ui.row().classes("items-center gap-1.5"):
             ui.icon("shuffle", size="14px").classes("text-indigo-500")
-            ui.label("Product 参数 (笛卡尔积)").classes(
+            ui.label("Product Parameters").classes(
                 "text-[11px] font-bold text-indigo-600 uppercase tracking-wider"
             )
             ui.badge(
@@ -122,7 +123,7 @@ def _zip_section(zip_params: Dict[str, List[str]]) -> None:
     with ui.column().classes("gap-2"):
         with ui.row().classes("items-center gap-1.5"):
             ui.icon("link", size="14px").classes("text-purple-500")
-            ui.label("Zip 参数 (配对组合)").classes(
+            ui.label("Zip Parameters").classes(
                 "text-[11px] font-bold text-purple-600 uppercase tracking-wider"
             )
             ui.badge(f"× {zip_count}").props(
@@ -159,27 +160,34 @@ def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state=
     with ui.row().classes(
         "w-full justify-end gap-3 px-6 py-4 bg-slate-50 border-t border-slate-100"
     ):
-        ui.button("取消", on_click=dlg.close).props("flat no-caps").classes(
+        ui.button("Cancel", on_click=dlg.close).props("flat no-caps").classes(
             "text-slate-500"
         )
 
-        def do_generate():
-            tasks = task_generator.create_tasks(configs, prefix)
-            task_manager.add_tasks(tasks)
-            if state is not None:
-                state["_manager_dirty"] = True
-            ui.notify(
-                f"Generated {n} tasks: {prefix}-[1-of-{n}] ~ {prefix}-[{n}-of-{n}]",
-                type="positive",
-                icon="grid_view",
-            )
+        async def do_generate():
             dlg.close()
+            ui.notify("Generating tasks in background...", type="info")
+            try:
+                from nicegui import run
+                tasks = await run.io_bound(task_generator.create_tasks, configs, prefix)
+                task_manager.add_tasks(tasks)
+                if state is not None:
+                    state["_manager_dirty"] = True
+                ui.notify(
+                    f"Generated {n} tasks: {prefix}_[1-of-{n}] ~ {prefix}_[{n}-of-{n}]",
+                    type="positive",
+                    icon="grid_view",
+                )
+            except Exception as e:
+                ui.notify(f"Generation error: {e}", type="negative", icon="error")
+
+        from pyruns.ui.theme import BTN_PRIMARY
 
         ui.button(
-            f"确认生成 {n} 个任务",
+            f"Confirm Generate {n} Tasks",
             icon="rocket_launch",
             on_click=do_generate,
         ).props("unelevated no-caps").classes(
-            "bg-indigo-600 text-white px-5 rounded-lg font-bold"
+            f"{BTN_PRIMARY} px-5 rounded-lg font-bold"
         )
 
