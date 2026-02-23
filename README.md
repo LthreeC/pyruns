@@ -29,9 +29,9 @@ pip install pyruns
 
 ## 🚀 快速开始
 
-无需修改现有代码！Pyruns 开箱即用，自动兼容你的 `argparse` 脚本；
+- 模式1：无需修改现有代码！Pyruns 开箱即用，自动兼容你的 `argparse` 脚本；
 
-或可自行写一个config.yaml对应pyruns.load来实现加载参数、
+- 模式2：自行写一个config.yaml对应pyruns.load来实现加载参数、
 
 ### CLI 命令用法
 
