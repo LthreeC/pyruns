@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 
 from pyruns.utils.config_utils import flatten_dict
 from pyruns.utils.batch_utils import _parse_pipe_value
+from pyruns.ui.theme import DIALOG_HEADER_PRIMARY
 
 
 def show_batch_confirm(
@@ -18,6 +19,7 @@ def show_batch_confirm(
     task_generator,
     task_manager,
     state: Dict[str, Any] = None,
+    on_success=None,
 ) -> None:
     """Open a dialog that summarises the batch and lets the user confirm."""
     n = len(configs)
@@ -51,7 +53,7 @@ def show_batch_confirm(
                 _zip_section(zip_params)
             _total_formula(product_params, zip_params, n)
 
-        _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state)
+        _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state, on_success)
 
     dlg.open()
 
@@ -60,10 +62,7 @@ def show_batch_confirm(
 
 
 def _dialog_header(n: int) -> None:
-    with ui.row().classes(
-        "w-full items-center gap-3 px-6 py-4 "
-        "bg-gradient-to-r from-indigo-600 to-indigo-700"
-    ):
+    with ui.row().classes(DIALOG_HEADER_PRIMARY):
         ui.icon("batch_prediction", size="24px", color="white")
         ui.label("Batch Generation Confirm").classes("text-lg font-bold text-white")
         ui.space()
@@ -156,7 +155,7 @@ def _total_formula(
         )
 
 
-def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state=None) -> None:
+def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state=None, on_success=None) -> None:
     with ui.row().classes(
         "w-full justify-end gap-3 px-6 py-4 bg-slate-50 border-t border-slate-100"
     ):
@@ -180,6 +179,9 @@ def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, state=
                 )
             except Exception as e:
                 ui.notify(f"Generation error: {e}", type="negative", icon="error")
+                
+            if on_success:
+                on_success()
 
         from pyruns.ui.theme import BTN_PRIMARY
 

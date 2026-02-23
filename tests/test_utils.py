@@ -1,6 +1,6 @@
 """
 Tests for pyruns.utils — parse_utils, log_io, process_utils, sort_utils,
-settings, task_io, config_utils, batch_utils, and validation.
+settings, info_io, config_utils, batch_utils, and validation.
 """
 import json
 import os
@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 import pyruns.utils.settings as settings
 from pyruns._config import (
     DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
-    SETTINGS_FILENAME, INFO_FILENAME, RUN_LOG_DIR, MONITOR_KEY,
+    SETTINGS_FILENAME, TASK_INFO_FILENAME, RUN_LOG_DIR, MONITOR_KEY,
     BATCH_ESCAPE,
 )
 from pyruns.utils.batch_utils import (
@@ -35,7 +35,7 @@ from pyruns.utils.parse_utils import (
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
-from pyruns.utils.task_io import (
+from pyruns.utils.info_io import (
     load_task_info, save_task_info, load_monitor_data,
     get_log_options, resolve_log_path, validate_task_name,
 )
@@ -140,10 +140,13 @@ def test_generate_config_file(tmp_path):
         "epochs": {"name": "--epochs", "default": 10},
     }
     
-    pyruns_dir = generate_config_file(str(p_script), params)
-    assert os.path.basename(pyruns_dir) == DEFAULT_ROOT_NAME
+    pyruns_dir = os.path.join(str(tmp_path), DEFAULT_ROOT_NAME, "my_script")
+    pyruns_dir_res = generate_config_file(pyruns_dir, str(p_script), params)
+    assert pyruns_dir_res == pyruns_dir
+    assert os.path.basename(pyruns_dir_res) == "my_script"
+    assert os.path.basename(os.path.dirname(pyruns_dir_res)) == DEFAULT_ROOT_NAME
     
-    cfg_path = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)
+    cfg_path = os.path.join(pyruns_dir_res, CONFIG_DEFAULT_FILENAME)
     assert os.path.exists(cfg_path)
     
     with open(cfg_path, "r", encoding="utf-8") as f:
@@ -480,7 +483,7 @@ def test_save_setting(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  task_io — task_info I/O, monitor data, log options
+#  info_io — task_info/script_info I/O, monitor data, log options
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -496,13 +499,13 @@ class TestLoadSaveTaskInfo:
         assert load_task_info(str(tmp_path)) == {}
 
     def test_load_corrupt_json(self, tmp_path):
-        path = os.path.join(str(tmp_path), INFO_FILENAME)
+        path = os.path.join(str(tmp_path), TASK_INFO_FILENAME)
         with open(path, "w") as f:
             f.write("{invalid json")
         assert load_task_info(str(tmp_path)) == {}
 
     def test_load_corrupt_raises_when_requested(self, tmp_path):
-        path = os.path.join(str(tmp_path), INFO_FILENAME)
+        path = os.path.join(str(tmp_path), TASK_INFO_FILENAME)
         with open(path, "w") as f:
             f.write("{invalid json")
         with pytest.raises(json.JSONDecodeError):
@@ -742,26 +745,28 @@ class TestTaskInfoIO:
 # ═══════════════════════════════════════════════════════════════
 
 class TestListTemplateFiles:
-    # deprecated
-    # def test_with_config_default(self, tasks_dir):
-        # result = list_template_files(tasks_dir)
-        # assert "config_default.yaml" in result
-
-    def test_with_task_subfolder(self, tasks_dir):
-        # Create a task subfolder with config.yaml
+    def test_with_task_subfolder(self, tmp_path):
+        run_root = str(tmp_path)
+        tasks_dir = os.path.join(run_root, "tasks")
+        
+        # Create a task subfolder with config.yaml inside `tasks/`
         task_dir = os.path.join(tasks_dir, "my-task")
-        os.makedirs(task_dir)
+        os.makedirs(task_dir, exist_ok=True)
         save_yaml(os.path.join(task_dir, "config.yaml"), {"x": 1})
 
-        result = list_template_files(tasks_dir)
-        assert os.path.join("my-task", "config.yaml") in result
+        result = list_template_files(run_root)
+        # the key is now tasks/my-task/config.yaml using forward slashes
+        assert "tasks/my-task/config.yaml" in result
 
-    def test_skips_dot_dirs(self, tasks_dir):
+    def test_skips_dot_dirs(self, tmp_path):
+        run_root = str(tmp_path)
+        tasks_dir = os.path.join(run_root, "tasks")
+        
         trash = os.path.join(tasks_dir, ".trash")
-        os.makedirs(trash)
+        os.makedirs(trash, exist_ok=True)
         save_yaml(os.path.join(trash, "config.yaml"), {"x": 1})
 
-        result = list_template_files(tasks_dir)
+        result = list_template_files(run_root)
         # .trash should be skipped
         for key in result:
             assert ".trash" not in key

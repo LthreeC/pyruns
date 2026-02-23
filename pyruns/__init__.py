@@ -5,9 +5,10 @@ import time
 from typing import Any, Dict, Optional
 
 from .core.config_manager import ConfigManager
-from .utils.task_io import load_task_info, save_task_info
+from .utils.info_io import load_task_info, save_task_info
 from ._config import ROOT_DIR, ENV_CONFIG, CONFIG_DEFAULT_FILENAME, MONITOR_KEY
 
+import sys
 from importlib.metadata import version, PackageNotFoundError
 try:
     __version__ = version("pyruns")
@@ -16,6 +17,18 @@ except PackageNotFoundError:
 
 
 _global_config_manager_ = ConfigManager()
+
+def _get_default_config_path() -> str:
+    from ._config import DEFAULT_ROOT_NAME
+    if os.environ.get(ENV_ROOT):
+        return os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
+        
+    script_path = sys.argv[0] if sys.argv else ""
+    if script_path and os.path.isfile(script_path):
+        script_base = os.path.splitext(os.path.basename(script_path))[0]
+        return os.path.join(os.getcwd(), DEFAULT_ROOT_NAME, script_base, CONFIG_DEFAULT_FILENAME)
+    
+    return os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
 
 
 def read(file_path: str = None):
@@ -34,7 +47,17 @@ def read(file_path: str = None):
 
     # 直接 python 运行: 使用指定路径或默认路径
     if not file_path:
-        file_path = os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
+        file_path = _get_default_config_path()
+        
+    if not os.path.exists(file_path) and not os.environ.get(ENV_CONFIG):
+        from ._config import DEFAULT_ROOT_NAME
+        script_name = os.path.basename(sys.argv[0]) if sys.argv else "script.py"
+        script_base = os.path.splitext(script_name)[0]
+        print(f"\n\033[93m[pyruns] Config not found: {file_path}\033[0m\n"
+              f"You can either:\n"
+              f"  1. Manually create the config file at {DEFAULT_ROOT_NAME}/{script_base}/{CONFIG_DEFAULT_FILENAME}\n"
+              f"  2. Or use CLI to import one: `pyr {script_name} your_config.yaml`\n")
+              
     return _global_config_manager_.read(file_path)
 
 
@@ -47,9 +70,18 @@ def load():
             _global_config_manager_.read(pyr_config)
         else:
             # Fallback: try default config path
-            default_path = os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
+            default_path = _get_default_config_path()
             if os.path.exists(default_path):
                 _global_config_manager_.read(default_path)
+            else:
+                from ._config import DEFAULT_ROOT_NAME
+                script_name = os.path.basename(sys.argv[0]) if sys.argv else "script.py"
+                script_base = os.path.splitext(script_name)[0]
+                print(f"\n\033[93m[pyruns] Config not found: {default_path}\033[0m\n"
+                      f"You can either:\n"
+                      f"  1. Manually create the config file at {DEFAULT_ROOT_NAME}/{script_base}/{CONFIG_DEFAULT_FILENAME}\n"
+                      f"  2. Or use CLI to import one: `pyr {script_name} your_config.yaml`\n")
+
     return _global_config_manager_.load()
 
 def ensure_config_default(root_dir: str = None):

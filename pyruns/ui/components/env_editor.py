@@ -3,6 +3,7 @@ Environment Variable Editor — PyCharm-style key=value table with add/remove/sa
 """
 from nicegui import ui
 from typing import Dict, List, Callable
+from pyruns.ui.theme import TOOLBAR_LIGHT
 
 
 def env_var_editor(
@@ -36,11 +37,7 @@ def env_var_editor(
         with ui.column().classes("w-full h-full gap-0"):
 
             # ── Toolbar ──
-            with ui.row().classes(
-                "w-full items-center justify-between px-5 py-2.5 flex-none "
-                "bg-gradient-to-r from-indigo-50 to-slate-50 "
-                "border-b border-indigo-100"
-            ):
+            with ui.row().classes(TOOLBAR_LIGHT):
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("vpn_key", size="18px").classes("text-indigo-500")
                     ui.label(f"Environment Variables · {len(rows)}").classes(

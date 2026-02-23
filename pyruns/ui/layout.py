@@ -62,6 +62,10 @@ def render_main_layout(
                     create(res)
             except Exception:
                 pass
+                
+        # Broadcast globally via our new simple event bus
+        from pyruns.utils.events import event_sys
+        event_sys.emit("on_tab_change", tab)
 
         # Toggle opacity instead of v-if visibility to allow CSS transitions
         for name, c in containers.items():

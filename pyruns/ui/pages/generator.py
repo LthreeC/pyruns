@@ -14,6 +14,7 @@ from nicegui import ui
 from typing import Dict, Any
 
 from pyruns.utils.config_utils import load_yaml, list_template_files
+from pyruns.utils.info_io import load_script_info, save_script_info
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils import get_logger, get_now_str
 from pyruns.ui.components.param_editor import recursive_param_editor
@@ -53,13 +54,15 @@ def render_generator_page(
     #  Row 1 — Config loading bar
     # ══════════════════════════════════════════════════════════
     with ui.row().classes(GENERATOR_HEADER_CLASSES):
-        tasks_dir_input = dir_picker(
-            value=state["tasks_dir"],
-            label="Tasks Root",
-            on_change=lambda path: (
-                state.update({"tasks_dir": path}),
-                refresh_files(),
-            ),
+        curr_run_root = str(state.get("run_root")).replace("\\", "/")
+
+        def _on_dir_change(p):
+            state["change_run_root"](p)
+
+        run_root_input = dir_picker(
+            value=curr_run_root,
+            label="Run Root",
+            on_change=_on_dir_change,
             input_classes="flex-grow",
         )
 
@@ -69,9 +72,10 @@ def render_generator_page(
 
         # Read-only indicator for config_default.yaml
         with ui.row().classes("items-center gap-1"):
+            from pyruns._config import CONFIG_DEFAULT_FILENAME
             tpl_lock = ui.icon("lock", size="16px").classes("text-slate-300")
             tpl_lock.tooltip(
-                "Templates are read-only — edits will not modify original default config"
+                f"Templates are read-only — edits will not modify original {CONFIG_DEFAULT_FILENAME}"
             )
             tpl_lock.set_visibility(False)
 
@@ -79,16 +83,25 @@ def render_generator_page(
             if not file_select.value:
                 return
             val = file_select.value
+            curr_run_root = str(state.get("run_root")).replace("\\", "/")
+            
+            # Save the last used template
+            try:
+                s_info = load_script_info(curr_run_root)
+                s_info["last_used_template"] = val
+                save_script_info(curr_run_root, s_info)
+            except Exception as e:
+                logger.error("Failed to save last_used_template: %s", e)
+            
             if os.path.isabs(val):
                 path = val
             elif val.startswith(".."):
-                path = os.path.abspath(
-                    os.path.join(state["tasks_dir"], val)
-                )
+                path = os.path.abspath(os.path.join(curr_run_root, val))
             else:
-                path = os.path.join(state["tasks_dir"], val)
+                path = os.path.join(curr_run_root, val)
 
-            tpl_lock.set_visibility("config_default" in val)
+            from pyruns._config import CONFIG_DEFAULT_FILENAME
+            tpl_lock.set_visibility(CONFIG_DEFAULT_FILENAME in val)
 
             if os.path.exists(path):
                 config_data = load_yaml(path)
@@ -103,14 +116,31 @@ def render_generator_page(
 
         file_select.on_value_change(on_file_select_change)
 
-        def refresh_files() -> None:
-            state["tasks_dir"] = tasks_dir_input.value
-            options = list_template_files(state["tasks_dir"])
-            file_select.options = options
-            if options and not file_select.value:
-                file_select.value = list(options.keys())[0]
-            if file_select.value:
-                on_file_select_change()
+        def refresh_files(new_selection=None) -> None:
+            curr_run_root = str(state.get("run_root")).replace("\\", "/")
+            options = list_template_files(curr_run_root)
+            file_select.set_options(options)
+            file_select.update()
+            
+            # Auto-select the newly generated one if requested
+            if new_selection and new_selection in options:
+                file_select.value = new_selection
+                return
+                
+            # If nothing selected and default exists, select it
+            if not file_select.value and file_select.options:
+                target_val = None
+                s_info = load_script_info(curr_run_root)
+                last_used = s_info.get("last_used_template")
+                if last_used and last_used in options:
+                    target_val = last_used
+                else:
+                    target_val = list(options.keys())[0]
+
+                if target_val and target_val != file_select.value:
+                    file_select.value = target_val
+                elif target_val:
+                    on_file_select_change()
 
         ui.button(
             icon="refresh", on_click=refresh_files
@@ -118,6 +148,19 @@ def render_generator_page(
 
         if not file_select.options:
             refresh_files()
+
+        # ── Listen for run_root changes from other pages ──
+        from pyruns.utils.events import event_sys
+
+        def _on_root_changed(new_path):
+            run_root_input.value = new_path
+            refresh_files()
+            try:
+                editor_area.refresh()
+            except NameError:
+                pass
+
+        event_sys.on("on_run_root_change", _on_root_changed)
 
     # ══════════════════════════════════════════════════════════
     #  Row 2 — Main Workspace (Side-by-side)
@@ -146,13 +189,14 @@ def render_generator_page(
 
                 if view_mode["current"] == "form":
                     expansions_ref.clear()
-                    recursive_param_editor(
-                        ui.column().classes("w-full gap-0"),
-                        config_data, state, task_manager,
-                        columns=form_cols["n"],
-                        expansions=expansions_ref,
-                        on_pin_toggle=lambda: editor_area.refresh(),
-                    )
+                    with ui.column().classes("w-full overflow-y-auto flex-grow gap-0").style("min-height: 0;"):
+                        recursive_param_editor(
+                            ui.column().classes("w-full gap-0 p-0 m-0"),
+                            config_data, state, task_manager,
+                            columns=form_cols["n"],
+                            expansions=expansions_ref,
+                            on_pin_toggle=lambda: editor_area.refresh(),
+                        )
                 else:
                     _render_yaml_view(yaml_holder)
 
@@ -164,6 +208,7 @@ def render_generator_page(
             _settings_panel(
                 state, view_mode, yaml_holder,
                 task_generator, task_manager,
+                refresh_files
             )
 
 
@@ -236,7 +281,7 @@ def _editor_toolbar(
 # ═══════════════════════════════════════════════════════════
 
 
-def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager):
+def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager, refresh_files):
     from pyruns.utils.settings import get as _get_ws_setting
 
     with ui.card().classes(GENERATOR_SETTINGS_CARD_CLASSES):
@@ -276,7 +321,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager)
             if use_ts_chk.value:
                 prefix = f"{prefix}_{get_now_str()}"
 
-            from pyruns.utils.task_io import validate_task_name
+            from pyruns.utils.info_io import validate_task_name
             err = validate_task_name(prefix, task_manager.root_dir)
             if err:
                 ui.notify(
@@ -315,12 +360,28 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager)
                         f"Generated {len(configs)} task",
                         type="positive", icon="add_circle",
                     )
+                    
+                    # Compute relative path for selection
+                    new_rel = None
+                    if tasks:
+                        from pyruns._config import TASKS_DIR, CONFIG_FILENAME
+                        new_rel = f"{TASKS_DIR}/{tasks[0]['name']}/{CONFIG_FILENAME}"
+                    refresh_files(new_selection=new_rel)
+                    
                 except Exception as e:
                     ui.notify(f"Generation error: {e}", type="negative", icon="error")
             else:
+                def on_batch_success(tasks_list=None):
+                    new_rel = None
+                    if tasks_list:
+                        from pyruns._config import TASKS_DIR, CONFIG_FILENAME
+                        new_rel = f"{TASKS_DIR}/{tasks_list[0]['name']}/{CONFIG_FILENAME}"
+                    refresh_files(new_selection=new_rel)
+
                 show_batch_confirm(
                     configs, prefix, state["config_data"],
                     task_generator, task_manager, state,
+                    on_success=on_batch_success
                 )
 
         from pyruns.ui.theme import BTN_PRIMARY

@@ -5,7 +5,7 @@ from nicegui import ui
 from typing import Dict, Any, Callable
 
 from pyruns.utils.config_utils import preview_config_line
-from pyruns.utils.task_io import load_task_info, save_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info
 from pyruns.ui.theme import (
     BTN_CLASS,
     STATUS_CARD_STYLES,

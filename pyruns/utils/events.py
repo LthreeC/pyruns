@@ -75,3 +75,30 @@ class LogEmitter:
 
 # ── Module-level singleton ──
 log_emitter = LogEmitter()
+
+
+class SimpleEventBus:
+    """A minimal event bus for coordinating cross-component UI actions (e.g. Tab switch)."""
+    def __init__(self):
+        self._listeners: Dict[str, List[Callable]] = defaultdict(list)
+
+    def on(self, event_name: str, callback: Callable):
+        if callback not in self._listeners[event_name]:
+            self._listeners[event_name].append(callback)
+
+    def off(self, event_name: str, callback: Callable):
+        if callback in self._listeners[event_name]:
+            self._listeners[event_name].remove(callback)
+
+    def emit(self, event_name: str, *args, **kwargs):
+        for cb in self._listeners.get(event_name, []):
+            try:
+                import asyncio
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(*args, **kwargs))
+                else:
+                    cb(*args, **kwargs)
+            except Exception as e:
+                logger.error("EventBus error emitting %s: %s", event_name, e)
+
+event_sys = SimpleEventBus()

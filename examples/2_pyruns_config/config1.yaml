@@ -1,0 +1,6 @@
+lr: 5e-3
+epochs: 20
+optimizer: sgd
+batch_size: 64
+dropout: 0.2
+model: resnet50

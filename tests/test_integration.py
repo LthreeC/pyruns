@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from pyruns._config import (
-    DEFAULT_ROOT_NAME, INFO_FILENAME, MONITOR_KEY, ENV_CONFIG,
+    DEFAULT_ROOT_NAME, TASK_INFO_FILENAME, MONITOR_KEY, ENV_CONFIG,
 )
 from pyruns.utils.config_utils import load_yaml, save_yaml
 from pyruns.utils.batch_utils import (
@@ -215,7 +215,7 @@ class TestAddMonitor:
             "start_times": start_times or ["2026-01-01 00:00:00"],
             "monitors": [{} for _ in (start_times or ["2026-01-01 00:00:00"])],
         }
-        with open(os.path.join(task_dir, INFO_FILENAME), "w") as f:
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
             json.dump(info, f)
         return task_dir
 
@@ -230,7 +230,7 @@ class TestAddMonitor:
         import pyruns
         pyruns.add_monitor(epoch=1, loss=0.5)
 
-        with open(os.path.join(task_dir, INFO_FILENAME)) as f:
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME)) as f:
             info = json.load(f)
         assert MONITOR_KEY in info
         assert len(info[MONITOR_KEY]) == 1
@@ -249,7 +249,7 @@ class TestAddMonitor:
         pyruns.add_monitor(loss=0.5)
         pyruns.add_monitor(acc=92.3)
 
-        with open(os.path.join(task_dir, INFO_FILENAME)) as f:
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME)) as f:
             info = json.load(f)
         monitors = info[MONITOR_KEY]
         assert len(monitors) == 1  # all merged into run 1
@@ -268,7 +268,7 @@ class TestAddMonitor:
         import pyruns
         pyruns.add_monitor(epoch=10, loss=0.1)
 
-        with open(os.path.join(task_dir, INFO_FILENAME)) as f:
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME)) as f:
             info = json.load(f)
         monitors = info[MONITOR_KEY]
         assert len(monitors) == 2  # padded for run 1, data in run 2
@@ -285,7 +285,7 @@ class TestAddMonitor:
         import pyruns
         pyruns.add_monitor({"a": 1}, b=2)
 
-        with open(os.path.join(task_dir, INFO_FILENAME)) as f:
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME)) as f:
             info = json.load(f)
         assert info[MONITOR_KEY][0] == {"a": 1, "b": 2}
 
@@ -313,7 +313,7 @@ class TestAddMonitor:
         import pyruns
         pyruns.add_monitor()
 
-        with open(os.path.join(task_dir, INFO_FILENAME)) as f:
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME)) as f:
             info = json.load(f)
         # monitors key exists (from executor init), but run data should be empty
         assert MONITOR_KEY in info

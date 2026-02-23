@@ -13,7 +13,7 @@ import yaml
 from unittest.mock import patch, MagicMock
 
 from pyruns._config import (
-    ENV_CONFIG, CONFIG_FILENAME, INFO_FILENAME, MONITOR_KEY,
+    ENV_CONFIG, CONFIG_FILENAME, TASK_INFO_FILENAME, MONITOR_KEY,
 )
 from pyruns.core.config_manager import ConfigNode, ConfigManager
 from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
@@ -284,7 +284,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
         "start_times": [],
         "finish_times": [],
     }
-    with open(os.path.join(task_dir, INFO_FILENAME), "w") as f:
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
         json.dump(task_info, f)
         
     # Mock subprocess with PIPE-style stdout
@@ -307,7 +307,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
     assert res["progress"] == 1.0
     
     # Check task_info updated
-    with open(os.path.join(task_dir, INFO_FILENAME), "r") as f:
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
         info = json.load(f)
         
     assert info["status"] == "completed"
@@ -338,7 +338,7 @@ def test_run_task_worker_failure(mock_popen, mock_emit, tmp_path):
         "script": "script.py",
         "status": "queued",
     }
-    with open(os.path.join(task_dir, INFO_FILENAME), "w") as f:
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
         json.dump(task_info, f)
         
     mock_proc = MagicMock()
@@ -361,7 +361,7 @@ def test_run_task_worker_failure(mock_popen, mock_emit, tmp_path):
     assert res["progress"] == 0.0
     
     # Check task_info updated
-    with open(os.path.join(task_dir, INFO_FILENAME), "r") as f:
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
         info = json.load(f)
     assert info["status"] == "failed"
     
@@ -610,7 +610,7 @@ def _make_task(tmp_path, name, monitors=None, starts=None, finishes=None, pids=N
     }
     if monitors is not None:
         info[MONITOR_KEY] = monitors
-    with open(os.path.join(task_dir, INFO_FILENAME), "w") as f:
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
         json.dump(info, f)
     return {
         "name": name,

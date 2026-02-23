@@ -36,6 +36,41 @@ def main_page():
     logger.debug("Creating new session page")
     state = asdict(AppState(_settings=_settings))
 
+    # ── Centralized run_root change function ──
+    # All pages call state["change_run_root"](path) instead of duplicating logic.
+    def _change_run_root(new_path: str) -> bool:
+        """Validate and apply a run_root change, broadcasting to all pages."""
+        new_path = os.path.abspath(new_path).replace("\\", "/")
+        import pyruns._config as _cfg
+        tasks_path = os.path.join(new_path, _cfg.TASKS_DIR)
+        has_tasks = os.path.isdir(tasks_path)
+        has_config = os.path.exists(os.path.join(new_path, _cfg.CONFIG_DEFAULT_FILENAME))
+        has_script = os.path.exists(os.path.join(new_path, _cfg.SCRIPT_INFO_FILENAME))
+        if not (has_tasks or has_config or has_script):
+            ui.notify(
+                f"无效的 Run Root：未找到 {_cfg.TASKS_DIR}/ 或 {_cfg.CONFIG_DEFAULT_FILENAME}",
+                type="warning",
+            )
+            return False
+
+        state["run_root"] = new_path
+        task_manager.root_dir = os.path.join(new_path, _cfg.TASKS_DIR)
+        task_generator.root_dir = os.path.join(new_path, _cfg.TASKS_DIR)
+        os.makedirs(task_manager.root_dir, exist_ok=True)
+
+        # Load script info
+        from pyruns.utils.info_io import load_script_info
+        s_info = load_script_info(new_path)
+        state["script_path"] = s_info.get("script_path", "")
+
+        task_manager.scan_disk()
+
+        from pyruns.utils.events import event_sys
+        event_sys.emit("on_run_root_change", new_path)
+        return True
+
+    state["change_run_root"] = _change_run_root
+
     # Each renderer is called at most once (on first visit).
     # Subsequent tab switches just toggle CSS visibility — instant.
     page_renderers = {
@@ -67,9 +102,9 @@ def main(*, reload: bool = False):
     # _config.py was first imported).
     import pyruns._config as _cfg
 
-    fresh_root = os.getenv(_cfg.ENV_ROOT, _cfg.ROOT_DIR)
+    fresh_root = os.path.abspath(os.getenv(_cfg.ENV_ROOT, _cfg.ROOT_DIR)).replace("\\", "/")
     _cfg.ROOT_DIR = fresh_root
-    abs_tasks_dir = os.path.join(fresh_root, _cfg.TASKS_DIR)
+    abs_tasks_dir = os.path.join(fresh_root, _cfg.TASKS_DIR).replace("\\", "/")
     os.makedirs(abs_tasks_dir, exist_ok=True)
 
     # Load workspace settings
@@ -87,9 +122,10 @@ def main(*, reload: bool = False):
     logger.debug(f"TaskGenerator instantiated with root_dir={task_generator.root_dir}")
     task_manager = TaskManager(root_dir=abs_tasks_dir)
     metrics_sampler = SystemMonitor()
-    logger.info("Pyruns initialised  root=%s  port=%s", fresh_root, _settings.get("ui_port", 8080))
+    
+    port = int(_settings.get("ui_port", 8099))
+    logger.info("Pyruns initialised  root=%s  port=%s", fresh_root, port)
 
-    port = int(_settings.get("ui_port", 8080))
     # In dev mode, tell uvicorn to watch the pyruns source tree for changes.
     pkg_dir = os.path.dirname(os.path.dirname(__file__))  # …/pyruns/
     ui.run(

@@ -7,11 +7,9 @@ from nicegui import ui
 from typing import Dict, Any
 
 from pyruns._config import CONFIG_FILENAME
-from pyruns.utils.task_io import load_task_info, save_task_info
-from pyruns.utils.task_io import get_log_options, resolve_log_path
-from pyruns.ui.theme import STATUS_ICONS
-from pyruns.ui.widgets import status_badge, readonly_code_viewer
-from pyruns.ui.components.env_editor import env_var_editor
+from pyruns.utils.info_io import load_task_info, save_task_info
+from pyruns.utils.info_io import get_log_options, resolve_log_path
+from pyruns.ui.theme import STATUS_ICONS, DIALOG_BACKDROP, DIALOG_HEADER_DARK, TOOLBAR_DARK, TOOLBAR_LIGHT
 
 from pyruns.utils import get_logger
 logger = get_logger(__name__)
@@ -48,8 +46,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
     """
     with ui.dialog().props("no-backdrop-dismiss") as task_dialog:
         with ui.card().classes(
-            "task-detail-card w-[1100px] max-w-[92vw] "
-            "p-0 flex flex-col overflow-hidden shadow-2xl"
+            f"task-detail-card w-[1100px] {DIALOG_BACKDROP}"
         ).style("height: 80vh; max-height: 80vh;"):
 
             @ui.refreshable
@@ -69,9 +66,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
 
                 # ── Dialog header (draggable) ──
                 header = ui.row().classes(
-                    "w-full bg-gradient-to-r from-slate-800 to-slate-900 "
-                    "text-white px-6 py-3 items-center justify-between "
-                    "cursor-move select-none flex-none"
+                    f"{DIALOG_HEADER_DARK} cursor-move select-none"
                 )
                 header.on("mousedown", js_handler=_DRAG_JS)
 
@@ -254,9 +249,7 @@ def _build_tab_run_log(t, log_options, initial_content):
 
             # Toolbar
             with ui.row().classes(
-                "w-full items-center gap-3 px-4 py-1.5 flex-none "
-                "bg-gradient-to-r from-slate-800 to-slate-900 "
-                "border-b border-slate-700"
+                TOOLBAR_DARK
             ):
                 ui.icon("terminal", size="16px").classes("text-emerald-400")
                 ui.label("Log Viewer").classes(
@@ -293,9 +286,7 @@ def _build_tab_notes(t, info_obj):
         # ── Toolbar ──
         # Keep original logic, border-b retains a slight divider feel
         with ui.row().classes(
-            "w-full items-center justify-between px-5 py-2 flex-none "
-            "bg-gradient-to-r from-indigo-50 to-slate-50 "
-            "border-b border-indigo-100"
+            TOOLBAR_LIGHT
         ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("edit_note", size="18px").classes("text-indigo-500")

@@ -5,7 +5,7 @@ from typing import Set
 
 from nicegui import ui
 
-from pyruns.utils.task_io import load_monitor_data
+from pyruns.utils.info_io import load_monitor_data
 from pyruns.core.report import (
     build_export_csv,
     build_export_json,

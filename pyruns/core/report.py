@@ -10,7 +10,7 @@ import json
 from typing import Dict, Any, List
 
 # Imported for internal use
-from pyruns.utils.task_io import load_monitor_data
+from pyruns.utils.info_io import load_monitor_data
 from pyruns.utils import get_now_str
 
 

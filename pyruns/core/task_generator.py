@@ -4,7 +4,7 @@ from typing import Dict, Any, List
 
 from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
 from pyruns.utils.config_utils import save_yaml
-from pyruns.utils.task_io import save_task_info
+from pyruns.utils.info_io import save_task_info
 from pyruns.utils import get_logger, get_now_str, get_now_str_us
 
 logger = get_logger(__name__)
@@ -53,7 +53,7 @@ class TaskGenerator:
 
         folder_name = base_name
         if group_index:
-            folder_name += f"_{group_index}"  # e.g. "my-exp-[1-of-12]"
+            folder_name += f"_{group_index}"  # e.g. "my-exp_[1-of-12]"
 
         # Deduplicate: append millis if folder already exists
         if os.path.exists(os.path.join(self.root_dir, folder_name)):
@@ -82,6 +82,18 @@ class TaskGenerator:
             "pinned": task_obj["pinned"],
         }
         env_script = os.environ.get(ENV_SCRIPT)
+        workspace_dir = os.path.dirname(self.root_dir)
+        info_path = os.path.join(workspace_dir, "script_info.json")
+        if os.path.exists(info_path):
+            try:
+                import json
+                with open(info_path, "r", encoding="utf-8") as f:
+                    s_info = json.load(f)
+                    if "script_path" in s_info and os.path.exists(s_info["script_path"]):
+                        env_script = s_info["script_path"]
+            except Exception as e:
+                logger.warning("Failed to read script_info.json: %s", e)
+                
         if env_script:
             info["script"] = env_script
         # Array fields at the end

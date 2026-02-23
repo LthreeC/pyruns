@@ -25,7 +25,6 @@ _DEFAULTS: Dict[str, Any] = {
     "manager_execution_mode": "thread", # thread | process
     "ui_page_size": 50,                 # cards per page (0 = show all)
     # Monitor
-    "monitor_poll_interval": 0.03,      # (legacy) UI status refresh; logs use push
     "monitor_chunk_size": 50000,        # bytes per chunk
     "monitor_scrollback": 100000,       # max lines in history
     # Logging
@@ -72,6 +71,11 @@ _cached: Dict[str, Any] = {}
 
 
 def _settings_path(root_dir: str = ROOT_DIR) -> str:
+    from pyruns._config import DEFAULT_ROOT_NAME
+    # If root_dir is .../_pyruns_/<script_name>, its parent is .../_pyruns_
+    parent = os.path.dirname(os.path.abspath(root_dir))
+    if os.path.basename(parent) == DEFAULT_ROOT_NAME:
+        return os.path.join(parent, SETTINGS_FILENAME)
     return os.path.join(root_dir, SETTINGS_FILENAME)
 
 
@@ -81,8 +85,9 @@ def ensure_settings_file(root_dir: str = ROOT_DIR) -> str:
     Returns the file path.
     """
     path = _settings_path(root_dir)
+    target_dir = os.path.dirname(path)
     if not os.path.exists(path):
-        os.makedirs(root_dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(_TEMPLATE)
     return path

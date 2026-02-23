@@ -23,6 +23,7 @@ def main():
     # If run through Pyruns, `load()` automatically detects the config yaml file!
     # If starting directly (e.g. `python main.py`), you can optionally use `pyruns.read("config.yaml")` first.
     config = pyruns.load()
+    print(config)
 
     # The config behaves like an object, allowing dot access to yaml values.
     # We will simulate reading hyperparameters if they are set, else use defaults.

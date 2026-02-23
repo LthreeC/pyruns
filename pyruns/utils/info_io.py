@@ -10,14 +10,15 @@ import re
 from typing import Dict, Any, List, Optional
 
 from pyruns._config import (
-    INFO_FILENAME,
+    TASK_INFO_FILENAME,
+    SCRIPT_INFO_FILENAME,
     RUN_LOG_DIR,
 )
 
 
 def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
     """Load task_info.json from a task directory."""
-    info_path = os.path.join(task_dir, INFO_FILENAME)
+    info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
     if not os.path.exists(info_path):
         return {}
     try:
@@ -31,7 +32,26 @@ def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
 
 def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     """Save task_info.json to a task directory."""
-    info_path = os.path.join(task_dir, INFO_FILENAME)
+    info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
+    with open(info_path, "w", encoding="utf-8") as f:
+        json.dump(info, f, indent=2, ensure_ascii=False)
+
+
+def load_script_info(run_root: str) -> Dict[str, Any]:
+    """Load script_info.json from the Run Root directory."""
+    info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
+    if not os.path.exists(info_path):
+        return {}
+    try:
+        with open(info_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_script_info(run_root: str, info: Dict[str, Any]) -> None:
+    """Save script_info.json to the Run Root directory."""
+    info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
     with open(info_path, "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2, ensure_ascii=False)
 

@@ -62,7 +62,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     # ══════════════════════════════════════════════════════════
     #  Row 1: Filter & Search
     # ══════════════════════════════════════════════════════════
-    tasks_dir_input, filter_status, search_input = _render_filter_row(
+    run_root_input, filter_status, search_input = _render_filter_row(
         state, task_manager, full_rescan, lambda: task_list.refresh()
     )
 
@@ -93,10 +93,10 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         # Apply filters
         # 1. Directory filter
         tasks = task_manager.tasks
-        if tasks_dir_input.value:
+        if run_root_input.value:
             # Normalize paths for comparison to avoid backslash/slash issues
             import os
-            td_val = os.path.normpath(tasks_dir_input.value)
+            td_val = os.path.normpath(run_root_input.value)
             tasks = [t for t in tasks if os.path.normpath(str(t.get("dir", ""))).startswith(td_val)]
 
         # 2. & 3. Apply Search & Status filters
@@ -178,22 +178,19 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     ui.timer(1.0, _check_dirty)
 
-    # ── Static refresh: immediately update when user switches TO the manager tab ──
-    # This prevents the visual delay of waiting up to 1 second for the next timer tick.
+    # ── Immediate refresh when switching TO the manager tab ──
     async def _on_tab_switch(tab: str):
-        if tab == "manager":
-            if state.get("_manager_dirty", False):
-                # Put UI in loading state to prevent flash of empty space
-                state["_manager_is_loading"] = True
-                task_list.refresh()
-                
-                import asyncio
-                await asyncio.sleep(0.05)
-                
-                state["_manager_is_loading"] = False
-                state["_manager_dirty"] = False
-                task_manager.refresh_from_disk(check_all=True)
-                task_list.refresh()
+        if tab == "manager" and state.get("_manager_dirty", False):
+            state["_manager_is_loading"] = True
+            task_list.refresh()
+
+            import asyncio
+            await asyncio.sleep(0.05)
+
+            state["_manager_is_loading"] = False
+            state["_manager_dirty"] = False
+            task_manager.refresh_from_disk(check_all=True)
+            task_list.refresh()
 
     cbs = state.setdefault("on_tab_change", [])
     cbs.append(_on_tab_switch)
@@ -209,11 +206,6 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 #  Page-level helpers
 # ═══════════════════════════════════════════════════════════
 
-def _apply_dir(path: str, state, task_manager, full_rescan) -> None:
-    logger.info("Switching tasks root to: %s", path)
-    state["tasks_dir"] = path
-    task_manager.root_dir = path
-    full_rescan()
 
 
 def _run_selected(state, task_manager, refresh_tasks) -> None:
@@ -348,12 +340,19 @@ def _summary_bar(
 
 def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
     """Render the top bar: Directory Picker | Filter | Search."""
+    import os
+    
+    curr_run_root = str(state.get("run_root")).replace("\\", "/")
+
+    def _on_dir_change(p):
+        state["change_run_root"](p)
+
     # ## 布局由 theme.py 统一定义: MANAGER_FILTER_ROW_CLASSES 包含所有搜索栏边距
     with ui.row().classes(MANAGER_FILTER_ROW_CLASSES):
-        tasks_dir_input = dir_picker(
-            value=state.get("tasks_dir", task_manager.root_dir),
-            label="Tasks Root",
-            on_change=lambda p: _apply_dir(p, state, task_manager, full_rescan),
+        run_root_input = dir_picker(
+            value=curr_run_root,
+            label="Run Root",
+            on_change=_on_dir_change,
             input_classes="flex-grow",
         )
 
@@ -384,12 +383,19 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
 
         ui.button(
             icon="refresh",
-            on_click=lambda: _apply_dir(
-                tasks_dir_input.value, state, task_manager, full_rescan,
-            ),
+            on_click=lambda: _on_dir_change(run_root_input.value),
         ).props("flat round dense color=slate")
 
-        return tasks_dir_input, filter_status, search_input
+        # ── Listen for run_root changes from other pages ──
+        from pyruns.utils.events import event_sys
+
+        def _on_root_changed(new_path):
+            run_root_input.value = new_path
+            full_rescan()
+
+        event_sys.on("on_run_root_change", _on_root_changed)
+
+        return run_root_input, filter_status, search_input
 
 
 def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):

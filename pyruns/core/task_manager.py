@@ -15,12 +15,12 @@ from typing import List, Dict, Any, Callable
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, Future
 
 from pyruns._config import (
-    TASKS_DIR, INFO_FILENAME, CONFIG_FILENAME,
+    TASKS_DIR, TASK_INFO_FILENAME, CONFIG_FILENAME,
     TRASH_DIR, RUN_LOG_DIR, ERROR_LOG_FILENAME,
 )
 from pyruns.utils.config_utils import load_yaml
 from pyruns.utils.process_utils import is_pid_running, kill_process
-from pyruns.utils.task_io import load_task_info, save_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger, get_now_str
 
@@ -154,7 +154,7 @@ class TaskManager:
     def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
         """Parse a single task directory into a task dict (or ``None``)."""
         task_dir = os.path.join(self.root_dir, dir_name)
-        info_path = os.path.join(task_dir, INFO_FILENAME)
+        info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
 
         if not os.path.exists(info_path):
             return None
@@ -193,7 +193,7 @@ class TaskManager:
             return None
 
         task = {
-            "dir": task_dir,
+            "dir": task_dir.replace("\\", "/"),
             "name": info.get("name", dir_name),
             "status": info.get("status", "unknown"),
             "created_at": info.get("created_at"),
@@ -232,18 +232,10 @@ class TaskManager:
 
         for t in current:
             # Decide whether to refresh this task
-            should_refresh = False
-            if force_all or check_all:
-                should_refresh = True
-            elif target_ids and t["name"] in target_ids:
-                should_refresh = True
-            elif t["status"] in ("running", "queued"):
-                should_refresh = True
-
-            if not should_refresh:
+            if not (force_all or check_all or (target_ids and t["name"] in target_ids) or t["status"] in ("running", "queued")):
                 continue
 
-            info_path = os.path.join(t["dir"], INFO_FILENAME)
+            info_path = os.path.join(t["dir"], TASK_INFO_FILENAME)
             if not os.path.exists(info_path):
                 # If folder gone, strictly speaking we might want to remove it,
                 # but for now just skip updating.
@@ -548,9 +540,7 @@ class TaskManager:
     def _latest_pid(info: dict):
         """Return the most relevant PID from an info dict."""
         pids = info.get("pids", [])
-        if isinstance(pids, list) and pids:
-            return pids[-1]
-        return None
+        return pids[-1] if isinstance(pids, list) and pids else None
 
     def _latest_pid_from_disk(self, task: dict):
         info = load_task_info(task["dir"])

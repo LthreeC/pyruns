@@ -120,10 +120,8 @@ def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
     return None
 
 
-def generate_config_file(filepath: str, params: Dict[str, Dict[str, Any]]) -> str:
+def generate_config_file(pyruns_dir: str, filepath: str, params: Dict[str, Dict[str, Any]]) -> str:
     """Auto-generate ``config_default.yaml`` from argparse params. Returns the _pyruns_ directory."""
-    file_dir = os.path.dirname(os.path.abspath(filepath))
-    pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME)
     os.makedirs(pyruns_dir, exist_ok=True)
 
     config_file = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)

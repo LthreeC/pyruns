@@ -1,7 +1,22 @@
 import os
 import ast
 import yaml
+import re
 from typing import Dict, Any, List
+
+# Fix PyYAML parsing of scientific notation without a dot (e.g. 5e-3)
+yaml_float_pattern = re.compile(
+    r'''^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+         |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
+         |\.[0-9_]+(?:[eE][-+]?[0-9]+)?
+         |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
+         |[-+]?\.(?:inf|Inf|INF)
+         |\.(?:nan|NaN|NAN))$''', re.X)
+yaml.SafeLoader.add_implicit_resolver(
+    'tag:yaml.org,2002:float',
+    yaml_float_pattern,
+    list('-+0123456789.')
+)
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
 
@@ -87,35 +102,59 @@ def get_nested(data: dict, full_key: str):
     return None, None, None
 
 
-def list_template_files(tasks_dir: str) -> Dict[str, str]:
+def list_template_files(run_root: str) -> Dict[str, str]:
     """
-    Scan a tasks directory for loadable YAML config files.
+    Scan a Run Root directory for loadable YAML config files.
     Returns dict of {relative_path: display_name}.
-    Optimized: uses directory names directly to avoid disk I/O.
     """
-    if not os.path.isdir(tasks_dir):
+    if not os.path.isdir(run_root):
         return {}
 
     options: Dict[str, str] = {}
 
-    from pyruns._config import ROOT_DIR
-    default_path = os.path.abspath(os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME))
-    if os.path.exists(default_path):
-        options[default_path] = "config_default"
+    from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, TASKS_DIR, TASK_INFO_FILENAME
+    from pyruns.utils.info_io import load_task_info
+    from pyruns.utils.sort_utils import task_sort_key
 
-    # config.yaml inside each task subfolder (use dir name, skip task_info I/O)
-    try:
-        for dir_name in sorted(os.listdir(tasks_dir)):
-            if dir_name.startswith("."):
-                continue
-            task_dir = os.path.join(tasks_dir, dir_name)
-            if not os.path.isdir(task_dir):
-                continue
-            cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
-            if os.path.exists(cfg_path):
-                options[os.path.join(dir_name, CONFIG_FILENAME)] = dir_name
-    except OSError:
-        pass
+    # config.yaml inside each task subfolder
+    actual_tasks_dir = os.path.join(run_root, TASKS_DIR)
+    
+    if os.path.isdir(actual_tasks_dir):
+        try:
+            task_entries = []
+            for dir_name in sorted(os.listdir(actual_tasks_dir)):
+                if dir_name.startswith("."):
+                    continue
+                task_dir = os.path.join(actual_tasks_dir, dir_name)
+                if not os.path.isdir(task_dir):
+                    continue
+                
+                cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
+                if os.path.exists(cfg_path):
+                    display_name = dir_name
+                    sort_val = (0, "")
+                    try:
+                        info = load_task_info(task_dir)
+                        if info:
+                            display_name = info.get("name", dir_name)
+                            sort_val = task_sort_key(info)
+                    except Exception:
+                        sort_val = (0, str(os.path.getmtime(cfg_path)))
+                        
+                    rel_path = os.path.join(TASKS_DIR, dir_name, CONFIG_FILENAME).replace("\\", "/")
+                    task_entries.append((rel_path, display_name, sort_val))
+                    
+            # Sort task configs using priority tuples (same as Manager)
+            task_entries.sort(key=lambda x: x[2], reverse=True)
+            for rel_path, display_name, _ in task_entries:
+                options[rel_path] = display_name
+        except OSError:
+            pass
+
+    # Append config_default.yaml at the very bottom
+    default_path = os.path.abspath(os.path.join(run_root, CONFIG_DEFAULT_FILENAME)).replace("\\", "/")
+    if os.path.exists(default_path):
+        options[default_path] = "config_default.yaml"
 
     return options
 

@@ -1,6 +1,8 @@
 """
 Recursive parameter editor – compact multi-column form for config dicts.
-Supports: adjustable columns, expand/collapse all, pin important params to the top.
+
+Supports: adjustable columns, expand/collapse all, pin important params
+to the top with full dotted-path labels (e.g. ``project.name``).
 """
 from nicegui import ui
 from typing import Dict, Any, List
@@ -10,27 +12,43 @@ from pyruns.ui.theme import (
     PINNED_TITLE_CLASSES, PINNED_EMPTY_CLASSES
 )
 
-# ── Type → icon / color ──
+# ── Type → (icon, text_color, bg_color) ──
 _TYPE_INFO = {
-    "bool":   ("check_circle",  "text-indigo-500",  "bg-indigo-50"),
-    "number": ("tag",           "text-blue-500",    "bg-blue-50"),
-    "list":   ("data_array",    "text-purple-500",  "bg-purple-50"),
-    "string": ("text_fields",   "text-slate-400",   "bg-slate-50"),
+    "bool":   ("check_circle", "text-indigo-500", "bg-indigo-50"),
+    "number": ("tag",          "text-blue-500",   "bg-blue-50"),
+    "list":   ("data_array",   "text-purple-500", "bg-purple-50"),
+    "string": ("text_fields",  "text-slate-400",  "bg-slate-50"),
 }
 
 _TINY = "outlined dense bg-white hide-bottom-space"
 
+# ── CSS: injected once per client to override Quasar defaults ──
 _EDITOR_CSS_CLIENTS: set = set()
 
 _EDITOR_CSS = """
+/* -- param input fields -- */
 .param-input .q-field__control { min-height: 26px !important; height: 26px !important; }
 .param-input .q-field__marginal { height: 26px !important; }
 .param-input .q-field__native { padding: 2px 8px !important; font-size: 12px; }
 .param-input input { font-size: 12px !important; }
+/* -- param expansion: zero out all Quasar internal spacing -- */
+.param-expansion .q-expansion-item__container { padding: 0 !important; margin: 0 !important; }
+.param-expansion .q-expansion-item__content { padding: 0 !important; margin: 0 !important; }
+.param-expansion .q-item { min-height: 26px !important; padding: 0 4px 0 8px !important; margin: 0 !important; }
+.param-expansion .q-item__section { padding: 0 !important; margin: 0 !important; }
+.param-expansion .q-item__section--side { padding: 0 !important; min-width: 20px !important; }
+.param-expansion .q-card, .param-expansion .q-card__section { padding: 0 !important; margin: 0 !important; box-shadow: none !important; }
+.param-expansion .q-list { padding: 0 !important; margin: 0 !important; }
+.param-expansion .q-focus-helper { display: none !important; }
+.param-expansion .nicegui-column, .param-expansion .nicegui-grid {
+    gap: 0 !important; margin: 0 !important;
+    padding-top: 0 !important; padding-bottom: 0 !important;
+}
 """
 
+
 def _ensure_editor_css():
-    """Inject CSS to shrink Quasar input boxes (once per NiceGUI client)."""
+    """Inject CSS once per NiceGUI client session."""
     try:
         cid = ui.context.client.id
     except Exception:
@@ -41,6 +59,7 @@ def _ensure_editor_css():
 
 
 def _get_type_key(value) -> str:
+    """Map a Python value to its type category string."""
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, (int, float)):
@@ -49,6 +68,10 @@ def _get_type_key(value) -> str:
         return "list"
     return "string"
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Main recursive editor
+# ═══════════════════════════════════════════════════════════════
 
 def recursive_param_editor(
     container,
@@ -69,133 +92,140 @@ def recursive_param_editor(
 
     if expansions is None:
         expansions = []
-    
     if full_data is None:
         full_data = data
-        
     if pinned is None:
-        # Load from persisted settings on first call
         from pyruns.utils.settings import get as _get_setting
         saved = _get_setting("pinned_params", [])
         pinned = state.setdefault("pinned_params", list(saved))
 
-    # Compatibility: generator.py passes on_star_toggle
+    # Compat: generator.py may pass on_star_toggle (legacy name)
     if 'on_star_toggle' in state:
         on_pin_toggle = state.pop('on_star_toggle')
 
     with container:
-        # Render the Pinned block at the root level only
+        # ── Pinned section (root level only) ──
         if is_root:
             valid_pinned = []
             for pk in pinned:
                 pd, k, v = get_nested(full_data, pk)
                 if pd is not None:
                     valid_pinned.append((pd, k, v, pk))
-            
+
             if valid_pinned:
                 with ui.column().classes(PINNED_BLOCK_CLASSES):
                     with ui.row().classes(PINNED_HEADER_CLASSES):
                         ui.icon("push_pin", size="14px", color="indigo-500")
                         ui.label("Pinned Parameters").classes(PINNED_TITLE_CLASSES)
-                    
-                    with ui.grid(columns=columns).classes("w-full gap-1 pt-0.5"):
+
+                    with ui.grid(columns=columns).classes("w-full gap-x-0.5 gap-y-0 p-0 m-0"):
                         for pd, k, v, pk in valid_pinned:
-                            _param_cell(pd, k, v, pk, pinned, state, on_pin_toggle)
-                
-                # Subheading for "All Parameters"
-                with ui.row().classes("w-full items-center gap-1.5 px-0 mt-0 mb-0 pt-0 pb-0"):
+                            # Show full dotted path as display label
+                            _param_cell(pd, k, v, pk, pinned, state, on_pin_toggle,
+                                        display_key=pk)
+
+                # "All Parameters" subheading
+                with ui.row().classes("w-full items-center gap-1.5 px-0 m-0 p-0").style("min-height:20px"):
                     ui.icon("list", size="14px", color="slate-400")
-                    ui.label("All Parameters").classes("text-[11px] font-bold text-slate-400 tracking-widest")
+                    ui.label("All Parameters").classes(
+                        "text-[11px] font-bold text-slate-400 tracking-widest leading-none p-0 m-0"
+                    )
 
-
-        # Process current level's dictionaries/values
+        # ── Separate simple keys vs dict keys ──
         simple_keys = {
             k: v for k, v in data.items()
             if not isinstance(v, dict) and not k.startswith("_meta")
         }
         dict_keys = {k: v for k, v in data.items() if isinstance(v, dict)}
 
-        # Render unpinned parameters for this level
-        unpinned_items = []
-        for key, value in simple_keys.items():
-            full_key = f"{key_prefix}{key}"
-            if full_key not in pinned:
-                unpinned_items.append((key, value, full_key))
-
-        if unpinned_items:
-            with ui.grid(columns=columns).classes("w-full gap-1"):
-                for key, value, full_key in unpinned_items:
+        # ── Unpinned leaf parameters at this level ──
+        unpinned = [
+            (k, v, f"{key_prefix}{k}")
+            for k, v in simple_keys.items()
+            if f"{key_prefix}{k}" not in pinned
+        ]
+        if unpinned:
+            with ui.grid(columns=columns).classes("w-full gap-x-0.5 gap-y-0"):
+                for key, value, full_key in unpinned:
                     _param_cell(data, key, value, full_key, pinned, state, on_pin_toggle)
 
-        # Recursively render sub-dictionaries
+        # ── Nested dicts → expansion items ──
         for key, value in dict_keys.items():
             exp = ui.expansion(
                 f"{key}", icon="folder_open", value=True,
             ).classes(
-                "w-full mt-1 border border-slate-200 "
-                "overflow-hidden bg-white"
+                "w-full m-0 p-0 border border-slate-200 "
+                "overflow-hidden bg-white param-expansion"
             ).props(
-                "dense header-class='bg-slate-50 text-slate-600 "
-                "font-bold tracking-wide text-xs py-0.5'"
+                "dense header-class='bg-slate-50 text-slate-600 font-bold tracking-wide text-xs' "
+                "content-class='p-0 m-0' "
+                "content-style='padding:0!important;margin:0!important;'"
             )
             expansions.append(exp)
             with exp:
-                with ui.column().classes("w-full px-1 py-1 border-t border-slate-100"):
-                    recursive_param_editor(
-                        ui.column().classes("w-full gap-0"),
-                        value, state, task_manager,
-                        columns=columns, depth=depth + 1,
-                        expansions=expansions, pinned=pinned,
-                        key_prefix=f"{key_prefix}{key}.",
-                        on_pin_toggle=on_pin_toggle,
-                        is_root=False,
-                        full_data=full_data,
-                    )
+                recursive_param_editor(
+                    ui.column().classes(
+                        "w-full pl-3 py-0 m-0 gap-0 border-t border-slate-100"
+                    ).style("padding-top:0;padding-bottom:0"),
+                    value, state, task_manager,
+                    columns=columns, depth=depth + 1,
+                    expansions=expansions, pinned=pinned,
+                    key_prefix=f"{key_prefix}{key}.",
+                    on_pin_toggle=on_pin_toggle,
+                    is_root=False,
+                    full_data=full_data,
+                )
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Single parameter cell
+# ═══════════════════════════════════════════════════════════════
 
 def _param_cell(
     data: dict, key: str, value, full_key: str,
     pinned: List[str], state: Dict[str, Any],
     on_pin_toggle: Any = None,
+    display_key: str = None,
 ) -> None:
-    """Compact param cell with pin toggle."""
+    """Render one parameter card: icon + label + value input + pin button.
+
+    Parameters
+    ----------
+    display_key : str, optional
+        Label to show. Defaults to ``key`` (leaf name) but pinned params
+        pass the full dotted path (e.g. ``project.name``) for clarity.
+    """
+    label = display_key or key
     tk = _get_type_key(value)
     icon_name, icon_color, icon_bg = _TYPE_INFO[tk]
     is_pinned = full_key in pinned
 
-    if is_pinned:
-        card_cls = (
-            "w-full border-2 border-indigo-300 "
-            "px-1.5 py-0.5 transition-all duration-100 gap-0 group"
-        )
-        card_bg = "background:#f5f3ff"  # extremely light indigo (indigo-50 is similar)
-    else:
-        card_cls = (
-            "w-full border border-slate-150 "
-            "px-1.5 py-0.5 hover:border-indigo-200 hover:shadow-sm "
-            "transition-all duration-100 gap-0 group"
-        )
-        card_bg = "background:#fafbfc"
+    # Card style: pinned gets a highlight border
+    card_cls = (
+        "w-full px-0.5 py-0 transition-all duration-100 gap-0 group "
+        + ("border-2 border-indigo-300" if is_pinned
+           else "border border-slate-150 hover:border-indigo-200 hover:shadow-sm")
+    )
+    card_bg = "background:#f5f3ff" if is_pinned else "background:#fafbfc"
 
     with ui.column().classes(card_cls).style(card_bg):
-        # Key row: type icon + label + pin btn
+        # ── Key row: type icon + label + pin button ──
         with ui.row().classes("w-full items-center gap-1"):
             with ui.element("div").classes(
                 f"w-4.5 h-4.5 flex items-center justify-center {icon_bg} flex-none"
             ):
                 ui.icon(icon_name, size="11px").classes(icon_color)
 
-            ui.label(key).classes(
+            ui.label(label).classes(
                 "text-xs font-semibold text-slate-600 font-mono truncate leading-none "
                 "flex-1 min-w-0"
-            ).tooltip(f"{key} ({tk})")
+            ).tooltip(f"{full_key} ({tk})")
 
             def toggle_pin(fk=full_key):
                 if fk in pinned:
                     pinned.remove(fk)
                 else:
                     pinned.append(fk)
-                # Persist to _pyruns_.yaml
                 from pyruns.utils.settings import save_setting
                 save_setting("pinned_params", pinned)
                 if on_pin_toggle:
@@ -205,19 +235,18 @@ def _param_cell(
                         pass
 
             pin_cls = (
-                "text-indigo-500 opacity-100"
-                if is_pinned
+                "text-indigo-500 opacity-100" if is_pinned
                 else "text-slate-300 opacity-0 group-hover:opacity-60 hover:text-indigo-400"
             )
-            star_tip = "Unpin" if is_pinned else "Pin this parameter"
-            
             ui.button(icon="push_pin", on_click=toggle_pin).props(
                 "flat dense round size=xs padding=0"
-            ).classes(f"{pin_cls} min-w-0 transition-opacity duration-200 ml-auto").style(
-                "width:18px; height:18px;"
-            ).tooltip(star_tip)
+            ).classes(
+                f"{pin_cls} min-w-0 transition-opacity duration-200 ml-auto"
+            ).style("width:18px;height:18px;").tooltip(
+                "Unpin" if is_pinned else "Pin this parameter"
+            )
 
-        # Value input — ultra-compact with .param-input CSS class
+        # ── Value input ──
         def on_change(e, d=data, k=key):
             d[k] = parse_value(e.value)
 

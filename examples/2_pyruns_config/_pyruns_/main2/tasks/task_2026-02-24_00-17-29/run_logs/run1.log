@@ -1,0 +1,17 @@
+[PYRUNS] ⌘⌘⌘⌘⌘ Task task_2026-02-24_00-17-29 started at 2026-02-24_01-20-46 ⌘⌘⌘⌘⌘
+--- 🛠  项目: DeepSense_Alpha (v1.2) ---
+--- 🤖 模型: Transformer | 层数: 12 ---
+--- 🚀 资源: cuda | 显存优化: 0.8 ---
+----------------------------------------
+开始使用 AdamW 优化器训练，学习率: 0.0005...
+[Epoch 01/8] Loss: 200.0220 | Dropout: 0.1 | Precision: fp16
+[Epoch 02/8] Loss: 100.0335 | Dropout: 0.1 | Precision: fp16
+[Epoch 03/8] Loss: 66.7097 | Dropout: 0.1 | Precision: fp16
+[Epoch 04/8] Loss: 50.0530 | Dropout: 0.1 | Precision: fp16
+[Epoch 05/8] Loss: 40.0624 | Dropout: 0.1 | Precision: fp16
+[Epoch 06/8] Loss: 33.4059 | Dropout: 0.1 | Precision: fp16
+[Epoch 07/8] Loss: 28.6528 | Dropout: 0.1 | Precision: fp16
+[Epoch 08/8] Loss: 25.0915 | Dropout: 0.1 | Precision: fp16
+----------------------------------------
+✅ 任务完成！结果已保存至: ./results
+[PYRUNS] ⌘⌘⌘⌘⌘ Task task_2026-02-24_00-17-29 finished at 2026-02-24_01-20-48 ⌘⌘⌘⌘⌘

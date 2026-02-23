@@ -10,7 +10,7 @@ from pyruns._config import (
     MONITOR_KEY, ERROR_LOG_FILENAME,
 )
 from pyruns.utils.log_io import append_log
-from pyruns.utils.task_io import load_task_info, save_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info
 from pyruns.utils.events import log_emitter
 from pyruns.utils import get_logger, get_now_str
 
@@ -146,6 +146,20 @@ def run_task_worker(
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
     meta_workdir = task_meta.get("workdir")
+
+    # ── 强制参考当前 Run Root 的 script_info.json ──
+    workspace_dir = os.path.dirname(os.path.dirname(task_dir))
+    info_path = os.path.join(workspace_dir, "script_info.json")
+    if os.path.exists(info_path):
+        try:
+            import json
+            with open(info_path, "r", encoding="utf-8") as f:
+                s_info = json.load(f)
+                info_script = s_info.get("script_path")
+                if info_script and os.path.exists(info_script):
+                    script_path = info_script
+        except Exception as e:
+            logger.warning("Failed to read script_info.json from %s: %s", workspace_dir, e)
 
     # 1. Update Status to Running + append start_times
     start_str = now_str

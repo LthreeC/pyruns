@@ -16,9 +16,10 @@ class AppState:
     _settings: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     active_tab: str = "generator"
-    tasks_dir: str = field(default_factory=lambda: __import__('os').path.join(_cfg.ROOT_DIR, _cfg.TASKS_DIR))
+    run_root: str = field(default_factory=lambda: _cfg.ROOT_DIR)
     config_data: Dict[str, Any] = field(default_factory=dict)
     config_path: str = ""
+    script_path: str = ""
 
     # Generator
     task_name_input: str = ""

@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 from nicegui import ui
 
 # Direct safe-read logic moved to utils/log_io.py for robustness
-from pyruns.utils.task_io import get_log_options, resolve_log_path
+from pyruns.utils.info_io import get_log_options, resolve_log_path
 from pyruns.utils.log_io import safe_read_log
 from pyruns.utils.settings import get as get_setting
 from pyruns.ui.theme import (
@@ -333,7 +333,22 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     # 1s timer for task list / status / log file list UI refresh (no log data polling)
     _mon_timer = ui.timer(1.0, _check_mon_dirty)
 
+    async def _on_tab_switch(tab: str):
+        if tab == "monitor":
+            _refresh_panel()
+
+    from pyruns.utils.events import event_sys
+
+    # Listen for run_root changes from other pages
+    def _on_root_changed(new_path):
+        _refresh_panel()
+
+    event_sys.on("on_run_root_change", _on_root_changed)
+    event_sys.on("on_tab_change", _on_tab_switch)
+
     def _cleanup_on_disconnect(*_):
+        event_sys.off("on_tab_change", _on_tab_switch)
+        event_sys.off("on_run_root_change", _on_root_changed)
         _mon_timer.cancel()
         # Unsubscribe from live log push to prevent memory leaks
         current_tid = sel.get("task_id")

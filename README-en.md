@@ -31,11 +31,20 @@ pip install pyruns
 
 ## 🚀 Quick Start
 
-No need to rewrite your code! Pyruns works out of the box with your existing `argparse` scripts. Simply prefix your python execution with `pyr`.
+No need to rewrite your code! Pyruns works out of the box with your existing `argparse` scripts.
+
+### CLI Usage
 
 ```bash
-pyr your_script.py       # Launch Pyruns Web UI
-pyr help                 # Show usage instructions
+# Mode 1: Zero Config (Automatically parses your Argparse script to build UI)
+pyr train.py
+
+# Mode 2: Custom YAML Config (Imports your YAML as the default config for this script)
+pyr train.py my_config.yaml
+
+# Show help / version
+pyr help
+pyr version
 ```
 
 ---
@@ -67,16 +76,17 @@ Use `pyruns.add_monitor()` in your scripts to record training metrics, making it
 
 ![Monitor UI - colored terminal log and export](docs/assets/monitor_ui.png)
 
-**Advanced Usage: Logging Metrics**
-See `examples/3_metrics_logging/train.py`. Add one line of code:
+**Advanced Usage: Logging Final Metrics**
+See `examples/3_metrics_logging/train.py`. Just add one line of code after training:
 
 ```python
 import pyruns
 
-for epoch in range(100):
-    loss, accuracy = train_one_epoch()
-    # Track metrics for easy CSV/JSON report bulk exportation later
-    pyruns.add_monitor(epoch=epoch, loss=loss, accuracy=accuracy)
+# Your training loop...
+loss, accuracy = 0.2, 0.95
+
+# Track the final metrics for this run to easily export bulk CSV/JSON reports later
+pyruns.add_monitor(loss=loss, accuracy=accuracy)
 ```
 
 ---
@@ -84,6 +94,8 @@ for epoch in range(100):
 ## 📋 Batch Generation Syntax
 
 You can queue up massive grids of experiments directly within the Generator form.
+
+![]()
 
 **Product (Cartesian) `|`**  
 Will create $3 \times 2 = 6$ combinations.
@@ -101,12 +113,20 @@ experiment_name: (exp_a | exp_b | exp_c)
 
 ---
 
-## ⚙️ Workspace Configuration
+## ⚙️ Workspace Configuration `_pyruns_`
 
-When launched, `pyr` automatically initializes a `_pyruns_` workspace directory alongside your script.
-Inside, you'll find `tasks/` (storing all task runs), `config_default.yaml`, and the GUI settings `_pyruns_settings.yaml`.
+Upon launch, `pyr train.py` will automatically create a unified `_pyruns_` workspace directory alongside your script.
+Global UI settings are shared in `_pyruns_/_pyruns_settings.yaml`, while each script gets its own isolated sub-namespace (e.g., `_pyruns_/train/config_default.yaml` and `_pyruns_/train/tasks/`), completely eliminating config conflicts between multiple scripts!
 
-Edit this file to deeply customize your UI experience!
+![]()
+
+You can also explicitly import your own YAML as the initial config via CLI:
+```bash
+# Automatically copies my_config.yaml to _pyruns_/train/config_default.yaml
+pyr train.py my_config.yaml
+```
+
+You can edit the shared settings (`_pyruns_/_pyruns_settings.yaml`) to deeply customize your UI experience:!
 ```yaml
 ui_port: 8099                      # Web UI port
 generator_form_columns: 2          # Grid columns in generator form

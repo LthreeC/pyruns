@@ -33,8 +33,10 @@ ensure_root_dir()
 
 TASKS_DIR = "tasks"
 
-# Task 内部文件/目录名
-INFO_FILENAME = "task_info.json"
+# Task / Script metadata filenames
+TASK_INFO_FILENAME = "task_info.json"
+SCRIPT_INFO_FILENAME = "script_info.json"
+
 CONFIG_FILENAME = "config.yaml"
 CONFIG_DEFAULT_FILENAME = "config_default.yaml"
 RUN_LOG_DIR = "run_logs"           # unified log directory: run1.log, run2.log, …

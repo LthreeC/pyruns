@@ -40,7 +40,11 @@ pip install -e .
 ### 方式一：CLI 模式（推荐）
 
 ```bash
+# 模式 1：零配置启动 (自动解析您的 Argparse 脚本构建 UI)
 pyr your_script.py
+
+# 模式 2：导入自定义 YAML 配置启动 (将 YAML 作为当前脚本的默认配置)
+pyr your_script.py my_config.yaml
 ```
 
 `pyr` 命令会自动完成以下步骤：
@@ -70,10 +74,12 @@ config = pyruns.load()
 print(config.learning_rate)            # 点号访问
 print(config.model.hidden_size)        # 嵌套配置
 
-# 记录监控数据（在 Monitor 页面查看）
+# 记录任务的最终指标（在 Monitor 页面查看）
 for epoch in range(100):
     loss = train_one_epoch()
-    pyruns.add_monitor(epoch=epoch, loss=loss, acc=eval_acc())
+
+# 记录当前运行的最终指标，便于导出 CSV/JSON 报告
+pyruns.add_monitor(final_loss=loss, acc=eval_acc())
 ```
 
 ### 方式三：直接启动 UI
@@ -110,7 +116,7 @@ pyr train.py
 
 ### 3. 在 Generator 页面调参
 
-![Generator UI 示例图](assets/getting_started.png)
+![Generator UI 示例图](assets/配置参数页面.png)
 
 - 修改参数值（如 `lr: 0.01`）
 - 输入任务名称（如 `baseline`）
@@ -122,11 +128,15 @@ pyr train.py
 - 点击 **RUN SELECTED**
 - 观察任务状态从 `pending` → `queued` → `running` → `completed`
 
+![Generator UI 示例图](assets/任务卡片页面2.png)
+
 ### 5. 在 Monitor 页面查看日志
 
 - 选择左侧任务列表中的任务
 - 实时查看彩色日志输出
 - 日志自动滚动到底部
+
+![Generator UI 示例图](assets/日志监测2.png)
 
 ## 目录结构
 

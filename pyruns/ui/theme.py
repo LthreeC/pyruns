@@ -114,6 +114,16 @@ PANEL_HEADER_INDIGO = (
 PANEL_HEADER_DARK = (
     "bg-gradient-to-r from-slate-800 to-slate-900 border-b border-slate-700"
 )
+
+# ─── Dialogs & Modals ──────────────────────────────────────
+DIALOG_BACKDROP = "w-full max-w-[92vw] p-0 flex flex-col overflow-hidden shadow-2xl"
+DIALOG_HEADER_DARK = "w-full bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-3 items-center justify-between flex-none"
+DIALOG_HEADER_PRIMARY = "w-full bg-gradient-to-r from-indigo-600 to-indigo-700 text-white px-6 py-4 items-center justify-between flex-none"
+
+# ─── Toolbars & Sub-headers ────────────────────────────────
+TOOLBAR_LIGHT = "w-full items-center justify-between px-5 py-2 flex-none bg-gradient-to-r from-indigo-50 to-slate-50 border-b border-indigo-100"
+TOOLBAR_DARK = "w-full items-center gap-3 px-4 py-1.5 flex-none bg-gradient-to-r from-slate-800 to-slate-900 border-b border-slate-700"
+
 DARK_BG = "#0d1117"
 
 EXPORT_PRE_STYLE = "color:#94a3b8;font-size:11px;padding:8px 12px;background:#1e293b;border-radius:8px;margin:4px 0;"
