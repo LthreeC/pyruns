@@ -41,7 +41,7 @@ pyruns.read("configs/experiment.yaml") # 指定路径
 
 ### `pyruns.load()`
 
-返回已加载的配置对象。必须先调用 `pyruns.read()`。
+返回已加载的配置对象。在 `pyr` 环境下无需手动调用 `read()`，`load()` 会自动加载当前任务的配置。
 
 **返回值**：`ConfigNode` | `list[ConfigNode]` — 支持点号属性访问的配置对象。
 
@@ -88,23 +88,22 @@ d = config.to_dict()
 **示例**：
 
 ```python
-# 关键字参数（推荐）
-pyruns.add_monitor(epoch=10, loss=0.234, acc=95.2)
+import pyruns
 
-# 字典参数
-pyruns.add_monitor({"metric_a": 1.0, "metric_b": 2.0})
+# 1. 记录最终指标（推荐）
+# 训练结束后调用一次
+pyruns.add_monitor(loss=0.234, acc=95.2)
 
-# 混合使用
-pyruns.add_monitor({"base_loss": 0.5}, epoch=10, lr=0.001)
+# 2. 混合使用字典参数
+pyruns.add_monitor({"base_loss": 0.5}, final_acc=98.1)
 ```
 
 **写入的 JSON 结构**：
 
 ```json
 {
-    "monitors": [
+    "monitor": [
         {
-            "epoch": 10,
             "loss": 0.234,
             "acc": 95.2
         }

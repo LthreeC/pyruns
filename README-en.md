@@ -9,11 +9,8 @@
 </p>
 
 <p align="center">
-  <b>🧪 A lightweight, minimalist web UI for managing, running, and monitoring your Python experiments.</b>
-</p>
-
-<p align="center">
-  ![Pyruns Banner](docs/assets/banner.png)
+  <b>🧪 A lightweight, minimalist web UI for managing, running, and monitoring your Python experiments.</b><br>
+  <i>No complex configuration. Plug and play to make hyperparameter tuning elegant and efficient for ML and scientific computing.</i>
 </p>
 
 ---
@@ -39,13 +36,14 @@ No need to rewrite your code! Pyruns works out of the box with your existing `ar
 # Mode 1: Zero Config (Automatically parses your Argparse script to build UI)
 pyr train.py
 
-# Mode 2: Custom YAML Config (Imports your YAML as the default config for this script)
+# Mode 2: Custom YAML Config (Imports your YAML as the base config for this script)
 pyr train.py my_config.yaml
 
-# Show help / version
+# Helper commands
 pyr help
 pyr version
 ```
+
 
 ---
 
@@ -57,7 +55,7 @@ We have provided an `examples/` directory to help you get started quickly. Pyrun
 
 Load YAML configs or parse `argparse`, edit hyperparameters in a structured auto-generated form, and utilize powerful **batch generation syntax** to queue up hundreds of experiments instantly!
 
-![Generator UI - showcasing forms and batch syntax](docs/assets/generator_ui.png)
+![Generator UI - showcasing forms and batch syntax](docs/assets/批量生成任务参数.png)
 
 **Basic Usage: Argparse (No Code Changes)**
 See `examples/1_argparse_script/main.py`. Pyruns will automatically read your `argparse` definitions and build the Generator UI for you.
@@ -67,14 +65,24 @@ See `examples/1_argparse_script/main.py`. Pyruns will automatically read your `a
 
 A clean, card-grid overview of all your generated tasks. Filter by status, search by name, bulk-select your experiments, and utilize background worker pools to run them in parallel!
 
-![Manager UI - task grid and filter](docs/assets/manager_ui.png)
+![Manager UI - task grid and filter](docs/assets/任务卡片页面3.png)
+
+View detailed task configurations at a glance:
+
+![Manager UI - Task Details Info](docs/assets/任务详情task.png)
+
+![Manager UI - Task Details Config](docs/assets/任务详情config.png)
+
+![Manager UI - Task Details Notes](docs/assets/任务详情notes.png)
+
+![Manager UI - Task Details Env](docs/assets/任务详情env.png)
 
 ### 3. Monitor: Live Colored Logs & Metrics Logging
 
 Click into any running task to directly view real-time **ANSI-colored terminal logs** in your browser!
 Use `pyruns.add_monitor()` in your scripts to record training metrics, making it easy to export bulk CSV/JSON reports later.
 
-![Monitor UI - colored terminal log and export](docs/assets/monitor_ui.png)
+![Monitor UI - colored terminal log and export](docs/assets/日志监测2.png)
 
 **Advanced Usage: Logging Final Metrics**
 See `examples/3_metrics_logging/train.py`. Just add one line of code after training:
@@ -137,9 +145,9 @@ log_enabled: false                 # Enable file logging
 
 ---
 
-## 📚 Documentation
+## 📚 Detailed Documentation
 
-Dive deeper into Pyruns:
+Want to unlock Pyruns' full potential? Check out our official documentation:
 
 - 🚀 [Getting Started](docs/getting-started.md) — 5-minute setup guide
 - ⚙️ [Configuration Guide](docs/configuration.md) — Understanding `_pyruns_` structure and settings

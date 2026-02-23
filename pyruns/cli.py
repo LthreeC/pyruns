@@ -24,12 +24,18 @@ USAGE
 
 EXAMPLES
     1. Zero Config (Argparse)
+       Just run your existing argparse scripts. No code changes needed!
        $ pyr train.py
-       (Automatically parses your argparse definitions to build the UI)
 
     2. Custom YAML Config
        $ pyr train.py my_config.yaml
-       (Imports your YAML file as the default configuration for this script)
+       
+       In your script, load the generated UI parameters like this:
+       >>> import pyruns
+       >>> config = pyruns.load()
+       >>> print(config.learning_rate)
+       
+       For more examples, check out the `examples/` folder in the repository!
     """.strip()
 )
 

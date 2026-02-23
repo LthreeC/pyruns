@@ -4,14 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyruns"
-version = "0.0.5"
+version = "0.0.7"
 description = "Lightweight web UI for managing, running, and monitoring Python experiments."
 readme = "README.md"
-license = {file = "LICENSE"}
+license = { file = "LICENSE" }
 requires-python = ">=3.8"
-authors = [
-    {name = "LthreeC", email = "lanshiL3C@gmail.com"},
-]
+authors = [{ name = "LthreeC", email = "lanshiL3C@gmail.com" }]
 keywords = [
     "experiment-management",
     "hyperparameter-tuning",
@@ -36,11 +34,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: User Interfaces",
 ]
-dependencies = [
-    "nicegui>=1.4",
-    "pyyaml>=5.4",
-    "psutil>=5.9",
-]
+dependencies = ["nicegui>=1.4", "pyyaml>=5.4", "psutil>=5.9"]
 
 [project.scripts]
 pyr = "pyruns.cli:pyr"

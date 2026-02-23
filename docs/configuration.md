@@ -61,8 +61,7 @@ model: resnet50
     "rerun_pid": [null],
     "notes": "首次实验，baseline 配置",
     "monitor": [
-        {"epoch": 1, "loss": 0.892, "acc": 45.2, "_ts": "2026-02-13 10:31:05"},
-        {"epoch": 2, "loss": 0.534, "acc": 72.1, "_ts": "2026-02-13 10:31:10"}
+        {"loss": 0.234, "acc": 95.2, "_ts": "2026-02-13 10:31:05"}
     ]
 }
 ```
@@ -144,7 +143,7 @@ training:
 
 在 Generator 页面中，嵌套字典显示为可折叠的分组。
 
-在脚本中使用：
+在脚本中使用（Mode 2）：
 
 ```python
 config = pyruns.load()
@@ -185,7 +184,7 @@ config.training.scheduler.type  # "cosine"
 
 为保证高度定制化并整洁分离项目逻辑，Pyruns 将配置层分为三部分：
 
-1. **`_pyruns_settings.yaml` (Workspace UI 设置)**: 自动生成在工作区内的文件。用于用户自定义如 `ui_port`（端口）、`manager_max_workers`（并发进程）、页面列数等外部设置。
-2. **`pyruns/_config.py` (底层常量)**: 硬编码了所有不会也不应该被用户修改的系统级变量（例如 `.trash` 回收站命名、内部的环境变量名称 `__PYRUNS_CONFIG__`）。
+1. **`_pyruns_settings.yaml` (Workspace UI 设置)**: 自动生成在工作区内的文件。用于用户自定义如 `ui_port`（默认为 8099）、`manager_max_workers`（并发进程）、页面列数等外部设置。
+2. **`pyruns/_config.py` (底层常量)**: 硬编码了所有不会也不应该被用户修改的系统级变量（例如 `.trash` 回收站命名、内部的环境变量名称 `PYRUNS_CONFIG`）。
 3. **`pyruns/ui/theme.py` (视觉系统)**: 所有 UI 的 Tailwind 样式、颜色映射（例如 `STATUS_ICONS`）。通过这种归类彻底杜绝散落的硬代码，实现界面的极度统一。
 

@@ -18,9 +18,6 @@ conda activate pyruns
 
 # 开发模式安装
 pip install -e .
-
-# 核心依赖（如 pyproject.toml 未列全，手动安装）
-pip install nicegui pyyaml psutil
 ```
 
 ### 3. 启动开发服务器
@@ -33,7 +30,7 @@ pyr your_script.py
 python -m pyruns.ui.app
 ```
 
-NiceGUI 默认运行在 `http://localhost:8080`，`reload=False`（生产模式）。
+NiceGUI 默认运行在 `http://localhost:8099`，`reload=False`（生产模式）。
 
 ---
 

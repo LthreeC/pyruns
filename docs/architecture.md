@@ -193,7 +193,7 @@ cli.py: pyr()
             ├── TaskGenerator(root_dir)
             ├── TaskManager(root_dir)   → scan_disk() + _scheduler_loop()
             ├── SystemMonitor()
-            └── ui.run(port=8080)
+            └── ui.run(port=8099)
                     │
                     ▼
                 main_page()  ← 每个浏览器连接调用一次

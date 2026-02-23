@@ -58,37 +58,30 @@ pyr your_script.py my_config.yaml
    - 包含所有参数的默认值和注释
 
 3. **启动 Web UI**
-   - 打开浏览器，访问 `http://localhost:8080`
+   - 终端会自动打开浏览器，或手动访问 `http://localhost:8099`
 
-### 方式二：在脚本中直接使用
+### 方式二：手动配置模式 (Manual Config)
+如果您的脚本没有使用 `argparse`，或者您希望显式控制配置：
 
-```python
-import pyruns
+1. **导入现有配置**：
+   ```bash
+   pyr train.py my_settings.yaml
+   ```
+   该 YAML 会被复制到任务根目录作为默认配置。
 
-# 读取配置
-pyruns.read()                          # 从默认位置或环境变量加载
-pyruns.read("path/to/config.yaml")     # 指定路径
+2. **在脚本中加载**：
+   ```python
+   import pyruns
+   config = pyruns.load()  # 自动加载 UI 中配置好的参数
+   ```
 
-# 使用配置
-config = pyruns.load()
-print(config.learning_rate)            # 点号访问
-print(config.model.hidden_size)        # 嵌套配置
-
-# 记录任务的最终指标（在 Monitor 页面查看）
-for epoch in range(100):
-    loss = train_one_epoch()
-
-# 记录当前运行的最终指标，便于导出 CSV/JSON 报告
-pyruns.add_monitor(final_loss=loss, acc=eval_acc())
-```
-
-### 方式三：直接启动 UI
-
+### 方式三：极简开发模式 (Dev Mode)
 ```bash
-python -m pyruns.ui.app
+pyr dev your_script.py
 ```
+开启热重载（Edit & See），实时响应脚本变化。
 
-此模式使用当前目录下的 `_pyruns_/` 作为任务根目录。
+---
 
 ## 第一个实验
 
