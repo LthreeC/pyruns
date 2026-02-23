@@ -79,7 +79,8 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
                 except Exception:
                     yaml_str = str(t.get("config", {})).lower()
 
-                text_blob = t.get("name", "").lower() + "\n" + yaml_str
+                notes_str = str(t.get("notes", "")).lower()
+                text_blob = t.get("name", "").lower() + "\n" + yaml_str + "\n" + notes_str
                 # For robust matching, remove all spaces around colons in both texts
                 # so "device: null" matches "device:null" etc.
 
