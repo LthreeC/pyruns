@@ -394,13 +394,11 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             si = ui.textarea(placeholder="Search config / name...").props(
                 "dense outlined bg-white clearable autogrow"
             ).classes("flex-grow text-xs font-mono").style("max-height: 80px; overflow-y: auto;")
-            si.on("keyup.enter", lambda _: (sel["_task_list_items"].refresh() if sel.get("_task_list_items") else None, sel["_task_list_pagination"].refresh() if sel.get("_task_list_pagination") else None))
-            si.on("clear", lambda _: (sel["_task_list_items"].refresh() if sel.get("_task_list_items") else None, sel["_task_list_pagination"].refresh() if sel.get("_task_list_pagination") else None))
-            
             # Using a slight debounce for textarea to avoid lag on multi-line paste
             search_timer = [None]
-            def _debounced_search(e):
-                search_ref["val"] = (e.value or "").strip().lower()
+
+            def _debounced_search(e=None):
+                search_ref["val"] = (si.value or "").strip().lower()
                 _page["value"] = 0
                 if sel.get("_task_list_items"):
                     sel["_task_list_items"].refresh()
@@ -410,9 +408,17 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             def _on_search(e):
                 if search_timer[0]:
                     search_timer[0].cancel()
-                search_timer[0] = ui.timer(0.3, lambda: _debounced_search(e), once=True)
+                search_timer[0] = ui.timer(0.3, _debounced_search, once=True)
 
             si.on_value_change(_on_search)
+
+            def _force_search_now(e=None):
+                if search_timer[0]:
+                    search_timer[0].cancel()
+                _debounced_search()
+
+            si.on("keyup.enter", _force_search_now)
+            si.on("clear", _force_search_now)
             
             ui.checkbox(on_change=_toggle_select_all).props(
                 "dense size=sm color=indigo"

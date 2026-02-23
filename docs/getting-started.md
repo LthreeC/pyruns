@@ -110,6 +110,8 @@ pyr train.py
 
 ### 3. 在 Generator 页面调参
 
+![Generator UI 示例图](assets/getting_started.png)
+
 - 修改参数值（如 `lr: 0.01`）
 - 输入任务名称（如 `baseline`）
 - 点击 **GENERATE** 生成任务

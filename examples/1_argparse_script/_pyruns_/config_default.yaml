@@ -1,0 +1,6 @@
+# Auto-generated for main.py
+
+lr: 0.001  # Learning rate
+epochs: 10  # Number of training epochs
+batch_size: 32  # Batch size for training
+optimizer: adam  # Optimizer choice
