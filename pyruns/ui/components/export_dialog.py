@@ -148,7 +148,7 @@ async def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
                     return
                 ts = export_timestamp()
                 ui.download(
-                    csv_str.encode("utf-8"), f"pyruns_report_{ts}.csv"
+                    csv_str.encode("utf-8-sig"), f"pyruns_report_{ts}.csv"
                 )
                 ui.notify("CSV exported", type="positive", icon="download")
                 dlg.close()
