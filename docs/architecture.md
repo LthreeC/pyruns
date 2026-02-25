@@ -231,7 +231,7 @@ _initial_load():
     task_list_panel.refresh()
 ```
 
-**关键设计决策**：使用延迟加载（`ui.timer`）而非同步加载，避免在 `@ui.refreshable` 渲染周期中执行阻塞 I/O。详见 [TROUBLESHOOTING.md](../TROUBLESHOOTING.md#1-monitor-页面必须先点-manager-才能加载任务列表)。
+**关键设计决策**：使用延迟加载（`ui.timer`）而非同步加载，避免在 `@ui.refreshable` 渲染周期中执行阻塞 I/O。
 
 ### 轮询与快照对比
 
