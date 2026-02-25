@@ -18,17 +18,15 @@ except PackageNotFoundError:
 
 _global_config_manager_ = ConfigManager()
 
+
 def _get_default_config_path() -> str:
     from ._config import DEFAULT_ROOT_NAME
-    if os.environ.get(ENV_ROOT):
-        return os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
         
     script_path = sys.argv[0] if sys.argv else ""
     if script_path and os.path.isfile(script_path):
         script_base = os.path.splitext(os.path.basename(script_path))[0]
-        return os.path.join(os.getcwd(), DEFAULT_ROOT_NAME, script_base, CONFIG_DEFAULT_FILENAME)
-    
-    return os.path.join(ROOT_DIR, CONFIG_DEFAULT_FILENAME)
+        return os.path.join(ROOT_DIR, script_base, CONFIG_DEFAULT_FILENAME)
+    raise FileNotFoundError(f"Default config path cannot be determined because script path is invalid: {script_path}")
 
 
 def read(file_path: str = None):

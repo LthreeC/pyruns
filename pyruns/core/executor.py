@@ -11,7 +11,7 @@ import sys
 import subprocess
 import time
 import threading
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from pyruns._config import (
     RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME,

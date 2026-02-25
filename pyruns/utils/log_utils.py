@@ -63,7 +63,6 @@ def configure_project_root_logger(
 
 
 def attach_file_handler(log_path: str, log_config: Optional[Dict] = None) -> None:
-    global _LIBRARY_ROOT_LOGGER
     log_config = log_config or _LOG_CONFIG
 
     file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
