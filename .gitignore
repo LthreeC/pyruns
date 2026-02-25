@@ -15,3 +15,6 @@ build/
 dist/
 __pycache__/
 _pyruns_/
+
+.vitepress/dist/
+.vitepress/cache/
