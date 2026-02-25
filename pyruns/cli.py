@@ -7,9 +7,9 @@ import sys
 import textwrap
 import traceback
 
-from ._config import ENV_ROOT, ENV_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
+from ._config import ENV_ROOT, ENV_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
 from . import __version__ as _VERSION
-from . import ensure_config_default 
+from . import ensure_config_default
 
 # ─── Help text ────────────────────────────────────────────────
 
@@ -84,6 +84,8 @@ def pyr():
     if not os.path.exists(filepath):
         print(f"Error: '{arg}' not found.")
         sys.exit(1)
+
+    ensure_root_dir()
 
     try:
         _setup_env(filepath, custom_yaml)

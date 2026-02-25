@@ -22,14 +22,16 @@ DEFAULT_ROOT_NAME = "_pyruns_"     # 默认任务存储目录名
 ROOT_DIR = os.getenv(ENV_ROOT, os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
 
 
-def ensure_root_dir() -> None:
-    """Create ROOT_DIR on disk if it doesn't already exist."""
-    if not os.path.exists(ROOT_DIR):
-        os.makedirs(ROOT_DIR, exist_ok=True)
+def ensure_root_dir(root: str = None) -> None:
+    """Create *root* (default ``ROOT_DIR``) on disk if it doesn't already exist.
 
-
-# Auto-create on first import (preserves existing behaviour)
-ensure_root_dir()
+    This is intentionally **not** called at import time so that merely
+    importing ``pyruns`` (e.g. during ``python -m build``) does not
+    create a ``_pyruns_`` directory as a side-effect.
+    """
+    target = root or ROOT_DIR
+    if not os.path.exists(target):
+        os.makedirs(target, exist_ok=True)
 
 TASKS_DIR = "tasks"
 
