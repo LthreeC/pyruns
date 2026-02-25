@@ -125,16 +125,14 @@ def status_dot(status: str, size: str = "14px") -> None:
 #  Readonly Content Viewer
 # ═══════════════════════════════════════════════════════════════
 
-_LANG_MAP = {"json": "JSON", "yaml": "YAML", "text": None}
-
-
 def readonly_code_viewer(content: str, mode: str = "text") -> None:
     """Full-height readonly CodeMirror viewer.
 
     *mode*: ``"json"`` | ``"yaml"`` | ``"text"`` | ``"log"``
     """
     _ensure_css()
-    lang = _LANG_MAP.get(mode)
+    # Map mode to CodeMirror language (None = plain text)
+    lang = {"json": "JSON", "yaml": "YAML"}.get(mode)
     theme = "vscodeDark" if mode in ("json", "yaml", "log") else "vscodeLight"
     return ui.codemirror(
         value=content, language=lang, theme=theme, line_wrapping=True,

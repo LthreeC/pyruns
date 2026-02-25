@@ -1,3 +1,6 @@
+"""
+Time utilities — unified timestamp formatting for task naming and logs.
+"""
 import datetime
 
 def get_now_str() -> str:

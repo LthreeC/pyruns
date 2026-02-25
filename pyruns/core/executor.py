@@ -1,3 +1,11 @@
+"""
+Executor — runs a single task as a subprocess.
+
+Three phases:
+  1. ``_prepare_env()``   — build the environment dict (PYTHONIOENCODING, config path, …)
+  2. ``_build_command()``  — detect script type (argparse / pyruns) and assemble argv
+  3. ``run_task_worker()`` — spawn the subprocess, tee stdout to log + EventBus, update status
+"""
 import os
 import sys
 import subprocess

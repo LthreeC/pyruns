@@ -10,6 +10,8 @@ from pyruns._config import CONFIG_FILENAME
 from pyruns.utils.info_io import load_task_info, save_task_info
 from pyruns.utils.info_io import get_log_options, resolve_log_path
 from pyruns.ui.theme import STATUS_ICONS, DIALOG_BACKDROP, DIALOG_HEADER_DARK, TOOLBAR_DARK, TOOLBAR_LIGHT
+from pyruns.ui.widgets import readonly_code_viewer, status_badge
+from pyruns.ui.components.env_editor import env_var_editor
 
 from pyruns.utils import get_logger
 logger = get_logger(__name__)
@@ -84,17 +86,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                             "flat round dense color=white"
                         ).classes("opacity-70 hover:opacity-100")
 
-                # ── Tabs ──
-                # tab_value = selected.get("tab", "task_info")
-                # with ui.tabs(value=tab_value).classes(
-                #     "w-full bg-slate-50 border-b border-slate-200 flex-none"
-                # ) as tabs:
-                #     ui.tab("task_info", label="Task Info", icon="info")
-                #     ui.tab("config", label="Config", icon="tune")
-                #     ui.tab("run.log", label="Run Log", icon="terminal")
-                #     ui.tab("notes", label="Notes", icon="edit_note")
-                #     ui.tab("env", label="Env Vars", icon="vpn_key")
-                    
+
                 # ── Tabs ──
                 tab_value = selected.get("tab", "task_info")
 

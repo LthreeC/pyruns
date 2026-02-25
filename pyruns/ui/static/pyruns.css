@@ -1,77 +1,148 @@
 /* ── readonly codemirror ── */
-.readonly-cm .cm-focused { outline: none !important; }
-.readonly-cm .cm-cursor { display: none !important; }
-.readonly-cm .cm-activeLine { background: transparent !important; }
-.readonly-cm .cm-content { cursor: default; }
-.readonly-cm .cm-gutters { cursor: default; }
+.readonly-cm .cm-focused {
+  outline: none !important;
+}
+.readonly-cm .cm-cursor {
+  display: none !important;
+}
+.readonly-cm .cm-activeLine {
+  background: transparent !important;
+}
+.readonly-cm .cm-content {
+  cursor: default;
+}
+.readonly-cm .cm-gutters {
+  cursor: default;
+}
 
 /* ── dialog: flex chain  card → tab-panels → panel → content ── */
 .task-detail-card .q-tab-panels {
-    padding: 0 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-    background: #1e1e1e !important;
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
 }
 .task-detail-card .q-tab-panels > div {
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
 }
 .task-detail-card .q-tab-panel {
-    padding: 0 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
 }
 
 /* ── codemirror: fill remaining flex space ── */
 .task-detail-card .readonly-cm,
 .task-detail-card nicegui-codemirror {
-    flex: 1 1 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
 }
 .task-detail-card .cm-editor {
-    height: 100% !important;
-    border: none !important;
+  height: 100% !important;
+  border: none !important;
 }
 
 /* ── Monitor: terminal-like log viewer ── */
 .monitor-log-pre {
-    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', monospace;
-    font-size: 12px;
-    line-height: 1.6;
-    color: #d4d4d4;
-    white-space: pre-wrap;
-    word-break: break-all;
-    padding: 8px 12px;
-    margin: 0;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", "Monaco", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 8px 12px;
+  margin: 0;
 }
 
 /* ── Monitor: task list item ── */
 .monitor-task-item {
-    cursor: pointer;
-    transition: all 0.15s ease;
-    border-left: 3px solid transparent;
-    flex-wrap: nowrap !important;
-    overflow: hidden;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-left: 3px solid transparent;
+  flex-wrap: nowrap !important;
+  overflow: hidden;
 }
-.monitor-task-item:hover { background: #f1f5f9; }
+.monitor-task-item:hover {
+  background: #f1f5f9;
+}
 .monitor-task-item.active {
-    background: #eef2ff;
-    border-left-color: #6366f1;
+  background: #eef2ff;
+  border-left-color: #6366f1;
 }
 .monitor-task-item .nicegui-label,
 .monitor-task-item label,
 .monitor-task-item span {
-    white-space: nowrap !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* ── Param editor: compact input fields ── */
+.param-input .q-field__control {
+  min-height: 26px !important;
+  height: 26px !important;
+}
+.param-input .q-field__marginal {
+  height: 26px !important;
+}
+.param-input .q-field__native {
+  padding: 2px 8px !important;
+  font-size: 12px;
+}
+.param-input input {
+  font-size: 12px !important;
+}
+
+/* ── Param editor: zero-out Quasar expansion spacing ── */
+.param-expansion .q-expansion-item__container {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.param-expansion .q-expansion-item__content {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.param-expansion .q-item {
+  min-height: 26px !important;
+  padding: 0 4px 0 8px !important;
+  margin: 0 !important;
+}
+.param-expansion .q-item__section {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.param-expansion .q-item__section--side {
+  padding: 0 !important;
+  min-width: 20px !important;
+}
+.param-expansion .q-card,
+.param-expansion .q-card__section {
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+.param-expansion .q-list {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+.param-expansion .q-focus-helper {
+  display: none !important;
+}
+.param-expansion .nicegui-column,
+.param-expansion .nicegui-grid {
+  gap: 0 !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
 }

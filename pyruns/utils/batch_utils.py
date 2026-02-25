@@ -20,7 +20,11 @@ logger = get_logger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 def _split_by_pipe(text: str) -> List[str]:
-    """Split string by BATCH_SEPARATOR, ignoring escaped instances (BATCH_ESCAPE)."""
+    """Split string by BATCH_SEPARATOR, ignoring escaped instances (BATCH_ESCAPE).
+
+    Escape handling: temporarily swap escaped separators with a null byte
+    so they survive the split, then restore them in each part.
+    """
     if not text:
         return []
     # Temporarily replace escaped separators with a null byte
@@ -32,12 +36,16 @@ def _split_by_pipe(text: str) -> List[str]:
 
 def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
 
-    """Detect pipe syntax and determine mode per-value.
+    """Detect pipe syntax and determine expansion mode per-value.
 
     Returns None if no pipe syntax found.
     Otherwise returns (split_parts, mode):
-        "product"  for bare pipes:      value1 | value2 | value3
-        "zip"      for parenthesized:   (value1 | value2 | value3)
+        "product"  for bare pipes:      ``value1 | value2 | value3``
+        "zip"      for parenthesized:   ``(value1 | value2 | value3)``
+
+    Also supports range shorthand:
+        ``(start, stop[, step])``   → product expansion
+        ``start:stop[:step]``       → product expansion
     """
     if not isinstance(value, str):
         return None

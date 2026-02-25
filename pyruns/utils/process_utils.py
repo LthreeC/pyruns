@@ -2,12 +2,14 @@
 Cross-platform process utilities — check if a PID is alive, kill a process.
 """
 import os
+from typing import Any
+
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def is_pid_running(pid) -> bool:
+def is_pid_running(pid: Any) -> bool:
     """Check whether *pid* is still alive (cross-platform)."""
     if not pid:
         return False

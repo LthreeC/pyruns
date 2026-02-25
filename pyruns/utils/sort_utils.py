@@ -8,6 +8,15 @@ import re
 import yaml
 from typing import Any, Dict
 
+# Priority weights for task status sorting (higher = appears first with reverse=True)
+_STATUS_PRIORITIES = {
+    "running": 50,
+    "queued": 40,
+    "failed": 30,
+    "completed": 20,
+    "pending": 10,
+}
+
 
 def task_sort_key(task: Dict[str, Any]) -> tuple:
     """Return a tuple for sorting tasks by status priority and timestamps.
@@ -26,14 +35,7 @@ def task_sort_key(task: Dict[str, Any]) -> tuple:
       - Inactive tasks: latest timestamp first => Return raw string.
     """
     status = task.get("status", "pending")
-    priorities = {
-        "running": 50,
-        "queued": 40,
-        "failed": 30,
-        "completed": 20,
-        "pending": 10
-    }
-    priority = priorities.get(status, 0)
+    priority = _STATUS_PRIORITIES.get(status, 0)
 
     finishes = task.get("finish_times") or []
     starts = task.get("start_times") or []

@@ -27,13 +27,10 @@ def read_log(log_path: str) -> str:
 
 
 def read_log_chunk(log_path: str, offset: int) -> tuple[str, int]:
-    """
-    Read new content from log file starting at `offset`.
-    
-    Returns:
-        (content, new_offset)
-    
-    If file was truncated (size < offset), reads from beginning.
+    """Read new content from log file starting at *offset*.
+
+    Returns ``(content, new_offset)``.\n    If file was truncated (size < offset), resets to beginning —
+    this handles log rotation / overwrite scenarios gracefully.
     """
     if not os.path.exists(log_path):
         return "", 0

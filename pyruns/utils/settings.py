@@ -66,7 +66,9 @@ log_enabled: false                  # false to disable all pyruns internal logs
 log_level: INFO                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
 """
 
-# ── Module-level cache ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+#  In-process cache — avoids re-reading YAML on every get() call
+# ═══════════════════════════════════════════════════════════════
 _cached: Dict[str, Any] = {}
 
 
@@ -134,6 +136,10 @@ def reload_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
     """Force reload from disk."""
     return load_settings(root_dir)
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Persistence — comment-preserving single-key YAML update
+# ═══════════════════════════════════════════════════════════════
 
 def save_setting(key: str, value: Any) -> None:
     """Persist a single setting to ``_pyruns_settings.yaml``.

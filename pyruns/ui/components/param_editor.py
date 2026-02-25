@@ -22,41 +22,6 @@ _TYPE_INFO = {
 
 _TINY = "outlined dense bg-white hide-bottom-space"
 
-# ── CSS: injected once per client to override Quasar defaults ──
-_EDITOR_CSS_CLIENTS: set = set()
-
-_EDITOR_CSS = """
-/* -- param input fields -- */
-.param-input .q-field__control { min-height: 26px !important; height: 26px !important; }
-.param-input .q-field__marginal { height: 26px !important; }
-.param-input .q-field__native { padding: 2px 8px !important; font-size: 12px; }
-.param-input input { font-size: 12px !important; }
-/* -- param expansion: zero out all Quasar internal spacing -- */
-.param-expansion .q-expansion-item__container { padding: 0 !important; margin: 0 !important; }
-.param-expansion .q-expansion-item__content { padding: 0 !important; margin: 0 !important; }
-.param-expansion .q-item { min-height: 26px !important; padding: 0 4px 0 8px !important; margin: 0 !important; }
-.param-expansion .q-item__section { padding: 0 !important; margin: 0 !important; }
-.param-expansion .q-item__section--side { padding: 0 !important; min-width: 20px !important; }
-.param-expansion .q-card, .param-expansion .q-card__section { padding: 0 !important; margin: 0 !important; box-shadow: none !important; }
-.param-expansion .q-list { padding: 0 !important; margin: 0 !important; }
-.param-expansion .q-focus-helper { display: none !important; }
-.param-expansion .nicegui-column, .param-expansion .nicegui-grid {
-    gap: 0 !important; margin: 0 !important;
-    padding-top: 0 !important; padding-bottom: 0 !important;
-}
-"""
-
-
-def _ensure_editor_css():
-    """Inject CSS once per NiceGUI client session."""
-    try:
-        cid = ui.context.client.id
-    except Exception:
-        cid = "__default__"
-    if cid not in _EDITOR_CSS_CLIENTS:
-        _EDITOR_CSS_CLIENTS.add(cid)
-        ui.add_css(_EDITOR_CSS)
-
 
 def _get_type_key(value) -> str:
     """Map a Python value to its type category string."""
@@ -88,7 +53,6 @@ def recursive_param_editor(
     full_data: Dict[str, Any] = None,
 ) -> None:
     """Build a compact form editor for a (possibly nested) config dict."""
-    _ensure_editor_css()
 
     if expansions is None:
         expansions = []

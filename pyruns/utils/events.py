@@ -56,7 +56,9 @@ class LogEmitter:
         if not subs:
             return
 
-        # Try to push into the running event loop (NiceGUI / uvicorn)
+        # Push into the asyncio event loop via call_soon_threadsafe so that
+        # NiceGUI / Quasar element updates (e.g. term.write) happen on the
+        # correct thread.  If no loop is running (e.g. in tests) call directly.
         loop = None
         try:
             loop = asyncio.get_running_loop()

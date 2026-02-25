@@ -10,7 +10,6 @@ MONITOR_PANEL_WIDTH = "16%"      # Monitor page task list panel width
 # ─── Spacing & Layout Presets ───────────────────────────────
 LAYOUT_ROW_GAP = "gap-2"
 LAYOUT_COL_GAP = "gap-2"
-CARD_MIN_HEIGHT = "148px"
 
 # ═══════════════════════════════════════════════════════════════
 #  UI Theme Constants
@@ -124,11 +123,7 @@ DIALOG_HEADER_PRIMARY = "w-full bg-gradient-to-r from-indigo-600 to-indigo-700 t
 TOOLBAR_LIGHT = "w-full items-center justify-between px-5 py-2 flex-none bg-gradient-to-r from-indigo-50 to-slate-50 border-b border-indigo-100"
 TOOLBAR_DARK = "w-full items-center gap-3 px-4 py-1.5 flex-none bg-gradient-to-r from-slate-800 to-slate-900 border-b border-slate-700"
 
-DARK_BG = "#0d1117"
-
 EXPORT_PRE_STYLE = "color:#94a3b8;font-size:11px;padding:8px 12px;background:#1e293b;border-radius:8px;margin:4px 0;"
-PARAM_CARD_ALT_BG = "background:#fffbeb"
-PARAM_CARD_BG = "background:#fafbfc"
 
 # ─── Task Status Colors ────────────────────────────────────
 STATUS_CARD_STYLES = {
@@ -161,11 +156,5 @@ STATUS_ICON_COLORS = {
     "running":     "text-amber-500",
     "completed":   "text-emerald-500",
     "failed":      "text-rose-500",
-}
-
-# ─── Status sort order (shared by manager + monitor) ──────
-STATUS_ORDER = {
-    "running": 0, "queued": 1, "pending": 2,
-    "failed": 3, "completed": 4,
 }
 

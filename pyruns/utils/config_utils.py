@@ -105,7 +105,10 @@ def get_nested(data: dict, full_key: str):
 def list_template_files(run_root: str) -> Dict[str, str]:
     """
     Scan a Run Root directory for loadable YAML config files.
-    Returns dict of {relative_path: display_name}.
+
+    Returns dict of ``{relative_path: display_name}``.
+    Searches both ``tasks/<name>/config.yaml`` and ``config_default.yaml``.
+    Results are sorted by task_sort_key (same order as Manager page).
     """
     if not os.path.isdir(run_root):
         return {}
@@ -193,9 +196,10 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
 
 def validate_config_types_against_template(orig_config: Dict[str, Any], new_configs: List[Dict[str, Any]]) -> str | None:
     """Ensure generated configs match the primitive types of the original template.
-    
-    Allows int -> float coercions, and permits strings where anything goes.
-    Returns an error message string if a mismatch is found, or None if fully valid.
+
+    Allows int → float coercion (safe widening), and permits strings
+    as wildcards (any type can parse from a string input).  Returns an
+    error message string if a mismatch is found, or None if fully valid.
     """
     flat_orig = flatten_dict(orig_config)
     for config in new_configs:
