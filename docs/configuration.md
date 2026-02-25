@@ -1,14 +1,32 @@
-# 配置系统文档
+# 配置系统
 
 ## 概述
 
-Pyruns 的配置系统围绕 YAML 文件构建，支持嵌套结构、自动类型推断和批量参数展开。
+Pyruns 的配置系统围绕 YAML 文件构建，支持嵌套结构、自动类型推断和批量参数展开。整个配置体系分为三个层次：
+
+| 层次 | 文件 | 说明 |
+|------|------|------|
+| **参数模板** | `config_default.yaml` | 脚本的默认参数基准，由 `pyr` 自动生成或用户导入 |
+| **任务快照** | `config.yaml` | 每次生成任务时的参数副本，保存在各任务目录下 |
+| **任务元数据** | `task_info.json` | 任务的完整生命周期数据（状态、时间、PID、笔记等） |
+
+---
 
 ## 配置文件
 
-### `config_default.yaml` — 模板配置
+### `config_default.yaml` — 参数模板
 
-由 `pyr` 自动生成，存放在 `_pyruns_/` 根目录。包含脚本中所有 `argparse` 参数的默认值。
+存放在 `_pyruns_/{script}/` 目录下，是 Generator 页面的参数来源。
+
+**生成方式（三选一）**：
+
+| 方式 | 触发条件 | 行为 |
+|------|----------|------|
+| **Argparse 自动解析** | `pyr train.py`（脚本含 `argparse`） | AST 静态分析提取所有参数默认值并生成 |
+| **YAML 导入** | `pyr train.py my_config.yaml` | 将 `my_config.yaml` 复制为 `config_default.yaml` |
+| **pyruns.load() 模式** | 脚本使用 `pyruns.load()` | 要求 `config_default.yaml` 已存在，否则报错并引导用户导入 |
+
+> 后续运行 `pyr train.py`（不带 YAML 参数）时，始终自动加载已有的 `config_default.yaml`。再次传入新 YAML 会覆盖旧模板。
 
 ```yaml
 # Auto-generated for train.py
@@ -19,14 +37,14 @@ batch_size: 32  # 批大小
 model: resnet50
 ```
 
-**特点**：
-- 在 Generator 页面中以只读模板形式显示（左上角有 🔒 标记）
-- 编辑不会修改原始文件
-- 用户编辑的是内存中的副本，生成任务时写入独立的 `config.yaml`
+**在 Generator 中的行为**：
+- 以只读模板形式加载（左上角 🔒 标记）
+- 用户编辑的是内存副本，原始文件不受影响
+- 生成任务时，参数写入各任务目录的独立 `config.yaml`
 
-### `config.yaml` — 任务级配置
+### `config.yaml` — 任务级快照
 
-每个任务目录包含一个独立的 `config.yaml`，是从模板生成时的参数快照。
+每个任务目录包含一个独立的 `config.yaml`，是生成任务时的参数快照：
 
 ```yaml
 lr: 0.01
@@ -35,13 +53,12 @@ batch_size: 64
 model: resnet50
 ```
 
-**特点**：
-- 不包含内部元数据字段（以 `_meta` 开头的键会被过滤）
-- 批量生成时，每个任务的 `config.yaml` 包含该任务对应的参数组合
+- 批量生成时，每个任务的 `config.yaml` 各自包含该任务的参数组合
+- 内部元数据字段（以 `_meta` 开头的键）会被自动过滤
 
 ### `task_info.json` — 任务元数据
 
-每个任务目录包含一个 `task_info.json`，记录任务的完整生命周期数据。
+记录任务的完整生命周期数据：
 
 ```json
 {
@@ -60,7 +77,7 @@ model: resnet50
     "rerun_at": ["2026-02-13 11:00:00"],
     "rerun_pid": [null],
     "notes": "首次实验，baseline 配置",
-    "monitor": [
+    "monitors": [
         {"loss": 0.234, "acc": 95.2, "_ts": "2026-02-13 10:31:05"}
     ]
 }
@@ -83,7 +100,7 @@ model: resnet50
 | `rerun_at` | `list[string]` | 每次重跑的时间 |
 | `rerun_pid` | `list[int?]` | 每次重跑的 PID |
 | `notes` | `string` | 用户笔记 |
-| `monitor` | `list[dict]` | 监控数据条目列表 |
+| `monitors` | `list[dict]` | 监控数据条目列表 |
 
 ## ConfigNode — 点号访问配置
 
@@ -165,26 +182,29 @@ config.training.scheduler.type  # "cosine"
 
 这些环境变量在任务执行时通过 `executor.py` 的 `_prepare_env()` 注入到子进程环境中。
 
-## 配置优先级
+## 配置查找优先级
 
-`pyruns.read()` 的配置文件查找顺序：
+`pyruns.read()` 按如下顺序查找配置文件：
 
-```
-1. 环境变量 PYRUNS_CONFIG（pyr 运行器自动设置）
-   └── 指向任务目录下的 config.yaml
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| 1 | 环境变量 `__PYRUNS_CONFIG__` | 由 `pyr` executor 自动设置，指向当前任务的 `config.yaml` |
+| 2 | 显式传入的 `file_path` | `pyruns.read("my_config.yaml")` |
+| 3 | 默认路径 | `_pyruns_/{script}/config_default.yaml` |
 
-2. 显式传入的 file_path
-   └── pyruns.read("my_config.yaml")
+**工作流说明**：
+- 通过 `pyr` 运行任务时，executor 会自动设置 `__PYRUNS_CONFIG__` 指向任务目录的 `config.yaml`，用户脚本中的 `pyruns.read()` / `pyruns.load()` 会自动读取
+- 直接 `python train.py` 运行时，按优先级 2→3 查找
 
-3. 默认路径
-   └── _pyruns_/config_default.yaml
-```
+---
 
-## UI 与环境全局配置 (`_pyruns_settings.yaml`)
+## 全局设置 `_pyruns_settings.yaml`
 
-为保证高度定制化并整洁分离项目逻辑，Pyruns 将配置层分为三部分：
+Pyruns 的配置层明确分离：
 
-1. **`_pyruns_settings.yaml` (Workspace UI 设置)**: 自动生成在工作区内的文件。用于用户自定义如 `ui_port`（默认为 8099）、`manager_max_workers`（并发进程）、页面列数等外部设置。
-2. **`pyruns/_config.py` (底层常量)**: 硬编码了所有不会也不应该被用户修改的系统级变量（例如 `.trash` 回收站命名、内部的环境变量名称 `PYRUNS_CONFIG`）。
-3. **`pyruns/ui/theme.py` (视觉系统)**: 所有 UI 的 Tailwind 样式、颜色映射（例如 `STATUS_ICONS`）。通过这种归类彻底杜绝散落的硬代码，实现界面的极度统一。
+| 文件 | 作用 | 修改方式 |
+|------|------|----------|
+| `_pyruns_settings.yaml` | 用户可定制的 UI 设置（端口、并发数、列数等） | 手动编辑或 UI 内修改 |
+| `pyruns/_config.py` | 系统级常量（目录名、环境变量名等） | 仅开发者修改 |
+| `pyruns/ui/theme.py` | 视觉系统（CSS 类名、颜色映射、图标） | 仅开发者修改 |
 

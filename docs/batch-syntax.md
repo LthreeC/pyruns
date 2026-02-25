@@ -1,12 +1,21 @@
-# 批量生成语法详解
+# 批量生成语法
 
-## 概述
+Pyruns 支持在 YAML 配置值中使用管道语法声明多值参数，自动生成所有参数组合的任务。
 
-Pyruns 支持在 YAML 配置值中使用 `|` 管道语法来声明多值参数，自动生成所有参数组合的任务。
+---
 
-## 两种语法
+## 语法总览
 
-### Product 语法 — 笛卡尔积
+| 语法 | 名称 | 效果 | 示例 |
+|------|------|------|------|
+| `a \| b \| c` | Product（笛卡尔积） | 与其他 Product 参数全排列组合 | 3 值 × 2 值 = 6 组合 |
+| `(a \| b \| c)` | Zip（配对组合） | 按位置一一对应，所有 Zip 长度须一致 | 3 值 → 3 组合 |
+
+两种语法可混合使用，总任务数 = Product 各参数值数量之积 × Zip 长度。
+
+---
+
+## Product — 笛卡尔积
 
 使用裸 `|` 分隔多个值：
 
@@ -28,7 +37,9 @@ lr=0.1,   batch_size=64
 
 **总数**：3 × 2 = **6 个任务**
 
-### Zip 语法 — 配对组合
+---
+
+## Zip — 配对组合
 
 使用 `(|)` 括号包裹：
 
@@ -49,7 +60,9 @@ seed=3, name=gamma
 
 **约束**：所有 Zip 参数必须有相同数量的值。
 
-### 混合使用
+---
+
+## 混合使用
 
 Product 和 Zip 可以同时使用：
 
@@ -69,7 +82,9 @@ model: resnet50
 
 **总数**：Product × Zip = (3 × 2) × 3 = **18 个任务**
 
-**公式**：\( \text{Total} = \prod(\text{product counts}) \times \text{zip length} \)
+**公式**：$\text{Total} = \prod(\text{product counts}) \times \text{zip length}$
+
+---
 
 ## 完整示例
 
@@ -106,20 +121,23 @@ dataset: cifar10
 
 **总数**：(2 × 2 × 2) × 3 = **24 个任务**
 
-### 生成后的目录结构
+### 生成后的目录
 
 ```
 _pyruns_/
 ├── my-exp-[1-of-24]/
 │   ├── task_info.json
 │   ├── config.yaml     ← lr=0.001, optimizer=adam, hidden_size=128, seed=42
-│   └── run.log
+│   └── run_logs/
+│       └── run1.log
 ├── my-exp-[2-of-24]/
 │   ├── config.yaml     ← lr=0.001, optimizer=adam, hidden_size=128, seed=123
 │   └── ...
 └── my-exp-[24-of-24]/
     └── ...
 ```
+
+---
 
 ## 类型推断
 
@@ -134,7 +152,9 @@ _pyruns_/
 | `[1, 2]` | `list` |
 | `None` | `NoneType` |
 
-## 嵌套参数支持
+---
+
+## 嵌套参数
 
 管道语法支持在嵌套字典的叶子节点中使用：
 
@@ -155,6 +175,8 @@ model.layers.output: 10                       → fixed
 ```
 
 总任务数：3 × 2 = **6**
+
+---
 
 ## 确认对话框
 

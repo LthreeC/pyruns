@@ -1,26 +1,28 @@
-# 🚀 安装与快速开始
+# 安装与快速开始
 
-欢迎使用 Pyruns！本文档将用最短的时间（约 5 分钟）带你体验 **“零配置、代码无侵入”** 的实验之旅。
+5 分钟上手 Pyruns 的完整工作流。
 
 ---
 
-## 💻 系统要求
+## 系统要求
 
 | 项目 | 要求 | 备注 |
 |------|------|------|
-| **Python** | ≥ 3.8 | 推荐使用虚拟环境 (`conda` 或 `venv`) |
-| **操作系统** | Windows / Linux / macOS | 跨平台支持 |
-| **GPU 监控** | NVIDIA GPU + `nvidia-smi` | 可选。如果存在，右上角将显示实时的 GPU 利用率和显存 |
+| Python | ≥ 3.8 | 推荐 `conda` 或 `venv` 虚拟环境 |
+| 操作系统 | Windows / Linux / macOS | 跨平台 |
+| GPU 监控 | NVIDIA GPU + `nvidia-smi` | 可选，有则自动显示 GPU 利用率 |
 
-## 📦 安装
+---
 
-### 方式 1：通过 Pip 安装（推荐）
+## 安装
+
+**pip（推荐）**
 
 ```bash
 pip install pyruns
 ```
 
-### 方式 2：从源码安装（开发者）
+**源码安装（开发者）**
 
 ```bash
 git clone https://github.com/LthreeC/pyruns.git
@@ -28,54 +30,49 @@ cd pyruns
 pip install -e .
 ```
 
-*附注：核心轻量级依赖项仅包含 `nicegui` (基于 FastAPI + Vue 的前端驱动), `pyyaml` (解析配置), 以及 `psutil` (采集系统资源)。*
+核心依赖仅三项：`nicegui`（Web 框架）、`pyyaml`（配置解析）、`psutil`（系统指标采集）。
 
 ---
 
-## ⚡ 核心理念：Zero-Config (零配置)
+## 两种启动模式
 
-市面上的实验管理工具通常需要重构代码、学习复杂的 API，并在脚本中添加样板代码。
+### 模式一：自动解析 Argparse（推荐）
 
-**Pyruns 采用无侵入式的架构设计。**
-
-其核心理念在于：**只要脚本使用了标准的 `argparse`，即可直接生成对应的 Web GUI，无需修改任何业务逻辑代码。**
-
----
-
-## 🏃 快速开始模式
-
-### 模式一：自动解析 Argparse 脚本（推荐）
-
-这是最推荐的接入模式。对于标准的、包含 `parser.add_argument(...)` 的 Python 训练脚本。
+适用于任何使用 `parser.add_argument(...)` 的 Python 脚本，无需改动任何代码。
 
 ```bash
 pyr train.py
 ```
 
-`pyr` 命令行会自动执行以下操作：
-1. **静态扫描**：通过 AST 语法树解析读取 `argparse` 定义。
-2. **生成默认配置**：在当前目录下创建 `_pyruns_/train/config_default.yaml`，提取所有参数的默认值和帮助文档。
-3. **启动 Web 界面**：根据上述信息，为您启动一个可交互的 Web 参数配置表单。
+执行后 Pyruns 会：
 
-### 模式二：基于 YAML 的配置模式
+1. 通过 AST 静态分析提取所有 `argparse` 参数定义
+2. 在 `_pyruns_/train/` 下生成 `config_default.yaml`（含默认值与 help 文本）
+3. 启动 Web UI 并在浏览器中打开参数配置表单
 
-如果您的项目使用 YAML 作为配置文件，可以直接通过命令行传入：
+### 模式二：自定义 YAML 配置
+
+当脚本使用 `pyruns.load()` 读取配置（而非 `argparse`）时，首次运行时传入配置文件：
 
 ```bash
-pyr train.py my_base_config.yaml
+pyr train.py my_config.yaml
+# → my_config.yaml 复制到 _pyruns_/train/config_default.yaml
 ```
 
-这会将 `my_base_config.yaml` 复制为当前脚本的默认参数模板，方便在界面中进行修改和复制。
+后续运行无需再指定 YAML，Pyruns 自动加载已保存的模板：
+
+```bash
+pyr train.py
+# → 自动加载 _pyruns_/train/config_default.yaml
+```
+
+如需更换模板，再次传入即可覆盖。
 
 ---
 
-## 🎯 动手做：你的第一个实验
+## 动手实践：第一个实验
 
-让我们在不改动业务逻辑的前提下，体验 Pyruns 流程。
-
-### 1. 准备你的旧代码
-
-新建一个 `train.py`，模拟一个普通的机器学习训练过程：
+### 1. 准备脚本
 
 ```python
 # train.py
@@ -83,85 +80,80 @@ import argparse
 import time
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--lr", type=float, default=0.001, help="初始学习率")
+parser.add_argument("--lr", type=float, default=0.001, help="学习率")
 parser.add_argument("--epochs", type=int, default=10, help="训练轮数")
-parser.add_argument("--batch_size", type=int, default=32, help="数据批大小")
+parser.add_argument("--batch_size", type=int, default=32, help="批大小")
 args = parser.parse_args()
 
-print(f"🚀 [INIT] 开始训练: LR={args.lr}, EPOCHS={args.epochs}, BATCH={args.batch_size}")
+print(f"[INIT] LR={args.lr}, EPOCHS={args.epochs}, BATCH={args.batch_size}")
 for epoch in range(args.epochs):
-    time.sleep(0.5)  # 模拟训练耗时
-    print(f"🔄 Epoch {epoch+1}/{args.epochs} 完成")
+    time.sleep(0.5)
+    print(f"Epoch {epoch+1}/{args.epochs} done")
 ```
 
-### 2. 赋予其 GUI
-
-就在这个文件所在的目录下，直接打开终端：
+### 2. 启动 UI
 
 ```bash
 pyr train.py
 ```
-*(如果是开发环境调试，推荐使用 `pyr dev train.py` 开启热重载模式)*
 
-### 3. 在 Generator 页面调参 (排队)
+> 开发调试推荐 `pyr dev train.py`（热重载模式）。
 
-终端将输出本地服务地址，并在默认浏览器中自动打开 `http://localhost:8099`。您将看到基于 `train.py` 自动渲染的 Web 配置表单。
+### 3. Generator — 配置参数
 
-![Generator UI 示例图](assets/tab_generator.png)
+浏览器自动打开 `http://localhost:8099`，显示从 `train.py` 解析生成的参数表单。
 
-1. 在 UI 里修改参数，比如把 `lr` 改成 `0.01`。
-2. （可选）为本次实验指定名称，比如 `fast-tuning`。
-3. 点击底部的 **GENERATE** 按钮，实验配置即自动创建。
+![Generator](assets/tab_generator.png)
 
-### 4. 在 Manager 页面运行
+1. 修改参数，例如将 `lr` 改为 `0.01`
+2. （可选）填写任务名称前缀，如 `fast-tuning`
+3. 点击 **GENERATE** 生成任务
 
-切换到左侧第二个 Tab（Manager 页面）。
+### 4. Manager — 运行任务
 
-1. 刚刚创建的任务正处于灰色的 `pending`（待运行）状态。
-2. 选中其复选框。
-3. 点击右侧的 **RUN SELECTED** 按钮。
-4. 任务状态将更新为橙色的 `running`。
+切换到 Manager 页面：
 
-![Manager UI 示例图](assets/tab_manager.png)
+1. 新任务显示为灰色 `Pending` 状态
+2. 勾选后点击 **RUN SELECTED**
+3. 状态变为橙色 `Running`
 
-### 5. 在 Monitor 页面查看日志
+![Manager](assets/tab_manager.png)
 
-切换到左侧第三个 Tab（Monitor 页面）。
+### 5. Monitor — 查看日志
 
-选择左侧列表里正在运行的任务。
-浏览器中会展示支持 ANSI 颜色的流式日志输出，日志会根据控制台的打印实时自动滚动。
+切换到 Monitor 页面，选中正在运行的任务即可查看 ANSI 彩色实时日志流。
 
-![Monitor UI 示例图](assets/tab_monitor.png)
+![Monitor](assets/tab_monitor.png)
 
 ---
 
-## 📁 目录结构与工作区隔离
+## 工作区结构
 
-运行 `pyr train.py` 后，项目目录下的文件结构如下：
+运行后的目录：
 
 ```text
 your_project/
-├── train.py                          # 原始脚本
-└── _pyruns_/                         # Pyruns 专属工作目录
-    ├── _pyruns_settings.yaml         # 全局 UI 首选项 (端口, 执行器模式等)
-    └── train/                        # <--- 当前脚本专属工作区
-        ├── config_default.yaml       # 自动提取的默认参数模板
-        └── tasks/                    # 存储该脚本所有实验记录
-            ├── fast-tuning/          # 单次实验数据目录
-            │   ├── task_info.json    # 实验元数据 (PID, 状态, 时间)
-            │   ├── config.yaml       # 本次实验的参数快照
-            │   └── run.log           # 本次实验的标准输出日志文件
-            └── .trash/               # 被软删除的实验记录
+├── train.py
+└── _pyruns_/
+    ├── _pyruns_settings.yaml      # 全局 UI 设置
+    └── train/                     # 按脚本名隔离
+        ├── script_info.json       # 脚本元信息
+        ├── config_default.yaml    # 参数模板
+        └── tasks/
+            ├── fast-tuning/
+            │   ├── task_info.json # 任务元数据
+            │   ├── config.yaml    # 参数快照
+            │   └── run_logs/
+            │       └── run1.log   # 控制台输出
+            └── .trash/            # 软删除（可恢复）
 ```
 
-**目录隔离策略规则解释**
-不同入口脚本在 `_pyruns_` 下拥有独立的文件夹。例如运行 `pyr test.py` 时，将在 `_pyruns_/test/` 目录下生成数据。此设计有效防止了多个脚本间的配置混淆和运行日志相互覆盖。
+不同脚本在 `_pyruns_/` 下完全隔离（如 `train/` 和 `test/`），互不干扰。
 
-## ⏭️ 下一步
+---
 
-了解更多 Pyruns 的进阶特性：
+## 下一步
 
-- [🖱️ Web 界面操作手册](ui-guide.md) — 了解参数模板、批量调度与监控面板的详细操作
-- [🧪 批量生成语法指南](batch-syntax.md) — 掌握使用 Product (`|`) 与 Zip (`(|)`) 生成多维参数网格
-- [🛠️ 开发者 API 参考](api-reference.md) — 学习如何使用 API 记录评估指标并导出报告
-
+- [界面操作手册](ui-guide.md) — Generator / Manager / Monitor 进阶操作
+- [批量生成语法](batch-syntax.md) — Product (`|`) 与 Zip (`(|)`) 参数网格
+- [API 参考](api-reference.md) — `read()` / `load()` / `add_monitor()`

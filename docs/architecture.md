@@ -1,8 +1,8 @@
-# 项目架构详解
+# 架构设计
 
 ## 总体设计
 
-Pyruns 采用三层分离架构，确保核心逻辑与 UI 框架解耦：
+Pyruns 采用三层分离架构，核心逻辑与 UI 框架完全解耦：
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -69,14 +69,17 @@ pyruns/
 │       └── monitor.py
 │
 └── utils/                   # ── 纯工具函数 ──
-    ├── ansi_utils.py
+    ├── batch_utils.py
     ├── config_utils.py
+    ├── events.py
+    ├── info_io.py
     ├── log_io.py
     ├── log_utils.py
     ├── parse_utils.py
     ├── process_utils.py
-    ├── task_io.py
-    └── task_utils.py
+    ├── settings.py
+    ├── sort_utils.py
+    └── time_utils.py
 ```
 
 ## 核心模块详解
@@ -87,20 +90,17 @@ pyruns/
 
 | 常量 | 值 | 用途 |
 |------|-----|------|
-| `ENV_ROOT` | `"PYRUNS_ROOT"` | 环境变量名：任务根目录 |
-| `ENV_CONFIG` | `"PYRUNS_CONFIG"` | 环境变量名：当前任务配置路径 |
-| `ENV_SCRIPT` | `"PYRUNS_SCRIPT"` | 环境变量名：用户脚本路径 |
+| `ENV_ROOT` | `"__PYRUNS_ROOT__"` | 环境变量名：任务根目录 |
+| `ENV_CONFIG` | `"__PYRUNS_CONFIG__"` | 环境变量名：当前任务配置路径 |
+| `ENV_SCRIPT` | `"__PYRUNS_SCRIPT__"` | 环境变量名：用户脚本路径 |
 | `DEFAULT_ROOT_NAME` | `"_pyruns_"` | 默认任务存储目录名 |
 | `ROOT_DIR` | 动态计算 | 运行时的任务根目录路径 |
-| `INFO_FILENAME` | `"task_info.json"` | 任务元数据文件名 |
+| `TASK_INFO_FILENAME` | `"task_info.json"` | 任务元数据文件名 |
 | `CONFIG_FILENAME` | `"config.yaml"` | 任务配置快照文件名 |
-| `LOG_FILENAME` | `"run.log"` | 首次运行日志文件名 |
-| `RERUN_LOG_DIR` | `"rerun_logs"` | 重跑日志子目录名 |
+| `CONFIG_DEFAULT_FILENAME` | `"config_default.yaml"` | 参数模板文件名 |
+| `RUN_LOG_DIR` | `"run_logs"` | 统一日志目录：run1.log, run2.log, … |
 | `TRASH_DIR` | `".trash"` | 软删除目录名 |
-| `MONITOR_KEY` | `"monitor"` | task_info.json 中监控数据的字段名 |
-| `THEME_COLOR` | `"indigo"` | 主题色 |
-| `HEADER_GRADIENT` | CSS 类 | 页头渐变背景 |
-| `BG_COLOR` | `"bg-slate-50"` | 页面背景色 |
+| `MONITOR_KEY` | `"monitors"` | task_info.json 中监控数据的字段名 |
 
 ### `core/task_manager.py` — 任务管理器
 
@@ -151,10 +151,10 @@ completed/failed ──→ queued (rerun)
 2. 构建命令行：`python script.py --arg1 val1 --arg2 val2`
 3. 设置环境变量（`PYRUNS_CONFIG`、`PYTHONIOENCODING` 等）
 4. 通过 `subprocess.Popen` 启动子进程
-5. 将 stdout/stderr 重定向到 `run.log`
+5. 将 stdout/stderr 重定向到 `run_logs/runN.log`
 6. 等待进程结束，更新 `task_info.json` 中的状态
 
-**重跑机制**：重跑日志存储在 `rerun_logs/rerunN.log`，支持多次重跑。
+**重跑机制**：重跑日志存储在 `run_logs/runN.log`（N 从 1 递增），支持多次重跑。
 
 ### `core/system_metrics.py` — 系统监控
 

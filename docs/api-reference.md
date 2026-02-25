@@ -1,8 +1,8 @@
 # API 参考
 
-## 公开 API（`pyruns` 包）
+## 公开 API
 
-以下函数可以在用户脚本中直接调用：
+用户脚本中可直接调用以下函数：
 
 ```python
 import pyruns
@@ -12,7 +12,7 @@ import pyruns
 
 ### `pyruns.read(file_path=None)`
 
-读取配置文件，初始化全局 ConfigManager。
+读取配置文件并初始化全局 ConfigManager。
 
 **参数**：
 
@@ -20,11 +20,13 @@ import pyruns
 |------|------|--------|------|
 | `file_path` | `str?` | `None` | 配置文件路径（YAML 或 JSON） |
 
-**配置查找优先级**：
+**查找优先级**：
 
-1. 环境变量 `PYRUNS_CONFIG`（由 `pyr` 运行器自动设置）
-2. 显式传入的 `file_path`
-3. `_pyruns_/config_default.yaml`
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| 1 | 环境变量 `__PYRUNS_CONFIG__` | 由 `pyr` executor 自动设置，指向任务的 `config.yaml` |
+| 2 | 显式传入的 `file_path` | — |
+| 3 | 默认路径 | `_pyruns_/{script}/config_default.yaml` |
 
 **示例**：
 
@@ -33,15 +35,15 @@ pyruns.read()                          # 自动查找
 pyruns.read("configs/experiment.yaml") # 指定路径
 ```
 
-**异常**：
-- `FileNotFoundError`：配置文件不存在
-- `RuntimeError`：配置文件解析失败
+**异常**：配置文件不存在时抛出 `FileNotFoundError`；解析失败时抛出 `RuntimeError`。
 
 ---
 
 ### `pyruns.load()`
 
-返回已加载的配置对象。在 `pyr` 环境下无需手动调用 `read()`，`load()` 会自动加载当前任务的配置。
+返回已加载的配置对象。在 `pyr` 环境下会自动加载当前任务配置，无需手动调用 `read()`。
+
+> 使用 `pyruns.load()` 的脚本需要确保 `_pyruns_/{script}/config_default.yaml` 已存在。可通过 `pyr script.py your_config.yaml` 一次性导入，后续直接 `pyr script.py` 即可。
 
 **返回值**：`ConfigNode` | `list[ConfigNode]` — 支持点号属性访问的配置对象。
 
@@ -62,14 +64,13 @@ print(config.layers)           # [64, 128, 256]
 d = config.to_dict()
 ```
 
-**异常**：
-- `RuntimeError`：未调用 `read()` 就调用 `load()`
+**异常**：未调用 `read()` 且无法自动定位配置时抛出 `RuntimeError`。
 
 ---
 
 ### `pyruns.add_monitor(data=None, **kwargs)`
 
-向当前任务的 `task_info.json` 追加一条监控数据。
+向当前任务的 `task_info.json` 追加监控数据。适用于在训练结束时记录关键指标，随后可在 Monitor 页面跨任务聚合导出。
 
 **参数**：
 
@@ -80,10 +81,10 @@ d = config.to_dict()
 
 **行为**：
 
-- 数据按 **Run** 聚合。同一次 Run 内的多次调用会合并到同一个字典中
-- 数据追加到 `task_info.json` 的 `"monitors"` 列表中
-- 如果不在 `pyr` 管理的任务中运行（无 `PYRUNS_CONFIG` 环境变量），调用被静默忽略
-- 写入失败时自动重试最多 5 次
+- 同一次 Run 内多次调用会合并到同一条记录
+- 数据追加到 `task_info.json` 的 `"monitors"` 列表
+- 不在 `pyr` 管理的任务中运行时（无 `__PYRUNS_CONFIG__` 环境变量），调用被静默忽略
+- 写入失败时自动重试（最多 5 次）
 
 **示例**：
 
@@ -102,7 +103,7 @@ pyruns.add_monitor({"base_loss": 0.5}, final_acc=98.1)
 
 ```json
 {
-    "monitor": [
+    "monitors": [
         {
             "loss": 0.234,
             "acc": 95.2
@@ -111,8 +112,7 @@ pyruns.add_monitor({"base_loss": 0.5}, final_acc=98.1)
 }
 ```
 
-**异常**：
-- `TypeError`：`data` 参数不是 `dict` 类型
+**异常**：`data` 非 `dict` 类型时抛出 `TypeError`。
 
 ---
 
@@ -185,7 +185,7 @@ flatten_dict({"a": {"b": 1, "c": 2}})
 
 ---
 
-### `pyruns.utils.task_io`
+### `pyruns.utils.info_io`
 
 #### `load_task_info(task_dir) → dict`
 
@@ -197,7 +197,7 @@ flatten_dict({"a": {"b": 1, "c": 2}})
 
 #### `load_monitor_data(task_dir) → list[dict]`
 
-从 `task_info.json` 中提取 `"monitor"` 字段。
+从 `task_info.json` 中提取 `"monitors"` 字段。
 
 #### `get_log_options(task_dir) → dict[str, str]`
 
@@ -232,18 +232,6 @@ flatten_dict({"a": {"b": 1, "c": 2}})
     "batch_size": {"name": "--batch_size", "type": int, "default": 32, "help": "批大小"},
 }
 ```
-
----
-
-### `pyruns.utils.ansi_utils`
-
-#### `ansi_to_html(text) → str`
-
-将 ANSI 转义码转换为 HTML `<span>` 标签。支持标准 8/16 色、粗体、斜体、下划线。
-
-#### `tail_lines(text, n=1000) → str`
-
-返回文本的最后 n 行。
 
 ---
 
