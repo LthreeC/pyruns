@@ -285,6 +285,7 @@ def test_is_pid_running_mock_posix(mock_kill):
     assert is_pid_running(99999) is False
 
 
+@pytest.mark.skipif(os.name != "nt", reason="ctypes.windll only available on Windows")
 @patch("pyruns.utils.process_utils.os.name", "nt")
 @patch("ctypes.windll.kernel32.OpenProcess")
 def test_is_pid_running_mock_nt_false(mock_open):
@@ -294,6 +295,7 @@ def test_is_pid_running_mock_nt_false(mock_open):
     mock_open.assert_called_with(0x00100000, False, 99999)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="ctypes.windll only available on Windows")
 @patch("pyruns.utils.process_utils.os.name", "nt")
 @patch("ctypes.windll.kernel32.CloseHandle")
 @patch("ctypes.windll.kernel32.OpenProcess")
