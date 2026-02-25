@@ -9,9 +9,28 @@
 </p>
 
 <p align="center">
-  <b>🧪 A lightweight, minimalist web UI for managing, running, and monitoring your Python experiments.</b><br>
-  <i>No complex configuration. Plug and play to make hyperparameter tuning elegant and efficient for ML and scientific computing.</i>
+  <b>🧪 A minimalist, lightweight, and powerful Web UI for managing, running, and monitoring your Python experiments.</b><br>
+  <i>Zero configuration. Plug and play. Focus on your code and make hyperparameter tuning elegant and efficient for ML and scientific computing.</i>
 </p>
+
+---
+
+## 🌟 Why Pyruns?
+
+In Machine Learning and scientific computing, **Hyperparameter Tuning** and **Experiment Management** often introduce friction into the workflow:
+- Managing batch experiments via complex Shell scripts is prone to errors.
+- Console outputs scattered across multiple Terminal windows are difficult to track.
+- Experiment records lack structure, making it hard to reproduce optimal parameter configurations.
+
+**Pyruns provides a lightweight solution.**
+It is designed as a local-first **Task Runner and Web GUI**, rather than a heavy MLOps platform. Built on a **Zero-Config** philosophy, Pyruns automatically orchestrates a Web UI around your existing `argparse` scripts with no modifications required to your underlying code.
+
+📌 **Key Features**
+- **🔌 Zero-Code Integration:** Parses your `argparse` definitions and renders them into an interactive web form.
+- **⚡ Batch Generation:** Define massive parameter grids effortlessly using internal syntax like `|` (Cartesian Product) and `(|)` (Paired mapping).
+- **🚀 Parallel Execution:** Built-in task queue and worker pools (threads/processes) for efficient concurrent execution.
+- **📊 Real-time Monitoring:** ANSI-colored stdout streams directly to the browser for live log tracking.
+- **📈 Metrics Logging:** Use the `pyruns.add_monitor()` API to log key metrics (e.g., loss, accuracy) and export aggregated CSV/JSON reports.
 
 ---
 
@@ -28,92 +47,93 @@ pip install pyruns
 
 ## 🚀 Quick Start
 
-No need to rewrite your code! Pyruns works out of the box with your existing `argparse` scripts.
-
-### CLI Usage
+### Mode 1: Zero Config (Recommended)
+No need to rewrite your code! Pyruns works out of the box, instantly generating a UI for your `argparse`-based scripts.
 
 ```bash
-# Mode 1: Zero Config (Automatically parses your Argparse script to build UI)
 pyr train.py
-
-# Mode 2: Custom YAML Config (Imports your YAML as the base config for this script)
-pyr train.py my_config.yaml
-
-# Helper commands
-pyr help
-pyr version
 ```
 
+### Mode 2: Custom YAML Config
+If you prefer configuration files, you can directly import your YAML as the base parameters for the script:
+
+```bash
+pyr train.py my_config.yaml
+```
+
+**CLI Helpers**
+```bash
+pyr help     # View all supported CLI commands
+pyr version  # Check current version
+```
 
 ---
 
 ## ✨ Features & UI Showcases
 
-We have provided an `examples/` directory to help you get started quickly. Pyruns provides three main tabs to manage the full lifecycle of your python experiments.
+We provide easy-to-follow tutorials in the `examples/` directory. Pyruns covers your entire experiment lifecycle through three core scenarios:
 
 ### 1. Generator: Configure & Batch Tasks
 
-Load YAML configs or parse `argparse`, edit hyperparameters in a structured auto-generated form, and utilize powerful **batch generation syntax** to queue up hundreds of experiments instantly!
+Load your `argparse` or YAML templates to configure hyperparameters through a structured form. Leverage **batch generation syntax** to queue parameter sweeps efficiently.
 
-![Generator UI - showcasing forms and batch syntax](docs/assets/批量生成任务参数.png)
+![Generator UI - showcasing forms and batch syntax](docs/assets/multi_gen.png)
 
-**Basic Usage: Argparse (No Code Changes)**
-See `examples/1_argparse_script/main.py`. Pyruns will automatically read your `argparse` definitions and build the Generator UI for you.
-> 💡 **Tip**: When both short and long arguments are defined (e.g., `-b, --batch_size`), Pyruns intelligently prioritizes the long argument name as the configuration key!
+> 💡 **Tip**: When parsing Argparse arguments, if both short and long forms exist (e.g., `-b, --batch_size`), Pyruns prioritizes the long argument name for clarity.
 
-### 2. Manager: Task Grid & Parallel Bulk Run
+### 2. Manager: Task Console & Parallel Dispatch
 
-A clean, card-grid overview of all your generated tasks. Filter by status, search by name, bulk-select your experiments, and utilize background worker pools to run them in parallel!
+Browse scheduled experiments in a clean card grid. Features include status filtering, fuzzy search, and bulk operations. Selected tasks are delegated to the worker pool for parallel execution.
 
-![Manager UI - task grid and filter](docs/assets/任务卡片页面3.png)
+![Manager UI - task grid and filter](docs/assets/tab_manager.png)
 
-View detailed task configurations at a glance:
+Selecting a task card displays detailed experiment metadata, including environment variables, configuration snapshots, execution logs, and user notes:
 
-![Manager UI - Task Details Info](docs/assets/任务详情task.png)
+| | |
+|:---:|:---:|
+| **Task Info Overview**<br>![Task Details Info](docs/assets/taskinfo.png) | **Config Snapshot**<br>![Task Details Config](docs/assets/config.png) |
+| **Custom Notes**<br>![Task Details Notes](docs/assets/notes.png) | **Environment Sandbox**<br>![Task Details Env](docs/assets/env.png) |
 
-![Manager UI - Task Details Config](docs/assets/任务详情config.png)
+### 3. Monitor: Live Colored Logs & System Metrics
 
-![Manager UI - Task Details Notes](docs/assets/任务详情notes.png)
+Clicking on a `running` task provides a real-time **ANSI-colored terminal log** view. The global navigation bar continuously updates hardware metrics (CPU, RAM, and Multi-GPU usage).
 
-![Manager UI - Task Details Env](docs/assets/任务详情env.png)
+![Monitor UI - colored terminal log and export](docs/assets/tab_monitor.png)
 
-### 3. Monitor: Live Colored Logs & Metrics Logging
-
-Click into any running task to directly view real-time **ANSI-colored terminal logs** in your browser!
-Use `pyruns.add_monitor()` in your scripts to record training metrics, making it easy to export bulk CSV/JSON reports later.
-
-![Monitor UI - colored terminal log and export](docs/assets/日志监测2.png)
-
-**Advanced Usage: Logging Final Metrics**
-See `examples/3_metrics_logging/train.py`. Just add one line of code after training:
+**Logging Final Metrics**
+To track final evaluation metrics across tasks, append the following API call at the end of your script (see `examples/3_metrics_logging/train.py`):
 
 ```python
-import pyruns
+last_loss = 0
 
-# Your training loop...
-loss, accuracy = 0.2, 0.95
+for epoch in range(1, args.epochs + 1):
+    time.sleep(0.5)  # Simulate compute
+    loss = 1.0 / (epoch * args.lr * 100)
+    last_loss = loss
+    print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
 
-# Track the final metrics for this run to easily export bulk CSV/JSON reports later
-pyruns.add_monitor(loss=loss, accuracy=accuracy)
+pyruns.add_monitor(last_loss=last_loss)
 ```
+
+![Monitor UI - export](docs/assets/export_report.png)
 
 ---
 
-## 📋 Batch Generation Syntax
+## 📋 Batch Generation Syntax 
 
-You can queue up massive grids of experiments directly within the Generator form.
+Pyruns supports specific syntax formulations within the UI to facilitate Grid Search creation.
 
 ![]()
 
 **Product (Cartesian) `|`**  
-Will create $3 \times 2 = 6$ combinations.
+Computes a Cartesian product. The configuration below produces $3 \times 2 = 6$ parameter pairs.
 ```yaml
 learning_rate: 0.001 | 0.01 | 0.1
 batch_size: 32 | 64
 ```
 
 **Zip (Paired) `(|)`**  
-Must have matching lengths. Will create exactly 3 combinations.
+Matched by position. The arrays wrapped in parentheses must have the same length. This accurately generates exactly 3 combinations.
 ```yaml
 seed: (1 | 2 | 3)
 experiment_name: (exp_a | exp_b | exp_c)
@@ -121,26 +141,21 @@ experiment_name: (exp_a | exp_b | exp_c)
 
 ---
 
-## ⚙️ Workspace Configuration `_pyruns_`
+## ⚙️ Workspace Isolation `_pyruns_`
 
-Upon launch, `pyr train.py` will automatically create a unified `_pyruns_` workspace directory alongside your script.
-Global UI settings are shared in `_pyruns_/_pyruns_settings.yaml`, while each script gets its own isolated sub-namespace (e.g., `_pyruns_/train/config_default.yaml` and `_pyruns_/train/tasks/`), completely eliminating config conflicts between multiple scripts!
+Pyruns handles filesystem outputs systematically. Running `pyr train.py` generates a `_pyruns_` workspace directory adjacent to the script.
+
+Global settings are stored in `_pyruns_/_pyruns_settings.yaml`. Crucially, experiment outputs and histories are **isolated by the entry script's name** (e.g., outputs under `_pyruns_/train/` are kept separate from `_pyruns_/test/`), mitigating file overwrite conflicts.
 
 ![]()
 
-You can also explicitly import your own YAML as the initial config via CLI:
-```bash
-# Automatically copies my_config.yaml to _pyruns_/train/config_default.yaml
-pyr train.py my_config.yaml
-```
-
-You can edit the shared settings (`_pyruns_/_pyruns_settings.yaml`) to deeply customize your UI experience:!
+You can edit the global settings (`_pyruns_/_pyruns_settings.yaml`) to deeply customize your UI experience:
 ```yaml
 ui_port: 8099                      # Web UI port
-generator_form_columns: 2          # Grid columns in generator form
-manager_max_workers: 4             # Number of scripts to run in parallel
-manager_execution_mode: thread     # Run using threads or processes
-log_enabled: false                 # Enable file logging
+generator_form_columns: 2          # Default expanded columns in generator form
+manager_max_workers: 4             # Max parallel threads/processes in Manager
+manager_execution_mode: thread     # Execution scheduling mode: thread or process
+log_enabled: false                 # Enable extra debug logging output
 ```
 
 ---
@@ -149,12 +164,12 @@ log_enabled: false                 # Enable file logging
 
 Want to unlock Pyruns' full potential? Check out our official documentation:
 
-- 🚀 [Getting Started](docs/getting-started.md) — 5-minute setup guide
-- ⚙️ [Configuration Guide](docs/configuration.md) — Understanding `_pyruns_` structure and settings
-- 🧪 [Batch Syntax](docs/batch-syntax.md) — Deep dive into Product / Zip generation
-- 🖥️ [UI User Guide](docs/ui-guide.md) — Mastering Generator, Manager, and Monitor pages
-- 🛠️ [API Reference](docs/api-reference.md) — Deep integration within your scripts
-- 📐 [Architecture](docs/architecture.md) — Internal design and principles
+- 🚀 [Getting Started](docs/getting-started.md) — 5-minute setup workflow
+- ⚙️ [Configuration Guide](docs/configuration.md) — Understand `_pyruns_` philosophy and isolation
+- 🧪 [Batch Syntax](docs/batch-syntax.md) — Deep dive into Product, Zip, and Range syntax
+- 🖥️ [UI User Guide](docs/ui-guide.md) — Master advanced interactions in Generator, Manager, and Monitor
+- 🛠️ [API Reference](docs/api-reference.md) — For power users: Deep integration inside your code
+- 📐 [Architecture](docs/architecture.md) — Internal scheduling logic (for developers)
 
 ---
 

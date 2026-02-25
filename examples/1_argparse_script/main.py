@@ -11,7 +11,7 @@ You do not need to import pyruns to use pyruns.
 2. Or, run this file with pyruns to manage experiments:
    `pyr main.py`
 """
-
+import pyruns
 import argparse
 import time
 
@@ -27,11 +27,15 @@ def main():
     print(f"🚀 Starting training with {args.optimizer.upper()} optimizer!")
     print(f"Hyperparameters: LR={args.lr}, Batch Size={args.batch_size}")
 
+    last_loss = 0
+
     for epoch in range(1, args.epochs + 1):
         time.sleep(0.5)  # Simulate compute
         loss = 1.0 / (epoch * args.lr * 100)
+        last_loss = loss
         print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
     
+    pyruns.add_monitor(last_loss=last_loss)
     print("✅ Training complete.")
 
 if __name__ == "__main__":

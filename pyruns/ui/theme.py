@@ -115,7 +115,7 @@ PANEL_HEADER_DARK = (
 )
 
 # ─── Dialogs & Modals ──────────────────────────────────────
-DIALOG_BACKDROP = "w-full max-w-[92vw] p-0 flex flex-col overflow-hidden shadow-2xl"
+DIALOG_BACKDROP = "w-full max-w-[70vw] p-0 flex flex-col overflow-hidden shadow-2xl"
 DIALOG_HEADER_DARK = "w-full bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-3 items-center justify-between flex-none"
 DIALOG_HEADER_PRIMARY = "w-full bg-gradient-to-r from-indigo-600 to-indigo-700 text-white px-6 py-4 items-center justify-between flex-none"
 
