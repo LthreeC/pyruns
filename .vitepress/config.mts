@@ -2,6 +2,7 @@ import { defineConfig } from 'vitepress'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
+  base: '/pyruns/', // 必须和你的仓库名一致，且前后都有斜杠
   title: "Pyruns",
   description: "python调参、任务批量生成、批量运行、管理、监控",
   themeConfig: {
