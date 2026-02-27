@@ -17,7 +17,7 @@ Pyruns 支持在 YAML 配置值中使用管道语法声明多值参数，自动�
 
 ## Product — 笛卡尔积
 
-使用裸 `|` 分隔多个值：
+使用 `|` 分隔多个值：
 
 ```yaml
 lr: 0.001 | 0.01 | 0.1
@@ -41,14 +41,14 @@ lr=0.1,   batch_size=64
 
 ## Zip — 配对组合
 
-使用 `(|)` 括号包裹：
+使用括号 `(|)` 包裹管道符及其元素：
 
 ```yaml
 seed: (1 | 2 | 3)
 name: (alpha | beta | gamma)
 ```
 
-**效果**：按位置配对（类似 Python 的 `zip()`）。
+**效果**：按位置配对组合（行为类似 Python 内置的 `zip()` 函数）。
 
 ```
 seed=1, name=alpha
@@ -58,13 +58,13 @@ seed=3, name=gamma
 
 **总数**：**3 个任务**
 
-**约束**：所有 Zip 参数必须有相同数量的值。
+**约束**：所有应用 Zip 语法声明的参数所包含的元素数量必须绝对一致。
 
 ---
 
 ## 混合使用
 
-Product 和 Zip 可以同时使用：
+Product 和 Zip 原则可以共同混用组合：
 
 ```yaml
 # Product 参数
@@ -80,7 +80,7 @@ epochs: 100
 model: resnet50
 ```
 
-**总数**：Product × Zip = (3 × 2) × 3 = **18 个任务**
+**总数**：Product 组合数 × Zip 组合数 = (3 × 2) × 3 = **18 个任务**
 
 **公式**：$\text{Total} = \prod(\text{product counts}) \times \text{zip length}$
 
@@ -108,7 +108,7 @@ epochs: 50
 dataset: cifar10
 ```
 
-### 生成的任务
+### 生成的任务列表
 
 | # | lr | optimizer | hidden_size | seed | run_name |
 |---|------|-----------|-------------|------|----------|
@@ -121,7 +121,7 @@ dataset: cifar10
 
 **总数**：(2 × 2 × 2) × 3 = **24 个任务**
 
-### 生成后的目录
+### 生成后的持久化目录
 
 ```
 _pyruns_/
@@ -139,11 +139,11 @@ _pyruns_/
 
 ---
 
-## 类型推断
+## 类型推断规则
 
-管道语法中的每个值会自动推断类型：
+管道语法中的各类数据节点会自动依据 Python SafeLoader 协议尝试推断类型：
 
-| 输入 | 推断为 |
+| 输入示例 | 目标推断类型 |
 |------|--------|
 | `0.001` | `float` |
 | `42` | `int` |
@@ -154,9 +154,9 @@ _pyruns_/
 
 ---
 
-## 嵌套参数
+## 嵌套参数支持
 
-管道语法支持在嵌套字典的叶子节点中使用：
+管道语法同样实用于多维且深层嵌套字典叶子节点：
 
 ```yaml
 model:
@@ -166,7 +166,7 @@ model:
     output: 10
 ```
 
-内部使用 `flatten_dict()` 将其展平为：
+生成阶段后台函数 `flatten_dict()` 展开其为一维空间以便交叉：
 
 ```
 model.architecture: resnet | vgg | densenet   → product, 3 values

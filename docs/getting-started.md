@@ -10,7 +10,7 @@
 |------|------|------|
 | Python | ≥ 3.8 | 推荐 `conda` 或 `venv` 虚拟环境 |
 | 操作系统 | Windows / Linux / macOS | 跨平台 |
-| GPU 监控 | NVIDIA GPU + `nvidia-smi` | 可选，有则自动显示 GPU 利用率 |
+| GPU 监控 | NVIDIA GPU + `nvidia-smi` | 可选，有则自动在顶部显示 GPU 利用率 |
 
 ---
 
@@ -46,27 +46,26 @@ pyr train.py
 
 执行后 Pyruns 会：
 
-1. 通过 AST 静态分析提取所有 `argparse` 参数定义
+1. 通过 AST 静态分析隐式提取出文件中所有的 `argparse` 参数定义
 2. 在 `_pyruns_/train/` 下生成 `config_default.yaml`（含默认值与 help 文本）
-3. 启动 Web UI 并在浏览器中打开参数配置表单
+3. 启动 Web UI 并在浏览器中呈现参数配置表单
 
 ### 模式二：自定义 YAML 配置
 
-当脚本使用 `pyruns.load()` 读取配置（而非 `argparse`）时，首次运行时传入配置文件：
+当脚本不使用命令行参数，而是直接在代码深处调用 `pyruns.load()` 读取配置时，你只需要在首次运行时传入一个模板：
 
 ```bash
 pyr train.py my_config.yaml
-# → my_config.yaml 复制到 _pyruns_/train/config_default.yaml
+# → my_config.yaml 将会自动被拷贝为 _pyruns_/train/config_default.yaml 作为表单原型
 ```
 
-后续运行无需再指定 YAML，Pyruns 自动加载已保存的模板：
+由于已经保存了原型，后续运行无需再指定 YAML，仅仅需要这么跑：
 
 ```bash
 pyr train.py
-# → 自动加载 _pyruns_/train/config_default.yaml
 ```
 
-如需更换模板，再次传入即可覆盖。
+如需更换最初的参数模板，再次带上另一个文件名传入即可覆盖。
 
 ---
 
@@ -97,63 +96,62 @@ for epoch in range(args.epochs):
 pyr train.py
 ```
 
-> 开发调试推荐 `pyr dev train.py`（热重载模式）。
+> 开发与调试时，推荐使用 `pyr dev train.py`（开启后端热重载）。
 
 ### 3. Generator — 配置参数
 
-浏览器自动打开 `http://localhost:8099`，显示从 `train.py` 解析生成的参数表单。
+你的默认浏览器会自动打开 `http://localhost:8099`，并显示从 `train.py` 解析出的参数表单。
 
 ![Generator](assets/tab_generator.png)
 
-1. 修改参数，例如将 `lr` 改为 `0.01`
-2. （可选）填写任务名称前缀，如 `fast-tuning`
-3. 点击 **GENERATE** 生成任务
+1. 在左侧表单中修改基础参数，或在右下角 YAML 输入框中使用类似 `lr: 0.001 | 0.01` 的语法定义参数网格。
+2. （可选）为这组任务设定一个统一的前缀，例如 `fast-tuning`。
+3. 点击 **GENERATE**，系统将解析参数网格并在后台生成对应的多个隔离任务记录。
 
-### 4. Manager — 运行任务
+### 4. Manager — 并行调度任务
 
 切换到 Manager 页面：
 
-1. 新任务显示为灰色 `Pending` 状态
-2. 勾选后点击 **RUN SELECTED**
-3. 状态变为橙色 `Running`
+1. 刚刚生成的所有任务会出现在列表中，并处于灰色的 `Pending` 状态。
+2. 勾选需要执行的任务卡片（或使用全选功能），然后在右上角控制面板中设定并发 `Workers` 数，接着点击 **RUN SELECTED**。
+3. 被成功调度的任务状态将过渡到橙色的 `Running` 状态。
 
 ![Manager](assets/tab_manager.png)
 
-### 5. Monitor — 查看日志
+### 5. Monitor — 追踪流式日志
 
-切换到 Monitor 页面，选中正在运行的任务即可查看 ANSI 彩色实时日志流。
+在处理多个并发任务时，如需检视特定任务的输出表现或异常堆栈，可切换至 Monitor 页面：
+在左侧任务队列中选中目标项目，右侧终端面板即可实时显示其标准输出。
 
 ![Monitor](assets/tab_monitor.png)
 
 ---
 
-## 工作区结构
+## 隔离的工作区机制
 
-运行后的目录：
+为确保项目源码空间清洁以及多次实验环境配置的独立性，任何运行历史都会隔离并映射在当前运行目录的子结构下：
 
 ```text
 your_project/
 ├── train.py
 └── _pyruns_/
-    ├── _pyruns_settings.yaml      # 全局 UI 设置
-    └── train/                     # 按脚本名隔离
-        ├── script_info.json       # 脚本元信息
-        ├── config_default.yaml    # 参数模板
+    ├── _pyruns_settings.yaml      # 全局界面行为偏好规范
+    └── train/                     # 按入口脚本同名的独立分块
+        ├── script_info.json       # 绑定绝对路径与解析类型
+        ├── config_default.yaml    # 提取的默认基础配置
         └── tasks/
-            ├── fast-tuning/
-            │   ├── task_info.json # 任务元数据
-            │   ├── config.yaml    # 参数快照
+            ├── fast_tuning-[1-of-6]/
+            │   ├── task_info.json # 承载时间戳、历次运行 PID 及聚合监控结构等状态机数据
+            │   ├── config.yaml    # 固定的任务运行专属环境变量快照
             │   └── run_logs/
-            │       └── run1.log   # 控制台输出
-            └── .trash/            # 软删除（可恢复）
+            │       └── run1.log   # 终端输出捕捉切片
+            └── .trash/            # 执行软删除操作产生的缓冲区域
 ```
-
-不同脚本在 `_pyruns_/` 下完全隔离（如 `train/` 和 `test/`），互不干扰。
 
 ---
 
 ## 下一步
 
-- [界面操作手册](ui-guide.md) — Generator / Manager / Monitor 进阶操作
-- [批量生成语法](batch-syntax.md) — Product (`|`) 与 Zip (`(|)`) 参数网格
-- [API 参考](api-reference.md) — `read()` / `load()` / `add_monitor()`
+- [UI 界面进阶操作](ui-guide.md) — 分析界面内各组件的互动功能（参数置顶、并发限制、批量导出等）
+- [批量参数语法解析](batch-syntax.md) — 规则定义如 Product (`|`) 与 Zip (`(|)`) 联合网格化操作
+- [内部 API 规范](api-reference.md) — 利用 `pyruns.read()` 及扩展 `add_monitor()` 自主调用功能详细指导

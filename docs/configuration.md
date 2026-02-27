@@ -62,24 +62,26 @@ model: resnet50
 
 ```json
 {
-    "id": "2026-02-13_10-30-45_1707817845123",
-    "name": "baseline-[1-of-6]",
-    "status": "completed",
-    "created_at": "2026-02-13 10:30:45",
-    "progress": 1.0,
-    "pinned": false,
-    "env": {
-        "CUDA_VISIBLE_DEVICES": "0"
-    },
-    "script": "/path/to/train.py",
-    "run_at": "2026-02-13 10:31:00",
-    "run_pid": null,
-    "rerun_at": ["2026-02-13 11:00:00"],
-    "rerun_pid": [null],
-    "notes": "首次实验，baseline 配置",
-    "monitors": [
-        {"loss": 0.234, "acc": 95.2, "_ts": "2026-02-13 10:31:05"}
-    ]
+  "name": "task_2026-02-27_15-55-43_[1-of-5]",
+  "status": "completed",
+  "progress": 1.0,
+  "created_at": "2026-02-27_15-55-44",
+  "pinned": false,
+  "script": "D:/path/to/script/main.py",
+  "start_times": [
+    "2026-02-27_15-55-48"
+  ],
+  "finish_times": [
+    "2026-02-27_15-55-53"
+  ],
+  "pids": [
+    22996
+  ],
+  "monitors": [
+    {
+      "last_loss": 1.0
+    }
+  ]
 }
 ```
 
@@ -87,20 +89,108 @@ model: resnet50
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | `string` | 唯一标识符（时间戳 + 毫秒） |
-| `name` | `string` | 显示名称（= 目录名） |
-| `status` | `string` | `pending` / `queued` / `running` / `completed` / `failed` |
-| `created_at` | `string` | 创建时间 |
+| `name` | `string` | 任务显示名称（与目录名一致） |
+| `status` | `string` | 当前状态，如 `pending`, `queued`, `running`, `completed`, `failed` |
 | `progress` | `float` | 进度 0.0 ~ 1.0 |
-| `pinned` | `bool` | 是否置顶 |
-| `env` | `dict` | 环境变量（如 `CUDA_VISIBLE_DEVICES`） |
-| `script` | `string` | 用户脚本的绝对路径 |
-| `run_at` | `string?` | 首次运行时间 |
-| `run_pid` | `int?` | 首次运行的进程 PID（结束后为 null） |
-| `rerun_at` | `list[string]` | 每次重跑的时间 |
-| `rerun_pid` | `list[int?]` | 每次重跑的 PID |
-| `notes` | `string` | 用户笔记 |
-| `monitors` | `list[dict]` | 监控数据条目列表 |
+| `created_at` | `string` | 任务创建时间 |
+| `pinned` | `bool` | 是否在 Manager 页面置顶 |
+| `script` | `string` | 绑定的 Python 脚本绝对路径 |
+| `start_times` | `list[string]` | 包含历次运行的启动时间记录 |
+| `finish_times` | `list[string]` | 包含历次运行的结束时间记录 |
+| `pids` | `list[int]` | 包含历次运行的进程 ID（运行结束后保留历史 PID 记录） |
+| `notes` | `string` | （可选）用户填写的笔记内容 |
+| `monitors` | `list[dict]` | （可选）记录的实时监控数据 |
+
+# 核心配置系统详解
+
+Pyruns 的设计原则之一是与原生脚本逻辑保持解耦。其配置系统覆盖了从**模板提取**到**环境注入**的完整流程。
+
+---
+
+## 一级机制：配置的生命周期
+
+### 1. 默认原型（`config_default.yaml`）
+
+该文件作为当前脚本的参数基准。
+
+- **动态提取**：通过 `pyr train.py` 运行时，系统后台利用 AST 静态分析自动提取 `add_argument` 中的参数类型和缺省值，并将结果保存至工作区目录下的 `_pyruns_/{script}/config_default.yaml`。
+- **显式导入**：通过 `pyr train.py my_base.yaml` 命令，系统将指定的外部 YAML 复制为工作区原型。
+
+该模板作为 Generator 界面的表单渲染基础。
+
+### 2. 参数快照（`config.yaml`）
+
+当通过界面生成多个任务时，Pyruns 会为每个任务创建相互独立的专属目录，并在其中存入确切的配置副本：
+
+```text
+_pyruns_/
+└── train/
+    ├── config_default.yaml       # 整体参数模板
+    └── tasks/
+        ├── task_1/
+        │   └── config.yaml       # task_1 的专属运行配置副本 
+        ├── task_2/
+        │   └── config.yaml
+```
+
+后续界面的重新渲染或全局模板的更改均不会影响已有任务快照中的数值，从而保证实验的可复现性。
+
+---
+
+## 二级机制：任务调度的注入机制
+
+在点击任务的执行操作时，底层 Executor 不会通过命令行参数（如 `--lr 0.1`）来传递由于嵌套或数据类型导致的复杂超参数。 
+
+实际流程是将任务目录中 `config.yaml` 的绝对路径注入到系统环境变量 `__PYRUNS_CONFIG__` 中，随后启动原脚本所在进程：
+
+```python
+# executor 层调度逻辑简化：
+env["__PYRUNS_CONFIG__"] = "..._pyruns_/train/tasks/task_1/config.yaml"
+subprocess.run(["python", "train.py"], env=env)
+```
+
+脚本启动并调用（或经由 `argparse` 代理被隐式调用） `pyruns.read()` 时：
+
+#### 优先级决断：
+1. 优先检测系统环境变量中是否存在 `__PYRUNS_CONFIG__`。
+2. 若存在，则直接绑定并读取该变量指向的快照文件，忽略其他入参。
+3. 参数被反序列化为 `ConfigNode` 对象供后续业务逻辑使用。
+
+---
+
+## 额外机制
+
+### 嵌套字典深度支持
+
+不要觉得 Pyruns 只能处理平铺的 `lr: 0.1` 这种单维字典，无论是你上传的 YAML 还是它自动生成的对象，它完美支持无论多深的嵌套：
+
+```yaml
+# config.yaml
+model:
+  vit:
+    patch_size: 16
+    layers:
+      - 64
+      - 128
+```
+
+在代码中，你依然可以使用魔法点号：
+
+```python
+config = pyruns.load()
+print(config.model.vit.layers[1])  # 打印出 128
+```
+
+### 类型安全（隐式推导）
+
+如果是在 Web UI 下手写 YAML，不需要给字符串加引号，底层使用了 PyYAML 的 SafeLoader 进行类型推断：
+
+```yaml
+learning_rate: 0.001   # float
+epochs: 100            # int
+use_pretrained: true   # bool (Python 的 True)
+name: baseline         # str
+```
 
 ## ConfigNode — 点号访问配置
 
