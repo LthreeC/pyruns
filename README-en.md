@@ -85,7 +85,7 @@ Runnable example scripts corresponding to these two modes are provided under the
 
 ### Example 1: Native Argparse Support (Zero-Code Change)
 
-> Directory: [`examples/1_argparse_script/`](examples/1_argparse_script/)
+> Directory: `examples/1_argparse_script/`
 
 Below is a standard `argparse` training script. You can seamlessly hand it over to Pyruns—**without making a single modification to your codebase**:
 
@@ -127,7 +127,7 @@ Pyruns statically analyzes the AST to extract all `add_argument()` definitions (
 
 ### Example 2: Loading YAML with `pyruns.load()`
 
-> Directory: [`examples/2_pyruns_config/`](examples/2_pyruns_config/)
+> Directory: `examples/2_pyruns_config/`
 
 When your scripts abandon command-line arguments and rely directly on reading YAML files, you can integrate via `pyruns.load()`. The returned `ConfigNode` grants intuitive dot-notation access, packaging nested structures recursively:
 

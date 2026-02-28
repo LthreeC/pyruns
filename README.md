@@ -85,7 +85,7 @@ pyr train.py
 
 ### 示例 1：Argparse 原生支持（零改动接入）
 
-> 对应目录：[`examples/1_argparse_script/`](examples/1_argparse_script/)
+> 对应目录：`examples/1_argparse_script/`
 
 下面是一个标准的 `argparse` 训练脚本，可以直接交给 Pyruns 接管——**无需对原始代码做任何修改**：
 
@@ -127,7 +127,7 @@ Pyruns 通过 AST 静态分析自动提取 `add_argument()` 的所有定义（�
 
 ### 示例 2：使用 `pyruns.load()` 加载 YAML 配置
 
-> 对应目录：[`examples/2_pyruns_config/`](examples/2_pyruns_config/)
+> 对应目录：`examples/2_pyruns_config/`
 
 当训练脚本不使用命令行参数、而是直接读取 YAML 配置文件时，可以通过 `pyruns.load()` 完成接入。`load()` 返回的 `ConfigNode` 对象支持点号属性访问，嵌套结构会被自动递归封装：
 
