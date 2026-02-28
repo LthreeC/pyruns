@@ -79,6 +79,136 @@ pyr train.py
 
 ---
 
+## 📝 Practical Examples
+
+Runnable example scripts corresponding to these two modes are provided under the `examples/` directory in our repository.
+
+### Example 1: Native Argparse Support (Zero-Code Change)
+
+> Directory: [`examples/1_argparse_script/`](examples/1_argparse_script/)
+
+Below is a standard `argparse` training script. You can seamlessly hand it over to Pyruns—**without making a single modification to your codebase**:
+
+```python
+# examples/1_argparse_script/main.py
+import pyruns
+import argparse
+import time
+
+def main():
+    parser = argparse.ArgumentParser(description="A simple ML training script.")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("-b", "--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd"])
+    args = parser.parse_args()
+
+    print(f"Hyperparameters: LR={args.lr}, Batch Size={args.batch_size}")
+    for epoch in range(1, args.epochs + 1):
+        time.sleep(0.5)
+        loss = 1.0 / (epoch * args.lr * 100)
+        print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
+
+    # Optional: Log the final metrics. This is silently ignored when run outside Pyruns.
+    pyruns.add_monitor(last_loss=loss)
+
+if __name__ == "__main__":
+    main()
+```
+
+**Usage**:
+
+```bash
+# Pyruns parses parameters and starts the Web UI
+pyr main.py
+```
+
+Pyruns statically analyzes the AST to extract all `add_argument()` definitions (names, types, defaults, help text) and builds an editable Web UI form. Altered parameters from the UI are passed implicitly as command-line arguments to your script—the native `parse_args()` logic will function as intended.
+
+### Example 2: Loading YAML with `pyruns.load()`
+
+> Directory: [`examples/2_pyruns_config/`](examples/2_pyruns_config/)
+
+When your scripts abandon command-line arguments and rely directly on reading YAML files, you can integrate via `pyruns.load()`. The returned `ConfigNode` grants intuitive dot-notation access, packaging nested structures recursively:
+
+```python
+# examples/2_pyruns_config/main1.py
+import pyruns
+import time
+
+def main():
+    config = pyruns.load()  # Auto-binds config.yaml from the current task
+
+    lr = config.lr
+    epochs = config.epochs
+    optimizer = config.optimizer
+
+    print(f"Hyperparameters: LR={lr}, Optimizer={optimizer}")
+    for epoch in range(1, epochs + 1):
+        time.sleep(0.5)
+        loss = 1.0 / (epoch * lr * 100)
+        print(f"Epoch {epoch}/{epochs} - Loss: {loss:.4f}")
+
+if __name__ == "__main__":
+    main()
+```
+
+Accompanying default `config1.yaml`:
+
+```yaml
+lr: 5e-3
+epochs: 20
+optimizer: sgd
+batch_size: 64
+dropout: 0.2
+model: resnet50
+```
+
+**Usage**:
+
+```bash
+# First Run: Pass the YAML template, Pyruns copies it as config_default.yaml
+pyr main1.py config1.yaml
+
+# Future Runs: No need to specify YAML, Pyruns uses the saved template
+pyr main1.py
+```
+
+Moreover, `pyruns.load()` effectively unpacks deeply nested YAMLs. Referencing `config2.yaml`, parameter levels spanning *project*, *model*, and *training* branches are fully chainable via dot notation:
+
+```yaml
+# config2.yaml — Three-level nested structure
+project:
+  name: "DeepSense_Alpha"
+  version: 1.2
+  output_dir: "./results"
+model:
+  type: "Transformer"
+  layers: 12
+  dropout: 0.1
+training:
+  hyperparams:
+    lr: 0.0005
+    epochs: 8
+    optimizer: "AdamW"
+  resources:
+    device: "cuda"
+    precision: "fp16"
+    gpu_config:
+      memory_frac: 0.8
+```
+
+You can effortlessly access deeply scoped values directly natively in your script:
+
+```python
+config = pyruns.load()
+config.project.name              # "DeepSense_Alpha"
+config.training.hyperparams.lr   # 0.0005
+config.training.resources.device # "cuda"
+```
+
+---
+
 ## 🎯 Interface Modules
 
 ### 🔧 Generator — Concise and Clear Parameter Editor

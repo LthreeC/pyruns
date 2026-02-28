@@ -79,6 +79,136 @@ pyr train.py
 
 ---
 
+## 📝 实际上手示例
+
+项目的 `examples/` 目录下提供了可直接运行的完整示例脚本，分别对应两种接入模式。
+
+### 示例 1：Argparse 原生支持（零改动接入）
+
+> 对应目录：[`examples/1_argparse_script/`](examples/1_argparse_script/)
+
+下面是一个标准的 `argparse` 训练脚本，可以直接交给 Pyruns 接管——**无需对原始代码做任何修改**：
+
+```python
+# examples/1_argparse_script/main.py
+import pyruns
+import argparse
+import time
+
+def main():
+    parser = argparse.ArgumentParser(description="A simple ML training script.")
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("-b", "--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd"])
+    args = parser.parse_args()
+
+    print(f"Hyperparameters: LR={args.lr}, Batch Size={args.batch_size}")
+    for epoch in range(1, args.epochs + 1):
+        time.sleep(0.5)
+        loss = 1.0 / (epoch * args.lr * 100)
+        print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
+
+    # 可选：记录最终指标，脱离 Pyruns 环境时该调用被静默忽略
+    pyruns.add_monitor(last_loss=loss)
+
+if __name__ == "__main__":
+    main()
+```
+
+**使用方式**：
+
+```bash
+# Pyruns 自动解析 argparse 参数并启动 Web UI
+pyr main.py
+```
+
+Pyruns 通过 AST 静态分析自动提取 `add_argument()` 的所有定义（参数名、类型、默认值、help 文本），生成可编辑的 Web UI 表单。用户在界面修改参数后，Pyruns 会以命令行参数的形式将其传递给脚本——脚本本身的 `parse_args()` 逻辑完全不受影响。
+
+### 示例 2：使用 `pyruns.load()` 加载 YAML 配置
+
+> 对应目录：[`examples/2_pyruns_config/`](examples/2_pyruns_config/)
+
+当训练脚本不使用命令行参数、而是直接读取 YAML 配置文件时，可以通过 `pyruns.load()` 完成接入。`load()` 返回的 `ConfigNode` 对象支持点号属性访问，嵌套结构会被自动递归封装：
+
+```python
+# examples/2_pyruns_config/main1.py
+import pyruns
+import time
+
+def main():
+    config = pyruns.load()  # 自动绑定当前任务的 config.yaml
+
+    lr = config.lr
+    epochs = config.epochs
+    optimizer = config.optimizer
+
+    print(f"Hyperparameters: LR={lr}, Optimizer={optimizer}")
+    for epoch in range(1, epochs + 1):
+        time.sleep(0.5)
+        loss = 1.0 / (epoch * lr * 100)
+        print(f"Epoch {epoch}/{epochs} - Loss: {loss:.4f}")
+
+if __name__ == "__main__":
+    main()
+```
+
+配套的默认配置文件 `config1.yaml`：
+
+```yaml
+lr: 5e-3
+epochs: 20
+optimizer: sgd
+batch_size: 64
+dropout: 0.2
+model: resnet50
+```
+
+**使用方式**：
+
+```bash
+# 首次运行：传入 YAML 模板，Pyruns 将其复制为 config_default.yaml
+pyr main1.py config1.yaml
+
+# 后续运行：无需再指定 YAML，Pyruns 自动使用已保存的模板
+pyr main1.py
+```
+
+此外，`pyruns.load()` 也支持多层嵌套的 YAML 结构。以 `config2.yaml` 为例，项目、模型、训练三级分层的配置可以通过链式点号一路访问到底：
+
+```yaml
+# config2.yaml — 三级嵌套结构
+project:
+  name: "DeepSense_Alpha"
+  version: 1.2
+  output_dir: "./results"
+model:
+  type: "Transformer"
+  layers: 12
+  dropout: 0.1
+training:
+  hyperparams:
+    lr: 0.0005
+    epochs: 8
+    optimizer: "AdamW"
+  resources:
+    device: "cuda"
+    precision: "fp16"
+    gpu_config:
+      memory_frac: 0.8
+```
+
+在脚本中通过点号链式访问即可读取任意层级的值：
+
+```python
+config = pyruns.load()
+config.project.name              # "DeepSense_Alpha"
+config.training.hyperparams.lr   # 0.0005
+config.training.resources.device # "cuda"
+```
+
+---
+
 ## 🎯 界面模块
 
 ### 🔧 Generator — 简洁清晰的参数编辑器
