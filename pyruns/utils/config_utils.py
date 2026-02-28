@@ -49,6 +49,8 @@ def load_yaml(path: str) -> Dict[str, Any]:
 def save_yaml(path: str, data: Dict[str, Any]) -> None:
     """Save a dict to a YAML file."""
     with open(path, "w", encoding="utf-8") as f:
+        if not data:
+            return
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
 
 

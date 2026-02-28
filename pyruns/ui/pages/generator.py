@@ -16,7 +16,7 @@ from typing import Dict, Any
 from pyruns.utils.config_utils import load_yaml, list_template_files
 from pyruns.utils.info_io import load_script_info, save_script_info
 from pyruns.utils.batch_utils import generate_batch_configs
-from pyruns.utils import get_logger, get_now_str
+from pyruns.utils import get_logger, get_now_str, client_connected
 from pyruns.ui.components.param_editor import recursive_param_editor
 from pyruns.ui.components.batch_dialog import show_batch_confirm
 from pyruns.ui.theme import (
@@ -110,7 +110,8 @@ def render_generator_page(
                 yaml_holder["text"] = _dict_to_yaml(config_data)
                 logger.debug("Loaded template: %s", val)
                 try:
-                    editor_area.refresh()
+                    if client_connected():
+                        editor_area.refresh()
                 except NameError:
                     pass
 
@@ -153,6 +154,8 @@ def render_generator_page(
         from pyruns.utils.events import event_sys
 
         def _on_root_changed(new_path):
+            if not client_connected():
+                return
             run_root_input.value = new_path
             refresh_files()
             try:
@@ -161,6 +164,9 @@ def render_generator_page(
                 pass
 
         event_sys.on("on_run_root_change", _on_root_changed)
+
+        client = ui.context.client
+        client.on_disconnect(lambda: event_sys.off("on_run_root_change", _on_root_changed))
 
     # ══════════════════════════════════════════════════════════
     #  Row 2 — Main Workspace (Side-by-side)
@@ -173,6 +179,8 @@ def render_generator_page(
 
             @ui.refreshable
             def editor_area() -> None:
+                if not client_connected():
+                    return
                 config_data = state.get("config_data")
                 if not config_data and file_select.value:
                     on_file_select_change()
@@ -310,9 +318,9 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                 if not _sync_yaml_to_config(yaml_holder["text"], state):
                     return
 
+            target_config = state.get("config_data") or {}
             if not state.get("config_data"):
-                ui.notify("Load a config first!", type="warning")
-                return
+                ui.notify("No config loaded, running with empty configuration.", type="info")
 
             prefix = state["task_name_input"].strip()
             if not prefix:
@@ -331,14 +339,14 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                 return
 
             try:
-                configs = generate_batch_configs(state["config_data"])
+                configs = generate_batch_configs(target_config)
             except ValueError as e:
                 logger.warning("Batch config error: %s", e)
                 ui.notify(str(e), type="negative", icon="error")
                 return
 
             # --- Type Checking against Original Template ---
-            if state.get("config_path") and os.path.exists(state["config_path"]):
+            if state.get("config_path") and os.path.exists(state["config_path"]) and target_config:
                 from pyruns.utils.config_utils import load_yaml, validate_config_types_against_template
                 try:
                     orig_config = load_yaml(state["config_path"])
@@ -379,7 +387,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                     refresh_files(new_selection=new_rel)
 
                 show_batch_confirm(
-                    configs, prefix, state["config_data"],
+                    configs, prefix, target_config,
                     task_generator, task_manager, state,
                     on_success=on_batch_success
                 )

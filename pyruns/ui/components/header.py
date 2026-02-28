@@ -6,6 +6,7 @@ from typing import Dict, Any, List
 
 from pyruns.ui.theme import HEADER_GRADIENT
 from pyruns.utils.settings import get as _get_setting
+from pyruns.utils import client_connected
 
 
 def render_header(state: Dict[str, Any], metrics_sampler) -> None:
@@ -26,6 +27,8 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
 
             @ui.refreshable
             def metrics_row() -> None:
+                if not client_connected():
+                    return
                 m = metrics_sampler.sample()
 
                 with ui.row().classes(
@@ -44,11 +47,9 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
                             "developer_board",
                         )
 
-                # Schedule next refresh (interval from workspace settings)
-                interval = _get_setting("header_refresh_interval", 3)
-                ui.timer(interval, metrics_row.refresh, once=True)
-
             metrics_row()
+            interval = _get_setting("header_refresh_interval", 3)
+            ui.timer(interval, metrics_row.refresh)
 
 
 def _stat_chip(label: str, value: str, icon_name: str) -> None:

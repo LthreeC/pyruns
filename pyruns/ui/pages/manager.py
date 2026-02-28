@@ -22,6 +22,7 @@ from pyruns.ui.components.task_card import render_card_grid
 from pyruns.ui.components.task_dialog import build_task_dialog
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
 from pyruns.utils import get_logger
+from pyruns.utils import client_connected
 
 logger = get_logger(__name__)
 
@@ -82,6 +83,8 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     @ui.refreshable
     def task_list() -> None:
+        if not client_connected():
+            return
         if state.get("_manager_is_loading", False):
             with ui.column().classes("w-full items-center justify-center py-20 gap-4 mt-10"):
                 ui.spinner("dots", size="3em", color="indigo", thickness=0.3)
@@ -170,13 +173,25 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     task_manager.on_change(_mark_dirty)
 
     def _check_dirty():
+        if not client_connected():
+            return
         # Only refresh if data is dirty AND user is actually looking at the manager tab
         if state.get("_manager_dirty", False) and state.get("active_tab") == "manager":
             state["_manager_dirty"] = False
             task_manager.refresh_from_disk(check_all=True)
             task_list.refresh()
 
-    ui.timer(1.0, _check_dirty)
+    _mgr_timer = ui.timer(1.0, _check_dirty)
+
+    def _cleanup_manager(*_):
+        try:
+            task_manager._observers.remove(_mark_dirty)
+        except ValueError:
+            pass
+        _mgr_timer.cancel()
+    
+    client = ui.context.client
+    client.on_disconnect(_cleanup_manager)
 
     # ── Immediate refresh when switching TO the manager tab ──
     async def _on_tab_switch(tab: str):
@@ -194,6 +209,8 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     cbs = state.setdefault("on_tab_change", [])
     cbs.append(_on_tab_switch)
+    if hasattr(ui.context, "client"):
+        ui.context.client.on_disconnect(lambda: cbs.remove(_on_tab_switch) if _on_tab_switch in cbs else None)
 
 
     # ## px-1: 左右内边距1 (4px); pb-1: 底部内边距1; gap-0: 消除子元素（全选框和任务卡片）之间的默认16px大间距
@@ -390,10 +407,14 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
         from pyruns.utils.events import event_sys
 
         def _on_root_changed(new_path):
+            if not client_connected():
+                return
             run_root_input.value = new_path
             full_rescan()
 
         event_sys.on("on_run_root_change", _on_root_changed)
+        if hasattr(ui.context, "client"):
+            ui.context.client.on_disconnect(lambda: event_sys.off("on_run_root_change", _on_root_changed))
 
         return run_root_input, filter_status, search_input
 

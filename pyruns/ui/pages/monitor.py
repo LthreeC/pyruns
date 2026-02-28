@@ -10,6 +10,7 @@ Design:
     with NiceGUI / Quasar intermediate wrapper divs.
 """
 import os
+import asyncio
 from typing import Dict, Any, Optional
 from nicegui import ui
 
@@ -29,7 +30,7 @@ from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
 from pyruns.utils.events import log_emitter
 
-from pyruns.utils import get_logger
+from pyruns.utils import get_logger, client_connected
 
 logger = get_logger(__name__)
 
@@ -233,9 +234,12 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
             sel["_pinned_task_view"].refresh()
 
         # Defer the heavy left-panel DOM diffing (CSS highlight) to avoid
-        # blocking the terminal's immediate response
-        if sel.get("_task_list_items"):
-            ui.timer(0.05, lambda: sel["_task_list_items"].refresh(), once=True)
+        # blocking the terminal's immediate response.
+        # NOTE: use asyncio.sleep instead of ui.timer to avoid parent-slot crash
+        # when the user clicks rapidly (the parent container may be refreshed).
+        await asyncio.sleep(0.05)
+        if client_connected() and sel.get("_task_list_items"):
+            sel["_task_list_items"].refresh()
 
     def _toggle_export(tid: str, checked: bool):
         if checked:
@@ -441,6 +445,8 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
 
         @ui.refreshable
         def pinned_task_view():
+            if not client_connected():
+                return
             if sel.get("task_id"):
                 t = _get_task(sel["task_id"])
                 if t:
@@ -453,6 +459,8 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         with ui.column().classes("flex-grow w-full overflow-y-auto").style("min-height: 0;"):
             @ui.refreshable
             def task_list_items():
+                if not client_connected():
+                    return
                 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
                 tasks = filter_tasks(list(task_manager.tasks), search_ref["val"])
                 tasks.sort(key=task_sort_key, reverse=True)
@@ -481,6 +489,8 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
 
         @ui.refreshable
         def task_list_pagination():
+            if not client_connected():
+                return
             from pyruns.utils.sort_utils import filter_tasks
             tasks = filter_tasks(list(task_manager.tasks), search_ref["val"])
             total_matches = len(tasks)
