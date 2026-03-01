@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyruns"
-version = "0.0.8"
+version = "0.0.9"
 description = "Lightweight web UI for managing, running, and monitoring Python experiments."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -35,6 +35,11 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = ["nicegui>=1.4", "pyyaml>=5.4", "psutil>=5.9"]
+
+[project.urls]
+Homepage = "https://github.com/LthreeC/pyruns"
+Repository = "https://github.com/LthreeC/pyruns"
+Documentation = "https://lthreec.github.io/pyruns"
 
 [project.scripts]
 pyr = "pyruns.cli:pyr"
