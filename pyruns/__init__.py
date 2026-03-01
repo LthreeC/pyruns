@@ -169,5 +169,13 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
             time.sleep(0.05)
     # Give up silently after retries
 
+# ═══════════════════════════════════════════════════════════════
+#  Path API
+# ═══════════════════════════════════════════════════════════════
 
-
+def get_task_dir() -> str:
+    """Return the task directory."""
+    pyr_config = os.environ.get(ENV_CONFIG)
+    if not pyr_config:
+        return None
+    return os.path.dirname(pyr_config)
