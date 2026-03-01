@@ -102,7 +102,7 @@ def main(*, reload: bool = False):
     # _config.py was first imported).
     import pyruns._config as _cfg
 
-    fresh_root = os.path.abspath(os.getenv(_cfg.ENV_ROOT, _cfg.ROOT_DIR)).replace("\\", "/")
+    fresh_root = os.path.abspath(os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)).replace("\\", "/")
     _cfg.ROOT_DIR = fresh_root
     abs_tasks_dir = os.path.join(fresh_root, _cfg.TASKS_DIR).replace("\\", "/")
     os.makedirs(abs_tasks_dir, exist_ok=True)

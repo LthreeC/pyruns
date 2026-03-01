@@ -13,7 +13,7 @@ import yaml
 from unittest.mock import patch, MagicMock
 
 from pyruns._config import (
-    ENV_CONFIG, CONFIG_FILENAME, TASK_INFO_FILENAME, MONITOR_KEY,
+    ENV_KEY_CONFIG, CONFIG_FILENAME, TASK_INFO_FILENAME, MONITOR_KEY,
 )
 from pyruns.core.config_manager import ConfigNode, ConfigManager
 from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
@@ -231,7 +231,7 @@ def test_prepare_env():
     assert env1["CUDA_VISIBLE_DEVICES"] == "1"
     
     env2 = _prepare_env(task_dir="/fake/dir")
-    assert env2[ENV_CONFIG] == os.path.join("/fake/dir", CONFIG_FILENAME)
+    assert env2[ENV_KEY_CONFIG] == os.path.join("/fake/dir", CONFIG_FILENAME)
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

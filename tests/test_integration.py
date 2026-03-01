@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from pyruns._config import (
-    DEFAULT_ROOT_NAME, TASK_INFO_FILENAME, MONITOR_KEY, ENV_CONFIG,
+    DEFAULT_ROOT_NAME, TASK_INFO_FILENAME, MONITOR_KEY, ENV_KEY_CONFIG,
 )
 from pyruns.utils.config_utils import load_yaml, save_yaml
 from pyruns.utils.batch_utils import (
@@ -225,7 +225,7 @@ class TestAddMonitor:
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
 
-        monkeypatch.setenv(ENV_CONFIG, config_path)
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor(epoch=1, loss=0.5)
@@ -242,7 +242,7 @@ class TestAddMonitor:
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv(ENV_CONFIG, config_path)
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor(epoch=1)
@@ -263,7 +263,7 @@ class TestAddMonitor:
         ])
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv(ENV_CONFIG, config_path)
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor(epoch=10, loss=0.1)
@@ -280,7 +280,7 @@ class TestAddMonitor:
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv(ENV_CONFIG, config_path)
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor({"a": 1}, b=2)
@@ -299,7 +299,7 @@ class TestAddMonitor:
 
     def test_silent_outside_pyr(self, monkeypatch):
         """add_monitor should silently return when PYRUNS_CONFIG is not set."""
-        monkeypatch.delenv(ENV_CONFIG, raising=False)
+        monkeypatch.delenv(ENV_KEY_CONFIG, raising=False)
         import pyruns
         pyruns.add_monitor(epoch=1)  # should not raise
 
@@ -308,7 +308,7 @@ class TestAddMonitor:
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
         open(config_path, "w").close()
-        monkeypatch.setenv(ENV_CONFIG, config_path)
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
 
         import pyruns
         pyruns.add_monitor()

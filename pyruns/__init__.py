@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from .core.config_manager import ConfigManager
 from .utils.info_io import load_task_info, save_task_info
-from ._config import ROOT_DIR, ENV_CONFIG, CONFIG_DEFAULT_FILENAME, MONITOR_KEY
+from ._config import ROOT_DIR, ENV_KEY_CONFIG, CONFIG_DEFAULT_FILENAME, MONITOR_KEY
 
 import sys
 from importlib.metadata import version, PackageNotFoundError
@@ -34,12 +34,12 @@ def read(file_path: str = None):
     读取配置文件。
 
     优先级:
-    1. 环境变量 ENV_CONFIG (pyr 启动任务时自动设置)
+    1. 环境变量 ENV_KEY_CONFIG (pyr 启动任务时自动设置)
     2. 显式传入的 file_path
     3. 默认 ROOT_DIR/config_default.yaml (直接 python 运行时)
     """
-    # pyr 模式: executor 启动子进程时会设置 ENV_CONFIG 指向任务的 config.yaml
-    pyr_config = os.environ.get(ENV_CONFIG)
+    # pyr 模式: executor 启动子进程时会设置 ENV_KEY_CONFIG 指向任务的 config.yaml
+    pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if pyr_config:
         return _global_config_manager_.read(pyr_config)
 
@@ -47,7 +47,7 @@ def read(file_path: str = None):
     if not file_path:
         file_path = _get_default_config_path()
         
-    if not os.path.exists(file_path) and not os.environ.get(ENV_CONFIG):
+    if not os.path.exists(file_path) and not os.environ.get(ENV_KEY_CONFIG):
         from ._config import DEFAULT_ROOT_NAME
         script_name = os.path.basename(sys.argv[0]) if sys.argv else "script.py"
         script_base = os.path.splitext(script_name)[0]
@@ -62,8 +62,8 @@ def read(file_path: str = None):
 def load():
     """Return the loaded config (auto-reads under ``pyr`` if not yet loaded)."""
     if _global_config_manager_._root is None:
-        # Auto-read when running under pyr (ENV_CONFIG is set by executor)
-        pyr_config = os.environ.get(ENV_CONFIG)
+        # Auto-read when running under pyr (ENV_KEY_CONFIG is set by executor)
+        pyr_config = os.environ.get(ENV_KEY_CONFIG)
         if pyr_config:
             _global_config_manager_.read(pyr_config)
         else:
@@ -113,7 +113,7 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
     **Behavior**:
     - Data is aggregated per **Run**. Multiple calls within the same run 
       will merge into the same dictionary row.
-    - Requires ``pyr`` execution (checks ``ENV_CONFIG``).
+    - Requires ``pyr`` execution (checks ``ENV_KEY_CONFIG``).
 
     :param data: Optional dictionary of metrics.
     :param kwargs: Keyword arguments for metrics.
@@ -122,7 +122,7 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
     if data is not None and not isinstance(data, dict):
         raise TypeError("add_monitor expects a dict or keyword arguments")
 
-    pyr_config = os.environ.get(ENV_CONFIG)
+    pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if not pyr_config:
         return  # usage outside pyr -> ignore
 
@@ -175,7 +175,7 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
 
 def get_task_dir() -> str:
     """Return the task directory."""
-    pyr_config = os.environ.get(ENV_CONFIG)
+    pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if not pyr_config:
         return None
     return os.path.dirname(pyr_config)

@@ -14,7 +14,7 @@ import threading
 from typing import Dict, Any, Optional, List
 
 from pyruns._config import (
-    RUN_LOG_DIR, ENV_CONFIG, CONFIG_FILENAME,
+    RUN_LOG_DIR, ENV_KEY_CONFIG, CONFIG_FILENAME,
     MONITOR_KEY, ERROR_LOG_FILENAME,
 )
 from pyruns.utils.log_io import append_log
@@ -33,14 +33,14 @@ def _prepare_env(
     """Build a subprocess environment dict.
 
     Sets UTF-8 encoding, unbuffered output, and optionally points
-    ``ENV_CONFIG`` at the task's config.yaml so ``pyruns.read()`` works.
+    ``ENV_KEY_CONFIG`` at the task's config.yaml so ``pyruns.read()`` works.
     """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"    # 避免 Windows GBK 编码问题
     env["PYTHONUTF8"] = "1"
     env["PYTHONUNBUFFERED"] = "1"        # print() 实时刷新
     if task_dir:
-        env[ENV_CONFIG] = os.path.join(task_dir, CONFIG_FILENAME)
+        env[ENV_KEY_CONFIG] = os.path.join(task_dir, CONFIG_FILENAME)
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
     return env

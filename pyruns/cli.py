@@ -7,7 +7,7 @@ import sys
 import textwrap
 import traceback
 
-from ._config import ENV_ROOT, ENV_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
+from ._config import ENV_KEY_ROOT, ENV_KEY_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
 from . import __version__ as _VERSION
 from . import ensure_config_default
 
@@ -177,8 +177,8 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
             ensure_config_default(pyruns_dir)
     
     # ── Set environment ──
-    os.environ[ENV_ROOT] = pyruns_dir
-    os.environ[ENV_SCRIPT] = filepath
+    os.environ[ENV_KEY_ROOT] = pyruns_dir
+    os.environ[ENV_KEY_SCRIPT] = filepath
     return pyruns_dir
 
 

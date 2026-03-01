@@ -88,19 +88,19 @@ pyruns/
 
 所有硬编码的常量集中在此文件，包括：
 
-| 常量 | 值 | 用途 |
-|------|-----|------|
-| `ENV_ROOT` | `"__PYRUNS_ROOT__"` | 环境变量名：任务根目录 |
-| `ENV_CONFIG` | `"__PYRUNS_CONFIG__"` | 环境变量名：当前任务配置路径 |
-| `ENV_SCRIPT` | `"__PYRUNS_SCRIPT__"` | 环境变量名：用户脚本路径 |
-| `DEFAULT_ROOT_NAME` | `"_pyruns_"` | 默认任务存储目录名 |
-| `ROOT_DIR` | 动态计算 | 运行时的任务根目录路径 |
-| `TASK_INFO_FILENAME` | `"task_info.json"` | 任务元数据文件名 |
-| `CONFIG_FILENAME` | `"config.yaml"` | 任务配置快照文件名 |
+| 常量                        | 值 | 用途 |
+|---------------------------|-----|------|
+| `ENV_KEY_ROOT`            | `"__PYRUNS_ROOT__"` | 环境变量名：任务根目录 |
+| `ENV_KEY_CONFIG`          | `"__PYRUNS_CONFIG__"` | 环境变量名：当前任务配置路径 |
+| `ENV_KEY_SCRIPT`          | `"__PYRUNS_SCRIPT__"` | 环境变量名：用户脚本路径 |
+| `DEFAULT_ROOT_NAME`       | `"_pyruns_"` | 默认任务存储目录名 |
+| `ROOT_DIR`                | 动态计算 | 运行时的任务根目录路径 |
+| `TASK_INFO_FILENAME`      | `"task_info.json"` | 任务元数据文件名 |
+| `CONFIG_FILENAME`         | `"config.yaml"` | 任务配置快照文件名 |
 | `CONFIG_DEFAULT_FILENAME` | `"config_default.yaml"` | 参数模板文件名 |
-| `RUN_LOG_DIR` | `"run_logs"` | 统一日志目录：run1.log, run2.log, … |
-| `TRASH_DIR` | `".trash"` | 软删除目录名 |
-| `MONITOR_KEY` | `"monitors"` | task_info.json 中监控数据的字段名 |
+| `RUN_LOG_DIR`             | `"run_logs"` | 统一日志目录：run1.log, run2.log, … |
+| `TRASH_DIR`               | `".trash"` | 软删除目录名 |
+| `MONITOR_KEY`             | `"monitors"` | task_info.json 中监控数据的字段名 |
 
 ### `core/task_manager.py` — 任务管理器
 

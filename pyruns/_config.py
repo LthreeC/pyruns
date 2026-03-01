@@ -10,16 +10,16 @@ import os
 # ═══════════════════════════════════════════════════════════════
 #  Environment Variable Names  (统一管理，后续改名只改这里)
 # ═══════════════════════════════════════════════════════════════
-ENV_ROOT = "__PYRUNS_ROOT__"           # 指定 _pyruns_ 根目录
-ENV_CONFIG = "__PYRUNS_CONFIG__"       # pyr 启动任务时，指向任务的 config.yaml
-ENV_SCRIPT = "__PYRUNS_SCRIPT__"       # pyr 启动时，指向用户脚本路径
+ENV_KEY_ROOT = "__PYRUNS_ROOT__"           # 指定 _pyruns_ 根目录
+ENV_KEY_CONFIG = "__PYRUNS_CONFIG__"       # pyr 启动任务时，指向任务的 config.yaml
+ENV_KEY_SCRIPT = "__PYRUNS_SCRIPT__"       # pyr 启动时，指向用户脚本路径
 
 # ═══════════════════════════════════════════════════════════════
 #  Directory / File Names
 # ═══════════════════════════════════════════════════════════════
 DEFAULT_ROOT_NAME = "_pyruns_"     # 默认任务存储目录名
 
-ROOT_DIR = os.getenv(ENV_ROOT, os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
+ROOT_DIR = os.getenv(ENV_KEY_ROOT, os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
 
 
 def ensure_root_dir(root: str = None) -> None:

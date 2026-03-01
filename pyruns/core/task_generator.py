@@ -2,7 +2,7 @@ import os
 import time
 from typing import Dict, Any, List
 
-from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_SCRIPT
+from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_KEY_SCRIPT
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils import get_logger, get_now_str, get_now_str_us
@@ -81,7 +81,7 @@ class TaskGenerator:
             "created_at": task_obj["created_at"],
             "pinned": task_obj["pinned"],
         }
-        env_script = os.environ.get(ENV_SCRIPT)
+        env_script = os.environ.get(ENV_KEY_SCRIPT)
         workspace_dir = os.path.dirname(self.root_dir)
         info_path = os.path.join(workspace_dir, "script_info.json")
         if os.path.exists(info_path):
