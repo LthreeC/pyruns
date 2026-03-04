@@ -34,8 +34,12 @@ def main():
         loss = 1.0 / (epoch * args.lr * 100)
         last_loss = loss
         print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
+        
+        # Track the loss for each epoch
+        pyruns.track(loss=loss)
     
-    pyruns.add_monitor(last_loss=last_loss)
+    # Record the final aggregate metrics to the run
+    pyruns.record(last_loss=last_loss)
     print("✅ Training complete.")
 
 if __name__ == "__main__":

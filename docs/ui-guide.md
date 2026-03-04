@@ -105,7 +105,7 @@
 当运行逻辑内部集成了指标搜集调用（存入 `task_info.json->monitors` 队列）：
 
 ```python
-pyruns.add_monitor(loss=curr_loss, auc=curr_auc)
+pyruns.record(loss=curr_loss, auc=curr_auc)
 ```
 
 系统支持汇总操作：

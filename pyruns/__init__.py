@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from .core.config_manager import ConfigManager
 from .utils.info_io import load_task_info, save_task_info
-from ._config import ROOT_DIR, ENV_KEY_CONFIG, CONFIG_DEFAULT_FILENAME, MONITOR_KEY
+from ._config import ROOT_DIR, ENV_KEY_CONFIG, CONFIG_DEFAULT_FILENAME, RECORDS_KEY, TRACKS_KEY
 
 import sys
 from importlib.metadata import version, PackageNotFoundError
@@ -98,17 +98,17 @@ def ensure_config_default(root_dir: str = None):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Monitoring API
+#  Record & Track API
 # ═══════════════════════════════════════════════════════════════
 
-def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
-    """向当前任务的 task_info.json 追加或更新监控数据。
+def record(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
+    """向当前任务的 task_info.json 追加或更新记录数据。
 
     在 pyr 启动的任务脚本中调用::
 
         import pyruns
-        pyruns.add_monitor(epoch=10, loss=0.234, acc=95.2)
-        pyruns.add_monitor({"metric_a": 1.0}, metric_b=2.0)
+        pyruns.record(epoch=10, loss=0.234, acc=95.2)
+        pyruns.record({"metric_a": 1.0}, metric_b=2.0)
 
     **Behavior**:
     - Data is aggregated per **Run**. Multiple calls within the same run 
@@ -120,7 +120,7 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
     :raises TypeError: if data is not a dict.
     """
     if data is not None and not isinstance(data, dict):
-        raise TypeError("add_monitor expects a dict or keyword arguments")
+        raise TypeError("record expects a dict or keyword arguments")
 
     pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if not pyr_config:
@@ -153,15 +153,15 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
             if run_index < 1:
                 run_index = 1
 
-            if MONITOR_KEY not in info:
-                info[MONITOR_KEY] = []
+            if RECORDS_KEY not in info:
+                info[RECORDS_KEY] = []
             
-            monitors = info[MONITOR_KEY]
-            while len(monitors) < run_index:
-                monitors.append({})
+            records = info[RECORDS_KEY]
+            while len(records) < run_index:
+                records.append({})
 
             # Merge data into the current run's slot
-            monitors[run_index - 1].update(update_data)
+            records[run_index - 1].update(update_data)
 
             save_task_info(task_dir, info)
             return
@@ -172,6 +172,64 @@ def add_monitor(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
 # ═══════════════════════════════════════════════════════════════
 #  Path API
 # ═══════════════════════════════════════════════════════════════
+
+def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
+    """向当前任务的 task_info.json 追加或更新时序序列数据（tracks）。
+
+    类似 ``record``，但是每次调用不会被合并成单一字典，而是作为数组的一个元素存入，供后续时序构图。
+
+    用法::
+
+        import pyruns
+        pyruns.track("loss", 0.5)
+        pyruns.track(loss=0.4, acc=0.9)
+
+    :param key: 要跟踪的指标名称（如果使用位置/单参数样式）
+    :param value: 指标的值
+    :param kwargs: Keyword arguments for tracks
+    """
+    pyr_config = os.environ.get(ENV_KEY_CONFIG)
+    if not pyr_config:
+        return
+
+    update_data = {}
+    if key is not None and value is not None:
+        update_data[key] = value
+    update_data.update(kwargs)
+
+    if not update_data:
+        return
+
+    task_dir = os.path.dirname(pyr_config)
+
+    for _attempt in range(5):
+        try:
+            info = load_task_info(task_dir, raise_error=True)
+            
+            starts = info.get("start_times", [])
+            run_index = max(1, len(starts))
+
+            if TRACKS_KEY not in info:
+                info[TRACKS_KEY] = []
+            
+            tracks = info[TRACKS_KEY]
+            while len(tracks) < run_index:
+                tracks.append({})
+
+            # current run's slot for tracking series
+            current_tracks = tracks[run_index - 1]
+
+            # merge data by appending to arrays
+            for k, val in update_data.items():
+                if k not in current_tracks:
+                    current_tracks[k] = []
+                current_tracks[k].append(val)
+
+            save_task_info(task_dir, info)
+            return
+        except (json.JSONDecodeError, IOError, OSError):
+            time.sleep(0.05)
+    # Give up silently after retries
 
 def get_task_dir() -> str:
     """Return the task directory."""

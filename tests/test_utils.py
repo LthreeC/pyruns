@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 import pyruns.utils.settings as settings
 from pyruns._config import (
     DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
-    SETTINGS_FILENAME, TASK_INFO_FILENAME, RUN_LOG_DIR, MONITOR_KEY,
+    SETTINGS_FILENAME, TASK_INFO_FILENAME, RUN_LOGS_DIR, RECORDS_KEY,
     BATCH_ESCAPE,
 )
 from pyruns.utils.batch_utils import (
@@ -36,7 +36,7 @@ from pyruns.utils.parse_utils import (
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
 from pyruns.utils.info_io import (
-    load_task_info, save_task_info, load_monitor_data,
+    load_task_info, save_task_info, load_record_data,
     get_log_options, resolve_log_path, validate_task_name,
 )
 
@@ -521,28 +521,28 @@ class TestLoadSaveTaskInfo:
         assert loaded == info
 
 
-class TestLoadMonitorData:
-    def test_with_monitors(self, tmp_path):
+class TestLoadRecordData:
+    def test_with_records(self, tmp_path):
         task_dir = str(tmp_path)
-        info = {MONITOR_KEY: [{"loss": 0.5}, {"loss": 0.1}]}
+        info = {RECORDS_KEY: [{"loss": 0.5}, {"loss": 0.1}]}
         save_task_info(task_dir, info)
-        data = load_monitor_data(task_dir)
+        data = load_record_data(task_dir)
         assert len(data) == 2
         assert data[0]["loss"] == 0.5
 
-    def test_without_monitors(self, tmp_path):
+    def test_without_records(self, tmp_path):
         task_dir = str(tmp_path)
         save_task_info(task_dir, {"name": "test"})
-        assert load_monitor_data(task_dir) == []
+        assert load_record_data(task_dir) == []
 
     def test_missing_file(self, tmp_path):
-        assert load_monitor_data(str(tmp_path)) == []
+        assert load_record_data(str(tmp_path)) == []
 
 
 class TestGetLogOptions:
     def test_run_logs(self, tmp_path):
         task_dir = str(tmp_path)
-        log_dir = os.path.join(task_dir, RUN_LOG_DIR)
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
         os.makedirs(log_dir)
         for name in ["run1.log", "run2.log", "run10.log"]:
             open(os.path.join(log_dir, name), "w").close()
@@ -559,7 +559,7 @@ class TestGetLogOptions:
 class TestResolveLogPath:
     def test_resolve_named(self, tmp_path):
         task_dir = str(tmp_path)
-        log_dir = os.path.join(task_dir, RUN_LOG_DIR)
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
         os.makedirs(log_dir)
         path = os.path.join(log_dir, "run1.log")
         open(path, "w").close()
@@ -569,7 +569,7 @@ class TestResolveLogPath:
 
     def test_resolve_latest(self, tmp_path):
         task_dir = str(tmp_path)
-        log_dir = os.path.join(task_dir, RUN_LOG_DIR)
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
         os.makedirs(log_dir)
         # Create run1.log with an older timestamp
         p1 = os.path.join(log_dir, "run1.log")

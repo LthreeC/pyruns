@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional
 from pyruns._config import (
     TASK_INFO_FILENAME,
     SCRIPT_INFO_FILENAME,
-    RUN_LOG_DIR,
+    RUN_LOGS_DIR,
 )
 
 
@@ -56,10 +56,14 @@ def save_script_info(run_root: str, info: Dict[str, Any]) -> None:
         json.dump(info, f, indent=2, ensure_ascii=False)
 
 
-def load_monitor_data(task_dir: str) -> List[Dict[str, Any]]:
-    """Load monitor entries from task_info.json."""
+def extract_metrics(info: dict) -> list:
+    """Safely extract records array from task info (defaults to empty dicts setup)."""
+    return info.get("records", [])
+
+def load_record_data(task_dir: str) -> list:
+    """Load record entries from task_info.json."""
     info = load_task_info(task_dir)
-    return info.get("monitors", [])
+    return extract_metrics(info)
 
 
 def get_log_options(task_dir: str) -> Dict[str, str]:
@@ -70,7 +74,7 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
     opts: Dict[str, str] = {}
 
     # ── New scheme: run_logs/run1.log, run2.log, … ──
-    run_dir = os.path.join(task_dir, RUN_LOG_DIR)
+    run_dir = os.path.join(task_dir, RUN_LOGS_DIR)
     if os.path.isdir(run_dir):
         # 1. Standard run logs
         files = sorted(

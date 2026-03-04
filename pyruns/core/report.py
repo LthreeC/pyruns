@@ -10,7 +10,7 @@ import json
 from typing import Dict, Any, List
 
 # Imported for internal use
-from pyruns.utils.info_io import load_monitor_data
+from pyruns.utils.info_io import load_record_data
 from pyruns.utils import get_now_str
 
 
@@ -33,7 +33,7 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
         starts = t.get("start_times") or []
         finishes = t.get("finish_times") or []
         pids = t.get("pids") or []
-        data = load_monitor_data(t["dir"])
+        data = load_record_data(t["dir"])
 
         n_runs = max(len(starts), 1)  # at least 1 row even if never run
 
@@ -76,7 +76,7 @@ def build_export_json(tasks: List[Dict[str, Any]]) -> str:
     """Build JSON string from monitor data of multiple tasks."""
     result = []
     for t in tasks:
-        data = load_monitor_data(t["dir"])
+        data = load_record_data(t["dir"])
         if data:
             result.append({
                 "task_name": t.get("name", ""),

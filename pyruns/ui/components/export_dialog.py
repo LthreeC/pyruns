@@ -5,7 +5,7 @@ from typing import Set
 
 from nicegui import ui
 
-from pyruns.utils.info_io import load_monitor_data
+from pyruns.utils.info_io import load_record_data
 from pyruns.core.report import (
     build_export_csv,
     build_export_json,
@@ -52,7 +52,7 @@ async def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
         def _scan_logs():
             tasks_with_data = []
             for t in selected_tasks:
-                mon = load_monitor_data(t["dir"])
+                mon = load_record_data(t["dir"])
                 if mon:
                     tasks_with_data.append((t, mon))
                 else:
@@ -86,7 +86,7 @@ async def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
                 ui.html(
                     f'<pre style="{EXPORT_PRE_STYLE}">'
                     "import pyruns\n"
-                    "pyruns.add_monitor(epoch=10, loss=0.234, acc=95.2)</pre>",
+                    "pyruns.record(epoch=10, loss=0.234, acc=95.2)</pre>",
                     sanitize=False,
                 )
 

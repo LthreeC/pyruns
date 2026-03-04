@@ -71,7 +71,7 @@ d = config.to_dict()
 
 ---
 
-### `pyruns.add_monitor(data=None, **kwargs)`
+### `pyruns.record(data=None, **kwargs)`
 
 向当前任务的 `task_info.json` 运行时数据中追加监控日志。常用于在训练或评估阶段记录关键指标，后续可在界面 Monitor 选项卡跨任务聚合交叉对比并导出报表。
 
@@ -85,7 +85,7 @@ d = config.to_dict()
 **行为**：
 
 - 同一次运行进程内的多次调用将被记录为含有时间戳的独立条目。
-- 数据安全地追加到对应任务 `task_info.json` 的 `"monitors"` 列表属性中。
+- 数据安全地追加到对应任务 `task_info.json` 的 `"records"` 列表属性中。
 - 不在 `pyr` 接管的任务中运行时（即环境变量未设置 `__PYRUNS_CONFIG__` 时），函数调用被**静默忽略**，确保业务源码脱离 Pyruns 环境运行不报错。
 - 提供并发写保护（默认配置遇互斥锁最多透明退避重试 5 次）。
 
@@ -95,17 +95,17 @@ d = config.to_dict()
 import pyruns
 
 # 1. 记录最终指标
-pyruns.add_monitor(loss=0.234, acc=95.2)
+pyruns.record(loss=0.234, acc=95.2)
 
 # 2. 混合字典与关键字使用
-pyruns.add_monitor({"base_loss": 0.5}, final_acc=98.1)
+pyruns.record({"base_loss": 0.5}, final_acc=98.1)
 ```
 
 **写入的后端结构**：
 
 ```json
 {
-    "monitors": [
+    "records": [
         {
             "loss": 0.234,
             "acc": 95.2

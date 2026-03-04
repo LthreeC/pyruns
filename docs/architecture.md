@@ -36,7 +36,7 @@ Pyruns 采用三层分离架构，核心逻辑与 UI 框架完全解耦：
 
 ```
 pyruns/
-├── __init__.py              # 公开 API: read(), load(), add_monitor()
+├── __init__.py              # 公开 API: read(), load(), record()
 ├── _config.py               # 全局常量与默认值
 ├── cli.py                   # CLI 入口: `pyr <script.py>`
 │
@@ -98,9 +98,9 @@ pyruns/
 | `TASK_INFO_FILENAME`      | `"task_info.json"` | 任务元数据文件名 |
 | `CONFIG_FILENAME`         | `"config.yaml"` | 任务配置快照文件名 |
 | `CONFIG_DEFAULT_FILENAME` | `"config_default.yaml"` | 参数模板文件名 |
-| `RUN_LOG_DIR`             | `"run_logs"` | 统一日志目录：run1.log, run2.log, … |
+| `RUN_LOGS_DIR`            | `"run_logs"` | 统一日志目录：run1.log, run2.log, … |
 | `TRASH_DIR`               | `".trash"` | 软删除目录名 |
-| `MONITOR_KEY`             | `"monitors"` | task_info.json 中监控数据的字段名 |
+| `RECORDS_KEY`             | `"records"` | task_info.json 中监控数据的字段名 |
 
 ### `core/task_manager.py` — 任务管理器
 
@@ -325,7 +325,7 @@ _on_task_done()                   →  内存 tasks 状态同步
 ```
 用户脚本                          Disk                    Monitor Page
 ────────                          ────                    ────────────
-pyruns.add_monitor(epoch=1,...)
+pyruns.record(epoch=1,...)
     │
     ▼
 task_info.json["monitor"].append({

@@ -13,7 +13,7 @@ import yaml
 from unittest.mock import patch, MagicMock
 
 from pyruns._config import (
-    ENV_KEY_CONFIG, CONFIG_FILENAME, TASK_INFO_FILENAME, MONITOR_KEY,
+    ENV_KEY_CONFIG, CONFIG_FILENAME, TASK_INFO_FILENAME, RECORDS_KEY,
 )
 from pyruns.core.config_manager import ConfigNode, ConfigManager
 from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
@@ -315,7 +315,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
     assert len(info["start_times"]) == 1
     assert len(info["finish_times"]) == 1
     assert 9999 in info["pids"]
-    assert len(info.get("monitors", [])) == 1
+    assert len(info.get("records", [])) == 1
 
     # Check log file was written by _tee_output
     log_path = os.path.join(task_dir, "run_logs", "run1.log")
@@ -597,7 +597,7 @@ class TestTaskGeneratorCreateTasks:
 # ═══════════════════════════════════════════════════════════════
 
 
-def _make_task(tmp_path, name, monitors=None, starts=None, finishes=None, pids=None):
+def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=None):
     """Create a task dict with a real task_info.json on disk."""
     task_dir = str(tmp_path / name)
     os.makedirs(task_dir, exist_ok=True)
@@ -608,8 +608,8 @@ def _make_task(tmp_path, name, monitors=None, starts=None, finishes=None, pids=N
         "finish_times": finishes or ["2026-01-01 00:01:00"],
         "pids": pids or [12345],
     }
-    if monitors is not None:
-        info[MONITOR_KEY] = monitors
+    if records is not None:
+        info[RECORDS_KEY] = records
     with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
         json.dump(info, f)
     return {
@@ -624,7 +624,7 @@ def _make_task(tmp_path, name, monitors=None, starts=None, finishes=None, pids=N
 
 class TestBuildExportCSV:
     def test_single_task_single_run(self, tmp_path):
-        task = _make_task(tmp_path, "t1", monitors=[{"loss": 0.5, "acc": 92}])
+        task = _make_task(tmp_path, "t1", records=[{"loss": 0.5, "acc": 92}])
         csv_str = build_export_csv([task])
         reader = csv.DictReader(io.StringIO(csv_str))
         rows = list(reader)
@@ -637,7 +637,7 @@ class TestBuildExportCSV:
     def test_multi_run(self, tmp_path):
         task = _make_task(
             tmp_path, "t2",
-            monitors=[{"loss": 0.5}, {"loss": 0.1}],
+            records=[{"loss": 0.5}, {"loss": 0.1}],
             starts=["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
             finishes=["2026-01-01 00:01:00", "2026-01-02 00:01:00"],
             pids=[111, 222],
@@ -656,7 +656,7 @@ class TestBuildExportCSV:
         assert csv_str == ""
 
     def test_column_order(self, tmp_path):
-        task = _make_task(tmp_path, "t3", monitors=[{"zeta": 1, "alpha": 2}])
+        task = _make_task(tmp_path, "t3", records=[{"zeta": 1, "alpha": 2}])
         csv_str = build_export_csv([task])
         reader = csv.DictReader(io.StringIO(csv_str))
         cols = reader.fieldnames
@@ -666,7 +666,7 @@ class TestBuildExportCSV:
 
 class TestBuildExportJSON:
     def test_basic(self, tmp_path):
-        task = _make_task(tmp_path, "j1", monitors=[{"loss": 0.3}])
+        task = _make_task(tmp_path, "j1", records=[{"loss": 0.3}])
         result = json.loads(build_export_json([task]))
         assert len(result) == 1
         assert result[0]["task_name"] == "j1"

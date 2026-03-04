@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, Future
 
 from pyruns._config import (
     TASKS_DIR, TASK_INFO_FILENAME, CONFIG_FILENAME,
-    TRASH_DIR, RUN_LOG_DIR, ERROR_LOG_FILENAME,
+    TRASH_DIR, RUN_LOGS_DIR, ERROR_LOG_FILENAME,
 )
 from pyruns.utils.config_utils import load_yaml
 from pyruns.utils.process_utils import is_pid_running, kill_process
@@ -94,7 +94,7 @@ class TaskManager:
                     self._sync_status_to_disk(t, "failed")
                     
                     # Log the forceful termination to error.log
-                    log_dir = os.path.join(t["dir"], RUN_LOG_DIR)
+                    log_dir = os.path.join(t["dir"], RUN_LOGS_DIR)
                     os.makedirs(log_dir, exist_ok=True)
                     error_log = os.path.join(log_dir, ERROR_LOG_FILENAME)
                     try:
@@ -212,7 +212,7 @@ class TaskManager:
             "start_times": info.get("start_times", []),
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
-            "monitors": len(info.get("monitors", [])),
+            "records": len(info.get("records", [])),
             "_mtime": os.path.getmtime(info_path),
         }
         if "_run_index" in info:
@@ -259,7 +259,7 @@ class TaskManager:
                     "start_times": info.get("start_times", []),
                     "finish_times": info.get("finish_times", []),
                     "pids": info.get("pids", []),
-                    "monitor_count": len(info.get("monitors", []))
+                    "records": len(info.get("records", []))
                 })
                 has_changed = True
             except Exception:
@@ -564,13 +564,14 @@ class TaskManager:
 
             try:
                 info = load_task_info(t["dir"])
+                # Minimal info to keep UI in sync
                 t.update({
                     "status": info.get("status", "completed"),
                     "progress": info.get("progress", 1.0),
                     "start_times": info.get("start_times", []),
                     "finish_times": info.get("finish_times", []),
                     "pids": info.get("pids", []),
-                    "monitor_count": len(info.get("monitors", []))
+                    "records": len(info.get("records", []))
                 })
             except Exception:
                 pass

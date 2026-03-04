@@ -13,9 +13,11 @@ import time
 import threading
 from typing import Dict, Any, Optional, List
 
-from pyruns._config import (
-    RUN_LOG_DIR, ENV_KEY_CONFIG, CONFIG_FILENAME,
-    MONITOR_KEY, ERROR_LOG_FILENAME,
+from .config_manager import ConfigManager
+from .._config import (
+    ENV_KEY_CONFIG, ENV_KEY_SCRIPT, CONFIG_FILENAME, CONFIG_DEFAULT_FILENAME,
+    RECORDS_KEY, RUN_LOGS_DIR, ERROR_LOG_FILENAME,
+    TASK_INFO_FILENAME,
 )
 from pyruns.utils.log_io import append_log
 from pyruns.utils.info_io import load_task_info, save_task_info
@@ -48,7 +50,7 @@ def _prepare_env(
 
 def _get_log_path(task_dir: str, run_index: int) -> str:
     """Return log file path ``run_logs/runN.log`` (1-based), creating the directory if needed."""
-    log_dir = os.path.join(task_dir, RUN_LOG_DIR)
+    log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
     os.makedirs(log_dir, exist_ok=True)
     return os.path.join(log_dir, f"run{run_index}.log")
 
@@ -266,7 +268,7 @@ def run_task_worker(
                         content = f.read()
                 
                 # Append to error.log with separator
-                err_log_path = os.path.join(task_dir, RUN_LOG_DIR, ERROR_LOG_FILENAME)
+                err_log_path = os.path.join(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME)
                 separator = f"\n\n{'='*40}\n[PYRUNS] Run #{run_index} FAILED at {end_str}\nReason: Exit Code {proc.returncode if 'proc' in locals() else 'Unknown'}\n{'='*40}\n"
                 
                 # Write to error.log (OVERWRITE mode)
@@ -293,14 +295,15 @@ def run_task_worker(
             finish_times = meta_final.get("finish_times", [])
             finish_times.append(end_str)
             
-            monitors = meta_final.get(MONITOR_KEY, [])
-            while len(monitors) < run_index:
-                monitors.append({})
+            # Make sure we have a "records" array large enough for `run_index`
+            records = meta_final.get(RECORDS_KEY, [])
+            while len(records) < run_index:
+                records.append({})
 
             meta_final.update({
                 "start_times": start_times,
                 "finish_times": finish_times,
-                "monitors": monitors,
+                RECORDS_KEY: records,
             })
 
         meta_final.update({
@@ -323,7 +326,7 @@ def run_task_worker(
         
         # Write exception to error.log
         try:
-            err_log_path = os.path.join(task_dir, RUN_LOG_DIR, ERROR_LOG_FILENAME)
+            err_log_path = os.path.join(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME)
             timestamp = get_now_str()
             separator = f"\n\n{'!'*40}\n[PYRUNS] INTERNAL ERROR at {timestamp}\n{task_dir=} {workdir=}\n{'!'*40}\n"
             with open(err_log_path, "w", encoding="utf-8") as f:

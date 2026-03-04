@@ -2,7 +2,7 @@ import os
 import time
 from typing import Dict, Any, List
 
-from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOG_DIR, ENV_KEY_SCRIPT
+from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOGS_DIR, ENV_KEY_SCRIPT
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils import get_logger, get_now_str, get_now_str_us
@@ -100,7 +100,8 @@ class TaskGenerator:
         info["start_times"] = []
         info["finish_times"] = []
         info["pids"] = []
-        info["monitors"] = []
+        info["records"] = []
+        info["tracks"] = []
 
         save_task_info(task_dir, info)
 
@@ -108,7 +109,7 @@ class TaskGenerator:
         save_yaml(os.path.join(task_dir, CONFIG_FILENAME), clean_config)
 
         # Create run_logs/ directory (empty, logs created on first run)
-        os.makedirs(os.path.join(task_dir, RUN_LOG_DIR), exist_ok=True)
+        os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
 
         logger.debug("Created task '%s' at %s", display_name, task_dir)
         return task_obj

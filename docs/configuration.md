@@ -77,7 +77,7 @@ model: resnet50
   "pids": [
     22996
   ],
-  "monitors": [
+  "records": [
     {
       "last_loss": 1.0
     }

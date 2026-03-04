@@ -154,4 +154,4 @@ your_project/
 
 - [UI 界面进阶操作](ui-guide.md) — 分析界面内各组件的互动功能（参数置顶、并发限制、批量导出等）
 - [批量参数语法解析](batch-syntax.md) — 规则定义如 Product (`|`) 与 Zip (`(|)`) 联合网格化操作
-- [内部 API 规范](api-reference.md) — 利用 `pyruns.read()` 及扩展 `add_monitor()` 自主调用功能详细指导
+- [内部 API 规范](api-reference.md) — 利用 `pyruns.read()` 及扩展 `record()` 自主调用功能详细指导

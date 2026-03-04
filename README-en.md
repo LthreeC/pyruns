@@ -47,7 +47,7 @@ During standard model training workflows, modifying and tracking different param
 | ⚡ **Isolated Task Queues** | Implements a buffer queue with configurable Thread/Process pool executors for execution limits. |
 | 📋 **Status Dashboard** | Manages the progression (Pending/Running/Failed/Completed) and provides historical query/rerun functions. |
 | 🖥️ **Stream Colored Terminal** | Delivers incremental terminal output feeds fully supporting ANSI escape code rendering (e.g., `tqdm`). |
-| 📊 **Metrics Aggregator** | Affords `pyruns.add_monitor()` callback to consolidate logs from various experimental groups into CSV/JSON logs. |
+| 📊 **Metrics Aggregator** | Affords `pyruns.record()` callback to consolidate logs from various experimental groups into CSV/JSON logs. |
 | 📁 **Parameter Snapshots** | Configures runtime directories corresponding to the file topology within `_pyruns/`, storing current environments to mitigate cross-interference, equipped with a soft-deletion mechanism for safety. |
 
 ---
@@ -110,7 +110,7 @@ def main():
         print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
 
     # Optional: Log the final metrics. This is silently ignored when run outside Pyruns.
-    pyruns.add_monitor(last_loss=loss)
+    pyruns.record(last_loss=loss)
 
 if __name__ == "__main__":
     main()
@@ -290,7 +290,7 @@ Underlying invocation logic intercepts when the Pending queue emits the executin
 | [📘 Batch Syntax Details](docs/batch-syntax.md) | Constructing parameter grids, variables derivations, etc. |
 | [📕 UI Operational Functions](docs/ui-guide.md) | Form resets, Execution Limits and Export tools |
 | [📙 Configuration Lifecycle](docs/configuration.md) | Priority structures & data hierarchies |
-| [📓 Native API Hooks](docs/api-reference.md) | Integrating endpoints like `read()` / `load()` & `add_monitor()` |
+| [📓 Native API Hooks](docs/api-reference.md) | Integrating endpoints like `read()` / `load()` & `record()` |
 
 ---
 

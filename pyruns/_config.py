@@ -6,6 +6,7 @@ constraints, and generator syntax tokens are defined here.  Changing a
 constant in this file propagates everywhere automatically.
 """
 import os
+from tarfile import RECORDSIZE
 
 # ═══════════════════════════════════════════════════════════════
 #  Environment Variable Names  (统一管理，后续改名只改这里)
@@ -42,10 +43,11 @@ SCRIPT_INFO_FILENAME = "script_info.json"
 
 CONFIG_FILENAME = "config.yaml"
 CONFIG_DEFAULT_FILENAME = "config_default.yaml"
-RUN_LOG_DIR = "run_logs"           # unified log directory: run1.log, run2.log, …
+RUN_LOGS_DIR = "run_logs"           # unified log directory: run1.log, run2.log, …
 ERROR_LOG_FILENAME = "error.log"   # Global error log for failed runs
 TRASH_DIR = ".trash"
-MONITOR_KEY = "monitors"           # Use "monitors" array key for stats
+RECORDS_KEY = "records"             # Use "records" array key for stats
+TRACKS_KEY = "tracks"              # Use "tracks" array key for sequence tracking
 SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
 
 # ═══════════════════════════════════════════════════════════════

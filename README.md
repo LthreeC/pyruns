@@ -47,7 +47,7 @@ pyr train.py          # 启动 Web UI 并接管当前脚本
 | ⚡ **独立任务队列** | 内部实现任务队列缓冲，可选 Thread/Process pool 型执行器控制并发规模。 |
 | 📋 **状态看板管理** | 对任务进行 Pending/Running/Failed/Completed 状态流转管理，支持对历史配置的搜索与复用。 |
 | 🖥️ **流式彩色终端** | 增量返回终端输出并完整支持 ANSI 转义字符渲染（如 `tqdm`）。 |
-| 📊 **指标监控聚合** | 提供 `pyruns.add_monitor()` 回调，帮助在多组参数实验后导出 CSV/JSON 等合并报告。 |
+| 📊 **指标监控聚合** | 提供 `pyruns.record()` 回调，帮助在多组参数实验后导出 CSV/JSON 等合并报告。 |
 | 📁 **环境参数快照** | 在 `_pyruns/` 下建立与脚本结构绑定的运行时目录，快照当前环境与参数，防干扰且支持软删除安全机制。 |
 
 ---
@@ -110,7 +110,7 @@ def main():
         print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
 
     # 可选：记录最终指标，脱离 Pyruns 环境时该调用被静默忽略
-    pyruns.add_monitor(last_loss=loss)
+    pyruns.record(last_loss=loss)
 
 if __name__ == "__main__":
     main()
@@ -290,7 +290,7 @@ your_project/
 | [📘 批量语法细则](docs/batch-syntax.md) | 复杂网格规则与类型推断行为 |
 | [📕 界面高级操作与控制](docs/ui-guide.md) | Manager执行限制细节及报表数据的导出等 |
 | [📙 配置流转与沙盒说明](docs/configuration.md) | Node树层级、优先读取顺位判定 |
-| [📓 API 接口文档](docs/api-reference.md) | 深入代码端的 `read()` / `load()` 及 `add_monitor()` 功能介绍 |
+| [📓 API 接口文档](docs/api-reference.md) | 深入代码端的 `read()` / `load()` 及 `record()` 功能介绍 |
 
 ---
 
