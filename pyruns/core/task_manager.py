@@ -48,16 +48,22 @@ class TaskManager:
         # Execution state
         self.is_processing = False
         self.execution_mode = "thread"
-        self.max_workers = 1
 
         # Observers for reactive UI
         self._observers: List[Callable[[], None]] = []
 
         # Executor pool (created lazily)
+        # Batch executor state
+        self.execution_mode = "thread"
+        self.max_workers = 1
         self._executor = None
-        self._executor_mode = None
-        self._executor_workers = None
         self._executor_lock = threading.Lock()
+        self._executor_mode = None
+        self._executor_workers = 0
+
+        # Independent executor for single runs (bypasses max_workers)
+        self._independent_executor = None
+
         self._running_ids: set = set()
 
         # Startup
@@ -307,6 +313,63 @@ class TaskManager:
             for t, run_idx in to_sync:
                 self._sync_status_to_disk(t, "queued", run_index=run_idx)
 
+        threading.Thread(target=_job, daemon=True).start()
+
+    def start_task_now(
+        self,
+        task_id: str,
+        execution_mode: str = None,
+    ) -> None:
+        """Immediately submit a single task to execution independently of the batch queue."""
+        if not execution_mode:
+            execution_mode = self.execution_mode
+
+        target = None
+        run_index = 1
+        with self._lock:
+            for t in self.tasks:
+                if t["name"] == task_id:
+                    t["status"] = "running"
+                    starts = t.get("start_times", [])
+                    run_index = len(starts) + 1
+                    t["_run_index"] = run_index
+                    self._running_ids.add(t["name"])
+                    target = t
+                    break
+
+        if not target:
+            return
+
+        self.trigger_update()
+
+        # Submit to independent executor
+        try:
+            with self._executor_lock:
+                if not self._independent_executor:
+                    cls = ProcessPoolExecutor if execution_mode == "process" else ThreadPoolExecutor
+                    # Single-run executor doesn't strictly limit workers, but let's give it a high cap
+                    self._independent_executor = cls(max_workers=32)
+
+            future = self._independent_executor.submit(
+                run_task_worker,
+                target["dir"], target["name"],
+                target["created_at"], target["config"],
+                target.get("env", {}), run_index,
+            )
+            logger.debug("Submitted task %s to independent executor", target["name"])
+            future.add_done_callback(
+                lambda f, tid=target["name"]: self._on_task_done(f, tid)
+            )
+        except Exception as exc:
+            with self._lock:
+                self._running_ids.discard(target["name"])
+                target["status"] = "failed"
+                self._mark_failed_on_disk(target)
+            logger.error("Failed to submit task %s: %s", target["name"], exc)
+            
+        # Disk IO in background
+        def _job():
+            self._sync_status_to_disk(target, "running", run_index=run_index)
         threading.Thread(target=_job, daemon=True).start()
 
     def rerun_task(self, task_id: str) -> bool:

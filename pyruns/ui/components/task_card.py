@@ -9,6 +9,10 @@ from pyruns.utils.info_io import load_task_info, save_task_info
 from pyruns.ui.theme import (
     BTN_CLASS,
     STATUS_CARD_STYLES,
+    MANAGER_GRID_CLASSES, CARD_BASE_CLASSES, CARD_HEADER_CLASSES, CARD_TITLE_COL_CLASSES,
+    CARD_TITLE_CLASSES, CARD_TIME_CLASSES, PIN_ACTIVE_CLASSES, PIN_INACTIVE_CLASSES,
+    CARD_BADGE_ROW_CLASSES, CARD_BODY_CLASSES, CARD_CONFIG_LINE_CLASSES, CARD_FOOTER_CLASSES,
+    CHECKBOX_PROPS, ACTION_BTN_PROPS, ACTION_BTN_CLASSES
 )
 from pyruns.ui.widgets import status_badge
 
@@ -17,9 +21,8 @@ def render_card_grid(
     tasks, state: Dict[str, Any], task_manager,
     open_task_dialog: Callable, refresh_tasks: Callable, refresh_ui: Callable,
 ):
-    """Render a grid of task cards."""
     try:
-        with ui.grid(columns=state.get("manager_columns", 4)).classes("w-full gap-3 p-1"):
+        with ui.grid(columns=state.get("manager_columns", 4)).classes(MANAGER_GRID_CLASSES):
             for t in tasks:
                 render_task_card(t, state, task_manager, open_task_dialog, refresh_tasks, refresh_ui)
     except Exception as e:
@@ -39,8 +42,7 @@ def render_task_card(
     highlight = "ring-2 ring-indigo-400 ring-offset-1" if is_selected else ""
 
     card = ui.card().classes(
-        f"w-full border {card_style} {highlight} shadow-sm "
-        f"hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden"
+        f"{CARD_BASE_CLASSES} {card_style} {highlight}"
     ).style("min-height: 148px")
     
     state.setdefault("_manager_cards", {})[t["name"]] = card
@@ -49,7 +51,7 @@ def render_task_card(
 
     with card:
         # ── Header row: checkbox + name + pin ──
-        with ui.row().classes("w-full items-start px-3 pt-3 pb-0 gap-2 flex-nowrap"):
+        with ui.row().classes(CARD_HEADER_CLASSES):
             def on_check(e, tid=t["name"]):
                 is_checked = e.value
                 if is_checked:
@@ -62,19 +64,14 @@ def render_task_card(
                     card.classes(remove="ring-2 ring-indigo-400 ring-offset-1")
 
             cb = ui.checkbox(value=is_selected, on_change=on_check).props(
-                "dense color=indigo size=xs"
+                CHECKBOX_PROPS
             ).classes("mt-0.5 task-checkbox").on("click", js_handler="(e) => e.stopPropagation()")
             
             state.setdefault("_manager_checkboxes", {})[t["name"]] = cb
 
-            with ui.column().classes("flex-grow gap-0.5 min-w-0"):
-                ui.label(t["name"]).classes(
-                    "font-bold text-[13px] text-slate-800 group-hover:text-indigo-700 "
-                    "transition-colors truncate leading-snug"
-                ).tooltip(t["name"])
-                ui.label(t.get("created_at", "")).classes(
-                    "text-[10px] text-slate-400 font-mono leading-tight"
-                )
+            with ui.column().classes(CARD_TITLE_COL_CLASSES):
+                ui.label(t["name"]).classes(CARD_TITLE_CLASSES).tooltip(t["name"])
+                ui.label(t.get("created_at", "")).classes(CARD_TIME_CLASSES)
 
             def toggle_pin(t=t):
                 info = load_task_info(t["dir"])
@@ -85,9 +82,9 @@ def render_task_card(
                 refresh_tasks()
 
             pin_cls = (
-                "text-amber-500 opacity-100"
+                PIN_ACTIVE_CLASSES
                 if t.get("pinned")
-                else "text-slate-300 opacity-0 group-hover:opacity-60"
+                else PIN_INACTIVE_CLASSES
             )
             ui.button(icon="push_pin", on_click=toggle_pin).props(
                 "flat round dense size=xs"
@@ -96,15 +93,13 @@ def render_task_card(
             ).on("click", js_handler="(e) => e.stopPropagation()")
 
         # ── Status badge ──
-        with ui.row().classes("w-full px-3 py-0.5"):
+        with ui.row().classes(CARD_BADGE_ROW_CLASSES):
             status_badge(status, size="sm")
 
         # ── Config preview + run count ──
-        with ui.column().classes("w-full px-3 py-1.5 gap-0.5 flex-grow"):
+        with ui.column().classes(CARD_BODY_CLASSES):
             line = preview_config_line(t.get("config", {}))
-            ui.label(line if line else "\u2014").classes(
-                "text-[11px] text-slate-500 truncate w-full font-mono leading-relaxed"
-            )
+            ui.label(line if line else "\u2014").classes(CARD_CONFIG_LINE_CLASSES)
 
             starts = t.get("start_times") or []
             run_count = len(starts)
@@ -116,10 +111,7 @@ def render_task_card(
                     )
 
         # ── Bottom action bar ──
-        with ui.row().classes(
-            "w-full items-center justify-between px-3 py-2 mt-auto "
-            "border-t border-slate-100 bg-slate-50/60"
-        ).on("click", js_handler="(e) => e.stopPropagation()"):
+        with ui.row().classes(CARD_FOOTER_CLASSES).on("click", js_handler="(e) => e.stopPropagation()"):
             with ui.row().classes("items-center gap-1"):
                 _card_action_btn(
                     icon="description", tooltip="Task Info",
@@ -130,8 +122,8 @@ def render_task_card(
                     on_click=lambda _e=None, t=t: open_task_dialog(t, "config"),
                 )
                 _card_action_btn(
-                    icon="terminal", tooltip="View Log",
-                    on_click=lambda _e=None, t=t: open_task_dialog(t, "run.log"),
+                    icon="edit_note", tooltip="Notes",
+                    on_click=lambda _e=None, t=t: open_task_dialog(t, "notes"),
                 )
 
 
@@ -141,22 +133,16 @@ def render_task_card(
 # ── Small helpers ──
 
 def _card_action_btn(icon: str, tooltip: str, on_click: Callable):
-    ui.button(icon=icon, on_click=on_click).props(
-        "flat round dense size=sm"
-    ).classes(
-        "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
-    ).tooltip(tooltip)
+    ui.button(icon=icon, on_click=on_click).props(ACTION_BTN_PROPS).classes(ACTION_BTN_CLASSES).tooltip(tooltip)
 
 
 def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
     tid = t["name"]
     if status in ("pending", "failed"):
         def run_single(*args):
-            task_manager.start_batch_tasks([tid], state.get("execution_mode", "thread"), 1)
-            ui.notify("Started 1 task", type="positive", icon="play_arrow")
-            # Don't call refresh_tasks() here — it does refresh_from_disk() which
-            # overwrites in-memory "queued" with on-disk "pending" (IO thread not done).
-            # trigger_update() in start_batch_tasks already fires observer callbacks.
+            task_manager.start_task_now(tid, state.get("execution_mode", "thread"))
+            ui.notify("Started task instantly", type="positive", icon="play_arrow")
+            # trigger_update() in start_task_now already fires observer callbacks.
 
         ui.button("RUN", icon="play_arrow", on_click=run_single).props(
             "unelevated no-caps dense size=sm"

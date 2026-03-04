@@ -120,13 +120,13 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
     file_dir = os.path.dirname(filepath).replace("\\", "/")
     script_base = os.path.splitext(os.path.basename(filepath))[0]
     
-    global_pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME).replace("\\", "/")
-    pyruns_dir = os.path.join(global_pyruns_dir, script_base).replace("\\", "/")
+    pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME).replace("\\", "/")
+    script_dir = os.path.join(pyruns_dir, script_base).replace("\\", "/")
 
-    os.makedirs(pyruns_dir, exist_ok=True)
+    os.makedirs(script_dir, exist_ok=True)
     ensure_settings_file(pyruns_dir)
 
-    info_path = os.path.join(pyruns_dir, "script_info.json")
+    info_path = os.path.join(script_dir, "script_info.json")
     if not os.path.exists(info_path):
         import time, json
         script_info = {
@@ -137,7 +137,7 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
         with open(info_path, "w", encoding="utf-8") as f:
             json.dump(script_info, f, indent=4)
 
-    config_default_path = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)
+    config_default_path = os.path.join(script_dir, CONFIG_DEFAULT_FILENAME)
 
     if custom_yaml:
         yaml_path = resolve_config_path(custom_yaml, file_dir)
@@ -154,7 +154,7 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
 
         if mode == "argparse":
             params = extract_argparse_params(filepath)
-            generate_config_file(pyruns_dir, filepath, params)
+            generate_config_file(script_dir, filepath, params)
 
         elif mode == "pyruns_read":
             if extra:
@@ -174,12 +174,12 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
 
         if mode != "pyruns_load":
             # Other modes like argparse or pyruns_read can safely initialize default blanks
-            ensure_config_default(pyruns_dir)
+            ensure_config_default(script_dir)
     
     # ── Set environment ──
-    os.environ[ENV_KEY_ROOT] = pyruns_dir
+    os.environ[ENV_KEY_ROOT] = script_dir
     os.environ[ENV_KEY_SCRIPT] = filepath
-    return pyruns_dir
+    return script_dir
 
 
 def _launch_dev(script_arg: str, custom_yaml: str = None):

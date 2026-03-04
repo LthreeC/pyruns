@@ -4,7 +4,7 @@ All style strings, color maps, and CSS classes live here.
 """
 
 # ─── Layout Widths ──────────────────────────────────────────
-SIDEBAR_WIDTH = "10%"            # Left navigation sidebar width
+SIDEBAR_WIDTH = "8%"            # Left navigation sidebar width
 MONITOR_PANEL_WIDTH = "16%"      # Monitor page task list panel width
 
 # ─── Spacing & Layout Presets ───────────────────────────────
@@ -97,6 +97,21 @@ MONITOR_TERMINAL_COL_CLASSES = "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1
 
 # ─── Input / Form ───────────────────────────────────────────
 INPUT_PROPS = "outlined dense bg-white text-slate-800"
+INPUT_BORDERLESS_PROPS = "dense borderless bg-color=white"
+INPUT_OUTLINED_CLASSES = "flex-grow ml-2 px-2 rounded-md shadow-sm border border-slate-200"
+
+# ─── Typography & Shared Element Styles ──────────────────────
+LABEL_BOLD_TRACKING = "text-sm font-bold text-slate-700 tracking-wide"
+TAB_PANEL_FULL = "p-0 gap-0 flex flex-col h-full w-full"
+TEXTAREA_FULL_BORDERLESS = "w-full h-full font-mono text-sm px-5 py-4 outline-none focus:outline-none"
+EMPTY_LABEL_CLASSES = "p-8 text-slate-400 text-center"
+ICON_BTN_HOVER_OPACITY = "opacity-70 hover:opacity-100"
+
+# ─── Tabs ──────────────────────────────────────────────────
+TABS_PROPS = "dense align=center no-caps active-color=indigo active-bg-color=indigo-50 indicator-color=indigo"
+TABS_CLASSES = "w-full bg-slate-100 text-slate-500 border-b border-slate-200 flex-none"
+TAB_PANELS_CLASSES = "w-full flex-grow overflow-hidden relative"
+TAB_CONTENT_CLASSES = "w-full flex-grow p-0 m-0 bg-white overflow-hidden"
 
 # ─── Button Styles ──────────────────────────────────────────
 BTN_CLASS = "transition-all duration-200"
@@ -116,8 +131,14 @@ PANEL_HEADER_DARK = (
 
 # ─── Dialogs & Modals ──────────────────────────────────────
 DIALOG_BACKDROP = "w-full max-w-[70vw] p-0 flex flex-col overflow-hidden shadow-2xl"
+DIALOG_WIDTH_LARGE = "w-[1100px]"
 DIALOG_HEADER_DARK = "w-full bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-3 items-center justify-between flex-none"
 DIALOG_HEADER_PRIMARY = "w-full bg-gradient-to-r from-indigo-600 to-indigo-700 text-white px-6 py-4 items-center justify-between flex-none"
+DIALOG_TITLE_CLASSES = "font-bold text-lg tracking-tight truncate"
+
+# ─── Loading States ────────────────────────────────────────
+LOADING_OVERLAY_CLASSES = "absolute inset-0 items-center justify-center bg-white/70 z-10 gap-3"
+LOADING_TEXT_CLASSES = "text-slate-500 font-medium"
 
 # ─── Toolbars & Sub-headers ────────────────────────────────
 TOOLBAR_LIGHT = "w-full items-center justify-between px-5 py-2 flex-none bg-gradient-to-r from-indigo-50 to-slate-50 border-b border-indigo-100"
@@ -157,4 +178,24 @@ STATUS_ICON_COLORS = {
     "completed":   "text-emerald-500",
     "failed":      "text-rose-500",
 }
+
+# ─── Task Card ──────────────────────────────────────────────
+CARD_BASE_CLASSES = "w-full border shadow-sm hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden"
+CARD_HEADER_CLASSES = "w-full items-start px-3 pt-3 pb-0 gap-2 flex-nowrap"
+CARD_TITLE_COL_CLASSES = "flex-grow gap-0.5 min-w-0"
+CARD_TITLE_CLASSES = "font-bold text-[13px] text-slate-800 group-hover:text-indigo-700 transition-colors truncate leading-snug"
+CARD_TIME_CLASSES = "text-[10px] text-slate-400 font-mono leading-tight"
+
+PIN_ACTIVE_CLASSES = "text-amber-500 opacity-100"
+PIN_INACTIVE_CLASSES = "text-slate-300 opacity-0 group-hover:opacity-60"
+
+CARD_BADGE_ROW_CLASSES = "w-full px-3 py-0.5"
+CARD_BODY_CLASSES = "w-full px-3 py-1.5 gap-0.5 flex-grow"
+CARD_CONFIG_LINE_CLASSES = "text-[11px] text-slate-500 truncate w-full font-mono leading-relaxed"
+
+CARD_FOOTER_CLASSES = "w-full items-center justify-between px-3 py-2 mt-auto border-t border-slate-100 bg-slate-50/60"
+
+CHECKBOX_PROPS = "dense color=indigo size=xs"
+ACTION_BTN_PROPS = "flat round dense size=sm"
+ACTION_BTN_CLASSES = "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
 
