@@ -258,7 +258,7 @@ def test_build_command_argparse(mock_extract, mock_detect):
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 def test_build_command_non_argparse(mock_detect):
-    mock_detect.return_value = ("pyruns_read", None)
+    mock_detect.return_value = ("pyruns_load", None)
     
     script_path = "train.py"
     config = {"lr": 0.05}

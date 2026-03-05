@@ -2,13 +2,11 @@
 Tests for pyruns.cli — display, commands, interactive, and workspace resolution.
 """
 import json
-import os
 
 import pytest
-from io import StringIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from pyruns._config import TASK_INFO_FILENAME, CONFIG_FILENAME, TASKS_DIR, RECORDS_KEY
+from pyruns._config import CONFIG_FILENAME, TASKS_DIR
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils.config_utils import save_yaml
 
@@ -86,9 +84,10 @@ def task_manager(workspace):
     """Create a TaskManager pointed at the workspace."""
     from pyruns.core.task_manager import TaskManager
     tasks_dir = str(workspace / TASKS_DIR)
-    tm = TaskManager(root_dir=tasks_dir)
-    import time
-    time.sleep(0.3)
+    with patch.object(TaskManager, "scan_disk_async", lambda self: self.scan_disk()):
+        with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+            tm = TaskManager(root_dir=tasks_dir)
+    tm.scan_disk()
     tm.refresh_from_disk(force_all=True)
     return tm
 

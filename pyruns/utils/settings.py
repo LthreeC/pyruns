@@ -8,12 +8,33 @@ import os
 import yaml
 from typing import Any, Dict
 
-from pyruns._config import SETTINGS_FILENAME, ROOT_DIR, SETTINGS_DEFAULTS
+from pyruns._config import SETTINGS_FILENAME, ROOT_DIR
 
+# Workspace settings defaults (consumed by utils/settings.py and UI state)
+SETTINGS_DEFAULTS = {
+    # Server
+    "ui_port": 8099,
+    # Header
+    "header_refresh_interval": 3,
+    # Generator
+    "generator_form_columns": 2,
+    "generator_auto_timestamp": True,
+    # Manager
+    "manager_columns": 5,
+    "manager_max_workers": 1,
+    "manager_execution_mode": "thread",
+    "ui_page_size": 50,
+    # Monitor
+    "monitor_chunk_size": 50000,
+    "monitor_scrollback": 100000,
+    # Logging
+    "log_enabled": False,
+    "log_level": "INFO",
+    # Persisted UI state
+    "pinned_params": [],
+}
 
-_DEFAULTS: Dict[str, Any] = dict(SETTINGS_DEFAULTS)
-
-_TEMPLATE = """\
+SETTINGS_TEMPLATE = f"""\
 # ═══════════════════════════════════════════════════════════════
 #  Pyruns Workspace Settings
 #  Auto-generated on first launch — edit freely to customise.
@@ -21,28 +42,28 @@ _TEMPLATE = """\
 # ═══════════════════════════════════════════════════════════════
 
 # ── Server ──────────────────────────────────────────────────
-ui_port: 8099                      # web UI port
+ui_port: {SETTINGS_DEFAULTS.get("ui_port")}                      # web UI port
 
 # ── Header ──────────────────────────────────────────────────
-header_refresh_interval: 3         # metrics refresh (seconds)
+header_refresh_interval: {SETTINGS_DEFAULTS.get("header_refresh_interval")}         # metrics refresh (seconds)
 
 # ── Generator ───────────────────────────────────────────────
-generator_form_columns: 2          # parameter editor columns (1-9)
-generator_auto_timestamp: true     # auto-name tasks with timestamp
+generator_form_columns: {SETTINGS_DEFAULTS.get("generator_form_columns")}          # parameter editor columns (1-9)
+generator_auto_timestamp: {SETTINGS_DEFAULTS.get("generator_auto_timestamp")}     # auto-name tasks with timestamp
 
 # ── Manager ─────────────────────────────────────────────────
-manager_columns: 5                 # task card grid columns (1-9)
-manager_max_workers: 1             # parallel worker count
-manager_execution_mode: thread     # thread | process
-ui_page_size: 50                   # cards per page (0 = show all)
+manager_columns: {SETTINGS_DEFAULTS.get("manager_columns")}                 # task card grid columns (1-9)
+manager_max_workers: {SETTINGS_DEFAULTS.get("manager_max_workers")}             # parallel worker count
+manager_execution_mode: {SETTINGS_DEFAULTS.get("manager_execution_mode")}     # thread | process
+ui_page_size: {SETTINGS_DEFAULTS.get("ui_page_size")}                   # cards per page (0 = show all)
 
 # ── Monitor ─────────────────────────────────────────────────
-monitor_chunk_size: 50000            # bytes per chunk
-monitor_scrollback: 100000           # max lines in history
+monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
+monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # max lines in history
 
 # ── Logging ─────────────────────────────────────────────────
-log_enabled: false                  # false to disable all pyruns internal logs
-log_level: INFO                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
+log_enabled: {SETTINGS_DEFAULTS.get("log_enabled")}                  # false to disable all pyruns internal logs
+log_level: {SETTINGS_DEFAULTS.get("log_level")}                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
 """
 
 # ═══════════════════════════════════════════════════════════════
@@ -70,7 +91,7 @@ def ensure_settings_file(root_dir: str = ROOT_DIR) -> str:
     if not os.path.exists(path):
         os.makedirs(target_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            f.write(_TEMPLATE)
+            f.write(SETTINGS_TEMPLATE)
     return path
 
 
@@ -81,7 +102,7 @@ def load_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
     """
     global _cached
     path = _settings_path(root_dir)
-    merged = dict(_DEFAULTS)
+    merged = dict(SETTINGS_DEFAULTS)
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -107,8 +128,8 @@ def get(key: str, default: Any = None) -> Any:
         except Exception:
             pass
     if not _cached:
-        return _DEFAULTS.get(key, default)
-    return _cached.get(key, _DEFAULTS.get(key, default))
+        return SETTINGS_DEFAULTS.get(key, default)
+    return _cached.get(key, SETTINGS_DEFAULTS.get(key, default))
 
 
 def reload_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:

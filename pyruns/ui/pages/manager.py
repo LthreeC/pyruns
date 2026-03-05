@@ -421,6 +421,22 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
 
 def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
     """Render the second bar: Columns | Workers | Mode | Run | Delete."""
+    from pyruns.utils.settings import save_setting
+
+    def _on_columns_change(e):
+        val = int(e.value)
+        state["manager_columns"] = val
+        save_setting("manager_columns", val)
+        ui_refresh_fn()
+
+    def _on_workers_change(e):
+        val = int(e.value) if e.value else 1
+        state["max_workers"] = val
+        save_setting("manager_max_workers", val)
+
+    def _on_mode_change(e):
+        state["execution_mode"] = e.value
+        save_setting("manager_execution_mode", e.value)
     # ## 布局由 theme.py 统一定义: MANAGER_ACTION_ROW_CLASSES
     with ui.row().classes(MANAGER_ACTION_ROW_CLASSES):
         # Left: columns
@@ -430,12 +446,7 @@ def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
                 value=state.get("manager_columns", 5),
                 label="Columns",
             ).props(INPUT_PROPS + " options-dense").classes("w-24")
-            col_sel.on_value_change(
-                lambda e: (
-                    state.update({"manager_columns": int(e.value)}),
-                    ui_refresh_fn(),
-                )
-            )
+            col_sel.on_value_change(_on_columns_change)
 
         # Right: workers + mode + run + delete
         with ui.row().classes("items-center gap-3"):
@@ -443,19 +454,13 @@ def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
                 value=state["max_workers"], min=1, step=1,
                 label="Workers",
             ).props(INPUT_PROPS).classes("w-20")
-            w_input.on_value_change(
-                lambda e: state.update({
-                    "max_workers": int(e.value) if e.value else 1
-                })
-            )
+            w_input.on_value_change(_on_workers_change)
 
             mode_sel = ui.select(
                 {"thread": "Thread", "process": "Process"},
                 value=state["execution_mode"], label="Mode",
             ).props(INPUT_PROPS + " options-dense").classes("w-28")
-            mode_sel.on_value_change(
-                lambda e: state.update({"execution_mode": e.value})
-            )
+            mode_sel.on_value_change(_on_mode_change)
 
             ui.button(
                 "RUN SELECTED", icon="play_arrow",

@@ -410,7 +410,7 @@ def test_load_settings(tmp_path):
     
     # Fallback to defaults if file doesn't exist
     cfg = settings.load_settings(root_dir)
-    assert cfg["ui_port"] == settings._DEFAULTS["ui_port"]
+    assert cfg["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
     assert cfg == settings._cached
     
     # Custom values
@@ -421,7 +421,7 @@ def test_load_settings(tmp_path):
     assert cfg2["ui_port"] == 9999
     assert cfg2["new_key"] == "abc"
     # Defaults still present
-    assert cfg2["manager_columns"] == settings._DEFAULTS["manager_columns"]
+    assert cfg2["manager_columns"] == settings.SETTINGS_DEFAULTS["manager_columns"]
 
 
 def test_get():
@@ -436,7 +436,7 @@ def test_get():
     # It attempts to load from ROOT_DIR. To avoid actual IO in tests that mock ROOT_DIR,
     # we just intercept ROOT_DIR or let it fallback to _DEFAULTS silently
     with patch("pyruns.utils.settings.ROOT_DIR", "/fake/dir"):
-        assert settings.get("ui_port") == settings._DEFAULTS["ui_port"]
+        assert settings.get("ui_port") == settings.SETTINGS_DEFAULTS["ui_port"]
 
 
 def test_save_setting(tmp_path):
