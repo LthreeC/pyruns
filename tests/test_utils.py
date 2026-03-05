@@ -42,27 +42,17 @@ from pyruns.utils.info_io import (
 
 
 def test_detect_config_source_fast(tmp_path):
-    # 1. pyruns_read
-    p_read = tmp_path / "read.py"
-    p_read.write_text("import pyruns\nconfig = pyruns.read('my_cfg.yaml')\n", encoding="utf-8")
-    assert detect_config_source_fast(str(p_read)) == ("pyruns_read", "my_cfg.yaml")
-
-    # 1b. pyruns_read default
-    p_read2 = tmp_path / "read2.py"
-    p_read2.write_text("import pyruns\nconfig = pyruns.read()\n", encoding="utf-8")
-    assert detect_config_source_fast(str(p_read2)) == ("pyruns_read", None)
-
-    # 2. pyruns_load
+    # 1. pyruns_load
     p_load = tmp_path / "load.py"
     p_load.write_text("import pyruns\nconfig = pyruns.load()\n", encoding="utf-8")
     assert detect_config_source_fast(str(p_load)) == ("pyruns_load", None)
 
-    # 3. argparse
+    # 2. argparse
     p_arg = tmp_path / "arg.py"
     p_arg.write_text("import argparse\nparser.add_argument('--lr', type=float, default=0.01)\n", encoding="utf-8")
     assert detect_config_source_fast(str(p_arg)) == ("argparse", None)
 
-    # 4. unknown
+    # 3. unknown
     p_unk = tmp_path / "unk.py"
     p_unk.write_text("print('hello world')", encoding="utf-8")
     assert detect_config_source_fast(str(p_unk)) == ("unknown", None)

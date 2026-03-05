@@ -6,7 +6,6 @@ constraints, and generator syntax tokens are defined here.  Changing a
 constant in this file propagates everywhere automatically.
 """
 import os
-from tarfile import RECORDSIZE
 
 # ═══════════════════════════════════════════════════════════════
 #  Environment Variable Names  (统一管理，后续改名只改这里)
@@ -49,6 +48,30 @@ TRASH_DIR = ".trash"
 RECORDS_KEY = "records"             # Use "records" array key for stats
 TRACKS_KEY = "tracks"              # Use "tracks" array key for sequence tracking
 SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
+
+# Workspace settings defaults (consumed by utils/settings.py and UI state)
+SETTINGS_DEFAULTS = {
+    # Server
+    "ui_port": 8099,
+    # Header
+    "header_refresh_interval": 3,
+    # Generator
+    "generator_form_columns": 2,
+    "generator_auto_timestamp": True,
+    # Manager
+    "manager_columns": 5,
+    "manager_max_workers": 1,
+    "manager_execution_mode": "thread",
+    "ui_page_size": 50,
+    # Monitor
+    "monitor_chunk_size": 50000,
+    "monitor_scrollback": 100000,
+    # Logging
+    "log_enabled": False,
+    "log_level": "INFO",
+    # Persisted UI state
+    "pinned_params": [],
+}
 
 # ═══════════════════════════════════════════════════════════════
 #  System Constraints & Constants

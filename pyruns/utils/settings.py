@@ -8,31 +8,10 @@ import os
 import yaml
 from typing import Any, Dict
 
-from pyruns._config import SETTINGS_FILENAME, ROOT_DIR
+from pyruns._config import SETTINGS_FILENAME, ROOT_DIR, SETTINGS_DEFAULTS
 
 
-_DEFAULTS: Dict[str, Any] = {
-    # Server
-    "ui_port": 8099,
-    # Header
-    "header_refresh_interval": 3,       # seconds
-    # Generator
-    "generator_form_columns": 2,        # 1-9
-    "generator_auto_timestamp": True,   # auto-name tasks with timestamp
-    # Manager
-    "manager_columns": 5,               # 1-9
-    "manager_max_workers": 1,
-    "manager_execution_mode": "thread", # thread | process
-    "ui_page_size": 50,                 # cards per page (0 = show all)
-    # Monitor
-    "monitor_chunk_size": 50000,        # bytes per chunk
-    "monitor_scrollback": 100000,       # max lines in history
-    # Logging
-    "log_enabled": False,                # enable/disable pyruns internal logging
-    "log_level": "INFO",                # DEBUG | INFO | WARNING | ERROR | CRITICAL
-    # State (persisted across sessions)
-    "pinned_params": [],               # list of dotted param keys, ordered by pin
-}
+_DEFAULTS: Dict[str, Any] = dict(SETTINGS_DEFAULTS)
 
 _TEMPLATE = """\
 # ═══════════════════════════════════════════════════════════════

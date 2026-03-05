@@ -7,7 +7,7 @@ from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 
 def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
-    """Detect how a script reads its config: 'pyruns_read', 'pyruns_load', 'argparse', or 'unknown'."""
+    """Detect how a script reads its config: 'pyruns_load', 'argparse', or 'unknown'."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
@@ -21,14 +21,6 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Attribute):
-                if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "read":
-                    arg_val = None
-                    if node.args:
-                        arg = node.args[0]
-                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                            arg_val = arg.value
-                    return ("pyruns_read", arg_val)
-
                 if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "load":
                     has_pyruns_load = True
 

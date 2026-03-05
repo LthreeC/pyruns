@@ -99,6 +99,8 @@ MONITOR_TERMINAL_COL_CLASSES = "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1
 INPUT_PROPS = "outlined dense bg-white text-slate-800"
 INPUT_BORDERLESS_PROPS = "dense borderless bg-color=white"
 INPUT_OUTLINED_CLASSES = "flex-grow ml-2 px-2 rounded-md shadow-sm border border-slate-200"
+ICON_BTN_MUTED_CLASSES = "text-slate-400 hover:text-indigo-500"
+TEXT_MONO_XS = "text-xs font-mono"
 
 # ─── Typography & Shared Element Styles ──────────────────────
 LABEL_BOLD_TRACKING = "text-sm font-bold text-slate-700 tracking-wide"
@@ -119,6 +121,7 @@ BTN_PRIMARY = f"{BTN_CLASS} bg-indigo-600 text-white hover:bg-indigo-700 shadow-
 BTN_SUCCESS = f"{BTN_CLASS} bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm hover:shadow"
 BTN_DANGER = f"{BTN_CLASS} bg-rose-600 text-white hover:bg-rose-700 shadow-sm hover:shadow"
 BTN_OUTLINE = f"{BTN_CLASS} border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium"
+BTN_PRIMARY_COMPACT = f"{BTN_PRIMARY} font-bold tracking-wide py-1 rounded"
 
 # ─── Shared Panel Styles ──────────────────────────────────
 PANEL_CARD = "bg-white shadow-sm border border-slate-100"

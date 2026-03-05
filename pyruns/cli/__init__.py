@@ -1,5 +1,8 @@
 """
-CLI entry point — ``pyr <script.py>`` or ``pyr help``.
+CLI entry point — ``pyr <script.py>`` or ``pyr <command>``.
+
+This package replaces the old single-file ``cli.py``.  The ``pyr()`` function
+is the console_scripts entry point registered in ``pyproject.toml``.
 """
 
 import os
@@ -7,9 +10,12 @@ import sys
 import textwrap
 import traceback
 
-from ._config import ENV_KEY_ROOT, ENV_KEY_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
-from . import __version__ as _VERSION
-from . import ensure_config_default
+from pyruns._config import ENV_KEY_ROOT, ENV_KEY_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
+from pyruns import __version__ as _VERSION
+from pyruns import ensure_config_default
+
+# ── CLI sub-command names (checked before script-path resolution) ──
+_CLI_COMMANDS = {"cli", "ls", "list", "gen", "generate", "run", "delete", "del", "rm", "jobs", "fg"}
 
 # ─── Help text ────────────────────────────────────────────────
 
@@ -20,22 +26,23 @@ pyruns v{_VERSION}
 USAGE
     pyr <script.py>                  Start UI for script (e.g., `pyr train.py`)
     pyr <script.py> [config.yaml]    Start UI and import a custom YAML config
-    pyr help | version               Show help / version
+    pyr dev <script.py>              Start UI in dev mode (hot-reload)
+    pyr cli                          Enter interactive CLI mode
+    pyr <command> [args]             Run a CLI command directly
+
+CLI COMMANDS
+    ls [query]            List tasks (with optional filter)
+    gen [template]        Generate tasks from YAML config
+    run <name|#>          Run task(s) by name or index
+    delete <name|#>       Soft-delete task(s)
+    jobs                  Show running/queued tasks
+    fg <%N|name|#>        Tail a task's log (Ctrl+C to detach)
 
 EXAMPLES
-    1. Zero Config (Argparse)
-       Just run your existing argparse scripts. No code changes needed!
-       $ pyr train.py
-
-    2. Custom YAML Config
-       $ pyr train.py my_config.yaml
-       
-       In your script, load the generated UI parameters like this:
-       >>> import pyruns
-       >>> config = pyruns.load()
-       >>> print(config.learning_rate)
-       
-       For more examples, check out the `examples/` folder in the repository!
+    pyr train.py                     Launch UI for train.py
+    pyr ls                           List tasks in current workspace
+    pyr run 1                        Run the first task
+    pyr cli                          Enter interactive shell
     """.strip()
 )
 
@@ -50,11 +57,91 @@ def _print_version():
     sys.exit(0)
 
 
+# ─── Workspace resolution ────────────────────────────────────
+
+
+def _resolve_workspace() -> str | None:
+    """Auto-detect the ``_pyruns_/<script>`` workspace in the current directory.
+
+    Walks up from CWD looking for a ``_pyruns_`` directory that contains at
+    least one sub-directory with a ``script_info.json``.  Returns the first
+    match (e.g. ``/project/_pyruns_/main``), or ``None``.
+    """
+    import json
+
+    cwd = os.getcwd()
+    pyruns_dir = os.path.join(cwd, DEFAULT_ROOT_NAME)
+
+    if not os.path.isdir(pyruns_dir):
+        return None
+
+    # Find the first sub-directory with script_info.json
+    for entry in sorted(os.listdir(pyruns_dir)):
+        candidate = os.path.join(pyruns_dir, entry)
+        info_path = os.path.join(candidate, "script_info.json")
+        if os.path.isdir(candidate) and os.path.exists(info_path):
+            return candidate
+
+    return None
+
+
+def _init_task_manager(workspace: str):
+    """Create a TaskManager pointed at the workspace's tasks/ directory."""
+    from pyruns._config import TASKS_DIR
+    from pyruns.core.task_manager import TaskManager
+
+    tasks_dir = os.path.join(workspace, TASKS_DIR)
+    os.makedirs(tasks_dir, exist_ok=True)
+
+    os.environ[ENV_KEY_ROOT] = workspace
+    tm = TaskManager(root_dir=tasks_dir)
+
+    # Wait for async scan to complete
+    import time
+    for _ in range(50):
+        if tm.tasks is not None:
+            break
+        time.sleep(0.05)
+    # Give scan a moment to finish
+    time.sleep(0.2)
+    tm.refresh_from_disk(force_all=True)
+    return tm
+
+
+# ─── CLI command dispatch ─────────────────────────────────────
+
+
+def _dispatch_cli(args: list) -> None:
+    """Handle CLI commands (both ``pyr cli`` and ``pyr <command>``)."""
+    workspace = _resolve_workspace()
+    if not workspace:
+        print(f"No pyruns workspace found in current directory.")
+        print(f"Hint: run `pyr <script.py>` first to initialize a workspace.")
+        sys.exit(1)
+
+    tm = _init_task_manager(workspace)
+
+    if not args or args[0] == "cli":
+        # Enter interactive REPL
+        from pyruns.cli.interactive import run_interactive
+        run_interactive(tm)
+    else:
+        from pyruns.cli.commands import COMMANDS
+        cmd_name = args[0].lower()
+        handler = COMMANDS.get(cmd_name)
+        if handler:
+            handler(tm, args[1:])
+        else:
+            print(f"Unknown command: '{cmd_name}'")
+            print(f"Run 'pyr help' for available commands.")
+            sys.exit(1)
+
+
 # ─── Main entry ───────────────────────────────────────────────
 
 
 def pyr():
-    """``pyr <script.py>`` — launch the experiment management UI."""
+    """``pyr`` — main console_scripts entry point."""
 
     if len(sys.argv) < 2:
         _print_help()
@@ -77,12 +164,19 @@ def pyr():
         _launch_dev(script_arg, custom_yaml)
         return
 
-    # ── Resolve script path ──
+    # ── CLI commands ──
+    if arg.lower() in _CLI_COMMANDS:
+        _dispatch_cli(sys.argv[1:])
+        return
+
+    # ── Script mode: pyr <script.py> [config.yaml] ──
     filepath = os.path.abspath(arg).replace("\\", "/")
     custom_yaml = sys.argv[2] if len(sys.argv) > 2 else None
 
     if not os.path.exists(filepath):
-        print(f"Error: '{arg}' not found.")
+        # Could be a typo of a CLI command
+        print(f"Error: '{arg}' is not a file or known command.")
+        print(f"Run 'pyr help' for usage.")
         sys.exit(1)
 
     ensure_root_dir()
@@ -103,6 +197,9 @@ def pyr():
         sys.exit(1)
 
 
+# ─── Environment setup (shared with dev mode) ────────────────
+
+
 def _setup_env(filepath: str, custom_yaml: str = None) -> str:
     """Detect config source, ensure workspace, set env vars.
 
@@ -119,7 +216,7 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
 
     file_dir = os.path.dirname(filepath).replace("\\", "/")
     script_base = os.path.splitext(os.path.basename(filepath))[0]
-    
+
     pyruns_dir = os.path.join(file_dir, DEFAULT_ROOT_NAME).replace("\\", "/")
     script_dir = os.path.join(pyruns_dir, script_base).replace("\\", "/")
 
@@ -156,14 +253,6 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
             params = extract_argparse_params(filepath)
             generate_config_file(script_dir, filepath, params)
 
-        elif mode == "pyruns_read":
-            if extra:
-                config_file = resolve_config_path(extra, file_dir)
-
-                if not config_file:
-                    print(f"Error: Config '{extra}' not found.")
-                    sys.exit(1)
-
         elif mode == "pyruns_load":
             if not os.path.exists(config_default_path):
                 print(f"\033[91mError: Missing default config file for {script_base}.py\033[0m")
@@ -173,9 +262,9 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
                 sys.exit(1)
 
         if mode != "pyruns_load":
-            # Other modes like argparse or pyruns_read can safely initialize default blanks
+            # Other modes like argparse/unknown can safely initialize default blanks
             ensure_config_default(script_dir)
-    
+
     # ── Set environment ──
     os.environ[ENV_KEY_ROOT] = script_dir
     os.environ[ENV_KEY_SCRIPT] = filepath
@@ -199,4 +288,3 @@ def _launch_dev(script_arg: str, custom_yaml: str = None):
 
 if __name__ == "__main__":
     pyr()
-

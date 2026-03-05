@@ -20,7 +20,7 @@ from pyruns.utils import get_logger, get_now_str, client_connected
 from pyruns.ui.components.param_editor import recursive_param_editor
 from pyruns.ui.components.batch_dialog import show_batch_confirm
 from pyruns.ui.theme import (
-    INPUT_PROPS, BTN_CLASS,
+    INPUT_PROPS, ICON_BTN_MUTED_CLASSES,
     GENERATOR_HEADER_CLASSES, GENERATOR_WORKSPACE_CLASSES,
     GENERATOR_LEFT_COL_CLASSES, GENERATOR_RIGHT_COL_CLASSES,
     GENERATOR_TOOLBAR_CLASSES, GENERATOR_SETTINGS_CARD_CLASSES,
@@ -244,7 +244,7 @@ def _editor_toolbar(
                         e.set_value(True) for e in expansions_ref
                     ],
                 ).props("flat dense round size=sm").classes(
-                    "text-slate-400 hover:text-indigo-500"
+                    ICON_BTN_MUTED_CLASSES
                 ).tooltip("Expand all")
 
                 ui.button(
@@ -253,7 +253,7 @@ def _editor_toolbar(
                         e.set_value(False) for e in expansions_ref
                     ],
                 ).props("flat dense round size=sm").classes(
-                    "text-slate-400 hover:text-indigo-500"
+                    ICON_BTN_MUTED_CLASSES
                 ).tooltip("Collapse all")
 
                 ui.select(
@@ -290,7 +290,7 @@ def _editor_toolbar(
 
 
 def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager, refresh_files):
-    from pyruns.utils.settings import get as _get_ws_setting
+    from pyruns.utils.settings import get as _get_ws_setting, save_setting
 
     with ui.card().classes(GENERATOR_SETTINGS_CARD_CLASSES):
         ui.label("Generation Settings").classes(
@@ -309,6 +309,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
             "Append timestamp suffix to task name",
             value=bool(_get_ws_setting("generator_auto_timestamp", True)),
         ).props("dense color=indigo").classes("text-xs text-slate-500 mb-3")
+        use_ts_chk.on_value_change(lambda e: save_setting("generator_auto_timestamp", bool(e.value)))
 
         _batch_syntax_hint()
         ui.separator().classes("mb-2")
@@ -411,6 +412,8 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
 
 def _set_cols(n: int, form_cols: dict, editor_area) -> None:
     form_cols["n"] = n
+    from pyruns.utils.settings import save_setting
+    save_setting("generator_form_columns", int(n))
     editor_area.refresh()
 
 

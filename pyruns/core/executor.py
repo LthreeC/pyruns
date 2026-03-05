@@ -35,7 +35,7 @@ def _prepare_env(
     """Build a subprocess environment dict.
 
     Sets UTF-8 encoding, unbuffered output, and optionally points
-    ``ENV_KEY_CONFIG`` at the task's config.yaml so ``pyruns.read()`` works.
+    ``ENV_KEY_CONFIG`` at the task's config.yaml so ``pyruns.load()`` works.
     """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"    # 避免 Windows GBK 编码问题
@@ -61,7 +61,7 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
     Returns (command, workdir) where command may be a list, a string,
     or None (simulation mode).
 
-    When the script uses ``pyruns.load()`` / ``pyruns.read()``, config is
+    When the script uses ``pyruns.load()``, config is
     passed via the ``PYRUNS_CONFIG`` environment variable (set by
     ``_prepare_env``), so NO CLI arguments are appended — only
     ``[python, script]``.  CLI arguments are only built for argparse
@@ -122,7 +122,7 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
                     cmd_list.append(f"--{k}")
                     cmd_list.append(str(v))
         else:
-            # pyruns_load / pyruns_read / unknown:
+            # pyruns_load / unknown:
             # Config is passed via PYRUNS_CONFIG env var, no CLI args needed
             logger.debug("Script uses %s mode — skipping CLI args", config_source)
 
