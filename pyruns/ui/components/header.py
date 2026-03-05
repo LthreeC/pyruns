@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from nicegui import ui
 
 from pyruns.ui.theme import HEADER_GRADIENT
+from pyruns.ui.theme import ROW_CENTER_GAP_3, ROW_CENTER_GAP_4
 from pyruns.utils import client_connected
 from pyruns.utils.settings import get as _get_setting, save_setting
 
@@ -16,13 +17,13 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
         f"{HEADER_GRADIENT} text-white px-6 py-2 shadow-md "
         "border-b border-white/10 items-center justify-between"
     ):
-        with ui.row().classes("items-center gap-3"):
+        with ui.row().classes(ROW_CENTER_GAP_3):
             ui.icon("rocket_launch", size="28px", color="white")
             ui.label("PYRUNS LAB").classes(
                 "text-xl font-bold tracking-widest font-mono text-white/90"
             )
 
-        with ui.row().classes("items-center gap-4"):
+        with ui.row().classes(ROW_CENTER_GAP_4):
             interval_state = {
                 "sec": max(1, int(_get_setting("header_refresh_interval", 3)))
             }

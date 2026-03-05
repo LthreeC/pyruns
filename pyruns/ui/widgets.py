@@ -11,6 +11,7 @@ from typing import Optional, Callable
 from pyruns.ui.theme import (
     INPUT_PROPS,
     STATUS_BADGE_STYLES, STATUS_ICONS, STATUS_ICON_COLORS,
+    DIR_PICKER_APPEND_BTN_PROPS, DIR_PICKER_APPEND_BTN_CLASSES,
 )
 
 
@@ -80,9 +81,7 @@ def dir_picker(
     with inp.add_slot("append"):
         ui.button(
             icon="folder_open", on_click=_pick
-        ).props("flat round dense").classes(
-            "text-slate-400 hover:text-indigo-600"
-        )
+        ).props(DIR_PICKER_APPEND_BTN_PROPS).classes(DIR_PICKER_APPEND_BTN_CLASSES)
 
     return inp
 

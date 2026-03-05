@@ -11,11 +11,17 @@ from nicegui import ui
 from typing import Dict, Any
 
 from pyruns.ui.theme import (
-    INPUT_PROPS, BTN_CLASS, STATUS_ICONS, STATUS_ICON_COLORS,
+    INPUT_PROPS, STATUS_ICONS, STATUS_ICON_COLORS,
     MANAGER_SUMMARY_BAR_CLASSES, MANAGER_ACTION_ROW_CLASSES,
     MANAGER_FILTER_ROW_CLASSES, MANAGER_EMPTY_ICON_SIZE,
     MANAGER_EMPTY_ICON_CLASSES, MANAGER_EMPTY_TITLE_CLASSES,
-    MANAGER_EMPTY_SUB_CLASSES
+    MANAGER_EMPTY_SUB_CLASSES, MANAGER_LOADING_COL_CLASSES,
+    MANAGER_LOADING_TEXT_CLASSES, MANAGER_BODY_CLASSES,
+    FILTER_SELECT_CLASSES, SEARCH_TEXTAREA_CLASSES,
+    SEARCH_TEXTAREA_STYLE, REFRESH_ICON_BTN_PROPS,
+    COMPACT_SELECT_CLASSES, WORKERS_INPUT_CLASSES,
+    MODE_SELECT_CLASSES, BTN_RUN_SELECTED_CLASSES,
+    BTN_DELETE_SELECTED_CLASSES,
 )
 from pyruns.ui.widgets import dir_picker, section_header
 from pyruns.ui.components.task_card import render_card_grid
@@ -86,9 +92,9 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         if not client_connected():
             return
         if state.get("_manager_is_loading", False):
-            with ui.column().classes("w-full items-center justify-center py-20 gap-4 mt-10"):
+            with ui.column().classes(MANAGER_LOADING_COL_CLASSES):
                 ui.spinner("dots", size="3em", color="indigo", thickness=0.3)
-                ui.label("Loading Tasks...").classes("text-slate-500 font-bold tracking-wider animate-pulse")
+                ui.label("Loading Tasks...").classes(MANAGER_LOADING_TEXT_CLASSES)
             return
 
         state["_manager_checkboxes"] = {}
@@ -215,7 +221,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     # ## px-1: 左右内边距1 (4px); pb-1: 底部内边距1; gap-0: 消除子元素（全选框和任务卡片）之间的默认16px大间距
     # ## flex-grow: 高度填满剩余空间; overflow-y-auto: 允许原生下拉滚动
-    with ui.column().classes("w-full flex-grow px-1 pb-1 gap-1 overflow-y-auto").style("min-height: 0;"):
+    with ui.column().classes(MANAGER_BODY_CLASSES).style("min-height: 0;"):
         task_list()
 
 
@@ -376,11 +382,11 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
         filter_status = ui.select(
             {"All": "All", **{s: s.capitalize() for s in ALL_STATUSES}},
             value="All", label="Filter",
-        ).props(INPUT_PROPS).classes("w-48")
+        ).props(INPUT_PROPS).classes(FILTER_SELECT_CLASSES)
 
         search_input = ui.textarea(
             value="", label="Search", placeholder="device: null...",
-        ).props(INPUT_PROPS + " clearable autogrow").classes("w-56 font-mono").style("max-height: 80px; overflow-y: auto;")
+        ).props(INPUT_PROPS + " clearable autogrow").classes(SEARCH_TEXTAREA_CLASSES).style(SEARCH_TEXTAREA_STYLE)
 
         # Using a slight debounce for textarea to avoid lag on multi-line paste
         search_timer = [None]
@@ -401,7 +407,7 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
         ui.button(
             icon="refresh",
             on_click=lambda: _on_dir_change(run_root_input.value),
-        ).props("flat round dense color=slate")
+        ).props(REFRESH_ICON_BTN_PROPS)
 
         # ── Listen for run_root changes from other pages ──
         from pyruns.utils.events import event_sys
@@ -445,7 +451,7 @@ def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
                 {n: f"{n} cols" for n in range(1, 10)},
                 value=state.get("manager_columns", 5),
                 label="Columns",
-            ).props(INPUT_PROPS + " options-dense").classes("w-24")
+            ).props(INPUT_PROPS + " options-dense").classes(COMPACT_SELECT_CLASSES)
             col_sel.on_value_change(_on_columns_change)
 
         # Right: workers + mode + run + delete
@@ -453,26 +459,25 @@ def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
             w_input = ui.number(
                 value=state["max_workers"], min=1, step=1,
                 label="Workers",
-            ).props(INPUT_PROPS).classes("w-20")
+            ).props(INPUT_PROPS).classes(WORKERS_INPUT_CLASSES)
             w_input.on_value_change(_on_workers_change)
 
             mode_sel = ui.select(
                 {"thread": "Thread", "process": "Process"},
                 value=state["execution_mode"], label="Mode",
-            ).props(INPUT_PROPS + " options-dense").classes("w-28")
+            ).props(INPUT_PROPS + " options-dense").classes(MODE_SELECT_CLASSES)
             mode_sel.on_value_change(_on_mode_change)
 
             ui.button(
                 "RUN SELECTED", icon="play_arrow",
                 on_click=lambda: _run_selected(state, task_manager, batch_refresh_fn),
             ).props("unelevated no-caps color=green-8").classes(
-                f"font-bold px-6 py-2.5 text-white text-sm "
-                f"shadow-md {BTN_CLASS}"
+                BTN_RUN_SELECTED_CLASSES
             )
 
             ui.button(
                 icon="delete_outline",
                 on_click=lambda: _delete_selected(state, task_manager, batch_refresh_fn),
             ).props("unelevated dense color=red-7").classes(
-                f"text-white {BTN_CLASS}"
+                BTN_DELETE_SELECTED_CLASSES
             )

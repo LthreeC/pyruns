@@ -4,7 +4,11 @@ Left sidebar navigation — Generator / Manager / Monitor tabs.
 from nicegui import ui
 from typing import Dict, Any, Callable
 
-from pyruns.ui.theme import SIDEBAR_WIDTH
+from pyruns.ui.theme import (
+    SIDEBAR_WIDTH, SIDEBAR_COL_CLASSES, SIDEBAR_MENU_TITLE_CLASSES,
+    SIDEBAR_LIST_CLASSES, SIDEBAR_BTN_PROPS, SIDEBAR_ICON_ACTIVE,
+    SIDEBAR_ICON_INACTIVE, SIDEBAR_LABEL_CLASSES,
+)
 
 _TABS = [
     ("Generator", "add_circle", "generator"),
@@ -21,17 +25,12 @@ def render_sidebar(state: Dict[str, Any], switch_tab: Callable) -> None:
     switch_tab : Callable[[str], None]
         Callback that toggles container visibility (no DOM rebuild).
     """
-    with ui.column().classes(
-        "flex-none bg-white border-r border-slate-100 gap-0 "
-        "shadow-[4px_0_24px_rgba(0,0,0,0.02)] print:hidden"
-    ).style(f"width: {SIDEBAR_WIDTH}; min-height: 100%;"):
-        ui.label("MENU").classes(
-            "text-[9px] font-bold text-slate-400 px-2 mt-5 mb-2 tracking-wider"
-        )
+    with ui.column().classes(SIDEBAR_COL_CLASSES).style(f"width: {SIDEBAR_WIDTH}; min-height: 100%;"):
+        ui.label("MENU").classes(SIDEBAR_MENU_TITLE_CLASSES)
 
         @ui.refreshable
         def menu() -> None:
-            with ui.column().classes("w-full gap-0 px-1.5"):
+            with ui.column().classes(SIDEBAR_LIST_CLASSES):
                 for name, icon, tab in _TABS:
                     _nav_item(name, icon, tab, state, switch_tab, menu)
 
@@ -53,20 +52,20 @@ def _nav_item(
             f"{base} bg-indigo-50 text-indigo-700 "
             "border-l-3 border-indigo-600"
         )
-        icon_color = "text-indigo-600"
+        icon_color = SIDEBAR_ICON_ACTIVE
     else:
         cls = (
             f"{base} text-slate-500 hover:bg-slate-50 hover:text-slate-800 "
             "border-l-3 border-transparent"
         )
-        icon_color = "text-slate-400"
+        icon_color = SIDEBAR_ICON_INACTIVE
 
     with ui.button(
         on_click=lambda: (
             switch_tab(tab),
             menu_refreshable.refresh(),
         ),
-    ).props("flat no-caps").classes(cls):
-        ui.icon(icon).classes(f"{icon_color} text-sm")
-        ui.label(name).classes("truncate")
+    ).props(SIDEBAR_BTN_PROPS).classes(cls):
+        ui.icon(icon).classes(icon_color)
+        ui.label(name).classes(SIDEBAR_LABEL_CLASSES)
 

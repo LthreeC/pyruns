@@ -12,7 +12,11 @@ from pyruns.ui.theme import (
     MANAGER_GRID_CLASSES, CARD_BASE_CLASSES, CARD_HEADER_CLASSES, CARD_TITLE_COL_CLASSES,
     CARD_TITLE_CLASSES, CARD_TIME_CLASSES, PIN_ACTIVE_CLASSES, PIN_INACTIVE_CLASSES,
     CARD_BADGE_ROW_CLASSES, CARD_BODY_CLASSES, CARD_CONFIG_LINE_CLASSES, CARD_FOOTER_CLASSES,
-    CHECKBOX_PROPS, ACTION_BTN_PROPS, ACTION_BTN_CLASSES
+    CHECKBOX_PROPS, ACTION_BTN_PROPS, ACTION_BTN_CLASSES,
+    TASK_CARD_ERROR_CLASSES, TASK_CARD_CHECKBOX_CLASSES,
+    TASK_CARD_META_ROW_CLASSES, TASK_CARD_META_ICON_CLASSES,
+    TASK_CARD_META_TEXT_CLASSES, TASK_CARD_ACTIONS_LEFT_CLASSES,
+    TASK_CARD_RUNNING_ACTIONS_CLASSES,
 )
 from pyruns.ui.widgets import status_badge
 
@@ -28,7 +32,7 @@ def render_card_grid(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        ui.label(f"Render Error: {e}").classes("text-red-500 font-bold p-4")
+        ui.label(f"Render Error: {e}").classes(TASK_CARD_ERROR_CLASSES)
 
 
 def render_task_card(
@@ -65,7 +69,7 @@ def render_task_card(
 
             cb = ui.checkbox(value=is_selected, on_change=on_check).props(
                 CHECKBOX_PROPS
-            ).classes("mt-0.5 task-checkbox").on("click", js_handler="(e) => e.stopPropagation()")
+            ).classes(TASK_CARD_CHECKBOX_CLASSES).on("click", js_handler="(e) => e.stopPropagation()")
             
             state.setdefault("_manager_checkboxes", {})[t["name"]] = cb
 
@@ -105,14 +109,14 @@ def render_task_card(
             run_count = len(starts)
             if run_count > 1:
                 with ui.row().classes("items-center gap-1 mt-0.5"):
-                    ui.icon("replay", size="12px").classes("text-indigo-400")
+                    ui.icon("replay", size="12px").classes(TASK_CARD_META_ICON_CLASSES)
                     ui.label(f"{run_count} run(s)").classes(
-                        "text-[10px] font-mono text-indigo-400"
+                        TASK_CARD_META_TEXT_CLASSES
                     )
 
         # ── Bottom action bar ──
         with ui.row().classes(CARD_FOOTER_CLASSES).on("click", js_handler="(e) => e.stopPropagation()"):
-            with ui.row().classes("items-center gap-1"):
+            with ui.row().classes(TASK_CARD_ACTIONS_LEFT_CLASSES):
                 _card_action_btn(
                     icon="description", tooltip="Task Info",
                     on_click=lambda _e=None, t=t: open_task_dialog(t, "task_info"),
@@ -159,7 +163,7 @@ def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
             else:
                 ui.notify("Cannot cancel this task", type="negative")
 
-        with ui.row().classes("items-center gap-1.5"):
+        with ui.row().classes(TASK_CARD_RUNNING_ACTIONS_CLASSES):
             if status == "running":
                 ui.spinner("dots", size="14px", color="amber")
             ui.button("STOP", icon="stop", on_click=cancel_single).props(
@@ -177,7 +181,7 @@ def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
             else:
                 ui.notify("Cannot rerun this task", type="negative")
 
-        with ui.row().classes("items-center gap-1.5"):
+        with ui.row().classes(TASK_CARD_RUNNING_ACTIONS_CLASSES):
             ui.icon("check_circle", size="20px").classes("text-emerald-500")
             from pyruns.ui.theme import BTN_PRIMARY
             ui.button("RERUN", icon="replay", on_click=rerun_single).props(

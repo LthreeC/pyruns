@@ -24,7 +24,13 @@ from pyruns.ui.theme import (
     MONITOR_PANEL_WIDTH, MONITOR_WORKSPACE_CLASSES,
     MONITOR_TERMINAL_COL_CLASSES, MONITOR_HEADER_HEIGHT_PX,
     MONITOR_EMPTY_COL_CLASSES, MONITOR_EMPTY_ICON_SIZE,
-    MONITOR_EMPTY_ICON_CLASSES, MONITOR_EMPTY_TEXT_CLASSES
+    MONITOR_EMPTY_ICON_CLASSES, MONITOR_EMPTY_TEXT_CLASSES,
+    MONITOR_TERMINAL_INNER_CLASSES, MONITOR_TERMINAL_CLASSES,
+    MONITOR_HEADER_ICON_CLASSES, MONITOR_HEADER_LABEL_CLASSES,
+    MONITOR_LOG_SELECT_PROPS, MONITOR_LOG_SELECT_CLASSES,
+    MONITOR_SIDEBAR_CLASSES, MONITOR_SIDEBAR_HEADER_CLASSES,
+    MONITOR_SEARCH_ROW_CLASSES, MONITOR_LIST_COL_CLASSES,
+    MONITOR_EXPORT_ROW_CLASSES, MONITOR_TASK_ROW_CLASSES,
 )
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.components.export_dialog import show_export_dialog
@@ -87,7 +93,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
             # Layout fix: use standard flex flow (min-w/h=0) instead of absolute pos
             with ui.column().classes(
-                "w-full flex-grow overflow-hidden pr-2"
+                MONITOR_TERMINAL_INNER_CLASSES
             ).style("min-height: 0; min-width: 0;"):
                 
                 terminal = ui.xterm({
@@ -97,9 +103,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                     'disableStdin': True,      # Crucial: lets browser handle Ctrl+C
                     'rightClickSelectsWord': True, 
                     'cursorInactiveStyle': 'none',
-                }).classes(
-                    "w-full h-full pl-2 pt-1"
-                ).style("min-height: 0; min-width: 0;")
+                }).classes(MONITOR_TERMINAL_CLASSES).style("min-height: 0; min-width: 0;")
                 
                 # Dynamically listen to dimension changes to trigger terminal re-wrap
                 ui.element('q-resize-observer').on('resize', terminal.fit)
@@ -136,15 +140,13 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     # ── header + placeholder ──
     with header_row:
-        header_icon_el = ui.icon("monitor_heart", size="14px").classes("text-slate-500")
-        header_label_el = ui.label("Select a task").classes(
-            "text-xs font-bold text-white truncate"
-        )
+        header_icon_el = ui.icon("monitor_heart", size="14px").classes(MONITOR_HEADER_ICON_CLASSES)
+        header_label_el = ui.label("Select a task").classes(MONITOR_HEADER_LABEL_CLASSES)
         ui.space()
         log_select_el = ui.select(
             [], value=None,
             on_change=lambda e: _on_log_select_change(e.value),
-        ).props("outlined dense dark options-dense").classes("w-36")
+        ).props(MONITOR_LOG_SELECT_PROPS).classes(MONITOR_LOG_SELECT_CLASSES)
         log_select_el.set_visibility(False)
 
     # ----------------------------------------------------------
@@ -366,13 +368,9 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
-    with ui.column().classes(
-        "flex-none border-r border-slate-200 bg-white gap-0 overflow-hidden"
-    ).style(f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"):
+    with ui.column().classes(MONITOR_SIDEBAR_CLASSES).style(f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"):
         
-        with ui.row().classes(
-            f"w-full items-center gap-1 px-1 py-2 flex-none {PANEL_HEADER_INDIGO}"
-        ):
+        with ui.row().classes(f"{MONITOR_SIDEBAR_HEADER_CLASSES} {PANEL_HEADER_INDIGO}"):
             ui.icon("monitor_heart", size="16px", color="white")
             ui.label("Tasks").classes("text-xs font-bold text-white")
             ui.space()
@@ -407,9 +405,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             if sel.get("_task_list_items"):
                 sel["_task_list_items"].refresh()
 
-        with ui.row().classes(
-            "w-full px-0 py-1 flex-none border-b border-slate-100 items-center gap-1 flex-nowrap overflow-hidden"
-        ):
+        with ui.row().classes(MONITOR_SEARCH_ROW_CLASSES):
             si = ui.textarea(placeholder="Search config / name...").props(
                 "dense outlined bg-white clearable autogrow"
             ).classes("flex-grow text-xs font-mono").style("max-height: 80px; overflow-y: auto;")
@@ -480,7 +476,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                         ui.label("No tasks").classes(MONITOR_EMPTY_TEXT_CLASSES)
                     return
 
-                with ui.column().classes("w-full gap-0 p-0 m-0 overflow-hidden shrink-0"): 
+                with ui.column().classes(MONITOR_LIST_COL_CLASSES): 
                     for t in visible_tasks:
                         _task_list_item(t, sel)
 
@@ -511,7 +507,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         sel["_task_list_pagination"] = task_list_pagination
         task_list_pagination()
 
-        with ui.row().classes("w-full p-2 flex-none mt-auto"): 
+        with ui.row().classes(MONITOR_EXPORT_ROW_CLASSES): 
             from pyruns.ui.theme import BTN_PRIMARY
             ui.button(
                 "Export Reports", 
@@ -543,9 +539,7 @@ def _task_list_item(t: Dict[str, Any], sel: Dict, is_pinned: bool = False) -> No
         border_style = "border-left: 4px solid transparent;"
         name_cls = "text-slate-700 font-semibold"
 
-    with ui.row().classes(
-        "w-full max-w-full items-center gap-0.5 flex-nowrap min-w-0 overflow-hidden border-b border-slate-50 pr-2"
-    ):
+    with ui.row().classes(MONITOR_TASK_ROW_CLASSES):
 
         # Checkbox stays intact, independent of hover effects
         ui.checkbox(

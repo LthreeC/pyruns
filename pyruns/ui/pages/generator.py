@@ -27,7 +27,8 @@ from pyruns.ui.theme import (
     EMPTY_STATE_COL_CLASSES, EMPTY_STATE_ICON_SIZE,
     EMPTY_STATE_ICON_CLASSES, EMPTY_STATE_TEXT_CLASSES,
     BATCH_HINT_BOX_CLASSES, BATCH_HINT_TITLE_CLASSES,
-    BATCH_HINT_FOOTER_CLASSES
+    BATCH_HINT_FOOTER_CLASSES, REFRESH_ICON_BTN_PROPS,
+    COMPACT_SELECT_CLASSES, TEXT_HEADING_SM
 )
 from pyruns.ui.widgets import dir_picker, _ensure_css
 
@@ -145,7 +146,7 @@ def render_generator_page(
 
         ui.button(
             icon="refresh", on_click=refresh_files
-        ).props("flat round dense color=slate")
+        ).props(REFRESH_ICON_BTN_PROPS)
 
         if not file_select.options:
             refresh_files()
@@ -233,7 +234,7 @@ def _editor_toolbar(
         with ui.row().classes("items-center gap-2"):
             ui.icon("tune", size="20px").classes("text-indigo-500")
             ui.label("Parameters").classes(
-                "text-sm font-bold text-slate-700 tracking-wide"
+                TEXT_HEADING_SM
             )
 
         with ui.row().classes("items-center gap-2"):
@@ -261,7 +262,7 @@ def _editor_toolbar(
                     value=form_cols["n"],
                 ).props(
                     "dense outlined options-dense"
-                ).classes("w-24").on_value_change(
+                ).classes(COMPACT_SELECT_CLASSES).on_value_change(
                     lambda e: _set_cols(e.value, form_cols, editor_area)
                 )
 
