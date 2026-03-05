@@ -323,8 +323,11 @@ def cmd_fg(tm, args: List[str] = None) -> None:
 COMMANDS = {
     "ls":       cmd_list,
     "list":     cmd_list,
+
     "gen":      cmd_generate,
     "generate": cmd_generate,
+    "gentask": cmd_generate,
+
     "run":      cmd_run,
     "delete":   cmd_delete,
     "del":      cmd_delete,

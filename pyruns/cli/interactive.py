@@ -27,9 +27,7 @@ _CLI_HELP = f"""
 def run_interactive(tm) -> None:
     """Enter the interactive REPL loop."""
     print(f"\n  {_BOLD}Pyruns CLI{_RESET}  (type 'help' for commands, 'exit' to quit)\n")
-
     # Show task list on entry
-    cmd_list(tm)
 
     while True:
         try:
@@ -50,7 +48,7 @@ def run_interactive(tm) -> None:
         cmd_name = parts[0].lower()
         cmd_args = parts[1:]
 
-        if cmd_name in ("exit", "quit", "q"):
+        if cmd_name in ("exit"):
             break
 
         if cmd_name in ("help", "?"):
