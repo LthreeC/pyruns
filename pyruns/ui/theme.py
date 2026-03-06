@@ -4,7 +4,7 @@ All style strings, color maps, and CSS classes live here.
 """
 
 # ─── Layout Widths ──────────────────────────────────────────
-SIDEBAR_WIDTH = "8%"            # Left navigation sidebar width
+SIDEBAR_WIDTH = "5%"            # Left navigation sidebar width
 MONITOR_PANEL_WIDTH = "16%"      # Monitor page task list panel width
 
 # ─── Spacing & Layout Presets ───────────────────────────────

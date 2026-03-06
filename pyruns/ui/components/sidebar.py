@@ -66,6 +66,7 @@ def _nav_item(
             menu_refreshable.refresh(),
         ),
     ).props(SIDEBAR_BTN_PROPS).classes(cls):
-        ui.icon(icon).classes(icon_color)
-        ui.label(name).classes(SIDEBAR_LABEL_CLASSES)
+        with ui.column().classes('items-center gap-1 no-wrap'):
+            ui.icon(icon).classes(icon_color)
+            ui.label(name).classes(SIDEBAR_LABEL_CLASSES)
 
