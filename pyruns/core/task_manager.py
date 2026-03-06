@@ -619,20 +619,20 @@ class TaskManager:
         return pids[-1] if isinstance(pids, list) and pids else None
 
     def _latest_pid_from_disk(self, task: dict):
-        info = load_task_info(task["dir"])
-        return self._latest_pid(info) if info else None
+        task_info = load_task_info(task["dir"])
+        return self._latest_pid(task_info) if task_info else None
 
     def _clean_aborted_runs(self, task: dict):
-        info = load_task_info(task["dir"])
-        if not info: return
-        starts = info.get("start_times", [])
-        finishes = info.get("finish_times", [])
+        task_info = load_task_info(task["dir"])
+        if not task_info: return
+        starts = task_info.get("start_times", [])
+        finishes = task_info.get("finish_times", [])
         if len(starts) > len(finishes):
             valid_sz = len(finishes)
-            info["start_times"] = starts[:valid_sz]
-            info["pids"] = info.get("pids", [])[:valid_sz]
-            info["records"] = info.get("records", [])[:valid_sz]
-            info["tracks"] = info.get("tracks", [])[:valid_sz]
+            task_info["start_times"] = starts[:valid_sz]
+            task_info["pids"] = task_info.get("pids", [])[:valid_sz]
+            task_info["records"] = task_info.get("records", [])[:valid_sz]
+            task_info["tracks"] = task_info.get("tracks", [])[:valid_sz]
             
             from pyruns._config import RUN_LOGS_DIR
             log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
@@ -658,16 +658,16 @@ class TaskManager:
     def _sync_status_to_disk(
         self, task: dict, status: str, run_index: int = 1,
     ) -> None:
-        info = load_task_info(task["dir"])
-        if not info:
+        task_info = load_task_info(task["dir"])
+        if not task_info:
             return
-        info["status"] = status
-        info["_run_index"] = run_index
-        save_task_info(task["dir"], info)
+        task_info["status"] = status
+        task_info["_run_index"] = run_index
+        save_task_info(task["dir"], task_info)
 
     def _mark_failed_on_disk(self, task: dict) -> None:
-        info = load_task_info(task["dir"])
-        if not info:
+        task_info = load_task_info(task["dir"])
+        if not task_info:
             return
-        info["status"] = "failed"
-        save_task_info(task["dir"], info)
+        task_info["status"] = "failed"
+        save_task_info(task["dir"], task_info)

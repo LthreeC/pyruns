@@ -151,7 +151,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
         await asyncio.sleep(0.01)
 
         def fetch_data():
-            info = load_task_info(task["dir"])
+            task_info = load_task_info(task["dir"])
             
             cfg_path = os.path.join(task["dir"], CONFIG_FILENAME)
             try:
@@ -160,11 +160,11 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
             except Exception:
                 cfg = "# No config.yaml"
                 
-            return info, cfg
+            return task_info, cfg
 
         try:
-            info, cfg = await run.io_bound(fetch_data)
-            selected["info_obj"] = info
+            task_info, cfg = await run.io_bound(fetch_data)
+            selected["info_obj"] = task_info
             selected["cfg_text"] = cfg
         except Exception as e:
             logger.error(f"Error async loading task dialog data: {e}")
@@ -195,9 +195,9 @@ def _build_tab_task_info(t, info_obj, selected):
                 if not new_name:
                     ui.notify("Name cannot be empty", type="negative")
                     return
-                info = load_task_info(t["dir"])
-                info["name"] = new_name
-                save_task_info(t["dir"], info)
+                task_info = load_task_info(t["dir"])
+                task_info["name"] = new_name
+                save_task_info(t["dir"], task_info)
                 t["name"] = new_name
                 # Update info_obj and refresh to reflect change in JSON view
                 if info_obj:
@@ -247,9 +247,9 @@ def _build_tab_notes(t, info_obj):
                 ui.label("Task Notes & Description").classes(LABEL_BOLD_TRACKING)
 
             def save_notes():
-                info = load_task_info(t["dir"])
-                info["notes"] = notes_holder["text"]
-                save_task_info(t["dir"], info)
+                task_info = load_task_info(t["dir"])
+                task_info["notes"] = notes_holder["text"]
+                save_task_info(t["dir"], task_info)
                 ui.notify("Notes saved", type="positive", icon="check")
 
             from pyruns.ui.theme import BTN_PRIMARY
@@ -286,9 +286,9 @@ def _build_tab_env_vars(t, info_obj):
         rows = [{"key": k, "val": v} for k, v in env.items()]
 
         def on_save_env(new_env):
-            info = load_task_info(t["dir"])
-            info["env"] = new_env
-            save_task_info(t["dir"], info)
+            task_info = load_task_info(t["dir"])
+            task_info["env"] = new_env
+            save_task_info(t["dir"], task_info)
             t["env"] = new_env
             ui.notify("Env vars saved", type="positive", icon="check")
 
