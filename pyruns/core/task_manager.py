@@ -99,8 +99,7 @@ class TaskManager:
                 if t["status"] in ("running", "queued"):
                     t["status"] = "failed"
                     now_str = get_now_str()
-                    t["finish_times"] = t.get("finish_times", []) + [now_str]
-                    self._sync_status_to_disk(t, "failed")
+                    self._mark_failed_on_disk(t)
                     
                     # Log the forceful termination to error.log
                     log_dir = os.path.join(t["dir"], RUN_LOGS_DIR)
@@ -235,8 +234,9 @@ class TaskManager:
             "records": len(info.get("records", [])),
             "_mtime": os.path.getmtime(info_path),
         }
-        if "_run_index" in info:
-            task["_run_index"] = info["_run_index"]
+        pending_run_index = info.get("run_index", info.get("_run_index"))
+        if pending_run_index:
+            task["run_index"] = pending_run_index
         return task
 
     def refresh_from_disk(
@@ -325,8 +325,8 @@ class TaskManager:
                 if t["name"] in task_ids:
                     t["status"] = "queued"
                     starts = t.get("start_times", [])
-                    t["_run_index"] = len(starts) + 1
-                    to_sync.append((t, t["_run_index"]))
+                    t["run_index"] = len(starts) + 1
+                    to_sync.append((t, t["run_index"]))
 
         self.is_processing = True
         self.trigger_update()
@@ -359,7 +359,7 @@ class TaskManager:
                     self._clean_aborted_runs(t)
                     starts = t.get("start_times", [])
                     run_index = len(starts) + 1
-                    t["_run_index"] = run_index
+                    t["run_index"] = run_index
                     self._running_ids.add(t["name"])
                     target = t
                     break
@@ -410,7 +410,7 @@ class TaskManager:
             starts = target.get("start_times", [])
             run_index = len(starts) + 1
             target["status"] = "queued"
-            target["_run_index"] = run_index
+            target["run_index"] = run_index
             self._sync_status_to_disk(
                 target, "queued", run_index=run_index,
             )
@@ -568,7 +568,7 @@ class TaskManager:
                 if not t:
                     continue
                 if t["status"] == "queued":
-                    run_index = t.pop("_run_index", 1)
+                    run_index = t.pop("run_index", t.pop("_run_index", 1))
                     t["status"] = "running"
                     self._running_ids.add(t["name"])
                     return t, run_index
@@ -636,35 +636,30 @@ class TaskManager:
     def _clean_aborted_runs(self, task: dict):
         task_info = load_task_info(task["dir"])
         if not task_info: return
-        starts = task_info.get("start_times", [])
-        finishes = task_info.get("finish_times", [])
-        if len(starts) > len(finishes):
-            valid_sz = len(finishes)
-            task_info["start_times"] = starts[:valid_sz]
-            task_info["pids"] = task_info.get("pids", [])[:valid_sz]
-            task_info["records"] = task_info.get("records", [])[:valid_sz]
-            task_info["tracks"] = task_info.get("tracks", [])[:valid_sz]
-            
-            from pyruns._config import RUN_LOGS_DIR
-            log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
-            if os.path.exists(log_dir):
-                i = valid_sz + 1
-                while True:
-                    bad_log = os.path.join(log_dir, f"run{i}.log")
-                    if os.path.exists(bad_log):
-                        try:
-                            os.remove(bad_log)
-                        except OSError:
-                            pass
-                        i += 1
-                    else:
-                        break
-            save_task_info(task["dir"], task_info)
-            task.update({
-                "start_times": task_info.get("start_times", []),
-                "finish_times": task_info.get("finish_times", []),
-                "pids": task_info.get("pids", []),
-            })
+        valid_sz = self._normalize_run_history(task_info)
+
+        from pyruns._config import RUN_LOGS_DIR
+        log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
+        if os.path.exists(log_dir):
+            i = valid_sz + 1
+            while True:
+                bad_log = os.path.join(log_dir, f"run{i}.log")
+                if os.path.exists(bad_log):
+                    try:
+                        os.remove(bad_log)
+                    except OSError:
+                        pass
+                    i += 1
+                else:
+                    break
+
+        save_task_info(task["dir"], task_info)
+        task.update({
+            "start_times": task_info.get("start_times", []),
+            "finish_times": task_info.get("finish_times", []),
+            "pids": task_info.get("pids", []),
+            "run_index": task_info.get("run_index", valid_sz),
+        })
 
     def _sync_status_to_disk(
         self, task: dict, status: str, run_index: int = 1,
@@ -673,7 +668,8 @@ class TaskManager:
         if not task_info:
             return
         task_info["status"] = status
-        task_info["_run_index"] = run_index
+        task_info["run_index"] = run_index
+        task_info.pop("_run_index", None)
         save_task_info(task["dir"], task_info)
 
     def _mark_failed_on_disk(self, task: dict) -> None:
@@ -681,4 +677,29 @@ class TaskManager:
         if not task_info:
             return
         task_info["status"] = "failed"
+        self._normalize_run_history(task_info)
         save_task_info(task["dir"], task_info)
+        task.update({
+            "status": "failed",
+            "start_times": task_info.get("start_times", []),
+            "finish_times": task_info.get("finish_times", []),
+            "pids": task_info.get("pids", []),
+            "records": len(task_info.get("records", [])),
+            "run_index": task_info.get("run_index", 0),
+        })
+
+    @staticmethod
+    def _normalize_run_history(task_info: dict) -> int:
+        """Normalize per-run arrays so they only keep completed-run entries."""
+        starts = list(task_info.get("start_times", []) or [])
+        finishes = list(task_info.get("finish_times", []) or [])
+        completed = min(len(starts), len(finishes))
+
+        task_info["start_times"] = starts[:completed]
+        task_info["finish_times"] = finishes[:completed]
+        task_info["pids"] = list(task_info.get("pids", []) or [])[:completed]
+        task_info["records"] = list(task_info.get("records", []) or [])[:completed]
+        task_info["tracks"] = list(task_info.get("tracks", []) or [])[:completed]
+        task_info["run_index"] = completed
+        task_info.pop("_run_index", None)
+        return completed

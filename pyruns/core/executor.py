@@ -55,6 +55,22 @@ def _get_log_path(task_dir: str, run_index: int) -> str:
     return os.path.join(log_dir, f"run{run_index}.log")
 
 
+def _normalize_run_history(meta: Dict[str, Any]) -> int:
+    """Keep only completed-run entries so run_index matches array lengths."""
+    starts = list(meta.get("start_times", []) or [])
+    finishes = list(meta.get("finish_times", []) or [])
+    completed = min(len(starts), len(finishes))
+
+    meta["start_times"] = starts[:completed]
+    meta["finish_times"] = finishes[:completed]
+    meta["pids"] = list(meta.get("pids", []) or [])[:completed]
+    meta["records"] = list(meta.get("records", []) or [])[:completed]
+    meta["tracks"] = list(meta.get("tracks", []) or [])[:completed]
+    meta["run_index"] = completed
+    meta.pop("_run_index", None)
+    return completed
+
+
 def _build_command(meta_cmd, script_path, meta_workdir, config):
     """Build the subprocess command list from task metadata + config.
 
@@ -178,7 +194,7 @@ def run_task_worker(
     append_log(log_path, start_log)
     log_emitter.emit(name, start_log.replace('\n', '\r\n'))
 
-    # Remove persisted _run_index (no longer needed once running)
+    # Remove stale queued marker, keep a single canonical run_index field.
     task_meta.pop("_run_index", None)
     task_meta.update({
         "status": "running",
@@ -254,7 +270,7 @@ def run_task_worker(
 
 
         # 4. Final update
-        meta_final = load_task_info(task_dir)
+        meta_final = load_task_info(task_dir) or dict(task_meta)
         
         finish_log = f"[PYRUNS] ⌘⌘⌘⌘⌘ Task {name} finished at {end_str} ⌘⌘⌘⌘⌘\n"
         append_log(log_path, finish_log)
@@ -308,6 +324,8 @@ def run_task_worker(
                 RECORDS_KEY: records,
             })
 
+        _normalize_run_history(meta_final)
+
         meta_final.update({
             "status": status,
             "progress": progress,
@@ -317,7 +335,8 @@ def run_task_worker(
         return {"status": status, "progress": progress}
 
     except Exception as e:
-        meta_err = load_task_info(task_dir)
+        meta_err = load_task_info(task_dir) or dict(task_meta)
+        _normalize_run_history(meta_err)
 
         meta_err.update({
             "status": "failed",

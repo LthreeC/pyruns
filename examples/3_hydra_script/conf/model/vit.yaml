@@ -1,0 +1,4 @@
+name: vit_base
+patch_size: 16
+num_heads: 12
+hidden_dim: 768

@@ -1,0 +1,4 @@
+name: resnet50
+num_layers: 50
+pretrained: true
+dropout: 0.1

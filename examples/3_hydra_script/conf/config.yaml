@@ -1,0 +1,14 @@
+defaults:
+  - model: resnet
+  - optimizer: adam
+  - dataset: cifar10
+
+# 训练超参数
+train:
+  epochs: 100
+  batch_size: 32
+  lr: 0.001
+
+# 其他设置
+seed: 42
+device: cuda
