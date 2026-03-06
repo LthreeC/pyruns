@@ -1,0 +1,10 @@
+name: SmallNet
+architecture:
+  input_dim: 784
+  hidden_dims: [128, 64]
+  output_dim: 10
+  activation: relu
+  dropout: 0.1
+params:
+  total_params: 109386
+  trainable: true

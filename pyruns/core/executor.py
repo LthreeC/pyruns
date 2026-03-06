@@ -11,6 +11,7 @@ import sys
 import subprocess
 import time
 import threading
+import codecs
 from typing import Dict, Any, Optional, List
 
 from .config_manager import ConfigManager
@@ -25,7 +26,6 @@ from pyruns.utils.events import log_emitter
 from pyruns.utils import get_logger, get_now_str
 
 logger = get_logger(__name__)
-
 
 
 def _prepare_env(
@@ -71,7 +71,7 @@ def _normalize_run_history(meta: Dict[str, Any]) -> int:
     return completed
 
 
-def _build_command(meta_cmd, script_path, meta_workdir, config):
+def _build_command(meta_cmd, script_path, meta_workdir, config, run_mode: str = "config"):
     """Build the subprocess command list from task metadata + config.
 
     Returns (command, workdir) where command may be a list, a string,
@@ -98,7 +98,19 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
         except Exception:
             pass
 
-        if config_source == "argparse":
+        mode = str(run_mode or "config").strip().lower()
+
+        if mode == "args":
+            try:
+                from pyruns.utils.parse_utils import split_cli_args
+                run_script = str(config.get("run_script", "") or "").strip()
+                script_cmd = split_cli_args(run_script) if run_script else []
+                cmd_list = script_cmd if script_cmd else [sys.executable, script_path]
+                cli_args = split_cli_args(config.get("args", ""))
+            except Exception:
+                cli_args = []
+            cmd_list.extend(cli_args)
+        elif config_source == "argparse":
             # ── argparse mode: append CLI args ──
             positional_order: List[str] = []
             try:
@@ -137,6 +149,10 @@ def _build_command(meta_cmd, script_path, meta_workdir, config):
                 elif v is not None:
                     cmd_list.append(f"--{k}")
                     cmd_list.append(str(v))
+        elif config_source == "hydra":
+            raise RuntimeError(
+                "Hydra script detected. Use Args mode in Generator (run_mode='args')."
+            )
         else:
             # pyruns_load / unknown:
             # Config is passed via PYRUNS_CONFIG env var, no CLI args needed
@@ -204,7 +220,11 @@ def run_task_worker(
 
     # 2. Build Command
     command, workdir = _build_command(
-        meta_cmd, script_path, meta_workdir, config
+        meta_cmd,
+        script_path,
+        meta_workdir,
+        config,
+        run_mode=str(task_meta.get("run_mode", "config") or "config"),
     )
 
     logger.debug("Built command: %s  workdir=%s", command, workdir)
@@ -241,6 +261,7 @@ def run_task_worker(
 
             # Tee pattern: reader thread reads PIPE → file + emit
             def _tee_output():
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                 with open(log_path, "ab") as lf:
                     # use read1 so it doesn't block waiting to fill 4096 bytes
                     for chunk in iter(lambda: proc.stdout.read1(4096), b''):
@@ -250,9 +271,13 @@ def run_task_worker(
                         lf.write(chunk)
                         lf.flush()
                         # B. Broadcast to subscribed UI sessions
-                        text = chunk.decode("utf-8", errors="replace")
+                        text = decoder.decode(chunk)
                         text = text.replace('\r\n', '\n').replace('\n', '\r\n')
                         log_emitter.emit(name, text)
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        tail = tail.replace('\r\n', '\n').replace('\n', '\r\n')
+                        log_emitter.emit(name, tail)
 
             reader_thread = threading.Thread(
                 target=_tee_output, daemon=True,
@@ -287,7 +312,14 @@ def run_task_worker(
                 
                 # Append to error.log with separator
                 err_log_path = os.path.join(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME)
-                separator = f"\n\n{'='*40}\n[PYRUNS] Run #{run_index} FAILED at {end_str}\nReason: Exit Code {proc.returncode if 'proc' in locals() else 'Unknown'}\n{'='*40}\n"
+                separator = (
+                    f"\n\n{'='*40}\n"
+                    f"[PYRUNS] Run #{run_index} FAILED at {end_str}\n"
+                    f"Reason: Exit Code {proc.returncode if 'proc' in locals() else 'Unknown'}\n"
+                    f"Command: {command!r}\n"
+                    f"Workdir: {workdir!r}\n"
+                    f"{'='*40}\n"
+                )
                 
                 # Write to error.log (OVERWRITE mode)
                 with open(err_log_path, "w", encoding="utf-8") as f:
@@ -343,16 +375,37 @@ def run_task_worker(
             "progress": 0.0,
         })
         save_task_info(task_dir, meta_err)
-        logger.error("Task %s failed with exception: %s", name, e)
+        run_mode = str(task_meta.get("run_mode", "config") or "config")
+        detail_text = "\n".join([
+            f"exception={type(e).__name__}: {e}",
+            f"command={command!r}",
+            f"workdir={workdir!r}",
+            f"run_mode={run_mode}",
+        ])
+        block = (
+            f"\n{'=' * 70}\n"
+            f"[PYRUNS ERROR] Task {name} failed\n"
+            f"{detail_text}\n"
+            f"{'=' * 70}"
+        )
+        logger.error("%s", block)
         
         # Write exception to error.log
         try:
             err_log_path = os.path.join(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME)
             timestamp = get_now_str()
-            separator = f"\n\n{'!'*40}\n[PYRUNS] INTERNAL ERROR at {timestamp}\n{task_dir=} {workdir=}\n{'!'*40}\n"
+            separator = (
+                f"\n\n{'!'*70}\n"
+                f"[PYRUNS] INTERNAL ERROR at {timestamp}\n"
+                f"{task_dir=} {workdir=}\n"
+                f"{'!'*70}\n"
+            )
             with open(err_log_path, "w", encoding="utf-8") as f:
-                f.write(f"{separator}{str(e)}\n\n")
+                f.write(f"{separator}{detail_text}\n{'!'*70}\n\n")
         except Exception:
             pass
             
         return {"status": "failed", "progress": 0.0, "error": str(e)}
+
+# cmd /c dir
+# powershell -Command ls

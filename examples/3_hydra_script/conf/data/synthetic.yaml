@@ -1,0 +1,8 @@
+name: SyntheticDataset
+num_samples: 5000
+num_features: 784
+num_classes: 10
+train_split: 0.9
+shuffle: true
+noise_level: 0.05
+distribution: gaussian

@@ -8,53 +8,43 @@ import re
 import yaml
 from typing import Any, Dict
 
-# Priority weights for task status sorting (higher = appears first with reverse=True)
-_STATUS_PRIORITIES = {
-    "running": 50,
-    "queued": 40,
-    "failed": 30,
-    "completed": 20,
-    "pending": 10,
+_ACTIVE_STATUSES = {"running", "queued"}
+_INACTIVE_TIE_PRIORITIES = {
+    "failed": 3,
+    "completed": 2,
+    "pending": 1,
 }
 
 
-def task_sort_key(task: Dict[str, Any]) -> tuple:
-    """Return a tuple for sorting tasks by status priority and timestamps.
-
-    Manager and Monitor use `reverse=True` so higher tuple values appear first.
-    
-    Priority:
-      1. running (50)
-      2. queued  (40)
-      3. failed  (30)
-      4. completed(20)
-      5. pending (10)
-      
-    Secondary:
-      - Active tasks (running/queued): earliest timestamp first => Return inverted int.
-      - Inactive tasks: latest timestamp first => Return raw string.
-    """
-    status = task.get("status", "pending")
-    priority = _STATUS_PRIORITIES.get(status, 0)
-
+def _timestamp_weight(task: Dict[str, Any]) -> int:
+    """Convert task activity timestamp to sortable int YYYYMMDDhhmmss[us]."""
     finishes = task.get("finish_times") or []
     starts = task.get("start_times") or []
-    
-    # For inactive tasks: use latest finish time, fallback to start time, fallback to created_at
-    if isinstance(finishes, list) and len(finishes) > 0:
-        ts_str = finishes[-1]
-    elif isinstance(starts, list) and len(starts) > 0:
-        ts_str = starts[-1]
+
+    if isinstance(finishes, list) and finishes:
+        ts = finishes[-1]
+    elif isinstance(starts, list) and starts:
+        ts = starts[-1]
     else:
-        ts_str = task.get("created_at") or ""
+        ts = task.get("created_at") or ""
 
-    if priority >= 40:  # running or queued (earliest first)
-        digits = "".join(filter(str.isdigit, str(ts_str)))
-        secondary = -int(digits) if digits else 0
-    else:               # others (latest first)
-        secondary = ts_str
+    digits = "".join(ch for ch in str(ts) if ch.isdigit())
+    return int(digits) if digits else 0
 
-    return (priority, secondary)
+
+def task_sort_key(task: Dict[str, Any]) -> tuple:
+    """Return a tuple for intuitive sorting with ``reverse=True``.
+
+    Rules:
+      1. Active tasks (running/queued) always first.
+      2. Inside each group, latest activity first.
+      3. Inactive ties are broken by failed > completed > pending.
+    """
+    status = str(task.get("status", "pending") or "pending")
+    active_rank = 1 if status in _ACTIVE_STATUSES else 0
+    time_rank = _timestamp_weight(task)
+    inactive_tie = _INACTIVE_TIE_PRIORITIES.get(status, 0)
+    return (active_rank, time_rank, inactive_tie)
 
 
 def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:

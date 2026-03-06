@@ -1,5 +1,5 @@
-"""
-CLI commands — ls, gen, run, delete, jobs, fg.
+﻿"""
+CLI commands 鈥?ls, gen, run, delete, jobs, fg.
 
 Each command is a plain function that takes a ``TaskManager`` (and optional args)
 and prints results to stdout.  All task lifecycle logic is delegated to
@@ -18,7 +18,6 @@ from typing import List, Optional
 from pyruns._config import CONFIG_DEFAULT_FILENAME, TASKS_DIR, RUN_LOGS_DIR
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
 from pyruns.utils.config_utils import load_yaml, preview_config_line
-from pyruns.utils.info_io import resolve_log_path
 from pyruns.cli.display import (
     print_task_table, print_jobs, print_task_detail,
     _BOLD, _RESET, _DIM, _colored, _STATUS_STYLES,
@@ -28,9 +27,9 @@ from pyruns.utils import get_logger
 logger = get_logger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 #  Helpers
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def _sorted_tasks(tm) -> list:
     """Return tasks sorted identically to the UI Manager page."""
@@ -40,13 +39,13 @@ def _sorted_tasks(tm) -> list:
 
 def _get_git_editor() -> str:
     """
-    100% 像素级复刻 git/editor.c 中的 git_editor() 逻辑
+    100% 鍍忕礌绾у鍒?git/editor.c 涓殑 git_editor() 閫昏緫
     """
-    # 1. 对应 getenv("GIT_EDITOR")
+    # 1. 瀵瑰簲 getenv("GIT_EDITOR")
     editor = os.environ.get("GIT_EDITOR")
     if editor: return editor
 
-    # 2. 对应 editor_program (即 git config core.editor)
+    # 2. 瀵瑰簲 editor_program (鍗?git config core.editor)
     try:
         editor = subprocess.check_output(
             ["git", "config", "--get", "core.editor"], 
@@ -56,22 +55,22 @@ def _get_git_editor() -> str:
     except Exception:
         pass
 
-    # 3. 对应 getenv("VISUAL")
+    # 3. 瀵瑰簲 getenv("VISUAL")
     editor = os.environ.get("VISUAL")
     if editor: return editor
 
-    # 4. 对应 getenv("EDITOR")
+    # 4. 瀵瑰簲 getenv("EDITOR")
     editor = os.environ.get("EDITOR")
     if editor: return editor
 
-    # 5. 额外彩蛋：如果用户连 Git 都没配，但确实在 VSCode/Cursor 终端里，帮他一把
+    # 5. 棰濆褰╄泲锛氬鏋滅敤鎴疯繛 Git 閮芥病閰嶏紝浣嗙‘瀹炲湪 VSCode/Cursor 缁堢閲岋紝甯粬涓€鎶?
     term = os.environ.get("TERM_PROGRAM", "")
     if term == "vscode":
         ipc = os.environ.get("VSCODE_IPC_HOOK_CLI", "").lower()
         if "cursor" in ipc: return "cursor --wait"
         return "code --wait"
 
-    # 6. 对应 DEFAULT_EDITOR
+    # 6. 瀵瑰簲 DEFAULT_EDITOR
     return "notepad" if os.name == "nt" else "vi"
 
 def _resolve_targets(tm, args: List[str]) -> list:
@@ -101,12 +100,12 @@ def _resolve_targets(tm, args: List[str]) -> list:
     return targets
 
 
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 #  Commands
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def cmd_list(tm, args: List[str] = None) -> None:
-    """``ls [query]`` — list tasks with optional filter."""
+    """``ls [query]`` 鈥?list tasks with optional filter."""
     args = args or []
     if "-i" in args:
         args_without_i = [a for a in args if a != "-i"]
@@ -122,11 +121,29 @@ def cmd_list(tm, args: List[str] = None) -> None:
 
 
 def cmd_generate(tm, args: List[str] = None) -> None:
-    """``gen [template_path]`` — open editor for YAML config, create tasks on save."""
+    """``gen [template_path]`` 鈥?open editor for YAML config, create tasks on save."""
     from pyruns.core.task_generator import TaskGenerator
     from pyruns.utils.batch_utils import generate_batch_configs
 
+    args = args or []
+    args_mode = "--args" in args
+    args = [a for a in args if a != "--args"]
+
     workspace_dir = os.path.dirname(tm.tasks_dir)
+
+    def _default_run_script() -> str:
+        script_info_path = os.path.join(workspace_dir, "script_info.json")
+        if os.path.exists(script_info_path):
+            try:
+                import json
+                with open(script_info_path, "r", encoding="utf-8") as f:
+                    info = json.load(f) or {}
+                sp = str(info.get("script_path", "") or "")
+                if sp:
+                    return f'python "{sp}"'
+            except Exception:
+                pass
+        return "python"
 
     template_path = None
     if args:
@@ -140,19 +157,26 @@ def cmd_generate(tm, args: List[str] = None) -> None:
     if not template_path:
         template_path = os.path.join(workspace_dir, CONFIG_DEFAULT_FILENAME)
 
-    if not os.path.exists(template_path):
-        print(f"  Template not found: {template_path}")
-        return
-
-    with open(template_path, "r", encoding="utf-8") as f:
-        template_content = f.read()
+    if args_mode and (not template_path or not os.path.exists(template_path)):
+        import yaml
+        template_content = yaml.safe_dump(
+            {"run_script": _default_run_script(), "args": ""},
+            sort_keys=False,
+            allow_unicode=True,
+        )
+    else:
+        if not os.path.exists(template_path):
+            print(f"  Template not found: {template_path}")
+            return
+        with open(template_path, "r", encoding="utf-8") as f:
+            template_content = f.read()
 
     header = (
-        "# ── Pyruns Task Generator ──────────────────────────────────\n"
+        "# 鈹€鈹€ Pyruns Task Generator 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€\n"
         "# Edit parameters below, then SAVE and CLOSE to generate tasks.\n"
         "# Use pipe syntax for batch: lr: 0.001 | 0.01 | 0.1\n"
         "# Lines starting with # are comments.\n"
-        "# ──────────────────────────────────────────────────────────\n\n"
+        "# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€\n\n"
     )
 
     with tempfile.NamedTemporaryFile(
@@ -163,16 +187,16 @@ def cmd_generate(tm, args: List[str] = None) -> None:
         tmp_path = tmp.name
 
     # ---------------------------------------------------------
-    # 核心执行逻辑：完全效仿 Git 的 launch_specified_editor
+    # 鏍稿績鎵ц閫昏緫锛氬畬鍏ㄦ晥浠?Git 鐨?launch_specified_editor
     # ---------------------------------------------------------
     editor = _get_git_editor()
     
-    # 完美复刻 Git 的提示语："hint: Waiting for your editor to close the file..."
+    # 瀹岀編澶嶅埢 Git 鐨勬彁绀鸿锛?hint: Waiting for your editor to close the file..."
     print(f"  hint: Waiting for your editor '{editor}' to close the file...")
     
     try:
-        # p.use_shell = 1 的 Python 实现：直接拼装字符串并开启 shell=True！
-        # 这样 Windows 的 cmd.exe 会自动处理 Cursor / VSCode 的调用，不再报 FileNotFoundError！
+        # p.use_shell = 1 鐨?Python 瀹炵幇锛氱洿鎺ユ嫾瑁呭瓧绗︿覆骞跺紑鍚?shell=True锛?
+        # 杩欐牱 Windows 鐨?cmd.exe 浼氳嚜鍔ㄥ鐞?Cursor / VSCode 鐨勮皟鐢紝涓嶅啀鎶?FileNotFoundError锛?
         cmd = f'{editor} "{tmp_path}"'
         subprocess.run(cmd, shell=True, check=True)
         
@@ -181,7 +205,7 @@ def cmd_generate(tm, args: List[str] = None) -> None:
         os.unlink(tmp_path)
         return
 
-    # 代码走到这里，说明用户已经在 IDE 里保存，并关闭了页签
+    # 浠ｇ爜璧板埌杩欓噷锛岃鏄庣敤鎴峰凡缁忓湪 IDE 閲屼繚瀛橈紝骞跺叧闂簡椤电
     config = load_yaml(tmp_path)
     try:
         os.unlink(tmp_path)
@@ -189,7 +213,7 @@ def cmd_generate(tm, args: List[str] = None) -> None:
         pass
 
     if not config:
-        print("  Empty config — no tasks generated.")
+        print("  Empty config 鈥?no tasks generated.")
         return
 
     configs = generate_batch_configs(config)
@@ -208,18 +232,19 @@ def cmd_generate(tm, args: List[str] = None) -> None:
     name_prefix = input("  Task name prefix (blank=auto): ").strip()
 
     gen = TaskGenerator(root_dir=tm.tasks_dir)
-    new_tasks = gen.create_tasks(configs, name_prefix)
+    run_mode = "args" if args_mode else "config"
+    new_tasks = gen.create_tasks(configs, name_prefix, run_mode=run_mode)
     for t in new_tasks:
         tm.add_task(t)
 
-    print(f"\n  ✔ Created {len(new_tasks)} task(s)")
+    print(f"\n  鉁?Created {len(new_tasks)} task(s)")
     for t in new_tasks:
-        print(f"    • {t['name']}")
+        print(f"    鈥?{t['name']}")
     print()
 
 
 def cmd_run(tm, args: List[str] = None) -> None:
-    """``run <name|index> [...]`` — run tasks. Multiple args triggers batch mode.
+    """``run <name|index> [...]`` 鈥?run tasks. Multiple args triggers batch mode.
 
     Single task: submits and auto-attaches to the log stream (like UI).
     Multiple tasks: prompts for batch settings, submits and returns.
@@ -235,11 +260,11 @@ def cmd_run(tm, args: List[str] = None) -> None:
     if len(targets) == 1:
         t = targets[0]
         if t.get("status") == "running":
-            print(f"  '{t['name']}' is already running — skipping.")
+            print(f"  '{t['name']}' is already running 鈥?skipping.")
             return
         print(f"  Starting '{t['name']}'...")
         tm.start_task_now(t["name"])
-        print(f"  ✔ Submitted 1 task\n")
+        print(f"  鉁?Submitted 1 task\n")
         # Auto-attach: stream log output in real-time (like fg)
         time.sleep(0.3)  # brief pause for log file to be created
         cmd_fg(tm, [t["name"]])
@@ -251,7 +276,7 @@ def cmd_run(tm, args: List[str] = None) -> None:
             return
         print(f"\n  {_BOLD}Batch Run{_RESET}  ({len(names)} task(s))")
         for n in names:
-            print(f"    • {n}")
+            print(f"    鈥?{n}")
         try:
             mw = input(f"\n  Max workers (default=1): ").strip()
             max_workers = int(mw) if mw else 1
@@ -259,14 +284,14 @@ def cmd_run(tm, args: List[str] = None) -> None:
             if mode not in ("process",):
                 mode = "thread"
             tm.start_batch_tasks(names, execution_mode=mode, max_workers=max_workers)
-            print(f"\n  ✔ Submitted {len(names)} task(s) in {mode} mode (workers={max_workers})")
+            print(f"\n  鉁?Submitted {len(names)} task(s) in {mode} mode (workers={max_workers})")
         except KeyboardInterrupt:
             print("\n  Cancelled.")
     print()
 
 
 def cmd_delete(tm, args: List[str] = None) -> None:
-    """``delete <name|index> [...]`` — soft-delete tasks to .trash."""
+    """``delete <name|index> [...]`` 鈥?soft-delete tasks to .trash."""
     if not args:
         print("  Usage: delete <name|index> [name|index ...]")
         return
@@ -285,106 +310,18 @@ def cmd_delete(tm, args: List[str] = None) -> None:
 
     task_ids = [t["name"] for t in targets]
     tm.delete_tasks(task_ids)
-    print(f"\n  {_colored('✔ Deleted', _STATUS_STYLES['failed'])} {len(targets)} task(s)\n")
+    print(f"\n  {_colored('鉁?Deleted', _STATUS_STYLES['failed'])} {len(targets)} task(s)\n")
 
 
 def cmd_jobs(tm, args: List[str] = None) -> None:
-    """``jobs`` — show running/queued tasks in Linux jobs style."""
+    """``jobs`` 鈥?show running/queued tasks in Linux jobs style."""
     tm.refresh_from_disk(check_all=True)
     tasks = _sorted_tasks(tm)
     print_jobs(tasks)
 
 
 def cmd_fg(tm, args: List[str] = None) -> None:
-    """``fg <name|index>`` — tail a task's log file (Ctrl+C to exit).
-
-    Uses log_emitter for real-time streaming (same mechanism as the UI),
-    falling back to file read only for the initial historical content.
-    """
-    import queue as _queue
-    from pyruns.utils.events import log_emitter
-
-    if not args:
-        print("  Usage: fg <name|index>")
-        return
-
-    targets = _resolve_targets(tm, [args[0]])
-    if not targets:
-        return
-    target = targets[0]
-
-    task_dir = target.get("dir")
-    task_name = target.get("name", "unknown")
-
-    log_path = resolve_log_path(task_dir)
-    if not log_path or not os.path.exists(log_path):
-        print(f"  No log file found for '{task_name}'")
-        return
-
-    # ── Print header ──
-    print(f"\n  {_BOLD}── {task_name} ──{_RESET}  (Ctrl+C to exit)\n")
-
-    # ── Phase 1: dump existing file content (historical) ──
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-            if content:
-                sys.stdout.write(content)
-                sys.stdout.flush()
-    except Exception:
-        pass
-
-    # ── Phase 2: subscribe to log_emitter for real-time chunks ──
-    log_queue: _queue.Queue = _queue.Queue()
-    _DONE = object()  # sentinel
-
-    def _on_chunk(chunk: str):
-        log_queue.put(chunk)
-
-    log_emitter.subscribe(task_name, _on_chunk)
-
-    try:
-        while True:
-            # Drain all available chunks without blocking
-            try:
-                while True:
-                    chunk = log_queue.get(timeout=0.2)
-                    if chunk is _DONE:
-                        raise StopIteration
-                    # log_emitter sends \r\n for xterm; convert back for terminal
-                    sys.stdout.write(chunk.replace('\r\n', '\n'))
-                    sys.stdout.flush()
-            except _queue.Empty:
-                pass
-            except StopIteration:
-                break
-
-            # Check if the task is still running
-            tm.refresh_from_disk(task_ids=[task_name])
-            found = None
-            for t in tm.tasks:
-                if t and t.get("name") == task_name:
-                    found = t
-                    break
-            if found and found.get("status") not in ("running", "queued"):
-                # Drain any remaining chunks
-                while not log_queue.empty():
-                    chunk = log_queue.get_nowait()
-                    sys.stdout.write(chunk.replace('\r\n', '\n'))
-                    sys.stdout.flush()
-                status = found.get("status", "unknown")
-                style = _STATUS_STYLES.get(status, "")
-                print(f"\n\n  {_colored(f'Task {status}', style)}\n")
-                break
-    except KeyboardInterrupt:
-        print(f"\n\n  {_DIM}Detached from {task_name}{_RESET}\n")
-    finally:
-        log_emitter.unsubscribe(task_name, _on_chunk)
-
-
-
-def cmd_fg(tm, args: List[str] = None) -> None:
-    """``fg <name|index>`` — tail a task's log file inline (Ctrl+C to exit)."""
+    """``fg <name|index>`` 鈥?tail a task's log file inline (Ctrl+C to exit)."""
     import queue as _queue
     import time
     from pyruns.utils.events import log_emitter
@@ -408,7 +345,7 @@ def cmd_fg(tm, args: List[str] = None) -> None:
     from pyruns._config import RUN_LOGS_DIR
     target_log = os.path.join(task_dir, RUN_LOGS_DIR, f"run{run_idx}.log")
 
-    print(f"\n  {_BOLD}── {task_name} ──{_RESET}  (Ctrl+C to exit)\n")
+    print(f"\n  {_BOLD}鈹€鈹€ {task_name} 鈹€鈹€{_RESET}  (Ctrl+C to exit)\n")
 
     # Wait up to 1s for the file to be created if it's currently queued
     for _ in range(10):
@@ -465,7 +402,7 @@ def cmd_fg(tm, args: List[str] = None) -> None:
 
 
 def cmd_log(tm, args: List[str] = None) -> None:
-    """``log <name|index>`` — view log files in alt-screen viewer."""
+    """``log <name|index>`` 鈥?view log files in alt-screen viewer."""
     if not args:
         print("  Usage: log <name|index>")
         return
@@ -480,7 +417,7 @@ def cmd_log(tm, args: List[str] = None) -> None:
 
 
 def cmd_open(tm, args: List[str] = None) -> None:
-    """``open <name|index> [config|task]`` — open a task's config.yaml or task_info.json in the editor."""
+    """``open <name|index> [config|task]`` 鈥?open a task's config.yaml or task_info.json in the editor."""
     if not args:
         print("  Usage: open <name|index> [config|task]")
         return
@@ -517,7 +454,7 @@ def cmd_open(tm, args: List[str] = None) -> None:
 
 
 def cmd_stat(tm, args: List[str] = None) -> None:
-    """``stat`` / ``status`` — show system metrics. Use ``stat -i`` for live refresh."""
+    """``stat`` / ``status`` 鈥?show system metrics. Use ``stat -i`` for live refresh."""
     args = args or []
     interactive = "-i" in args
     
@@ -528,13 +465,13 @@ def cmd_stat(tm, args: List[str] = None) -> None:
 
 
 def cmd_info(tm, args: List[str] = None) -> None:
-    """``info`` — show current workspace info."""
+    """``info`` 鈥?show current workspace info."""
     import json
     from pyruns.cli.display import _get_terminal_width
 
     print(f"\n  {_BOLD}Workspace Info{_RESET}")
     tw = _get_terminal_width()
-    sep = f"  {'─' * (tw - 4)}"
+    sep = f"  {'鈹€' * (tw - 4)}"
     print(sep)
 
     tasks_dir = getattr(tm, 'tasks_dir', None)
@@ -578,7 +515,7 @@ def _stat_once() -> None:
     gpus = metrics.get("gpus", [])
     
     tw = _get_terminal_width()
-    sep = f"  {'─' * (tw - 4)}"
+    sep = f"  {'鈹€' * (tw - 4)}"
     
     print(f"\n  {_BOLD}System Metrics{_RESET}")
     print(sep)
@@ -622,7 +559,7 @@ def _stat_interactive() -> None:
             mem_info = _psutil.virtual_memory()
             gpus = metrics.get("gpus", [])
             tw = _get_terminal_width()
-            sep = f"  {'─' * (tw - 4)}"
+            sep = f"  {'鈹€' * (tw - 4)}"
             
             out = ["\033[2J\033[H"]
             out.append(f"\n  {_BOLD}System Metrics{_RESET}  {_DIM}(refreshing every 1s, press Ctrl+C to exit){_RESET}\n")
@@ -665,15 +602,15 @@ def _bar(percent: float, width: int = 30) -> str:
         color = "\033[33m"  # Yellow
     else:
         color = "\033[31m"  # Red
-    return f"{color}{'█' * filled}{_DIM}{'░' * empty}{_RESET}  {color}{percent:5.1f}%{_RESET}"
+    return f"{color}{'#' * filled}{_DIM}{'.' * empty}{_RESET}  {color}{percent:5.1f}%{_RESET}"
 
 
 
 
 
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 #  Command registry
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 COMMANDS = {
     "ls":       cmd_list,

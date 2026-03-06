@@ -1,0 +1,7 @@
+name: ToyDataset
+num_samples: 1000
+num_features: 784
+num_classes: 10
+train_split: 0.8
+shuffle: true
+noise_level: 0.01

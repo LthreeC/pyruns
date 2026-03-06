@@ -1,5 +1,5 @@
-"""
-CLI entry point — ``pyr <script.py>`` or ``pyr <command>``.
+﻿"""
+CLI entry point 鈥?``pyr <script.py>`` or ``pyr <command>``.
 
 This package replaces the old single-file ``cli.py``.  The ``pyr()`` function
 is the console_scripts entry point registered in ``pyproject.toml``.
@@ -17,10 +17,10 @@ from pyruns import ensure_config_default
 from pyruns.utils import get_logger
 logger = get_logger(__name__)
 
-# ── CLI sub-command names (checked before script-path resolution) ──
+# 鈹€鈹€ CLI sub-command names (checked before script-path resolution) 鈹€鈹€
 _CLI_COMMANDS = {"cli", "ls", "list", "gen", "generate", "run", "delete", "del", "rm", "jobs", "log", "fg"}
 
-# ─── Help text ────────────────────────────────────────────────
+# 鈹€鈹€鈹€ Help text 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 _HELP = textwrap.dedent(
     f"""
@@ -36,6 +36,7 @@ USAGE
 CLI COMMANDS
     ls [query]            List tasks (with optional filter)
     gen [template]        Generate tasks from YAML config
+    gen --args [template] Generate tasks in args mode (args: "...")
     run <name|#>          Run task(s) by name or index
     delete <name|#>       Soft-delete task(s)
     jobs                  Show running/queued tasks
@@ -61,7 +62,8 @@ def _print_version():
     sys.exit(0)
 
 
-# ─── Workspace resolution ────────────────────────────────────
+
+# 鈹€鈹€鈹€ Workspace resolution 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def _resolve_workspace(script_path: str = None) -> str | None:
@@ -142,7 +144,7 @@ def _init_task_manager(workspace: str):
     return tm
 
 
-# ─── CLI command dispatch ─────────────────────────────────────
+# 鈹€鈹€鈹€ CLI command dispatch 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def _dispatch_cli(args: list) -> None:
@@ -152,13 +154,13 @@ def _dispatch_cli(args: list) -> None:
     script_path = None
     if args and len(args) > 1 and args[1].endswith('.py') and os.path.exists(args[1]):
         script_path = args[1]
-        args = [args[0]] + args[2:]  # 剥离脚本路径，保留其余命令参数
+        args = [args[0]] + args[2:]  # 鍓ョ鑴氭湰璺緞锛屼繚鐣欏叾浣欏懡浠ゅ弬鏁?
         
     if script_path:
-        # 核心：复用环境构建逻辑，让 CLI 与 UI 行动完全一致
+        # 鏍稿績锛氬鐢ㄧ幆澧冩瀯寤洪€昏緫锛岃 CLI 涓?UI 琛屽姩瀹屽叏涓€鑷?
         workspace = _setup_env(script_path)
     else:
-        # 仅当未指定特定脚本时，尝试自动推断当前工作区
+        # 浠呭綋鏈寚瀹氱壒瀹氳剼鏈椂锛屽皾璇曡嚜鍔ㄦ帹鏂綋鍓嶅伐浣滃尯
         workspace = _resolve_workspace()
 
     logger.debug(f"workspace={workspace}")
@@ -186,17 +188,17 @@ def _dispatch_cli(args: list) -> None:
             sys.exit(1)
 
 
-# ─── Main entry ───────────────────────────────────────────────
+# 鈹€鈹€鈹€ Main entry 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def pyr():
-    """``pyr`` — main console_scripts entry point."""
+    """``pyr`` 鈥?main console_scripts entry point."""
 
-    if len(sys.argv) < 2:
-        # Implicit UI mode without arguments
-        sys.argv.insert(1, "ui")
+    argv = list(sys.argv[1:])
+    if not argv:
+        argv = ["ui"]
 
-    arg = sys.argv[1]
+    arg = argv[0]
 
     # Help / version flags
     if arg in ("help", "-h", "--help"):
@@ -204,26 +206,26 @@ def pyr():
     if arg in ("version", "-v", "--version"):
         _print_version()
 
-    # ── Dev mode: pyr dev <script.py> [custom.yaml] ──
+    # 鈹€鈹€ Dev mode: pyr dev <script.py> [custom.yaml] 鈹€鈹€
     if arg == "dev":
-        if len(sys.argv) < 3:
+        if len(argv) < 2:
             print("Usage: pyr dev <script.py> [custom_config.yaml]")
             sys.exit(1)
-        script_arg = sys.argv[2]
-        custom_yaml = sys.argv[3] if len(sys.argv) > 3 else None
+        script_arg = argv[1]
+        custom_yaml = argv[2] if len(argv) > 2 else None
         _launch_dev(script_arg, custom_yaml)
         return
 
-    # ── CLI commands ──
+    # 鈹€鈹€ CLI commands 鈹€鈹€
     if arg.lower() in _CLI_COMMANDS:
-        _dispatch_cli(sys.argv[1:])
+        _dispatch_cli(argv)
         return
 
-    # ── UI Mode (explicit `ui` or implicit `<script.py>`) ──
+    # 鈹€鈹€ UI Mode (explicit `ui` or implicit `<script.py>`) 鈹€鈹€
     if arg == "ui":
-        if len(sys.argv) > 2:
-            filepath = sys.argv[2]
-            custom_yaml = sys.argv[3] if len(sys.argv) > 3 else None
+        if len(argv) > 1:
+            filepath = argv[1]
+            custom_yaml = argv[2] if len(argv) > 2 else None
         else:
             # Auto-detect latest script
             ws = _resolve_workspace()
@@ -256,7 +258,7 @@ def pyr():
     else:
         # Implicit UI mode: pyr <script.py>
         filepath = arg
-        custom_yaml = sys.argv[2] if len(sys.argv) > 2 else None
+        custom_yaml = argv[1] if len(argv) > 1 else None
 
     filepath = os.path.abspath(filepath).replace("\\", "/")
 
@@ -271,7 +273,7 @@ def pyr():
     try:
         _setup_env(filepath, custom_yaml)
 
-        # ── Launch UI ──
+        # 鈹€鈹€ Launch UI 鈹€鈹€
         sys.argv = [sys.argv[0]]
         from pyruns.ui.app import main
 
@@ -284,7 +286,7 @@ def pyr():
         sys.exit(1)
 
 
-# ─── Environment setup (shared with dev mode) ────────────────
+# 鈹€鈹€鈹€ Environment setup (shared with dev mode) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def _setup_env(filepath: str, custom_yaml: str = None) -> str:
@@ -324,6 +326,8 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
 
     config_default_path = os.path.join(script_dir, CONFIG_DEFAULT_FILENAME)
 
+    mode, _ = detect_config_source_fast(filepath)
+
     if custom_yaml:
         yaml_path = resolve_config_path(custom_yaml, file_dir)
         if yaml_path and os.path.exists(yaml_path):
@@ -334,13 +338,9 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
             print(f"Error: Custom config '{custom_yaml}' not found.")
             sys.exit(1)
     else:
-        # ── Detect config source ──
-        mode, extra = detect_config_source_fast(filepath)
-
         if mode == "argparse":
             params = extract_argparse_params(filepath)
             generate_config_file(script_dir, filepath, params)
-
         elif mode == "pyruns_load":
             if not os.path.exists(config_default_path):
                 print(f"\033[91mError: Missing default config file for {script_base}.py\033[0m")
@@ -349,11 +349,11 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
                 print(f"  2. Provide a yaml via CLI: `pyr {script_base}.py settings.yaml`")
                 sys.exit(1)
 
-        if mode != "pyruns_load":
-            # Other modes like argparse/unknown can safely initialize default blanks
+        if mode == "argparse":
+            # argparse mode always has a generated config_default.yaml
             ensure_config_default(script_dir)
 
-    # ── Set environment ──
+    # 鈹€鈹€ Set environment 鈹€鈹€
     os.environ[ENV_KEY_ROOT] = script_dir
     return script_dir
 
@@ -368,10 +368,11 @@ def _launch_dev(script_arg: str, custom_yaml: str = None):
         sys.exit(1)
 
     _setup_env(filepath, custom_yaml)
-    print("[pyruns dev] Hot-reload enabled — editing .py files will auto-restart")
+    print("[pyruns dev] Hot-reload enabled 鈥?editing .py files will auto-restart")
     print(f"[pyruns dev] Script: {filepath}")
     _sp.run([sys.executable, "-m", "pyruns.ui.app"])
 
 
 if __name__ == "__main__":
     pyr()
+

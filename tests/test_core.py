@@ -271,6 +271,30 @@ def test_build_command_non_argparse(mock_detect):
     assert cmd[1] == "train.py"
 
 
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+def test_build_command_args_mode(mock_detect):
+    mock_detect.return_value = ("hydra", None)
+    script_path = "train.py"
+    config = {
+        "run_script": "python -m demo.train",
+        "args": "model=vit \\\n dataset=imagenet \\\n train.epochs=300",
+    }
+    cmd, wd = _build_command(None, script_path, None, config, run_mode="args")
+    assert cmd[0] == "python"
+    assert cmd[1] == "-m"
+    assert cmd[2] == "demo.train"
+    assert "model=vit" in cmd
+    assert "dataset=imagenet" in cmd
+    assert "train.epochs=300" in cmd
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+def test_build_command_hydra_requires_args(mock_detect):
+    mock_detect.return_value = ("hydra", None)
+    with pytest.raises(RuntimeError):
+        _build_command(None, "train.py", None, {"args": ""}, run_mode="config")
+
+
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
@@ -544,6 +568,19 @@ class TestTaskGeneratorCreateTask:
 
         folder = os.path.basename(task["dir"])
         assert folder.startswith("task_")
+
+    def test_run_mode_written_per_task(self, tmp_path):
+        gen = TaskGenerator(root_dir=str(tmp_path))
+        task_cfg = gen.create_task("cfg-task", {"x": 1}, run_mode="config")
+        task_args = gen.create_task("args-task", {"args": "model=vit"}, run_mode="args")
+
+        with open(os.path.join(task_cfg["dir"], "task_info.json"), "r", encoding="utf-8") as f:
+            info_cfg = json.load(f)
+        with open(os.path.join(task_args["dir"], "task_info.json"), "r", encoding="utf-8") as f:
+            info_args = json.load(f)
+
+        assert info_cfg["run_mode"] == "config"
+        assert info_args["run_mode"] == "args"
 
 
 # ═══════════════════════════════════════════════════════════════

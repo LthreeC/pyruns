@@ -24,6 +24,19 @@ from pyruns.ui.theme import (
     GENERATOR_HEADER_CLASSES, GENERATOR_WORKSPACE_CLASSES,
     GENERATOR_LEFT_COL_CLASSES, GENERATOR_RIGHT_COL_CLASSES,
     GENERATOR_TOOLBAR_CLASSES, GENERATOR_SETTINGS_CARD_CLASSES,
+    GENERATOR_TEMPLATE_SELECT_CLASSES, GENERATOR_LOCK_ROW_CLASSES,
+    GENERATOR_TOOLBAR_SIDE_CLASSES, GENERATOR_VIEW_TOGGLE_WRAP_CLASSES,
+    GENERATOR_SETTINGS_TITLE_CLASSES, GENERATOR_TASK_NAME_INPUT_CLASSES,
+    GENERATOR_TIMESTAMP_CHECKBOX_CLASSES, GENERATOR_FORM_SCROLL_CLASSES,
+    GENERATOR_FORM_SCROLL_STYLE, GENERATOR_FORM_ROOT_CLASSES,
+    GENERATOR_WARNING_ROW_CLASSES, GENERATOR_WARNING_ICON_CLASSES,
+    GENERATOR_WARNING_TEXT_CLASSES, GENERATOR_YAML_EDITOR_CLASSES,
+    GENERATOR_YAML_EDITOR_STYLE, GENERATOR_ARGS_CONTAINER_CLASSES,
+    GENERATOR_ARGS_HEADER_ROW_CLASSES, GENERATOR_ARGS_TITLE_CLASSES,
+    GENERATOR_ARGS_BADGE_CLASSES, GENERATOR_ARGS_EXPANSION_CLASSES,
+    GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES, GENERATOR_ARGS_TEXTAREA_CLASSES,
+    GENERATOR_ARGS_TEXTAREA_STYLE, GENERATOR_GENERATE_BTN_CLASSES,
+    GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES, GENERATOR_INACTIVE_TOGGLE_BTN_CLASSES,
     EMPTY_STATE_COL_CLASSES, EMPTY_STATE_ICON_SIZE,
     EMPTY_STATE_ICON_CLASSES, EMPTY_STATE_TEXT_CLASSES,
     BATCH_HINT_BOX_CLASSES, BATCH_HINT_TITLE_CLASSES,
@@ -31,6 +44,9 @@ from pyruns.ui.theme import (
     COMPACT_SELECT_CLASSES, TEXT_HEADING_SM
 )
 from pyruns.ui.widgets import dir_picker, _ensure_css
+from pyruns._config import (
+    DEFAULT_GENERATOR_MODE, DEFAULT_GENERATOR_FORM_COLUMNS, DEFAULT_GENERATOR_AUTO_TIMESTAMP,
+)
 
 logger = get_logger(__name__)
 
@@ -46,10 +62,28 @@ def render_generator_page(
 
     # ── Per-session view state (column count from settings) ──
     from pyruns.utils.settings import get as _get_setting
-    view_mode = {"current": "form"}
-    form_cols = {"n": int(_get_setting("generator_form_columns", 2))}
+    script_info = load_script_info(str(state.get("run_root", "")).replace("\\", "/"))
+    script_path = script_info.get("script_path", "")
+    script_mode = "unknown"
+    if script_path and os.path.exists(script_path):
+        try:
+            from pyruns.utils.parse_utils import detect_config_source_fast
+            script_mode, _ = detect_config_source_fast(script_path)
+        except Exception:
+            script_mode = "unknown"
+
+    saved_mode = str(_get_setting("generate_mode", DEFAULT_GENERATOR_MODE) or DEFAULT_GENERATOR_MODE).lower()
+    initial_mode = saved_mode if saved_mode in ("form", "yaml", "args") else "form"
+
+    view_mode = {"current": initial_mode}
+    form_cols = {"n": int(_get_setting("generator_form_columns", DEFAULT_GENERATOR_FORM_COLUMNS))}
     yaml_holder = {"text": ""}
+    args_holder = {"text": ""}
+    run_script_holder = {"text": ""}
     expansions_ref: list = []
+    config_default_exists = os.path.exists(
+        os.path.join(str(state.get("run_root", "")).replace("\\", "/"), "config_default.yaml")
+    )
 
     # ══════════════════════════════════════════════════════════
     #  Row 1 — Config loading bar
@@ -69,10 +103,10 @@ def render_generator_page(
 
         file_select = ui.select(
             [], label="Template"
-        ).props(INPUT_PROPS).classes("w-64")
+        ).props(INPUT_PROPS).classes(GENERATOR_TEMPLATE_SELECT_CLASSES)
 
         # Read-only indicator for config_default.yaml
-        with ui.row().classes("items-center gap-1"):
+        with ui.row().classes(GENERATOR_LOCK_ROW_CLASSES):
             from pyruns._config import CONFIG_DEFAULT_FILENAME
             tpl_lock = ui.icon("lock", size="16px").classes("text-slate-300")
             tpl_lock.tooltip(
@@ -109,6 +143,12 @@ def render_generator_page(
                 state["config_data"] = config_data
                 state["config_path"] = path
                 yaml_holder["text"] = _dict_to_yaml(config_data)
+                if _is_args_only_config(config_data):
+                    args_holder["text"] = str(config_data.get("args", "") or "")
+                    run_script_holder["text"] = str(config_data.get("run_script", "") or _default_run_script(script_path))
+                    view_mode["current"] = "args"
+                elif view_mode["current"] == "args":
+                    view_mode["current"] = "form"
                 logger.debug("Loaded template: %s", val)
                 try:
                     if client_connected():
@@ -151,6 +191,14 @@ def render_generator_page(
         if not file_select.options:
             refresh_files()
 
+        if script_mode in ("hydra", "unknown") and not config_default_exists:
+            ui.notify(
+                "No config_default.yaml detected for this script; Args mode is the default.",
+                type="info",
+                icon="info",
+                timeout=3500,
+            )
+
         # ── Listen for run_root changes from other pages ──
         from pyruns.utils.events import event_sys
 
@@ -187,27 +235,45 @@ def render_generator_page(
                     on_file_select_change()
                     config_data = state.get("config_data")
 
-                if not config_data:
-                    _empty_editor_placeholder()
-                    return
-
                 _editor_toolbar(
                     view_mode, form_cols, expansions_ref,
-                    state, yaml_holder, editor_area,
+                    state, yaml_holder, args_holder, run_script_holder, editor_area,
                 )
+
+                if not config_data and view_mode["current"] in ("form", "yaml"):
+                    _empty_editor_placeholder(
+                        mode=view_mode["current"],
+                        need_default_hint=(not config_default_exists),
+                    )
+                    return
+
+                if view_mode["current"] in ("form", "yaml") and script_mode in ("hydra", "unknown"):
+                    with ui.row().classes(
+                        GENERATOR_WARNING_ROW_CLASSES
+                    ):
+                        ui.icon("warning", size="16px").classes(GENERATOR_WARNING_ICON_CLASSES)
+                        msg = (
+                            "This script looks like Hydra/unknown parser. "
+                            "Config mode may not match runtime behavior. Prefer Args mode."
+                        )
+                        if not config_default_exists:
+                            msg += " No config_default.yaml found; defaulting to Args mode is recommended."
+                        ui.label(msg).classes(GENERATOR_WARNING_TEXT_CLASSES)
 
                 if view_mode["current"] == "form":
                     expansions_ref.clear()
-                    with ui.column().classes("w-full overflow-y-auto flex-grow gap-0").style("min-height: 0;"):
+                    with ui.column().classes(GENERATOR_FORM_SCROLL_CLASSES).style(GENERATOR_FORM_SCROLL_STYLE):
                         recursive_param_editor(
-                            ui.column().classes("w-full gap-0 p-0 m-0"),
+                            ui.column().classes(GENERATOR_FORM_ROOT_CLASSES),
                             config_data, state, task_manager,
                             columns=form_cols["n"],
                             expansions=expansions_ref,
                             on_pin_toggle=lambda: editor_area.refresh(),
                         )
-                else:
+                elif view_mode["current"] == "yaml":
                     _render_yaml_view(yaml_holder)
+                else:
+                    _render_args_view(args_holder, run_script_holder, script_path)
 
             editor_area()
             _editor_area_ref[0] = editor_area
@@ -215,7 +281,8 @@ def render_generator_page(
         # ── RIGHT: Settings & generate button ──
         with ui.column().classes(GENERATOR_RIGHT_COL_CLASSES):
             _settings_panel(
-                state, view_mode, yaml_holder,
+                state, view_mode, yaml_holder, args_holder,
+                run_script_holder, script_path,
                 task_generator, task_manager,
                 refresh_files
             )
@@ -228,16 +295,16 @@ def render_generator_page(
 
 def _editor_toolbar(
     view_mode, form_cols, expansions_ref,
-    state, yaml_holder, editor_area,
+    state, yaml_holder, args_holder, run_script_holder, editor_area,
 ) -> None:
     with ui.row().classes(GENERATOR_TOOLBAR_CLASSES):
-        with ui.row().classes("items-center gap-2"):
+        with ui.row().classes(GENERATOR_TOOLBAR_SIDE_CLASSES):
             ui.icon("tune", size="20px").classes("text-indigo-500")
             ui.label("Parameters").classes(
                 TEXT_HEADING_SM
             )
 
-        with ui.row().classes("items-center gap-2"):
+        with ui.row().classes(GENERATOR_TOOLBAR_SIDE_CLASSES):
             if view_mode["current"] == "form":
                 ui.button(
                     icon="unfold_more",
@@ -266,21 +333,26 @@ def _editor_toolbar(
                     lambda e: _set_cols(e.value, form_cols, editor_area)
                 )
 
-            with ui.row().classes(
-                "items-center gap-1 bg-slate-100 p-1"
-            ):
+            with ui.row().classes(GENERATOR_VIEW_TOGGLE_WRAP_CLASSES):
                 _toggle_btn(
                     "Form", "view_list",
                     view_mode["current"] == "form",
                     lambda: _switch_view(
-                        "form", state, yaml_holder, view_mode, editor_area
+                        "form", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
                     ),
                 )
                 _toggle_btn(
                     "YAML", "code",
                     view_mode["current"] == "yaml",
                     lambda: _switch_view(
-                        "yaml", state, yaml_holder, view_mode, editor_area
+                        "yaml", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
+                    ),
+                )
+                _toggle_btn(
+                    "Args", "terminal",
+                    view_mode["current"] == "args",
+                    lambda: _switch_view(
+                        "args", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
                     ),
                 )
 
@@ -290,26 +362,27 @@ def _editor_toolbar(
 # ═══════════════════════════════════════════════════════════
 
 
-def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager, refresh_files):
+def _settings_panel(
+    state, view_mode, yaml_holder, args_holder, run_script_holder, script_path,
+    task_generator, task_manager, refresh_files
+):
     from pyruns.utils.settings import get as _get_ws_setting, save_setting
 
     with ui.card().classes(GENERATOR_SETTINGS_CARD_CLASSES):
-        ui.label("Generation Settings").classes(
-            "text-sm font-bold mb-2 text-slate-800"
-        )
+        ui.label("Generation Settings").classes(GENERATOR_SETTINGS_TITLE_CLASSES)
 
         ui.input(
             value=state["task_name_input"],
             placeholder="task",
             label="Task Name (= Folder Name)",
-        ).props(INPUT_PROPS).classes("w-full mb-1").on_value_change(
+        ).props(INPUT_PROPS).classes(GENERATOR_TASK_NAME_INPUT_CLASSES).on_value_change(
             lambda e: state.update({"task_name_input": e.value})
         )
 
         use_ts_chk = ui.checkbox(
             "Append timestamp suffix to task name",
-            value=bool(_get_ws_setting("generator_auto_timestamp", True)),
-        ).props("dense color=indigo").classes("text-xs text-slate-500 mb-3")
+            value=bool(_get_ws_setting("generator_auto_timestamp", DEFAULT_GENERATOR_AUTO_TIMESTAMP)),
+        ).props("dense color=indigo").classes(GENERATOR_TIMESTAMP_CHECKBOX_CLASSES)
         use_ts_chk.on_value_change(lambda e: save_setting("generator_auto_timestamp", bool(e.value)))
 
         _batch_syntax_hint()
@@ -320,9 +393,16 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                 if not _sync_yaml_to_config(yaml_holder["text"], state):
                     return
 
-            target_config = state.get("config_data") or {}
-            if not state.get("config_data"):
-                ui.notify("No config loaded, running with empty configuration.", type="info")
+            run_mode = "args" if view_mode["current"] == "args" else "config"
+            if run_mode == "args":
+                target_config = {
+                    "run_script": str(run_script_holder.get("text", "") or _default_run_script(script_path)),
+                    "args": str(args_holder.get("text", "") or ""),
+                }
+            else:
+                target_config = state.get("config_data") or {}
+                if not state.get("config_data"):
+                    ui.notify("No config loaded, running with empty configuration.", type="info")
 
             prefix = state["task_name_input"].strip()
             if not prefix:
@@ -348,7 +428,12 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                 return
 
             # --- Type Checking against Original Template ---
-            if state.get("config_path") and os.path.exists(state["config_path"]) and target_config:
+            if (
+                run_mode == "config"
+                and state.get("config_path")
+                and os.path.exists(state["config_path"])
+                and target_config
+            ):
                 from pyruns.utils.config_utils import load_yaml, validate_config_types_against_template
                 try:
                     orig_config = load_yaml(state["config_path"])
@@ -363,7 +448,9 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
             if len(configs) == 1:
                 try:
                     from nicegui import run
-                    tasks = await run.io_bound(task_generator.create_tasks, configs, prefix)
+                    tasks = await run.io_bound(
+                        task_generator.create_tasks, configs, prefix, run_mode
+                    )
                     task_manager.add_tasks(tasks)
                     logger.info("Generated %d task(s) with prefix '%s'", len(configs), prefix)
                     ui.notify(
@@ -391,6 +478,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                 show_batch_confirm(
                     configs, prefix, target_config,
                     task_generator, task_manager,
+                    run_mode=run_mode,
                     on_success=on_batch_success
                 )
 
@@ -398,7 +486,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
         ui.button(
             "GENERATE", on_click=handle_generate,
         ).props("unelevated icon=rocket_launch").classes(
-            f"{BTN_PRIMARY} w-full text-sm font-bold py-2 tracking-wide rounded"
+            f"{BTN_PRIMARY} {GENERATOR_GENERATE_BTN_CLASSES}"
         )
 
         ui.label(
@@ -424,30 +512,43 @@ def _toggle_btn(label: str, icon: str, active: bool, on_click) -> None:
         ui.button(label, icon=icon, on_click=on_click).props(
             "unelevated no-caps size=md"
         ).classes(
-            f"{BTN_PRIMARY} px-5 py-1.5 font-bold text-sm tracking-wide rounded"
+            f"{BTN_PRIMARY} {GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES}"
         )
     else:
         ui.button(label, icon=icon, on_click=on_click).props(
             "flat no-caps size=md"
         ).classes(
-            "text-slate-500 font-medium px-5 py-1.5 text-sm "
-            "hover:text-indigo-600 hover:bg-indigo-50/50"
+            GENERATOR_INACTIVE_TOGGLE_BTN_CLASSES
         )
 
 
-def _switch_view(target, state, yaml_holder, view_mode, editor_area) -> None:
+def _switch_view(target, state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area) -> None:
     if view_mode["current"] == target:
         return
-    if target == "yaml":
-        yaml_holder["text"] = _dict_to_yaml(state.get("config_data", {}))
-    else:
+    current = view_mode["current"]
+    if current == "yaml":
         try:
             parsed = yaml.safe_load(yaml_holder["text"])
             if isinstance(parsed, dict):
                 state["config_data"] = parsed
         except yaml.YAMLError:
             pass
+    elif current == "args":
+        args_holder["text"] = str(args_holder.get("text", "") or "")
+
+    if target == "yaml":
+        yaml_holder["text"] = _dict_to_yaml(state.get("config_data", {}))
+    elif target == "args":
+        cfg = state.get("config_data") or {}
+        if _is_args_only_config(cfg):
+            args_holder["text"] = str(cfg.get("args", "") or "")
+            run_script_holder["text"] = str(cfg.get("run_script", "") or "")
     view_mode["current"] = target
+    try:
+        from pyruns.utils.settings import save_setting
+        save_setting("generate_mode", target)
+    except Exception:
+        pass
     editor_area.refresh()
 
 
@@ -459,6 +560,20 @@ def _dict_to_yaml(data: Dict[str, Any]) -> str:
         clean, default_flow_style=False,
         allow_unicode=True, sort_keys=False,
     )
+
+
+def _default_run_script(script_path: str) -> str:
+    if script_path:
+        # Quote path if needed; value is later tokenized via split_cli_args.
+        return f'python "{script_path}"'
+    return "python"
+
+
+def _is_args_only_config(data: Dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return False
+    keys = [k for k in data.keys() if not str(k).startswith("_meta")]
+    return set(keys).issubset({"args", "run_script"})
 
 
 def _sync_yaml_to_config(
@@ -494,16 +609,54 @@ def _render_yaml_view(yaml_holder: dict) -> None:
     cm = ui.codemirror(
         value=yaml_holder["text"],
         language="YAML", theme="vscodeDark", line_wrapping=True,
-    ).classes("w-full overflow-hidden").style(
-        "height: calc(100vh - 260px); min-height: 400px;"
-    )
+    ).classes(GENERATOR_YAML_EDITOR_CLASSES).style(GENERATOR_YAML_EDITOR_STYLE)
     cm.on_value_change(lambda e: yaml_holder.update({"text": e.value}))
 
 
-def _empty_editor_placeholder() -> None:
+def _render_args_view(args_holder: dict, run_script_holder: dict, script_path: str) -> None:
+    with ui.column().classes(GENERATOR_ARGS_CONTAINER_CLASSES):
+        with ui.row().classes(GENERATOR_ARGS_HEADER_ROW_CLASSES):
+            ui.icon("terminal", size="18px").classes("text-emerald-600")
+            ui.label("Args Mode").classes(GENERATOR_ARGS_TITLE_CLASSES)
+            ui.badge("run as: <run_script> <args>").props(
+                "color=emerald-1 text-color=emerald-8"
+            ).classes(GENERATOR_ARGS_BADGE_CLASSES)
+
+        with ui.expansion("Run Script (Advanced)", icon="settings", value=False).classes(
+            GENERATOR_ARGS_EXPANSION_CLASSES
+        ):
+            ui.input(
+                value=str(run_script_holder.get("text", "") or _default_run_script(script_path)),
+                label="run_script",
+                placeholder='python "path/to/train.py"  or  python -m package.module',
+            ).props("outlined dense").classes(GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES).on_value_change(
+                lambda e: run_script_holder.update({"text": e.value})
+            )
+
+        ui.textarea(
+            value=str(args_holder.get("text", "") or ""),
+            placeholder=(
+                "args here"
+            ),
+        ).props(
+            "outlined autogrow input-style='font-family:Consolas,Monaco,monospace;line-height:1.5;'"
+        ).classes(
+            GENERATOR_ARGS_TEXTAREA_CLASSES
+        ).style(GENERATOR_ARGS_TEXTAREA_STYLE).on_value_change(
+            lambda e: args_holder.update({"text": e.value})
+        )
+
+
+def _empty_editor_placeholder(mode: str = "form", need_default_hint: bool = False) -> None:
     with ui.column().classes(EMPTY_STATE_COL_CLASSES):
         ui.icon("description", size=EMPTY_STATE_ICON_SIZE).classes(EMPTY_STATE_ICON_CLASSES)
-        ui.label("No config loaded").classes(EMPTY_STATE_TEXT_CLASSES)
+        if mode == "yaml":
+            text = "YAML mode is empty. Load or create config_default.yaml first."
+        else:
+            text = "Form mode is empty. Load or create config_default.yaml first."
+        if need_default_hint:
+            text += " (config_default.yaml not found)"
+        ui.label(text).classes(EMPTY_STATE_TEXT_CLASSES)
 
 
 def _batch_syntax_hint() -> None:

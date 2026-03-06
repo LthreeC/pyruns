@@ -65,6 +65,13 @@
   margin: 0;
 }
 
+/* Keep scrollbar visible while reserving a configurable right text gutter. */
+.monitor-xterm .xterm-viewport {
+  padding-right: var(--monitor-xterm-gutter, 24px) !important;
+  margin-right: 0px !important;
+  box-sizing: content-box !important;
+}
+
 /* ── Monitor: task list item ── */
 .monitor-task-item {
   cursor: pointer;

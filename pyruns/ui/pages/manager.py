@@ -30,6 +30,7 @@ from pyruns.ui.components.task_dialog import build_task_dialog
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
 from pyruns.utils import get_logger
 from pyruns.utils import client_connected
+from pyruns._config import DEFAULT_UI_PAGE_SIZE
 
 logger = get_logger(__name__)
 
@@ -40,7 +41,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     from pyruns.utils.settings import get as _get_setting
 
     # Maximum cards rendered per page (0 = show all)
-    _PAGE_SIZE: int = int(_get_setting("ui_page_size", 50)) or 0
+    _PAGE_SIZE: int = int(_get_setting("ui_page_size", DEFAULT_UI_PAGE_SIZE)) or 0
 
     selected = {"task": None, "tab": "task_info"}
     build_task_dialog(selected, task_manager)

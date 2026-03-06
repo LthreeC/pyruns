@@ -52,7 +52,15 @@ def test_detect_config_source_fast(tmp_path):
     p_arg.write_text("import argparse\nparser.add_argument('--lr', type=float, default=0.01)\n", encoding="utf-8")
     assert detect_config_source_fast(str(p_arg)) == ("argparse", None)
 
-    # 3. unknown
+    # 3. hydra
+    p_hydra = tmp_path / "hydra_demo.py"
+    p_hydra.write_text(
+        "import hydra\n@hydra.main(version_base=None, config_path='conf', config_name='config')\ndef main(cfg):\n    pass\n",
+        encoding="utf-8",
+    )
+    assert detect_config_source_fast(str(p_hydra)) == ("hydra", None)
+
+    # 4. unknown
     p_unk = tmp_path / "unk.py"
     p_unk.write_text("print('hello world')", encoding="utf-8")
     assert detect_config_source_fast(str(p_unk)) == ("unknown", None)
@@ -331,23 +339,23 @@ def test_task_sort_key():
         "start_times": ["2023-10-01", "2023-10-05"],
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task1) == (10, "2023-10-05")  # default status is pending (10), ts is string
+    assert task_sort_key(task1) == (0, 20231005, 1)
 
     # Priority 2: created_at, if start_times is empty or missing
     task2 = {
         "start_times": [],
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task2) == (10, "2023-10-02")
+    assert task_sort_key(task2) == (0, 20231002, 1)
 
     task3 = {
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task3) == (10, "2023-10-02")
+    assert task_sort_key(task3) == (0, 20231002, 1)
 
     # Default: empty string if neither are present
     task4 = {}
-    assert task_sort_key(task4) == (10, "")
+    assert task_sort_key(task4) == (0, 0, 1)
 
     # Bad data type fallback
     task5 = {
@@ -355,7 +363,7 @@ def test_task_sort_key():
         "created_at": "2023-10-02"
     }
     # It checks isinstance(list), so it should fallback to created_at
-    assert task_sort_key(task5) == (10, "2023-10-02")
+    assert task_sort_key(task5) == (0, 20231002, 1)
     
     # Priority Top: Running/Queued tasks return inverted int
     task6 = {
@@ -363,13 +371,13 @@ def test_task_sort_key():
         "start_times": ["2023-10-06"],
         "created_at": "2023-10-02"
     }
-    assert task_sort_key(task6) == (50, -20231006)
+    assert task_sort_key(task6) == (1, 20231006, 0)
     
     task7 = {
         "status": "completed",
         "start_times": ["2023-10-07"]
     }
-    assert task_sort_key(task7) == (20, "2023-10-07")
+    assert task_sort_key(task7) == (0, 20231007, 2)
 
 
 # ═══════════════════════════════════════════════════════════════

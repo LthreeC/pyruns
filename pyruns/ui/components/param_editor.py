@@ -225,6 +225,13 @@ def _param_cell(
                 "w-full font-mono text-xs text-blue-700 param-input"
             )
         else:
-            ui.input(value=str(value), on_change=on_change).props(_TINY).classes(
-                "w-full font-mono text-xs text-slate-700 param-input"
-            )
+            if key == "args":
+                ui.textarea(value=str(value), on_change=on_change).props(
+                    "outlined dense autogrow bg-white hide-bottom-space"
+                ).classes(
+                    "w-full font-mono text-xs text-slate-700 param-input"
+                ).style("min-height:96px")
+            else:
+                ui.input(value=str(value), on_change=on_change).props(_TINY).classes(
+                    "w-full font-mono text-xs text-slate-700 param-input"
+                )

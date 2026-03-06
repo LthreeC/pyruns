@@ -44,6 +44,7 @@ class TaskGenerator:
         name_prefix: str,
         config: Dict[str, Any],
         group_index: str = "",
+        run_mode: str = "config",
     ) -> Dict[str, Any]:
         ts = get_now_str()
 
@@ -100,6 +101,8 @@ class TaskGenerator:
                     logger.warning("Could not resolve script path from script_info.json: %s", sp)
             except Exception as e:
                 logger.warning("Failed to read script_info.json: %s", e)
+        mode = str(run_mode or "config").strip().lower()
+        info["run_mode"] = mode
         # Array fields at the end
         info["start_times"] = []
         info["finish_times"] = []
@@ -122,12 +125,13 @@ class TaskGenerator:
         self,
         configs: List[Dict[str, Any]],
         name_prefix: str,
+        run_mode: str = "config",
     ) -> List[Dict[str, Any]]:
         """Create multiple tasks from a list of configs, adding group indices when > 1."""
         tasks: List[Dict[str, Any]] = []
         total = len(configs)
         for idx, cfg in enumerate(configs):
             group_index = f"[{idx + 1}-of-{total}]" if total > 1 else ""
-            tasks.append(self.create_task(name_prefix, cfg, group_index))
+            tasks.append(self.create_task(name_prefix, cfg, group_index, run_mode=run_mode))
         return tasks
 

@@ -18,6 +18,7 @@ def show_batch_confirm(
     base_config: Dict[str, Any],
     task_generator,
     task_manager,
+    run_mode: str = "config",
     on_success=None,
 ) -> None:
     """Open a dialog that summarises the batch and lets the user confirm."""
@@ -52,7 +53,9 @@ def show_batch_confirm(
                 _zip_section(zip_params)
             _total_formula(product_params, zip_params, n)
 
-        _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, on_success)
+        _dialog_footer(
+            dlg, configs, prefix, n, task_generator, task_manager, run_mode, on_success
+        )
 
     dlg.open()
 
@@ -154,7 +157,9 @@ def _total_formula(
         )
 
 
-def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, on_success=None) -> None:
+def _dialog_footer(
+    dlg, configs, prefix, n, task_generator, task_manager, run_mode="config", on_success=None
+) -> None:
     with ui.row().classes(
         "w-full justify-end gap-3 px-6 py-4 bg-slate-50 border-t border-slate-100"
     ):
@@ -167,7 +172,7 @@ def _dialog_footer(dlg, configs, prefix, n, task_generator, task_manager, on_suc
             ui.notify("Generating tasks in background...", type="info")
             try:
                 from nicegui import run
-                tasks = await run.io_bound(task_generator.create_tasks, configs, prefix)
+                tasks = await run.io_bound(task_generator.create_tasks, configs, prefix, run_mode)
                 task_manager.add_tasks(tasks)
                 ui.notify(
                     f"Generated {n} tasks: {prefix}_[1-of-{n}] ~ {prefix}_[{n}-of-{n}]",

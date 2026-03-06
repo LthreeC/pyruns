@@ -9,6 +9,7 @@ from pyruns.ui.theme import HEADER_GRADIENT
 from pyruns.ui.theme import ROW_CENTER_GAP_3, ROW_CENTER_GAP_4
 from pyruns.utils import client_connected
 from pyruns.utils.settings import get as _get_setting, save_setting
+from pyruns._config import DEFAULT_HEADER_REFRESH_INTERVAL
 
 
 def render_header(state: Dict[str, Any], metrics_sampler) -> None:
@@ -25,7 +26,7 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
 
         with ui.row().classes(ROW_CENTER_GAP_4):
             interval_state = {
-                "sec": max(1, int(_get_setting("header_refresh_interval", 3)))
+                "sec": max(1, int(_get_setting("header_refresh_interval", DEFAULT_HEADER_REFRESH_INTERVAL)))
             }
 
             @ui.refreshable

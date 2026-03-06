@@ -21,8 +21,10 @@ from pyruns.utils.settings import get as get_setting
 from pyruns.ui.theme import (
     STATUS_ICONS, STATUS_ICON_COLORS,
     PANEL_HEADER_INDIGO, PANEL_HEADER_DARK,
-    MONITOR_PANEL_WIDTH, MONITOR_WORKSPACE_CLASSES,
-    MONITOR_TERMINAL_COL_CLASSES, MONITOR_HEADER_HEIGHT_PX,
+    MONITOR_WORKSPACE_CLASSES,
+    MONITOR_TERMINAL_COL_CLASSES,
+    MONITOR_WORKSPACE_STYLE, MONITOR_SIDEBAR_STYLE, MONITOR_TERMINAL_COL_STYLE,
+    MONITOR_TERMINAL_INNER_STYLE, MONITOR_TERMINAL_STYLE, MONITOR_HEADER_ROW_CLASSES,
     MONITOR_EMPTY_COL_CLASSES, MONITOR_EMPTY_ICON_SIZE,
     MONITOR_EMPTY_ICON_CLASSES, MONITOR_EMPTY_TEXT_CLASSES,
     MONITOR_TERMINAL_INNER_CLASSES, MONITOR_TERMINAL_CLASSES,
@@ -31,6 +33,14 @@ from pyruns.ui.theme import (
     MONITOR_SIDEBAR_CLASSES, MONITOR_SIDEBAR_HEADER_CLASSES,
     MONITOR_SEARCH_ROW_CLASSES, MONITOR_LIST_COL_CLASSES,
     MONITOR_EXPORT_ROW_CLASSES, MONITOR_TASK_ROW_CLASSES,
+    MONITOR_TASKS_TITLE_CLASSES, MONITOR_REFRESH_BTN_CLASSES,
+    MONITOR_SEARCH_INPUT_CLASSES, MONITOR_SEARCH_INPUT_STYLE,
+    MONITOR_PINNED_CARD_CLASSES, MONITOR_TASK_LIST_SCROLL_CLASSES,
+    MONITOR_TASK_LIST_SCROLL_STYLE, MONITOR_EXPORT_BTN_CLASSES,
+    MONITOR_TASK_CHECKBOX_CLASSES, MONITOR_TASK_ITEM_BASE_CLASSES,
+    MONITOR_TASK_LINE1_CLASSES, MONITOR_TASK_LINE1_LEFT_CLASSES,
+    MONITOR_PIN_ICON_CLASSES, MONITOR_TASK_NAME_CLASSES,
+    MONITOR_TASK_STATUS_LABEL_CLASSES,
 )
 from pyruns.ui.widgets import _ensure_css
 from pyruns.ui.update_scheduler import ClientDebouncedUpdater
@@ -38,6 +48,10 @@ from pyruns.ui.components.export_dialog import show_export_dialog
 from pyruns.utils.events import log_emitter
 
 from pyruns.utils import get_logger, client_connected
+from pyruns._config import (
+    DEFAULT_MONITOR_SCROLLBACK, DEFAULT_MONITOR_CHUNK_SIZE,
+    DEFAULT_MONITOR_TERMINAL_GUTTER_PX, DEFAULT_UI_PAGE_SIZE,
+)
 
 logger = get_logger(__name__)
 
@@ -76,35 +90,35 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     # ═════════════════════════════════════════════════════════
     #  Two-column layout — explicit height via calc()
     # ═════════════════════════════════════════════════════════
-    with ui.row().classes(MONITOR_WORKSPACE_CLASSES).style(
-        f"height: calc(100vh - {MONITOR_HEADER_HEIGHT_PX}px); overflow: hidden;"
-    ):
+    with ui.row().classes(MONITOR_WORKSPACE_CLASSES).style(MONITOR_WORKSPACE_STYLE):
         # ── LEFT panel ──
         _build_left_panel(sel, task_manager, _get_task)
 
             # ── RIGHT panel skeleton ──
-        with ui.column().classes(MONITOR_TERMINAL_COL_CLASSES).style("height: 100%;"):
+        with ui.column().classes(MONITOR_TERMINAL_COL_CLASSES).style(MONITOR_TERMINAL_COL_STYLE):
             
             header_row = ui.row().classes(
-                f"w-full items-center gap-2 px-2 py-1.5 flex-none {PANEL_HEADER_DARK}"
+                f"{MONITOR_HEADER_ROW_CLASSES} {PANEL_HEADER_DARK}"
             )
             
             # Load settings
-            SCROLLBACK = int(get_setting("monitor_scrollback", 100000))
+            scrollback = int(get_setting("monitor_scrollback", DEFAULT_MONITOR_SCROLLBACK))
+            gutter_px = max(0, min(48, int(get_setting("monitor_terminal_gutter_px", DEFAULT_MONITOR_TERMINAL_GUTTER_PX))))
 
             # Layout fix: use standard flex flow (min-w/h=0) instead of absolute pos
             with ui.column().classes(
                 MONITOR_TERMINAL_INNER_CLASSES
-            ).style("min-height: 0; min-width: 0;"):
-                
+            ).style(MONITOR_TERMINAL_INNER_STYLE):
                 terminal = ui.xterm({
-                    'cursorBlink': True, 
-                    'scrollback': SCROLLBACK,
+                    'cursorBlink': True,
+                    'scrollback': scrollback,
                     'theme': {'background': '#1e1e1e'},
                     'disableStdin': True,      # Crucial: lets browser handle Ctrl+C
-                    'rightClickSelectsWord': True, 
+                    'rightClickSelectsWord': True,
                     'cursorInactiveStyle': 'none',
-                }).classes(MONITOR_TERMINAL_CLASSES).style("min-height: 0; min-width: 0;")
+                }).classes(f"{MONITOR_TERMINAL_CLASSES} monitor-xterm").style(
+                    f"{MONITOR_TERMINAL_STYLE}; --monitor-xterm-gutter: {gutter_px}px;"
+                )
                 
                 # Dynamically listen to dimension changes to trigger terminal re-wrap
                 ui.element('q-resize-observer').on('resize', terminal.fit)
@@ -181,7 +195,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         await asyncio.sleep(0.01)
         
         def _read_initial():
-            CHUNK_SIZE = int(get_setting("monitor_chunk_size", 50000))
+            CHUNK_SIZE = int(get_setting("monitor_chunk_size", DEFAULT_MONITOR_CHUNK_SIZE))
             file_size = os.path.getsize(log_path)
             start_offset = max(0, file_size - (CHUNK_SIZE * 2)) 
             if start_offset > 0:
@@ -357,11 +371,11 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
-    with ui.column().classes(MONITOR_SIDEBAR_CLASSES).style(f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"):
+    with ui.column().classes(MONITOR_SIDEBAR_CLASSES).style(MONITOR_SIDEBAR_STYLE):
         
         with ui.row().classes(f"{MONITOR_SIDEBAR_HEADER_CLASSES} {PANEL_HEADER_INDIGO}"):
             ui.icon("monitor_heart", size="16px", color="white")
-            ui.label("Tasks").classes("text-xs font-bold text-white")
+            ui.label("Tasks").classes(MONITOR_TASKS_TITLE_CLASSES)
             ui.space()
 
             def _manual_refresh():
@@ -370,11 +384,11 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
 
             ui.button(icon="refresh", on_click=_manual_refresh).props(
                 "flat dense round size=xs"
-            ).classes("text-white/70 hover:text-white").tooltip("Refresh List")
+            ).classes(MONITOR_REFRESH_BTN_CLASSES).tooltip("Refresh List")
 
         search_ref = {"val": ""}
         _page = {"value": 0}
-        _PAGE_SIZE = int(get_setting("ui_page_size", 50)) or 40
+        _PAGE_SIZE = int(get_setting("ui_page_size", DEFAULT_UI_PAGE_SIZE)) or DEFAULT_UI_PAGE_SIZE
 
         def _toggle_select_all():
             from pyruns.utils.sort_utils import filter_tasks
@@ -397,7 +411,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         with ui.row().classes(MONITOR_SEARCH_ROW_CLASSES):
             si = ui.textarea(placeholder="Search config / name...").props(
                 "dense outlined bg-white clearable autogrow"
-            ).classes("flex-grow text-xs font-mono").style("max-height: 80px; overflow-y: auto;")
+            ).classes(MONITOR_SEARCH_INPUT_CLASSES).style(MONITOR_SEARCH_INPUT_STYLE)
             # Using a slight debounce for textarea to avoid lag on multi-line paste
             search_timer = [None]
 
@@ -435,13 +449,13 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
             if sel.get("task_id"):
                 t = _get_task(sel["task_id"])
                 if t:
-                    with ui.column().classes("w-full gap-0 p-0 m-0 border-b-2 border-indigo-200 bg-indigo-50/50 flex-none"):
+                    with ui.column().classes(MONITOR_PINNED_CARD_CLASSES):
                         _task_list_item(t, sel, is_pinned=True)
 
         sel["_pinned_task_view"] = pinned_task_view
         pinned_task_view()
 
-        with ui.column().classes("flex-grow w-full overflow-y-auto").style("min-height: 0;"):
+        with ui.column().classes(MONITOR_TASK_LIST_SCROLL_CLASSES).style(MONITOR_TASK_LIST_SCROLL_STYLE):
             @ui.refreshable
             def task_list_items():
                 if not client_connected():
@@ -502,7 +516,7 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 "Export Reports", 
                 on_click=lambda: show_export_dialog(task_manager, sel["export_ids"]),
             ).props("unelevated icon=download").classes(
-                f"{BTN_PRIMARY} w-full text-sm font-bold tracking-wide py-1 rounded"
+                f"{BTN_PRIMARY} {MONITOR_EXPORT_BTN_CLASSES}"
             )
 
 
@@ -534,27 +548,26 @@ def _task_list_item(t: Dict[str, Any], sel: Dict, is_pinned: bool = False) -> No
         ui.checkbox(
             value=tid in sel["export_ids"],
             on_change=lambda e, _tid=tid: sel.get("_toggle_export", lambda x, y: None)(_tid, e.value),
-        ).props("dense size=xs color=indigo").classes("shrink-0 pl-1")
+        ).props("dense size=xs color=indigo").classes(MONITOR_TASK_CHECKBOX_CLASSES)
 
         # Inner clickable area — sidebar-like active style
         with ui.column().classes(
-            f"flex-1 w-0 min-w-0 justify-center gap-0 cursor-pointer overflow-hidden "
-            f"py-1 pl-1.5 rounded monitor-task-item {bg_cls}"
+            f"{MONITOR_TASK_ITEM_BASE_CLASSES} {bg_cls}"
         ).style(border_style).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
 
             # Line 1: task name + icon
-            with ui.row().classes("w-full items-center justify-between gap-1 flex-nowrap"):
-                with ui.row().classes("items-center gap-1 flex-1 min-w-0 flex-nowrap"):
+            with ui.row().classes(MONITOR_TASK_LINE1_CLASSES):
+                with ui.row().classes(MONITOR_TASK_LINE1_LEFT_CLASSES):
                     if is_pinned:
-                        ui.icon("push_pin", size="10px").classes("text-indigo-500 shrink-0 transform -rotate-45")
+                        ui.icon("push_pin", size="10px").classes(MONITOR_PIN_ICON_CLASSES)
                     ui.label(task_name).classes(
-                        f"truncate flex-1 min-w-0 text-[11px] {name_cls} leading-snug task-name"
+                        f"{MONITOR_TASK_NAME_CLASSES} {name_cls}"
                     ).tooltip(task_name)
                 ui.icon(icon_name, size="10px").classes(f"{icon_cls} shrink-0 pr-1")
 
             # Line 2: status label
             ui.label(status.upper()).classes(
-                "truncate w-full text-[9px] text-slate-400 leading-snug"
+                MONITOR_TASK_STATUS_LABEL_CLASSES
             )
             
 

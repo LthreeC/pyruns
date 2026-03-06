@@ -1,0 +1,43 @@
+model:
+  name: SmallNet
+  architecture:
+    input_dim: 784
+    hidden_dims:
+    - 128
+    - 64
+    output_dim: 10
+    activation: relu
+    dropout: 0.1
+  params:
+    total_params: 109386
+    trainable: true
+optimizer:
+  name: Adam
+  lr: 0.001
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  weight_decay: 0.0001
+  amsgrad: false
+data:
+  name: ToyDataset
+  num_samples: 1000
+  num_features: 784
+  num_classes: 10
+  train_split: 0.8
+  shuffle: true
+  noise_level: 0.01
+train:
+  epochs: 10
+  batch_size: 32
+  lr: 0.001
+  print_every: 2
+experiment:
+  name: baseline
+  seed: 42
+  device: cpu
+  save_dir: ./outputs
+logging:
+  level: INFO
+  log_to_file: false

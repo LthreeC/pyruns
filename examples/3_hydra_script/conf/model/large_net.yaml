@@ -1,0 +1,10 @@
+name: LargeNet
+architecture:
+  input_dim: 784
+  hidden_dims: [512, 256, 128]
+  output_dim: 10
+  activation: relu
+  dropout: 0.2
+params:
+  total_params: 534026
+  trainable: true

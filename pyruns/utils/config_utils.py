@@ -21,6 +21,20 @@ yaml.SafeLoader.add_implicit_resolver(
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
 
 
+class _PrettyDumper(yaml.SafeDumper):
+    """SafeDumper variant that renders multi-line strings as YAML block scalars."""
+
+
+def _str_presenter(dumper: yaml.Dumper, data: str):
+    if "\n" in data:
+        # `|-` style keeps the text readable and avoids noisy escaped "\\n".
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_PrettyDumper.add_representer(str, _str_presenter)
+
+
 def safe_filename(name: str) -> str:
     """Sanitize a string to be safe for filenames."""
     safe = "".join([c for c in name if c.isalnum() or c in (" ", "-", "_")]).strip()
@@ -51,7 +65,14 @@ def save_yaml(path: str, data: Dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         if not data:
             return
-        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+        yaml.dump(
+            data,
+            f,
+            Dumper=_PrettyDumper,
+            sort_keys=False,
+            allow_unicode=True,
+            default_flow_style=False,
+        )
 
 
 def parse_value(val_str: str) -> Any:

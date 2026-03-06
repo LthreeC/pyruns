@@ -1,0 +1,43 @@
+model:
+  name: LargeNet
+  architecture:
+    input_dim: 784
+    hidden_dims:
+    - 512
+    - 256
+    - 128
+    output_dim: 10
+    activation: relu
+    dropout: 0.2
+  params:
+    total_params: 534026
+    trainable: true
+optimizer:
+  name: SGD
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  nesterov: true
+  dampening: 0.0
+data:
+  name: SyntheticDataset
+  num_samples: 5000
+  num_features: 784
+  num_classes: 10
+  train_split: 0.9
+  shuffle: true
+  noise_level: 0.05
+  distribution: gaussian
+train:
+  epochs: 10
+  batch_size: 32
+  lr: 0.001
+  print_every: 2
+experiment:
+  name: baseline
+  seed: 42
+  device: cpu
+  save_dir: ./outputs
+logging:
+  level: INFO
+  log_to_file: false

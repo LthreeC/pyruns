@@ -54,6 +54,23 @@ SETTINGS_FILENAME = "_pyruns_settings.yaml"  # workspace-level UI settings
 EXECUTION_MODES = ["thread", "process"]
 CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# UI/System default values (used by settings + UI fallbacks)
+DEFAULT_UI_PORT = 8099
+DEFAULT_UI_PAGE_SIZE = 50
+DEFAULT_HEADER_REFRESH_INTERVAL = 3
+
+DEFAULT_GENERATOR_FORM_COLUMNS = 2
+DEFAULT_GENERATOR_AUTO_TIMESTAMP = True
+DEFAULT_GENERATOR_MODE = "form"  # form | yaml | args
+
+DEFAULT_MANAGER_COLUMNS = 5
+DEFAULT_MANAGER_MAX_WORKERS = 1
+DEFAULT_MANAGER_EXECUTION_MODE = "thread"
+
+DEFAULT_MONITOR_CHUNK_SIZE = 50000
+DEFAULT_MONITOR_SCROLLBACK = 100000
+DEFAULT_MONITOR_TERMINAL_GUTTER_PX = 24
+
 # ═══════════════════════════════════════════════════════════════
 #  Generator Syntax Constants
 # ═══════════════════════════════════════════════════════════════

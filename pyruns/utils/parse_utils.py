@@ -1,5 +1,6 @@
 import ast
 import os
+import shlex
 import yaml
 from typing import Dict, Any, Optional, Tuple
 
@@ -7,7 +8,7 @@ from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 
 def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
-    """Detect how a script reads its config: 'pyruns_load', 'argparse', or 'unknown'."""
+    """Detect how a script reads its config: pyruns_load/argparse/hydra/unknown."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
@@ -17,8 +18,18 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
 
     has_pyruns_load = False
     has_argparse = False
+    has_hydra = False
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "hydra" or alias.name.startswith("hydra."):
+                    has_hydra = True
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "hydra" or mod.startswith("hydra."):
+                has_hydra = True
+
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Attribute):
                 if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "load":
@@ -26,14 +37,50 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
 
                 if node.func.attr == "add_argument":
                     has_argparse = True
+                if getattr(node.func.value, "id", "") == "hydra" and node.func.attr == "main":
+                    has_hydra = True
 
     if has_pyruns_load:
         return ("pyruns_load", None)
-    
+
+    if has_hydra:
+        return ("hydra", None)
+
     if has_argparse:
         return ("argparse", None)
 
     return ("unknown", None)
+
+
+def split_cli_args(args_text: str) -> list[str]:
+    """Split a multi-line CLI args string into argv tokens."""
+    text = str(args_text or "")
+    if not text.strip():
+        return []
+
+    normalized_parts = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.endswith("\\"):
+            s = s[:-1].rstrip()
+        normalized_parts.append(s)
+    normalized = " ".join(normalized_parts) if normalized_parts else text.strip()
+
+    try:
+        tokens = shlex.split(normalized, posix=(os.name != "nt"))
+        # On Windows with posix=False, shlex keeps wrapping quotes.
+        # Strip a single pair of matching outer quotes so subprocess argv stays clean.
+        cleaned: list[str] = []
+        for tok in tokens:
+            s = str(tok)
+            if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+                s = s[1:-1]
+            cleaned.append(s)
+        return cleaned
+    except Exception:
+        return normalized.split()
 
 
 def _extract_value(node: ast.AST) -> Any:
