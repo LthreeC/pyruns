@@ -2,7 +2,8 @@ import os
 import time
 from typing import Dict, Any, List
 
-from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOGS_DIR, ENV_KEY_SCRIPT
+
+from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOGS_DIR
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils import get_logger, get_now_str, get_now_str_us
@@ -81,21 +82,24 @@ class TaskGenerator:
             "created_at": task_obj["created_at"],
             "pinned": task_obj["pinned"],
         }
-        env_script = os.environ.get(ENV_KEY_SCRIPT)
+        # Resolve script path directly from workspace script_info.json
         workspace_dir = os.path.dirname(self.root_dir)
-        info_path = os.path.join(workspace_dir, "script_info.json")
-        if os.path.exists(info_path):
+
+        # ── Strategy 1: script_info.json in workspace ──
+        from pyruns._config import SCRIPT_INFO_FILENAME
+        script_info_path = os.path.join(workspace_dir, SCRIPT_INFO_FILENAME)
+        if os.path.exists(script_info_path):
             try:
                 import json
-                with open(info_path, "r", encoding="utf-8") as f:
+                with open(script_info_path, "r", encoding="utf-8") as f:
                     s_info = json.load(f)
-                    if "script_path" in s_info and os.path.exists(s_info["script_path"]):
-                        env_script = s_info["script_path"]
+                    sp = s_info.get("script_path", "")
+                if sp and os.path.exists(sp):
+                    info["script"] = sp
+                else:
+                    logger.warning("Could not resolve script path from script_info.json: %s", sp)
             except Exception as e:
                 logger.warning("Failed to read script_info.json: %s", e)
-                
-        if env_script:
-            info["script"] = env_script
         # Array fields at the end
         info["start_times"] = []
         info["finish_times"] = []

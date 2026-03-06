@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional, List
 
 from .config_manager import ConfigManager
 from .._config import (
-    ENV_KEY_CONFIG, ENV_KEY_SCRIPT, CONFIG_FILENAME, CONFIG_DEFAULT_FILENAME,
+    ENV_KEY_CONFIG, CONFIG_FILENAME, CONFIG_DEFAULT_FILENAME,
     RECORDS_KEY, RUN_LOGS_DIR, ERROR_LOG_FILENAME,
     TASK_INFO_FILENAME,
 )
@@ -159,11 +159,11 @@ def run_task_worker(
 
     # ── 强制参考当前 Run Root 的 script_info.json ──
     workspace_dir = os.path.dirname(os.path.dirname(task_dir))
-    info_path = os.path.join(workspace_dir, "script_info.json")
-    if os.path.exists(info_path):
+    script_info_path = os.path.join(workspace_dir, "script_info.json")
+    if os.path.exists(script_info_path):
         try:
             import json
-            with open(info_path, "r", encoding="utf-8") as f:
+            with open(script_info_path, "r", encoding="utf-8") as f:
                 s_info = json.load(f)
                 info_script = s_info.get("script_path")
                 if info_script and os.path.exists(info_script):
@@ -183,6 +183,7 @@ def run_task_worker(
     task_meta.update({
         "status": "running",
         "progress": 0.0,
+        "run_index": run_index,  # explicitly store run_index
     })
 
     # 2. Build Command
@@ -198,6 +199,7 @@ def run_task_worker(
     try:
         if command:
             env = _prepare_env(env_vars, task_dir=task_dir)
+            env["PYRUNS_RUN_INDEX"] = str(run_index)
             
             # Avoid [WinError 267] Invalid directory name on Windows
             # if the user deleted/moved the original script directory between reruns
@@ -233,7 +235,7 @@ def run_task_worker(
                         lf.flush()
                         # B. Broadcast to subscribed UI sessions
                         text = chunk.decode("utf-8", errors="replace")
-                        text = text.replace('\n', '\r\n')
+                        text = text.replace('\r\n', '\n').replace('\n', '\r\n')
                         log_emitter.emit(name, text)
 
             reader_thread = threading.Thread(

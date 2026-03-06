@@ -64,7 +64,7 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
     cols = [c for c in priority if c in all_keys]
     cols += sorted(all_keys - set(priority))
 
-    output = io.StringIO()
+    output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=cols, extrasaction="ignore")
     writer.writeheader()
     for row in all_rows:

@@ -46,10 +46,10 @@ def task_sort_key(task: Dict[str, Any]) -> tuple:
     elif isinstance(starts, list) and len(starts) > 0:
         ts_str = starts[-1]
     else:
-        ts_str = task.get("created_at", "")
+        ts_str = task.get("created_at") or ""
 
     if priority >= 40:  # running or queued (earliest first)
-        digits = "".join(filter(str.isdigit, ts_str))
+        digits = "".join(filter(str.isdigit, str(ts_str)))
         secondary = -int(digits) if digits else 0
     else:               # others (latest first)
         secondary = ts_str

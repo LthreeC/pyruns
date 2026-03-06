@@ -143,15 +143,13 @@ def record(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         try:
             info = load_task_info(task_dir, raise_error=True)
             
-            # Determine which run we are in based on start_times length
-            # len=1 -> Run 1 (index 0)
-            starts = info.get("start_times", [])
-            run_index = len(starts)
-
-            # Safety fallback: if run_index is 0 (shouldn't happen under pyr execution),
-            # treat it as run 1 or just append to end.
-            if run_index < 1:
-                run_index = 1
+            # Determine which run we are in
+            run_index_str = os.environ.get("PYRUNS_RUN_INDEX")
+            if run_index_str and run_index_str.isdigit():
+                run_index = int(run_index_str)
+            else:
+                starts = info.get("start_times", [])
+                run_index = max(1, len(starts))
 
             if RECORDS_KEY not in info:
                 info[RECORDS_KEY] = []
@@ -205,9 +203,12 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
     for _attempt in range(5):
         try:
             info = load_task_info(task_dir, raise_error=True)
-            
-            starts = info.get("start_times", [])
-            run_index = max(1, len(starts))
+            run_index_str = os.environ.get("PYRUNS_RUN_INDEX")
+            if run_index_str and run_index_str.isdigit():
+                run_index = int(run_index_str)
+            else:
+                starts = info.get("start_times", [])
+                run_index = max(1, len(starts))
 
             if TRACKS_KEY not in info:
                 info[TRACKS_KEY] = []
@@ -237,3 +238,12 @@ def get_task_dir() -> str:
     if not pyr_config:
         return None
     return os.path.dirname(pyr_config)
+
+
+def get_run_index() -> int:
+    """Return the current run index."""
+    pyr_config = os.environ.get(ENV_KEY_CONFIG)
+    if not pyr_config:
+        return None
+    info = load_task_info(os.path.dirname(pyr_config), raise_error=True)
+    return len(info.get("start_times", []))

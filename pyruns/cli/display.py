@@ -39,10 +39,12 @@ def _colored(text: str, style: str) -> str:
     return f"{style}{text}{_RESET}"
 
 
-def _status_str(status: str) -> str:
+def _status_str(status: str, runs: int = 1) -> str:
     icon = _STATUS_ICONS.get(status, "?")
     style = _STATUS_STYLES.get(status, "")
     label = status.capitalize()
+    if status in ("completed", "failed") and runs > 1:
+        label = f"{label}({runs})"
     return _colored(f"{icon} {label:<10}", style)
 
 
@@ -89,10 +91,11 @@ def print_task_table(tasks: List[Dict[str, Any]], title: str = "Tasks") -> None:
     print(sep)
 
     for i, t in enumerate(tasks, 1):
-        name = _truncate(t.get("name", "unnamed"), name_w)
-        created = t.get("created_at", "")[:time_w]
-        status = t.get("status", "pending")
-        status_cell = _status_str(status)
+        name = _truncate(t.get("name") or "unnamed", name_w)
+        created = (t.get("created_at") or "")[:time_w]
+        status = t.get("status") or "pending"
+        runs = len(t.get("start_times") or [])
+        status_cell = _status_str(status, runs)
 
         print(f"  {i:<{idx_w}}  {status_cell} {name:<{name_w}}  {_DIM}{created}{_RESET}")
 
@@ -131,7 +134,9 @@ def print_task_detail(task: Dict[str, Any]) -> None:
 
     print(f"\n  {_BOLD}{task.get('name', 'unnamed')}{_RESET}")
     print(sep)
-    print(f"  Status:     {_status_str(task.get('status', 'pending'))}")
+    starts = task.get("start_times", [])
+    runs = len(starts)
+    print(f"  Status:     {_status_str(task.get('status', 'pending'), runs)}")
     print(f"  Created:    {task.get('created_at', 'N/A')}")
     print(f"  Directory:  {_DIM}{task.get('dir', 'N/A')}{_RESET}")
 

@@ -77,6 +77,23 @@ Pyruns then administers parameter management and associated environment variable
 pyr train.py
 ```
 
+### Mode 3: CLI Interactive Mode
+
+If you are running on a Headless Server or prefer a pure command-line experience, Pyruns also offers a **first-class CLI interactive environment that is fully equivalent to the Web UI**.
+
+```bash
+pyr cli train.py
+```
+
+This command automatically initializes the exact same workspace directory structure and configuration as the Web UI, and drops you into an interactive REPL terminal:
+```text
+  Pyruns CLI  (type 'help' for commands, 'exit' to quit)
+pyruns> ls         # List current tasks
+pyruns> run 1      # Run a task and automatically stream standard output!
+pyruns> status -i  # Real-time system and GPU metrics
+```
+All actions triggered via the CLI are 100% data-compatible and synchronized with the Web UI.
+
 ---
 
 ## 📝 Practical Examples
@@ -288,6 +305,7 @@ Underlying invocation logic intercepts when the Pending queue emits the executin
 |----------|---------|
 | [📗 Getting Started Workflow](docs/getting-started.md) | OS Requirements & Initial Sample Runs |
 | [📘 Batch Syntax Details](docs/batch-syntax.md) | Constructing parameter grids, variables derivations, etc. |
+| [💻 CLI Interactive Guide](docs/cli-guide.md) | Instructions on managing the entire workflow deeply using the Headless REPL environment |
 | [📕 UI Operational Functions](docs/ui-guide.md) | Form resets, Execution Limits and Export tools |
 | [📙 Configuration Lifecycle](docs/configuration.md) | Priority structures & data hierarchies |
 | [📓 Native API Hooks](docs/api-reference.md) | Integrating endpoints like `read()` / `load()` & `record()` |

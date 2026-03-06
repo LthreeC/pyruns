@@ -15,6 +15,9 @@ import pyruns
 import argparse
 import time
 
+from pyruns.utils import get_logger
+logger = get_logger(__name__)
+
 def main():
     parser = argparse.ArgumentParser(description="A simple ML training script.")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
@@ -34,6 +37,7 @@ def main():
         loss = 1.0 / (epoch * args.lr * 100)
         last_loss = loss
         print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
+        # logger.info(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
         
         # Track the loss for each epoch
         pyruns.track(loss=loss)

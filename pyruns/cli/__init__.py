@@ -10,12 +10,15 @@ import sys
 import textwrap
 import traceback
 
-from pyruns._config import ENV_KEY_ROOT, ENV_KEY_SCRIPT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
+from pyruns._config import ENV_KEY_ROOT, DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME, ensure_root_dir
 from pyruns import __version__ as _VERSION
 from pyruns import ensure_config_default
 
+from pyruns.utils import get_logger
+logger = get_logger(__name__)
+
 # ── CLI sub-command names (checked before script-path resolution) ──
-_CLI_COMMANDS = {"cli", "ls", "list", "gen", "generate", "run", "delete", "del", "rm", "jobs", "fg"}
+_CLI_COMMANDS = {"cli", "ls", "list", "gen", "generate", "run", "delete", "del", "rm", "jobs", "log", "fg"}
 
 # ─── Help text ────────────────────────────────────────────────
 
@@ -36,7 +39,8 @@ CLI COMMANDS
     run <name|#>          Run task(s) by name or index
     delete <name|#>       Soft-delete task(s)
     jobs                  Show running/queued tasks
-    fg <%N|name|#>        Tail a task's log (Ctrl+C to detach)
+    log <%N|name|#>       View a task's log in alt-screen viewer
+    fg <%N|name|#>        Tail a task's log inline (Ctrl+C to detach)
 
 EXAMPLES
     pyr train.py                     Launch UI for train.py
@@ -60,12 +64,12 @@ def _print_version():
 # ─── Workspace resolution ────────────────────────────────────
 
 
-def _resolve_workspace() -> str | None:
+def _resolve_workspace(script_path: str = None) -> str | None:
     """Auto-detect the ``_pyruns_/<script>`` workspace in the current directory.
 
-    Walks up from CWD looking for a ``_pyruns_`` directory that contains at
-    least one sub-directory with a ``script_info.json``.  Returns the first
-    match (e.g. ``/project/_pyruns_/main``), or ``None``.
+    If script_path is provided, return that specific workspace.
+    Otherwise, auto-detect by finding the script_info.json pointing
+    to the most recently modified script file.
     """
     import json
 
@@ -75,36 +79,66 @@ def _resolve_workspace() -> str | None:
     if not os.path.isdir(pyruns_dir):
         return None
 
-    # Find the first sub-directory with script_info.json
-    for entry in sorted(os.listdir(pyruns_dir)):
-        candidate = os.path.join(pyruns_dir, entry)
-        info_path = os.path.join(candidate, "script_info.json")
-        if os.path.isdir(candidate) and os.path.exists(info_path):
+    if script_path:
+        target_base = os.path.splitext(os.path.basename(script_path))[0]
+        candidate = os.path.join(pyruns_dir, target_base)
+        if os.path.isdir(candidate):
             return candidate
+            
+        target_abs = os.path.abspath(script_path).replace("\\", "/")
+        for entry in os.listdir(pyruns_dir):
+            candidate = os.path.join(pyruns_dir, entry)
+            script_info_path = os.path.join(candidate, "script_info.json")
+            if os.path.isdir(candidate) and os.path.exists(script_info_path):
+                try:
+                    with open(script_info_path, "r", encoding="utf-8") as f:
+                        info = json.load(f)
+                    if info.get("script_name") == target_base or info.get("script_path") == target_abs:
+                        return candidate
+                except Exception:
+                    pass
+        return None
 
-    return None
+    best_candidate = None
+    latest_time = -1
+
+    for entry in os.listdir(pyruns_dir):
+        candidate = os.path.join(pyruns_dir, entry)
+        script_info_path = os.path.join(candidate, "script_info.json")
+        if os.path.isdir(candidate) and os.path.exists(script_info_path):
+            try:
+                with open(script_info_path, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+                s_path = info.get("script_path")
+                if s_path and os.path.exists(s_path):
+                    mtime = os.path.getmtime(s_path)
+                    if mtime > latest_time:
+                        latest_time = mtime
+                        best_candidate = candidate
+                elif not best_candidate:
+                    best_candidate = candidate
+            except Exception:
+                if not best_candidate:
+                    best_candidate = candidate
+
+    return best_candidate
 
 
 def _init_task_manager(workspace: str):
     """Create a TaskManager pointed at the workspace's tasks/ directory."""
     from pyruns._config import TASKS_DIR
     from pyruns.core.task_manager import TaskManager
+    from pyruns.utils.settings import ensure_settings_file, load_settings
 
     tasks_dir = os.path.join(workspace, TASKS_DIR)
     os.makedirs(tasks_dir, exist_ok=True)
 
     os.environ[ENV_KEY_ROOT] = workspace
-    tm = TaskManager(root_dir=tasks_dir)
-
-    # Wait for async scan to complete
-    import time
-    for _ in range(50):
-        if tm.tasks is not None:
-            break
-        time.sleep(0.05)
-    # Give scan a moment to finish
-    time.sleep(0.2)
-    tm.refresh_from_disk(force_all=True)
+    ensure_settings_file(workspace)
+    load_settings(workspace)
+    
+    tm = TaskManager(tasks_dir=tasks_dir, lazy_scan=False)
+    logger.debug(f"vars: {vars(tm)}")
     return tm
 
 
@@ -113,10 +147,25 @@ def _init_task_manager(workspace: str):
 
 def _dispatch_cli(args: list) -> None:
     """Handle CLI commands (both ``pyr cli`` and ``pyr <command>``)."""
-    workspace = _resolve_workspace()
+    
+    # If the user ran `pyr cli script.py`, extract the script path
+    script_path = None
+    if args and len(args) > 1 and args[1].endswith('.py') and os.path.exists(args[1]):
+        script_path = args[1]
+        args = [args[0]] + args[2:]  # 剥离脚本路径，保留其余命令参数
+        
+    if script_path:
+        # 核心：复用环境构建逻辑，让 CLI 与 UI 行动完全一致
+        workspace = _setup_env(script_path)
+    else:
+        # 仅当未指定特定脚本时，尝试自动推断当前工作区
+        workspace = _resolve_workspace()
+
+    logger.debug(f"workspace={workspace}")
+
     if not workspace:
         print(f"No pyruns workspace found in current directory.")
-        print(f"Hint: run `pyr <script.py>` first to initialize a workspace.")
+        print(f"Hint: run `pyr ui <script.py>` first to initialize a workspace.")
         sys.exit(1)
 
     tm = _init_task_manager(workspace)
@@ -144,7 +193,8 @@ def pyr():
     """``pyr`` — main console_scripts entry point."""
 
     if len(sys.argv) < 2:
-        _print_help()
+        # Implicit UI mode without arguments
+        sys.argv.insert(1, "ui")
 
     arg = sys.argv[1]
 
@@ -169,9 +219,46 @@ def pyr():
         _dispatch_cli(sys.argv[1:])
         return
 
-    # ── Script mode: pyr <script.py> [config.yaml] ──
-    filepath = os.path.abspath(arg).replace("\\", "/")
-    custom_yaml = sys.argv[2] if len(sys.argv) > 2 else None
+    # ── UI Mode (explicit `ui` or implicit `<script.py>`) ──
+    if arg == "ui":
+        if len(sys.argv) > 2:
+            filepath = sys.argv[2]
+            custom_yaml = sys.argv[3] if len(sys.argv) > 3 else None
+        else:
+            # Auto-detect latest script
+            ws = _resolve_workspace()
+            if not ws:
+                print("Error: No pyruns workspace found to auto-detect a script.")
+                sys.exit(1)
+            # Read script path from workspace
+            script_info_path = os.path.join(ws, "script_info.json")
+            import json
+            filepath = None
+            if os.path.exists(script_info_path):
+                with open(script_info_path, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+                filepath = info.get("script_path")
+            # Fallback: derive from workspace name (e.g. _pyruns_/main -> main.py)
+            if not filepath or not os.path.exists(filepath):
+                project_root = os.path.dirname(os.path.dirname(ws))
+                ws_name = os.path.basename(ws)
+                for ext in (".py", ""):
+                    candidate = os.path.join(project_root, ws_name + ext)
+                    if os.path.exists(candidate):
+                        filepath = candidate
+                        break
+            if not filepath or not os.path.exists(filepath):
+                print("Error: Cannot find the original script for the workspace.")
+                print(f"  Workspace: {ws}")
+                print(f"  Try: pyr ui <script.py>")
+                sys.exit(1)
+            custom_yaml = None
+    else:
+        # Implicit UI mode: pyr <script.py>
+        filepath = arg
+        custom_yaml = sys.argv[2] if len(sys.argv) > 2 else None
+
+    filepath = os.path.abspath(filepath).replace("\\", "/")
 
     if not os.path.exists(filepath):
         # Could be a typo of a CLI command
@@ -214,6 +301,7 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
     )
     from pyruns.utils.settings import ensure_settings_file
 
+    filepath = os.path.abspath(filepath).replace("\\", "/")
     file_dir = os.path.dirname(filepath).replace("\\", "/")
     script_base = os.path.splitext(os.path.basename(filepath))[0]
 
@@ -223,15 +311,15 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
     os.makedirs(script_dir, exist_ok=True)
     ensure_settings_file(pyruns_dir)
 
-    info_path = os.path.join(script_dir, "script_info.json")
-    if not os.path.exists(info_path):
+    script_info_path = os.path.join(script_dir, "script_info.json")
+    if not os.path.exists(script_info_path):
         import time, json
         script_info = {
             "script_name": script_base,
-            "script_path": filepath,
+            "script_path": filepath,  # Saved as absolute path
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        with open(info_path, "w", encoding="utf-8") as f:
+        with open(script_info_path, "w", encoding="utf-8") as f:
             json.dump(script_info, f, indent=4)
 
     config_default_path = os.path.join(script_dir, CONFIG_DEFAULT_FILENAME)
@@ -267,7 +355,6 @@ def _setup_env(filepath: str, custom_yaml: str = None) -> str:
 
     # ── Set environment ──
     os.environ[ENV_KEY_ROOT] = script_dir
-    os.environ[ENV_KEY_SCRIPT] = filepath
     return script_dir
 
 

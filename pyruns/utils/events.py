@@ -50,15 +50,18 @@ class LogEmitter:
         Called from executor reader threads — dispatches into the
         asyncio event loop via ``call_soon_threadsafe`` so that
         NiceGUI UI updates happen safely.
+
+        For CLI subscribers (no asyncio loop), callbacks are called
+        directly from the emit thread — CLI consumers should use
+        thread-safe data structures (e.g. ``queue.Queue``).
         """
         with self._lock:
             subs = list(self._subscribers.get(task_name, []))
         if not subs:
             return
 
-        # Push into the asyncio event loop via call_soon_threadsafe so that
-        # NiceGUI / Quasar element updates (e.g. term.write) happen on the
-        # correct thread.  If no loop is running (e.g. in tests) call directly.
+        # Try to get the asyncio event loop for NiceGUI / Quasar.
+        # In CLI mode there is no running loop, so we call callbacks directly.
         loop = None
         try:
             loop = asyncio.get_running_loop()
@@ -70,6 +73,8 @@ class LogEmitter:
                 if loop and loop.is_running():
                     loop.call_soon_threadsafe(cb, chunk_text)
                 else:
+                    # CLI / non-async context: call directly (thread-safe
+                    # by convention — CLI consumers use queue.Queue).
                     cb(chunk_text)
             except Exception as exc:
                 logger.debug("LogEmitter callback error: %s", exc)

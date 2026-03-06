@@ -54,9 +54,9 @@ def main_page():
             return False
 
         state["run_root"] = new_path
-        task_manager.root_dir = os.path.join(new_path, _cfg.TASKS_DIR)
+        task_manager.tasks_dir = os.path.join(new_path, _cfg.TASKS_DIR)
         task_generator.root_dir = os.path.join(new_path, _cfg.TASKS_DIR)
-        os.makedirs(task_manager.root_dir, exist_ok=True)
+        os.makedirs(task_manager.tasks_dir, exist_ok=True)
 
         # Load script info
         from pyruns.utils.info_io import load_script_info
@@ -120,7 +120,7 @@ def main(*, reload: bool = False):
 
     task_generator = TaskGenerator(root_dir=abs_tasks_dir)
     logger.debug(f"TaskGenerator instantiated with root_dir={task_generator.root_dir}")
-    task_manager = TaskManager(root_dir=abs_tasks_dir)
+    task_manager = TaskManager(tasks_dir=abs_tasks_dir)
     metrics_sampler = SystemMonitor()
     
     port = int(_settings.get("ui_port", 8099))

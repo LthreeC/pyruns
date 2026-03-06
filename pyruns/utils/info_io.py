@@ -39,11 +39,11 @@ def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
 
 def load_script_info(run_root: str) -> Dict[str, Any]:
     """Load script_info.json from the Run Root directory."""
-    info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
-    if not os.path.exists(info_path):
+    script_info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
+    if not os.path.exists(script_info_path):
         return {}
     try:
-        with open(info_path, "r", encoding="utf-8") as f:
+        with open(script_info_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -51,8 +51,8 @@ def load_script_info(run_root: str) -> Dict[str, Any]:
 
 def save_script_info(run_root: str, info: Dict[str, Any]) -> None:
     """Save script_info.json to the Run Root directory."""
-    info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
-    with open(info_path, "w", encoding="utf-8") as f:
+    script_info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
+    with open(script_info_path, "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2, ensure_ascii=False)
 
 

@@ -77,6 +77,23 @@ pyr train.py my_config.yaml
 pyr train.py
 ```
 
+### 模式 3：CLI 命令行交互模式
+
+如果你在无头服务器 (Headless Server) 上运行，或者更偏爱纯命令行操作，Pyruns 提供了一个**与 Web UI 级别完全等同**的 CLI 交互环境。
+
+```bash
+pyr cli train.py
+```
+
+这会自动构建和 Web UI 完全一样的工作区目录结构和配置，然后进入交互式的 REPL 终端：
+```text
+  Pyruns CLI  (type 'help' for commands, 'exit' to quit)
+pyruns> ls         # 查看当前任务
+pyruns> run 1      # 运行指定任务，并自动 stream 输出日志！
+pyruns> status -i  # 实时显示系统和 GPU 监控
+```
+任何通过 CLI 触发的操作和 Web UI 是 100% 数据互通和兼容的。
+
 ---
 
 ## 📝 实际上手示例
@@ -288,6 +305,7 @@ your_project/
 |------|------|
 | [📗 安装部署与初次接入](docs/getting-started.md) | 环境说明与第一个示例运作 |
 | [📘 批量语法细则](docs/batch-syntax.md) | 复杂网格规则与类型推断行为 |
+| [💻 命令行 CLI 交互控制](docs/cli-guide.md) | 在无头服务器/纯终端使用 REPL 环境管理全部流程的操作详解 |
 | [📕 界面高级操作与控制](docs/ui-guide.md) | Manager执行限制细节及报表数据的导出等 |
 | [📙 配置流转与沙盒说明](docs/configuration.md) | Node树层级、优先读取顺位判定 |
 | [📓 API 接口文档](docs/api-reference.md) | 深入代码端的 `read()` / `load()` 及 `record()` 功能介绍 |

@@ -32,16 +32,16 @@ class TaskManager:
 
     Parameters
     ----------
-    root_dir : str
+    tasks_dir : str
         Directory that contains task sub-folders (each with ``task_info.json``).
     """
 
-    def __init__(self, root_dir: str = None):
-        if root_dir is None:
+    def __init__(self, tasks_dir: str = None, lazy_scan: bool = True):
+        if tasks_dir is None:
             from pyruns._config import ROOT_DIR, TASKS_DIR
-            root_dir = os.path.join(ROOT_DIR, TASKS_DIR)
+            tasks_dir = os.path.join(ROOT_DIR, TASKS_DIR)
             
-        self.root_dir = root_dir
+        self.tasks_dir = tasks_dir
         self.tasks: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
 
@@ -67,15 +67,22 @@ class TaskManager:
         self._running_ids: set = set()
 
         # Startup
-        logger.info("TaskManager initialised  root=%s", root_dir)
-        self.scan_disk_async()
+        logger.info("TaskManager initialised  root=%s", tasks_dir)
+        if lazy_scan:
+            self.scan_disk_async()
+        else:
+            self.scan_disk()
+            
         threading.Thread(target=self._scheduler_loop, daemon=True).start()
 
-        try:
-            from nicegui import app
-            app.on_shutdown(self._cleanup_on_shutdown)
-        except ImportError:
-            pass
+        import sys
+        if "nicegui" in sys.modules:
+            try:
+                from nicegui import app
+                if hasattr(app, "on_shutdown"):
+                    app.on_shutdown(self._cleanup_on_shutdown)
+            except Exception:
+                pass
 
         import atexit
         atexit.register(self._cleanup_on_shutdown)
@@ -87,6 +94,8 @@ class TaskManager:
         acquired = self._lock.acquire(timeout=2.0)
         try:
             for t in self.tasks:
+                if not t:
+                    continue
                 if t["status"] in ("running", "queued"):
                     t["status"] = "failed"
                     now_str = get_now_str()
@@ -131,18 +140,18 @@ class TaskManager:
 
     def scan_disk(self) -> None:
         """Full scan of *root_dir* — rebuild the in-memory task list."""
-        if not self.root_dir or not os.path.exists(self.root_dir):
-            logger.warning("root_dir does not exist: %s", self.root_dir)
+        if not self.tasks_dir or not os.path.exists(self.tasks_dir):
+            logger.warning("root_dir does not exist: %s", self.tasks_dir)
             with self._lock:
                 self.tasks = []
             return
 
         subdirs = sorted(
-            (d for d in os.listdir(self.root_dir)
-             if os.path.isdir(os.path.join(self.root_dir, d))
+            (d for d in os.listdir(self.tasks_dir)
+             if os.path.isdir(os.path.join(self.tasks_dir, d))
              and d != TRASH_DIR),
             key=lambda x: os.path.getmtime(
-                os.path.join(self.root_dir, x)
+                os.path.join(self.tasks_dir, x)
             ),
             reverse=True,
         )
@@ -159,7 +168,7 @@ class TaskManager:
 
     def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
         """Parse a single task directory into a task dict (or ``None``)."""
-        task_dir = os.path.join(self.root_dir, dir_name)
+        task_dir = os.path.join(self.tasks_dir, dir_name)
         info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
 
         if not os.path.exists(info_path):
@@ -237,6 +246,8 @@ class TaskManager:
         target_ids = set(task_ids) if task_ids else None
 
         for t in current:
+            if not t:
+                continue
             # Decide whether to refresh this task
             if not (force_all or check_all or (target_ids and t["name"] in target_ids) or t["status"] in ("running", "queued")):
                 continue
@@ -298,6 +309,8 @@ class TaskManager:
         to_sync = []
         with self._lock:
             for t in self.tasks:
+                if not t:
+                    continue
                 if t["name"] in task_ids:
                     t["status"] = "queued"
                     starts = t.get("start_times", [])
@@ -328,8 +341,11 @@ class TaskManager:
         run_index = 1
         with self._lock:
             for t in self.tasks:
+                if not t:
+                    continue
                 if t["name"] == task_id:
                     t["status"] = "running"
+                    self._clean_aborted_runs(t)
                     starts = t.get("start_times", [])
                     run_index = len(starts) + 1
                     t["_run_index"] = run_index
@@ -379,6 +395,7 @@ class TaskManager:
             if not target or target["status"] not in ("completed", "failed"):
                 return False
 
+            self._clean_aborted_runs(target)
             starts = target.get("start_times", [])
             run_index = len(starts) + 1
             target["status"] = "queued"
@@ -426,7 +443,7 @@ class TaskManager:
         self.trigger_update()
 
         # Retry logic for Windows file locking
-        trash_dir = os.path.join(self.root_dir, TRASH_DIR)
+        trash_dir = os.path.join(self.tasks_dir, TRASH_DIR)
         os.makedirs(trash_dir, exist_ok=True)
         
         for target in targets:
@@ -537,6 +554,8 @@ class TaskManager:
         """Pick the next queued task and mark it running (thread-safe)."""
         with self._lock:
             for t in self.tasks:
+                if not t:
+                    continue
                 if t["status"] == "queued":
                     run_index = t.pop("_run_index", 1)
                     t["status"] = "running"
@@ -579,13 +598,6 @@ class TaskManager:
             if worker_error and t["status"] in ("running", "queued"):
                 t["status"] = "failed"
                 disk_info = load_task_info(t["dir"])
-                # Ensure we record a finish time for failure
-                starts = disk_info.get("start_times", [])
-                finishes = disk_info.get("finish_times", [])
-                if len(finishes) < len(starts):
-                    finishes.append(get_now_str())
-                    disk_info["finish_times"] = finishes
-
                 disk_info["status"] = "failed"
                 save_task_info(t["dir"], disk_info)
         
@@ -610,6 +622,39 @@ class TaskManager:
         info = load_task_info(task["dir"])
         return self._latest_pid(info) if info else None
 
+    def _clean_aborted_runs(self, task: dict):
+        info = load_task_info(task["dir"])
+        if not info: return
+        starts = info.get("start_times", [])
+        finishes = info.get("finish_times", [])
+        if len(starts) > len(finishes):
+            valid_sz = len(finishes)
+            info["start_times"] = starts[:valid_sz]
+            info["pids"] = info.get("pids", [])[:valid_sz]
+            info["records"] = info.get("records", [])[:valid_sz]
+            info["tracks"] = info.get("tracks", [])[:valid_sz]
+            
+            from pyruns._config import RUN_LOGS_DIR
+            log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
+            if os.path.exists(log_dir):
+                i = valid_sz + 1
+                while True:
+                    bad_log = os.path.join(log_dir, f"run{i}.log")
+                    if os.path.exists(bad_log):
+                        try:
+                            os.remove(bad_log)
+                        except OSError:
+                            pass
+                        i += 1
+                    else:
+                        break
+            save_task_info(task["dir"], info)
+            task.update({
+                "start_times": info.get("start_times", []),
+                "finish_times": info.get("finish_times", []),
+                "pids": info.get("pids", []),
+            })
+
     def _sync_status_to_disk(
         self, task: dict, status: str, run_index: int = 1,
     ) -> None:
@@ -625,9 +670,4 @@ class TaskManager:
         if not info:
             return
         info["status"] = "failed"
-        starts = info.get("start_times", [])
-        finishes = info.get("finish_times", [])
-        if len(finishes) < len(starts):
-            finishes.append(get_now_str())
-            info["finish_times"] = finishes
         save_task_info(task["dir"], info)

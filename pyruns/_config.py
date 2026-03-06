@@ -10,9 +10,8 @@ import os
 # ═══════════════════════════════════════════════════════════════
 #  Environment Variable Names  (统一管理，后续改名只改这里)
 # ═══════════════════════════════════════════════════════════════
-ENV_KEY_ROOT = "__PYRUNS_ROOT__"           # 指定 _pyruns_ 根目录
+ENV_KEY_ROOT = "__PYRUNS_ROOT__"           # pyr 启动时，指向 _pyruns_/<script_name> 工作区用户脚本路径
 ENV_KEY_CONFIG = "__PYRUNS_CONFIG__"       # pyr 启动任务时，指向任务的 config.yaml
-ENV_KEY_SCRIPT = "__PYRUNS_SCRIPT__"       # pyr 启动时，指向用户脚本路径
 
 # ═══════════════════════════════════════════════════════════════
 #  Directory / File Names

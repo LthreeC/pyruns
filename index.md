@@ -33,6 +33,9 @@ features:
   - title: 🛠️ 任务并行调度
     details: 强大的任务管理后台，支持线程/进程双模式调度，轻松管理多核并发实验。
     icon: 🖥️
+  - title: 💻 命令行 CLI 等价模式
+    details: 针对无头服务器环境提供与 Web UI 功能完全对等的交互式终端，全键盘搞定所有工作流。
+    icon: ⌨
   - title: 📁 隔离的存储策略
     details: 采用 _pyruns_ 目录自动隔离不同脚本的实验记录，有效防止数据覆写与冲突。
     icon: ⚙️

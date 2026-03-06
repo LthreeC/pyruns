@@ -332,7 +332,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
                 prefix = f"{prefix}_{get_now_str()}"
 
             from pyruns.utils.info_io import validate_task_name
-            err = validate_task_name(prefix, task_manager.root_dir)
+            err = validate_task_name(prefix, task_manager.tasks_dir)
             if err:
                 ui.notify(
                     f"Invalid task name: {err}",

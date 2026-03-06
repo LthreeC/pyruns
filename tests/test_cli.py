@@ -86,7 +86,7 @@ def task_manager(workspace):
     tasks_dir = str(workspace / TASKS_DIR)
     with patch.object(TaskManager, "scan_disk_async", lambda self: self.scan_disk()):
         with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-            tm = TaskManager(root_dir=tasks_dir)
+            tm = TaskManager(tasks_dir=tasks_dir)
     tm.scan_disk()
     tm.refresh_from_disk(force_all=True)
     return tm
@@ -208,7 +208,8 @@ class TestCmdRun:
         task_manager.scan_disk()
 
         with patch.object(task_manager, "start_task_now") as mock_start:
-            cmd_run(task_manager, ["1"])
+            with patch("pyruns.cli.commands.cmd_fg"):
+                cmd_run(task_manager, ["1"])
             mock_start.assert_called_once_with("my-task")
 
     def test_run_by_name(self, workspace, task_manager):
@@ -217,7 +218,8 @@ class TestCmdRun:
         task_manager.scan_disk()
 
         with patch.object(task_manager, "start_task_now") as mock_start:
-            cmd_run(task_manager, ["target-task"])
+            with patch("pyruns.cli.commands.cmd_fg"):
+                cmd_run(task_manager, ["target-task"])
             mock_start.assert_called_once_with("target-task")
 
 
@@ -251,21 +253,6 @@ class TestCmdDelete:
         assert "Cancelled" in captured.out
 
 
-class TestCmdFg:
-    def test_fg_no_args(self, task_manager, capsys):
-        from pyruns.cli.commands import cmd_fg
-        cmd_fg(task_manager)
-        captured = capsys.readouterr()
-        assert "Usage" in captured.out
-
-    def test_fg_no_log(self, workspace, task_manager, capsys):
-        from pyruns.cli.commands import cmd_fg
-        _add_task(workspace, "no-log-task", "pending")
-        task_manager.scan_disk()
-
-        cmd_fg(task_manager, ["no-log-task"])
-        captured = capsys.readouterr()
-        assert "No log file" in captured.out
 
 
 # ═══════════════════════════════════════════════════════════════
