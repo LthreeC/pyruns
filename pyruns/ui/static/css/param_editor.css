@@ -1,0 +1,69 @@
+/* param editor compact input fields */
+.param-input .q-field__control {
+  min-height: 26px !important;
+  height: 26px !important;
+}
+
+.param-input .q-field__marginal {
+  height: 26px !important;
+}
+
+.param-input .q-field__native {
+  padding: 2px 8px !important;
+  font-size: 12px;
+}
+
+.param-input input {
+  font-size: 12px !important;
+}
+
+/* param editor zero-out Quasar expansion spacing */
+.param-expansion .q-expansion-item__container {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.param-expansion .q-expansion-item__content {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.param-expansion .q-item {
+  min-height: 26px !important;
+  padding: 0 4px 0 8px !important;
+  margin: 0 !important;
+}
+
+.param-expansion .q-item__section {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.param-expansion .q-item__section--side {
+  padding: 0 !important;
+  min-width: 20px !important;
+}
+
+.param-expansion .q-card,
+.param-expansion .q-card__section {
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+.param-expansion .q-list {
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.param-expansion .q-focus-helper {
+  display: none !important;
+}
+
+.param-expansion .nicegui-column,
+.param-expansion .nicegui-grid {
+  gap: 0 !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}

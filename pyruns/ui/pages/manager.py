@@ -18,7 +18,7 @@ from pyruns.ui.theme import (
     MANAGER_EMPTY_SUB_CLASSES, MANAGER_LOADING_COL_CLASSES,
     MANAGER_LOADING_TEXT_CLASSES, MANAGER_BODY_CLASSES,
     FILTER_SELECT_CLASSES, SEARCH_TEXTAREA_CLASSES,
-    SEARCH_TEXTAREA_STYLE, REFRESH_ICON_BTN_PROPS,
+    REFRESH_ICON_BTN_PROPS,
     COMPACT_SELECT_CLASSES, WORKERS_INPUT_CLASSES,
     MODE_SELECT_CLASSES, BTN_RUN_SELECTED_CLASSES,
     BTN_DELETE_SELECTED_CLASSES,
@@ -382,7 +382,7 @@ def _render_filter_row(state, task_manager, full_rescan, refresh_fn):
 
         search_input = ui.textarea(
             value="", label="Search", placeholder="device: null...",
-        ).props(INPUT_PROPS + " clearable autogrow").classes(SEARCH_TEXTAREA_CLASSES).style(SEARCH_TEXTAREA_STYLE)
+        ).props(INPUT_PROPS + " clearable autogrow").classes(SEARCH_TEXTAREA_CLASSES)
 
         # Using a slight debounce for textarea to avoid lag on multi-line paste
         search_timer = [None]

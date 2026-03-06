@@ -1,0 +1,44 @@
+/* monitor terminal-like log viewer */
+.monitor-log-pre {
+  font-family: "Cascadia Code", "Fira Code", "Consolas", "Monaco", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 8px 12px;
+  margin: 0;
+}
+
+/* keep scrollbar visible while reserving configurable right text gutter */
+.monitor-xterm .xterm-viewport {
+  padding-right: var(--monitor-xterm-gutter, 24px) !important;
+  margin-right: 0 !important;
+  box-sizing: content-box !important;
+}
+
+/* monitor task list item */
+.monitor-task-item {
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-left: 3px solid transparent;
+  flex-wrap: nowrap !important;
+  overflow: hidden;
+}
+
+.monitor-task-item:hover {
+  background: #f1f5f9;
+}
+
+.monitor-task-item.active {
+  background: #eef2ff;
+  border-left-color: #6366f1;
+}
+
+.monitor-task-item .nicegui-label,
+.monitor-task-item label,
+.monitor-task-item span {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}

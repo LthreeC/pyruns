@@ -153,3 +153,38 @@
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
+
+/* shared textarea behavior */
+.search-textarea {
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* generator page */
+.generator-form-scroll {
+  min-height: 0;
+}
+.generator-yaml-editor {
+  height: calc(100vh - 260px);
+  min-height: 400px;
+}
+.generator-args-textarea {
+  min-height: 320px;
+  background: #f8fafc;
+}
+
+/* monitor page */
+.monitor-terminal-col {
+  height: 100%;
+}
+.monitor-terminal-inner {
+  min-height: 0;
+  min-width: 0;
+}
+.monitor-terminal {
+  min-height: 0;
+  min-width: 0;
+}
+.monitor-task-list-scroll {
+  min-height: 0;
+}

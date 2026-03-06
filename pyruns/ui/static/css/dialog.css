@@ -1,0 +1,40 @@
+/* task detail dialog: flex chain card -> tab-panels -> panel -> content */
+.task-detail-card .q-tab-panels {
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  background: #1e1e1e !important;
+}
+
+.task-detail-card .q-tab-panels > div {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.task-detail-card .q-tab-panel {
+  padding: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+/* codemirror fill remaining flex space */
+.task-detail-card .readonly-cm,
+.task-detail-card nicegui-codemirror {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.task-detail-card .cm-editor {
+  height: 100% !important;
+  border: none !important;
+}

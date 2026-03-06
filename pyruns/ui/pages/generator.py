@@ -24,24 +24,20 @@ from pyruns.ui.theme import (
     GENERATOR_HEADER_CLASSES, GENERATOR_WORKSPACE_CLASSES,
     GENERATOR_LEFT_COL_CLASSES, GENERATOR_RIGHT_COL_CLASSES,
     GENERATOR_TOOLBAR_CLASSES, GENERATOR_SETTINGS_CARD_CLASSES,
-    GENERATOR_TEMPLATE_SELECT_CLASSES, GENERATOR_LOCK_ROW_CLASSES,
-    GENERATOR_TOOLBAR_SIDE_CLASSES, GENERATOR_VIEW_TOGGLE_WRAP_CLASSES,
-    GENERATOR_SETTINGS_TITLE_CLASSES, GENERATOR_TASK_NAME_INPUT_CLASSES,
-    GENERATOR_TIMESTAMP_CHECKBOX_CLASSES, GENERATOR_FORM_SCROLL_CLASSES,
-    GENERATOR_FORM_SCROLL_STYLE, GENERATOR_FORM_ROOT_CLASSES,
+    GENERATOR_TEMPLATE_SELECT_CLASSES, GENERATOR_VIEW_TOGGLE_WRAP_CLASSES,
+    GENERATOR_FORM_SCROLL_CLASSES, GENERATOR_FORM_ROOT_CLASSES,
     GENERATOR_WARNING_ROW_CLASSES, GENERATOR_WARNING_ICON_CLASSES,
     GENERATOR_WARNING_TEXT_CLASSES, GENERATOR_YAML_EDITOR_CLASSES,
-    GENERATOR_YAML_EDITOR_STYLE, GENERATOR_ARGS_CONTAINER_CLASSES,
-    GENERATOR_ARGS_HEADER_ROW_CLASSES, GENERATOR_ARGS_TITLE_CLASSES,
-    GENERATOR_ARGS_BADGE_CLASSES, GENERATOR_ARGS_EXPANSION_CLASSES,
+    GENERATOR_ARGS_CONTAINER_CLASSES, GENERATOR_ARGS_EXPANSION_CLASSES,
     GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES, GENERATOR_ARGS_TEXTAREA_CLASSES,
-    GENERATOR_ARGS_TEXTAREA_STYLE, GENERATOR_GENERATE_BTN_CLASSES,
+    GENERATOR_GENERATE_BTN_CLASSES,
     GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES, GENERATOR_INACTIVE_TOGGLE_BTN_CLASSES,
     EMPTY_STATE_COL_CLASSES, EMPTY_STATE_ICON_SIZE,
     EMPTY_STATE_ICON_CLASSES, EMPTY_STATE_TEXT_CLASSES,
     BATCH_HINT_BOX_CLASSES, BATCH_HINT_TITLE_CLASSES,
     BATCH_HINT_FOOTER_CLASSES, REFRESH_ICON_BTN_PROPS,
-    COMPACT_SELECT_CLASSES, TEXT_HEADING_SM
+    COMPACT_SELECT_CLASSES, TEXT_HEADING_SM, TEXT_MUTED_XS,
+    ROW_CENTER_GAP_1, ROW_CENTER_GAP_2, COL_FULL
 )
 from pyruns.ui.widgets import dir_picker, _ensure_css
 from pyruns._config import (
@@ -106,7 +102,7 @@ def render_generator_page(
         ).props(INPUT_PROPS).classes(GENERATOR_TEMPLATE_SELECT_CLASSES)
 
         # Read-only indicator for config_default.yaml
-        with ui.row().classes(GENERATOR_LOCK_ROW_CLASSES):
+        with ui.row().classes(ROW_CENTER_GAP_1):
             from pyruns._config import CONFIG_DEFAULT_FILENAME
             tpl_lock = ui.icon("lock", size="16px").classes("text-slate-300")
             tpl_lock.tooltip(
@@ -262,7 +258,7 @@ def render_generator_page(
 
                 if view_mode["current"] == "form":
                     expansions_ref.clear()
-                    with ui.column().classes(GENERATOR_FORM_SCROLL_CLASSES).style(GENERATOR_FORM_SCROLL_STYLE):
+                    with ui.column().classes(GENERATOR_FORM_SCROLL_CLASSES):
                         recursive_param_editor(
                             ui.column().classes(GENERATOR_FORM_ROOT_CLASSES),
                             config_data, state, task_manager,
@@ -298,13 +294,13 @@ def _editor_toolbar(
     state, yaml_holder, args_holder, run_script_holder, editor_area,
 ) -> None:
     with ui.row().classes(GENERATOR_TOOLBAR_CLASSES):
-        with ui.row().classes(GENERATOR_TOOLBAR_SIDE_CLASSES):
+        with ui.row().classes(ROW_CENTER_GAP_2):
             ui.icon("tune", size="20px").classes("text-indigo-500")
             ui.label("Parameters").classes(
                 TEXT_HEADING_SM
             )
 
-        with ui.row().classes(GENERATOR_TOOLBAR_SIDE_CLASSES):
+        with ui.row().classes(ROW_CENTER_GAP_2):
             if view_mode["current"] == "form":
                 ui.button(
                     icon="unfold_more",
@@ -369,20 +365,20 @@ def _settings_panel(
     from pyruns.utils.settings import get as _get_ws_setting, save_setting
 
     with ui.card().classes(GENERATOR_SETTINGS_CARD_CLASSES):
-        ui.label("Generation Settings").classes(GENERATOR_SETTINGS_TITLE_CLASSES)
+        ui.label("Generation Settings").classes(TEXT_HEADING_SM + " mb-2 text-slate-800")
 
         ui.input(
             value=state["task_name_input"],
             placeholder="task",
             label="Task Name (= Folder Name)",
-        ).props(INPUT_PROPS).classes(GENERATOR_TASK_NAME_INPUT_CLASSES).on_value_change(
+        ).props(INPUT_PROPS).classes(COL_FULL + " mb-1").on_value_change(
             lambda e: state.update({"task_name_input": e.value})
         )
 
         use_ts_chk = ui.checkbox(
             "Append timestamp suffix to task name",
             value=bool(_get_ws_setting("generator_auto_timestamp", DEFAULT_GENERATOR_AUTO_TIMESTAMP)),
-        ).props("dense color=indigo").classes(GENERATOR_TIMESTAMP_CHECKBOX_CLASSES)
+        ).props("dense color=indigo").classes(TEXT_MUTED_XS + " mb-3")
         use_ts_chk.on_value_change(lambda e: save_setting("generator_auto_timestamp", bool(e.value)))
 
         _batch_syntax_hint()
@@ -609,18 +605,18 @@ def _render_yaml_view(yaml_holder: dict) -> None:
     cm = ui.codemirror(
         value=yaml_holder["text"],
         language="YAML", theme="vscodeDark", line_wrapping=True,
-    ).classes(GENERATOR_YAML_EDITOR_CLASSES).style(GENERATOR_YAML_EDITOR_STYLE)
+    ).classes(GENERATOR_YAML_EDITOR_CLASSES)
     cm.on_value_change(lambda e: yaml_holder.update({"text": e.value}))
 
 
 def _render_args_view(args_holder: dict, run_script_holder: dict, script_path: str) -> None:
     with ui.column().classes(GENERATOR_ARGS_CONTAINER_CLASSES):
-        with ui.row().classes(GENERATOR_ARGS_HEADER_ROW_CLASSES):
+        with ui.row().classes(ROW_CENTER_GAP_2):
             ui.icon("terminal", size="18px").classes("text-emerald-600")
-            ui.label("Args Mode").classes(GENERATOR_ARGS_TITLE_CLASSES)
+            ui.label("Args Mode").classes(TEXT_HEADING_SM + " text-slate-800")
             ui.badge("run as: <run_script> <args>").props(
                 "color=emerald-1 text-color=emerald-8"
-            ).classes(GENERATOR_ARGS_BADGE_CLASSES)
+            ).classes("text-[10px]")
 
         with ui.expansion("Run Script (Advanced)", icon="settings", value=False).classes(
             GENERATOR_ARGS_EXPANSION_CLASSES
@@ -640,9 +636,7 @@ def _render_args_view(args_holder: dict, run_script_holder: dict, script_path: s
             ),
         ).props(
             "outlined autogrow input-style='font-family:Consolas,Monaco,monospace;line-height:1.5;'"
-        ).classes(
-            GENERATOR_ARGS_TEXTAREA_CLASSES
-        ).style(GENERATOR_ARGS_TEXTAREA_STYLE).on_value_change(
+        ).classes(GENERATOR_ARGS_TEXTAREA_CLASSES).on_value_change(
             lambda e: args_holder.update({"text": e.value})
         )
 

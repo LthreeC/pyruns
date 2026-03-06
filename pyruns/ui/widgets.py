@@ -21,9 +21,30 @@ from pyruns.ui.theme import (
 
 _CSS_CLIENTS: set = set()
 
-_CSS_PATH = os.path.join(os.path.dirname(__file__), "static", "pyruns.css")
-with open(_CSS_PATH, "r", encoding="utf-8") as _f:
-    _GLOBAL_CSS = _f.read()
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+_CSS_DIR = os.path.join(_STATIC_DIR, "css")
+_LEGACY_CSS_PATH = os.path.join(_STATIC_DIR, "pyruns.css")
+
+
+def _load_global_css() -> str:
+    """Load categorized CSS files; fallback to legacy monolithic stylesheet."""
+    css_parts = []
+    if os.path.isdir(_CSS_DIR):
+        for name in sorted(os.listdir(_CSS_DIR)):
+            if not name.lower().endswith(".css"):
+                continue
+            path = os.path.join(_CSS_DIR, name)
+            with open(path, "r", encoding="utf-8") as f:
+                css_parts.append(f.read())
+
+    if not css_parts and os.path.exists(_LEGACY_CSS_PATH):
+        with open(_LEGACY_CSS_PATH, "r", encoding="utf-8") as f:
+            css_parts.append(f.read())
+
+    return "\n\n".join(css_parts)
+
+
+_GLOBAL_CSS = _load_global_css()
 
 
 def _ensure_css() -> None:
@@ -34,7 +55,8 @@ def _ensure_css() -> None:
         cid = "__default__"
     if cid not in _CSS_CLIENTS:
         _CSS_CLIENTS.add(cid)
-        ui.add_css(_GLOBAL_CSS)
+        if _GLOBAL_CSS:
+            ui.add_css(_GLOBAL_CSS)
 
 
 # ═══════════════════════════════════════════════════════════════

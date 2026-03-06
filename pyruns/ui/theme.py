@@ -1,16 +1,13 @@
-"""
+﻿"""
 Centralized UI theme constants for Pyruns.
 All style strings, color maps, and CSS classes live here.
 """
 
 # ─── Layout Widths ──────────────────────────────────────────
-SIDEBAR_WIDTH = "5%"            # Left navigation sidebar width
-MONITOR_PANEL_WIDTH = "16%"      # Monitor page task list panel width
+SIDEBAR_WIDTH = "6%"            # Left navigation sidebar width
+MONITOR_PANEL_WIDTH = "15%"      # Monitor page task list panel width
 
 # ─── Spacing & Layout Presets ───────────────────────────────
-LAYOUT_ROW_GAP = "gap-2"
-LAYOUT_COL_GAP = "gap-2"
-
 # ═══════════════════════════════════════════════════════════════
 #  UI Theme Constants
 # ═══════════════════════════════════════════════════════════════
@@ -45,28 +42,17 @@ GENERATOR_TOOLBAR_CLASSES = (
 )
 GENERATOR_SETTINGS_CARD_CLASSES = "w-full p-3 shadow-sm bg-white border border-slate-100"
 GENERATOR_TEMPLATE_SELECT_CLASSES = "w-64"
-GENERATOR_LOCK_ROW_CLASSES = "items-center gap-1"
-GENERATOR_TOOLBAR_SIDE_CLASSES = "items-center gap-2"
 GENERATOR_VIEW_TOGGLE_WRAP_CLASSES = "items-center gap-1 bg-slate-100 p-1"
-GENERATOR_SETTINGS_TITLE_CLASSES = "text-sm font-bold mb-2 text-slate-800"
-GENERATOR_TASK_NAME_INPUT_CLASSES = "w-full mb-1"
-GENERATOR_TIMESTAMP_CHECKBOX_CLASSES = "text-xs text-slate-500 mb-3"
-GENERATOR_FORM_SCROLL_CLASSES = "w-full overflow-y-auto flex-grow gap-0"
-GENERATOR_FORM_SCROLL_STYLE = "min-height: 0;"
+GENERATOR_FORM_SCROLL_CLASSES = "w-full overflow-y-auto flex-grow gap-0 generator-form-scroll"
 GENERATOR_FORM_ROOT_CLASSES = "w-full gap-0 p-0 m-0"
 GENERATOR_WARNING_ROW_CLASSES = "w-full items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 mb-2"
 GENERATOR_WARNING_ICON_CLASSES = "text-amber-600 mt-0.5"
 GENERATOR_WARNING_TEXT_CLASSES = "text-xs text-amber-700 leading-5"
-GENERATOR_YAML_EDITOR_CLASSES = "w-full overflow-hidden"
-GENERATOR_YAML_EDITOR_STYLE = "height: calc(100vh - 260px); min-height: 400px;"
+GENERATOR_YAML_EDITOR_CLASSES = "w-full overflow-hidden generator-yaml-editor"
 GENERATOR_ARGS_CONTAINER_CLASSES = "w-full h-full p-4 bg-slate-50 border border-slate-200 gap-3"
-GENERATOR_ARGS_HEADER_ROW_CLASSES = "items-center gap-2"
-GENERATOR_ARGS_TITLE_CLASSES = "text-sm font-bold text-slate-800 tracking-wide"
-GENERATOR_ARGS_BADGE_CLASSES = "text-[10px]"
 GENERATOR_ARGS_EXPANSION_CLASSES = "w-full bg-white border border-slate-200"
 GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES = "w-full font-mono text-xs"
-GENERATOR_ARGS_TEXTAREA_CLASSES = "w-full text-[12px]"
-GENERATOR_ARGS_TEXTAREA_STYLE = "min-height: 320px; background: #f8fafc;"
+GENERATOR_ARGS_TEXTAREA_CLASSES = "w-full text-[12px] generator-args-textarea"
 GENERATOR_GENERATE_BTN_CLASSES = "w-full text-sm font-bold py-2 tracking-wide rounded"
 GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES = "px-5 py-1.5 font-bold text-sm tracking-wide rounded"
 GENERATOR_INACTIVE_TOGGLE_BTN_CLASSES = (
@@ -121,31 +107,17 @@ BATCH_HINT_FOOTER_CLASSES = "text-[10px] text-slate-400 mt-3 text-center w-full"
 # ─── Monitor Page ───────────────────────────────────────────
 MONITOR_HEADER_HEIGHT_PX = 52
 MONITOR_WORKSPACE_CLASSES = "w-full gap-0 flex-nowrap"
-MONITOR_TERMINAL_COL_CLASSES = "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1e1e]"
+MONITOR_TERMINAL_COL_CLASSES = "flex-grow min-w-0 gap-0 overflow-hidden bg-[#1e1e1e] monitor-terminal-col"
 MONITOR_WORKSPACE_STYLE = f"height: calc(100vh - {MONITOR_HEADER_HEIGHT_PX}px); overflow: hidden;"
 MONITOR_SIDEBAR_STYLE = f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"
-MONITOR_TERMINAL_COL_STYLE = "height: 100%;"
-MONITOR_TERMINAL_INNER_STYLE = "min-height: 0; min-width: 0;"
-MONITOR_TERMINAL_STYLE = "min-height: 0; min-width: 0;"
 MONITOR_HEADER_ROW_CLASSES = "w-full items-center gap-2 px-2 py-1.5 flex-none"
-MONITOR_TASKS_TITLE_CLASSES = "text-xs font-bold text-white"
-MONITOR_REFRESH_BTN_CLASSES = "text-white/70 hover:text-white"
-MONITOR_SEARCH_INPUT_CLASSES = "flex-grow text-xs font-mono"
-MONITOR_SEARCH_INPUT_STYLE = "max-height: 80px; overflow-y: auto;"
 MONITOR_PINNED_CARD_CLASSES = "w-full gap-0 p-0 m-0 border-b-2 border-indigo-200 bg-indigo-50/50 flex-none"
-MONITOR_TASK_LIST_SCROLL_CLASSES = "flex-grow w-full overflow-y-auto"
-MONITOR_TASK_LIST_SCROLL_STYLE = "min-height: 0;"
+MONITOR_TASK_LIST_SCROLL_CLASSES = "flex-grow w-full overflow-y-auto monitor-task-list-scroll"
 MONITOR_EXPORT_BTN_CLASSES = "w-full text-sm font-bold tracking-wide py-1 rounded"
-MONITOR_TASK_CHECKBOX_CLASSES = "shrink-0 pl-1"
 MONITOR_TASK_ITEM_BASE_CLASSES = (
     "flex-1 w-0 min-w-0 justify-center gap-0 cursor-pointer overflow-hidden "
     "py-1 pl-1.5 rounded monitor-task-item"
 )
-MONITOR_TASK_LINE1_CLASSES = "w-full items-center justify-between gap-1 flex-nowrap"
-MONITOR_TASK_LINE1_LEFT_CLASSES = "items-center gap-1 flex-1 min-w-0 flex-nowrap"
-MONITOR_PIN_ICON_CLASSES = "text-indigo-500 shrink-0 transform -rotate-45"
-MONITOR_TASK_NAME_CLASSES = "truncate flex-1 min-w-0 text-[11px] leading-snug task-name"
-MONITOR_TASK_STATUS_LABEL_CLASSES = "truncate w-full text-[9px] text-slate-400 leading-snug"
 
 # ─── Input / Form ───────────────────────────────────────────
 INPUT_PROPS = "outlined dense bg-white text-slate-800"
@@ -172,13 +144,10 @@ BTN_CLASS = "transition-all duration-200"
 BTN_PRIMARY = f"{BTN_CLASS} bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm hover:shadow"
 BTN_SUCCESS = f"{BTN_CLASS} bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm hover:shadow"
 BTN_DANGER = f"{BTN_CLASS} bg-rose-600 text-white hover:bg-rose-700 shadow-sm hover:shadow"
-BTN_OUTLINE = f"{BTN_CLASS} border border-slate-300 text-slate-700 hover:bg-slate-50 font-medium"
-BTN_PRIMARY_COMPACT = f"{BTN_PRIMARY} font-bold tracking-wide py-1 rounded"
 BTN_RUN_SELECTED_CLASSES = f"{BTN_SUCCESS} font-bold px-6 py-2.5 text-sm"
 BTN_DELETE_SELECTED_CLASSES = BTN_DANGER
 
 # ─── Shared Panel Styles ──────────────────────────────────
-PANEL_CARD = "bg-white shadow-sm border border-slate-100"
 PANEL_HEADER_INDIGO = (
     "bg-gradient-to-r from-indigo-600 to-indigo-700"
 )
@@ -263,18 +232,12 @@ ROW_CENTER_GAP_1 = "items-center gap-1"
 ROW_CENTER_GAP_2 = "items-center gap-2"
 ROW_CENTER_GAP_3 = "items-center gap-3"
 ROW_CENTER_GAP_4 = "items-center gap-4"
-ROW_BETWEEN_CENTER = "w-full items-center justify-between"
 COL_FULL = "w-full"
-COL_FULL_GAP_1 = "w-full gap-1"
-COL_FULL_GAP_2 = "w-full gap-2"
-COL_SCROLL_FILL = "w-full flex-grow overflow-y-auto"
 TEXT_HEADING_SM = "text-sm font-bold text-slate-700 tracking-wide"
 TEXT_MUTED_XS = "text-xs text-slate-500"
-TEXT_MUTED_2XS = "text-[10px] text-slate-400"
 
 FILTER_SELECT_CLASSES = "w-48"
-SEARCH_TEXTAREA_CLASSES = "w-56 font-mono"
-SEARCH_TEXTAREA_STYLE = "max-height: 80px; overflow-y: auto;"
+SEARCH_TEXTAREA_CLASSES = "w-56 font-mono search-textarea"
 WORKERS_INPUT_CLASSES = "w-20"
 MODE_SELECT_CLASSES = "w-28"
 COMPACT_SELECT_CLASSES = "w-24"
@@ -286,8 +249,8 @@ MANAGER_LOADING_COL_CLASSES = "w-full items-center justify-center py-20 gap-4 mt
 MANAGER_LOADING_TEXT_CLASSES = "text-slate-500 font-bold tracking-wider animate-pulse"
 MANAGER_BODY_CLASSES = "w-full flex-grow px-1 pb-1 gap-1 overflow-y-auto"
 
-MONITOR_TERMINAL_INNER_CLASSES = "w-full flex-grow overflow-hidden"
-MONITOR_TERMINAL_CLASSES = "w-full h-full pl-2 pt-1"
+MONITOR_TERMINAL_INNER_CLASSES = "w-full flex-grow overflow-hidden monitor-terminal-inner"
+MONITOR_TERMINAL_CLASSES = "w-full h-full pl-2 pt-1 monitor-terminal"
 MONITOR_HEADER_ICON_CLASSES = "text-slate-500"
 MONITOR_HEADER_LABEL_CLASSES = "text-xs font-bold text-white truncate"
 MONITOR_LOG_SELECT_PROPS = "outlined dense dark options-dense"
@@ -339,6 +302,21 @@ ENV_EDITOR_EMPTY_ICON_CLASSES = "text-indigo-200"
 ENV_EDITOR_EMPTY_TITLE_CLASSES = "text-slate-400 text-base"
 ENV_EDITOR_EMPTY_SUB_CLASSES = "text-slate-300 text-xs"
 ENV_EDITOR_EMPTY_ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
+ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
+ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
+ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"
+
+ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
+ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
+ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
+ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"
+
+ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
+ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
+ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
+ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"
+
+ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
 ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
 ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
 ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"

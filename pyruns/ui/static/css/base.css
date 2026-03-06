@@ -1,0 +1,16 @@
+/* readonly codemirror */
+.readonly-cm .cm-focused {
+  outline: none !important;
+}
+.readonly-cm .cm-cursor {
+  display: none !important;
+}
+.readonly-cm .cm-activeLine {
+  background: transparent !important;
+}
+.readonly-cm .cm-content {
+  cursor: default;
+}
+.readonly-cm .cm-gutters {
+  cursor: default;
+}
