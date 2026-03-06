@@ -1,8 +1,8 @@
 """
 Report / Export service — builds CSV/JSON reports from monitor data.
 
-Data-loading utilities (load_monitor_data, get_log_options) live in
-pyruns.utils.task_io. This module only contains export business logic.
+Data-loading utilities (load_record_data, get_log_options) live in
+``pyruns.utils.info_io``. This module only contains export business logic.
 """
 import io
 import csv

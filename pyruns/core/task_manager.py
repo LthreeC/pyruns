@@ -44,10 +44,10 @@ class TaskManager:
         self.tasks_dir = tasks_dir
         self.tasks: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._observer_lock = threading.Lock()
 
         # Execution state
         self.is_processing = False
-        self.execution_mode = "thread"
 
         # Observers for reactive UI
         self._observers: List[Callable[[], None]] = []
@@ -121,11 +121,22 @@ class TaskManager:
 
     def on_change(self, callback: Callable[[], None]) -> None:
         """Register a callback for when task state changes (reactive UI)."""
-        self._observers.append(callback)
+        with self._observer_lock:
+            if callback not in self._observers:
+                self._observers.append(callback)
+
+    def off_change(self, callback: Callable[[], None]) -> None:
+        """Unregister a previously registered callback."""
+        with self._observer_lock:
+            if callback in self._observers:
+                self._observers.remove(callback)
 
     def trigger_update(self) -> None:
         """Notify all registered observers."""
-        for cb in self._observers:
+        with self._observer_lock:
+            callbacks = list(self._observers)
+
+        for cb in callbacks:
             try:
                 cb()
             except Exception as e:
@@ -648,11 +659,11 @@ class TaskManager:
                         i += 1
                     else:
                         break
-            save_task_info(task["dir"], info)
+            save_task_info(task["dir"], task_info)
             task.update({
-                "start_times": info.get("start_times", []),
-                "finish_times": info.get("finish_times", []),
-                "pids": info.get("pids", []),
+                "start_times": task_info.get("start_times", []),
+                "finish_times": task_info.get("finish_times", []),
+                "pids": task_info.get("pids", []),
             })
 
     def _sync_status_to_disk(

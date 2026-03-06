@@ -33,6 +33,7 @@ from pyruns.ui.theme import (
     MONITOR_EXPORT_ROW_CLASSES, MONITOR_TASK_ROW_CLASSES,
 )
 from pyruns.ui.widgets import _ensure_css
+from pyruns.ui.update_scheduler import ClientDebouncedUpdater
 from pyruns.ui.components.export_dialog import show_export_dialog
 from pyruns.utils.events import log_emitter
 
@@ -260,12 +261,6 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     # ----------------------------------------------------------
     #  Reactive updates (status + log file list only, no log polling)
     # ----------------------------------------------------------
-    import asyncio
-    try:
-        main_loop = asyncio.get_running_loop()
-    except RuntimeError:
-        main_loop = None
-
     def _refresh_panel():
         pinned = sel.get("_pinned_task_view")
         if pinned:
@@ -278,30 +273,14 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
             pag.refresh()
 
     _mon_dirty = {"flag": False}
-    # Capture the specific client context 
+    # Capture the specific client context
     client = ui.context.client
+    try:
+        log_emitter.bind_loop(asyncio.get_running_loop())
+    except RuntimeError:
+        pass
 
-    def on_task_manager_change():
-        def _do_update():
-            if getattr(client, "has_socket_connection", False) is False:
-                return
-            with client:
-                # Throttle UI redraws: just set dirty flag for the 0.5s timer to pick up
-                _mon_dirty["flag"] = True
-                    
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            if loop and loop.is_running():
-                loop.call_soon_threadsafe(_do_update)
-            else:
-                _do_update()
-        except RuntimeError:
-            _do_update()
-
-    task_manager.on_change(on_task_manager_change)
-
-    async def _check_mon_dirty():
+    async def _apply_monitor_updates():
         if _mon_dirty["flag"]:
             _mon_dirty["flag"] = False
             _refresh_panel()
@@ -336,26 +315,36 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
                 log_select_el.update()
 
-    # 1s timer for task list / status / log file list UI refresh (no log data polling)
-    _mon_timer = ui.timer(1.0, _check_mon_dirty)
+    _mon_updater = ClientDebouncedUpdater(
+        client, _apply_monitor_updates, delay_sec=0.12
+    )
+
+    def on_task_manager_change():
+        _mon_dirty["flag"] = True
+        _mon_updater.trigger()
+
+    task_manager.on_change(on_task_manager_change)
 
     async def _on_tab_switch(tab: str):
         if tab == "monitor":
-            _refresh_panel()
+            _mon_dirty["flag"] = True
+            _mon_updater.trigger()
 
     from pyruns.utils.events import event_sys
 
     # Listen for run_root changes from other pages
     def _on_root_changed(new_path):
-        _refresh_panel()
+        _mon_dirty["flag"] = True
+        _mon_updater.trigger()
 
     event_sys.on("on_run_root_change", _on_root_changed)
     event_sys.on("on_tab_change", _on_tab_switch)
 
     def _cleanup_on_disconnect(*_):
+        task_manager.off_change(on_task_manager_change)
         event_sys.off("on_tab_change", _on_tab_switch)
         event_sys.off("on_run_root_change", _on_root_changed)
-        _mon_timer.cancel()
+        _mon_updater.close()
         # Unsubscribe from live log push to prevent memory leaks
         current_tid = sel.get("task_id")
         if current_tid:

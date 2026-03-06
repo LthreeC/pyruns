@@ -48,8 +48,6 @@ def render_task_card(
     card = ui.card().classes(
         f"{CARD_BASE_CLASSES} {card_style} {highlight}"
     ).style("min-height: 148px")
-    
-    state.setdefault("_manager_cards", {})[t["name"]] = card
 
     card.on("click", lambda _e=None, t=t: open_task_dialog(t))
 
@@ -131,7 +129,7 @@ def render_task_card(
                 )
 
 
-            _card_run_indicator(t, status, state, task_manager, refresh_tasks)
+            _card_run_indicator(t, status, state, task_manager)
 
 
 # ── Small helpers ──
@@ -140,7 +138,7 @@ def _card_action_btn(icon: str, tooltip: str, on_click: Callable):
     ui.button(icon=icon, on_click=on_click).props(ACTION_BTN_PROPS).classes(ACTION_BTN_CLASSES).tooltip(tooltip)
 
 
-def _card_run_indicator(t, status, state, task_manager, refresh_tasks):
+def _card_run_indicator(t, status, state, task_manager):
     tid = t["name"]
     if status in ("pending", "failed"):
         def run_single(*args):

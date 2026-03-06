@@ -4,7 +4,6 @@ Task Detail Dialog – displays task info, config, logs, notes, env vars.
 import os
 import json
 from nicegui import ui
-from typing import Dict, Any
 
 from pyruns._config import CONFIG_FILENAME
 from pyruns.utils.info_io import load_task_info, save_task_info
@@ -46,12 +45,11 @@ _DRAG_JS = """(e) => {
 }"""
 
 
-def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
+def build_task_dialog(selected: dict, task_manager):
     """
     Build the task detail dialog (once, at page init).
     Stores the dialog and open function into `selected["_dialog"]` and `selected["_open_fn"]`.
     """
-    selected["state"] = state
     with ui.dialog().props("no-backdrop-dismiss") as task_dialog:
         with ui.card().classes(
             f"task-detail-card {DIALOG_WIDTH_LARGE} {DIALOG_BACKDROP}"
@@ -112,7 +110,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
                             ui.spinner('dots', size='3em', color='indigo')
                             ui.label("Loading task details...").classes(LOADING_TEXT_CLASSES)
 
-                    _build_tab_task_info(t, info_obj, selected)
+                    _build_tab_task_info(t, info_obj, selected, task_manager)
                     _build_tab_config(t, cfg_text)
                     _build_tab_notes(t, info_obj)
                     _build_tab_env_vars(t, info_obj)
@@ -180,7 +178,7 @@ def build_task_dialog(selected: dict, state: Dict[str, Any], task_manager):
 #  Individual tab builders
 # ═══════════════════════════════════════════════════════════════
 
-def _build_tab_task_info(t, info_obj, selected):
+def _build_tab_task_info(t, info_obj, selected, task_manager):
     """Task Info tab — readonly JSON viewer and rename control."""
     with ui.tab_panel("task_info").classes(TAB_PANEL_FULL):
         # Rename control
@@ -203,12 +201,8 @@ def _build_tab_task_info(t, info_obj, selected):
                 if info_obj:
                     info_obj["name"] = new_name
                 ui.notify(f"Task renamed to {new_name}", type="positive", icon="check")
-                # Trigger a broader refresh via the background refresh mechanism
-                if "state" in selected:
-                    selected["state"]["_manager_dirty"] = True
-                else:
-                    # Fallback if state wasn't stored (we should store it in build_task_dialog)
-                    pass
+                # Notify manager/monitor pages to refresh reactive lists.
+                task_manager.trigger_update()
 
             from pyruns.ui.theme import BTN_PRIMARY
             ui.button("Rename", icon="save", on_click=save_name).props("unelevated dense size=sm").classes(f"{BTN_PRIMARY} px-4")

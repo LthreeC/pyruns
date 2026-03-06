@@ -390,7 +390,7 @@ def _settings_panel(state, view_mode, yaml_holder, task_generator, task_manager,
 
                 show_batch_confirm(
                     configs, prefix, target_config,
-                    task_generator, task_manager, state,
+                    task_generator, task_manager,
                     on_success=on_batch_success
                 )
 

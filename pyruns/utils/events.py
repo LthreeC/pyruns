@@ -28,6 +28,17 @@ class LogEmitter:
         self._lock = threading.Lock()
         # { task_name: [callback, ...] }
         self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
+        self._loop = None
+
+    def bind_loop(self, loop=None) -> None:
+        """Bind a UI asyncio loop for thread-safe callback dispatch."""
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+        with self._lock:
+            self._loop = loop
 
     def subscribe(self, task_name: str, callback: Callable) -> None:
         """Register *callback* to receive log chunks for *task_name*."""
@@ -60,13 +71,8 @@ class LogEmitter:
         if not subs:
             return
 
-        # Try to get the asyncio event loop for NiceGUI / Quasar.
-        # In CLI mode there is no running loop, so we call callbacks directly.
-        loop = None
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
+        with self._lock:
+            loop = self._loop
 
         for cb in subs:
             try:

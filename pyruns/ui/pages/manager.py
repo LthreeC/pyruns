@@ -24,6 +24,7 @@ from pyruns.ui.theme import (
     BTN_DELETE_SELECTED_CLASSES,
 )
 from pyruns.ui.widgets import dir_picker, section_header
+from pyruns.ui.update_scheduler import ClientDebouncedUpdater
 from pyruns.ui.components.task_card import render_card_grid
 from pyruns.ui.components.task_dialog import build_task_dialog
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
@@ -42,7 +43,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
     _PAGE_SIZE: int = int(_get_setting("ui_page_size", 50)) or 0
 
     selected = {"task": None, "tab": "task_info"}
-    build_task_dialog(selected, state, task_manager)
+    build_task_dialog(selected, task_manager)
     open_task_dialog = selected["_open_fn"]
 
     # ── Pagination state ──
@@ -98,7 +99,6 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             return
 
         state["_manager_checkboxes"] = {}
-        state["_manager_cards"] = {}
         # Apply filters
         # 1. Directory filter
         tasks = task_manager.tasks
@@ -175,48 +175,43 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
 
     def _mark_dirty():
         state["_manager_dirty"] = True
+        _manager_updater.trigger()
 
-    task_manager.on_change(_mark_dirty)
-
-    def _check_dirty():
+    async def _check_dirty():
         if not client_connected():
             return
         # Only refresh if data is dirty AND user is actually looking at the manager tab
         if state.get("_manager_dirty", False) and state.get("active_tab") == "manager":
+            from nicegui import run
+            state["_manager_is_loading"] = True
+            task_list.refresh()
+            try:
+                await run.io_bound(task_manager.refresh_from_disk, None, False, True)
+            finally:
+                state["_manager_is_loading"] = False
             state["_manager_dirty"] = False
-            task_manager.refresh_from_disk(check_all=True)
             task_list.refresh()
 
-    _mgr_timer = ui.timer(1.0, _check_dirty)
+    _manager_updater = ClientDebouncedUpdater(
+        client, _check_dirty, delay_sec=0.12
+    )
+    task_manager.on_change(_mark_dirty)
 
     def _cleanup_manager(*_):
-        try:
-            task_manager._observers.remove(_mark_dirty)
-        except ValueError:
-            pass
-        _mgr_timer.cancel()
+        task_manager.off_change(_mark_dirty)
+        _manager_updater.close()
+        if _on_tab_switch in cbs:
+            cbs.remove(_on_tab_switch)
     
-    client = ui.context.client
     client.on_disconnect(_cleanup_manager)
 
     # ── Immediate refresh when switching TO the manager tab ──
     async def _on_tab_switch(tab: str):
         if tab == "manager" and state.get("_manager_dirty", False):
-            state["_manager_is_loading"] = True
-            task_list.refresh()
-
-            import asyncio
-            await asyncio.sleep(0.05)
-
-            state["_manager_is_loading"] = False
-            state["_manager_dirty"] = False
-            task_manager.refresh_from_disk(check_all=True)
-            task_list.refresh()
+            _manager_updater.trigger()
 
     cbs = state.setdefault("on_tab_change", [])
     cbs.append(_on_tab_switch)
-    if hasattr(ui.context, "client"):
-        ui.context.client.on_disconnect(lambda: cbs.remove(_on_tab_switch) if _on_tab_switch in cbs else None)
 
 
     # ## px-1: 左右内边距1 (4px); pb-1: 底部内边距1; gap-0: 消除子元素（全选框和任务卡片）之间的默认16px大间距
