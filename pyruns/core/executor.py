@@ -21,7 +21,7 @@ from .._config import (
     TASK_INFO_FILENAME,
 )
 from pyruns.utils.log_io import append_log
-from pyruns.utils.info_io import load_task_info, save_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info, normalize_run_history
 from pyruns.utils.events import log_emitter
 from pyruns.utils import get_logger, get_now_str
 
@@ -55,20 +55,7 @@ def _get_log_path(task_dir: str, run_index: int) -> str:
     return os.path.join(log_dir, f"run{run_index}.log")
 
 
-def _normalize_run_history(meta: Dict[str, Any]) -> int:
-    """Keep only completed-run entries so run_index matches array lengths."""
-    starts = list(meta.get("start_times", []) or [])
-    finishes = list(meta.get("finish_times", []) or [])
-    completed = min(len(starts), len(finishes))
-
-    meta["start_times"] = starts[:completed]
-    meta["finish_times"] = finishes[:completed]
-    meta["pids"] = list(meta.get("pids", []) or [])[:completed]
-    meta["records"] = list(meta.get("records", []) or [])[:completed]
-    meta["tracks"] = list(meta.get("tracks", []) or [])[:completed]
-    meta["run_index"] = completed
-    meta.pop("_run_index", None)
-    return completed
+# _normalize_run_history is now in utils/info_io.py  →  normalize_run_history
 
 
 def _build_command(meta_cmd, script_path, meta_workdir, config, run_mode: str = "config"):
@@ -356,7 +343,7 @@ def run_task_worker(
                 RECORDS_KEY: records,
             })
 
-        _normalize_run_history(meta_final)
+        normalize_run_history(meta_final)
 
         meta_final.update({
             "status": status,
@@ -368,7 +355,7 @@ def run_task_worker(
 
     except Exception as e:
         meta_err = load_task_info(task_dir) or dict(task_meta)
-        _normalize_run_history(meta_err)
+        normalize_run_history(meta_err)
 
         meta_err.update({
             "status": "failed",

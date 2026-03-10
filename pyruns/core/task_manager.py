@@ -20,7 +20,7 @@ from pyruns._config import (
 )
 from pyruns.utils.config_utils import load_yaml
 from pyruns.utils.process_utils import is_pid_running, kill_process
-from pyruns.utils.info_io import load_task_info, save_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info, normalize_run_history
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger, get_now_str
 
@@ -636,7 +636,7 @@ class TaskManager:
     def _clean_aborted_runs(self, task: dict):
         task_info = load_task_info(task["dir"])
         if not task_info: return
-        valid_sz = self._normalize_run_history(task_info)
+        valid_sz = normalize_run_history(task_info)
 
         from pyruns._config import RUN_LOGS_DIR
         log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
@@ -677,7 +677,7 @@ class TaskManager:
         if not task_info:
             return
         task_info["status"] = "failed"
-        self._normalize_run_history(task_info)
+        normalize_run_history(task_info)
         save_task_info(task["dir"], task_info)
         task.update({
             "status": "failed",
@@ -687,19 +687,4 @@ class TaskManager:
             "records": len(task_info.get("records", [])),
             "run_index": task_info.get("run_index", 0),
         })
-
-    @staticmethod
-    def _normalize_run_history(task_info: dict) -> int:
-        """Normalize per-run arrays so they only keep completed-run entries."""
-        starts = list(task_info.get("start_times", []) or [])
-        finishes = list(task_info.get("finish_times", []) or [])
-        completed = min(len(starts), len(finishes))
-
-        task_info["start_times"] = starts[:completed]
-        task_info["finish_times"] = finishes[:completed]
-        task_info["pids"] = list(task_info.get("pids", []) or [])[:completed]
-        task_info["records"] = list(task_info.get("records", []) or [])[:completed]
-        task_info["tracks"] = list(task_info.get("tracks", []) or [])[:completed]
-        task_info["run_index"] = completed
-        task_info.pop("_run_index", None)
-        return completed
+    # _normalize_run_history has been moved to utils/info_io.py → normalize_run_history

@@ -9,32 +9,57 @@
 </p>
 
 <p align="center">
-  <b>Python experiment management Web UI: parameter visualization, batch scheduling, and resource monitoring</b>
+  <b>Python experiment management Web UI: parameter visualization, batch scheduling, and resource monitoring</b><br>
+  <sub>✅ Zero-intrusion argparse support · ✅ CLI mode works with any framework · ✅ Fully local execution</sub>
 </p>
 
 Pyruns provides a local browser-based graphical interface for Python scripts. Its main features include generating visual configuration forms by parsing `argparse`, supporting specific syntax to implement batch task generation on parameter grids, managing parallel scheduling queues, providing real-time stream output of ANSI-colored logs, and exporting aggregated cross-task metrics.
 
-**This tool does not require modification of native business code, and all processes are executed locally.**
+**No code modification required · No account signup · No internet needed · Everything runs locally**
 
 ```bash
 pip install pyruns
-pyr train.py          # Launch Web UI and proxy the current script
+pyr train.py          # Launch Web UI in 30 seconds
 ```
+
+> 💡 **Only 3 dependencies**: `nicegui` + `pyyaml` + `psutil` — install and go. No heavyweight frameworks will pollute your environment.
 
 ---
 
 ## 💡 Engineering Challenges Addressed
 
-During standard model training workflows, modifying and tracking different parameter combinations is often extremely tedious and error-prone:
-- Writing multi-layered nested Bash loop scripts for hyperparameter search is verbose and hard to maintain.
-- Manually recording each parameter set and its corresponding experimental result is time-consuming and easily lost or confused over time.
-- During concurrent execution with multiple parameters, standard output logs interleave, hindering error localization.
+### Pain Point 1: Hyperparameter Search Requires Hand-Written Bash Loops
 
-**Pyruns' core solution is designed to make the cumbersome process of "parameter modification and experiment tracking" incredibly simple:**
-- ✅ **Minimalist Task Generation**: Non-invasively parses existing `argparse` and provides a **concise, clearly visible Web UI parameter editor**. It supports declarative syntax (e.g., `lr: 0.001 | 0.01`) to expand parameter grids and generate isolated tasks with one click.
-- ✅ **Convenient Historical Task Management**: You can easily track, search, reuse, and manage the status of previously run experimental tasks.
-- ✅ **Real-time Isolated Log Viewing**: No need to worry about tasks being interrupted by SSH terminal disconnections. While tasks are running, you can view isolated standard outputs and error stacks for each task in real-time right in your browser.
-- ✅ **Variable Monitoring & One-Click Report Export**: Provides a simple API to monitor key metrics during task execution. It supports cross-task metric comparison on the frontend and allows you to merge and export comprehensive reports with a single click.
+**Without Pyruns** — you need to write painful nested scripts like this:
+```bash
+for lr in 0.001 0.01 0.1; do
+  for bs in 32 64 128; do
+    for opt in adam sgd; do
+      python train.py --lr $lr --batch_size $bs --optimizer $opt \
+        > logs/lr${lr}_bs${bs}_${opt}.log 2>&1 &
+    done
+  done
+done
+wait
+```
+
+**With Pyruns** — two lines of declaration replace all 18 nested combinations:
+```yaml
+lr: 0.001 | 0.01 | 0.1
+batch_size: 32 | 64 | 128
+optimizer: adam | sgd
+```
+Click **GENERATE** → 18 isolated tasks are automatically created, each with its own config snapshot and log directory.
+
+### Pain Point 2: Experiment Tracking Relies on Memory and Spreadsheets
+
+> *"What batch_size did I use for that lr=0.01 experiment last week? Where did I save the results?"*
+
+Pyruns automatically saves a complete parameter snapshot (`config.yaml`), run timeline, PID records, and user-editable notes for **every task**. In the Manager interface, you can instantly search, filter, and reuse historical tasks — no more digging through folders or grepping log files.
+
+### Pain Point 3: Concurrent Task Logs Become an Unreadable Mess
+
+Running 6 experiments concurrently with all their stdout interleaved? Pyruns **fully isolates** each task's output into dedicated log files and provides a real-time ANSI-colored terminal in the Monitor page — including proper `tqdm` progress bar rendering. Tasks continue running in the background even if your SSH connection drops.
 
 ---
 
@@ -42,13 +67,15 @@ During standard model training workflows, modifying and tracking different param
 
 | Feature | Description |
 |---------|-------------|
-| 🔌 **Static Parameter Parsing** | Extracts definitions of `argparse` from the source code to render the Web UI form; direct config through `yaml` files is also supported. |
+| 🔌 **Multi-Framework Zero-Intrusion Parsing** | Extracts definitions of `argparse` from the source code to render the Web UI form; direct config through `yaml` files is also supported; **CLI/Args mode can run scripts using any framework (Hydra, Fire, etc.)**. |
 | 🧮 **Parameter Grid Expansion** | Supports building batch parameter configurations utilizing `\|` for Cartesian product permutations or `(\|)` for paired mappings. |
 | ⚡ **Isolated Task Queues** | Implements a buffer queue with configurable Thread/Process pool executors for execution limits. |
 | 📋 **Status Dashboard** | Manages the progression (Pending/Running/Failed/Completed) and provides historical query/rerun functions. |
 | 🖥️ **Stream Colored Terminal** | Delivers incremental terminal output feeds fully supporting ANSI escape code rendering (e.g., `tqdm`). |
 | 📊 **Metrics Aggregator** | Affords `pyruns.record()` callback to consolidate logs from various experimental groups into CSV/JSON logs. |
 | 📁 **Parameter Snapshots** | Configures runtime directories corresponding to the file topology within `_pyruns/`, storing current environments to mitigate cross-interference, equipped with a soft-deletion mechanism for safety. |
+
+> 🎯 **Design Philosophy**: Pyruns is not a heavyweight experiment platform (like MLflow or W&B). It's a **ready-to-use, lightweight local tuning assistant**. Its goal is to give you the convenience of parameter management and experiment tracking at **minimal learning cost**, without changing your existing workflow.
 
 ---
 
@@ -93,6 +120,22 @@ pyruns> run 1      # Run a task and automatically stream standard output!
 pyruns> status -i  # Real-time system and GPU metrics
 ```
 All actions triggered via the CLI are 100% data-compatible and synchronized with the Web UI.
+
+### Mode 4: CLI/Args Mode (Works with Any Framework)
+
+Pyruns' **Args Mode** can manage experiments using any framework. Simply use the Args view when generating tasks, and specify the launch command in `run_script`:
+
+```yaml
+# Example: managing Hydra experiments
+run_script: "python -m my_project.train"
+args: |
+  model=vit
+  dataset=imagenet
+  training.lr=0.001
+  training.epochs=300
+```
+
+Pyruns appends the `args` content as command-line arguments directly after `run_script`. This means **whether your script uses Hydra, Fire, Click, or any other framework**, as long as it can be launched with command-line arguments, you can leverage Pyruns' batch generation and task management to manage it.
 
 ---
 

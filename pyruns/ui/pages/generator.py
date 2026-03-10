@@ -61,6 +61,18 @@ def render_generator_page(
     script_info = load_script_info(str(state.get("run_root", "")).replace("\\", "/"))
     script_path = script_info.get("script_path", "")
     script_mode = "unknown"
+    # If stored path doesn't exist (e.g. drive letter changed), try resolving from run_root
+    if script_path and not os.path.exists(script_path):
+        run_root = str(state.get("run_root", "")).replace("\\", "/")
+        script_name = script_info.get("script_name", "")
+        if run_root and script_name:
+            # run_root is like .../project/_pyruns_/train → script is at .../project/train.py
+            candidate = os.path.join(os.path.dirname(os.path.dirname(run_root)), f"{script_name}.py")
+            if os.path.exists(candidate):
+                script_path = candidate.replace("\\", "/")
+                # Update script_info so future loads work correctly
+                script_info["script_path"] = script_path
+                save_script_info(str(state.get("run_root", "")).replace("\\", "/"), script_info)
     if script_path and os.path.exists(script_path):
         try:
             from pyruns.utils.parse_utils import detect_config_source_fast

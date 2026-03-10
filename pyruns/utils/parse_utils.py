@@ -2,7 +2,7 @@ import ast
 import os
 import shlex
 import yaml
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
@@ -52,7 +52,7 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
     return ("unknown", None)
 
 
-def split_cli_args(args_text: str) -> list[str]:
+def split_cli_args(args_text: str) -> List[str]:
     """Split a multi-line CLI args string into argv tokens."""
     text = str(args_text or "")
     if not text.strip():
@@ -72,7 +72,7 @@ def split_cli_args(args_text: str) -> list[str]:
         tokens = shlex.split(normalized, posix=(os.name != "nt"))
         # On Windows with posix=False, shlex keeps wrapping quotes.
         # Strip a single pair of matching outer quotes so subprocess argv stays clean.
-        cleaned: list[str] = []
+        cleaned: List[str] = []
         for tok in tokens:
             s = str(tok)
             if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):

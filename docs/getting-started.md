@@ -30,11 +30,13 @@ cd pyruns
 pip install -e .
 ```
 
-核心依赖仅三项：`nicegui`（Web 框架）、`pyyaml`（配置解析）、`psutil`（系统指标采集）。
+核心依赖仅三项：`nicegui`（Web 框架）、`pyyaml`（配置解析）、`psutil`（系统指标采集）。不会给你的环境引入重量级框架。
+
+> 💡 **设计目标**：Pyruns 不是 MLflow 或 W&B 的替代品，而是一个**开箱即用的本地调参助手**。让你在不改变现有工作流的前提下，用最低学习成本获得参数管理和实验追踪的便利。
 
 ---
 
-## 三种启动模式
+## 四种启动模式
 
 ### 模式一：自动解析 Argparse（推荐）
 
@@ -80,6 +82,21 @@ pyr cli train.py
 - 使用 `gen [yaml_path]` 调用你的默认编辑器编辑参数并生成任务
 - 使用 `run [任务名或编号]` 执行任务，并**自动流式显示颜色终端输出**
 - 使用 `stat -i` 显示类似 `gpustat` 和 `htop` 的系统实时状态
+
+### 模式四：命令行 / Args 模式（兼容任意框架）
+
+当你的脚本使用 Hydra、Fire、Click 或其他框架时，可以通过 Args 模式将 Pyruns 作为任务管理层：
+
+```yaml
+# 示例：管理 Hydra 实验
+run_script: "python -m my_project.train"
+args: |
+  model=vit
+  dataset=imagenet
+  training.lr=0.001
+```
+
+Pyruns 会将 `args` 的内容作为命令行参数追加到 `run_script` 后执行。只要脚本能通过命令行参数启动，就可以用 Pyruns 的批量生成语法（如 `training.lr: 0.001 | 0.01 | 0.1`）自动创建多组实验。
 
 ---
 

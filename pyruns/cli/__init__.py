@@ -1,4 +1,4 @@
-﻿"""
+"""
 CLI entry point 鈥?``pyr <script.py>`` or ``pyr <command>``.
 
 This package replaces the old single-file ``cli.py``.  The ``pyr()`` function
@@ -66,7 +66,7 @@ def _print_version():
 # 鈹€鈹€鈹€ Workspace resolution 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
-def _resolve_workspace(script_path: str = None) -> str | None:
+def _resolve_workspace(script_path: str = None) -> "str | None":
     """Auto-detect the ``_pyruns_/<script>`` workspace in the current directory.
 
     If script_path is provided, return that specific workspace.

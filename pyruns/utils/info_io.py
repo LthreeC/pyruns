@@ -139,3 +139,23 @@ def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[st
             return f"Task name '{name}' already exists in the current workspace"
             
     return None
+
+
+def normalize_run_history(meta: Dict[str, Any]) -> int:
+    """Keep only completed-run entries so run_index matches array lengths.
+
+    Truncates start_times, finish_times, pids, records, and tracks
+    to the min(len(start_times), len(finish_times)) and updates run_index.
+    """
+    starts = list(meta.get("start_times", []) or [])
+    finishes = list(meta.get("finish_times", []) or [])
+    completed = min(len(starts), len(finishes))
+
+    meta["start_times"] = starts[:completed]
+    meta["finish_times"] = finishes[:completed]
+    meta["pids"] = list(meta.get("pids", []) or [])[:completed]
+    meta["records"] = list(meta.get("records", []) or [])[:completed]
+    meta["tracks"] = list(meta.get("tracks", []) or [])[:completed]
+    meta["run_index"] = completed
+    meta.pop("_run_index", None)
+    return completed

@@ -2,7 +2,7 @@ import os
 import ast
 import yaml
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Fix PyYAML parsing of scientific notation without a dot (e.g. 5e-3)
 yaml_float_pattern = re.compile(
@@ -217,7 +217,7 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
     return result
 
 
-def validate_config_types_against_template(orig_config: Dict[str, Any], new_configs: List[Dict[str, Any]]) -> str | None:
+def validate_config_types_against_template(orig_config: Dict[str, Any], new_configs: List[Dict[str, Any]]) -> Optional[str]:
     """Ensure generated configs match the primitive types of the original template.
 
     Allows int → float coercion (safe widening), and permits strings

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Centralized UI theme constants for Pyruns.
 All style strings, color maps, and CSS classes live here.
 """
@@ -233,7 +233,7 @@ ROW_CENTER_GAP_2 = "items-center gap-2"
 ROW_CENTER_GAP_3 = "items-center gap-3"
 ROW_CENTER_GAP_4 = "items-center gap-4"
 COL_FULL = "w-full"
-TEXT_HEADING_SM = "text-sm font-bold text-slate-700 tracking-wide"
+TEXT_HEADING_SM = LABEL_BOLD_TRACKING  # alias for backward compatibility
 TEXT_MUTED_XS = "text-xs text-slate-500"
 
 FILTER_SELECT_CLASSES = "w-48"
@@ -282,15 +282,15 @@ TASK_CARD_CHECKBOX_CLASSES = "mt-0.5 task-checkbox"
 TASK_CARD_META_ROW_CLASSES = "items-center gap-1 mt-0.5"
 TASK_CARD_META_ICON_CLASSES = "text-indigo-400"
 TASK_CARD_META_TEXT_CLASSES = "text-[10px] font-mono text-indigo-400"
-TASK_CARD_ACTIONS_LEFT_CLASSES = "items-center gap-1"
+TASK_CARD_ACTIONS_LEFT_CLASSES = ROW_CENTER_GAP_1  # alias
 TASK_CARD_RUNNING_ACTIONS_CLASSES = "items-center gap-1.5"
 
 # =============================================================================
 # Env Editor
 # =============================================================================
 ENV_EDITOR_ROOT_CLASSES = "w-full h-full gap-0"
-ENV_EDITOR_TOOLBAR_TITLE_CLASSES = "text-sm font-bold text-slate-700 tracking-wide"
-ENV_EDITOR_TOOLBAR_ACTIONS_CLASSES = "items-center gap-1.5"
+ENV_EDITOR_TOOLBAR_TITLE_CLASSES = LABEL_BOLD_TRACKING  # alias
+ENV_EDITOR_TOOLBAR_ACTIONS_CLASSES = ROW_CENTER_GAP_2  # was "items-center gap-1.5", standardized to gap-2 for consistency
 ENV_EDITOR_ADD_BTN_CLASSES = "text-indigo-600 hover:bg-indigo-100 px-2"
 ENV_EDITOR_SAVE_BTN_CLASSES = "px-4"
 ENV_EDITOR_TABLE_HEAD_CLASSES = (
@@ -302,21 +302,6 @@ ENV_EDITOR_EMPTY_ICON_CLASSES = "text-indigo-200"
 ENV_EDITOR_EMPTY_TITLE_CLASSES = "text-slate-400 text-base"
 ENV_EDITOR_EMPTY_SUB_CLASSES = "text-slate-300 text-xs"
 ENV_EDITOR_EMPTY_ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
-ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
-ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
-ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"
-
-ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
-ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
-ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
-ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"
-
-ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
-ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
-ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
-ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"
-
-ADD_CLASSES = "text-indigo-500 border-indigo-300 mt-2 px-4"
 ENV_EDITOR_KEY_INPUT_CLASSES = "w-[35%] font-mono text-[13px] text-slate-800"
 ENV_EDITOR_VAL_INPUT_CLASSES = "flex-grow font-mono text-[13px] text-slate-700"
 ENV_EDITOR_DEL_BTN_CLASSES = "w-8 text-slate-300 hover:text-red-500 transition-all"

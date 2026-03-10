@@ -4,6 +4,7 @@ Low-level log file I/O helpers (append, read).
 Moved from core/ to utils/ — these are pure I/O utilities, not business logic.
 """
 import os
+from typing import Tuple
 
 
 def append_log(log_path: str, message: str) -> None:
@@ -26,7 +27,7 @@ def read_log(log_path: str) -> str:
         return ""
 
 
-def read_log_chunk(log_path: str, offset: int) -> tuple[str, int]:
+def read_log_chunk(log_path: str, offset: int) -> Tuple[str, int]:
     """Read new content from log file starting at *offset*.
 
     Returns ``(content, new_offset)``.\n    If file was truncated (size < offset), resets to beginning —
@@ -54,7 +55,7 @@ def read_log_chunk(log_path: str, offset: int) -> tuple[str, int]:
         return "", offset
 
 
-def read_last_bytes(log_path: str, n_bytes: int = 10000) -> tuple[str, int]:
+def read_last_bytes(log_path: str, n_bytes: int = 10000) -> Tuple[str, int]:
     """
     Read the last `n_bytes` of a log file.
     
@@ -78,7 +79,7 @@ def read_last_bytes(log_path: str, n_bytes: int = 10000) -> tuple[str, int]:
         return "", 0
 
 
-def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> tuple[str, int]:
+def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> Tuple[str, int]:
     """
     Read up to `max_bytes` from file at `offset`.
     
