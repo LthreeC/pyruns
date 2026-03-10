@@ -227,8 +227,9 @@ def run_task_worker(
             # Avoid [WinError 267] Invalid directory name on Windows
             # if the user deleted/moved the original script directory between reruns
             if workdir and not os.path.isdir(workdir):
-                logger.warning("Workdir '%s' is invalid, falling back to task_dir '%s'", workdir, task_dir)
-                workdir = task_dir
+                fallback = os.path.dirname(script_path) if script_path else os.getcwd()
+                logger.warning("Workdir '%s' is invalid, falling back to script dir '%s'", workdir, fallback)
+                workdir = fallback
 
             proc = subprocess.Popen(
                 command,

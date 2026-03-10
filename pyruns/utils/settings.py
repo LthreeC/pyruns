@@ -1,4 +1,4 @@
-﻿"""
+"""
 Workspace settings loader/saver for Pyruns.
 
 Settings are persisted to ``_pyruns_settings.yaml`` under the workspace root.

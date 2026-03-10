@@ -445,6 +445,17 @@ class TaskManager:
             for tid in task_ids:
                 target = self._find(tid)
                 if target:
+                    # Cancel the task if it is running or queued
+                    if target["status"] in ("running", "queued"):
+                        if target["status"] == "running":
+                            pid = self._latest_pid_from_disk(target)
+                            if pid:
+                                kill_process(int(pid))
+                            self._running_ids.discard(tid)
+                        
+                        target["status"] = "failed"
+                        self._mark_failed_on_disk(target)
+                    
                     self.tasks.remove(target)
                     targets.append(target)
         
