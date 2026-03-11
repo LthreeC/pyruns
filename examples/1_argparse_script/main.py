@@ -37,7 +37,7 @@ def main():
         loss = 1.0 / (epoch * args.lr * 100)
         last_loss = loss
         print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
-        # logger.info(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
+        logger.info(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
         
         # Track the loss for each epoch
         pyruns.track(loss=loss)
