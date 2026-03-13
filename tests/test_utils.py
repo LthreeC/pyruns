@@ -632,6 +632,10 @@ class TestParseValue:
     def test_bool_false(self):
         assert parse_value("False") is False
         assert parse_value("false") is False
+    
+    def test_bool_passthrough(self):
+        assert parse_value(True) is True
+        assert parse_value(False) is False
 
     def test_list(self):
         assert parse_value("[1, 2, 3]") == [1, 2, 3]

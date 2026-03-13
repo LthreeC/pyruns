@@ -75,8 +75,14 @@ def save_yaml(path: str, data: Dict[str, Any]) -> None:
         )
 
 
-def parse_value(val_str: str) -> Any:
-    """Parse string input into Python types (int, float, list, bool)."""
+def parse_value(val_str: Any) -> Any:
+    """Parse UI / CLI input into Python values.
+
+    Supports both string and non-string input. Non-string values (e.g. bool
+    from a switch widget) are returned as-is.
+    """
+    if not isinstance(val_str, str):
+        return val_str
     try:
         return ast.literal_eval(val_str)
     except Exception:

@@ -1,4 +1,6 @@
-# Pyruns
+# pyruns
+
+![logo](docs/assets/pyruns_logo2.png)
 
 **English | [简体中文](README.md)**
 
