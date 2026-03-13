@@ -106,7 +106,7 @@ def render_task_card(
             starts = t.get("start_times") or []
             run_count = len(starts)
             if run_count > 1:
-                with ui.row().classes("items-center gap-1 mt-0.5"):
+                with ui.row().classes(TASK_CARD_META_ROW_CLASSES):
                     ui.icon("replay", size="12px").classes(TASK_CARD_META_ICON_CLASSES)
                     ui.label(f"{run_count} run(s)").classes(
                         TASK_CARD_META_TEXT_CLASSES

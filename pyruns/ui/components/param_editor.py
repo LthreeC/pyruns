@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 from pyruns.utils.config_utils import parse_value, get_nested
 from pyruns.ui.theme import (
     PINNED_BLOCK_CLASSES, PINNED_HEADER_CLASSES,
-    PINNED_TITLE_CLASSES, PINNED_EMPTY_CLASSES
+    PINNED_TITLE_CLASSES
 )
 
 # ── Type → (icon, text_color, bg_color) ──
