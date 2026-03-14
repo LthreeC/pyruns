@@ -5,9 +5,9 @@ from nicegui import ui
 from typing import Dict, Any, Callable
 
 from pyruns.ui.theme import (
-    SIDEBAR_WIDTH, SIDEBAR_COL_CLASSES, SIDEBAR_MENU_TITLE_CLASSES,
+    SIDEBAR_WIDTH, SIDEBAR_COL_CLASSES,
     SIDEBAR_LIST_CLASSES, SIDEBAR_BTN_PROPS, SIDEBAR_ICON_ACTIVE,
-    SIDEBAR_ICON_INACTIVE, SIDEBAR_LABEL_CLASSES,
+    SIDEBAR_ICON_INACTIVE,
 )
 
 _TABS = [
@@ -25,8 +25,10 @@ def render_sidebar(state: Dict[str, Any], switch_tab: Callable) -> None:
     switch_tab : Callable[[str], None]
         Callback that toggles container visibility (no DOM rebuild).
     """
-    with ui.column().classes(SIDEBAR_COL_CLASSES).style(f"width: {SIDEBAR_WIDTH}; min-height: 100%;"):
-        ui.label("MENU").classes(SIDEBAR_MENU_TITLE_CLASSES)
+    with ui.column().classes(SIDEBAR_COL_CLASSES).style(
+        f"width: {SIDEBAR_WIDTH}; min-width: 120px; max-width: 152px; min-height: 100%;"
+    ):
+        ui.label("MENU").classes("text-[9px] font-bold text-slate-400 px-2 mt-5 mb-2 tracking-wider")
 
         @ui.refreshable
         def menu() -> None:
@@ -44,8 +46,8 @@ def _nav_item(
     """Single navigation button."""
     active = state["active_tab"] == tab
     base = (
-        "w-full px-2.5 py-1.5 transition-all duration-200 "
-        "flex items-center gap-2 text-[18px] font-medium"
+        "w-full px-2.5 py-2 transition-all duration-200 "
+        "flex items-center gap-2 text-sm font-semibold justify-start sidebar-nav-btn"
     )
     if active:
         cls = (
@@ -66,7 +68,7 @@ def _nav_item(
             menu_refreshable.refresh(),
         ),
     ).props(SIDEBAR_BTN_PROPS).classes(cls):
-        with ui.column().classes('items-center gap-1 no-wrap'):
+        with ui.row().classes("items-center gap-2 no-wrap w-full"):
             ui.icon(icon).classes(icon_color)
-            ui.label(name).classes(SIDEBAR_LABEL_CLASSES)
+            ui.label(name).classes("truncate text-[12px]")
 

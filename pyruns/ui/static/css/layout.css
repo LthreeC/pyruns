@@ -4,9 +4,41 @@
   overflow-y: auto;
 }
 
+.app-shell {
+  background: transparent;
+}
+
+.app-content {
+  min-height: 0;
+  contain: layout paint;
+}
+
+.manager-body {
+  min-height: 0;
+}
+
+.manager-grid {
+  content-visibility: auto;
+  contain-intrinsic-size: 980px;
+}
+
+.manager-grid .task-card {
+  min-height: 148px;
+}
+
 /* generator page */
 .generator-form-scroll {
   min-height: 0;
+  content-visibility: auto;
+  overflow-x: auto;
+  overflow-y: auto;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 251, 255, 0.96) 100%);
+  border: 1px solid var(--pr-border);
+  border-top: none;
+  border-radius: 0 0 var(--pr-radius-lg) var(--pr-radius-lg);
+  box-shadow: var(--pr-shadow-sm);
+  padding: 6px;
 }
 
 .generator-yaml-editor {
@@ -19,6 +51,17 @@
   background: #f8fafc;
 }
 
+.generator-workspace {
+  align-items: stretch;
+}
+
+@media (max-width: 1280px) {
+  .generator-yaml-editor {
+    height: calc(100vh - 230px);
+    min-height: 320px;
+  }
+}
+
 /* monitor page */
 .monitor-terminal-col {
   height: 100%;
@@ -27,6 +70,7 @@
 .monitor-terminal-inner {
   min-height: 0;
   min-width: 0;
+  contain: layout paint;
 }
 
 .monitor-terminal {
@@ -36,4 +80,15 @@
 
 .monitor-task-list-scroll {
   min-height: 0;
+}
+
+@media (max-width: 1180px) {
+  .generator-workspace {
+    flex-wrap: wrap !important;
+  }
+
+  .generator-workspace > .nicegui-column:last-child {
+    width: 100% !important;
+    position: static !important;
+  }
 }

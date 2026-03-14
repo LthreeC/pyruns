@@ -32,12 +32,12 @@ def render_main_layout(
     ui.context.client.content.classes("p-0 gap-0")
 
     # ── Flex row: sidebar (15%) + content (85%) ──
-    with ui.row().classes("w-full flex-nowrap gap-0").style("height: calc(100vh - 52px); overflow: hidden;"):
+    with ui.row().classes("w-full flex-nowrap gap-0 app-shell").style("height: calc(100vh - 52px); overflow: hidden;"):
         # Sidebar column
         render_sidebar(state, lambda tab: switch_tab(tab))
 
         # Content column — fills the remaining space (relative anchor for absolute children)
-        with ui.column().classes("flex-grow min-w-0 gap-0 h-full relative").style("height: 100%;"):
+        with ui.column().classes("flex-grow min-w-0 gap-0 h-full relative app-content").style("height: 100%;"):
             containers: Dict[str, ui.element] = {}
             rendered: set = set()
 
@@ -80,17 +80,6 @@ def render_main_layout(
             with containers[tab]:
                 page_renderers[tab]()
 
-    # Render & show the initial tab
+    # Render & show only the initial tab (true lazy render).
     initial = state["active_tab"]
-    
-    # We must mark ALL tabs as rendered so they pre-build into the HTML,
-    # otherwise the CSS opacity fade won't work on first click because 
-    # the DOM node doesn't exist yet.
-    for tab in _TAB_NAMES:
-        rendered.add(tab)
-        with containers[tab]:
-            page_renderers[tab]()
-            
-    containers[initial].classes(
-        remove="opacity-0 pointer-events-none", add="opacity-100 z-10"
-    )
+    switch_tab(initial)

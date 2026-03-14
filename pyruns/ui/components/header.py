@@ -15,13 +15,13 @@ from pyruns._config import DEFAULT_HEADER_REFRESH_INTERVAL
 def render_header(state: Dict[str, Any], metrics_sampler) -> None:
     """Render the top header bar with branding and system metrics."""
     with ui.header().classes(
-        f"{HEADER_GRADIENT} text-white px-6 py-2 shadow-md "
+        f"{HEADER_GRADIENT} text-white px-6 py-2 shadow-md app-header "
         "border-b border-white/10 items-center justify-between"
     ):
         with ui.row().classes(ROW_CENTER_GAP_3):
             ui.icon("rocket_launch", size="28px", color="white")
             ui.label("PYRUNS LAB").classes(
-                "text-xl font-bold tracking-widest font-mono text-white/90"
+                "text-xl font-bold tracking-widest text-white/90 app-brand-title"
             )
 
         with ui.row().classes(ROW_CENTER_GAP_4):
@@ -36,10 +36,10 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
                 m = metrics_sampler.sample()
 
                 with ui.row().classes(
-                    "items-center gap-3 bg-white/5 px-3 py-1 "
+                    "items-center gap-3 bg-white/5 px-3 py-1 header-metrics-panel "
                     "border border-white/10 backdrop-blur-sm"
                 ):
-                    _stat_chip("CPU", f"{m['cpu_percent']:.0f}%", "memory")
+                    _stat_chip("CPU", f"{m['cpu_percent']:.0f}%", "speed")
                     _stat_chip("RAM", f"{m['mem_percent']:.0f}%", "memory")
 
                     gpus: List[Dict[str, Any]] = m.get("gpus") or []
@@ -73,7 +73,7 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
 
 def _stat_chip(label: str, value: str, icon_name: str) -> None:
     with ui.row().classes(
-        "items-center gap-1 bg-white/5 px-2 py-0.5 border border-white/10"
+        "items-center gap-1 bg-white/5 px-2 py-0.5 border border-white/10 stat-chip"
     ):
         ui.icon(icon_name, size="xs", color="gray-300")
         ui.label(label).classes(

@@ -92,6 +92,9 @@ class TaskManager:
         logger.info("System shutting down — cleaning up stuck task states...")
         # Use timeout to avoid hard deadlock if crashed mid-lock
         acquired = self._lock.acquire(timeout=2.0)
+        if not acquired:
+            logger.warning("Skip shutdown cleanup: task manager lock not acquired in time.")
+            return
         try:
             for t in self.tasks:
                 if not t:
@@ -216,6 +219,10 @@ class TaskManager:
         except Exception as exc:
             logger.error("Error loading config for %s: %s", dir_name, exc)
             return None
+        try:
+            mtime_ns = os.stat(info_path).st_mtime_ns
+        except OSError:
+            mtime_ns = 0
 
         task = {
             "dir": task_dir.replace("\\", "/"),
@@ -232,7 +239,8 @@ class TaskManager:
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
             "records": len(info.get("records", [])),
-            "_mtime": os.path.getmtime(info_path),
+            "_mtime": (mtime_ns / 1_000_000_000) if mtime_ns else 0.0,
+            "_mtime_ns": mtime_ns,
         }
         pending_run_index = info.get("run_index", info.get("_run_index"))
         if pending_run_index:
@@ -270,11 +278,12 @@ class TaskManager:
                 continue
 
             try:
-                mtime = os.path.getmtime(info_path)
-                if not force_all and t.get("_mtime") == mtime:
+                mtime_ns = os.stat(info_path).st_mtime_ns
+                if not force_all and t.get("_mtime_ns") == mtime_ns:
                     continue
                 info = load_task_info(t["dir"])
-                t["_mtime"] = mtime
+                t["_mtime_ns"] = mtime_ns
+                t["_mtime"] = mtime_ns / 1_000_000_000
                 t.update({
                     "status": info.get("status", t["status"]),
                     "progress": info.get("progress", t.get("progress", 0.0)),
@@ -313,7 +322,7 @@ class TaskManager:
     ) -> None:
         if execution_mode:
             self.execution_mode = execution_mode
-        if max_workers:
+        if max_workers is not None:
             self.max_workers = max_workers
 
         # Synchronously set status to "queued" so the UI reflects immediately

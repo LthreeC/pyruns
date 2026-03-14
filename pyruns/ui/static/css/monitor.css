@@ -20,14 +20,15 @@
 /* monitor task list item */
 .monitor-task-item {
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.14s ease;
   border-left: 3px solid transparent;
   flex-wrap: nowrap !important;
   overflow: hidden;
+  border-radius: 4px;
 }
 
 .monitor-task-item:hover {
-  background: #f1f5f9;
+  background: #eef5ff;
 }
 
 .monitor-task-item.active {
@@ -41,4 +42,29 @@
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
+}
+
+.monitor-task-list-scroll {
+  content-visibility: auto;
+  contain-intrinsic-size: 760px;
+}
+
+.monitor-sidebar .q-field__control {
+  border-radius: 6px !important;
+}
+
+.monitor-sidebar ::-webkit-scrollbar,
+.manager-body ::-webkit-scrollbar,
+.generator-form-scroll ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.monitor-sidebar ::-webkit-scrollbar-thumb,
+.manager-body ::-webkit-scrollbar-thumb,
+.generator-form-scroll ::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.55);
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background-clip: content-box;
 }

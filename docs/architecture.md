@@ -257,6 +257,13 @@ def _poll():
 - Manager：每 2 秒轮询一次
 - Monitor：每 1 秒轮询一次 + 增量日志推送
 
+### 2026 UI 性能修订
+
+- 主布局改为 true lazy render：只有当前访问的 tab 才会首次构建 DOM。
+- Manager 在无活跃任务时不再强制做额外磁盘刷新，优先复用内存中的最新状态。
+- UI 侧引入更轻量的视觉样式：更小的圆角、更浅的阴影、减少不必要的 hover 位移动画，降低长期运行时的重绘成本。
+- 长列表区域使用 `content-visibility` / `contain` 做浏览器级渲染裁剪，尤其针对 Generator、Manager、Monitor 的重内容区域。
+
 ### CSS 注入策略
 
 NiceGUI 服务端是持久的（不会重启），但用户可能刷新浏览器。使用 per-client 集合追踪 CSS 注入状态：

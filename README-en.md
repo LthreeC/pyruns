@@ -274,8 +274,13 @@ config.training.resources.device # "cuda"
 ## 🎯 Interface Modules
 
 ### 🔧 Generator — Concise and Clear Parameter Editor
-Provides a clearly visible structured form on the left to control hyperparameter modifications, supporting declarative batch syntax. The right side offers a real-time preview of the batch experimental tasks that will be generated in parallel. The (Pin) function makes it easy to tag core parameters.
-![Generator UI](docs/assets/multi_gen.png)
+Provides a clearly visible structured form on the left to control hyperparameter modifications, supporting declarative batch syntax. The right side offers a focused settings panel for task naming and generation. Pinning still keeps critical parameters close at hand, but the overall layout now stays flatter and lighter so large forms remain easier to scan.
+![Generator UI](docs/assets/ui_generator_refined.png)
+
+Recent UI refinement notes:
+- The visual system now uses flatter cards, tighter spacing, and smaller corner radii to feel more like an experiment workbench than a dashboard toy.
+- Initial page rendering is truly lazy now, so unvisited tabs do not build their DOM trees until needed.
+- Manager and Monitor updates are more selective, reducing unnecessary refresh work during long-running sessions.
 
 ### 📦 Manager — Convenient Historical Task Tracking and Management
 The core task management panel. It enables you to extremely easily monitor, search, and manage all generated task queues. It supports checking boxes to apply concurrent execution limits. Clicking into a task card allows you to trace its precise historical parameter snapshot (`config.yaml`).

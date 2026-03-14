@@ -26,18 +26,15 @@ from pyruns.ui.theme import (
     GENERATOR_TOOLBAR_CLASSES, GENERATOR_SETTINGS_CARD_CLASSES,
     GENERATOR_TEMPLATE_SELECT_CLASSES, GENERATOR_VIEW_TOGGLE_WRAP_CLASSES,
     GENERATOR_FORM_SCROLL_CLASSES, GENERATOR_FORM_ROOT_CLASSES,
-    GENERATOR_WARNING_ROW_CLASSES, GENERATOR_WARNING_ICON_CLASSES,
-    GENERATOR_WARNING_TEXT_CLASSES, GENERATOR_YAML_EDITOR_CLASSES,
+    GENERATOR_WARNING_ROW_CLASSES, GENERATOR_YAML_EDITOR_CLASSES,
     GENERATOR_ARGS_CONTAINER_CLASSES, GENERATOR_ARGS_EXPANSION_CLASSES,
     GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES, GENERATOR_ARGS_TEXTAREA_CLASSES,
     GENERATOR_GENERATE_BTN_CLASSES,
     GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES, GENERATOR_INACTIVE_TOGGLE_BTN_CLASSES,
-    EMPTY_STATE_COL_CLASSES, EMPTY_STATE_ICON_SIZE,
-    EMPTY_STATE_ICON_CLASSES, EMPTY_STATE_TEXT_CLASSES,
-    BATCH_HINT_BOX_CLASSES, BATCH_HINT_TITLE_CLASSES,
-    BATCH_HINT_FOOTER_CLASSES, REFRESH_ICON_BTN_PROPS,
-    COMPACT_SELECT_CLASSES, TEXT_HEADING_SM, TEXT_MUTED_XS,
-    ROW_CENTER_GAP_1, ROW_CENTER_GAP_2, COL_FULL
+    EMPTY_STATE_COL_CLASSES, BATCH_HINT_BOX_CLASSES,
+    REFRESH_ICON_BTN_PROPS,
+    COMPACT_SELECT_CLASSES, LABEL_BOLD_TRACKING, TEXT_MUTED_XS,
+    ROW_CENTER_GAP_1, ROW_CENTER_GAP_2,
 )
 from pyruns.ui.widgets import dir_picker, _ensure_css
 from pyruns._config import (
@@ -48,6 +45,7 @@ logger = get_logger(__name__)
 
 # Module-level ref so param_editor can trigger a refresh for star toggle
 _editor_area_ref = [None]
+_MAX_FORM_COLUMNS = 9
 
 
 def render_generator_page(
@@ -80,11 +78,17 @@ def render_generator_page(
         except Exception:
             script_mode = "unknown"
 
-    saved_mode = str(_get_setting("generate_mode", DEFAULT_GENERATOR_MODE) or DEFAULT_GENERATOR_MODE).lower()
+    # Backward compatibility: keep reading the legacy `generate_mode` key.
+    legacy_mode = str(_get_setting("generate_mode", "") or "").lower()
+    saved_mode = str(
+        _get_setting("generator_mode", legacy_mode or DEFAULT_GENERATOR_MODE)
+        or DEFAULT_GENERATOR_MODE
+    ).lower()
     initial_mode = saved_mode if saved_mode in ("form", "yaml", "args") else "form"
 
     view_mode = {"current": initial_mode}
-    form_cols = {"n": int(_get_setting("generator_form_columns", DEFAULT_GENERATOR_FORM_COLUMNS))}
+    initial_cols = int(_get_setting("generator_form_columns", DEFAULT_GENERATOR_FORM_COLUMNS))
+    form_cols = {"n": max(1, min(_MAX_FORM_COLUMNS, initial_cols))}
     yaml_holder = {"text": ""}
     args_holder = {"text": ""}
     run_script_holder = {"text": ""}
@@ -170,11 +174,17 @@ def render_generator_page(
             curr_run_root = str(state.get("run_root")).replace("\\", "/")
             options = list_template_files(curr_run_root)
             file_select.set_options(options)
+
+            # Existing selection may become invalid after run_root switch or file deletion.
+            if file_select.value and file_select.value not in options:
+                file_select.value = None
+
             file_select.update()
             
             # Auto-select the newly generated one if requested
             if new_selection and new_selection in options:
                 file_select.value = new_selection
+                on_file_select_change()
                 return
                 
             # If nothing selected and default exists, select it
@@ -189,6 +199,7 @@ def render_generator_page(
 
                 if target_val and target_val != file_select.value:
                     file_select.value = target_val
+                    on_file_select_change()
                 elif target_val:
                     on_file_select_change()
 
@@ -259,14 +270,14 @@ def render_generator_page(
                     with ui.row().classes(
                         GENERATOR_WARNING_ROW_CLASSES
                     ):
-                        ui.icon("warning", size="16px").classes(GENERATOR_WARNING_ICON_CLASSES)
+                        ui.icon("warning", size="16px").classes("text-amber-600 mt-0.5")
                         msg = (
                             "This script looks like Hydra/unknown parser. "
                             "Config mode may not match runtime behavior. Prefer Args mode."
                         )
                         if not config_default_exists:
                             msg += " No config_default.yaml found; defaulting to Args mode is recommended."
-                        ui.label(msg).classes(GENERATOR_WARNING_TEXT_CLASSES)
+                        ui.label(msg).classes("text-xs text-amber-700 leading-5")
 
                 if view_mode["current"] == "form":
                     expansions_ref.clear()
@@ -309,7 +320,7 @@ def _editor_toolbar(
         with ui.row().classes(ROW_CENTER_GAP_2):
             ui.icon("tune", size="20px").classes("text-indigo-500")
             ui.label("Parameters").classes(
-                TEXT_HEADING_SM
+                LABEL_BOLD_TRACKING
             )
 
         with ui.row().classes(ROW_CENTER_GAP_2):
@@ -333,7 +344,7 @@ def _editor_toolbar(
                 ).tooltip("Collapse all")
 
                 ui.select(
-                    {n: f"{n} cols" for n in range(1, 10)},
+                    {n: f"{n} cols" for n in range(1, _MAX_FORM_COLUMNS + 1)},
                     value=form_cols["n"],
                 ).props(
                     "dense outlined options-dense"
@@ -377,13 +388,13 @@ def _settings_panel(
     from pyruns.utils.settings import get as _get_ws_setting, save_setting
 
     with ui.card().classes(GENERATOR_SETTINGS_CARD_CLASSES):
-        ui.label("Generation Settings").classes(TEXT_HEADING_SM + " mb-2 text-slate-800")
+        ui.label("Generation Settings").classes(LABEL_BOLD_TRACKING + " mb-2 text-slate-800")
 
         ui.input(
             value=state["task_name_input"],
             placeholder="task",
             label="Task Name (= Folder Name)",
-        ).props(INPUT_PROPS).classes(COL_FULL + " mb-1").on_value_change(
+        ).props(INPUT_PROPS).classes("w-full mb-1").on_value_change(
             lambda e: state.update({"task_name_input": e.value})
         )
 
@@ -499,7 +510,7 @@ def _settings_panel(
 
         ui.label(
             "No | → Direct Gen  .  Given | → Batch Gen After Confirm"
-        ).classes(BATCH_HINT_FOOTER_CLASSES)
+        ).classes("text-[11px] text-slate-400 mt-3 text-center w-full")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -508,9 +519,9 @@ def _settings_panel(
 
 
 def _set_cols(n: int, form_cols: dict, editor_area) -> None:
-    form_cols["n"] = n
+    form_cols["n"] = max(1, min(_MAX_FORM_COLUMNS, int(n)))
     from pyruns.utils.settings import save_setting
-    save_setting("generator_form_columns", int(n))
+    save_setting("generator_form_columns", form_cols["n"])
     editor_area.refresh()
 
 
@@ -554,7 +565,7 @@ def _switch_view(target, state, yaml_holder, args_holder, run_script_holder, vie
     view_mode["current"] = target
     try:
         from pyruns.utils.settings import save_setting
-        save_setting("generate_mode", target)
+        save_setting("generator_mode", target)
     except Exception:
         pass
     editor_area.refresh()
@@ -625,10 +636,10 @@ def _render_args_view(args_holder: dict, run_script_holder: dict, script_path: s
     with ui.column().classes(GENERATOR_ARGS_CONTAINER_CLASSES):
         with ui.row().classes(ROW_CENTER_GAP_2):
             ui.icon("terminal", size="18px").classes("text-emerald-600")
-            ui.label("Args Mode").classes(TEXT_HEADING_SM + " text-slate-800")
+            ui.label("Args Mode").classes(LABEL_BOLD_TRACKING + " text-slate-800")
             ui.badge("run as: <run_script> <args>").props(
                 "color=emerald-1 text-color=emerald-8"
-            ).classes("text-[10px]")
+            ).classes("text-[11px]")
 
         with ui.expansion("Run Script (Advanced)", icon="settings", value=False).classes(
             GENERATOR_ARGS_EXPANSION_CLASSES
@@ -655,21 +666,21 @@ def _render_args_view(args_holder: dict, run_script_holder: dict, script_path: s
 
 def _empty_editor_placeholder(mode: str = "form", need_default_hint: bool = False) -> None:
     with ui.column().classes(EMPTY_STATE_COL_CLASSES):
-        ui.icon("description", size=EMPTY_STATE_ICON_SIZE).classes(EMPTY_STATE_ICON_CLASSES)
+        ui.icon("description", size="48px").classes("text-slate-200")
         if mode == "yaml":
             text = "YAML mode is empty. Load or create config_default.yaml first."
         else:
             text = "Form mode is empty. Load or create config_default.yaml first."
         if need_default_hint:
             text += " (config_default.yaml not found)"
-        ui.label(text).classes(EMPTY_STATE_TEXT_CLASSES)
+        ui.label(text).classes("text-slate-400 italic mt-2")
 
 
 def _batch_syntax_hint() -> None:
     with ui.column().classes(BATCH_HINT_BOX_CLASSES):
         with ui.row().classes("items-center gap-1"):
             ui.icon("info_outline", size="13px").classes("text-indigo-400")
-            ui.label("Batch Syntax").classes(BATCH_HINT_TITLE_CLASSES)
+            ui.label("Batch Syntax").classes("text-[11px] font-bold text-slate-600")
         from pyruns.ui.theme import get_generator_batch_hint_html
         from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE
         

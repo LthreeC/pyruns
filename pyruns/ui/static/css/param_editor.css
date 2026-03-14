@@ -1,20 +1,21 @@
 /* param editor compact input fields */
 .param-input .q-field__control {
-  min-height: 26px !important;
-  height: 26px !important;
+  min-height: 32px !important;
+  height: 32px !important;
 }
 
 .param-input .q-field__marginal {
-  height: 26px !important;
+  height: 32px !important;
 }
 
 .param-input .q-field__native {
-  padding: 2px 8px !important;
-  font-size: 12px;
+  padding: 4px 12px !important;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .param-input input {
-  font-size: 12px !important;
+  font-size: 13px !important;
 }
 
 /* param editor zero-out Quasar expansion spacing */
@@ -29,8 +30,8 @@
 }
 
 .param-expansion .q-item {
-  min-height: 26px !important;
-  padding: 0 4px 0 8px !important;
+  min-height: 30px !important;
+  padding: 0 6px 0 10px !important;
   margin: 0 !important;
 }
 
@@ -62,8 +63,63 @@
 
 .param-expansion .nicegui-column,
 .param-expansion .nicegui-grid {
-  gap: 0 !important;
+  gap: 4px !important;
   margin: 0 !important;
   padding-top: 0 !important;
   padding-bottom: 0 !important;
+}
+
+.param-card {
+  border-radius: 5px;
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+  min-height: 54px;
+}
+
+.param-grid {
+  width: max-content;
+  min-width: 100%;
+  align-content: start;
+}
+
+.param-row {
+  min-width: 0;
+}
+
+.param-meta {
+  width: 34%;
+  min-width: 0;
+  max-width: 210px;
+  overflow: hidden;
+}
+
+.param-label {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.param-value-wrap {
+  min-width: 0;
+}
+
+.param-value-wrap .q-field,
+.param-value-wrap .nicegui-input {
+  width: 100%;
+}
+
+.param-type-chip {
+  border-radius: 3px;
+}
+
+.param-section {
+  border-radius: 5px;
+}
+
+.param-meta .nicegui-label,
+.param-meta label,
+.param-meta span {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }

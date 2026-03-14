@@ -19,8 +19,7 @@ from pyruns.ui.theme import (
     ENV_EDITOR_SAVE_BTN_CLASSES,
     ENV_EDITOR_TABLE_BODY_CLASSES,
     ENV_EDITOR_TABLE_HEAD_CLASSES,
-    ENV_EDITOR_TOOLBAR_ACTIONS_CLASSES,
-    ENV_EDITOR_TOOLBAR_TITLE_CLASSES,
+    LABEL_BOLD_TRACKING,
     ENV_EDITOR_VAL_INPUT_CLASSES,
     ROW_CENTER_GAP_2,
     TOOLBAR_LIGHT,
@@ -52,9 +51,9 @@ def env_var_editor(
                 with ui.row().classes(ROW_CENTER_GAP_2):
                     ui.icon("vpn_key", size="18px").classes("text-indigo-500")
                     ui.label(f"Environment Variables · {len(rows)}").classes(
-                        ENV_EDITOR_TOOLBAR_TITLE_CLASSES
+                        LABEL_BOLD_TRACKING
                     )
-                with ui.row().classes(ENV_EDITOR_TOOLBAR_ACTIONS_CLASSES):
+                with ui.row().classes(ROW_CENTER_GAP_2):
                     ui.button("Add", icon="add", on_click=_add).props(
                         "flat dense no-caps size=sm"
                     ).classes(ENV_EDITOR_ADD_BTN_CLASSES)

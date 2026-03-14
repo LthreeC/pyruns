@@ -35,36 +35,36 @@ _SHADOW_SM = "shadow-sm"
 # Layout widths
 # -----------------------------------------------------------------------------
 SIDEBAR_WIDTH = "6%"
-MONITOR_PANEL_WIDTH = "15%"
+MONITOR_PANEL_WIDTH = "16%"
 
 
 # -----------------------------------------------------------------------------
 # Header / bars
 # -----------------------------------------------------------------------------
-HEADER_GRADIENT = "bg-gradient-to-r from-[#0f172a] to-[#312e81]"
+HEADER_GRADIENT = "bg-gradient-to-r from-[#0b1424] via-[#133b56] to-[#135e5a]"
 
 MANAGER_SUMMARY_BAR_CLASSES = _cx(
     _W_FULL,
     "px-2 py-1 mb-0",
     _BG_WHITE_SOFT,
     _BORDER_B_SLATE_200,
-    "items-center justify-between shadow-md sticky top-0 z-[20]",
+    "items-center justify-between shadow-md sticky top-0 z-[20] manager-surface",
 )
 MANAGER_ACTION_ROW_CLASSES = _cx(
     _W_FULL,
-    "items-center justify-between gap-1 px-3 py-1.5 z-[21]",
+    "items-center justify-between gap-1 px-3 py-1.5 z-[21] manager-surface",
     _BG_WHITE_SOFT,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
 MANAGER_FILTER_ROW_CLASSES = _cx(
     _W_FULL,
-    "items-center gap-2 mb-0 px-3 py-1.5 z-[22]",
+    "items-center gap-2 mb-0 px-3 py-1.5 z-[22] manager-surface",
     _BG_WHITE_SOFT,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
-MANAGER_GRID_CLASSES = _cx(_W_FULL, _GAP_3, "p-1")
+MANAGER_GRID_CLASSES = _cx(_W_FULL, _GAP_3, "p-1 manager-grid")
 
 
 # -----------------------------------------------------------------------------
@@ -72,22 +72,22 @@ MANAGER_GRID_CLASSES = _cx(_W_FULL, _GAP_3, "p-1")
 # -----------------------------------------------------------------------------
 GENERATOR_HEADER_CLASSES = _cx(
     _W_FULL,
-    "items-center gap-2 mb-2 px-3 py-1.5 sticky top-0 z-10",
+    "items-center gap-2 mb-2 px-3 py-1.5 sticky top-0 z-10 generator-surface",
     _BG_WHITE,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
-GENERATOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_1, "flex-nowrap items-start h-full")
+GENERATOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_1, "flex-nowrap items-start h-full generator-workspace")
 GENERATOR_LEFT_COL_CLASSES = _cx(_FLEX_GROW, _GAP_2, _MIN_W_0, "h-full")
 GENERATOR_RIGHT_COL_CLASSES = "w-96 flex-none sticky top-4"
 GENERATOR_TOOLBAR_CLASSES = _cx(
     _W_FULL,
-    "items-center justify-between px-3 py-1 mb-1",
+    "items-center justify-between px-3 py-1 mb-1 generator-surface",
     _BG_WHITE,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
-GENERATOR_SETTINGS_CARD_CLASSES = _cx(_W_FULL, "p-3", _SHADOW_SM, _BG_WHITE, _BORDER_SLATE_100)
+GENERATOR_SETTINGS_CARD_CLASSES = _cx(_W_FULL, "p-3 generator-settings-card", _SHADOW_SM, _BG_WHITE, _BORDER_SLATE_100)
 GENERATOR_TEMPLATE_SELECT_CLASSES = "w-64"
 GENERATOR_VIEW_TOGGLE_WRAP_CLASSES = _cx("items-center", _GAP_1, "bg-slate-100 p-1")
 GENERATOR_FORM_SCROLL_CLASSES = _cx(_W_FULL, "overflow-y-auto", _FLEX_GROW, _GAP_0, "generator-form-scroll")
@@ -97,8 +97,6 @@ GENERATOR_WARNING_ROW_CLASSES = _cx(
     "items-start gap-2 px-3 py-2 mb-2",
     "bg-amber-50 border border-amber-200",
 )
-GENERATOR_WARNING_ICON_CLASSES = "text-amber-600 mt-0.5"
-GENERATOR_WARNING_TEXT_CLASSES = "text-xs text-amber-700 leading-5"
 GENERATOR_YAML_EDITOR_CLASSES = _cx(_W_FULL, "overflow-hidden generator-yaml-editor")
 GENERATOR_ARGS_CONTAINER_CLASSES = _cx(
     _W_FULL,
@@ -109,8 +107,8 @@ GENERATOR_ARGS_CONTAINER_CLASSES = _cx(
 GENERATOR_ARGS_EXPANSION_CLASSES = _cx(_W_FULL, _BG_WHITE, "border border-slate-200")
 GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES = _cx(_W_FULL, "font-mono text-xs")
 GENERATOR_ARGS_TEXTAREA_CLASSES = _cx(_W_FULL, "text-[12px] generator-args-textarea")
-GENERATOR_GENERATE_BTN_CLASSES = _cx(_W_FULL, "text-sm font-bold py-2 tracking-wide rounded")
-GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES = "px-5 py-1.5 font-bold text-sm tracking-wide rounded"
+GENERATOR_GENERATE_BTN_CLASSES = _cx(_W_FULL, "text-sm font-bold py-2 tracking-wide")
+GENERATOR_ACTIVE_TOGGLE_BTN_CLASSES = "px-5 py-1.5 font-bold text-sm tracking-wide"
 GENERATOR_INACTIVE_TOGGLE_BTN_CLASSES = (
     "text-slate-500 font-medium px-5 py-1.5 text-sm hover:text-indigo-600 hover:bg-indigo-50/50"
 )
@@ -127,7 +125,6 @@ PINNED_HEADER_CLASSES = _cx(
     "border-b border-indigo-100/50",
 )
 PINNED_TITLE_CLASSES = "text-xs font-bold text-indigo-700 tracking-wide"
-PINNED_EMPTY_CLASSES = "text-xs text-indigo-400 italic px-2 py-1"
 
 
 def get_generator_batch_hint_html(separator: str, escape: str) -> str:
@@ -154,19 +151,8 @@ def get_generator_batch_hint_html(separator: str, escape: str) -> str:
 # Empty states / placeholders
 # -----------------------------------------------------------------------------
 EMPTY_STATE_COL_CLASSES = _cx(_W_FULL, "items-center justify-center py-20")
-EMPTY_STATE_ICON_SIZE = "48px"
-EMPTY_STATE_ICON_CLASSES = "text-slate-200"
-EMPTY_STATE_TEXT_CLASSES = "text-slate-400 italic mt-2"
-
-MANAGER_EMPTY_ICON_SIZE = "72px"
-MANAGER_EMPTY_ICON_CLASSES = "text-slate-200 mb-3"
-MANAGER_EMPTY_TITLE_CLASSES = "text-xl font-bold text-slate-400"
-MANAGER_EMPTY_SUB_CLASSES = "text-sm text-slate-400 mt-1"
 
 MONITOR_EMPTY_COL_CLASSES = _cx(_W_FULL, "items-center py-8 gap-2")
-MONITOR_EMPTY_ICON_SIZE = "32px"
-MONITOR_EMPTY_ICON_CLASSES = "text-slate-200"
-MONITOR_EMPTY_TEXT_CLASSES = "text-[10px] text-slate-400"
 
 BATCH_HINT_BOX_CLASSES = _cx(
     _W_FULL,
@@ -174,8 +160,6 @@ BATCH_HINT_BOX_CLASSES = _cx(
     "mb-3 px-2 py-1.5",
     "bg-slate-50 border border-slate-100",
 )
-BATCH_HINT_TITLE_CLASSES = "text-[10px] font-bold text-slate-600"
-BATCH_HINT_FOOTER_CLASSES = "text-[10px] text-slate-400 mt-3 text-center w-full"
 
 
 # -----------------------------------------------------------------------------
@@ -183,15 +167,15 @@ BATCH_HINT_FOOTER_CLASSES = "text-[10px] text-slate-400 mt-3 text-center w-full"
 # -----------------------------------------------------------------------------
 MONITOR_HEADER_HEIGHT_PX = 52
 MONITOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_0, "flex-nowrap")
-MONITOR_TERMINAL_COL_CLASSES = _cx(_FLEX_GROW, _MIN_W_0, _GAP_0, "overflow-hidden bg-[#1e1e1e] monitor-terminal-col")
+MONITOR_TERMINAL_COL_CLASSES = _cx(_FLEX_GROW, _MIN_W_0, _GAP_0, "overflow-hidden bg-[#1e1e1e] monitor-terminal-col monitor-main-panel")
 MONITOR_WORKSPACE_STYLE = f"height: calc(100vh - {MONITOR_HEADER_HEIGHT_PX}px); overflow: hidden;"
 MONITOR_SIDEBAR_STYLE = f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"
 MONITOR_HEADER_ROW_CLASSES = _cx(_W_FULL, "items-center gap-2 px-2 py-1.5 flex-none")
 MONITOR_PINNED_CARD_CLASSES = _cx(_W_FULL, _GAP_0, "p-0 m-0 border-b-2 border-indigo-200 bg-indigo-50/50 flex-none")
 MONITOR_TASK_LIST_SCROLL_CLASSES = _cx(_FLEX_GROW, _W_FULL, "overflow-y-auto monitor-task-list-scroll")
-MONITOR_EXPORT_BTN_CLASSES = _cx(_W_FULL, "text-sm font-bold tracking-wide py-1 rounded")
+MONITOR_EXPORT_BTN_CLASSES = _cx(_W_FULL, "text-sm font-bold tracking-wide py-1")
 MONITOR_TASK_ITEM_BASE_CLASSES = (
-    "flex-1 w-0 min-w-0 justify-center gap-0 cursor-pointer overflow-hidden py-1 pl-1.5 rounded monitor-task-item"
+    "flex-1 w-0 min-w-0 justify-center gap-0 cursor-pointer overflow-hidden py-1 pl-1.5 monitor-task-item"
 )
 
 
@@ -200,7 +184,7 @@ MONITOR_TASK_ITEM_BASE_CLASSES = (
 # -----------------------------------------------------------------------------
 INPUT_PROPS = "outlined dense bg-white text-slate-800"
 INPUT_BORDERLESS_PROPS = "dense borderless bg-color=white"
-INPUT_OUTLINED_CLASSES = "flex-grow ml-2 px-2 rounded-md shadow-sm border border-slate-200"
+INPUT_OUTLINED_CLASSES = "flex-grow ml-2 px-2 shadow-sm border border-slate-200"
 ICON_BTN_MUTED_CLASSES = "text-slate-400 hover:text-indigo-500"
 TEXT_MONO_XS = "text-xs font-mono"
 
@@ -224,7 +208,6 @@ BTN_PRIMARY = f"{BTN_CLASS} bg-indigo-600 text-white hover:bg-indigo-700 shadow-
 BTN_SUCCESS = f"{BTN_CLASS} bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm hover:shadow"
 BTN_DANGER = f"{BTN_CLASS} bg-rose-600 text-white hover:bg-rose-700 shadow-sm hover:shadow"
 BTN_RUN_SELECTED_CLASSES = f"{BTN_SUCCESS} font-bold px-6 py-2.5 text-sm"
-BTN_DELETE_SELECTED_CLASSES = BTN_DANGER
 
 PANEL_HEADER_INDIGO = "bg-gradient-to-r from-indigo-600 to-indigo-700"
 PANEL_HEADER_DARK = "bg-gradient-to-r from-slate-800 to-slate-900 border-b border-slate-700"
@@ -239,7 +222,6 @@ LOADING_OVERLAY_CLASSES = "absolute inset-0 items-center justify-center bg-white
 LOADING_TEXT_CLASSES = "text-slate-500 font-medium"
 
 TOOLBAR_LIGHT = "w-full items-center justify-between px-5 py-2 flex-none bg-gradient-to-r from-indigo-50 to-slate-50 border-b border-indigo-100"
-TOOLBAR_DARK = "w-full items-center gap-3 px-4 py-1.5 flex-none bg-gradient-to-r from-slate-800 to-slate-900 border-b border-slate-700"
 
 EXPORT_PRE_STYLE = "color:#94a3b8;font-size:11px;padding:8px 12px;background:#1e293b;border-radius:8px;margin:4px 0;"
 
@@ -283,7 +265,7 @@ STATUS_ICON_COLORS = {
 # -----------------------------------------------------------------------------
 # Task card
 # -----------------------------------------------------------------------------
-CARD_BASE_CLASSES = "w-full border shadow-sm hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden"
+CARD_BASE_CLASSES = "w-full border shadow-sm hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden task-card"
 CARD_HEADER_CLASSES = "w-full items-start px-3 pt-3 pb-0 gap-2 flex-nowrap"
 CARD_TITLE_COL_CLASSES = "flex-grow gap-0.5 min-w-0"
 CARD_TITLE_CLASSES = "font-bold text-[13px] text-slate-800 group-hover:text-indigo-700 transition-colors truncate leading-snug"
@@ -309,50 +291,43 @@ ROW_CENTER_GAP_1 = "items-center gap-1"
 ROW_CENTER_GAP_2 = "items-center gap-2"
 ROW_CENTER_GAP_3 = "items-center gap-3"
 ROW_CENTER_GAP_4 = "items-center gap-4"
-COL_FULL = _W_FULL
-TEXT_HEADING_SM = LABEL_BOLD_TRACKING
-TEXT_MUTED_XS = "text-xs text-slate-500"
+TEXT_MUTED_XS = "text-[12px] text-slate-500"
 
 FILTER_SELECT_CLASSES = "w-48"
 SEARCH_TEXTAREA_CLASSES = "w-56 font-mono search-textarea"
 WORKERS_INPUT_CLASSES = "w-20"
 MODE_SELECT_CLASSES = "w-28"
-COMPACT_SELECT_CLASSES = "w-24"
+COMPACT_SELECT_CLASSES = "w-28 text-[12px]"
 REFRESH_ICON_BTN_PROPS = "flat round dense color=slate"
 DIR_PICKER_APPEND_BTN_PROPS = "flat round dense"
 DIR_PICKER_APPEND_BTN_CLASSES = "text-slate-400 hover:text-indigo-600"
 
 MANAGER_LOADING_COL_CLASSES = "w-full items-center justify-center py-20 gap-4 mt-10"
 MANAGER_LOADING_TEXT_CLASSES = "text-slate-500 font-bold tracking-wider animate-pulse"
-MANAGER_BODY_CLASSES = "w-full flex-grow px-1 pb-1 gap-1 overflow-y-auto"
+MANAGER_BODY_CLASSES = "w-full flex-grow px-1 pb-1 gap-1 overflow-y-auto manager-body"
 
 MONITOR_TERMINAL_INNER_CLASSES = "w-full flex-grow overflow-hidden monitor-terminal-inner"
 MONITOR_TERMINAL_CLASSES = "w-full h-full pl-2 pt-1 monitor-terminal"
-MONITOR_HEADER_ICON_CLASSES = "text-slate-500"
-MONITOR_HEADER_LABEL_CLASSES = "text-xs font-bold text-white truncate"
 MONITOR_LOG_SELECT_PROPS = "outlined dense dark options-dense"
 MONITOR_LOG_SELECT_CLASSES = "w-36"
-MONITOR_SIDEBAR_CLASSES = "flex-none border-r border-slate-200 bg-white gap-0 overflow-hidden"
+MONITOR_SIDEBAR_CLASSES = "flex-none border-r border-slate-200 bg-white gap-0 overflow-hidden monitor-sidebar"
 MONITOR_SIDEBAR_HEADER_CLASSES = "w-full items-center gap-1 px-1 py-2 flex-none"
 MONITOR_SEARCH_ROW_CLASSES = "w-full px-0 py-1 flex-none border-b border-slate-100 items-center gap-1 flex-nowrap overflow-hidden"
 MONITOR_LIST_COL_CLASSES = "w-full gap-0 p-0 m-0 overflow-hidden shrink-0"
 MONITOR_EXPORT_ROW_CLASSES = "w-full p-2 flex-none mt-auto"
 MONITOR_TASK_ROW_CLASSES = "w-full max-w-full items-center gap-0.5 flex-nowrap min-w-0 overflow-hidden border-b border-slate-50 pr-2"
 
-SIDEBAR_COL_CLASSES = "flex-none bg-white border-r border-slate-100 gap-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)] print:hidden"
-SIDEBAR_MENU_TITLE_CLASSES = "text-[9px] font-bold text-slate-400 px-2 mt-5 mb-2 tracking-wider"
+SIDEBAR_COL_CLASSES = "flex-none bg-white border-r border-slate-100 gap-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)] print:hidden sidebar-shell"
 SIDEBAR_LIST_CLASSES = "w-full gap-0 px-1.5"
 SIDEBAR_BTN_PROPS = "flat no-caps"
 SIDEBAR_ICON_ACTIVE = "text-indigo-600 text-sm"
 SIDEBAR_ICON_INACTIVE = "text-slate-400 text-sm"
-SIDEBAR_LABEL_CLASSES = "truncate"
 
 TASK_CARD_ERROR_CLASSES = "text-red-500 font-bold p-4"
 TASK_CARD_CHECKBOX_CLASSES = "mt-0.5 task-checkbox"
 TASK_CARD_META_ROW_CLASSES = "items-center gap-1 mt-0.5"
 TASK_CARD_META_ICON_CLASSES = "text-indigo-400"
 TASK_CARD_META_TEXT_CLASSES = "text-[10px] font-mono text-indigo-400"
-TASK_CARD_ACTIONS_LEFT_CLASSES = ROW_CENTER_GAP_1
 TASK_CARD_RUNNING_ACTIONS_CLASSES = "items-center gap-1.5"
 
 
@@ -360,8 +335,6 @@ TASK_CARD_RUNNING_ACTIONS_CLASSES = "items-center gap-1.5"
 # Env editor
 # -----------------------------------------------------------------------------
 ENV_EDITOR_ROOT_CLASSES = "w-full h-full gap-0"
-ENV_EDITOR_TOOLBAR_TITLE_CLASSES = LABEL_BOLD_TRACKING
-ENV_EDITOR_TOOLBAR_ACTIONS_CLASSES = ROW_CENTER_GAP_2
 ENV_EDITOR_ADD_BTN_CLASSES = "text-indigo-600 hover:bg-indigo-100 px-2"
 ENV_EDITOR_SAVE_BTN_CLASSES = "px-4"
 ENV_EDITOR_TABLE_HEAD_CLASSES = "w-full items-center bg-slate-100 gap-0 flex-none border-b border-slate-200"

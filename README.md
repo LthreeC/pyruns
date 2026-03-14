@@ -275,7 +275,9 @@ config.training.resources.device # "cuda"
 
 ### 🔧 Generator — 简洁清晰的参数编辑器
 在左侧提供清晰可见的结构化表单控制超参数修改，并支持声明化批量语法；右侧可实时预览将会并行生成的批量实验任务。通过（Pin）功能可以方便地标记核心参数。
-![Generator UI](docs/assets/multi_gen.png)
+![Generator UI](docs/assets/ui_generator_refined.png)
+
+> UI/Performance update: the Generator page now uses a flatter visual system with tighter spacing, smaller corner radii, true lazy tab rendering, and more selective Manager/Monitor refresh behavior.
 
 ### 📦 Manager — 便捷的历史任务记录与管理
 核心的任务管理面板。能够极其方便地监控、搜索并管理所有生成的任务队列。支持勾选进行并发执行限制；点击进入任务卡片，可查阅其精准的参数快照 (`config.yaml`) 历史记录。

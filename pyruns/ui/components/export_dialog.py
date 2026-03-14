@@ -91,7 +91,7 @@ async def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
                 )
 
             # Task name list (wider so scrollbar is on the right)
-            with ui.scroll_area().classes("w-full max-h-[40vh] border border-slate-100 rounded bg-slate-50/50"):
+            with ui.scroll_area().classes("w-full max-h-[40vh] border border-slate-100 bg-slate-50/50"):
                 with ui.column().classes("w-full gap-1 p-2"):
                     for t, mon in fetched_results:
                         with ui.row().classes("w-full items-center gap-1.5 flex-nowrap overflow-hidden"):

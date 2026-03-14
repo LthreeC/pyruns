@@ -15,7 +15,7 @@ from pyruns.ui.theme import (
     CHECKBOX_PROPS, ACTION_BTN_PROPS, ACTION_BTN_CLASSES,
     TASK_CARD_ERROR_CLASSES, TASK_CARD_CHECKBOX_CLASSES,
     TASK_CARD_META_ROW_CLASSES, TASK_CARD_META_ICON_CLASSES,
-    TASK_CARD_META_TEXT_CLASSES, TASK_CARD_ACTIONS_LEFT_CLASSES,
+    TASK_CARD_META_TEXT_CLASSES, ROW_CENTER_GAP_1,
     TASK_CARD_RUNNING_ACTIONS_CLASSES,
 )
 from pyruns.ui.widgets import status_badge
@@ -114,7 +114,7 @@ def render_task_card(
 
         # ── Bottom action bar ──
         with ui.row().classes(CARD_FOOTER_CLASSES).on("click", js_handler="(e) => e.stopPropagation()"):
-            with ui.row().classes(TASK_CARD_ACTIONS_LEFT_CLASSES):
+            with ui.row().classes(ROW_CENTER_GAP_1):
                 _card_action_btn(
                     icon="description", tooltip="Task Info",
                     on_click=lambda _e=None, t=t: open_task_dialog(t, "task_info"),

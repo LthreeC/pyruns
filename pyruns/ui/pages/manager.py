@@ -13,15 +13,13 @@ from typing import Dict, Any
 from pyruns.ui.theme import (
     INPUT_PROPS, STATUS_ICONS, STATUS_ICON_COLORS,
     MANAGER_SUMMARY_BAR_CLASSES, MANAGER_ACTION_ROW_CLASSES,
-    MANAGER_FILTER_ROW_CLASSES, MANAGER_EMPTY_ICON_SIZE,
-    MANAGER_EMPTY_ICON_CLASSES, MANAGER_EMPTY_TITLE_CLASSES,
-    MANAGER_EMPTY_SUB_CLASSES, MANAGER_LOADING_COL_CLASSES,
+    MANAGER_FILTER_ROW_CLASSES, MANAGER_LOADING_COL_CLASSES,
     MANAGER_LOADING_TEXT_CLASSES, MANAGER_BODY_CLASSES,
     FILTER_SELECT_CLASSES, SEARCH_TEXTAREA_CLASSES,
     REFRESH_ICON_BTN_PROPS,
     COMPACT_SELECT_CLASSES, WORKERS_INPUT_CLASSES,
     MODE_SELECT_CLASSES, BTN_RUN_SELECTED_CLASSES,
-    BTN_DELETE_SELECTED_CLASSES,
+    BTN_DANGER,
 )
 from pyruns.ui.widgets import dir_picker, section_header
 from pyruns.ui.update_scheduler import ClientDebouncedUpdater
@@ -183,13 +181,18 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             return
         # Only refresh if data is dirty AND user is actually looking at the manager tab
         if state.get("_manager_dirty", False) and state.get("active_tab") == "manager":
-            from nicegui import run
-            state["_manager_is_loading"] = True
-            task_list.refresh()
-            try:
-                await run.io_bound(task_manager.refresh_from_disk, None, False, True)
-            finally:
-                state["_manager_is_loading"] = False
+            # Fast path: if no active jobs, in-memory data is usually already up-to-date
+            # via task_manager events; avoid expensive disk-wide checks.
+            has_active_tasks = any(
+                t and t.get("status") in ("running", "queued")
+                for t in task_manager.tasks
+            )
+            if has_active_tasks:
+                from nicegui import run
+                try:
+                    await run.io_bound(task_manager.refresh_from_disk)
+                finally:
+                    pass
             state["_manager_dirty"] = False
             task_list.refresh()
 
@@ -249,9 +252,9 @@ def _delete_selected(state, task_manager, refresh_tasks) -> None:
     if not ids:
         return
 
-    with ui.dialog() as dialog, ui.card().classes("p-6 w-96 rounded-2xl shadow-xl"):
+    with ui.dialog() as dialog, ui.card().classes("p-6 w-96 shadow-xl"):
         with ui.row().classes("items-center gap-4 w-full mb-4 outline-none"):
-            ui.icon("delete_outline", size="28px").classes("text-red-500 bg-red-50 p-2 rounded-full")
+            ui.icon("delete_outline", size="28px").classes("text-red-500 bg-red-50 p-2 rounded-md")
             ui.label(f"Delete {len(ids)} Task{'s' if len(ids)>1 else ''}").classes("text-lg font-bold text-slate-800")
             
         ui.label(
@@ -284,11 +287,11 @@ def _delete_selected(state, task_manager, refresh_tasks) -> None:
 
 def _empty_state() -> None:
     with ui.column().classes("w-full items-center justify-center py-20"):
-        ui.icon("inbox", size=MANAGER_EMPTY_ICON_SIZE).classes(MANAGER_EMPTY_ICON_CLASSES)
-        ui.label("No tasks found").classes(MANAGER_EMPTY_TITLE_CLASSES)
+        ui.icon("inbox", size="72px").classes("text-slate-200 mb-3")
+        ui.label("No tasks found").classes("text-xl font-bold text-slate-400")
         ui.label(
             "Generate tasks from the Generator page, or change the filter."
-        ).classes(MANAGER_EMPTY_SUB_CLASSES)
+        ).classes("text-sm text-slate-400 mt-1")
 
 
 def _summary_bar(
@@ -475,5 +478,5 @@ def _render_action_row(state, task_manager, batch_refresh_fn, ui_refresh_fn):
                 icon="delete_outline",
                 on_click=lambda: _delete_selected(state, task_manager, batch_refresh_fn),
             ).props("unelevated dense color=red-7").classes(
-                BTN_DELETE_SELECTED_CLASSES
+                BTN_DANGER
             )

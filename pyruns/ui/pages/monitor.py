@@ -24,10 +24,8 @@ from pyruns.ui.theme import (
     MONITOR_WORKSPACE_CLASSES,
     MONITOR_TERMINAL_COL_CLASSES,
     MONITOR_WORKSPACE_STYLE, MONITOR_SIDEBAR_STYLE, MONITOR_HEADER_ROW_CLASSES,
-    MONITOR_EMPTY_COL_CLASSES, MONITOR_EMPTY_ICON_SIZE,
-    MONITOR_EMPTY_ICON_CLASSES, MONITOR_EMPTY_TEXT_CLASSES,
+    MONITOR_EMPTY_COL_CLASSES,
     MONITOR_TERMINAL_INNER_CLASSES, MONITOR_TERMINAL_CLASSES,
-    MONITOR_HEADER_ICON_CLASSES, MONITOR_HEADER_LABEL_CLASSES,
     MONITOR_LOG_SELECT_PROPS, MONITOR_LOG_SELECT_CLASSES,
     MONITOR_SIDEBAR_CLASSES, MONITOR_SIDEBAR_HEADER_CLASSES,
     MONITOR_SEARCH_ROW_CLASSES, MONITOR_LIST_COL_CLASSES,
@@ -148,12 +146,16 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     # ── header + placeholder ──
     with header_row:
-        header_icon_el = ui.icon("monitor_heart", size="14px").classes(MONITOR_HEADER_ICON_CLASSES)
-        header_label_el = ui.label("Select a task").classes(MONITOR_HEADER_LABEL_CLASSES)
+        header_icon_el = ui.icon("monitor_heart", size="14px").classes("text-slate-500")
+        header_label_el = ui.label("Select a task").classes("text-xs font-bold text-white truncate")
         ui.space()
+        def _on_log_select_event(e):
+            from nicegui.background_tasks import create
+            create(_on_log_select_change(e.value))
+
         log_select_el = ui.select(
             [], value=None,
-            on_change=lambda e: _on_log_select_change(e.value),
+            on_change=_on_log_select_event,
         ).props(MONITOR_LOG_SELECT_PROPS).classes(MONITOR_LOG_SELECT_CLASSES)
         log_select_el.set_visibility(False)
 
@@ -183,7 +185,6 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         term.write('\033c')
         term.write("Loading logs...\r\n")
 
-        import asyncio
         from nicegui import run
         await asyncio.sleep(0.01)
         
@@ -222,6 +223,10 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         term.write(chunk)
 
     async def _select_task(tid: str):
+        # Avoid full re-read when user clicks the same task repeatedly.
+        if tid == sel.get("task_id"):
+            return
+
         # Unsubscribe from the old task first
         old_tid = sel.get("task_id")
         if old_tid:
@@ -231,6 +236,12 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         sel["log_file_name"] = None
         sel["_log_offset"] = 0
         logger.debug("Monitor: selected task %s", tid[:8] if tid else None)
+
+        # Refresh selection highlight immediately for better click responsiveness.
+        if sel.get("_pinned_task_view"):
+            sel["_pinned_task_view"].refresh()
+        if sel.get("_task_list_items"):
+            sel["_task_list_items"].refresh()
 
         # Rebuild right panel first so the user sees "Loading..." instantly
         await _rebuild_right()
@@ -381,7 +392,8 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
 
         search_ref = {"val": ""}
         _page = {"value": 0}
-        _PAGE_SIZE = int(get_setting("ui_page_size", DEFAULT_UI_PAGE_SIZE)) or DEFAULT_UI_PAGE_SIZE
+        page_size = int(get_setting("ui_page_size", DEFAULT_UI_PAGE_SIZE))
+        _PAGE_SIZE = page_size if page_size >= 0 else DEFAULT_UI_PAGE_SIZE
 
         def _toggle_select_all():
             from pyruns.utils.sort_utils import filter_tasks
@@ -458,18 +470,22 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
                 tasks.sort(key=task_sort_key, reverse=True)
 
                 total_matches = len(tasks)
-                total_pages = max(1, (total_matches + _PAGE_SIZE - 1) // _PAGE_SIZE)
-                page = min(_page["value"], total_pages - 1)
-                _page["value"] = page
+                if _PAGE_SIZE > 0:
+                    total_pages = max(1, (total_matches + _PAGE_SIZE - 1) // _PAGE_SIZE)
+                    page = min(_page["value"], total_pages - 1)
+                    _page["value"] = page
 
-                start = page * _PAGE_SIZE
-                end = min(start + _PAGE_SIZE, total_matches)
-                visible_tasks = tasks[start:end]
+                    start = page * _PAGE_SIZE
+                    end = min(start + _PAGE_SIZE, total_matches)
+                    visible_tasks = tasks[start:end]
+                else:
+                    _page["value"] = 0
+                    visible_tasks = tasks
 
                 if not visible_tasks:
                     with ui.column().classes(MONITOR_EMPTY_COL_CLASSES):
-                        ui.icon("search_off", size=MONITOR_EMPTY_ICON_SIZE).classes(MONITOR_EMPTY_ICON_CLASSES)
-                        ui.label("No tasks").classes(MONITOR_EMPTY_TEXT_CLASSES)
+                        ui.icon("search_off", size="32px").classes("text-slate-200")
+                        ui.label("No tasks").classes("text-[10px] text-slate-400")
                     return
 
                 with ui.column().classes(MONITOR_LIST_COL_CLASSES): 
@@ -482,6 +498,8 @@ def _build_left_panel(sel: Dict, task_manager, _get_task) -> None:
         @ui.refreshable
         def task_list_pagination():
             if not client_connected():
+                return
+            if _PAGE_SIZE <= 0:
                 return
             from pyruns.utils.sort_utils import filter_tasks
             tasks = filter_tasks(list(task_manager.tasks), search_ref["val"])
@@ -544,9 +562,16 @@ def _task_list_item(t: Dict[str, Any], sel: Dict, is_pinned: bool = False) -> No
         ).props("dense size=xs color=indigo").classes("shrink-0 pl-1")
 
         # Inner clickable area — sidebar-like active style
+        def _on_pick(_=None, _tid=tid):
+            from nicegui.background_tasks import create
+            fn = sel.get("_select_task")
+            if fn is None:
+                return
+            create(fn(_tid))
+
         with ui.column().classes(
             f"{MONITOR_TASK_ITEM_BASE_CLASSES} {bg_cls}"
-        ).style(border_style).on("click", lambda _, _tid=tid: sel.get("_select_task", lambda x: None)(_tid)):
+        ).style(border_style).on("click", _on_pick):
 
             # Line 1: task name + icon
             with ui.row().classes("w-full items-center justify-between gap-1 flex-nowrap"):
