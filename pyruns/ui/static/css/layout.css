@@ -12,7 +12,7 @@
 .app-content {
   min-height: 0;
   min-width: 0;
-  contain: layout paint;
+  contain: layout;
 }
 
 .manager-body {
@@ -51,12 +51,10 @@
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 251, 255, 0.96) 100%);
+  background: #ffffff;
   border: 1px solid var(--pr-border);
   border-top: none;
   border-radius: 0 0 var(--pr-radius-lg) var(--pr-radius-lg);
-  box-shadow: var(--pr-shadow-sm);
   padding: 10px;
 }
 
@@ -105,10 +103,9 @@
 
 .monitor-task-list-scroll {
   min-height: 0;
-  scroll-behavior: smooth;
 }
 
 .manager-body,
 .generator-form-scroll {
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }

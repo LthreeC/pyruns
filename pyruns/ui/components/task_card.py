@@ -149,8 +149,7 @@ def _card_run_indicator(t, status, state, task_manager):
         ui.button("RUN", icon="play_arrow", on_click=run_single).props(
             "unelevated no-caps dense size=sm"
         ).classes(
-            f"text-white text-[11px] px-3 bg-emerald-600 hover:bg-emerald-700 "
-            f"shadow-sm {BTN_CLASS}"
+            f"text-white text-[11px] px-3 bg-emerald-600 hover:bg-emerald-700 {BTN_CLASS}"
         ).on("click", js_handler="(e) => e.stopPropagation()")
 
     elif status in ("running", "queued"):
@@ -167,8 +166,7 @@ def _card_run_indicator(t, status, state, task_manager):
             ui.button("STOP", icon="stop", on_click=cancel_single).props(
                 "unelevated no-caps dense size=sm"
             ).classes(
-                f"text-white text-[11px] px-3 bg-rose-600 hover:bg-rose-700 "
-                f"shadow-sm {BTN_CLASS}"
+                f"text-white text-[11px] px-3 bg-rose-600 hover:bg-rose-700 {BTN_CLASS}"
             ).on("click", js_handler="(e) => e.stopPropagation()")
 
     elif status == "completed":

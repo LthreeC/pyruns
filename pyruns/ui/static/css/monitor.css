@@ -23,7 +23,7 @@
 
 .monitor-task-item {
   cursor: pointer;
-  transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
   border-left: 3px solid transparent;
   flex-wrap: nowrap !important;
   overflow: hidden;

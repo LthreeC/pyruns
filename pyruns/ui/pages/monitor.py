@@ -237,7 +237,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         sel["_log_offset"] = 0
         logger.debug("Monitor: selected task %s", tid[:8] if tid else None)
 
-        # Refresh selection highlight immediately for better click responsiveness.
+        # Refresh selection highlight once before loading logs.
         if sel.get("_pinned_task_view"):
             sel["_pinned_task_view"].refresh()
         if sel.get("_task_list_items"):
@@ -249,18 +249,6 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         # Subscribe for live log push if a task is selected
         if tid:
             log_emitter.subscribe(tid, _handle_live_log)
-
-        # Refresh the pinned task immediately as well
-        if sel.get("_pinned_task_view"):
-            sel["_pinned_task_view"].refresh()
-
-        # Defer the heavy left-panel DOM diffing (CSS highlight) to avoid
-        # blocking the terminal's immediate response.
-        # NOTE: use asyncio.sleep instead of ui.timer to avoid parent-slot crash
-        # when the user clicks rapidly (the parent container may be refreshed).
-        await asyncio.sleep(0.05)
-        if client_connected() and sel.get("_task_list_items"):
-            sel["_task_list_items"].refresh()
 
     def _toggle_export(tid: str, checked: bool):
         if checked:
@@ -334,7 +322,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
                 log_select_el.update()
 
     _mon_updater = ClientDebouncedUpdater(
-        client, _apply_monitor_updates, delay_sec=0.12
+        client, _apply_monitor_updates, delay_sec=0.18
     )
 
     def on_task_manager_change():

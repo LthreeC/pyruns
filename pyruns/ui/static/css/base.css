@@ -1,22 +1,19 @@
 :root {
-  --pr-bg-0: #f4f8fc;
-  --pr-bg-1: #e9f0f7;
+  --pr-bg-0: #f6f8fb;
+  --pr-bg-1: #edf2f7;
   --pr-surface: #ffffff;
-  --pr-surface-soft: rgba(255, 255, 255, 0.88);
-  --pr-border: #dbe5f0;
-  --pr-shadow-sm: 0 4px 14px rgba(15, 23, 42, 0.045);
-  --pr-shadow-md: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --pr-surface-soft: rgba(255, 255, 255, 0.96);
+  --pr-border: #dde5ee;
+  --pr-shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --pr-shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06);
   --pr-radius-sm: 3px;
-  --pr-radius-md: 5px;
-  --pr-radius-lg: 7px;
+  --pr-radius-md: 4px;
+  --pr-radius-lg: 6px;
 }
 
 html,
 body {
-  background:
-    radial-gradient(circle at 8% 4%, #d8e8ff 0%, rgba(216, 232, 255, 0) 34%),
-    radial-gradient(circle at 92% 0%, #d8f6ed 0%, rgba(216, 246, 237, 0) 30%),
-    linear-gradient(180deg, var(--pr-bg-0) 0%, var(--pr-bg-1) 100%);
+  background: linear-gradient(180deg, var(--pr-bg-0) 0%, var(--pr-bg-1) 100%);
   color: #1f2937;
   overflow-x: hidden;
   font-family:
@@ -34,7 +31,7 @@ body {
 }
 
 .app-header {
-  backdrop-filter: saturate(1.05) blur(4px);
+  backdrop-filter: none;
 }
 
 .app-brand-title {
@@ -48,23 +45,18 @@ body {
 
 .header-metrics-panel {
   border-radius: var(--pr-radius-lg);
+  background: rgba(255, 255, 255, 0.04) !important;
 }
 
 .stat-chip {
   border-radius: var(--pr-radius-md);
-  transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.stat-chip:hover {
-  background: rgba(255, 255, 255, 0.12) !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
 }
 
 .manager-surface,
 .generator-surface,
 .generator-settings-card {
   border-radius: var(--pr-radius-lg);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.94) 100%);
+  background: #ffffff;
   box-shadow: var(--pr-shadow-sm);
   will-change: auto;
 }
@@ -85,11 +77,11 @@ body {
 
 .q-field--outlined .q-field__control {
   border-radius: var(--pr-radius-md) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
 }
 
 .q-field--focused .q-field__control {
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+  box-shadow: none;
 }
 
 .q-separator {
@@ -98,11 +90,11 @@ body {
 
 .task-card {
   contain: layout paint style;
-  transition: box-shadow 0.16s ease, border-color 0.16s ease;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
 }
 
 .sidebar-shell {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafd 100%);
+  background: #ffffff;
 }
 
 .sidebar-nav-btn {
@@ -111,7 +103,7 @@ body {
 }
 
 .monitor-sidebar {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafd 100%);
+  background: #ffffff;
 }
 
 .monitor-main-panel {

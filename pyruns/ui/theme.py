@@ -182,10 +182,10 @@ TAB_PANELS_CLASSES = _cx(_W_FULL, _FLEX_GROW, "overflow-hidden relative")
 TAB_CONTENT_CLASSES = _cx(_W_FULL, _FLEX_GROW, "p-0 m-0 bg-white overflow-hidden")
 
 
-BTN_CLASS = "transition-all duration-200"
-BTN_PRIMARY = f"{BTN_CLASS} bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm hover:shadow"
-BTN_SUCCESS = f"{BTN_CLASS} bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm hover:shadow"
-BTN_DANGER = f"{BTN_CLASS} bg-rose-600 text-white hover:bg-rose-700 shadow-sm hover:shadow"
+BTN_CLASS = "transition-colors duration-150"
+BTN_PRIMARY = f"{BTN_CLASS} bg-slate-800 text-white hover:bg-slate-900"
+BTN_SUCCESS = f"{BTN_CLASS} bg-emerald-600 text-white hover:bg-emerald-700"
+BTN_DANGER = f"{BTN_CLASS} bg-rose-600 text-white hover:bg-rose-700"
 BTN_RUN_SELECTED_CLASSES = f"{BTN_SUCCESS} font-bold px-6 py-2.5 text-sm"
 
 PANEL_HEADER_INDIGO = "bg-gradient-to-r from-indigo-600 to-indigo-700"
@@ -213,7 +213,7 @@ STATUS_CARD_STYLES = {
 STATUS_BADGE_STYLES = {
     "pending": "bg-slate-100 text-slate-500",
     "queued": "bg-blue-100 text-blue-700",
-    "running": "bg-amber-100 text-amber-700 animate-pulse",
+    "running": "bg-amber-100 text-amber-700",
     "completed": "bg-emerald-100 text-emerald-700",
     "failed": "bg-rose-100 text-rose-700",
 }
@@ -233,7 +233,7 @@ STATUS_ICON_COLORS = {
 }
 
 
-CARD_BASE_CLASSES = "w-full border shadow-sm hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden task-card"
+CARD_BASE_CLASSES = "w-full border transition-colors duration-150 cursor-pointer group p-0 overflow-hidden task-card"
 CARD_HEADER_CLASSES = "w-full items-start px-3 pt-3 pb-0 gap-2 flex-nowrap"
 CARD_TITLE_COL_CLASSES = "flex-grow gap-0.5 min-w-0"
 CARD_TITLE_CLASSES = "font-bold text-[13px] text-slate-800 group-hover:text-indigo-700 transition-colors truncate leading-snug"
@@ -246,7 +246,7 @@ CARD_CONFIG_LINE_CLASSES = "text-[11px] text-slate-500 truncate w-full font-mono
 CARD_FOOTER_CLASSES = "w-full items-center justify-between px-3 py-2 mt-auto border-t border-slate-100 bg-slate-50/60"
 CHECKBOX_PROPS = "dense color=indigo size=xs"
 ACTION_BTN_PROPS = "flat round dense size=sm"
-ACTION_BTN_CLASSES = "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+ACTION_BTN_CLASSES = "text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
 
 
 ROW_CENTER_GAP_1 = "items-center gap-1"
