@@ -6,10 +6,12 @@
 
 .app-shell {
   background: transparent;
+  min-width: 0;
 }
 
 .app-content {
   min-height: 0;
+  min-width: 0;
   contain: layout paint;
 }
 
@@ -27,10 +29,27 @@
 }
 
 /* generator page */
+.generator-workspace {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 360px);
+  align-items: start;
+  min-width: 0;
+}
+
+.generator-main-col,
+.generator-side-panel {
+  min-width: 0;
+}
+
+.generator-side-panel {
+  width: clamp(320px, 26vw, 360px) !important;
+  align-self: start;
+}
+
 .generator-form-scroll {
   min-height: 0;
-  content-visibility: auto;
-  overflow-x: auto;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 251, 255, 0.96) 100%);
@@ -38,12 +57,12 @@
   border-top: none;
   border-radius: 0 0 var(--pr-radius-lg) var(--pr-radius-lg);
   box-shadow: var(--pr-shadow-sm);
-  padding: 6px;
+  padding: 10px;
 }
 
 .generator-yaml-editor {
-  height: calc(100vh - 260px);
-  min-height: 400px;
+  height: calc(100vh - 264px);
+  min-height: 420px;
 }
 
 .generator-args-textarea {
@@ -51,26 +70,32 @@
   background: #f8fafc;
 }
 
-.generator-workspace {
-  align-items: stretch;
-}
+@media (max-width: 1380px) {
+  .generator-workspace {
+    grid-template-columns: 1fr !important;
+  }
 
-@media (max-width: 1280px) {
+  .generator-side-panel {
+    width: 100% !important;
+    position: static !important;
+  }
+
   .generator-yaml-editor {
-    height: calc(100vh - 230px);
-    min-height: 320px;
+    height: calc(100vh - 236px);
+    min-height: 340px;
   }
 }
 
 /* monitor page */
 .monitor-terminal-col {
   height: 100%;
+  min-width: 0;
 }
 
 .monitor-terminal-inner {
   min-height: 0;
   min-width: 0;
-  contain: layout paint;
+  contain: layout;
 }
 
 .monitor-terminal {
@@ -80,15 +105,10 @@
 
 .monitor-task-list-scroll {
   min-height: 0;
+  scroll-behavior: smooth;
 }
 
-@media (max-width: 1180px) {
-  .generator-workspace {
-    flex-wrap: wrap !important;
-  }
-
-  .generator-workspace > .nicegui-column:last-child {
-    width: 100% !important;
-    position: static !important;
-  }
+.manager-body,
+.generator-form-scroll {
+  scroll-behavior: smooth;
 }

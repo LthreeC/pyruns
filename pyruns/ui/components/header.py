@@ -1,21 +1,19 @@
-"""
-Header component: app branding and live CPU/RAM/GPU summary.
-"""
+"""Header component with app branding and live CPU/RAM/GPU summary."""
+
 from typing import Any, Dict, List
 
 from nicegui import ui
 
-from pyruns.ui.theme import HEADER_GRADIENT
-from pyruns.ui.theme import ROW_CENTER_GAP_3, ROW_CENTER_GAP_4
+from pyruns._config import DEFAULT_HEADER_REFRESH_INTERVAL
+from pyruns.ui.theme import HEADER_GRADIENT, ROW_CENTER_GAP_3, ROW_CENTER_GAP_4
 from pyruns.utils import client_connected
 from pyruns.utils.settings import get as _get_setting, save_setting
-from pyruns._config import DEFAULT_HEADER_REFRESH_INTERVAL
 
 
 def render_header(state: Dict[str, Any], metrics_sampler) -> None:
     """Render the top header bar with branding and system metrics."""
     with ui.header().classes(
-        f"{HEADER_GRADIENT} text-white px-6 py-2 shadow-md app-header "
+        f"{HEADER_GRADIENT} text-white px-5 py-2 shadow-md app-header "
         "border-b border-white/10 items-center justify-between"
     ):
         with ui.row().classes(ROW_CENTER_GAP_3):
@@ -33,29 +31,25 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
             def metrics_row() -> None:
                 if not client_connected():
                     return
-                m = metrics_sampler.sample()
+                metrics = metrics_sampler.sample()
 
                 with ui.row().classes(
                     "items-center gap-3 bg-white/5 px-3 py-1 header-metrics-panel "
                     "border border-white/10 backdrop-blur-sm"
                 ):
-                    _stat_chip("CPU", f"{m['cpu_percent']:.0f}%", "speed")
-                    _stat_chip("RAM", f"{m['mem_percent']:.0f}%", "memory")
+                    _stat_chip("CPU", f"{metrics['cpu_percent']:.0f}%", "speed")
+                    _stat_chip("RAM", f"{metrics['mem_percent']:.0f}%", "memory")
 
-                    gpus: List[Dict[str, Any]] = m.get("gpus") or []
+                    gpus: List[Dict[str, Any]] = metrics.get("gpus") or []
                     if gpus:
-                        avg_util = sum(g["util"] for g in gpus) / len(gpus)
-                        _stat_chip(
-                            f"GPU {len(gpus)}x",
-                            f"{avg_util:.0f}%",
-                            "developer_board",
-                        )
+                        avg_util = sum(gpu["util"] for gpu in gpus) / len(gpus)
+                        _stat_chip(f"GPU {len(gpus)}x", f"{avg_util:.0f}%", "developer_board")
 
             metrics_row()
             timer_ref = {"obj": ui.timer(interval_state["sec"], metrics_row.refresh)}
 
-            def _apply_refresh_interval(e) -> None:
-                sec = max(1, int(e.value or 1))
+            def _apply_refresh_interval(event) -> None:
+                sec = max(1, int(event.value or 1))
                 interval_state["sec"] = sec
                 save_setting("header_refresh_interval", sec)
                 if timer_ref["obj"] is not None:
@@ -76,7 +70,5 @@ def _stat_chip(label: str, value: str, icon_name: str) -> None:
         "items-center gap-1 bg-white/5 px-2 py-0.5 border border-white/10 stat-chip"
     ):
         ui.icon(icon_name, size="xs", color="gray-300")
-        ui.label(label).classes(
-            "text-[10px] font-bold text-gray-400 uppercase tracking-wider"
-        )
+        ui.label(label).classes("text-[10px] font-bold text-gray-400 uppercase tracking-wider")
         ui.label(value).classes("text-xs font-mono text-white")

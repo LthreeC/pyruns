@@ -19,24 +19,19 @@
 }
 
 /* param editor zero-out Quasar expansion spacing */
-.param-expansion .q-expansion-item__container {
-  padding: 0 !important;
-  margin: 0 !important;
-}
-
-.param-expansion .q-expansion-item__content {
+.param-expansion .q-expansion-item__container,
+.param-expansion .q-expansion-item__content,
+.param-expansion .q-card,
+.param-expansion .q-card__section,
+.param-expansion .q-list,
+.param-expansion .q-item__section {
   padding: 0 !important;
   margin: 0 !important;
 }
 
 .param-expansion .q-item {
-  min-height: 30px !important;
-  padding: 0 6px 0 10px !important;
-  margin: 0 !important;
-}
-
-.param-expansion .q-item__section {
-  padding: 0 !important;
+  min-height: 32px !important;
+  padding: 0 8px 0 12px !important;
   margin: 0 !important;
 }
 
@@ -45,40 +40,28 @@
   min-width: 20px !important;
 }
 
-.param-expansion .q-card,
-.param-expansion .q-card__section {
-  padding: 0 !important;
-  margin: 0 !important;
-  box-shadow: none !important;
-}
-
-.param-expansion .q-list {
-  padding: 0 !important;
-  margin: 0 !important;
-}
-
 .param-expansion .q-focus-helper {
   display: none !important;
 }
 
 .param-expansion .nicegui-column,
 .param-expansion .nicegui-grid {
-  gap: 4px !important;
+  gap: 6px !important;
   margin: 0 !important;
   padding-top: 0 !important;
   padding-bottom: 0 !important;
 }
 
 .param-card {
-  border-radius: 5px;
-  padding-top: 5px !important;
-  padding-bottom: 5px !important;
-  min-height: 54px;
+  border-radius: 6px;
+  padding-top: 7px !important;
+  padding-bottom: 7px !important;
+  min-height: 58px;
 }
 
 .param-grid {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 0;
   align-content: start;
 }
 
@@ -93,7 +76,10 @@
   overflow: hidden;
 }
 
-.param-label {
+.param-label,
+.param-meta .nicegui-label,
+.param-meta label,
+.param-meta span {
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
@@ -108,18 +94,23 @@
   width: 100%;
 }
 
-.param-type-chip {
-  border-radius: 3px;
-}
-
+.param-type-chip,
 .param-section {
   border-radius: 5px;
 }
 
-.param-meta .nicegui-label,
-.param-meta label,
-.param-meta span {
-  white-space: nowrap !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
+@media (max-width: 1100px) {
+  .param-row {
+    flex-wrap: wrap !important;
+    align-items: flex-start !important;
+  }
+
+  .param-meta {
+    width: 100%;
+    max-width: none;
+  }
+
+  .param-value-wrap {
+    width: 100%;
+  }
 }

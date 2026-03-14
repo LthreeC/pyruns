@@ -1,19 +1,21 @@
+"""Task creation helpers for turning configs into disk-backed tasks."""
+
+from __future__ import annotations
+
 import os
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-
-from pyruns._config import TASKS_DIR, CONFIG_FILENAME, RUN_LOGS_DIR
+from pyruns._config import CONFIG_FILENAME, RUN_LOGS_DIR
+from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.config_utils import save_yaml
-from pyruns.utils.info_io import save_task_info
-from pyruns.utils import get_logger, get_now_str, get_now_str_us
+from pyruns.utils.info_io import load_script_info, save_task_info
 
 logger = get_logger(__name__)
 
 
 def create_task_object(task_dir: str, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    """Create the in-memory dictionary representing a task."""
-    created_at = get_now_str()
+    """Build the in-memory representation used by TaskManager and the UI."""
     return {
         "dir": task_dir,
         "name": name,
@@ -21,23 +23,43 @@ def create_task_object(task_dir: str, name: str, config: Dict[str, Any]) -> Dict
         "config": config,
         "log": "",
         "progress": 0.0,
-        "created_at": created_at,
+        "created_at": get_now_str(),
         "env": {},
         "pinned": False,
-        "run_at": [],
-        "run_pid": [],
-        "monitor": [],
+        "start_times": [],
+        "finish_times": [],
+        "pids": [],
+        "records": 0,
     }
 
 
 class TaskGenerator:
-    def __init__(self, root_dir: str = None):
+    """Create one or many task folders under the workspace tasks directory."""
+
+    def __init__(self, root_dir: str | None = None):
         if root_dir is None:
             from pyruns._config import ROOT_DIR, TASKS_DIR
+
             root_dir = os.path.join(ROOT_DIR, TASKS_DIR)
-            
+
         self.root_dir = root_dir
         os.makedirs(self.root_dir, exist_ok=True)
+
+    def _resolve_script_path(self) -> str:
+        """Best-effort lookup of the source script from workspace metadata."""
+        workspace_dir = os.path.dirname(self.root_dir)
+        script_info = load_script_info(workspace_dir)
+        script_path = str(script_info.get("script_path", "") or "")
+        return script_path if script_path and os.path.exists(script_path) else ""
+
+    @staticmethod
+    def _clean_task_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove UI-only metadata before persisting config.yaml."""
+        return {
+            key: value
+            for key, value in config.items()
+            if not str(key).startswith("_meta")
+        }
 
     def create_task(
         self,
@@ -46,76 +68,46 @@ class TaskGenerator:
         group_index: str = "",
         run_mode: str = "config",
     ) -> Dict[str, Any]:
-        ts = get_now_str()
-
-        # ── Folder name = user-provided task name ──
+        """Create one task folder with task_info.json, config.yaml, and run_logs/."""
+        timestamp = get_now_str()
         base_name = name_prefix.strip() if name_prefix else ""
         if not base_name:
-            base_name = f"task_{ts}"
+            base_name = f"task_{timestamp}"
 
-        folder_name = base_name
-        if group_index:
-            folder_name += f"_{group_index}"  # e.g. "my-exp_[1-of-12]"
-
-        # Deduplicate: append millis if folder already exists
+        folder_name = f"{base_name}_{group_index}" if group_index else base_name
         if os.path.exists(os.path.join(self.root_dir, folder_name)):
-            folder_name += f"_{int(time.time() * 1000)}"
+            folder_name = f"{folder_name}_{int(time.time() * 1000)}"
 
         task_dir = os.path.join(self.root_dir, folder_name)
         os.makedirs(task_dir, exist_ok=True)
 
-        # Display name = folder name (readable)
-        display_name = base_name
-        if group_index:
-            display_name += f"_{group_index}"
-
-        # Clean config: remove internal _meta keys before saving
-        clean_config = {k: v for k, v in config.items() if not k.startswith("_meta")}
+        display_name = f"{base_name}_{group_index}" if group_index else base_name
+        clean_config = self._clean_task_config(config)
+        mode = str(run_mode or "config").strip().lower()
 
         task_obj = create_task_object(task_dir, display_name, clean_config)
+        task_obj["run_mode"] = mode
 
-        # ── Write files ──
-        # task_info.json — ordered fields
-        info = {
+        task_info: Dict[str, Any] = {
             "name": task_obj["name"],
             "status": task_obj["status"],
             "progress": task_obj["progress"],
             "created_at": task_obj["created_at"],
             "pinned": task_obj["pinned"],
+            "run_mode": mode,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+            "records": [],
+            "tracks": [],
         }
-        # Resolve script path directly from workspace script_info.json
-        workspace_dir = os.path.dirname(self.root_dir)
 
-        # ── Strategy 1: script_info.json in workspace ──
-        from pyruns._config import SCRIPT_INFO_FILENAME
-        script_info_path = os.path.join(workspace_dir, SCRIPT_INFO_FILENAME)
-        if os.path.exists(script_info_path):
-            try:
-                import json
-                with open(script_info_path, "r", encoding="utf-8") as f:
-                    s_info = json.load(f)
-                    sp = s_info.get("script_path", "")
-                if sp and os.path.exists(sp):
-                    info["script"] = sp
-                else:
-                    logger.warning("Could not resolve script path from script_info.json: %s", sp)
-            except Exception as e:
-                logger.warning("Failed to read script_info.json: %s", e)
-        mode = str(run_mode or "config").strip().lower()
-        info["run_mode"] = mode
-        # Array fields at the end
-        info["start_times"] = []
-        info["finish_times"] = []
-        info["pids"] = []
-        info["records"] = []
-        info["tracks"] = []
+        script_path = self._resolve_script_path()
+        if script_path:
+            task_info["script"] = script_path
 
-        save_task_info(task_dir, info)
-
-        # config.yaml: only clean parameters
+        save_task_info(task_dir, task_info)
         save_yaml(os.path.join(task_dir, CONFIG_FILENAME), clean_config)
-
-        # Create run_logs/ directory (empty, logs created on first run)
         os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
 
         logger.debug("Created task '%s' at %s", display_name, task_dir)
@@ -127,11 +119,17 @@ class TaskGenerator:
         name_prefix: str,
         run_mode: str = "config",
     ) -> List[Dict[str, Any]]:
-        """Create multiple tasks from a list of configs, adding group indices when > 1."""
-        tasks: List[Dict[str, Any]] = []
+        """Create many tasks, appending [i-of-n] suffixes when needed."""
         total = len(configs)
-        for idx, cfg in enumerate(configs):
-            group_index = f"[{idx + 1}-of-{total}]" if total > 1 else ""
-            tasks.append(self.create_task(name_prefix, cfg, group_index, run_mode=run_mode))
+        tasks: List[Dict[str, Any]] = []
+        for index, config in enumerate(configs, start=1):
+            group_index = f"[{index}-of-{total}]" if total > 1 else ""
+            tasks.append(
+                self.create_task(
+                    name_prefix,
+                    config,
+                    group_index=group_index,
+                    run_mode=run_mode,
+                )
+            )
         return tasks
-

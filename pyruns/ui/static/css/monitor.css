@@ -10,21 +10,24 @@
   margin: 0;
 }
 
-/* keep scrollbar visible while reserving configurable right text gutter */
 .monitor-xterm .xterm-viewport {
   padding-right: var(--monitor-xterm-gutter, 24px) !important;
   margin-right: 0 !important;
   box-sizing: content-box !important;
 }
 
-/* monitor task list item */
+.monitor-sidebar {
+  border-radius: var(--pr-radius-lg);
+  box-shadow: var(--pr-shadow-sm);
+}
+
 .monitor-task-item {
   cursor: pointer;
-  transition: background-color 0.14s ease;
+  transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
   border-left: 3px solid transparent;
   flex-wrap: nowrap !important;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .monitor-task-item:hover {
@@ -45,8 +48,7 @@
 }
 
 .monitor-task-list-scroll {
-  content-visibility: auto;
-  contain-intrinsic-size: 760px;
+  contain: layout;
 }
 
 .monitor-sidebar .q-field__control {
@@ -67,4 +69,10 @@
   border: 2px solid transparent;
   border-radius: 4px;
   background-clip: content-box;
+}
+
+@media (max-width: 1180px) {
+  .monitor-sidebar {
+    min-width: 220px !important;
+  }
 }

@@ -18,6 +18,7 @@ body {
     radial-gradient(circle at 92% 0%, #d8f6ed 0%, rgba(216, 246, 237, 0) 30%),
     linear-gradient(180deg, var(--pr-bg-0) 0%, var(--pr-bg-1) 100%);
   color: #1f2937;
+  overflow-x: hidden;
   font-family:
     "Avenir Next",
     "Trebuchet MS",
@@ -65,6 +66,7 @@ body {
   border-radius: var(--pr-radius-lg);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.94) 100%);
   box-shadow: var(--pr-shadow-sm);
+  will-change: auto;
 }
 
 .generator-settings-card {
@@ -114,6 +116,7 @@ body {
 
 .monitor-main-panel {
   border-top-left-radius: var(--pr-radius-lg);
+  border-top-right-radius: var(--pr-radius-lg);
   overflow: hidden;
 }
 

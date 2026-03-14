@@ -1,18 +1,11 @@
-﻿"""Centralized NiceGUI class/props constants for Pyruns UI.
-
-This file intentionally keeps semantic names used by pages/components, while
-reducing duplication by composing many constants from a shared token set.
-"""
+"""Centralized NiceGUI class/props constants for Pyruns UI."""
 
 
 def _cx(*parts: str) -> str:
     """Join class fragments while ignoring empty values."""
-    return " ".join(p for p in parts if p)
+    return " ".join(part for part in parts if part)
 
 
-# -----------------------------------------------------------------------------
-# Shared tokens
-# -----------------------------------------------------------------------------
 _W_FULL = "w-full"
 _FLEX_NONE = "flex-none"
 _FLEX_GROW = "flex-grow"
@@ -24,24 +17,18 @@ _GAP_3 = "gap-3"
 _GAP_4 = "gap-4"
 
 _BG_WHITE = "bg-white"
-_BG_WHITE_SOFT = "bg-white/95 backdrop-blur-sm"
+_BG_WHITE_SOFT = "bg-white/95"
 _BORDER_B_SLATE_200 = "border-b border-slate-200"
 _BORDER_SLATE_200 = "border border-slate-200"
 _BORDER_SLATE_100 = "border border-slate-100"
 _SHADOW_SM = "shadow-sm"
 
 
-# -----------------------------------------------------------------------------
-# Layout widths
-# -----------------------------------------------------------------------------
-SIDEBAR_WIDTH = "6%"
-MONITOR_PANEL_WIDTH = "16%"
+SIDEBAR_WIDTH = "clamp(118px, 8vw, 146px)"
+MONITOR_PANEL_WIDTH = "clamp(232px, 20vw, 320px)"
 
 
-# -----------------------------------------------------------------------------
-# Header / bars
-# -----------------------------------------------------------------------------
-HEADER_GRADIENT = "bg-gradient-to-r from-[#0b1424] via-[#133b56] to-[#135e5a]"
+HEADER_GRADIENT = "bg-gradient-to-r from-[#0b1424] via-[#123851] to-[#14655d]"
 
 MANAGER_SUMMARY_BAR_CLASSES = _cx(
     _W_FULL,
@@ -52,14 +39,14 @@ MANAGER_SUMMARY_BAR_CLASSES = _cx(
 )
 MANAGER_ACTION_ROW_CLASSES = _cx(
     _W_FULL,
-    "items-center justify-between gap-1 px-3 py-1.5 z-[21] manager-surface",
+    "items-center justify-between gap-2 px-3 py-2 z-[21] manager-surface",
     _BG_WHITE_SOFT,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
 MANAGER_FILTER_ROW_CLASSES = _cx(
     _W_FULL,
-    "items-center gap-2 mb-0 px-3 py-1.5 z-[22] manager-surface",
+    "items-center gap-2 mb-0 px-3 py-2 z-[22] manager-surface",
     _BG_WHITE_SOFT,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
@@ -67,30 +54,33 @@ MANAGER_FILTER_ROW_CLASSES = _cx(
 MANAGER_GRID_CLASSES = _cx(_W_FULL, _GAP_3, "p-1 manager-grid")
 
 
-# -----------------------------------------------------------------------------
-# Generator page
-# -----------------------------------------------------------------------------
 GENERATOR_HEADER_CLASSES = _cx(
     _W_FULL,
-    "items-center gap-2 mb-2 px-3 py-1.5 sticky top-0 z-10 generator-surface",
+    "items-center gap-3 mb-3 px-4 py-2 sticky top-0 z-10 generator-surface flex-wrap",
     _BG_WHITE,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
-GENERATOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_1, "flex-nowrap items-start h-full generator-workspace")
-GENERATOR_LEFT_COL_CLASSES = _cx(_FLEX_GROW, _GAP_2, _MIN_W_0, "h-full")
-GENERATOR_RIGHT_COL_CLASSES = "w-96 flex-none sticky top-4"
+GENERATOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_4, "items-start h-full generator-workspace")
+GENERATOR_LEFT_COL_CLASSES = _cx(_FLEX_GROW, _GAP_2, _MIN_W_0, "h-full generator-main-col")
+GENERATOR_RIGHT_COL_CLASSES = "flex-none gap-3 generator-side-panel"
 GENERATOR_TOOLBAR_CLASSES = _cx(
     _W_FULL,
-    "items-center justify-between px-3 py-1 mb-1 generator-surface",
+    "items-center justify-between px-4 py-2 mb-2 generator-surface flex-wrap",
     _BG_WHITE,
     _BORDER_B_SLATE_200,
     _SHADOW_SM,
 )
-GENERATOR_SETTINGS_CARD_CLASSES = _cx(_W_FULL, "p-3 generator-settings-card", _SHADOW_SM, _BG_WHITE, _BORDER_SLATE_100)
+GENERATOR_SETTINGS_CARD_CLASSES = _cx(
+    _W_FULL,
+    "p-4 generator-settings-card",
+    _SHADOW_SM,
+    _BG_WHITE,
+    _BORDER_SLATE_100,
+)
 GENERATOR_TEMPLATE_SELECT_CLASSES = "w-64"
 GENERATOR_VIEW_TOGGLE_WRAP_CLASSES = _cx("items-center", _GAP_1, "bg-slate-100 p-1")
-GENERATOR_FORM_SCROLL_CLASSES = _cx(_W_FULL, "overflow-y-auto", _FLEX_GROW, _GAP_0, "generator-form-scroll")
+GENERATOR_FORM_SCROLL_CLASSES = _cx(_W_FULL, _FLEX_GROW, _GAP_0, "generator-form-scroll")
 GENERATOR_FORM_ROOT_CLASSES = _cx(_W_FULL, _GAP_0, "p-0 m-0")
 GENERATOR_WARNING_ROW_CLASSES = _cx(
     _W_FULL,
@@ -98,12 +88,7 @@ GENERATOR_WARNING_ROW_CLASSES = _cx(
     "bg-amber-50 border border-amber-200",
 )
 GENERATOR_YAML_EDITOR_CLASSES = _cx(_W_FULL, "overflow-hidden generator-yaml-editor")
-GENERATOR_ARGS_CONTAINER_CLASSES = _cx(
-    _W_FULL,
-    "h-full p-4",
-    _GAP_3,
-    "bg-slate-50 border border-slate-200",
-)
+GENERATOR_ARGS_CONTAINER_CLASSES = _cx(_W_FULL, "h-full p-5", _GAP_3, "bg-slate-50 border border-slate-200")
 GENERATOR_ARGS_EXPANSION_CLASSES = _cx(_W_FULL, _BG_WHITE, "border border-slate-200")
 GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES = _cx(_W_FULL, "font-mono text-xs")
 GENERATOR_ARGS_TEXTAREA_CLASSES = _cx(_W_FULL, "text-[12px] generator-args-textarea")
@@ -129,7 +114,6 @@ PINNED_TITLE_CLASSES = "text-xs font-bold text-indigo-700 tracking-wide"
 
 def get_generator_batch_hint_html(separator: str, escape: str) -> str:
     """Build HTML help text for batch syntax."""
-    escape_html = escape
     return (
         '<span style="font-family:monospace;font-size:10px;color:#475569;">'
         '<b style="color:#6366f1;">Product</b>:&nbsp;'
@@ -139,21 +123,16 @@ def get_generator_batch_hint_html(separator: str, escape: str) -> str:
         '<b style="color:#ec4899;">Range</b>:&nbsp;&nbsp;&nbsp;'
         '<code style="background:#fce7f3;padding:0 3px;border-radius:2px;">epoch: 1:30:1</code><br>'
         '<b style="color:#14b8a6;">Escape</b>:&nbsp;&nbsp;'
-        f'<span style="color:#64748b;">Use </span>'
-        f'<code style="background:#ccfbf1;padding:0 3px;border-radius:2px;">{escape_html}</code>'
+        '<span style="color:#64748b;">Use </span>'
+        f'<code style="background:#ccfbf1;padding:0 3px;border-radius:2px;">{escape}</code>'
         f'<span style="color:#64748b;"> to escape {separator} in normal strings</span><br>'
         '<span style="color:#94a3b8;">Total = product_count x zip_len</span>'
         "</span>"
     )
 
 
-# -----------------------------------------------------------------------------
-# Empty states / placeholders
-# -----------------------------------------------------------------------------
 EMPTY_STATE_COL_CLASSES = _cx(_W_FULL, "items-center justify-center py-20")
-
 MONITOR_EMPTY_COL_CLASSES = _cx(_W_FULL, "items-center py-8 gap-2")
-
 BATCH_HINT_BOX_CLASSES = _cx(
     _W_FULL,
     _GAP_1,
@@ -162,16 +141,22 @@ BATCH_HINT_BOX_CLASSES = _cx(
 )
 
 
-# -----------------------------------------------------------------------------
-# Monitor page
-# -----------------------------------------------------------------------------
 MONITOR_HEADER_HEIGHT_PX = 52
-MONITOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_0, "flex-nowrap")
-MONITOR_TERMINAL_COL_CLASSES = _cx(_FLEX_GROW, _MIN_W_0, _GAP_0, "overflow-hidden bg-[#1e1e1e] monitor-terminal-col monitor-main-panel")
+MONITOR_WORKSPACE_CLASSES = _cx(_W_FULL, _GAP_3, "items-stretch flex-nowrap")
+MONITOR_TERMINAL_COL_CLASSES = _cx(
+    _FLEX_GROW,
+    _MIN_W_0,
+    _GAP_0,
+    "overflow-hidden bg-[#1e1e1e] monitor-terminal-col monitor-main-panel",
+)
 MONITOR_WORKSPACE_STYLE = f"height: calc(100vh - {MONITOR_HEADER_HEIGHT_PX}px); overflow: hidden;"
-MONITOR_SIDEBAR_STYLE = f"width: {MONITOR_PANEL_WIDTH}; height: 100%;"
+MONITOR_SIDEBAR_STYLE = f"width: {MONITOR_PANEL_WIDTH}; height: 100%; min-width: {MONITOR_PANEL_WIDTH};"
 MONITOR_HEADER_ROW_CLASSES = _cx(_W_FULL, "items-center gap-2 px-2 py-1.5 flex-none")
-MONITOR_PINNED_CARD_CLASSES = _cx(_W_FULL, _GAP_0, "p-0 m-0 border-b-2 border-indigo-200 bg-indigo-50/50 flex-none")
+MONITOR_PINNED_CARD_CLASSES = _cx(
+    _W_FULL,
+    _GAP_0,
+    "p-0 m-0 border-b-2 border-indigo-200 bg-indigo-50/50 flex-none",
+)
 MONITOR_TASK_LIST_SCROLL_CLASSES = _cx(_FLEX_GROW, _W_FULL, "overflow-y-auto monitor-task-list-scroll")
 MONITOR_EXPORT_BTN_CLASSES = _cx(_W_FULL, "text-sm font-bold tracking-wide py-1")
 MONITOR_TASK_ITEM_BASE_CLASSES = (
@@ -179,9 +164,6 @@ MONITOR_TASK_ITEM_BASE_CLASSES = (
 )
 
 
-# -----------------------------------------------------------------------------
-# Inputs / shared controls
-# -----------------------------------------------------------------------------
 INPUT_PROPS = "outlined dense bg-white text-slate-800"
 INPUT_BORDERLESS_PROPS = "dense borderless bg-color=white"
 INPUT_OUTLINED_CLASSES = "flex-grow ml-2 px-2 shadow-sm border border-slate-200"
@@ -200,9 +182,6 @@ TAB_PANELS_CLASSES = _cx(_W_FULL, _FLEX_GROW, "overflow-hidden relative")
 TAB_CONTENT_CLASSES = _cx(_W_FULL, _FLEX_GROW, "p-0 m-0 bg-white overflow-hidden")
 
 
-# -----------------------------------------------------------------------------
-# Buttons / panels / dialogs
-# -----------------------------------------------------------------------------
 BTN_CLASS = "transition-all duration-200"
 BTN_PRIMARY = f"{BTN_CLASS} bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm hover:shadow"
 BTN_SUCCESS = f"{BTN_CLASS} bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm hover:shadow"
@@ -220,15 +199,10 @@ DIALOG_TITLE_CLASSES = "font-bold text-lg tracking-tight truncate"
 
 LOADING_OVERLAY_CLASSES = "absolute inset-0 items-center justify-center bg-white/70 z-10 gap-3"
 LOADING_TEXT_CLASSES = "text-slate-500 font-medium"
-
 TOOLBAR_LIGHT = "w-full items-center justify-between px-5 py-2 flex-none bg-gradient-to-r from-indigo-50 to-slate-50 border-b border-indigo-100"
-
 EXPORT_PRE_STYLE = "color:#94a3b8;font-size:11px;padding:8px 12px;background:#1e293b;border-radius:8px;margin:4px 0;"
 
 
-# -----------------------------------------------------------------------------
-# Status maps
-# -----------------------------------------------------------------------------
 STATUS_CARD_STYLES = {
     "pending": "border-slate-200 bg-white",
     "queued": "border-blue-200 bg-blue-50/30",
@@ -236,7 +210,6 @@ STATUS_CARD_STYLES = {
     "completed": "border-emerald-200 bg-emerald-50/20",
     "failed": "border-rose-200 bg-rose-50/20",
 }
-
 STATUS_BADGE_STYLES = {
     "pending": "bg-slate-100 text-slate-500",
     "queued": "bg-blue-100 text-blue-700",
@@ -244,7 +217,6 @@ STATUS_BADGE_STYLES = {
     "completed": "bg-emerald-100 text-emerald-700",
     "failed": "bg-rose-100 text-rose-700",
 }
-
 STATUS_ICONS = {
     "pending": "schedule",
     "queued": "hourglass_top",
@@ -252,7 +224,6 @@ STATUS_ICONS = {
     "completed": "check_circle",
     "failed": "error",
 }
-
 STATUS_ICON_COLORS = {
     "pending": "text-slate-400",
     "queued": "text-blue-500",
@@ -262,31 +233,22 @@ STATUS_ICON_COLORS = {
 }
 
 
-# -----------------------------------------------------------------------------
-# Task card
-# -----------------------------------------------------------------------------
 CARD_BASE_CLASSES = "w-full border shadow-sm hover:shadow-lg transition-all duration-200 cursor-pointer group p-0 overflow-hidden task-card"
 CARD_HEADER_CLASSES = "w-full items-start px-3 pt-3 pb-0 gap-2 flex-nowrap"
 CARD_TITLE_COL_CLASSES = "flex-grow gap-0.5 min-w-0"
 CARD_TITLE_CLASSES = "font-bold text-[13px] text-slate-800 group-hover:text-indigo-700 transition-colors truncate leading-snug"
 CARD_TIME_CLASSES = "text-[10px] text-slate-400 font-mono leading-tight"
-
 PIN_ACTIVE_CLASSES = "text-amber-500 opacity-100"
 PIN_INACTIVE_CLASSES = "text-slate-300 opacity-0 group-hover:opacity-60"
-
 CARD_BADGE_ROW_CLASSES = "w-full px-3 py-0.5"
 CARD_BODY_CLASSES = "w-full px-3 py-1.5 gap-0.5 flex-grow"
 CARD_CONFIG_LINE_CLASSES = "text-[11px] text-slate-500 truncate w-full font-mono leading-relaxed"
 CARD_FOOTER_CLASSES = "w-full items-center justify-between px-3 py-2 mt-auto border-t border-slate-100 bg-slate-50/60"
-
 CHECKBOX_PROPS = "dense color=indigo size=xs"
 ACTION_BTN_PROPS = "flat round dense size=sm"
 ACTION_BTN_CLASSES = "text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
 
 
-# -----------------------------------------------------------------------------
-# Common reusable aliases
-# -----------------------------------------------------------------------------
 ROW_CENTER_GAP_1 = "items-center gap-1"
 ROW_CENTER_GAP_2 = "items-center gap-2"
 ROW_CENTER_GAP_3 = "items-center gap-3"
@@ -317,7 +279,7 @@ MONITOR_LIST_COL_CLASSES = "w-full gap-0 p-0 m-0 overflow-hidden shrink-0"
 MONITOR_EXPORT_ROW_CLASSES = "w-full p-2 flex-none mt-auto"
 MONITOR_TASK_ROW_CLASSES = "w-full max-w-full items-center gap-0.5 flex-nowrap min-w-0 overflow-hidden border-b border-slate-50 pr-2"
 
-SIDEBAR_COL_CLASSES = "flex-none bg-white border-r border-slate-100 gap-0 shadow-[4px_0_24px_rgba(0,0,0,0.02)] print:hidden sidebar-shell"
+SIDEBAR_COL_CLASSES = "flex-none bg-white border-r border-slate-100 gap-0 shadow-[4px_0_24px_rgba(15,23,42,0.05)] print:hidden sidebar-shell"
 SIDEBAR_LIST_CLASSES = "w-full gap-0 px-1.5"
 SIDEBAR_BTN_PROPS = "flat no-caps"
 SIDEBAR_ICON_ACTIVE = "text-indigo-600 text-sm"
@@ -331,9 +293,6 @@ TASK_CARD_META_TEXT_CLASSES = "text-[10px] font-mono text-indigo-400"
 TASK_CARD_RUNNING_ACTIONS_CLASSES = "items-center gap-1.5"
 
 
-# -----------------------------------------------------------------------------
-# Env editor
-# -----------------------------------------------------------------------------
 ENV_EDITOR_ROOT_CLASSES = "w-full h-full gap-0"
 ENV_EDITOR_ADD_BTN_CLASSES = "text-indigo-600 hover:bg-indigo-100 px-2"
 ENV_EDITOR_SAVE_BTN_CLASSES = "px-4"

@@ -19,7 +19,7 @@ _TYPE_INFO = {
 }
 
 _TINY = "outlined dense bg-white hide-bottom-space"
-_PARAM_GRID_MIN_COL_PX = 240
+_PARAM_GRID_MIN_COL_PX = 0
 
 
 def _get_type_key(value: Any) -> str:
@@ -266,5 +266,5 @@ def _pin_button(is_pinned: bool, on_click) -> None:
 def _param_grid(columns: int, extra_classes: str = ""):
     classes = f"w-full param-grid {extra_classes}".strip()
     return ui.element("div").classes(classes).style(
-        f"display:grid;grid-template-columns:repeat({columns}, minmax({_PARAM_GRID_MIN_COL_PX}px, 1fr));gap:4px;"
+        f"display:grid;grid-template-columns:repeat({columns}, minmax({_PARAM_GRID_MIN_COL_PX}px, 1fr));gap:8px;"
     )

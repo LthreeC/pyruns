@@ -317,13 +317,13 @@ def _editor_toolbar(
     state, yaml_holder, args_holder, run_script_holder, editor_area,
 ) -> None:
     with ui.row().classes(GENERATOR_TOOLBAR_CLASSES):
-        with ui.row().classes(ROW_CENTER_GAP_2):
+        with ui.row().classes(f"{ROW_CENTER_GAP_2} min-w-0"):
             ui.icon("tune", size="20px").classes("text-indigo-500")
             ui.label("Parameters").classes(
                 LABEL_BOLD_TRACKING
             )
 
-        with ui.row().classes(ROW_CENTER_GAP_2):
+        with ui.row().classes(f"{ROW_CENTER_GAP_2} flex-wrap justify-end min-w-0"):
             if view_mode["current"] == "form":
                 ui.button(
                     icon="unfold_more",

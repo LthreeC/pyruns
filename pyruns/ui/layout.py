@@ -1,18 +1,8 @@
-"""
-Main layout — header + sidebar + lazy-rendered content panels.
+"""Main layout with header, sidebar, and lazy-rendered page panels."""
 
-Instead of destroying / recreating pages on every tab switch
-(``@ui.refreshable``), we create one container per page and toggle
-CSS visibility.  Pages are rendered **lazily** on first visit so
-the initial load stays fast.
-
-This eliminates the multi-second lag when switching tabs — the DOM
-tree for already-visited pages is preserved across switches.
-"""
+from typing import Any, Callable, Dict
 
 from nicegui import ui
-from typing import Dict, Any, Callable
-
 
 from pyruns.ui.components.header import render_header
 from pyruns.ui.components.sidebar import render_sidebar
@@ -26,60 +16,52 @@ def render_main_layout(
     metrics_sampler,
     page_renderers: Dict[str, Callable],
 ) -> None:
-    """Assemble the full page: header, sidebar, and lazy content panels."""
+    """Assemble the full page shell and lazily mount each tab once."""
     render_header(state, metrics_sampler)
-
     ui.context.client.content.classes("p-0 gap-0")
 
-    # ── Flex row: sidebar (15%) + content (85%) ──
-    with ui.row().classes("w-full flex-nowrap gap-0 app-shell").style("height: calc(100vh - 52px); overflow: hidden;"):
-        # Sidebar column
+    with ui.row().classes("w-full gap-0 flex-nowrap app-shell").style("height: calc(100vh - 52px); overflow: hidden;"):
         render_sidebar(state, lambda tab: switch_tab(tab))
 
-        # Content column — fills the remaining space (relative anchor for absolute children)
         with ui.column().classes("flex-grow min-w-0 gap-0 h-full relative app-content").style("height: 100%;"):
             containers: Dict[str, ui.element] = {}
-            rendered: set = set()
+            rendered: set[str] = set()
 
             for tab in _TAB_NAMES:
-                c = ui.column().classes(
+                container = ui.column().classes(
                     "w-full h-full gap-0 flex-nowrap overflow-hidden absolute inset-0 "
                     "transition-opacity duration-200 ease-in-out"
                 ).style("height: 100%; min-height: 0;")
-                c.classes("opacity-0 pointer-events-none")
-                containers[tab] = c
+                container.classes("opacity-0 pointer-events-none")
+                containers[tab] = container
 
     def switch_tab(tab: str) -> None:
-        """Show *tab* and hide the rest; lazy-render on first visit."""
+        """Show the requested tab and keep others mounted but hidden."""
         state["active_tab"] = tab
 
-        # Notify tab change observers (if any)
-        for cb in state.get("on_tab_change", []):
+        for callback in state.get("on_tab_change", []):
             try:
-                res = cb(tab)
-                if hasattr(res, "__await__"):
+                result = callback(tab)
+                if hasattr(result, "__await__"):
                     from nicegui.background_tasks import create
-                    create(res)
+
+                    create(result)
             except Exception:
                 pass
-                
-        # Broadcast globally via our new simple event bus
+
         from pyruns.utils.events import event_sys
+
         event_sys.emit("on_tab_change", tab)
 
-        # Toggle opacity instead of v-if visibility to allow CSS transitions
-        for name, c in containers.items():
+        for name, container in containers.items():
             if name == tab:
-                c.classes(remove="opacity-0 pointer-events-none", add="opacity-100 z-10")
+                container.classes(remove="opacity-0 pointer-events-none", add="opacity-100 z-10")
             else:
-                c.classes(remove="opacity-100 z-10", add="opacity-0 pointer-events-none")
+                container.classes(remove="opacity-100 z-10", add="opacity-0 pointer-events-none")
 
-        # Render content once, on first visit
         if tab not in rendered:
             rendered.add(tab)
             with containers[tab]:
                 page_renderers[tab]()
 
-    # Render & show only the initial tab (true lazy render).
-    initial = state["active_tab"]
-    switch_tab(initial)
+    switch_tab(state["active_tab"])
