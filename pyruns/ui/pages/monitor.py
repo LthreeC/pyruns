@@ -64,6 +64,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         "auto_scroll": True,
         "export_ids": set(),
         "_log_offset": 0,
+        "_live_attached": False,
     }
 
     # ----------------------------------------------------------
@@ -217,10 +218,24 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     # ── Live log callback (called by LogEmitter from executor thread) ──
     def _handle_live_log(chunk: str):
+        if state.get("active_tab") != "monitor":
+            return
         term = sel.get("_terminal")
         if not term:
             return
         term.write(chunk)
+
+    def _attach_live_log(task_name: Optional[str]) -> None:
+        if not task_name or sel.get("_live_attached"):
+            return
+        log_emitter.subscribe(task_name, _handle_live_log)
+        sel["_live_attached"] = True
+
+    def _detach_live_log(task_name: Optional[str]) -> None:
+        if not task_name or not sel.get("_live_attached"):
+            return
+        log_emitter.unsubscribe(task_name, _handle_live_log)
+        sel["_live_attached"] = False
 
     async def _select_task(tid: str):
         # Avoid full re-read when user clicks the same task repeatedly.
@@ -230,7 +245,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         # Unsubscribe from the old task first
         old_tid = sel.get("task_id")
         if old_tid:
-            log_emitter.unsubscribe(old_tid, _handle_live_log)
+            _detach_live_log(old_tid)
 
         sel["task_id"] = tid
         sel["log_file_name"] = None
@@ -248,7 +263,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
         # Subscribe for live log push if a task is selected
         if tid:
-            log_emitter.subscribe(tid, _handle_live_log)
+            _attach_live_log(tid)
 
     def _toggle_export(tid: str, checked: bool):
         if checked:
@@ -333,8 +348,11 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
 
     async def _on_tab_switch(tab: str):
         if tab == "monitor":
+            _attach_live_log(sel.get("task_id"))
             _mon_dirty["flag"] = True
             _mon_updater.trigger()
+        else:
+            _detach_live_log(sel.get("task_id"))
 
     from pyruns.utils.events import event_sys
 
@@ -346,9 +364,10 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
     def _on_task_rename(old_name: str, new_name: str):
         if sel.get("task_id") == old_name:
             if old_name:
-                log_emitter.unsubscribe(old_name, _handle_live_log)
+                _detach_live_log(old_name)
             sel["task_id"] = new_name
-            log_emitter.subscribe(new_name, _handle_live_log)
+            if state.get("active_tab") == "monitor":
+                _attach_live_log(new_name)
         if old_name in sel["export_ids"]:
             sel["export_ids"].discard(old_name)
             sel["export_ids"].add(new_name)
@@ -368,7 +387,7 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         # Unsubscribe from live log push to prevent memory leaks
         current_tid = sel.get("task_id")
         if current_tid:
-            log_emitter.unsubscribe(current_tid, _handle_live_log)
+            _detach_live_log(current_tid)
 
     client.on_disconnect(_cleanup_on_disconnect)
 

@@ -6,7 +6,7 @@ import json
 from nicegui import ui
 
 from pyruns._config import CONFIG_FILENAME
-from pyruns.utils.info_io import load_task_info, save_task_info
+from pyruns.utils.info_io import load_task_info
 from pyruns.utils.info_io import get_log_options, resolve_log_path
 from pyruns.ui.theme import (
     STATUS_ICONS, DIALOG_BACKDROP, DIALOG_HEADER_DARK, TOOLBAR_LIGHT,
@@ -113,7 +113,7 @@ def build_task_dialog(selected: dict, task_manager):
                     _build_tab_task_info(t, info_obj, selected, task_manager)
                     _build_tab_config(t, cfg_text)
                     _build_tab_notes(t, info_obj)
-                    _build_tab_env_vars(t, info_obj)
+                    _build_tab_env_vars(t, info_obj, task_manager)
 
             dialog_body()
 
@@ -239,9 +239,13 @@ def _build_tab_notes(t, info_obj):
                 ui.label("Task Notes & Description").classes(LABEL_BOLD_TRACKING)
 
             def save_notes():
-                task_info = load_task_info(t["dir"])
-                task_info["notes"] = notes_holder["text"]
-                save_task_info(t["dir"], task_info)
+                ok, result = task_manager.update_task_notes(t["name"], notes_holder["text"])
+                if not ok:
+                    ui.notify(str(result), type="negative")
+                    return
+                t["notes"] = str(result)
+                if info_obj is not None:
+                    info_obj["notes"] = str(result)
                 ui.notify("Notes saved", type="positive", icon="check")
 
             from pyruns.ui.theme import BTN_PRIMARY
@@ -271,17 +275,20 @@ def _build_tab_notes(t, info_obj):
             )
 
 
-def _build_tab_env_vars(t, info_obj):
+def _build_tab_env_vars(t, info_obj, task_manager=None):
     """Env Vars tab — key/value editor."""
     with ui.tab_panel("env"):
         env = info_obj.get("env", {}) if isinstance(info_obj, dict) else {}
         rows = [{"key": k, "val": v} for k, v in env.items()]
 
         def on_save_env(new_env):
-            task_info = load_task_info(t["dir"])
-            task_info["env"] = new_env
-            save_task_info(t["dir"], task_info)
-            t["env"] = new_env
+            ok, result = task_manager.update_task_env(t["name"], new_env)
+            if not ok:
+                ui.notify(str(result), type="negative")
+                return
+            t["env"] = dict(result)
+            if info_obj is not None:
+                info_obj["env"] = dict(result)
             ui.notify("Env vars saved", type="positive", icon="check")
 
         env_var_editor(rows, on_save=on_save_env)

@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import yaml
@@ -23,7 +24,7 @@ from pyruns.utils.batch_utils import (
 )
 from pyruns.utils.config_utils import (
     safe_filename, parse_value, flatten_dict, unflatten_dict,
-    load_yaml, save_yaml, list_yaml_files, list_template_files,
+    load_yaml, load_yaml_strict, save_yaml, list_yaml_files, list_template_files,
     preview_config_line, validate_config_types_against_template,
 )
 from pyruns.utils.log_io import (
@@ -31,7 +32,7 @@ from pyruns.utils.log_io import (
 )
 from pyruns.utils.parse_utils import (
     detect_config_source_fast, extract_argparse_params,
-    argparse_params_to_dict, resolve_config_path, generate_config_file,
+    argparse_params_to_dict, resolve_config_path, generate_config_file, split_cli_args,
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
@@ -65,6 +66,24 @@ def test_detect_config_source_fast(tmp_path):
     p_unk.write_text("print('hello world')", encoding="utf-8")
     assert detect_config_source_fast(str(p_unk)) == ("unknown", None)
 
+    # 5. alias import
+    p_alias = tmp_path / "alias.py"
+    p_alias.write_text("import pyruns as pyr\nconfig = pyr.load()\n", encoding="utf-8")
+    assert detect_config_source_fast(str(p_alias)) == ("pyruns_load", None)
+
+    # 6. from-import alias
+    p_from = tmp_path / "from_load.py"
+    p_from.write_text("from pyruns import load as cfg_load\nconfig = cfg_load()\n", encoding="utf-8")
+    assert detect_config_source_fast(str(p_from)) == ("pyruns_load", None)
+
+    # 7. hydra alias import
+    p_hydra_alias = tmp_path / "hydra_alias.py"
+    p_hydra_alias.write_text(
+        "from hydra import main as hydra_main\n@hydra_main(version_base=None, config_path='conf', config_name='config')\ndef main(cfg):\n    pass\n",
+        encoding="utf-8",
+    )
+    assert detect_config_source_fast(str(p_hydra_alias)) == ("hydra", None)
+
 
 def test_extract_argparse_params(tmp_path):
     p_script = tmp_path / "demo.py"
@@ -88,6 +107,24 @@ parser.add_argument('-b', '--batch-size', default=32)
     assert params["batch_size"]["default"] == 32
 
 
+def test_extract_argparse_params_supports_dest_action_choices_and_positional(tmp_path):
+    p_script = tmp_path / "advanced_argparse.py"
+    code = """
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("dataset")
+parser.add_argument("-q", dest="quiet_mode", action="store_true")
+parser.add_argument("--device", choices=["cpu", "cuda"], nargs="?", default="cpu")
+"""
+    p_script.write_text(code, encoding="utf-8")
+    params = extract_argparse_params(str(p_script))
+    assert params["dataset"]["name"] == "dataset"
+    assert params["quiet_mode"]["action"] == "store_true"
+    assert params["quiet_mode"]["default"] is False
+    assert params["device"]["choices"] == ["cpu", "cuda"]
+    assert params["device"]["nargs"] == "?"
+
+
 def test_argparse_params_to_dict():
     params = {
         "lr": {"name": "--lr", "default": 0.01},
@@ -96,6 +133,19 @@ def test_argparse_params_to_dict():
     }
     d = argparse_params_to_dict(params)
     assert d == {"lr": 0.01, "epochs": 10, "no_default": None}
+
+
+def test_split_cli_args_invalid_quotes():
+    with pytest.raises(ValueError, match="Invalid CLI args"):
+        split_cli_args('model="vit')
+
+
+def test_split_cli_args_handles_windows_path_and_kv_args():
+    args = split_cli_args('"C:\\Program Files\\Python\\python.exe" -m train model=vit dataset=imagenet')
+    assert args[0] == "C:\\Program Files\\Python\\python.exe"
+    assert args[1:3] == ["-m", "train"]
+    assert "model=vit" in args
+    assert "dataset=imagenet" in args
 
 
 def test_resolve_config_path(tmp_path):
@@ -737,6 +787,20 @@ class TestYamlIO:
         with open(path, "w") as f:
             f.write("- a\n- b\n")
         assert load_yaml(path) == {}
+
+    def test_load_yaml_strict_raises_on_non_mapping(self, tmp_dir):
+        path = str(tmp_dir / "list.yaml")
+        with open(path, "w") as f:
+            f.write("- a\n- b\n")
+        with pytest.raises(ValueError, match="mapping"):
+            load_yaml_strict(path)
+
+    def test_load_yaml_strict_raises_on_invalid_yaml(self, tmp_dir):
+        path = str(tmp_dir / "bad.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("a: [1, 2\n")
+        with pytest.raises(Exception):
+            load_yaml_strict(path)
 
     def test_list_yaml_files(self, tmp_dir):
         for name in ["a.yaml", "b.yml", "c.txt"]:

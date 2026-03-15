@@ -6,6 +6,7 @@ This tests the end-to-end flow that the Generator UI drives.
 """
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import yaml
@@ -289,6 +290,26 @@ class TestAddMonitor:
             info = json.load(f)
         assert info[RECORDS_KEY][0] == {"a": 1, "b": 2}
 
+    def test_record_concurrent_updates_do_not_drop_fields(self, tmp_path, monkeypatch):
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+
+        import pyruns
+
+        def _write(idx: int):
+            pyruns.record(**{f"k{idx}": idx})
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(_write, range(8)))
+
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8") as f:
+            info = json.load(f)
+        row = info[RECORDS_KEY][0]
+        for idx in range(8):
+            assert row[f"k{idx}"] == idx
+
     def test_type_error_on_invalid_data(self):
         """record(non_dict) should raise TypeError."""
         import pyruns
@@ -332,3 +353,31 @@ class TestAddMonitor:
         tracks = info[TRACKS_KEY][0]
         assert tracks["loss"] == [0.5, 0.4]
         assert tracks["acc"] == [0.9]
+
+    def test_record_and_track_concurrent_updates_both_survive(self, tmp_path, monkeypatch):
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+
+        import pyruns
+        from pyruns._config import TRACKS_KEY
+
+        def _record(idx: int):
+            pyruns.record(**{f"metric_{idx}": idx})
+
+        def _track(idx: int):
+            pyruns.track(loss=idx)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(_record, i) for i in range(4)]
+            futures += [pool.submit(_track, i) for i in range(4)]
+            for fut in futures:
+                fut.result()
+
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8") as f:
+            info = json.load(f)
+        for idx in range(4):
+            assert info[RECORDS_KEY][0][f"metric_{idx}"] == idx
+        assert sorted(info[TRACKS_KEY][0]["loss"]) == [0, 1, 2, 3]

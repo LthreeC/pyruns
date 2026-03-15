@@ -20,7 +20,7 @@ from pyruns._config import (
 )
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger, get_now_str
-from pyruns.utils.config_utils import build_config_preview_and_search_text, load_yaml
+from pyruns.utils.config_utils import build_config_preview_and_search_text, load_yaml_strict
 from pyruns.utils.info_io import (
     ensure_run_slot,
     load_task_info,
@@ -164,8 +164,8 @@ class TaskManager:
             ),
             None,
         )
-        if not config_path:
-            return None
+        config_data: Dict[str, Any] = {}
+        load_error = ""
 
         try:
             info = load_task_info(task_dir)
@@ -185,11 +185,14 @@ class TaskManager:
                 info = load_task_info(task_dir)
                 logger.warning("%s: running but process gone; marked failed", dir_name)
 
-        try:
-            config_data = load_yaml(config_path)
-        except Exception as exc:
-            logger.error("Error loading config for %s: %s", dir_name, exc)
-            return None
+        if not config_path:
+            load_error = "config.yaml is missing"
+        else:
+            try:
+                config_data = load_yaml_strict(config_path)
+            except Exception as exc:
+                load_error = str(exc)
+                logger.error("Error loading config for %s: %s", dir_name, exc)
 
         try:
             mtime_ns = os.stat(info_path).st_mtime_ns
@@ -213,6 +216,7 @@ class TaskManager:
             "pids": info.get("pids", []),
             "records": len(info.get("records", [])),
             "notes": info.get("notes", ""),
+            "_load_error": load_error,
             "_mtime": (mtime_ns / 1_000_000_000) if mtime_ns else 0.0,
             "_mtime_ns": mtime_ns,
         }
@@ -387,6 +391,67 @@ class TaskManager:
         self._sync_status_to_disk(target["name"], "queued", run_index=run_index)
         self.trigger_update()
         return True
+
+    def set_task_pinned(self, task_name: str, pinned: Optional[bool] = None) -> tuple[bool, bool | str]:
+        """Toggle or set a task's pinned state and sync in-memory caches."""
+        with self._lock:
+            target = self._resolve_identifier_locked(task_name)
+            if not target:
+                return False, "Task not found"
+            new_value = (not bool(target.get("pinned", False))) if pinned is None else bool(pinned)
+            task_dir = target["dir"]
+
+        def _apply(task_info: Dict[str, Any]) -> None:
+            task_info["pinned"] = new_value
+
+        updated = update_task_info(task_dir, _apply)
+        with self._lock:
+            current = self._resolve_identifier_locked(task_name)
+            if current:
+                self._apply_info_to_task(current, updated)
+        self.trigger_update()
+        return True, new_value
+
+    def update_task_notes(self, task_name: str, notes: str) -> tuple[bool, str]:
+        """Persist task notes and refresh derived search/preview fields."""
+        with self._lock:
+            target = self._resolve_identifier_locked(task_name)
+            if not target:
+                return False, "Task not found"
+            task_dir = target["dir"]
+
+        def _apply(task_info: Dict[str, Any]) -> None:
+            task_info["notes"] = str(notes or "")
+
+        updated = update_task_info(task_dir, _apply)
+        with self._lock:
+            current = self._resolve_identifier_locked(task_name)
+            if current:
+                self._apply_info_to_task(current, updated)
+        self.trigger_update()
+        return True, str(updated.get("notes", "") or "")
+
+    def update_task_env(self, task_name: str, env: Dict[str, Any]) -> tuple[bool, Dict[str, Any] | str]:
+        """Persist task env vars and sync in-memory task state."""
+        with self._lock:
+            target = self._resolve_identifier_locked(task_name)
+            if not target:
+                return False, "Task not found"
+            task_dir = target["dir"]
+
+        normalized_env = {str(k): str(v) for k, v in (env or {}).items() if str(k)}
+
+        def _apply(task_info: Dict[str, Any]) -> None:
+            task_info["env"] = normalized_env
+            task_info.pop("custom_env", None)
+
+        updated = update_task_info(task_dir, _apply)
+        with self._lock:
+            current = self._resolve_identifier_locked(task_name)
+            if current:
+                self._apply_info_to_task(current, updated)
+        self.trigger_update()
+        return True, dict(updated.get("env", {}) or {})
 
     def rename_task(self, old_name: str, new_name: str) -> tuple[bool, str]:
         """Rename a task by renaming both the folder and the stored task name."""

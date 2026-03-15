@@ -13,7 +13,7 @@ import yaml
 from nicegui import ui
 from typing import Dict, Any
 
-from pyruns.utils.config_utils import load_yaml, list_template_files
+from pyruns.utils.config_utils import list_template_files, load_yaml_strict
 from pyruns.utils.info_io import load_script_info, save_script_info
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils import get_logger, get_now_str, client_connected
@@ -151,7 +151,18 @@ def render_generator_page(
             tpl_lock.set_visibility(CONFIG_DEFAULT_FILENAME in val)
 
             if os.path.exists(path):
-                config_data = load_yaml(path)
+                try:
+                    config_data = load_yaml_strict(path)
+                except Exception as exc:
+                    ui.notify(
+                        f"Failed to load template: {exc}",
+                        type="negative",
+                        icon="error",
+                        multi_line=True,
+                    )
+                    logger.error("Failed to load template %s: %s", path, exc)
+                    return
+
                 state["config_data"] = config_data
                 state["config_path"] = path
                 yaml_holder["text"] = _dict_to_yaml(config_data)
@@ -453,15 +464,22 @@ def _settings_panel(
                 and os.path.exists(state["config_path"])
                 and target_config
             ):
-                from pyruns.utils.config_utils import load_yaml, validate_config_types_against_template
+                from pyruns.utils.config_utils import load_yaml_strict, validate_config_types_against_template
                 try:
-                    orig_config = load_yaml(state["config_path"])
+                    orig_config = load_yaml_strict(state["config_path"])
                     err_msg = validate_config_types_against_template(orig_config, configs)
                     if err_msg:
                         ui.notify(err_msg, type="negative", icon="error", multi_line=True, timeout=5000)
                         return
                 except Exception as e:
+                    ui.notify(
+                        f"Failed to validate against template: {e}",
+                        type="negative",
+                        icon="error",
+                        multi_line=True,
+                    )
                     logger.warning(f"Type check failed to read template: {e}")
+                    return
             # ---------------------------------------------
 
             if len(configs) == 1:

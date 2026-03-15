@@ -1,5 +1,7 @@
 """Header component with app branding and live CPU/RAM/GPU summary."""
 
+import threading
+import time
 from typing import Any, Dict, List
 
 from nicegui import ui
@@ -8,6 +10,25 @@ from pyruns._config import DEFAULT_HEADER_REFRESH_INTERVAL
 from pyruns.ui.theme import HEADER_GRADIENT, ROW_CENTER_GAP_3, ROW_CENTER_GAP_4
 from pyruns.utils import client_connected
 from pyruns.utils.settings import get as _get_setting, save_setting
+
+_METRICS_CACHE_LOCK = threading.Lock()
+_METRICS_CACHE: Dict[str, Any] = {"at": 0.0, "data": {"cpu_percent": 0.0, "mem_percent": 0.0, "gpus": []}}
+_METRICS_CACHE_TTL_SEC = 1.0
+
+
+def _shared_metrics_snapshot(metrics_sampler) -> Dict[str, Any]:
+    """Return a shared metrics snapshot sampled at most once per TTL window."""
+    now = time.monotonic()
+    with _METRICS_CACHE_LOCK:
+        cached_at = float(_METRICS_CACHE.get("at", 0.0) or 0.0)
+        if now - cached_at < _METRICS_CACHE_TTL_SEC:
+            return dict(_METRICS_CACHE["data"])
+
+    metrics = metrics_sampler.sample()
+    with _METRICS_CACHE_LOCK:
+        _METRICS_CACHE["at"] = now
+        _METRICS_CACHE["data"] = dict(metrics)
+        return dict(metrics)
 
 
 def render_header(state: Dict[str, Any], metrics_sampler) -> None:
@@ -31,7 +52,7 @@ def render_header(state: Dict[str, Any], metrics_sampler) -> None:
             def metrics_row() -> None:
                 if not client_connected():
                     return
-                metrics = metrics_sampler.sample()
+                metrics = _shared_metrics_snapshot(metrics_sampler)
 
                 with ui.row().classes(
                     "items-center gap-3 bg-white/5 px-3 py-1 header-metrics-panel "

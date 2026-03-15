@@ -5,7 +5,6 @@ from nicegui import ui
 from typing import Dict, Any, Callable
 
 from pyruns.utils.config_utils import preview_config_line
-from pyruns.utils.info_io import load_task_info, save_task_info
 from pyruns.ui.theme import (
     BTN_CLASS,
     STATUS_CARD_STYLES,
@@ -76,13 +75,10 @@ def render_task_card(
                 ui.label(t.get("created_at", "")).classes(CARD_TIME_CLASSES)
 
             def toggle_pin(t=t):
-                info = load_task_info(t["dir"])
-                pinned = not info.get("pinned", False)
-                info["pinned"] = pinned
-                save_task_info(t["dir"], info)
-                t["pinned"] = pinned
-                refresh_ui()
-                task_manager.trigger_update()
+                ok, result = task_manager.set_task_pinned(t["name"])
+                if ok:
+                    t["pinned"] = bool(result)
+                    refresh_ui()
 
             pin_cls = (
                 PIN_ACTIVE_CLASSES

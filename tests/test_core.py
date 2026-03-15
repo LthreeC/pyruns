@@ -295,9 +295,18 @@ def test_build_command_hydra_requires_args(mock_detect):
         _build_command(None, "train.py", None, {"args": ""}, run_mode="config")
 
 
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+def test_build_command_unknown_requires_args_mode(mock_detect):
+    mock_detect.return_value = ("unknown", None)
+    with pytest.raises(RuntimeError, match="Unable to detect script config mode safely"):
+        _build_command(None, "train.py", None, {}, run_mode="config")
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
-def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
+def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
+    mock_detect.return_value = ("pyruns_load", None)
     task_dir = str(tmp_path)
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
     
@@ -351,9 +360,11 @@ def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
     assert mock_emit.called
 
 
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
-def test_run_task_worker_failure(mock_popen, mock_emit, tmp_path):
+def test_run_task_worker_failure(mock_popen, mock_emit, mock_detect, tmp_path):
+    mock_detect.return_value = ("pyruns_load", None)
     task_dir = str(tmp_path)
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
     

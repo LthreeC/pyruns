@@ -7,9 +7,65 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
+from contextlib import contextmanager
 from typing import Any, Callable, Dict, Optional
 
 from pyruns._config import RUN_LOGS_DIR, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME
+
+_TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
+_TASK_FILE_LOCKS_GUARD = threading.Lock()
+_LOCK_FILENAME = f".{TASK_INFO_FILENAME}.lock"
+_LOCK_POLL_SEC = 0.05
+_LOCK_TIMEOUT_SEC = 5.0
+
+
+def _thread_lock_for(task_dir: str) -> threading.RLock:
+    key = os.path.abspath(task_dir)
+    with _TASK_FILE_LOCKS_GUARD:
+        lock = _TASK_FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _TASK_FILE_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC):
+    """Acquire a task-local thread/process lock for task_info.json updates."""
+    thread_lock = _thread_lock_for(task_dir)
+    lock_path = os.path.join(task_dir, _LOCK_FILENAME)
+    os.makedirs(task_dir, exist_ok=True)
+    acquired = thread_lock.acquire(timeout=timeout_sec)
+    if not acquired:
+        raise TimeoutError(f"Timed out acquiring task lock for {task_dir}")
+
+    fd: Optional[int] = None
+    start = time.monotonic()
+    try:
+        while True:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                os.write(fd, f"{os.getpid()} {threading.get_ident()}".encode("utf-8", errors="ignore"))
+                break
+            except FileExistsError:
+                if time.monotonic() - start >= timeout_sec:
+                    raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
+                time.sleep(_LOCK_POLL_SEC)
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except OSError:
+            pass
+        thread_lock.release()
 
 
 def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
@@ -37,25 +93,8 @@ def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     payload = copy.deepcopy(info)
     payload.pop("id", None)
     normalize_run_history(payload)
-
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=f".{TASK_INFO_FILENAME}.",
-        suffix=".tmp",
-        dir=task_dir,
-        text=True,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, info_path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+    with task_info_lock(task_dir):
+        _write_task_info_unlocked(info_path, task_dir, payload)
 
 
 def load_script_info(run_root: str) -> Dict[str, Any]:
@@ -112,12 +151,29 @@ def update_task_info(
     raise_error: bool = False,
 ) -> Dict[str, Any]:
     """Read-modify-write task_info.json using the shared atomic save path."""
-    info = load_task_info(task_dir, raise_error=raise_error)
-    if not info and raise_error:
-        raise FileNotFoundError(os.path.join(task_dir, TASK_INFO_FILENAME))
-    updater(info)
-    save_task_info(task_dir, info)
-    return info
+    info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
+    with task_info_lock(task_dir):
+        if os.path.exists(info_path):
+            try:
+                with open(info_path, "r", encoding="utf-8") as f:
+                    info = json.load(f)
+            except Exception:
+                if raise_error:
+                    raise
+                info = {}
+        else:
+            if raise_error:
+                raise FileNotFoundError(info_path)
+            info = {}
+
+        info.pop("id", None)
+        normalize_run_history(info)
+        updater(info)
+        payload = copy.deepcopy(info)
+        payload.pop("id", None)
+        normalize_run_history(payload)
+        _write_task_info_unlocked(info_path, task_dir, payload)
+        return payload
 
 
 def run_slot_count(meta: Dict[str, Any]) -> int:
@@ -244,3 +300,25 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
     meta["run_index"] = total
     meta.pop("_run_index", None)
     return total
+
+
+def _write_task_info_unlocked(info_path: str, task_dir: str, payload: Dict[str, Any]) -> None:
+    """Write task info atomically; caller must already hold task_info_lock()."""
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{TASK_INFO_FILENAME}.",
+        suffix=".tmp",
+        dir=task_dir,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, info_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass

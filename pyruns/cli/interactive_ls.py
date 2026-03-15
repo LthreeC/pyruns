@@ -230,7 +230,7 @@ def run_interactive_ls(tm, query=""):
             # Env
             elif key == "e" and tasks:
                 _leave_alt()
-                _edit_env(tasks[cursor])
+                _edit_env(tm, tasks[cursor])
                 _enter_alt()
 
             # Export
@@ -439,15 +439,15 @@ def _view_log(task):
         sys.stdout.flush()
 
 
-def _edit_env(t):
+def _edit_env(tm, t):
     """Edit custom_env for a task via task_info.json."""
-    from pyruns.utils.info_io import load_task_info, save_task_info
+    from pyruns.utils.info_io import load_task_info
 
     print(f"\n  {_BOLD}Environment Variables for '{t['name']}'{_RESET}")
     print(f"  {_DIM}Type KEY=VALUE to set, or KEY to delete. Blank to cancel.{_RESET}\n")
 
     info = load_task_info(t["dir"])
-    env = info.get("custom_env", {}) or {}
+    env = info.get("env", {}) or {}
 
     if not env:
         print(f"  {_DIM}(No custom variables){_RESET}")
@@ -463,8 +463,7 @@ def _edit_env(t):
                 env[k.strip()] = v.strip()
             else:
                 env.pop(pair.strip(), None)
-            info["custom_env"] = env
-            save_task_info(t["dir"], info)
+            tm.update_task_env(t["name"], env)
     except KeyboardInterrupt:
         pass
 

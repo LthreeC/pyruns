@@ -61,6 +61,19 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return {}
 
 
+def load_yaml_strict(path: str) -> Dict[str, Any]:
+    """Load a YAML file into a dict or raise a descriptive error."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML root must be a mapping: {path}")
+    return data
+
+
 def save_yaml(path: str, data: Dict[str, Any]) -> None:
     """Save a dict to a YAML file."""
     with open(path, "w", encoding="utf-8") as f:

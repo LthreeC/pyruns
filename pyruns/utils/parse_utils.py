@@ -33,6 +33,10 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
     if tree is None:
         return ("unknown", None)
 
+    pyruns_aliases = set()
+    pyruns_load_aliases = set()
+    hydra_aliases = set()
+    hydra_main_aliases = set()
     has_pyruns_load = False
     has_argparse = False
     has_hydra = False
@@ -40,21 +44,36 @@ def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                if alias.name == "pyruns":
+                    pyruns_aliases.add(alias.asname or alias.name)
                 if alias.name == "hydra" or alias.name.startswith("hydra."):
+                    hydra_aliases.add(alias.asname or alias.name.split(".")[0])
                     has_hydra = True
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
+            if mod == "pyruns":
+                for alias in node.names:
+                    if alias.name == "load":
+                        pyruns_load_aliases.add(alias.asname or alias.name)
             if mod == "hydra" or mod.startswith("hydra."):
+                for alias in node.names:
+                    if alias.name == "main":
+                        hydra_main_aliases.add(alias.asname or alias.name)
                 has_hydra = True
 
         if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute):
-                if getattr(node.func.value, "id", "") == "pyruns" and node.func.attr == "load":
+            if isinstance(node.func, ast.Name):
+                if node.func.id in pyruns_load_aliases:
+                    has_pyruns_load = True
+                if node.func.id in hydra_main_aliases:
+                    has_hydra = True
+            elif isinstance(node.func, ast.Attribute):
+                if getattr(node.func.value, "id", "") in pyruns_aliases and node.func.attr == "load":
                     has_pyruns_load = True
 
                 if node.func.attr == "add_argument":
                     has_argparse = True
-                if getattr(node.func.value, "id", "") == "hydra" and node.func.attr == "main":
+                if getattr(node.func.value, "id", "") in hydra_aliases and node.func.attr == "main":
                     has_hydra = True
 
     if has_pyruns_load:
@@ -85,19 +104,40 @@ def split_cli_args(args_text: str) -> List[str]:
         normalized_parts.append(s)
     normalized = " ".join(normalized_parts) if normalized_parts else text.strip()
 
+    if _has_unbalanced_quotes(normalized):
+        raise ValueError("Invalid CLI args: unmatched quotes")
+
     try:
         tokens = shlex.split(normalized, posix=(os.name != "nt"))
-        # On Windows with posix=False, shlex keeps wrapping quotes.
-        # Strip a single pair of matching outer quotes so subprocess argv stays clean.
-        cleaned: List[str] = []
-        for tok in tokens:
-            s = str(tok)
-            if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
-                s = s[1:-1]
-            cleaned.append(s)
-        return cleaned
-    except Exception:
-        return normalized.split()
+    except ValueError as exc:
+        raise ValueError(f"Invalid CLI args: {exc}") from exc
+
+    cleaned: List[str] = []
+    for tok in tokens:
+        s = str(tok)
+        if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+            s = s[1:-1]
+        cleaned.append(s)
+    return cleaned
+
+
+def _has_unbalanced_quotes(text: str) -> bool:
+    """Return True if *text* contains unmatched single or double quotes."""
+    quote = None
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch in {"'", '"'}:
+            if quote is None:
+                quote = ch
+            elif quote == ch:
+                quote = None
+    return quote is not None
 
 
 def _extract_value(node: ast.AST) -> Any:
@@ -137,6 +177,7 @@ def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
             flags = [_extract_value(a) for a in node.args]
             flags = [str(f) for f in flags if isinstance(f, str)]
             if flags:
+                info["flags"] = list(flags)
                 long_flags = [f for f in flags if f.startswith("--")]
                 info["name"] = long_flags[0] if long_flags else flags[0]
 
@@ -144,10 +185,20 @@ def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
             if kw.arg:
                 info[kw.arg] = _extract_value(kw.value)
 
-        name = info.get("name")
-        dest = str(name).lstrip("-").replace("-", "_") if name else ""
+        explicit_dest = info.get("dest")
+        if explicit_dest:
+            dest = str(explicit_dest).replace("-", "_")
+        else:
+            name = info.get("name")
+            dest = str(name).lstrip("-").replace("-", "_") if name else ""
         
         if dest:
+            action = str(info.get("action", "") or "")
+            if "default" not in info:
+                if action == "store_true":
+                    info["default"] = False
+                elif action == "store_false":
+                    info["default"] = True
             params[dest] = info
 
     return params

@@ -30,6 +30,16 @@ from pyruns.utils.log_io import append_log
 logger = get_logger(__name__)
 
 
+def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
+    """Build a more visible lifecycle banner for task start/finish logs."""
+    title = phase.upper()
+    return (
+        f"[PYRUNS] {'=' * 20} {title} {'=' * 20}\n"
+        f"[PYRUNS] Task {name} {phase.lower()}ed at {timestamp}\n"
+        f"[PYRUNS] {'=' * (42 + len(title))}\n"
+    )
+
+
 def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
     task_dir: Optional[str] = None,
@@ -68,25 +78,19 @@ def _build_command(
         cmd_list: List[str] = [sys.executable, script_path]
 
         config_source = "unknown"
-        try:
-            from pyruns.utils.parse_utils import detect_config_source_fast
+        from pyruns.utils.parse_utils import detect_config_source_fast
 
-            config_source, _ = detect_config_source_fast(script_path)
-        except Exception:
-            pass
+        config_source, _ = detect_config_source_fast(script_path)
 
         mode = str(run_mode or "config").strip().lower()
 
         if mode == "args":
-            try:
-                from pyruns.utils.parse_utils import split_cli_args
+            from pyruns.utils.parse_utils import split_cli_args
 
-                run_script = str(config.get("run_script", "") or "").strip()
-                script_cmd = split_cli_args(run_script) if run_script else []
-                cmd_list = script_cmd if script_cmd else [sys.executable, script_path]
-                cli_args = split_cli_args(config.get("args", ""))
-            except Exception:
-                cli_args = []
+            run_script = str(config.get("run_script", "") or "").strip()
+            script_cmd = split_cli_args(run_script) if run_script else []
+            cmd_list = script_cmd if script_cmd else [sys.executable, script_path]
+            cli_args = split_cli_args(config.get("args", ""))
             cmd_list.extend(cli_args)
         elif config_source == "argparse":
             positional_order: List[str] = []
@@ -128,6 +132,11 @@ def _build_command(
         elif config_source == "hydra":
             raise RuntimeError(
                 "Hydra script detected. Use Args mode in Generator (run_mode='args')."
+            )
+        elif config_source == "unknown":
+            raise RuntimeError(
+                "Unable to detect script config mode safely. "
+                "Use Args mode, or integrate via argparse / pyruns.load()."
             )
 
         command = cmd_list
@@ -229,7 +238,7 @@ def run_task_worker(
         )
 
         start_str = get_now_str()
-        start_log = f"[PYRUNS] Task {name} started at {start_str}\n"
+        start_log = _lifecycle_banner("start", name, start_str)
         append_log(log_path, start_log)
         log_emitter.emit(name, start_log.replace("\n", "\r\n"))
 
@@ -267,7 +276,7 @@ def run_task_worker(
         progress = 1.0 if ret == 0 else 0.0
         end_str = get_now_str()
 
-        finish_log = f"[PYRUNS] Task {name} finished at {end_str}\n"
+        finish_log = _lifecycle_banner("finish", name, end_str)
         append_log(log_path, finish_log)
         log_emitter.emit(name, finish_log.replace("\n", "\r\n"))
 

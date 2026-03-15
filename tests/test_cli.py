@@ -126,6 +126,61 @@ def test_task_manager_rename_task_rejects_running(workspace, task_manager):
     assert "cannot be renamed" in message
 
 
+def test_task_manager_update_notes_updates_search_cache(workspace, task_manager):
+    _add_task(workspace, "notes-task")
+    task_manager.scan_disk()
+    ok, notes = task_manager.update_task_notes("notes-task", "best checkpoint")
+    assert ok is True
+    assert notes == "best checkpoint"
+    task = next(t for t in task_manager.tasks if t["name"] == "notes-task")
+    assert task["notes"] == "best checkpoint"
+    assert "best checkpoint" in task["search_text"]
+
+
+def test_task_manager_update_env_updates_memory_and_disk(workspace, task_manager):
+    _add_task(workspace, "env-task")
+    task_manager.scan_disk()
+    ok, env = task_manager.update_task_env("env-task", {"CUDA_VISIBLE_DEVICES": "0"})
+    assert ok is True
+    assert env == {"CUDA_VISIBLE_DEVICES": "0"}
+    task = next(t for t in task_manager.tasks if t["name"] == "env-task")
+    assert task["env"] == {"CUDA_VISIBLE_DEVICES": "0"}
+    info = json.loads((workspace / TASKS_DIR / "env-task" / "task_info.json").read_text(encoding="utf-8"))
+    assert info["env"] == {"CUDA_VISIBLE_DEVICES": "0"}
+
+
+def test_task_manager_set_task_pinned_updates_memory_and_disk(workspace, task_manager):
+    _add_task(workspace, "pin-task")
+    task_manager.scan_disk()
+    ok, pinned = task_manager.set_task_pinned("pin-task", True)
+    assert ok is True
+    assert pinned is True
+    task = next(t for t in task_manager.tasks if t["name"] == "pin-task")
+    assert task["pinned"] is True
+    info = json.loads((workspace / TASKS_DIR / "pin-task" / "task_info.json").read_text(encoding="utf-8"))
+    assert info["pinned"] is True
+
+
+def test_task_manager_scan_ignores_task_without_config(workspace, task_manager):
+    bad_dir = workspace / TASKS_DIR / "broken-task"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    save_task_info(str(bad_dir), {"name": "broken-task", "status": "pending"})
+    task_manager.scan_disk()
+    task = next(t for t in task_manager.tasks if t["name"] == "broken-task")
+    assert task["_load_error"] == "config.yaml is missing"
+
+
+def test_task_manager_scan_keeps_task_with_invalid_config(workspace, task_manager):
+    bad_dir = workspace / TASKS_DIR / "bad-config-task"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    save_task_info(str(bad_dir), {"name": "bad-config-task", "status": "pending"})
+    (bad_dir / CONFIG_FILENAME).write_text("a: [1, 2\n", encoding="utf-8")
+    task_manager.scan_disk()
+    task = next(t for t in task_manager.tasks if t["name"] == "bad-config-task")
+    assert task["config"] == {}
+    assert task["_load_error"]
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Display tests
 # ═══════════════════════════════════════════════════════════════
