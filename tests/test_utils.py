@@ -493,7 +493,23 @@ class TestLoadSaveTaskInfo:
         info = {"name": "test", "status": "pending", "extra": [1, 2, 3]}
         save_task_info(task_dir, info)
         loaded = load_task_info(task_dir)
-        assert loaded == info
+        assert loaded["name"] == info["name"]
+        assert loaded["status"] == info["status"]
+        assert loaded["extra"] == info["extra"]
+
+    def test_save_normalizes_run_slots(self, tmp_path):
+        task_dir = str(tmp_path)
+        info = {
+            "name": "slot-test",
+            "start_times": ["2026-01-01 00:00:00"],
+            "records": [{"loss": 0.5}, {"loss": 0.1}],
+        }
+        save_task_info(task_dir, info)
+        loaded = load_task_info(task_dir)
+        assert loaded["run_index"] == 2
+        assert loaded["start_times"] == ["2026-01-01 00:00:00", ""]
+        assert loaded["finish_times"] == ["", ""]
+        assert loaded["records"][1] == {"loss": 0.1}
 
     def test_load_missing_file(self, tmp_path):
         assert load_task_info(str(tmp_path)) == {}
@@ -516,7 +532,8 @@ class TestLoadSaveTaskInfo:
         info = {"name": "测试任务", "description": "中文描述 🧪"}
         save_task_info(task_dir, info)
         loaded = load_task_info(task_dir)
-        assert loaded == info
+        assert loaded["name"] == info["name"]
+        assert loaded["description"] == info["description"]
 
 
 class TestLoadRecordData:
@@ -738,7 +755,9 @@ class TestTaskInfoIO:
         info = {"name": "test", "status": "pending", "env": {"CUDA": "0"}}
         save_task_info(str(tmp_dir), info)
         loaded = load_task_info(str(tmp_dir))
-        assert loaded == info
+        assert loaded["name"] == info["name"]
+        assert loaded["status"] == info["status"]
+        assert loaded["env"] == info["env"]
 
     def test_load_missing(self, tmp_dir):
         assert load_task_info(str(tmp_dir)) == {}

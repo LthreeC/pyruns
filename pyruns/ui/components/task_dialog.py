@@ -193,16 +193,14 @@ def _build_tab_task_info(t, info_obj, selected, task_manager):
                 if not new_name:
                     ui.notify("Name cannot be empty", type="negative")
                     return
-                task_info = load_task_info(t["dir"])
-                task_info["name"] = new_name
-                save_task_info(t["dir"], task_info)
+                ok, result = task_manager.rename_task(t.get("name", ""), new_name)
+                if not ok:
+                    ui.notify(str(result), type="negative")
+                    return
                 t["name"] = new_name
-                # Update info_obj and refresh to reflect change in JSON view
                 if info_obj:
                     info_obj["name"] = new_name
                 ui.notify(f"Task renamed to {new_name}", type="positive", icon="check")
-                # Notify manager/monitor pages to refresh reactive lists.
-                task_manager.trigger_update()
 
             from pyruns.ui.theme import BTN_PRIMARY
             ui.button("Rename", icon="save", on_click=save_name).props("unelevated dense size=sm").classes(f"{BTN_PRIMARY} px-4")

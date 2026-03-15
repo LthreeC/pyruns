@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from pyruns._config import CONFIG_FILENAME, RUN_LOGS_DIR
 from pyruns.utils import get_logger, get_now_str
-from pyruns.utils.config_utils import save_yaml
+from pyruns.utils.config_utils import build_config_preview_and_search_text, save_yaml
 from pyruns.utils.info_io import load_script_info, save_task_info
 
 logger = get_logger(__name__)
@@ -16,6 +16,10 @@ logger = get_logger(__name__)
 
 def create_task_object(task_dir: str, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
     """Build the in-memory representation used by TaskManager and the UI."""
+    preview_text, search_text = build_config_preview_and_search_text(
+        config,
+        task_name=name,
+    )
     return {
         "dir": task_dir,
         "name": name,
@@ -30,6 +34,9 @@ def create_task_object(task_dir: str, name: str, config: Dict[str, Any]) -> Dict
         "finish_times": [],
         "pids": [],
         "records": 0,
+        "notes": "",
+        "preview_text": preview_text,
+        "search_text": search_text,
     }
 
 

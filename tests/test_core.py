@@ -338,7 +338,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, tmp_path):
     assert info["progress"] == 1.0
     assert len(info["start_times"]) == 1
     assert len(info["finish_times"]) == 1
-    assert 9999 in info["pids"]
+    assert info["pids"] == [9999]
     assert len(info.get("records", [])) == 1
 
     # Check log file was written by _tee_output
@@ -389,15 +389,17 @@ def test_run_task_worker_failure(mock_popen, mock_emit, tmp_path):
         info = json.load(f)
     assert info["status"] == "failed"
     
-    # Check log migration: run1.log content moved to error.log
+    # Check failed run keeps run1.log and appends a failure summary to error.log
     run_log = os.path.join(task_dir, "run_logs", "run1.log")
-    assert not os.path.exists(run_log)  # Should be deleted after moving
+    assert os.path.exists(run_log)
+    with open(run_log, "r", encoding="utf-8", errors="replace") as f:
+        assert "Some log output" in f.read()
     error_log = os.path.join(task_dir, "run_logs", "error.log")
     assert os.path.exists(error_log)
     with open(error_log, "r", encoding="utf-8") as f:
         content = f.read()
-        assert "Some log output" in content
-        assert "Reason: Exit Code 1" in content
+        assert "Run #1 failed" in content
+        assert "reason=exit_code 1" in content
 
 # ═══════════════════════════════════════════════════════════════
 #  LogEmitter — publish-subscribe event bus

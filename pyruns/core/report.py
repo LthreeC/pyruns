@@ -21,7 +21,7 @@ from pyruns.utils import get_now_str
 def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
     """Build CSV string — one row per task per run.
 
-    Columns: name, id, status, run, start_time, finish_time, pid,
+    Columns: name, status, run, start_time, finish_time, pid,
              plus any monitor data keys.
     """
     all_rows: List[Dict[str, Any]] = []
@@ -76,7 +76,7 @@ def build_export_json(tasks: List[Dict[str, Any]]) -> str:
     """Build JSON string from monitor data of multiple tasks."""
     result = []
     for t in tasks:
-        data = load_record_data(t["dir"])
+        data = [entry for entry in load_record_data(t["dir"]) if entry]
         if data:
             result.append({
                 "task_name": t.get("name", ""),

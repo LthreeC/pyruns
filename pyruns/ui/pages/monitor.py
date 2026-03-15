@@ -343,13 +343,27 @@ def render_monitor_page(state: Dict[str, Any], task_manager) -> None:
         _mon_dirty["flag"] = True
         _mon_updater.trigger()
 
+    def _on_task_rename(old_name: str, new_name: str):
+        if sel.get("task_id") == old_name:
+            if old_name:
+                log_emitter.unsubscribe(old_name, _handle_live_log)
+            sel["task_id"] = new_name
+            log_emitter.subscribe(new_name, _handle_live_log)
+        if old_name in sel["export_ids"]:
+            sel["export_ids"].discard(old_name)
+            sel["export_ids"].add(new_name)
+        _mon_dirty["flag"] = True
+        _mon_updater.trigger()
+
     event_sys.on("on_run_root_change", _on_root_changed)
     event_sys.on("on_tab_change", _on_tab_switch)
+    event_sys.on("on_task_rename", _on_task_rename)
 
     def _cleanup_on_disconnect(*_):
         task_manager.off_change(on_task_manager_change)
         event_sys.off("on_tab_change", _on_tab_switch)
         event_sys.off("on_run_root_change", _on_root_changed)
+        event_sys.off("on_task_rename", _on_task_rename)
         _mon_updater.close()
         # Unsubscribe from live log push to prevent memory leaks
         current_tid = sel.get("task_id")

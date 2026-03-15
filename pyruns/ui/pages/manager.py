@@ -200,9 +200,22 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
         client, _check_dirty, delay_sec=0.18
     )
     task_manager.on_change(_mark_dirty)
+    from pyruns.utils.events import event_sys
+
+    def _on_task_rename(old_name: str, new_name: str):
+        selected_ids = state.get("selected_task_ids", [])
+        if old_name in selected_ids:
+            state["selected_task_ids"] = [
+                new_name if item == old_name else item for item in selected_ids
+            ]
+        state["_manager_dirty"] = True
+        _manager_updater.trigger()
+
+    event_sys.on("on_task_rename", _on_task_rename)
 
     def _cleanup_manager(*_):
         task_manager.off_change(_mark_dirty)
+        event_sys.off("on_task_rename", _on_task_rename)
         _manager_updater.close()
         if _on_tab_switch in cbs:
             cbs.remove(_on_tab_switch)
@@ -244,7 +257,7 @@ def _run_selected(state, task_manager, refresh_tasks) -> None:
     logger.info("Started %d task(s)  mode=%s  workers=%d",
                 len(ids), state["execution_mode"], state["max_workers"])
     state["selected_task_ids"] = []
-    refresh_tasks()
+    task_manager.trigger_update()
 
 
 def _delete_selected(state, task_manager, refresh_tasks) -> None:
@@ -271,14 +284,14 @@ def _delete_selected(state, task_manager, refresh_tasks) -> None:
                 
                 # Clear visual selection immediately
                 state["selected_task_ids"] = []
-                refresh_tasks()
+                task_manager.trigger_update()
                 
                 # Offload to IO pool to avoid blocking the UI loop
                 from nicegui import run
                 await run.io_bound(task_manager.delete_tasks, ids)
                 
                 # Refresh again to reflect the removed tasks
-                refresh_tasks()
+                task_manager.trigger_update()
                 
             ui.button("Move to Trash", on_click=proceed).props("unelevated color=red no-caps").classes("font-bold shadow-md shadow-red-500/20")
             
@@ -301,9 +314,10 @@ def _summary_bar(
     # ## 布局由 theme.py 统一定义: MANAGER_SUMMARY_BAR_CLASSES 包含所有边距设计
     with ui.row().classes(MANAGER_SUMMARY_BAR_CLASSES):
         with ui.row().classes("items-center gap-3"):
+            visible_ids = {t["name"] for t in visible_tasks}
             all_selected = (
-                len(state.get("selected_task_ids", [])) == len(visible_tasks)
-                and len(visible_tasks) > 0
+                bool(visible_ids)
+                and visible_ids.issubset(set(state.get("selected_task_ids", [])))
             )
 
             def toggle_all(e):

@@ -8,7 +8,7 @@ import shutil
 import threading
 import time
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pyruns._config import (
     CONFIG_FILENAME,
@@ -20,9 +20,16 @@ from pyruns._config import (
 )
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger, get_now_str
-from pyruns.utils.config_utils import load_yaml
-from pyruns.utils.info_io import load_task_info, normalize_run_history, save_task_info
+from pyruns.utils.config_utils import build_config_preview_and_search_text, load_yaml
+from pyruns.utils.info_io import (
+    ensure_run_slot,
+    load_task_info,
+    run_slot_count,
+    update_task_info,
+    validate_task_name,
+)
 from pyruns.utils.process_utils import is_pid_running, kill_process
+from pyruns.utils.events import event_sys
 
 logger = get_logger(__name__)
 
@@ -38,6 +45,7 @@ class TaskManager:
 
         self.tasks_dir = tasks_dir
         self.tasks: List[Dict[str, Any]] = []
+        self._tasks_by_name: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._observer_lock = threading.Lock()
         self._executor_lock = threading.Lock()
@@ -112,6 +120,7 @@ class TaskManager:
             logger.warning("root_dir does not exist: %s", self.tasks_dir)
             with self._lock:
                 self.tasks = []
+                self._rebuild_indexes_locked()
                 self.is_processing = False
             return
 
@@ -133,6 +142,7 @@ class TaskManager:
 
         with self._lock:
             self.tasks = new_tasks
+            self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
         logger.debug("scan_disk completed: %d tasks found", len(new_tasks))
 
@@ -165,12 +175,14 @@ class TaskManager:
             logger.error("Error loading info for %s: %s", dir_name, exc)
             return None
 
-        task_name = info.get("name")
+        task_name = dir_name
         if info.get("status") == "running" and task_name not in self._running_ids:
             pid = self._latest_pid(info)
             if not (pid and is_pid_running(pid)):
-                self._mark_failed_on_disk({"dir": task_dir})
-                info["status"] = "failed"
+                self._mark_failed_on_disk(
+                    {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
+                )
+                info = load_task_info(task_dir)
                 logger.warning("%s: running but process gone; marked failed", dir_name)
 
         try:
@@ -186,7 +198,7 @@ class TaskManager:
 
         task = {
             "dir": task_dir.replace("\\", "/"),
-            "name": info.get("name", dir_name),
+            "name": task_name,
             "status": info.get("status", "pending"),
             "created_at": info.get("created_at"),
             "config": config_data,
@@ -200,12 +212,14 @@ class TaskManager:
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
             "records": len(info.get("records", [])),
+            "notes": info.get("notes", ""),
             "_mtime": (mtime_ns / 1_000_000_000) if mtime_ns else 0.0,
             "_mtime_ns": mtime_ns,
         }
         pending_run_index = info.get("run_index", info.get("_run_index"))
         if pending_run_index:
-            task["run_index"] = pending_run_index
+            task["run_index"] = int(pending_run_index)
+        self._refresh_derived_fields(task)
         return task
 
     def refresh_from_disk(
@@ -226,7 +240,7 @@ class TaskManager:
             if not (
                 force_all
                 or check_all
-                or (target_ids and task["name"] in target_ids)
+                or (target_ids and self._task_matches_identifier(task, target_ids))
                 or task["status"] in ("running", "queued")
             ):
                 continue
@@ -244,7 +258,7 @@ class TaskManager:
                     continue
 
                 with self._lock:
-                    existing = self._find(task["name"])
+                    existing = self._tasks_by_name.get(task["name"])
                     if not existing:
                         continue
                     before = self._task_snapshot(existing)
@@ -260,6 +274,7 @@ class TaskManager:
     def add_task(self, task_obj: Dict[str, Any]) -> None:
         with self._lock:
             self.tasks.insert(0, task_obj)
+            self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
         self.trigger_update()
 
@@ -267,6 +282,7 @@ class TaskManager:
         with self._lock:
             for task in reversed(task_objs):
                 self.tasks.insert(0, task)
+            self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
         self.trigger_update()
 
@@ -282,21 +298,23 @@ class TaskManager:
         if max_workers is not None:
             self.max_workers = max(1, int(max_workers))
 
-        to_sync: list[tuple[Dict[str, Any], int]] = []
+        to_sync: list[tuple[str, int]] = []
         with self._lock:
-            for task in self.tasks:
-                if task and task["name"] in task_ids:
-                    task["status"] = "queued"
-                    run_index = len(task.get("start_times", [])) + 1
-                    task["run_index"] = run_index
-                    to_sync.append((task, run_index))
+            for identifier in task_ids:
+                task = self._resolve_identifier_locked(identifier)
+                if not task:
+                    continue
+                task["status"] = "queued"
+                run_index = max(int(task.get("run_index", 0) or 0), len(task.get("start_times", []))) + 1
+                task["run_index"] = run_index
+                to_sync.append((task["name"], run_index))
             self._recompute_processing_flag_locked()
         self.trigger_update()
 
         def _job() -> None:
-            logger.info("Queued %d task(s) for execution. Processing IO...", len(task_ids))
-            for task, run_index in to_sync:
-                self._sync_status_to_disk(task, "queued", run_index=run_index)
+            logger.info("Queued %d task(s) for execution. Processing IO...", len(to_sync))
+            for task_id, run_index in to_sync:
+                self._sync_status_to_disk(task_id, "queued", run_index=run_index)
 
         threading.Thread(target=_job, daemon=True).start()
 
@@ -311,16 +329,13 @@ class TaskManager:
         target = None
         run_index = 1
         with self._lock:
-            for task in self.tasks:
-                if task and task["name"] == task_id:
-                    task["status"] = "running"
-                    self._clean_aborted_runs(task)
-                    run_index = len(task.get("start_times", [])) + 1
-                    task["run_index"] = run_index
-                    self._running_ids.add(task["name"])
-                    self._recompute_processing_flag_locked()
-                    target = task
-                    break
+            target = self._resolve_identifier_locked(task_id)
+            if target:
+                target["status"] = "running"
+                run_index = max(int(target.get("run_index", 0) or 0), len(target.get("start_times", []))) + 1
+                target["run_index"] = run_index
+                self._running_ids.add(target["name"])
+                self._recompute_processing_flag_locked()
 
         if not target:
             return
@@ -352,32 +367,81 @@ class TaskManager:
                 self._recompute_processing_flag_locked()
             logger.error("Failed to submit task %s: %s", target["name"], exc)
 
-        def _job() -> None:
-            self._sync_status_to_disk(target, "running", run_index=run_index)
-
-        threading.Thread(target=_job, daemon=True).start()
+        threading.Thread(
+            target=lambda: self._sync_status_to_disk(target["name"], "running", run_index=run_index),
+            daemon=True,
+        ).start()
 
     def rerun_task(self, task_id: str) -> bool:
         """Queue a completed or failed task again."""
         with self._lock:
-            target = self._find(task_id)
+            target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("completed", "failed"):
                 return False
 
-            self._clean_aborted_runs(target)
-            run_index = len(target.get("start_times", [])) + 1
+            run_index = max(int(target.get("run_index", 0) or 0), len(target.get("start_times", []))) + 1
             target["status"] = "queued"
             target["run_index"] = run_index
-            self._sync_status_to_disk(target, "queued", run_index=run_index)
             self._recompute_processing_flag_locked()
 
+        self._sync_status_to_disk(target["name"], "queued", run_index=run_index)
         self.trigger_update()
         return True
+
+    def rename_task(self, old_name: str, new_name: str) -> tuple[bool, str]:
+        """Rename a task by renaming both the folder and the stored task name."""
+        new_name = (new_name or "").strip()
+        if not new_name:
+            return False, "Task name cannot be empty"
+
+        with self._lock:
+            target = self._resolve_identifier_locked(old_name)
+            if not target:
+                return False, "Task not found"
+            if target["status"] in ("running", "queued"):
+                return False, "Running or queued tasks cannot be renamed"
+            if new_name == target["name"]:
+                return True, target["name"]
+
+            err = validate_task_name(new_name, self.tasks_dir)
+            if err:
+                return False, err
+
+            old_dir = target["dir"]
+            new_dir = os.path.join(self.tasks_dir, new_name)
+            if os.path.exists(new_dir):
+                return False, f"Task name '{new_name}' already exists in the current workspace"
+
+            try:
+                os.rename(old_dir, new_dir)
+            except OSError as exc:
+                return False, str(exc)
+
+            try:
+                def _apply(info: Dict[str, Any]) -> None:
+                    info["name"] = new_name
+
+                update_task_info(new_dir, _apply, raise_error=True)
+            except Exception as exc:
+                try:
+                    os.rename(new_dir, old_dir)
+                except OSError:
+                    pass
+                return False, str(exc)
+
+            target["dir"] = new_dir.replace("\\", "/")
+            target["name"] = new_name
+            self._refresh_derived_fields(target)
+            self._rebuild_indexes_locked()
+
+        self.trigger_update()
+        event_sys.emit("on_task_rename", old_name, new_name)
+        return True, new_name
 
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a queued or running task."""
         with self._lock:
-            target = self._find(task_id)
+            target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("queued", "running"):
                 return False
 
@@ -385,13 +449,13 @@ class TaskManager:
                 pid = self._latest_pid_from_disk(target)
                 if pid:
                     kill_process(int(pid))
-                self._running_ids.discard(task_id)
+                self._running_ids.discard(target["name"])
 
             target["status"] = "failed"
-            self._mark_failed_on_disk(target)
             self._recompute_processing_flag_locked()
-            logger.info("Cancelled task %s", task_id[:8])
+            logger.info("Cancelled task %s", target["name"])
 
+        self._mark_failed_on_disk(target)
         self.trigger_update()
         return True
 
@@ -399,8 +463,8 @@ class TaskManager:
         """Soft-delete tasks by moving folders into .trash."""
         targets = []
         with self._lock:
-            for task_id in task_ids:
-                target = self._find(task_id)
+            for identifier in task_ids:
+                target = self._resolve_identifier_locked(identifier)
                 if not target:
                     continue
                 if target["status"] in ("running", "queued"):
@@ -408,11 +472,12 @@ class TaskManager:
                         pid = self._latest_pid_from_disk(target)
                         if pid:
                             kill_process(int(pid))
-                        self._running_ids.discard(task_id)
+                        self._running_ids.discard(target["name"])
                     target["status"] = "failed"
                     self._mark_failed_on_disk(target)
                 self.tasks.remove(target)
                 targets.append(target)
+            self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
 
         if not targets:
@@ -505,10 +570,7 @@ class TaskManager:
         """Create or recreate the batch executor when mode/worker count changes."""
         with self._executor_lock:
             workers = max(1, int(self.max_workers))
-            changed = (
-                self._executor_mode != self.execution_mode
-                or self._executor_workers != workers
-            )
+            changed = self._executor_mode != self.execution_mode or self._executor_workers != workers
             if self._executor and not changed:
                 return
             if self._executor:
@@ -527,7 +589,7 @@ class TaskManager:
         with self._lock:
             for task in self.tasks:
                 if task and task["status"] == "queued":
-                    run_index = task.pop("run_index", task.pop("_run_index", 1))
+                    run_index = int(task.get("run_index", 1) or 1)
                     task["status"] = "running"
                     self._running_ids.add(task["name"])
                     self._recompute_processing_flag_locked()
@@ -548,7 +610,7 @@ class TaskManager:
 
         with self._lock:
             self._running_ids.discard(task_id)
-            task = self._find(task_id)
+            task = self._tasks_by_name.get(task_id)
             if not task:
                 self._recompute_processing_flag_locked()
                 return
@@ -562,9 +624,7 @@ class TaskManager:
 
             if worker_error and task["status"] in ("running", "queued"):
                 task["status"] = "failed"
-                disk_info = load_task_info(task["dir"])
-                disk_info["status"] = "failed"
-                save_task_info(task["dir"], disk_info)
+                self._mark_failed_on_disk(task)
 
             self._recompute_processing_flag_locked()
 
@@ -598,67 +658,66 @@ class TaskManager:
         finally:
             self._lock.release()
 
-    def _find(self, task_id: str) -> Dict[str, Any] | None:
-        return next((task for task in self.tasks if task["name"] == task_id), None)
+    def _resolve_identifier_locked(self, identifier: str | None) -> Dict[str, Any] | None:
+        if not identifier:
+            return None
+        return self._tasks_by_name.get(identifier)
 
     @staticmethod
     def _latest_pid(info: Dict[str, Any]) -> Any:
         pids = info.get("pids", [])
-        return pids[-1] if isinstance(pids, list) and pids else None
+        if not isinstance(pids, list):
+            return None
+        for pid in reversed(pids):
+            if pid:
+                return pid
+        return None
 
     def _latest_pid_from_disk(self, task: Dict[str, Any]) -> Any:
         task_info = load_task_info(task["dir"])
         return self._latest_pid(task_info) if task_info else None
 
-    def _clean_aborted_runs(self, task: Dict[str, Any]) -> None:
-        """Trim incomplete run history and remove stale runN.log files."""
-        task_info = load_task_info(task["dir"])
-        if not task_info:
-            return
-
-        valid_count = normalize_run_history(task_info)
-        log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
-        if os.path.exists(log_dir):
-            index = valid_count + 1
-            while True:
-                bad_log = os.path.join(log_dir, f"run{index}.log")
-                if not os.path.exists(bad_log):
-                    break
-                try:
-                    os.remove(bad_log)
-                except OSError:
-                    pass
-                index += 1
-
-        save_task_info(task["dir"], task_info)
-        self._apply_info_to_task(task, task_info)
-        task["run_index"] = task_info.get("run_index", valid_count)
-
-    def _sync_status_to_disk(self, task: Dict[str, Any], status: str, run_index: int = 1) -> None:
+    def _sync_status_to_disk(self, identifier: str, status: str, run_index: int = 1) -> None:
         """Persist transient queue/running status changes."""
-        task_info = load_task_info(task["dir"])
-        if not task_info:
-            return
-        task_info["status"] = status
-        task_info["run_index"] = run_index
-        task_info.pop("_run_index", None)
-        save_task_info(task["dir"], task_info)
+        with self._lock:
+            task = self._resolve_identifier_locked(identifier)
+            if not task:
+                return
+            task_dir = task["dir"]
+
+        def _apply(task_info: Dict[str, Any]) -> None:
+            task_info["status"] = status
+            task_info["run_index"] = run_index
+
+        update_task_info(task_dir, _apply)
 
     def _mark_failed_on_disk(self, task: Dict[str, Any]) -> None:
-        """Persist a failed state and normalize incomplete history."""
-        task_info = load_task_info(task["dir"])
-        if not task_info:
-            return
-        task_info["status"] = "failed"
-        normalize_run_history(task_info)
-        save_task_info(task["dir"], task_info)
-        self._apply_info_to_task(task, task_info)
-        task["status"] = "failed"
+        """Persist a failed state and finalize the active run slot if needed."""
+        task_dir = task["dir"]
+        finish_now = get_now_str()
+        run_index = int(task.get("run_index", 0) or 0)
+
+        def _apply(task_info: Dict[str, Any]) -> None:
+            slot_count = run_slot_count(task_info)
+            target_index = max(run_index, slot_count)
+            should_finalize_slot = slot_count > 0 or task_info.get("status") == "running"
+            if should_finalize_slot and target_index > 0:
+                slot = ensure_run_slot(task_info, target_index)
+                if not task_info["finish_times"][slot]:
+                    task_info["finish_times"][slot] = finish_now
+            task_info["status"] = "failed"
+            task_info["progress"] = 0.0
+
+        updated = update_task_info(task_dir, _apply)
+        if "status" in task:
+            self._apply_info_to_task(task, updated)
+            task["status"] = "failed"
 
     @staticmethod
     def _task_snapshot(task: Dict[str, Any]) -> tuple:
         """Compact comparison tuple for change detection."""
         return (
+            task.get("name"),
             task.get("status"),
             task.get("progress"),
             tuple(task.get("start_times", [])),
@@ -667,6 +726,7 @@ class TaskManager:
             task.get("records"),
             task.get("pinned"),
             task.get("run_mode"),
+            task.get("notes", ""),
         )
 
     def _apply_info_to_task(
@@ -677,22 +737,43 @@ class TaskManager:
         mtime_ns: int | None = None,
     ) -> None:
         """Copy task_info.json fields used by UI and scheduler."""
-        task.update({
-            "status": info.get("status", task.get("status", "pending")),
-            "progress": info.get("progress", task.get("progress", 0.0)),
-            "env": info.get("env", task.get("env", {})),
-            "pinned": info.get("pinned", task.get("pinned", False)),
-            "script": info.get("script", task.get("script")),
-            "run_mode": info.get("run_mode", task.get("run_mode", "config")),
-            "start_times": info.get("start_times", []),
-            "finish_times": info.get("finish_times", []),
-            "pids": info.get("pids", []),
-            "records": len(info.get("records", [])),
-            "run_index": info.get("run_index", info.get("_run_index", task.get("run_index", 0))),
-        })
+        task.update(
+            {
+                "name": os.path.basename(os.path.normpath(task["dir"])),
+                "status": info.get("status", task.get("status", "pending")),
+                "progress": info.get("progress", task.get("progress", 0.0)),
+                "env": info.get("env", task.get("env", {})),
+                "pinned": info.get("pinned", task.get("pinned", False)),
+                "script": info.get("script", task.get("script")),
+                "run_mode": info.get("run_mode", task.get("run_mode", "config")),
+                "start_times": info.get("start_times", []),
+                "finish_times": info.get("finish_times", []),
+                "pids": info.get("pids", []),
+                "records": len(info.get("records", [])),
+                "notes": info.get("notes", ""),
+                "run_index": int(info.get("run_index", info.get("_run_index", task.get("run_index", 0))) or 0),
+            }
+        )
         if mtime_ns is not None:
             task["_mtime_ns"] = mtime_ns
             task["_mtime"] = mtime_ns / 1_000_000_000
+        self._refresh_derived_fields(task)
+
+    def _refresh_derived_fields(self, task: Dict[str, Any]) -> None:
+        preview_text, search_text = build_config_preview_and_search_text(
+            task.get("config", {}) or {},
+            task_name=str(task.get("name", "") or ""),
+            notes=str(task.get("notes", "") or ""),
+        )
+        task["preview_text"] = preview_text
+        task["search_text"] = search_text
+
+    def _rebuild_indexes_locked(self) -> None:
+        self._tasks_by_name = {task["name"]: task for task in self.tasks if task and task.get("name")}
+
+    @staticmethod
+    def _task_matches_identifier(task: Dict[str, Any], identifiers: set[str]) -> bool:
+        return str(task.get("name")) in identifiers
 
     def _recompute_processing_flag_locked(self) -> None:
         """Sleep the scheduler when nothing is queued or running."""

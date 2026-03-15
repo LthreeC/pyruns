@@ -52,14 +52,14 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
         return tasks
 
     def matches_all(task: Dict[str, object]) -> bool:
-        try:
-            yaml_str = yaml.dump(task.get("config", {}), default_flow_style=False).lower()
-        except Exception:
-            yaml_str = str(task.get("config", {})).lower()
-
-        notes_str = str(task.get("notes", "")).lower()
-        text_blob = f"{task.get('name', '').lower()}\n{yaml_str}\n{notes_str}"
-        normalized_blob = re.sub(r"\s*:\s*", ":", text_blob)
+        normalized_blob = str(task.get("search_text", "") or "").lower()
+        if not normalized_blob:
+            try:
+                yaml_str = yaml.dump(task.get("config", {}), default_flow_style=False).lower()
+            except Exception:
+                yaml_str = str(task.get("config", {})).lower()
+            text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}".lower()
+            normalized_blob = re.sub(r"\s*:\s*", ":", text_blob)
 
         for line in query_lines:
             normalized_line = re.sub(r"\s*:\s*", ":", line)

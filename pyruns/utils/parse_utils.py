@@ -1,4 +1,5 @@
 import ast
+import functools
 import os
 import shlex
 import yaml
@@ -7,13 +8,29 @@ from typing import Dict, Any, List, Optional, Tuple
 from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
 
 
+def _cache_key(filepath: str) -> Tuple[str, int, int]:
+    """Return a cache key that invalidates on file content changes."""
+    try:
+        stat = os.stat(filepath)
+        return (os.path.abspath(filepath), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (os.path.abspath(filepath), 0, 0)
+
+
+@functools.lru_cache(maxsize=128)
+def _read_tree_cached(cache_key: Tuple[str, int, int]) -> Optional[ast.AST]:
+    path = cache_key[0]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return ast.parse(f.read(), filename=path)
+    except Exception:
+        return None
+
+
 def detect_config_source_fast(filepath: str) -> Tuple[str, Optional[str]]:
     """Detect how a script reads its config: pyruns_load/argparse/hydra/unknown."""
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-        tree = ast.parse(content, filename=filepath)
-    except Exception:
+    tree = _read_tree_cached(_cache_key(filepath))
+    if tree is None:
         return ("unknown", None)
 
     has_pyruns_load = False
@@ -100,10 +117,8 @@ def _extract_value(node: ast.AST) -> Any:
 
 def extract_argparse_params(filepath: str) -> Dict[str, Dict[str, Any]]:
     """Parse a script's AST to extract ``add_argument`` calls and their metadata."""
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            tree = ast.parse(f.read(), filename=filepath)
-    except Exception:
+    tree = _read_tree_cached(_cache_key(filepath))
+    if tree is None:
         return {}
 
     params: Dict[str, Dict[str, Any]] = {}

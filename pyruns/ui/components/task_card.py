@@ -81,7 +81,8 @@ def render_task_card(
                 info["pinned"] = pinned
                 save_task_info(t["dir"], info)
                 t["pinned"] = pinned
-                refresh_tasks()
+                refresh_ui()
+                task_manager.trigger_update()
 
             pin_cls = (
                 PIN_ACTIVE_CLASSES

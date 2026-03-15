@@ -5,9 +5,26 @@ import os
 import json
 import shutil
 import tempfile
+import uuid
+from pathlib import Path
 
 import pytest
 import yaml
+
+
+_LOCAL_TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
+
+
+@pytest.fixture()
+def tmp_path():
+    """Workspace-local replacement for pytest's default tmp_path fixture."""
+    _LOCAL_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    path = _LOCAL_TMP_ROOT / uuid.uuid4().hex
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture()

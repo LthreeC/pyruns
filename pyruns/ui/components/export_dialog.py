@@ -52,7 +52,7 @@ async def show_export_dialog(task_manager, export_ids: Set[str]) -> None:
         def _scan_logs():
             tasks_with_data = []
             for t in selected_tasks:
-                mon = load_record_data(t["dir"])
+                mon = [entry for entry in load_record_data(t["dir"]) if entry]
                 if mon:
                     tasks_with_data.append((t, mon))
                 else:

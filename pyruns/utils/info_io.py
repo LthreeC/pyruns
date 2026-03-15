@@ -1,19 +1,15 @@
-"""
-Task-level I/O utilities — reading task_info, log files, monitor data.
+"""Task-level I/O helpers shared by core, UI, and public APIs."""
 
-These are low-level data access helpers used by both core/ and ui/ layers.
-They contain NO business logic (no status transitions, no scheduling, etc.).
-"""
-import os
+from __future__ import annotations
+
+import copy
 import json
+import os
 import re
-from typing import Dict, Any, List, Optional
+import tempfile
+from typing import Any, Callable, Dict, Optional
 
-from pyruns._config import (
-    TASK_INFO_FILENAME,
-    SCRIPT_INFO_FILENAME,
-    RUN_LOGS_DIR,
-)
+from pyruns._config import RUN_LOGS_DIR, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME
 
 
 def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
@@ -23,22 +19,47 @@ def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
         return {}
     try:
         with open(info_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            info = json.load(f)
     except Exception:
         if raise_error:
             raise
         return {}
 
+    info.pop("id", None)
+    normalize_run_history(info)
+    return info
+
 
 def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
-    """Save task_info.json to a task directory."""
+    """Save task_info.json atomically after normalizing run-slot fields."""
+    os.makedirs(task_dir, exist_ok=True)
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
-    with open(info_path, "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=2, ensure_ascii=False)
+    payload = copy.deepcopy(info)
+    payload.pop("id", None)
+    normalize_run_history(payload)
+
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{TASK_INFO_FILENAME}.",
+        suffix=".tmp",
+        dir=task_dir,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, info_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def load_script_info(run_root: str) -> Dict[str, Any]:
-    """Load script_info.json from the Run Root directory."""
+    """Load script_info.json from the run root directory."""
     script_info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
     if not os.path.exists(script_info_path):
         return {}
@@ -50,15 +71,33 @@ def load_script_info(run_root: str) -> Dict[str, Any]:
 
 
 def save_script_info(run_root: str, info: Dict[str, Any]) -> None:
-    """Save script_info.json to the Run Root directory."""
+    """Save script_info.json atomically to the run root directory."""
+    os.makedirs(run_root, exist_ok=True)
     script_info_path = os.path.join(run_root, SCRIPT_INFO_FILENAME)
-    with open(script_info_path, "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{SCRIPT_INFO_FILENAME}.",
+        suffix=".tmp",
+        dir=run_root,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, script_info_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
-def extract_metrics(info: dict) -> list:
-    """Safely extract records array from task info (defaults to empty dicts setup)."""
+def extract_metrics(info: Dict[str, Any]) -> list:
+    """Safely extract record rows from task info."""
     return info.get("records", [])
+
 
 def load_record_data(task_dir: str) -> list:
     """Load record entries from task_info.json."""
@@ -66,27 +105,76 @@ def load_record_data(task_dir: str) -> list:
     return extract_metrics(info)
 
 
+def update_task_info(
+    task_dir: str,
+    updater: Callable[[Dict[str, Any]], None],
+    *,
+    raise_error: bool = False,
+) -> Dict[str, Any]:
+    """Read-modify-write task_info.json using the shared atomic save path."""
+    info = load_task_info(task_dir, raise_error=raise_error)
+    if not info and raise_error:
+        raise FileNotFoundError(os.path.join(task_dir, TASK_INFO_FILENAME))
+    updater(info)
+    save_task_info(task_dir, info)
+    return info
+
+
+def run_slot_count(meta: Dict[str, Any]) -> int:
+    """Return the aligned run-slot count for *meta*."""
+    return max(
+        len(list(meta.get("start_times", []) or [])),
+        len(list(meta.get("finish_times", []) or [])),
+        len(list(meta.get("pids", []) or [])),
+        len(list(meta.get("records", []) or [])),
+        len(list(meta.get("tracks", []) or [])),
+        int(meta.get("run_index", meta.get("_run_index", 0)) or 0),
+    )
+
+
+def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
+    """Pad run arrays so that *run_index* exists and return the zero-based slot."""
+    target = max(int(run_index or 0), 1)
+    meta["start_times"] = list(meta.get("start_times", []) or [])
+    meta["finish_times"] = list(meta.get("finish_times", []) or [])
+    meta["pids"] = list(meta.get("pids", []) or [])
+    meta["records"] = list(meta.get("records", []) or [])
+    meta["tracks"] = list(meta.get("tracks", []) or [])
+
+    while len(meta["start_times"]) < target:
+        meta["start_times"].append("")
+    while len(meta["finish_times"]) < target:
+        meta["finish_times"].append("")
+    while len(meta["pids"]) < target:
+        meta["pids"].append(None)
+    while len(meta["records"]) < target:
+        meta["records"].append({})
+    while len(meta["tracks"]) < target:
+        meta["tracks"].append({})
+
+    meta["run_index"] = max(int(meta.get("run_index", 0) or 0), target)
+    meta.pop("_run_index", None)
+    return target - 1
+
+
 def get_log_options(task_dir: str) -> Dict[str, str]:
-    """Return {display_name: file_path} for all available log files.
-
-    Scans the new ``run_logs/`` directory for ``runN.log`` files.
-    """
+    """Return ``{display_name: file_path}`` for all available log files."""
     opts: Dict[str, str] = {}
-
-    # ── New scheme: run_logs/run1.log, run2.log, … ──
     run_dir = os.path.join(task_dir, RUN_LOGS_DIR)
     if os.path.isdir(run_dir):
-        # 1. Standard run logs
         files = sorted(
-            [f for f in os.listdir(run_dir)
-             if f.startswith("run") and f.endswith(".log")],
+            [
+                f
+                for f in os.listdir(run_dir)
+                if f.startswith("run") and f.endswith(".log")
+            ],
             key=lambda x: int("".join(filter(str.isdigit, x)) or "0"),
         )
         for f in files:
             opts[f] = os.path.join(run_dir, f)
-            
-        # 2. Error log (if exists)
+
         from pyruns._config import ERROR_LOG_FILENAME
+
         err_path = os.path.join(run_dir, ERROR_LOG_FILENAME)
         if os.path.exists(err_path):
             opts[ERROR_LOG_FILENAME] = err_path
@@ -95,34 +183,22 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
 
 
 def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Optional[str]:
-    """Resolve which log file to display for a task.
-
-    If log_file_name is given, look it up. Otherwise pick the **latest**
-    (highest numbered) log file.
-    Returns the absolute file path, or None if no log exists.
-    """
+    """Resolve which log file to display for a task."""
     opts = get_log_options(task_dir)
     if log_file_name:
         return opts.get(log_file_name)
-    # Default: latest log based on modification time
     if opts:
-        # Sort by mtime descending
         cached = [(f, p, os.path.getmtime(p)) for f, p in opts.items()]
         cached.sort(key=lambda x: x[2], reverse=True)
         return cached[0][1]
     return None
 
 
-
-# Characters invalid in folder names (Windows + Unix)
 _INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[str]:
-    """
-    Validate whether a task name can be used as a folder name.
-    Returns None if valid, or an error message string if invalid.
-    """
+    """Validate whether a task name can be used as a folder name."""
     if not name or not name.strip():
         return "Task name cannot be empty"
     name = name.strip()
@@ -133,29 +209,38 @@ def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[st
         return f"Task name contains invalid characters: {''.join(set(bad))}"
     if name.startswith("."):
         return "Task name cannot start with '.'"
-    
-    if root_dir:
-        if os.path.exists(os.path.join(root_dir, name)):
-            return f"Task name '{name}' already exists in the current workspace"
-            
+
+    if root_dir and os.path.exists(os.path.join(root_dir, name)):
+        return f"Task name '{name}' already exists in the current workspace"
     return None
 
 
 def normalize_run_history(meta: Dict[str, Any]) -> int:
-    """Keep only completed-run entries so run_index matches array lengths.
+    """Align run-slot arrays without discarding failed or incomplete runs."""
+    total = run_slot_count(meta)
 
-    Truncates start_times, finish_times, pids, records, and tracks
-    to the min(len(start_times), len(finish_times)) and updates run_index.
-    """
     starts = list(meta.get("start_times", []) or [])
     finishes = list(meta.get("finish_times", []) or [])
-    completed = min(len(starts), len(finishes))
+    pids = list(meta.get("pids", []) or [])
+    records = list(meta.get("records", []) or [])
+    tracks = list(meta.get("tracks", []) or [])
 
-    meta["start_times"] = starts[:completed]
-    meta["finish_times"] = finishes[:completed]
-    meta["pids"] = list(meta.get("pids", []) or [])[:completed]
-    meta["records"] = list(meta.get("records", []) or [])[:completed]
-    meta["tracks"] = list(meta.get("tracks", []) or [])[:completed]
-    meta["run_index"] = completed
+    while len(starts) < total:
+        starts.append("")
+    while len(finishes) < total:
+        finishes.append("")
+    while len(pids) < total:
+        pids.append(None)
+    while len(records) < total:
+        records.append({})
+    while len(tracks) < total:
+        tracks.append({})
+
+    meta["start_times"] = starts[:total]
+    meta["finish_times"] = finishes[:total]
+    meta["pids"] = pids[:total]
+    meta["records"] = records[:total]
+    meta["tracks"] = tracks[:total]
+    meta["run_index"] = total
     meta.pop("_run_index", None)
-    return completed
+    return total

@@ -1,6 +1,8 @@
 """
 System metrics collector – CPU, RAM, GPU via psutil + nvidia-smi.
 """
+import time
+
 import psutil
 import subprocess
 from typing import List, Dict, Any
@@ -11,6 +13,8 @@ class SystemMonitor:
 
     def __init__(self):
         self._gpu_cache: List[Dict[str, Any]] = []
+        self._gpu_cache_at: float = 0.0
+        self._gpu_ttl_sec: float = 1.5
 
     def sample(self) -> Dict[str, Any]:
         """Collect system metrics (CPU, RAM, GPU)."""
@@ -22,6 +26,10 @@ class SystemMonitor:
         return metrics
 
     def _get_gpu_metrics(self) -> List[Dict[str, Any]]:
+        now = time.monotonic()
+        if self._gpu_cache and now - self._gpu_cache_at < self._gpu_ttl_sec:
+            return self._gpu_cache
+
         try:
             out = subprocess.check_output(
                 [
@@ -45,6 +53,7 @@ class SystemMonitor:
                         "mem_total": float(parts[3]),
                     })
             self._gpu_cache = gpus
+            self._gpu_cache_at = now
             return gpus
         except Exception:
             return self._gpu_cache

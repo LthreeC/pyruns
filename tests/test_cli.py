@@ -92,6 +92,40 @@ def task_manager(workspace):
     return tm
 
 
+def test_task_manager_scan_uses_folder_name_as_task_name(workspace, task_manager):
+    _add_task(workspace, "stable-name-task")
+    task_manager.scan_disk()
+    task = next(t for t in task_manager.tasks if t["name"] == "stable-name-task")
+    assert task["name"] == "stable-name-task"
+
+
+def test_task_manager_rename_task_moves_folder(workspace, task_manager):
+    _add_task(workspace, "before-rename")
+    task_manager.scan_disk()
+    ok, result = task_manager.rename_task("before-rename", "after-rename")
+    assert ok is True
+    assert result == "after-rename"
+    assert (workspace / TASKS_DIR / "after-rename").exists()
+    assert not (workspace / TASKS_DIR / "before-rename").exists()
+
+
+def test_task_manager_rename_task_rejects_conflict(workspace, task_manager):
+    _add_task(workspace, "task-a")
+    _add_task(workspace, "task-b")
+    task_manager.scan_disk()
+    ok, message = task_manager.rename_task("task-a", "task-b")
+    assert ok is False
+    assert "already exists" in message
+
+
+def test_task_manager_rename_task_rejects_running(workspace, task_manager):
+    _add_task(workspace, "runner", status="queued")
+    task_manager.scan_disk()
+    ok, message = task_manager.rename_task("runner", "runner-renamed")
+    assert ok is False
+    assert "cannot be renamed" in message
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Display tests
 # ═══════════════════════════════════════════════════════════════

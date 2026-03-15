@@ -1,8 +1,9 @@
-import os
 import ast
-import yaml
+import os
 import re
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 # Fix PyYAML parsing of scientific notation without a dot (e.g. 5e-3)
 yaml_float_pattern = re.compile(
@@ -221,6 +222,34 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
     if len(result) > max_len:
         result = result[:max_len - 3] + "..."
     return result
+
+
+def build_config_preview_and_search_text(
+    cfg: Dict[str, Any],
+    *,
+    task_name: str = "",
+    notes: str = "",
+    max_items: int = 6,
+    max_len: int = 120,
+) -> Tuple[str, str]:
+    """Build cached preview and normalized search text for a task config."""
+    preview = preview_config_line(cfg, max_items=max_items, max_len=max_len)
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    flat = flatten_dict(cfg)
+    search_lines = [str(task_name or ""), str(notes or "")]
+    for key, value in flat.items():
+        if str(key).startswith("_meta"):
+            continue
+        search_lines.append(f"{key}: {value}")
+        short_key = key.rsplit(".", 1)[-1]
+        if short_key != key:
+            search_lines.append(f"{short_key}: {value}")
+
+    blob = "\n".join(search_lines).lower()
+    normalized_blob = re.sub(r"\s*:\s*", ":", blob)
+    return preview, normalized_blob
 
 
 def validate_config_types_against_template(orig_config: Dict[str, Any], new_configs: List[Dict[str, Any]]) -> Optional[str]:
