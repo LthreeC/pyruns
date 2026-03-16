@@ -31,7 +31,7 @@ body {
 }
 
 .app-header {
-  backdrop-filter: none;
+  filter: none;
 }
 
 .app-brand-title {
