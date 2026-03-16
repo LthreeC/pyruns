@@ -178,14 +178,37 @@ def save_setting_for_root(root_dir: str, key: str, value: Any) -> None:
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read()
 
+            # Match the key line and any continuation lines (YAML list items)
             pattern = re.compile(
                 rf"^{re.escape(key)}\s*:.*(?:\n[ \t]*-[ \t]+.*)*",
                 re.MULTILINE,
             )
-            if pattern.search(text):
-                new_text = pattern.sub(f"{key}: {val_text}", text)
+
+            if isinstance(value, list) and value:
+                # For non-empty lists, use full YAML reload-and-dump to avoid
+                # regex substitution issues with multi-line list values.
+                try:
+                    data = yaml.safe_load(text) or {}
+                    if isinstance(data, dict):
+                        data[key] = value
+                        # Re-dump the entire file to ensure correct formatting
+                        new_text = yaml.dump(
+                            data, default_flow_style=False,
+                            allow_unicode=True, sort_keys=False,
+                        )
+                    else:
+                        new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
+                except Exception:
+                    # Fallback to regex approach
+                    if pattern.search(text):
+                        new_text = pattern.sub(f"{key}: {val_text}", text)
+                    else:
+                        new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
             else:
-                new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
+                if pattern.search(text):
+                    new_text = pattern.sub(f"{key}: {val_text}", text)
+                else:
+                    new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
 
             with open(path, "w", encoding="utf-8") as f:
                 f.write(new_text)

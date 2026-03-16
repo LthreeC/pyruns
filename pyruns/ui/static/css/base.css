@@ -90,7 +90,13 @@ body {
 
 .task-card {
   contain: layout paint style;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.task-card:hover {
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.10);
 }
 
 .sidebar-shell {

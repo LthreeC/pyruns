@@ -197,7 +197,7 @@ def render_manager_page(state: Dict[str, Any], task_manager) -> None:
             task_list.refresh()
 
     _manager_updater = ClientDebouncedUpdater(
-        client, _check_dirty, delay_sec=0.18
+        client, _check_dirty, delay_sec=0.30
     )
     task_manager.on_change(_mark_dirty)
     from pyruns.utils.events import event_sys

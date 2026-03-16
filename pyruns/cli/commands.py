@@ -7,6 +7,7 @@ and prints results to stdout.  All task lifecycle logic is delegated to
 business logic.
 """
 import os
+import shlex
 import shutil
 
 import sys
@@ -195,10 +196,8 @@ def cmd_generate(tm, args: List[str] = None) -> None:
     print(f"  hint: Waiting for your editor '{editor}' to close the file...")
     
     try:
-        # p.use_shell = 1 的 Python 实现：直接拼装字符串并开启 shell=True，
-        # 这样 Windows 的 cmd.exe 会自动处理 Cursor / VSCode 的调用，不再报 FileNotFoundError。
-        cmd = f'{editor} "{tmp_path}"'
-        subprocess.run(cmd, shell=True, check=True)
+        cmd_list = shlex.split(editor, posix=(os.name != "nt")) + [tmp_path]
+        subprocess.run(cmd_list, check=True)
         
     except Exception as e:
         print(f"  error: there was a problem with the editor '{editor}'")
@@ -447,8 +446,8 @@ def cmd_open(tm, args: List[str] = None) -> None:
     editor_no_wait = editor.replace(" --wait", "").replace(" -w", "")
     print(f"  Opening {os.path.basename(config_path)} ...")
     try:
-        cmd = f'{editor_no_wait} "{config_path}"'
-        subprocess.Popen(cmd, shell=True)
+        cmd_list = shlex.split(editor_no_wait, posix=(os.name != "nt")) + [config_path]
+        subprocess.Popen(cmd_list)
     except Exception as e:
         print(f"  Failed to open editor: {e}")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -228,9 +229,13 @@ def run_task_worker(
             )
             workdir = fallback
 
+        # Normalize string commands to list to avoid shell=True injection risk
+        if isinstance(command, str):
+            command = shlex.split(command, posix=(os.name != "nt"))
+
         proc = subprocess.Popen(
             command,
-            shell=isinstance(command, str),
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=workdir,

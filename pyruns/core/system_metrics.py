@@ -15,6 +15,9 @@ class SystemMonitor:
         self._gpu_cache: List[Dict[str, Any]] = []
         self._gpu_cache_at: float = 0.0
         self._gpu_ttl_sec: float = 1.5
+        self._gpu_available: bool = True  # False after first nvidia-smi failure
+        self._gpu_fail_count: int = 0
+        self._GPU_MAX_FAILS: int = 3  # Stop trying after N consecutive failures
 
     def sample(self) -> Dict[str, Any]:
         """Collect system metrics (CPU, RAM, GPU)."""
@@ -28,6 +31,10 @@ class SystemMonitor:
     def _get_gpu_metrics(self) -> List[Dict[str, Any]]:
         now = time.monotonic()
         if self._gpu_cache and now - self._gpu_cache_at < self._gpu_ttl_sec:
+            return self._gpu_cache
+
+        # Skip nvidia-smi entirely after repeated failures (no GPU on this machine)
+        if not self._gpu_available:
             return self._gpu_cache
 
         try:
@@ -54,7 +61,11 @@ class SystemMonitor:
                     })
             self._gpu_cache = gpus
             self._gpu_cache_at = now
+            self._gpu_fail_count = 0  # Reset on success
             return gpus
         except Exception:
+            self._gpu_fail_count += 1
+            if self._gpu_fail_count >= self._GPU_MAX_FAILS:
+                self._gpu_available = False
             return self._gpu_cache
 

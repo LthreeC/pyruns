@@ -15,13 +15,21 @@
   contain: layout;
 }
 
+/* GPU-accelerated page switch panels */
+.app-content > .nicegui-column {
+  will-change: opacity;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 .manager-body {
   min-height: 0;
+  contain: layout style;
 }
 
 .manager-grid {
   content-visibility: auto;
-  contain-intrinsic-size: 980px;
+  contain-intrinsic-size: auto 980px;
 }
 
 .manager-grid .task-card {
@@ -108,4 +116,6 @@
 .manager-body,
 .generator-form-scroll {
   scroll-behavior: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }

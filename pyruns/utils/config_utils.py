@@ -76,9 +76,12 @@ def load_yaml_strict(path: str) -> Dict[str, Any]:
 
 def save_yaml(path: str, data: Dict[str, Any]) -> None:
     """Save a dict to a YAML file."""
+    if not data:
+        # Write an empty YAML comment instead of truncating to 0 bytes
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# empty config\n")
+        return
     with open(path, "w", encoding="utf-8") as f:
-        if not data:
-            return
         yaml.dump(
             data,
             f,
@@ -174,23 +177,25 @@ def list_template_files(run_root: str) -> Dict[str, str]:
                 task_dir = os.path.join(actual_tasks_dir, dir_name)
                 if not os.path.isdir(task_dir):
                     continue
-                
+
                 cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
                 if os.path.exists(cfg_path):
                     display_name = dir_name
-                    sort_val = (0, "")
+                    # Use file mtime for sorting instead of loading full task_info.json
+                    # This avoids expensive JSON parsing for every task directory
                     try:
-                        info = load_task_info(task_dir)
-                        if info:
-                            display_name = info.get("name", dir_name)
-                            sort_val = task_sort_key(info)
-                    except Exception:
-                        sort_val = (0, str(os.path.getmtime(cfg_path)))
-                        
+                        mtime = os.path.getmtime(os.path.join(task_dir, TASK_INFO_FILENAME))
+                    except OSError:
+                        try:
+                            mtime = os.path.getmtime(cfg_path)
+                        except OSError:
+                            mtime = 0.0
+                    sort_val = mtime
+
                     rel_path = os.path.join(TASKS_DIR, dir_name, CONFIG_FILENAME).replace("\\", "/")
                     task_entries.append((rel_path, display_name, sort_val))
-                    
-            # Sort task configs using priority tuples (same as Manager)
+
+            # Sort by mtime descending (newest first)
             task_entries.sort(key=lambda x: x[2], reverse=True)
             for rel_path, display_name, _ in task_entries:
                 options[rel_path] = display_name

@@ -108,7 +108,12 @@ class SimpleEventBus:
             try:
                 import asyncio
                 if asyncio.iscoroutinefunction(cb):
-                    asyncio.create_task(cb(*args, **kwargs))
+                    try:
+                        loop = asyncio.get_running_loop()
+                        asyncio.ensure_future(cb(*args, **kwargs), loop=loop)
+                    except RuntimeError:
+                        # No running event loop — skip async callback safely
+                        logger.debug("EventBus: skipping async callback %s (no event loop)", cb)
                 else:
                     cb(*args, **kwargs)
             except Exception as e:

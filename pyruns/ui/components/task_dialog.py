@@ -112,7 +112,7 @@ def build_task_dialog(selected: dict, task_manager):
 
                     _build_tab_task_info(t, info_obj, selected, task_manager)
                     _build_tab_config(t, cfg_text)
-                    _build_tab_notes(t, info_obj)
+                    _build_tab_notes(t, info_obj, task_manager)
                     _build_tab_env_vars(t, info_obj, task_manager)
 
             dialog_body()
@@ -219,7 +219,7 @@ def _build_tab_config(t, cfg_text):
         readonly_code_viewer(cfg_text, mode="yaml")
 
 
-def _build_tab_notes(t, info_obj):
+def _build_tab_notes(t, info_obj, task_manager=None):
     """Notes tab — editable textarea with save button."""
     # 1. Remove padding (p-0) and gap (gap-0) from tab_panel
     # Use flex-col for vertical layout, h-full to fill height

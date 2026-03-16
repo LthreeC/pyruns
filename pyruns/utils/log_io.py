@@ -111,5 +111,8 @@ def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> Tuple[s
                 chunk = chunk[:last_newline + 1]
                 
         # Decode and normalize newlines for xterm.js
-        text = chunk.decode("utf-8", errors="replace").replace('\n', '\r\n')
+        # First collapse any existing \r\n to \n, then convert all \n to \r\n
+        # to avoid double-conversion (\r\n → \r\r\n) when log already has \r\n
+        text = chunk.decode("utf-8", errors="replace")
+        text = text.replace('\r\n', '\n').replace('\n', '\r\n')
         return text, offset + len(chunk)

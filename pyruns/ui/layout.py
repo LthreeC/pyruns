@@ -30,9 +30,9 @@ def render_main_layout(
             for tab in _TAB_NAMES:
                 container = ui.column().classes(
                     "w-full h-full gap-0 flex-nowrap overflow-hidden absolute inset-0 "
-                    "transition-opacity duration-200 ease-in-out"
-                ).style("height: 100%; min-height: 0;")
-                container.classes("opacity-0 pointer-events-none")
+                    "transition-opacity duration-150 ease-out"
+                ).style("height: 100%; min-height: 0; will-change: opacity;")
+                container.classes("opacity-0 pointer-events-none invisible")
                 containers[tab] = container
 
     def switch_tab(tab: str) -> None:
@@ -55,9 +55,15 @@ def render_main_layout(
 
         for name, container in containers.items():
             if name == tab:
-                container.classes(remove="opacity-0 pointer-events-none", add="opacity-100 z-10")
+                container.classes(
+                    remove="opacity-0 pointer-events-none invisible",
+                    add="opacity-100 z-10 visible",
+                )
             else:
-                container.classes(remove="opacity-100 z-10", add="opacity-0 pointer-events-none")
+                container.classes(
+                    remove="opacity-100 z-10 visible",
+                    add="opacity-0 pointer-events-none invisible",
+                )
 
         if tab not in rendered:
             rendered.add(tab)

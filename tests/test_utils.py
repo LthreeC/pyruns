@@ -520,15 +520,18 @@ def test_save_setting(tmp_path):
         settings.save_setting("pinned_params", ["a", "b"])
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-            assert "pinned_params: \n- a\n- b" in text
-            
+            # Accept both formats: YAML dump may use "key:\n- val" or "key: \n- val"
+            assert "pinned_params" in text
+            assert "- a\n- b" in text
+
         assert settings._cached["pinned_params"] == ["a", "b"]
-        
+
         # 4. Update the list again
         settings.save_setting("pinned_params", ["c"])
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-            assert "pinned_params: \n- c" in text
+            assert "pinned_params" in text
+            assert "- c" in text
             assert "- a" not in text
 
 

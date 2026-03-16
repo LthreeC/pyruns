@@ -124,21 +124,33 @@ class TaskManager:
                 self.is_processing = False
             return
 
-        subdirs = sorted(
-            (
-                name
-                for name in os.listdir(self.tasks_dir)
-                if os.path.isdir(os.path.join(self.tasks_dir, name)) and name != TRASH_DIR
-            ),
-            key=lambda name: os.path.getmtime(os.path.join(self.tasks_dir, name)),
-            reverse=True,
-        )
+        # Use os.scandir for fewer syscalls (isdir + mtime in one stat)
+        try:
+            entries = []
+            with os.scandir(self.tasks_dir) as it:
+                for entry in it:
+                    if entry.is_dir() and entry.name != TRASH_DIR:
+                        try:
+                            mtime = entry.stat().st_mtime
+                        except OSError:
+                            mtime = 0.0
+                        entries.append((entry.name, mtime))
+            entries.sort(key=lambda x: x[1], reverse=True)
+            subdirs = [name for name, _ in entries]
+        except OSError:
+            subdirs = []
 
-        new_tasks = []
-        for dir_name in subdirs:
-            task = self._load_task_dir(dir_name)
-            if task is not None:
-                new_tasks.append(task)
+        # Parallel I/O: load task dirs concurrently for large workspaces
+        if len(subdirs) > 8:
+            with ThreadPoolExecutor(max_workers=min(16, len(subdirs))) as pool:
+                results = list(pool.map(self._load_task_dir, subdirs))
+            new_tasks = [t for t in results if t is not None]
+        else:
+            new_tasks = []
+            for dir_name in subdirs:
+                task = self._load_task_dir(dir_name)
+                if task is not None:
+                    new_tasks.append(task)
 
         with self._lock:
             self.tasks = new_tasks
@@ -530,7 +542,7 @@ class TaskManager:
         with self._lock:
             for identifier in task_ids:
                 target = self._resolve_identifier_locked(identifier)
-                if not target:
+                if not target or target in targets:
                     continue
                 if target["status"] in ("running", "queued"):
                     if target["status"] == "running":
@@ -540,7 +552,8 @@ class TaskManager:
                         self._running_ids.discard(target["name"])
                     target["status"] = "failed"
                     self._mark_failed_on_disk(target)
-                self.tasks.remove(target)
+                if target in self.tasks:
+                    self.tasks.remove(target)
                 targets.append(target)
             self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
@@ -576,13 +589,23 @@ class TaskManager:
     def _scheduler_loop(self) -> None:
         """Submit queued tasks up to max_workers and keep UI state fresh."""
         last_trigger = 0.0
+        last_refresh = 0.0
         while True:
             try:
-                if self.refresh_from_disk():
-                    now = time.time()
-                    if now - last_trigger >= 1.0:
-                        last_trigger = now
-                        self.trigger_update()
+                # Only refresh from disk if we have active tasks or it's been >1s
+                now = time.time()
+                should_refresh = (
+                    self._running_ids or
+                    self.is_processing or
+                    (now - last_refresh >= 1.0)
+                )
+
+                if should_refresh:
+                    last_refresh = now
+                    if self.refresh_from_disk():
+                        if now - last_trigger >= 1.0:
+                            last_trigger = now
+                            self.trigger_update()
 
                 if not self.is_processing:
                     time.sleep(0.5)
@@ -673,11 +696,14 @@ class TaskManager:
         except Exception:
             pass
 
+        need_mark_failed = False
+        task_ref = None
         with self._lock:
             self._running_ids.discard(task_id)
             task = self._tasks_by_name.get(task_id)
             if not task:
                 self._recompute_processing_flag_locked()
+                self.trigger_update()
                 return
 
             try:
@@ -689,9 +715,14 @@ class TaskManager:
 
             if worker_error and task["status"] in ("running", "queued"):
                 task["status"] = "failed"
-                self._mark_failed_on_disk(task)
+                need_mark_failed = True
+                task_ref = task
 
             self._recompute_processing_flag_locked()
+
+        # Disk I/O outside the lock to avoid potential deadlock
+        if need_mark_failed and task_ref:
+            self._mark_failed_on_disk(task_ref)
 
         self.trigger_update()
 

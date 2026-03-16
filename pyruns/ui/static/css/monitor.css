@@ -23,11 +23,12 @@
 
 .monitor-task-item {
   cursor: pointer;
-  transition: background-color 0.1s ease, border-color 0.1s ease;
+  transition: background-color 0.08s ease;
   border-left: 3px solid transparent;
   flex-wrap: nowrap !important;
   overflow: hidden;
   border-radius: 6px;
+  contain: layout style;
 }
 
 .monitor-task-item:hover {

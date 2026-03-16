@@ -8,9 +8,20 @@ from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
+# Import psutil at module level so tests can mock it via
+# @patch("pyruns.utils.process_utils.psutil")
+try:
+    import psutil as _psutil
+except ImportError:
+    _psutil = None  # type: ignore[assignment]
+
 
 def is_pid_running(pid: Any) -> bool:
-    """Check whether *pid* is still alive (cross-platform)."""
+    """Check whether *pid* is still alive (cross-platform).
+
+    Uses psutil when available for more reliable detection (handles PID
+    reuse on Windows).  Falls back to OS-level checks otherwise.
+    """
     if not pid:
         return False
     try:

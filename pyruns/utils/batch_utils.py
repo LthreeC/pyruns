@@ -76,21 +76,27 @@ def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
             pass
 
     # Range syntax 2: start:stop:step or start:stop
+    # Guard: only match if exactly 2 or 3 colon-separated parts (avoids
+    # collision with YAML time strings like "12:30:00" which have 3 parts
+    # but typically contain values > 59 in stop position for real ranges).
     if ":" in s and BATCH_SEPARATOR not in s and "{" not in s and "[" not in s:
         parts = [p.strip() for p in s.split(":")]
-        try:
-            int_parts = [int(p) for p in parts]
-            if len(int_parts) in (2, 3):
+        if len(parts) in (2, 3):
+            try:
+                int_parts = [int(p) for p in parts]
                 start = int_parts[0]
                 stop = int_parts[1]
                 step = int_parts[2] if len(int_parts) == 3 else 1
-                generated = [str(x) for x in range(start, stop, step)]
-
-                if generated:
-                    logger.debug("Parsed range: %s -> %d items (start=%s)", s, len(generated), generated[0])
-                    return (generated, "product")
-        except ValueError:
-            pass
+                # Sanity: step must be non-zero and range must produce items
+                if step == 0:
+                    pass
+                else:
+                    generated = [str(x) for x in range(start, stop, step)]
+                    if generated:
+                        logger.debug("Parsed range: %s -> %d items (start=%s)", s, len(generated), generated[0])
+                        return (generated, "product")
+            except ValueError:
+                pass
 
     # Product syntax: xxx | yyy
     parts = _split_by_pipe(s)

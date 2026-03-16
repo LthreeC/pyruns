@@ -169,7 +169,7 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
             time.sleep(0.05)
 
 
-def get_task_dir() -> str:
+def get_task_dir() -> Optional[str]:
     """Return the current task directory, or ``None`` outside pyruns."""
     pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if not pyr_config:
@@ -177,7 +177,7 @@ def get_task_dir() -> str:
     return os.path.dirname(pyr_config)
 
 
-def get_run_index() -> int:
+def get_run_index() -> Optional[int]:
     """Return the current run index, or ``None`` outside pyruns."""
     pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if not pyr_config:
