@@ -12,7 +12,12 @@ from typing import Any
 from urllib.parse import urlencode
 
 from pyruns import ensure_config_default
-from pyruns._config import CONFIG_DEFAULT_FILENAME, DEFAULT_ROOT_NAME, ENV_KEY_ROOT
+from pyruns._config import (
+    CONFIG_DEFAULT_FILENAME,
+    DEFAULT_ROOT_NAME,
+    ENV_KEY_ROOT,
+    SCRIPT_INFO_FILENAME,
+)
 from pyruns.utils.info_io import load_script_info
 from pyruns.utils.parse_utils import (
     detect_config_source_fast,
@@ -53,7 +58,7 @@ def resolve_workspace_for_script(script_path: str) -> str | None:
     target_base = os.path.splitext(os.path.basename(normalized))[0]
     for entry in sorted(os.listdir(pyruns_dir)):
         workspace = os.path.join(pyruns_dir, entry)
-        script_info_path = os.path.join(workspace, "script_info.json")
+        script_info_path = os.path.join(workspace, SCRIPT_INFO_FILENAME)
         if not os.path.isfile(script_info_path):
             continue
         try:
@@ -75,7 +80,7 @@ def list_script_candidates(base_dir: str | None = None) -> list[dict[str, Any]]:
 
     if workspace_root.is_dir():
         for workspace in sorted(path for path in workspace_root.iterdir() if path.is_dir()):
-            script_info_path = workspace / "script_info.json"
+            script_info_path = workspace / SCRIPT_INFO_FILENAME
             if not script_info_path.is_file():
                 continue
             try:
@@ -116,6 +121,27 @@ def list_script_candidates(base_dir: str | None = None) -> list[dict[str, Any]]:
         ),
     )
     return ordered
+
+
+def choose_script_file(initial_dir: str | None = None) -> str | None:
+    """Open a native file picker and return one Python script path."""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askopenfilename(
+            initialdir=initial_dir or os.getcwd(),
+            title="Select Python script",
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")],
+        )
+        root.destroy()
+        return normalize_path(path) if path else None
+    except Exception:
+        return None
 
 
 def list_config_candidates(script_path: str) -> list[dict[str, Any]]:
@@ -182,7 +208,7 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
     os.makedirs(script_dir, exist_ok=True)
     ensure_settings_file(pyruns_dir)
 
-    script_info_path = os.path.join(script_dir, "script_info.json")
+    script_info_path = os.path.join(script_dir, SCRIPT_INFO_FILENAME)
     if not os.path.exists(script_info_path):
         script_info = {
             "script_name": script_base,

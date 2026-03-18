@@ -280,6 +280,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         except FileNotFoundError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/launcher/pick-script")
+    def pick_launcher_script() -> dict[str, Any]:
+        try:
+            return get_runtime().pick_and_open_launcher_workspace()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/tasks")
     def get_tasks(
         query: str = "",
@@ -419,8 +426,11 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         loop = asyncio.get_running_loop()
         log_emitter.bind_loop(loop)
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        disconnected = asyncio.Event()
 
         def on_chunk(chunk_text: str) -> None:
+            if disconnected.is_set():
+                return
             queue.put_nowait(
                 {
                     "type": "chunk",
@@ -430,18 +440,31 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             )
 
         async def watch_client_messages() -> None:
-            while True:
-                await websocket.receive_text()
+            try:
+                while True:
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                pass
+            finally:
+                disconnected.set()
 
         watcher = asyncio.create_task(watch_client_messages())
         log_emitter.subscribe(task_name, on_chunk)
         try:
-            while True:
-                message = await queue.get()
-                await websocket.send_json(message)
+            while not disconnected.is_set():
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                try:
+                    await websocket.send_json(message)
+                except (WebSocketDisconnect, RuntimeError):
+                    disconnected.set()
+                    break
         except WebSocketDisconnect:
             pass
         finally:
+            disconnected.set()
             watcher.cancel()
             log_emitter.unsubscribe(task_name, on_chunk)
 
@@ -493,6 +516,8 @@ def main(
         port=port,
         reload=reload,
         factory=reload,
+        access_log=False,
+        log_level="warning",
     )
 
 

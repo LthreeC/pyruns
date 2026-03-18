@@ -4,17 +4,17 @@
 
 /* ── Dark theme (default) ── */
 :root {
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  --font-sans: 'Segoe UI Variable', 'Aptos', 'Trebuchet MS', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
 
-  --surface-base: #09090B;
-  --surface-raised: #141414;
-  --surface-overlay: #1C1C1C;
-  --surface-hover: #252525;
+  --surface-base: #111827;
+  --surface-raised: #161f2c;
+  --surface-overlay: #1e293b;
+  --surface-hover: #243244;
 
-  --border-subtle: #1F1F1F;
-  --border-default: #27272A;
-  --border-strong: #3A3A3A;
+  --border-subtle: #263244;
+  --border-default: #334155;
+  --border-strong: #475569;
 
   --text-primary: #FAFAFA;
   --text-secondary: #A1A1AA;
@@ -83,9 +83,10 @@ body {
 }
 
 /* xterm overrides */
-.xterm { padding: 4px 0 0 8px; }
+.xterm { padding: 6px 0 0 10px; }
 .xterm-viewport::-webkit-scrollbar { width: 6px; }
 .xterm-viewport::-webkit-scrollbar-thumb { background: #3A3A3A; border-radius: 3px; }
+.monitor-terminal-shell { background: #0b1220; }
 
 /* CodeMirror overrides */
 .cm-editor { font-size: 13px !important; }
@@ -124,7 +125,5 @@ body {
 
 /* Dialog backdrop */
 dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
 }

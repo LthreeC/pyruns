@@ -27,7 +27,7 @@ def main():
     
     args = parser.parse_args()
 
-    print(f"🚀 Starting training with {args.optimizer.upper()} optimizer!")
+    print(f"🚀 Starting training with {args.optimizer.upper()} optimizer!", "g"*1000)
     print(f"Hyperparameters: LR={args.lr}, Batch Size={args.batch_size}")
 
     last_loss = 0

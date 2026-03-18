@@ -28,31 +28,33 @@ export default function ConfirmDialog({
   return (
     <dialog
       ref={ref}
-      className="fixed inset-0 z-50 m-auto bg-surface-raised border border-border rounded-lg shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-sm max-w-md w-full p-0"
+      className="fixed inset-0 z-50 m-auto w-full max-w-md rounded-2xl border border-border-subtle bg-surface-raised p-0 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.95)] backdrop:bg-black/50"
       onClose={onCancel}
     >
-      <div className="p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-zinc-100">{title}</h3>
-          <button onClick={onCancel} className="text-zinc-500 hover:text-zinc-300 transition-colors">
+      <div className="p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
+          <button type="button" onClick={onCancel} className="rounded-lg p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary">
             <X className="w-4 h-4" />
           </button>
         </div>
-        {description && <p className="text-xs text-zinc-400 mb-4">{description}</p>}
+        {description && <p className="mb-4 text-xs text-txt-secondary leading-relaxed">{description}</p>}
         {children}
         <div className="flex justify-end gap-2 mt-5">
           <button
+            type="button"
             onClick={onCancel}
-            className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 rounded-md hover:bg-surface-overlay transition-colors"
+            className="rounded-md px-3.5 py-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={onConfirm}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors ${
               confirmVariant === 'danger'
-                ? 'bg-rose-500/15 text-rose-400 hover:bg-rose-500/25'
-                : 'bg-accent/15 text-accent hover:bg-accent/25'
+                ? 'border border-rose-500/20 text-rose-400 hover:bg-rose-500/10'
+                : 'border border-border-subtle text-txt-primary hover:bg-surface-overlay'
             }`}
           >
             {confirmLabel}

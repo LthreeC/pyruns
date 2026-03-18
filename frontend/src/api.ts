@@ -128,3 +128,6 @@ export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =
   request<WorkspaceInfo>('/api/launcher/open', {
     method: 'POST', body: JSON.stringify({ script_path: scriptPath, config_path: configPath }),
   })
+
+export const pickLauncherScript = () =>
+  request<WorkspaceInfo>('/api/launcher/pick-script', { method: 'POST' })

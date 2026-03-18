@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { X, FileText, Settings, StickyNote, Variable, Save } from 'lucide-react'
+import { useState, useCallback, useEffect, type ComponentType } from 'react'
+import { X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check } from 'lucide-react'
 import clsx from 'clsx'
 import StatusBadge from '@/components/shared/StatusBadge'
 import type { Task } from '@/types'
@@ -18,33 +18,61 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('info')
   const [notes, setNotes] = useState(task.notes || '')
   const [envPairs, setEnvPairs] = useState<[string, string][]>(
-    Object.entries(task.env || {}).map(([k, v]) => [k, String(v)])
+    Object.entries(task.env || {}).map(([key, value]) => [key, String(value)])
   )
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(task.name)
 
+  useEffect(() => {
+    setTab('info')
+    setNotes(task.notes || '')
+    setEnvPairs(Object.entries(task.env || {}).map(([key, value]) => [key, String(value)]))
+    setNewName(task.name)
+    setRenaming(false)
+  }, [task])
+
   const handleSaveNotes = useCallback(async () => {
     setSaving(true)
-    try { await api.updateNotes(task.name, notes); onRefresh() }
-    finally { setSaving(false) }
-  }, [task.name, notes])
+    try {
+      await api.updateNotes(task.name, notes)
+      onRefresh()
+    } finally {
+      setSaving(false)
+    }
+  }, [task.name, notes, onRefresh])
 
   const handleSaveEnv = useCallback(async () => {
     setSaving(true)
-    const env = Object.fromEntries(envPairs.filter(([k]) => k.trim()))
-    try { await api.updateEnv(task.name, env); onRefresh() }
-    finally { setSaving(false) }
-  }, [task.name, envPairs])
+    const env = Object.fromEntries(envPairs.filter(([key]) => key.trim()))
+    try {
+      await api.updateEnv(task.name, env)
+      onRefresh()
+    } finally {
+      setSaving(false)
+    }
+  }, [task.name, envPairs, onRefresh])
 
   const handleRename = useCallback(async () => {
-    if (!newName.trim() || newName === task.name) { setRenaming(false); return }
-    setSaving(true)
-    try { await api.renameTask(task.name, newName.trim()); onRefresh(); onClose() }
-    finally { setSaving(false); setRenaming(false) }
-  }, [task.name, newName])
+    if (!newName.trim() || newName === task.name) {
+      setRenaming(false)
+      return
+    }
 
-  const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
+    setSaving(true)
+    try {
+      await api.renameTask(task.name, newName.trim())
+      onRefresh()
+      onClose()
+    } catch {
+      setNewName(task.name)
+    } finally {
+      setSaving(false)
+      setRenaming(false)
+    }
+  }, [task.name, newName, onRefresh, onClose])
+
+  const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
     { key: 'config', label: 'Config', icon: Settings },
     { key: 'notes', label: 'Notes', icon: StickyNote },
@@ -53,122 +81,173 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/40" />
+      <div className="absolute inset-0 bg-black/30" />
       <div
-        className="relative w-full max-w-lg bg-surface-raised border-l border-border-subtle h-full flex flex-col animate-slide-in"
-        onClick={e => e.stopPropagation()}
+        className="animate-slide-in relative flex h-full w-[44%] min-w-[360px] max-w-[1120px] flex-col border-l border-border-subtle bg-surface-raised"
+        onClick={event => event.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle flex-none">
-          <div className="flex items-center gap-2 min-w-0">
-            <StatusBadge status={task.status as TaskStatus} />
+        <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
+          <StatusBadge status={task.status as TaskStatus} />
+
+          <div className="min-w-0 flex-1">
             {renaming ? (
-              <input
-                autoFocus
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                onBlur={handleRename}
-                onKeyDown={e => e.key === 'Enter' && handleRename()}
-                className="bg-surface-overlay border border-border rounded px-2 py-0.5 text-sm text-txt-primary outline-none focus:border-accent/50"
-              />
+              <div className="flex items-center gap-1.5">
+                <input
+                  autoFocus
+                  value={newName}
+                  onChange={event => setNewName(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') void handleRename()
+                    if (event.key === 'Escape') {
+                      setRenaming(false)
+                      setNewName(task.name)
+                    }
+                  }}
+                  title="New task name"
+                  className="w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-sm text-txt-primary outline-none focus:border-border"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleRename()}
+                  title="Save name"
+                  className="rounded-md p-1.5 text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRenaming(false)
+                    setNewName(task.name)
+                  }}
+                  title="Cancel"
+                  className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             ) : (
-              <span
-                className="text-sm font-medium text-txt-primary truncate cursor-pointer hover:text-accent transition-colors"
-                onDoubleClick={() => setRenaming(true)}
-                title="Double-click to rename"
-              >
-                {task.name}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="truncate text-sm font-medium text-txt-primary">{task.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setRenaming(true)}
+                  title="Rename task"
+                  className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              </div>
             )}
           </div>
-          <button type="button" onClick={onClose} className="p-1 text-txt-tertiary hover:text-txt-primary transition-colors" title="Close">
-            <X className="w-4 h-4" />
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+            title="Close"
+          >
+            <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-border-subtle flex-none">
-          {TABS.map(({ key, label, icon: Icon }) => (
+        <div className="flex gap-1 border-b border-border-subtle px-3 py-2">
+          {tabs.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               type="button"
               onClick={() => setTab(key)}
               className={clsx(
-                'flex items-center gap-1.5 px-4 py-2 text-xs transition-colors border-b-2',
+                'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
                 tab === key
-                  ? 'text-txt-primary border-accent'
-                  : 'text-txt-tertiary border-transparent hover:text-txt-secondary'
+                  ? 'bg-surface-overlay text-txt-primary'
+                  : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
               )}
             >
-              <Icon className="w-3 h-3" /> {label}
+              <Icon className="h-3.5 w-3.5" />
+              <span>{label}</span>
             </button>
           ))}
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
           {tab === 'info' && <InfoTab task={task} />}
           {tab === 'config' && <ConfigTab task={task} />}
           {tab === 'notes' && (
-            <div className="flex flex-col gap-3 h-full">
+            <div className="flex h-full flex-col gap-3">
               <textarea
                 value={notes}
-                onChange={e => setNotes(e.target.value)}
+                onChange={event => setNotes(event.target.value)}
                 placeholder="Add notes..."
-                className="flex-1 min-h-[200px] bg-surface-overlay border border-border rounded-md p-3 text-xs text-txt-primary placeholder:text-txt-tertiary outline-none focus:border-accent/50 resize-none font-mono"
+                className="min-h-[220px] flex-1 resize-none rounded-lg border border-border-subtle bg-surface-overlay p-3 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
               />
               <button
                 type="button"
-                onClick={handleSaveNotes}
+                onClick={() => void handleSaveNotes()}
                 disabled={saving}
-                className="self-end flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors disabled:opacity-50"
+                className="self-end rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay disabled:opacity-50"
               >
-                <Save className="w-3 h-3" /> Save Notes
+                <span className="inline-flex items-center gap-1.5">
+                  <Save className="h-3.5 w-3.5" />
+                  Save Notes
+                </span>
               </button>
             </div>
           )}
           {tab === 'env' && (
             <div className="flex flex-col gap-3">
-              {envPairs.map(([k, v], i) => (
-                <div key={i} className="flex items-center gap-2">
+              {envPairs.map(([key, value], index) => (
+                <div key={`${key}-${index}`} className="flex items-center gap-2">
                   <input
-                    value={k}
-                    onChange={e => { const p = [...envPairs]; p[i] = [e.target.value, v]; setEnvPairs(p) }}
+                    value={key}
+                    onChange={event => {
+                      const next = [...envPairs]
+                      next[index] = [event.target.value, value]
+                      setEnvPairs(next)
+                    }}
                     placeholder="KEY"
-                    className="w-1/3 bg-surface-overlay border border-border rounded px-2 py-1.5 text-xs text-txt-primary font-mono outline-none focus:border-accent/50"
+                    className="w-2/5 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
                   />
                   <input
-                    value={v}
-                    onChange={e => { const p = [...envPairs]; p[i] = [k, e.target.value]; setEnvPairs(p) }}
+                    value={value}
+                    onChange={event => {
+                      const next = [...envPairs]
+                      next[index] = [key, event.target.value]
+                      setEnvPairs(next)
+                    }}
                     placeholder="value"
-                    className="flex-1 bg-surface-overlay border border-border rounded px-2 py-1.5 text-xs text-txt-primary font-mono outline-none focus:border-accent/50"
+                    className="flex-1 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
                   />
                   <button
                     type="button"
-                    onClick={() => setEnvPairs(envPairs.filter((_, j) => j !== i))}
-                    className="text-txt-tertiary hover:text-rose-400 transition-colors"
+                    onClick={() => setEnvPairs(envPairs.filter((_, pairIndex) => pairIndex !== index))}
+                    className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-rose-400"
                     title="Remove"
                   >
-                    <X className="w-3 h-3" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
+
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setEnvPairs([...envPairs, ['', '']])}
-                  className="text-2xs text-accent hover:text-accent-hover transition-colors"
+                  className="text-xs text-txt-secondary transition-colors hover:text-txt-primary"
                 >
                   + Add variable
                 </button>
                 <div className="flex-1" />
                 <button
                   type="button"
-                  onClick={handleSaveEnv}
+                  onClick={() => void handleSaveEnv()}
                   disabled={saving}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent/15 text-accent text-xs font-medium hover:bg-accent/25 transition-colors disabled:opacity-50"
+                  className="rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay disabled:opacity-50"
                 >
-                  <Save className="w-3 h-3" /> Save
+                  <span className="inline-flex items-center gap-1.5">
+                    <Save className="h-3.5 w-3.5" />
+                    Save
+                  </span>
                 </button>
               </div>
             </div>
@@ -183,20 +262,27 @@ function InfoTab({ task }: { task: Task }) {
   const rows: [string, string][] = [
     ['Status', task.status],
     ['Created', task.created_at],
-    ['Run Mode', task.run_mode || '—'],
+    ['Run Mode', task.run_mode || 'standard'],
     ['Run Index', String(task.run_index || 1)],
     ['Directory', task.dir],
   ]
-  if (task.start_times?.length) rows.push(['Last Start', task.start_times[task.start_times.length - 1]])
-  if (task.finish_times?.length) rows.push(['Last Finish', task.finish_times[task.finish_times.length - 1]])
-  if (task.pids?.length) rows.push(['PIDs', task.pids.join(', ')])
+
+  if (task.start_times?.length) {
+    rows.push(['Last Start', task.start_times[task.start_times.length - 1]])
+  }
+  if (task.finish_times?.length) {
+    rows.push(['Last Finish', task.finish_times[task.finish_times.length - 1]])
+  }
+  if (task.pids?.length) {
+    rows.push(['PIDs', task.pids.join(', ')])
+  }
 
   return (
     <div className="space-y-2">
       {rows.map(([label, value]) => (
-        <div key={label} className="flex items-start gap-3">
-          <span className="text-2xs text-txt-tertiary w-20 flex-none pt-0.5">{label}</span>
-          <span className="text-xs text-txt-secondary font-mono break-all">{value}</span>
+        <div key={label} className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 border-b border-border-subtle py-2">
+          <span className="text-xs text-txt-tertiary">{label}</span>
+          <span className="break-all font-mono text-xs text-txt-primary">{value}</span>
         </div>
       ))}
     </div>
@@ -206,13 +292,13 @@ function InfoTab({ task }: { task: Task }) {
 function ConfigTab({ task }: { task: Task }) {
   const yaml = task.config
     ? Object.entries(task.config)
-        .filter(([k]) => !k.startsWith('_meta'))
-        .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+        .filter(([key]) => !key.startsWith('_meta'))
+        .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
         .join('\n')
     : '(empty)'
 
   return (
-    <pre className="text-xs text-txt-secondary font-mono bg-surface-overlay border border-border rounded-md p-3 overflow-auto whitespace-pre-wrap">
+    <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
       {yaml}
     </pre>
   )

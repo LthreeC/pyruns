@@ -85,6 +85,7 @@ monitor_terminal_gutter_px: {SETTINGS_DEFAULTS.get("monitor_terminal_gutter_px")
 # Logging
 log_enabled: {SETTINGS_DEFAULTS.get("log_enabled")}
 log_level: {SETTINGS_DEFAULTS.get("log_level")}                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
+
 """
 
 

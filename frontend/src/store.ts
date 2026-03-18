@@ -23,6 +23,7 @@ interface WorkspaceState {
   workspace: WorkspaceInfo | null
   loading: boolean
   fetch: () => Promise<void>
+  setWorkspace: (workspace: WorkspaceInfo | null) => void
   setRunRoot: (path: string) => Promise<void>
 }
 
@@ -37,6 +38,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     } finally {
       set({ loading: false })
     }
+  },
+  setWorkspace(workspace) {
+    set({ workspace })
   },
   async setRunRoot(path: string) {
     const ws = await api.setRunRoot(path)
@@ -227,7 +231,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   async selectTask(name: string) {
     set({ selectedTaskName: name, logContent: '', logOffset: 0, loading: true })
     try {
-      const logs = await api.getTaskLogs(name)
+      const logs = await api.getTaskLogs(name, undefined, undefined, 50000)
       set({
         logContent: logs.content,
         logOffset: logs.offset,
@@ -243,7 +247,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     if (!selectedTaskName) return
     set({ selectedLog: logName, loading: true })
     try {
-      const logs = await api.getTaskLogs(selectedTaskName, logName)
+      const logs = await api.getTaskLogs(selectedTaskName, logName, undefined, 50000)
       set({ logContent: logs.content, logOffset: logs.offset })
     } finally {
       set({ loading: false })
@@ -311,8 +315,8 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
     const { selectedScript, selectedConfig } = get()
     set({ loading: true })
     try {
-      await api.openLauncherWorkspace(selectedScript, selectedConfig || undefined)
-      await useWorkspaceStore.getState().fetch()
+      const workspace = await api.openLauncherWorkspace(selectedScript, selectedConfig || undefined)
+      useWorkspaceStore.getState().setWorkspace(workspace)
     } finally {
       set({ loading: false })
     }

@@ -193,6 +193,18 @@ def run_task_worker(
             info_script = s_info.get("script_path")
             if info_script and os.path.exists(info_script):
                 script_path = info_script
+            elif info_script and not os.path.exists(info_script):
+                # Drive letter or mount point may have changed (e.g. OneDrive).
+                # Try to find the script relative to the workspace parent.
+                script_basename = os.path.basename(info_script)
+                pyruns_parent = os.path.dirname(os.path.dirname(workspace_dir))
+                candidate = os.path.join(pyruns_parent, script_basename)
+                if os.path.exists(candidate):
+                    script_path = candidate
+                    logger.info(
+                        "script_info path stale (%s), resolved to %s",
+                        info_script, candidate,
+                    )
         except Exception as exc:
             logger.warning("Failed to read script_info.json from %s: %s", workspace_dir, exc)
 

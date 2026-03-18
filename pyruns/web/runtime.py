@@ -16,6 +16,7 @@ from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.launcher import (
     bootstrap_workspace,
+    choose_script_file,
     list_config_candidates,
     list_script_candidates,
     list_workspace_candidates,
@@ -626,7 +627,6 @@ class PyrunsRuntime:
 
     def list_launcher_scripts(self) -> List[Dict[str, Any]]:
         """Return launchable scripts from the current project directory."""
-
         return list_script_candidates()
 
     def list_launcher_configs(self, script_path: str) -> List[Dict[str, Any]]:
@@ -651,5 +651,17 @@ class PyrunsRuntime:
         """Prepare and activate a workspace selected in the launcher."""
 
         workspace = bootstrap_workspace(script_path, config_path or None)
+        self.reload(workspace)
+        return self.get_workspace_info()
+
+    def pick_and_open_launcher_workspace(self) -> Dict[str, Any]:
+        """Open a native script picker and activate the chosen workspace."""
+
+        current_script = self.get_workspace_info().get("script_path", "")
+        initial_dir = os.path.dirname(str(current_script or "")) or os.getcwd()
+        script_path = choose_script_file(initial_dir)
+        if not script_path:
+            raise ValueError("No script selected.")
+        workspace = bootstrap_workspace(script_path)
         self.reload(workspace)
         return self.get_workspace_info()
