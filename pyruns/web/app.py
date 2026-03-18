@@ -1,0 +1,500 @@
+"""FastAPI app and unified server entry point for the React-based UI."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import threading
+import time
+import webbrowser
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from pyruns._config import DEFAULT_UI_PORT
+from pyruns.utils.events import log_emitter
+from pyruns.web.runtime import PyrunsRuntime
+from pyruns.utils import get_logger
+
+logger = get_logger(__name__)
+
+
+class RunRootRequest(BaseModel):
+    """Workspace switch request payload."""
+
+    path: str = Field(min_length=1)
+
+
+class TaskActionRequest(BaseModel):
+    """Task action request payload."""
+
+    execution_mode: str | None = None
+
+
+class TaskBatchActionRequest(BaseModel):
+    """Batch task action request payload."""
+
+    task_names: list[str] = Field(default_factory=list)
+    execution_mode: str | None = None
+    max_workers: int | None = None
+
+
+class TaskBatchDeleteRequest(BaseModel):
+    """Batch delete payload."""
+
+    task_names: list[str] = Field(default_factory=list)
+
+
+class TaskPinRequest(BaseModel):
+    """Pin or unpin one task."""
+
+    pinned: bool | None = None
+
+
+class TaskNotesRequest(BaseModel):
+    """Notes update payload."""
+
+    notes: str = ""
+
+
+class TaskEnvRequest(BaseModel):
+    """Env update payload."""
+
+    env: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskRenameRequest(BaseModel):
+    """Rename payload."""
+
+    new_name: str = Field(min_length=1)
+
+
+class LauncherOpenRequest(BaseModel):
+    """Launcher selection payload."""
+
+    script_path: str = Field(min_length=1)
+    config_path: str | None = None
+
+
+class GeneratorCreateRequest(BaseModel):
+    """Task generation payload for the React generator workspace."""
+
+    name_prefix: str = Field(min_length=1)
+    run_mode: str = Field(default="yaml", min_length=1)
+    yaml_text: str = ""
+    args_text: str = ""
+    run_script: str = ""
+    template_value: str = ""
+    append_timestamp: bool = True
+
+
+class GeneratorPreviewRequest(BaseModel):
+    """Task preview payload for the React generator workspace."""
+
+    run_mode: str = Field(default="yaml", min_length=1)
+    yaml_text: str = ""
+    args_text: str = ""
+    run_script: str = ""
+    template_value: str = ""
+
+
+def _frontend_candidates() -> list[Path]:
+    project_root = Path(__file__).resolve().parents[2]
+    return [
+        # project_root / "frontend" / "dist", # we don't want to serve from the source dir to avoid accidentally running unbuilt code
+        Path(__file__).resolve().parent / "static",
+    ]
+
+
+def _frontend_dist_dir() -> Path | None:
+    for candidate in _frontend_candidates():
+        if candidate.exists() and candidate.is_dir() and (candidate / "index.html").exists():
+            return candidate
+    return None
+
+
+def _fallback_frontend_html() -> str:
+    return """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pyruns React UI</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Segoe UI", sans-serif;
+        background: linear-gradient(135deg, #0f172a, #1e293b 55%, #134e4a);
+        color: #e2e8f0;
+      }
+      main {
+        max-width: 760px;
+        margin: 10vh auto;
+        padding: 32px;
+        background: rgba(15, 23, 42, 0.76);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+      }
+      h1 { margin-top: 0; font-size: 28px; }
+      p, li { line-height: 1.6; color: #cbd5e1; }
+      code {
+        background: rgba(15, 23, 42, 0.95);
+        padding: 2px 6px;
+      }
+      a { color: #5eead4; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pyruns API server is running</h1>
+      <p>The React source tree is present, but no built frontend bundle was found yet.</p>
+      <p>Once the frontend is built into <code>frontend/dist</code> or <code>pyruns/web/static</code>, this page will serve it automatically.</p>
+      <ul>
+        <li>Workspace API: <a href="/api/workspace">/api/workspace</a></li>
+        <li>Task list API: <a href="/api/tasks">/api/tasks</a></li>
+        <li>Metrics API: <a href="/api/system/metrics">/api/system/metrics</a></li>
+      </ul>
+    </main>
+  </body>
+</html>
+""".strip()
+
+
+def _schedule_browser_open(url: str, *, delay_seconds: float = 0.8) -> None:
+    """Open the local UI shortly after the server starts listening."""
+
+    def _open() -> None:
+        time.sleep(delay_seconds)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            return
+
+    threading.Thread(target=_open, daemon=True).start()
+
+
+def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
+    """Create the Pyruns FastAPI app."""
+    app = FastAPI(title="Pyruns API", version="0.1.6")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.state.runtime = runtime or PyrunsRuntime()
+
+    dist_dir = _frontend_dist_dir()
+    
+    logger.info(f"Frontend dist directory: {dist_dir}")
+    
+    if dist_dir is not None:
+        assets_dir = dist_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    def get_runtime() -> PyrunsRuntime:
+        return app.state.runtime
+
+    @app.get("/api/workspace")
+    def get_workspace() -> dict[str, Any]:
+        return get_runtime().get_workspace_info()
+
+    @app.post("/api/workspace/run-root")
+    def set_run_root(payload: RunRootRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().change_run_root(payload.path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/templates")
+    def get_templates() -> dict[str, Any]:
+        return {"items": get_runtime().list_templates()}
+
+    @app.get("/api/templates/content")
+    def get_template_content(value: str) -> dict[str, Any]:
+        try:
+            return get_runtime().get_template_content(value)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/generator/create")
+    def create_tasks_from_generator(payload: GeneratorCreateRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().create_tasks_from_template(
+                name_prefix=payload.name_prefix,
+                run_mode=payload.run_mode,
+                yaml_text=payload.yaml_text,
+                args_text=payload.args_text,
+                run_script=payload.run_script,
+                template_value=payload.template_value,
+                append_timestamp=payload.append_timestamp,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/generator/preview")
+    def preview_tasks_from_generator(payload: GeneratorPreviewRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().preview_tasks_from_template(
+                run_mode=payload.run_mode,
+                yaml_text=payload.yaml_text,
+                args_text=payload.args_text,
+                run_script=payload.run_script,
+                template_value=payload.template_value,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/dashboard")
+    def get_dashboard(refresh: bool = True, recent_limit: int = 6) -> dict[str, Any]:
+        return get_runtime().get_dashboard(refresh=refresh, recent_limit=recent_limit)
+
+    @app.get("/api/launcher/scripts")
+    def get_launcher_scripts() -> dict[str, Any]:
+        return {"items": get_runtime().list_launcher_scripts()}
+
+    @app.get("/api/launcher/configs")
+    def get_launcher_configs(script: str) -> dict[str, Any]:
+        return {"items": get_runtime().list_launcher_configs(script)}
+
+    @app.get("/api/launcher/workspaces")
+    def get_launcher_workspaces(script: str, config: str | None = None) -> dict[str, Any]:
+        return {"items": get_runtime().list_launcher_workspaces(script, config)}
+
+    @app.post("/api/launcher/open")
+    def open_launcher_workspace(payload: LauncherOpenRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().open_launcher_workspace(
+                payload.script_path,
+                payload.config_path,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/tasks")
+    def get_tasks(
+        query: str = "",
+        status: str = "All",
+        offset: int = 0,
+        limit: int = 50,
+        refresh: bool = True,
+    ) -> dict[str, Any]:
+        page = get_runtime().list_tasks(
+            query=query,
+            status=status,
+            offset=offset,
+            limit=limit,
+            refresh=refresh,
+        )
+        return {
+            "items": page.items,
+            "total": page.total,
+            "offset": page.offset,
+            "limit": page.limit,
+            "has_more": page.has_more,
+        }
+
+    @app.get("/api/tasks/{task_name}")
+    def get_task(task_name: str, refresh: bool = True) -> dict[str, Any]:
+        task = get_runtime().get_task(task_name, refresh=refresh)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found")
+        return task
+
+    @app.post("/api/tasks/batch/run")
+    def run_tasks_batch(payload: TaskBatchActionRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().start_tasks_batch(
+                payload.task_names,
+                execution_mode=payload.execution_mode,
+                max_workers=payload.max_workers,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/tasks/batch/delete")
+    def delete_tasks_batch(payload: TaskBatchDeleteRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().delete_tasks_batch(payload.task_names)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/tasks/{task_name}/run")
+    def run_task(task_name: str, payload: TaskActionRequest | None = None) -> dict[str, Any]:
+        try:
+            execution_mode = payload.execution_mode if payload is not None else None
+            task = get_runtime().start_task(task_name, execution_mode)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        return {"ok": True, "task": task}
+
+    @app.post("/api/tasks/{task_name}/cancel")
+    def cancel_task(task_name: str) -> dict[str, Any]:
+        try:
+            task = get_runtime().cancel_task(task_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.post("/api/tasks/{task_name}/pin")
+    def pin_task(task_name: str, payload: TaskPinRequest) -> dict[str, Any]:
+        try:
+            task = get_runtime().set_task_pin(task_name, payload.pinned)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.patch("/api/tasks/{task_name}/notes")
+    def update_task_notes(task_name: str, payload: TaskNotesRequest) -> dict[str, Any]:
+        try:
+            task = get_runtime().update_task_notes(task_name, payload.notes)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.patch("/api/tasks/{task_name}/env")
+    def update_task_env(task_name: str, payload: TaskEnvRequest) -> dict[str, Any]:
+        try:
+            task = get_runtime().update_task_env(task_name, payload.env)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.post("/api/tasks/{task_name}/rename")
+    def rename_task(task_name: str, payload: TaskRenameRequest) -> dict[str, Any]:
+        try:
+            task = get_runtime().rename_task(task_name, payload.new_name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.get("/api/tasks/{task_name}/logs")
+    def get_task_logs(
+        task_name: str,
+        log_file_name: str | None = None,
+        offset: int | None = Query(default=None),
+        tail_bytes: int = 12000,
+    ) -> dict[str, Any]:
+        try:
+            return get_runtime().get_task_logs(
+                task_name,
+                log_file_name=log_file_name,
+                offset=offset,
+                tail_bytes=tail_bytes,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+
+    @app.websocket("/api/tasks/{task_name}/logs/stream")
+    async def stream_task_logs(websocket: WebSocket, task_name: str) -> None:
+        runtime = get_runtime()
+        if runtime.get_task(task_name, refresh=False) is None:
+            await websocket.close(code=4404, reason="Task not found")
+            return
+
+        await websocket.accept()
+        loop = asyncio.get_running_loop()
+        log_emitter.bind_loop(loop)
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        def on_chunk(chunk_text: str) -> None:
+            queue.put_nowait(
+                {
+                    "type": "chunk",
+                    "task_name": task_name,
+                    "content": chunk_text,
+                }
+            )
+
+        async def watch_client_messages() -> None:
+            while True:
+                await websocket.receive_text()
+
+        watcher = asyncio.create_task(watch_client_messages())
+        log_emitter.subscribe(task_name, on_chunk)
+        try:
+            while True:
+                message = await queue.get()
+                await websocket.send_json(message)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            watcher.cancel()
+            log_emitter.unsubscribe(task_name, on_chunk)
+
+    @app.get("/api/system/metrics")
+    def get_metrics() -> dict[str, Any]:
+        return get_runtime().get_metrics()
+
+    if dist_dir is not None:
+
+        @app.get("/{full_path:path}")
+        def serve_frontend(full_path: str) -> FileResponse:
+            requested = (dist_dir / full_path).resolve()
+            if (
+                full_path
+                and requested.exists()
+                and requested.is_file()
+                and os.path.commonpath([str(requested), str(dist_dir)]) == str(dist_dir)
+            ):
+                return FileResponse(requested)
+            return FileResponse(
+                dist_dir / "index.html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
+
+    else:
+
+        @app.get("/{full_path:path}")
+        def serve_frontend_fallback(_full_path: str) -> HTMLResponse:
+            return HTMLResponse(_fallback_frontend_html())
+
+    return app
+
+
+def main(
+    *,
+    reload: bool = False,
+    open_browser: bool | None = None,
+    start_path: str = "/",
+) -> None:
+    """Launch the unified Pyruns API and frontend server."""
+    runtime = PyrunsRuntime()
+    port = int(runtime.settings.get("ui_port", DEFAULT_UI_PORT))
+    should_open_browser = (not reload) if open_browser is None else open_browser
+    if should_open_browser:
+        _schedule_browser_open(f"http://127.0.0.1:{port}{start_path}")
+    uvicorn.run(
+        "pyruns.web.app:create_app" if reload else create_app(runtime),
+        host="127.0.0.1",
+        port=port,
+        reload=reload,
+        factory=reload,
+    )
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    main(reload=True)

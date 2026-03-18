@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import copy
 import os
 import shutil
 import threading
@@ -104,6 +105,31 @@ class TaskManager:
                 callback()
             except Exception as exc:
                 logger.error("Observer callback error: %s", exc)
+
+    @staticmethod
+    def serialize_task(task: Dict[str, Any] | None) -> Dict[str, Any] | None:
+        """Return a detached task copy suitable for APIs and read-only consumers."""
+        if task is None:
+            return None
+        data = copy.deepcopy(task)
+        data["dir"] = str(data.get("dir", "")).replace("\\", "/")
+        return data
+
+    def list_tasks(self) -> List[Dict[str, Any]]:
+        """Return detached copies of the current task list."""
+        with self._lock:
+            tasks = list(self.tasks)
+        return [
+            serialized
+            for serialized in (self.serialize_task(task) for task in tasks)
+            if serialized is not None
+        ]
+
+    def get_task(self, identifier: str) -> Dict[str, Any] | None:
+        """Return a detached task copy by name."""
+        with self._lock:
+            task = self._tasks_by_name.get(identifier)
+        return self.serialize_task(task)
 
     def scan_disk_async(self) -> None:
         """Run a full disk scan in the background."""
