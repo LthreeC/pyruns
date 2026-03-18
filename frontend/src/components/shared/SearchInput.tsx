@@ -18,19 +18,19 @@ export default function SearchInput({ value, onChange, placeholder = 'Search...'
 
   return (
     <div className="relative flex items-center">
-      <Search className="absolute left-3 w-3.5 h-3.5 text-txt-tertiary pointer-events-none" />
+      <Search className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-txt-tertiary" />
       <input
         type="text"
         value={local}
         onChange={e => setLocal(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-lg border border-border-subtle bg-surface-overlay pl-9 pr-8 py-2 text-xs text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised"
+        className="w-full rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-8 pr-8 text-xs text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised"
       />
       {local && (
         <button
           type="button"
           onClick={() => { setLocal(''); onChange('') }}
-          className="absolute right-2 rounded-md p-1 text-txt-tertiary hover:bg-surface-hover hover:text-txt-primary"
+          className="absolute right-1.5 rounded-md p-1 text-txt-tertiary hover:bg-surface-hover hover:text-txt-primary"
         >
           <X className="w-3 h-3" />
         </button>

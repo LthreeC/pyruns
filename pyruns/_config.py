@@ -69,7 +69,6 @@ DEFAULT_MANAGER_EXECUTION_MODE = "thread"
 
 DEFAULT_MONITOR_CHUNK_SIZE = 50000
 DEFAULT_MONITOR_SCROLLBACK = 100000
-DEFAULT_MONITOR_TERMINAL_GUTTER_PX = 24
 
 # ═══════════════════════════════════════════════════════════════
 #  Generator Syntax Constants

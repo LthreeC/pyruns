@@ -25,7 +25,6 @@ from pyruns._config import (
     DEFAULT_MANAGER_EXECUTION_MODE,
     DEFAULT_MONITOR_CHUNK_SIZE,
     DEFAULT_MONITOR_SCROLLBACK,
-    DEFAULT_MONITOR_TERMINAL_GUTTER_PX,
 )
 
 
@@ -46,7 +45,6 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     # Monitor
     "monitor_chunk_size": DEFAULT_MONITOR_CHUNK_SIZE,
     "monitor_scrollback": DEFAULT_MONITOR_SCROLLBACK,
-    "monitor_terminal_gutter_px": DEFAULT_MONITOR_TERMINAL_GUTTER_PX,
     # Logging
     "log_enabled": False,
     "log_level": "INFO",
@@ -80,7 +78,6 @@ ui_page_size: {SETTINGS_DEFAULTS.get("ui_page_size")}                   # cards 
 # Monitor
 monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
 monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # max lines in history
-monitor_terminal_gutter_px: {SETTINGS_DEFAULTS.get("monitor_terminal_gutter_px")}   # right-side text gutter (px)
 
 # Logging
 log_enabled: {SETTINGS_DEFAULTS.get("log_enabled")}

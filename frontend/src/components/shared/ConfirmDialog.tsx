@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 
 interface Props {
@@ -9,7 +9,7 @@ interface Props {
   confirmVariant?: 'danger' | 'primary'
   onConfirm: () => void
   onCancel: () => void
-  children?: React.ReactNode
+  children?: ReactNode
 }
 
 export default function ConfirmDialog({

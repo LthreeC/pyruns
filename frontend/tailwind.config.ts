@@ -51,7 +51,7 @@ export default {
         '13': '52px',
         '15': '60px',
         '18': '72px',
-        sidebar: '220px',
+        sidebar: '14%',
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',

@@ -37,7 +37,7 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="flex h-screen w-sidebar flex-none flex-col border-r border-border-subtle bg-surface-raised">
+    <aside className="flex h-screen w-sidebar min-w-[180px] max-w-[260px] flex-none flex-col border-r border-border-subtle bg-surface-raised">
       <div className="flex h-12 items-center gap-2 border-b border-border-subtle px-4">
         <Rocket className="h-4 w-4 text-accent" />
         <div className="min-w-0">

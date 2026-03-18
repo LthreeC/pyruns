@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import type { Task, WorkspaceInfo, TemplateContent, Dashboard, ScriptCandidate, ConfigCandidate } from './types'
 import * as api from './api'
 
+let monitorRequestSeq = 0
+
 /* ── Theme Store ── */
 interface ThemeState {
   theme: 'dark' | 'light'
@@ -229,9 +231,13 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   loading: false,
   exportIds: new Set(),
   async selectTask(name: string) {
+    const requestId = ++monitorRequestSeq
     set({ selectedTaskName: name, logContent: '', logOffset: 0, loading: true })
     try {
       const logs = await api.getTaskLogs(name, undefined, undefined, 50000)
+      if (requestId !== monitorRequestSeq || get().selectedTaskName !== name) {
+        return
+      }
       set({
         logContent: logs.content,
         logOffset: logs.offset,
@@ -239,18 +245,30 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         selectedLog: logs.selected_log,
       })
     } finally {
-      set({ loading: false })
+      if (requestId === monitorRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   async selectLogFile(logName: string) {
     const { selectedTaskName } = get()
     if (!selectedTaskName) return
+    const requestId = ++monitorRequestSeq
     set({ selectedLog: logName, loading: true })
     try {
       const logs = await api.getTaskLogs(selectedTaskName, logName, undefined, 50000)
+      if (
+        requestId !== monitorRequestSeq
+        || get().selectedTaskName !== selectedTaskName
+        || get().selectedLog !== logName
+      ) {
+        return
+      }
       set({ logContent: logs.content, logOffset: logs.offset })
     } finally {
-      set({ loading: false })
+      if (requestId === monitorRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   appendLog(text: string) {
