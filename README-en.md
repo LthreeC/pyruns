@@ -2,7 +2,12 @@
 
 ![logo](docs/assets/pyruns_logo2.png)
 
-**English | [简体中文](README.md)**
+[简体中文](README.md) | **English**
+
+[![PyPI version](https://img.shields.io/pypi/v/pyruns.svg)](https://pypi.org/project/pyruns/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pyruns.svg)](https://pypi.org/project/pyruns/)
+[![License](https://img.shields.io/pypi/l/pyruns.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-2563eb.svg)](https://lthreec.github.io/pyruns/)
 
 > A local Web UI for Python experiment work: visual parameter editing, batch task generation, task orchestration, real-time terminal logs, and CSV metric export.  
 > Everything runs locally, everything is disk-backed, and everything stays close to the scripts and terminals you already use.

@@ -2,6 +2,13 @@
 
 ![logo](docs/assets/pyruns_logo2.png)
 
+[English](README-en.md) | **简体中文**
+
+[![PyPI version](https://img.shields.io/pypi/v/pyruns.svg)](https://pypi.org/project/pyruns/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pyruns.svg)](https://pypi.org/project/pyruns/)
+[![License](https://img.shields.io/pypi/l/pyruns.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-2563eb.svg)](https://lthreec.github.io/pyruns/)
+
 > Python 实验管理 Web UI 工具：参数可视化编辑、批量任务生成、任务调度管理、实时日志流式查看与 CSV 指标导出。  
 > 全流程本地运行，围绕磁盘工作区组织状态，让脚本实验这件事终于变得清楚、直接、可追踪。
 
