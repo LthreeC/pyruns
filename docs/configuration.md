@@ -1,12 +1,17 @@
 # 配置说明
 
-这一版 Pyruns 需要从三个层面理解配置：
+Pyruns 的配置不是“堆一页键值对”。  
+它更像三层互相咬合的结构：
 
 1. workspace 级配置
-2. task 级配置
-3. shell runtime 配置
+2. task 级数据
+3. shell runtime 策略
 
-## 1. 核心概念
+理解了这三层，很多行为都会一下子变得顺理成章。
+
+![任务详情与配置语义示意](/docs/assets/task_info.png)
+
+## 1. 两个最重要的概念
 
 ### `workspace_kind`
 
@@ -105,9 +110,9 @@ tasks/<task_name>/
 
 ## 5. `task_info.json`
 
-无论是 config 任务还是 shell 任务，都会有统一的生命周期元信息。
+无论是 config 任务还是 shell 任务，都会保留统一的生命周期元信息。
 
-典型字段：
+典型字段如下：
 
 ```json
 {
@@ -159,7 +164,7 @@ ui_page_size: 50
 
 monitor_chunk_size: 50000
 monitor_scrollback: 100000
-monitor_sidebar_width_pct: 24
+monitor_sidebar_width_pct: 14
 
 log_enabled: false
 log_level: INFO
@@ -168,7 +173,7 @@ shell_mode: follow
 shell_executable: ""
 ```
 
-## 7. 重点配置项解释
+## 7. 重点配置项
 
 ### `header_refresh_interval`
 
@@ -179,7 +184,9 @@ shell_executable: ""
 ### `monitor_sidebar_width_pct`
 
 - 控制 Monitor 左侧任务栏宽度百分比
-- 当前前端会把它限制在 `18 ~ 36`
+- 当前前端直接按百分比使用
+- 默认值现在是 `14`
+- 不再额外做最小值 / 最大值限制
 
 ### `manager_execution_mode`
 
@@ -204,9 +211,9 @@ shell_executable: ""
 
 只有在 `shell_mode: custom` 时才会生效。
 
-## 8. shell 任务的执行约束
+## 8. shell 任务执行约束
 
-当前 shell 任务的执行规则：
+当前 shell 任务的执行规则非常明确：
 
 - 任务正文直接来自 `config.sh`
 - 不读取 `config.yaml`
@@ -228,7 +235,7 @@ shell_executable: ""
 - 默认跟随当前 shell
 - 直接按当前 shell 语义执行
 
-## 9. config 任务的执行约束
+## 9. config 任务执行约束
 
 config 任务仍然是 Python 任务主链路：
 
@@ -246,4 +253,10 @@ Manager 和 Monitor 的搜索框支持多行输入。
 - 多行之间按 AND 匹配
 - 会在任务名、preview、config_text、search_text、notes 等字段中做包含判断
 
-这个行为和后端 `filter_tasks` 一致。
+这个行为和后端 `filter_tasks` 保持一致。
+
+如果你要补一张“配置是怎么落到任务里的”展示图，最值得补的是：
+
+- `task_info.json` 详情面板截图
+- `config.yaml` / `config.sh` 面板截图
+- `Env Vars` 面板截图

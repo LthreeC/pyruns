@@ -356,6 +356,7 @@ export default function GeneratorPage() {
   )
 
   const hasBatchSyntax = editorMode === 'form' && hasBatchExpression(yamlText)
+  const yamlContainsBatchSyntax = editorMode === 'yaml' && hasBatchExpression(yamlText)
   const batchHintText = previewData?.count
     ? `Batch syntax detected. ${previewData.count} tasks will be created after confirmation.`
     : 'Batch syntax detected. A preview opens before creating multiple tasks.'
@@ -599,8 +600,13 @@ export default function GeneratorPage() {
                 YAML mode creates exactly one <code className="text-txt-primary">config.yaml</code> task.
               </div>
               <div className="text-2xs leading-relaxed text-txt-secondary">
-                Switch back to <span className="text-txt-primary">Form</span> for batch expansion and parameter pinning.
+                Batch syntax is disabled here. Switch back to <span className="text-txt-primary">Form</span> for batch expansion and parameter pinning.
               </div>
+              {yamlContainsBatchSyntax && (
+                <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-2xs text-amber-400">
+                  Batch syntax was detected in YAML mode, but YAML mode only creates one task. Use Form mode if you want batch generation.
+                </div>
+              )}
             </CompactSection>
           )}
 
@@ -657,6 +663,8 @@ export default function GeneratorPage() {
             <div className="mt-2 text-center text-2xs text-txt-tertiary">
               {editorMode === 'form' && hasBatchSyntax
                 ? batchHintText
+                : editorMode === 'yaml' && yamlContainsBatchSyntax
+                  ? 'YAML mode does not expand batch syntax. Switch back to Form mode.'
                 : editorMode === 'shell'
                   ? 'Creates one config.sh task immediately.'
                   : 'Creates one task immediately.'}

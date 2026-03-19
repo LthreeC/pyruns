@@ -19,6 +19,29 @@ yaml.SafeLoader.add_implicit_resolver(
     list('-+0123456789.')
 )
 
+# PyYAML still treats values like ``30:40:1`` as YAML 1.1 sexagesimal integers.
+# That collides with Pyruns range batch syntax, where users expect ``start:stop:step``.
+# Replace the implicit int resolver with a YAML-1.2-style pattern that keeps colon
+# forms as plain strings so batch expansion can process them later.
+yaml_int_pattern = re.compile(
+    r'''^(?:[-+]?(?:0|[1-9][0-9_]*)
+         |[-+]?0b[0-1_]+
+         |[-+]?0o[0-7_]+
+         |[-+]?0x[0-9a-fA-F_]+)$''',
+    re.X,
+)
+for first_char, resolvers in list(yaml.SafeLoader.yaml_implicit_resolvers.items()):
+    yaml.SafeLoader.yaml_implicit_resolvers[first_char] = [
+        (tag, regexp)
+        for tag, regexp in resolvers
+        if tag != 'tag:yaml.org,2002:int'
+    ]
+yaml.SafeLoader.add_implicit_resolver(
+    'tag:yaml.org,2002:int',
+    yaml_int_pattern,
+    list('-+0123456789'),
+)
+
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
 
 

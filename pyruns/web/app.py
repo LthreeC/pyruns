@@ -13,7 +13,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -343,6 +343,16 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/tasks/export/csv")
+    def export_tasks_csv(payload: TaskBatchDeleteRequest) -> Response:
+        try:
+            csv_text = get_runtime().export_tasks_csv(payload.task_names)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return Response(content=csv_text, media_type="text/csv; charset=utf-8")
 
     @app.post("/api/tasks/{task_name}/run")
     def run_task(task_name: str, payload: TaskActionRequest | None = None) -> dict[str, Any]:

@@ -4,35 +4,35 @@
 
 **English | [简体中文](README.md)**
 
-<p align="center">
-  <img src="https://img.shields.io/pypi/v/pyruns.svg?style=for-the-badge&color=blue" alt="PyPI version">
-  <img src="https://img.shields.io/pypi/pyversions/pyruns.svg?style=for-the-badge" alt="Python Versions">
-  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License">
-</p>
+> A local Web UI for Python experiment work: visual parameter editing, batch task generation, task orchestration, real-time terminal logs, and CSV metric export.  
+> Everything runs locally, everything is disk-backed, and everything stays close to the scripts and terminals you already use.
 
-<p align="center">
-  <b>Python experiment management Web UI: parameter visualization, batch scheduling, and resource monitoring</b><br>
-  <sub>✅ Zero-intrusion argparse support · ✅ CLI mode works with any framework · ✅ Fully local execution</sub>
-</p>
+![Generator](docs/assets/tab_generator.png)
 
-Pyruns provides a local browser-based graphical interface for Python scripts. Its main features include generating visual configuration forms by parsing `argparse`, supporting specific syntax to implement batch task generation on parameter grids, managing parallel scheduling queues, providing real-time stream output of ANSI-colored logs, and exporting aggregated cross-task metrics.
+Pyruns is designed around a simple idea: experiment tooling should feel closer to your real workflow, not further away from it.
 
-**No code modification required · No account signup · No internet needed · Everything runs locally**
+It tries to stay aligned with what you already have:
+
+- your original scripts
+- your current terminal / shell
+- your conda environment and environment variables
+- a disk-backed workspace under `_pyruns_`
+
+**No accounts · No cloud dependency · No database required · Fully local execution**
 
 ```bash
 pip install pyruns
-pyr train.py          # Launch Web UI in 30 seconds
+pyr train.py
 ```
 
-> 💡 **Only 3 dependencies**: `nicegui` + `pyyaml` + `psutil` — install and go. No heavyweight frameworks will pollute your environment.
+## Why it feels useful
 
----
+Many experiment tools are powerful, but everyday friction still comes from the same places.
 
-## 💡 Engineering Challenges Addressed
+### Pain point 1: hyperparameter search still turns into hand-written loops
 
-### Pain Point 1: Hyperparameter Search Requires Hand-Written Bash Loops
+Without Pyruns, you often end up writing nested shell loops like this:
 
-**Without Pyruns** — you need to write painful nested scripts like this:
 ```bash
 for lr in 0.001 0.01 0.1; do
   for bs in 32 64 128; do
@@ -45,322 +45,257 @@ done
 wait
 ```
 
-**With Pyruns** — two lines of declaration replace all 18 nested combinations:
+With Pyruns, the same intent can live directly in `Form` mode:
+
 ```yaml
 lr: 0.001 | 0.01 | 0.1
 batch_size: 32 | 64 | 128
 optimizer: adam | sgd
 ```
-Click **GENERATE** → 18 isolated tasks are automatically created, each with its own config snapshot and log directory.
 
-### Pain Point 2: Experiment Tracking Relies on Memory and Spreadsheets
+That expands into isolated tasks with their own configs, logs, and histories.
 
-> *"What batch_size did I use for that lr=0.01 experiment last week? Where did I save the results?"*
+### Pain point 2: experiment history lives in your memory instead of your workspace
 
-Pyruns automatically saves a complete parameter snapshot (`config.yaml`), run timeline, PID records, and user-editable notes for **every task**. In the Manager interface, you can instantly search, filter, and reuse historical tasks — no more digging through folders or grepping log files.
+“Which `batch_size` did I use for that `lr=0.01` run last week?”  
+“Where did that shell task log go?”  
+“What environment did it use?”
 
-### Pain Point 3: Concurrent Task Logs Become an Unreadable Mess
+Pyruns keeps that history close:
 
-Running 6 experiments concurrently with all their stdout interleaved? Pyruns **fully isolates** each task's output into dedicated log files and provides a real-time ANSI-colored terminal in the Monitor page — including proper `tqdm` progress bar rendering. Tasks continue running in the background even if your SSH connection drops.
+- `config.yaml` or `config.sh`
+- `task_info.json`
+- `run_logs/runN.log`
+- timestamps, PIDs, notes, and environment details
 
----
+The result is simple: tasks do not disappear after they finish. They leave behind a usable history.
 
-## ✨ Core Features
+### Pain point 3: concurrent logs become unreadable
 
-| Feature | Description |
-|---------|-------------|
-| 🔌 **Multi-Framework Zero-Intrusion Parsing** | Extracts definitions of `argparse` from the source code to render the Web UI form; direct config through `yaml` files is also supported; **CLI/Args mode can run scripts using any framework (Hydra, Fire, etc.)**. |
-| 🧮 **Parameter Grid Expansion** | Supports building batch parameter configurations utilizing `\|` for Cartesian product permutations or `(\|)` for paired mappings. |
-| ⚡ **Isolated Task Queues** | Implements a buffer queue with configurable Thread/Process pool executors for execution limits. |
-| 📋 **Status Dashboard** | Manages the progression (Pending/Running/Failed/Completed) and provides historical query/rerun functions. |
-| 🖥️ **Stream Colored Terminal** | Delivers incremental terminal output feeds fully supporting ANSI escape code rendering (e.g., `tqdm`). |
-| 📊 **Metrics Aggregator** | Affords `pyruns.record()` callback to consolidate logs from various experimental groups into CSV/JSON logs. |
-| 📁 **Parameter Snapshots** | Configures runtime directories corresponding to the file topology within `_pyruns/`, storing current environments to mitigate cross-interference, equipped with a soft-deletion mechanism for safety. |
+When several tasks run at once, mixed stdout is the fastest way to lose context. Pyruns isolates task output into separate log files and gives it a dedicated terminal-like surface in `Monitor`.
 
-> 🎯 **Design Philosophy**: Pyruns is not a heavyweight experiment platform (like MLflow or W&B). It's a **ready-to-use, lightweight local tuning assistant**. Its goal is to give you the convenience of parameter management and experiment tracking at **minimal learning cost**, without changing your existing workflow.
+![Monitor](docs/assets/tab_monitor.png)
 
----
+For shell-driven workflows, this matters even more:
 
-## 🚀 Getting Started
+![Shell Monitor](docs/assets/shell_monitor.png)
 
-### Mode 1: Argparse Based Script Integration
+## Core capabilities
 
-No source code modification is needed. Pyruns employs an AST analyzer to extract the configurations of `add_argument`.
+| Capability | What it gives you |
+| --- | --- |
+| `React Generator` | `Form`, `YAML`, and `Shell` entry modes for config tasks and shell tasks. |
+| `Form batch expansion` | Batch syntax with `|`, `(|)`, and `start:stop:step` for cartesian, zip, and range expansion. |
+| `YAML single-task mode` | `YAML` mode stays focused on creating one clean `config.yaml` task at a time. |
+| `Shell Workspace` | Shell tasks are stored as `config.sh` and follow the terminal that launched `pyr` by default. |
+| `Manager control room` | Search, filter, batch run, batch delete, pin, inspect details, and jump into logs. |
+| `Monitor terminal` | Real-time xterm.js view, historical log switching, clipboard support, and CSV export. |
+| `Metric export` | Record metrics with `pyruns.record()` and export selected task results as CSV. |
+| `Disk-backed workspace` | Task state lives on disk, making refresh, recovery, CLI/Web sharing, and backup much easier. |
+
+## Two workspace modes
+
+### 1. Script Workspace
+
+When you open a normal Python script, Pyruns builds a dedicated workspace around it:
+
+```text
+project/
+├─ train.py
+└─ _pyruns_/
+   ├─ _pyruns_settings.yaml
+   └─ train/
+      ├─ script_info.json
+      ├─ config_default.yaml
+      └─ tasks/
+```
+
+This is the right fit for:
+
+- `argparse` scripts
+- `pyruns.load()` / `pyruns.read()` workflows
+- Python tasks that should keep a separate `config.yaml` snapshot per run
+
+### 2. Shell Workspace
+
+When you switch into shell mode, the workspace becomes:
+
+```text
+project/
+└─ _pyruns_/
+   └─ _shell_/
+      ├─ script_info.json
+      └─ tasks/
+```
+
+Each shell task is persisted as:
+
+```text
+_pyruns_/_shell_/tasks/<task_name>/config.sh
+```
+
+The key idea is not “bash compatibility”. It is this:
+
+- default `shell_mode: follow`
+- follow the terminal that launched `pyr`
+- inherit the current Python process environment
+- do not auto-translate syntax across shells
+
+So the target behavior of a shell task is:
+
+> as close as possible to manually running the same command in the terminal that started `pyr`
+
+![Shell Generator](docs/assets/shell_generator.png)
+
+## How to connect Pyruns
+
+### Mode 1: zero-intrusion `argparse` integration
+
+If your script already uses `argparse`:
 
 ```bash
 pyr train.py
 ```
-This generates `_pyruns_/train/config_default.yaml` in the directory associated with the script, followed by starting a local Web service (listening on port `8099` by default).
 
-### Mode 2: Loading Base YAML Configuration
+Pyruns will try to extract parameter definitions, build an editable form, and send modified values back as command-line arguments.
 
-If your script functions by reading external YAML configurations and incorporates `pyruns.load()` within the source logic:
+### Mode 2: YAML template driven workflow
+
+If your script reads config with `pyruns.load()`:
 
 ```bash
-# Initial execution: Supply default parameter template
-pyr train.py my_config.yaml  
+pyr train.py my_config.yaml
 ```
-Pyruns then administers parameter management and associated environment variables:
+
+On the first run, Pyruns stores that file as `config_default.yaml`. After that:
 
 ```bash
 pyr train.py
 ```
 
-### Mode 3: CLI Interactive Mode
+the same workspace can continue handling generation, scheduling, and execution.
 
-If you are running on a Headless Server or prefer a pure command-line experience, Pyruns also offers a **first-class CLI interactive environment that is fully equivalent to the Web UI**.
+### Mode 3: CLI interactive mode
+
+If you work on a headless server or simply prefer a terminal workflow:
 
 ```bash
 pyr cli train.py
 ```
 
-This command automatically initializes the exact same workspace directory structure and configuration as the Web UI, and drops you into an interactive REPL terminal:
-```text
-  Pyruns CLI  (type 'help' for commands, 'exit' to quit)
-pyruns> ls         # List current tasks
-pyruns> run 1      # Run a task and automatically stream standard output!
-pyruns> status -i  # Real-time system and GPU metrics
-```
-All actions triggered via the CLI are 100% data-compatible and synchronized with the Web UI.
+The CLI and the Web UI share the same workspace and task data on disk.
 
-### Mode 4: CLI/Args Mode (Works with Any Framework)
+## Practical examples
 
-Pyruns' **Args Mode** can manage experiments using any framework. Simply use the Args view when generating tasks, and specify the launch command in `run_script`:
+The repository already includes runnable examples under `examples/`.
 
-```yaml
-# Example: managing Hydra experiments
-run_script: "python -m my_project.train"
-args: |
-  model=vit
-  dataset=imagenet
-  training.lr=0.001
-  training.epochs=300
-```
+### Example 1: native `argparse` support
 
-Pyruns appends the `args` content as command-line arguments directly after `run_script`. This means **whether your script uses Hydra, Fire, Click, or any other framework**, as long as it can be launched with command-line arguments, you can leverage Pyruns' batch generation and task management to manage it.
-
----
-
-## 📝 Practical Examples
-
-Runnable example scripts corresponding to these two modes are provided under the `examples/` directory in our repository.
-
-### Example 1: Native Argparse Support (Zero-Code Change)
-
-> Directory: `examples/1_argparse_script/`
-
-Below is a standard `argparse` training script. You can seamlessly hand it over to Pyruns—**without making a single modification to your codebase**:
-
-```python
-# examples/1_argparse_script/main.py
-import pyruns
-import argparse
-import time
-
-def main():
-    parser = argparse.ArgumentParser(description="A simple ML training script.")
-    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
-    parser.add_argument("-b", "--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "sgd"])
-    args = parser.parse_args()
-
-    print(f"Hyperparameters: LR={args.lr}, Batch Size={args.batch_size}")
-    for epoch in range(1, args.epochs + 1):
-        time.sleep(0.5)
-        loss = 1.0 / (epoch * args.lr * 100)
-        print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")
-
-    # Optional: Log the final metrics. This is silently ignored when run outside Pyruns.
-    pyruns.record(last_loss=loss)
-
-if __name__ == "__main__":
-    main()
-```
-
-**Usage**:
-
-```bash
-# Pyruns parses parameters and starts the Web UI
-pyr main.py
-```
-
-Pyruns statically analyzes the AST to extract all `add_argument()` definitions (names, types, defaults, help text) and builds an editable Web UI form. Altered parameters from the UI are passed implicitly as command-line arguments to your script—the native `parse_args()` logic will function as intended.
-
-### Example 2: Loading YAML with `pyruns.load()`
-
-> Directory: `examples/2_pyruns_config/`
-
-When your scripts abandon command-line arguments and rely directly on reading YAML files, you can integrate via `pyruns.load()`. The returned `ConfigNode` grants intuitive dot-notation access, packaging nested structures recursively:
-
-```python
-# examples/2_pyruns_config/main1.py
-import pyruns
-import time
-
-def main():
-    config = pyruns.load()  # Auto-binds config.yaml from the current task
-
-    lr = config.lr
-    epochs = config.epochs
-    optimizer = config.optimizer
-
-    print(f"Hyperparameters: LR={lr}, Optimizer={optimizer}")
-    for epoch in range(1, epochs + 1):
-        time.sleep(0.5)
-        loss = 1.0 / (epoch * lr * 100)
-        print(f"Epoch {epoch}/{epochs} - Loss: {loss:.4f}")
-
-if __name__ == "__main__":
-    main()
-```
-
-Accompanying default `config1.yaml`:
-
-```yaml
-lr: 5e-3
-epochs: 20
-optimizer: sgd
-batch_size: 64
-dropout: 0.2
-model: resnet50
-```
-
-**Usage**:
-
-```bash
-# First Run: Pass the YAML template, Pyruns copies it as config_default.yaml
-pyr main1.py config1.yaml
-
-# Future Runs: No need to specify YAML, Pyruns uses the saved template
-pyr main1.py
-```
-
-Moreover, `pyruns.load()` effectively unpacks deeply nested YAMLs. Referencing `config2.yaml`, parameter levels spanning *project*, *model*, and *training* branches are fully chainable via dot notation:
-
-```yaml
-# config2.yaml — Three-level nested structure
-project:
-  name: "DeepSense_Alpha"
-  version: 1.2
-  output_dir: "./results"
-model:
-  type: "Transformer"
-  layers: 12
-  dropout: 0.1
-training:
-  hyperparams:
-    lr: 0.0005
-    epochs: 8
-    optimizer: "AdamW"
-  resources:
-    device: "cuda"
-    precision: "fp16"
-    gpu_config:
-      memory_frac: 0.8
-```
-
-You can effortlessly access deeply scoped values directly natively in your script:
-
-```python
-config = pyruns.load()
-config.project.name              # "DeepSense_Alpha"
-config.training.hyperparams.lr   # 0.0005
-config.training.resources.device # "cuda"
-```
-
----
-
-## 🎯 Interface Modules
-
-### 🔧 Generator — Concise and Clear Parameter Editor
-Provides a clearly visible structured form on the left to control hyperparameter modifications, supporting declarative batch syntax. The right side offers a focused settings panel for task naming and generation. Pinning still keeps critical parameters close at hand, but the overall layout now stays flatter and lighter so large forms remain easier to scan.
-![Generator UI](docs/assets/ui_generator_refined.png)
-
-Recent UI refinement notes:
-- The visual system now uses flatter cards, tighter spacing, and smaller corner radii to feel more like an experiment workbench than a dashboard toy.
-- Initial page rendering is truly lazy now, so unvisited tabs do not build their DOM trees until needed.
-- Manager and Monitor updates are more selective, reducing unnecessary refresh work during long-running sessions.
-
-### 📦 Manager — Convenient Historical Task Tracking and Management
-The core task management panel. It enables you to extremely easily monitor, search, and manage all generated task queues. It supports checking boxes to apply concurrent execution limits. Clicking into a task card allows you to trace its precise historical parameter snapshot (`config.yaml`).
-![Manager UI](docs/assets/tab_manager.png)
-
-<details>
-<summary><b>🔥 Click to reveal details inside the Task Card</b></summary>
-
-| Features | View |
-| :---: | :---: |
-| **Lifecycle Overview**<br>Rerun history & continuous PIDs | ![Task Details Info](docs/assets/taskinfo.png) |
-| **Absolute Isolation**<br>Exclusive `config.yaml` mapping | ![Task Details Config](docs/assets/config.png) |
-| **Experimental Notes**<br>Editable sub-texts tied to parameters | ![Task Details Notes](docs/assets/notes.png) |
-| **Environment Tracing**<br>Fully restored system variables on init | ![Task Details Env](docs/assets/env.png) |
-
-</details>
-
-### 📈 Monitor — Real-time Viewing & One-Click Report Export
-Directs the standard output stream of active tasks to the browser terminal in real-time. Meanwhile, monitored task execution metrics (like Loss, Accuracy, etc.) can be checked across multiple tasks here to export aggregated comparison reports with a single click.
-![Monitor UI](docs/assets/tab_monitor.png)
-
----
-
-## 🧪 Batch Generation Syntax
-
-The Generator’s input zones ingest designated piping syntaxes crafted to outline execution plans:
-
-**Cartesian Product Combinations `|`** — Full permutations (e.g., 3 × 2 = 6 independent tasks):
-```yaml
-learning_rate: 0.001 | 0.01 | 0.1
-batch_size: 32 | 64
-```
-
-**One-to-One Mappings `(|)`** — Equilateral correspondences (a total of 3 independent tasks):
-```yaml
-seed: (1 | 2 | 3)
-experiment_name: (exp_a | exp_b | exp_c)
-```
-Numeric sequences are accommodated (e.g., `lr: 1:10:2`). Detailed formatting rules are articulated within the [Batch generation schema](docs/batch-syntax.md).
-
----
-
-## 📂 Internal Directory Architecture
-
-Pyruns executes under an isolated persistence protocol. The execution cache triggered by a given script strictly adheres to the ensuing directory hierarchy:
+Directory:
 
 ```text
-your_project/
-├── train.py
-└── _pyruns_/
-    ├── _pyruns_settings.yaml            # Configures global network ports and concurrency
-    └── train/                           # Independent namespace corresponding to the script
-        ├── script_info.json             # Registers absolute local bounds and environmental dependencies
-        ├── config_default.yaml          # Fundamental layout for parsing UI forms
-        └── tasks/
-            ├── fast_tuning_[1-of-6]/
-            │   ├── task_info.json       # Metadata statemachine (holds execution PID, timestamps, monitors)
-            │   ├── config.yaml          # Defines precise parameter footprints
-            │   └── run_logs/
-            │       ├── run1.log         # Standard stdout
-            │       └── error.log        # Standard stderror stacks detached upon non-zero exit codes
-            └── .trash/                  # Retains insubstantial references via the user Interface
+examples/1_argparse_script/
 ```
 
-Underlying invocation logic intercepts when the Pending queue emits the executing trigger; the Pyruns proxy mounts the designated `config.yaml` target by projecting to the `__PYRUNS_CONFIG__` variable.
+This path is perfect for showcasing:
 
----
+- the `Generator` form page
+- the expanded task grid in `Manager`
 
-## 📖 Additional Docs
+### Example 2: `pyruns.load()` with YAML
 
-| Sections | Details |
-|----------|---------|
-| [📗 Getting Started Workflow](docs/getting-started.md) | OS Requirements & Initial Sample Runs |
-| [📘 Batch Syntax Details](docs/batch-syntax.md) | Constructing parameter grids, variables derivations, etc. |
-| [💻 CLI Interactive Guide](docs/cli-guide.md) | Instructions on managing the entire workflow deeply using the Headless REPL environment |
-| [📕 UI Operational Functions](docs/ui-guide.md) | Form resets, Execution Limits and Export tools |
-| [📙 Configuration Lifecycle](docs/configuration.md) | Priority structures & data hierarchies |
-| [📓 Native API Hooks](docs/api-reference.md) | Integrating endpoints like `read()` / `load()` & `record()` |
+Directory:
 
----
+```text
+examples/2_pyruns_config/
+```
+
+This one is especially good for showing:
+
+- per-task `config.yaml` snapshots
+- task detail tabs such as `Task Info` and environment metadata
+
+![Task Detail](docs/assets/task_info.png)
+
+## Interface modules
+
+### Generator
+
+The Generator is where parameter editing and task creation happen.  
+It should feel fast, dense, and focused, not bloated.
+
+![Generator Preview](docs/assets/tab_generator.png)
+
+You can use it to:
+
+- switch templates
+- edit parameters in `Form`
+- edit complete config text in `YAML`
+- write shell scripts in `Shell`
+- pin important fields
+- preview batch expansion before creating tasks
+
+### Manager
+
+Manager is the orchestration layer.  
+This is where “seeing tasks” becomes “acting on tasks”.
+
+![Manager Preview](docs/assets/tab_manager.png)
+
+It supports:
+
+- multiline search
+- status filtering
+- batch run / delete
+- pinned tasks as their own section
+- detail drawer inspection
+- direct navigation into Monitor logs
+
+### Monitor
+
+Monitor is the observation surface.  
+Its job is not just to print stdout, but to make logs workable.
+
+It supports:
+
+- real-time log streaming
+- historical log switching
+- terminal copy behavior
+- selected-task CSV export
+- tight linkage with Manager and task detail views
+
+## Configuration entrypoint
+
+Workspace settings live in:
+
+```text
+<project>/_pyruns_/_pyruns_settings.yaml
+```
+
+Important keys include:
+
+- `header_refresh_interval`
+- `generator_form_columns`
+- `manager_columns`
+- `manager_execution_mode`
+- `monitor_sidebar_width_pct`
+- `shell_mode`
+- `shell_executable`
+
+The important shell mental model is:
+
+- keep `shell_mode: follow` by default
+- switch to `custom` only when you explicitly want to lock execution to a fixed shell
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md)
+- [Showcase](docs/showcase.md)
+- [UI Guide](docs/ui-guide.md)
+- [Configuration](docs/configuration.md)
+- [Architecture](docs/architecture.md)
+- [Batch Syntax](docs/batch-syntax.md)
+- [CLI Guide](docs/cli-guide.md)
 
 ## License
 

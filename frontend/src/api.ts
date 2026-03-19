@@ -88,6 +88,19 @@ export const batchDeleteTasks = (taskNames: string[]) =>
     body: JSON.stringify({ task_names: taskNames }),
   })
 
+export async function exportTasksCsv(taskNames: string[]): Promise<Blob> {
+  const res = await fetch(`${BASE}/api/tasks/export/csv`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_names: taskNames }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `HTTP ${res.status}`)
+  }
+  return res.blob()
+}
+
 export const runTask = (name: string, executionMode?: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/run`, {
     method: 'POST',

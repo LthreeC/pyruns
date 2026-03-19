@@ -22,6 +22,7 @@ from pyruns._config import (
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
+from pyruns.core.report import build_export_csv
 from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
@@ -399,6 +400,29 @@ class PyrunsRuntime:
             "deleted": normalized_names,
         }
 
+    def export_tasks_csv(self, task_names: List[str]) -> str:
+        """Build a CSV export for the selected tasks."""
+
+        normalized_names: List[str] = []
+        seen: set[str] = set()
+        tasks: List[Dict[str, Any]] = []
+        for name in task_names:
+            task_name = str(name or "").strip()
+            if not task_name or task_name in seen:
+                continue
+            task = self.require_task(task_name, refresh=True)
+            normalized_names.append(task_name)
+            tasks.append(task)
+            seen.add(task_name)
+
+        if not normalized_names:
+            raise ValueError("No valid tasks were provided for export.")
+
+        csv_text = build_export_csv(tasks)
+        if not csv_text:
+            raise ValueError("No monitor data available to export.")
+        return csv_text
+
     def set_task_pin(self, task_name: str, pinned: bool | None = None) -> Dict[str, Any]:
         """Toggle or set one task's pinned state."""
         self.require_task(task_name, refresh=False)
@@ -561,6 +585,8 @@ class PyrunsRuntime:
             except ValueError as exc:
                 raise ValueError(str(exc)) from exc
         else:
+            if generate_batch_configs(base_config) != [base_config]:
+                raise ValueError("YAML mode does not support batch syntax. Switch back to Form mode.")
             configs = [base_config]
 
         if template_value and orig_config:
@@ -646,6 +672,8 @@ class PyrunsRuntime:
             except ValueError as exc:
                 raise ValueError(str(exc)) from exc
         else:
+            if generate_batch_configs(base_config) != [base_config]:
+                raise ValueError("YAML mode does not support batch syntax. Switch back to Form mode.")
             configs = [base_config]
 
         if template_value and orig_config:

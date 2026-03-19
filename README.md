@@ -2,33 +2,101 @@
 
 ![logo](docs/assets/pyruns_logo2.png)
 
-> 一个面向本地实验与脚本任务管理的轻量工具：参数生成、批量任务、原生 shell 任务、实时日志、任务检索、指标导出，全部围绕磁盘工作区展开。
+> Python 实验管理 Web UI 工具：参数可视化编辑、批量任务生成、任务调度管理、实时日志流式查看与 CSV 指标导出。  
+> 全流程本地运行，围绕磁盘工作区组织状态，让脚本实验这件事终于变得清楚、直接、可追踪。
 
-## 项目定位
+![Generator](docs/assets/tab_generator.png)
 
-Pyruns 现在的主链路是：
+Pyruns 为 Python 脚本提供基于本地浏览器的图形界面。它的核心思路不是“接管你的工程”，而是尽量贴着你已经在用的工作方式走：
 
-- 前端：React，源码在 [`frontend/`](frontend)
-- 后端：FastAPI，接口与运行时在 [`pyruns/web/`](pyruns/web)
-- 核心逻辑：任务生成、任务管理、执行器、系统指标在 [`pyruns/core/`](pyruns/core)
-- 工具层：settings、log I/O、workspace/task 文件结构、排序与过滤在 [`pyruns/utils/`](pyruns/utils)
-- 前端构建产物：打包到 [`pyruns/web/static/`](pyruns/web/static)，这样整个 UI 可以直接随 `pyruns` 使用
+- 继续使用原脚本
+- 继续使用原终端 / shell
+- 继续使用原 conda 环境与环境变量
+- 把任务、配置、日志、备注、运行历史稳稳落在 `_pyruns_` 工作区里
 
-Pyruns 不是一个远程 SaaS，也不是云端实验平台。它的设计目标很明确：
+**无需注册账号 · 无需联网 · 无需数据库 · 所有流程均在本地执行**
 
-- 直接在你当前机器上工作
-- 尽量复用你已经在用的脚本、环境变量、conda 环境和 shell
-- 用磁盘目录把任务状态、配置、日志和记录稳定落盘
-- 让 React UI 成为当前主入口
+```bash
+pip install pyruns
+pyr train.py
+```
 
-## 当前核心能力
+## 为什么它顺手
+
+很多实验工具做得很大，但真正落到日常工作里，最麻烦的问题往往还是这些：
+
+### 痛点 1：超参搜索还在靠手写循环
+
+没有 Pyruns 时，你常常要写这种让人头皮发麻的嵌套循环：
+
+```bash
+for lr in 0.001 0.01 0.1; do
+  for bs in 32 64 128; do
+    for opt in adam sgd; do
+      python train.py --lr $lr --batch_size $bs --optimizer $opt \
+        > logs/lr${lr}_bs${bs}_${opt}.log 2>&1 &
+    done
+  done
+done
+wait
+```
+
+用了 Pyruns，在 `Form` 模式里写成这样就够了：
+
+```yaml
+lr: 0.001 | 0.01 | 0.1
+batch_size: 32 | 64 | 128
+optimizer: adam | sgd
+```
+
+点击生成后，就会自动展开成多组独立任务，每个任务都拥有自己的配置快照、运行目录和日志文件。
+
+### 痛点 2：实验记录全靠人脑回忆
+
+“上周那组 `lr=0.01` 的实验，用的到底是哪个 `batch_size`？”  
+“那次 shell 任务跑在什么环境里？”  
+“日志在哪个目录？”
+
+Pyruns 会为每个任务保存：
+
+- `config.yaml` 或 `config.sh`
+- `task_info.json`
+- `run_logs/runN.log`
+- 运行时间线、PID、备注、环境信息
+
+这意味着任务不是跑完就散掉，而是会留下完整、可检索、可复用的历史。
+
+### 痛点 3：多任务并发时日志全混在一起
+
+多个任务一起跑的时候，最难受的就是终端输出互相穿插。Pyruns 把每个任务的输出都隔离到独立日志文件，并在 `Monitor` 页面里提供更像真实终端的实时查看体验。
+
+![Monitor](docs/assets/tab_monitor.png)
+
+对于 shell 工作流，这点尤其重要：
+
+![Shell Monitor](docs/assets/shell_monitor.png)
+
+## 核心特性
+
+| 特性 | 说明 |
+| --- | --- |
+| `React Generator` | 支持 `Form` / `YAML` / `Shell` 三种生成入口。脚本工作区可视化调参，shell 工作区直接编辑命令正文。 |
+| `Form 批量生成` | 在 `Form` 模式中支持 `|`、`(|)`、`start:stop:step` 等批量语法，用于笛卡尔积、配对组合与区间展开。 |
+| `YAML 单任务模式` | `YAML` 模式专注于一次生成一个完整 `config.yaml` 任务，不承担 batch 展开。 |
+| `Shell Workspace` | 每个 shell 任务保存为 `config.sh`，默认跟随启动 `pyr` 的那个终端语义执行。 |
+| `Manager 控制台` | 支持搜索、状态筛选、批量运行、批量删除、pin、详情查看与日志跳转。 |
+| `Monitor 终端` | 使用 xterm.js 实时查看日志流、切换历史日志、复制终端内容，并导出 CSV 聚合结果。 |
+| `指标导出` | 通过 `pyruns.record()` 记录实验指标后，可在 Monitor 中按任务勾选导出 CSV。 |
+| `磁盘工作区` | 真实状态以磁盘为准。页面刷新、CLI / Web 共用、手工检查与备份都更简单。 |
+
+## 两种工作区
 
 ### 1. Script Workspace
 
-对普通 Python 脚本工作区，Pyruns 会围绕脚本创建一个独立 workspace：
+当你打开一个普通 Python 脚本时，Pyruns 会围绕它创建一个独立工作区：
 
 ```text
-your_project/
+project/
 ├─ train.py
 └─ _pyruns_/
    ├─ _pyruns_settings.yaml
@@ -38,175 +106,190 @@ your_project/
       └─ tasks/
 ```
 
-在这个工作区里：
+这一模式适合：
 
-- `Generator` 支持 `form` / `yaml`
-- `task_kind = "config"`
-- 每个任务保存自己的 `config.yaml`
-- 执行时会注入 `__PYRUNS_CONFIG__`
-- 适合 `argparse` 或 `pyruns.load()` 风格脚本
+- `argparse` 脚本
+- `pyruns.load()` / `pyruns.read()` 风格脚本
+- 希望每个任务都带独立 `config.yaml` 的 Python 任务
 
 ### 2. Shell Workspace
 
-Pyruns 也支持共享的 shell 工作区：
+当你切到 shell 模式，工作区会变成：
 
 ```text
-your_project/
+project/
 └─ _pyruns_/
    └─ _shell_/
       ├─ script_info.json
       └─ tasks/
 ```
 
-在这个工作区里：
+每个 shell 任务落盘为：
 
-- `Generator` 固定为 `shell`
-- `task_kind = "shell"`
-- 每个任务保存为 `config.sh`
-- 不注入 `__PYRUNS_CONFIG__`
-- 任务正文就是要执行的命令文本
+```text
+_pyruns_/_shell_/tasks/<task_name>/config.sh
+```
 
 最重要的语义是：
 
 - 默认 `shell_mode: follow`
-- 也就是 shell 任务会尽量等价于“在启动 `pyr` 的那个终端里，再手动执行一次同样的命令”
-- 当前 Python 进程环境会继续继承给子进程，所以 conda、PATH、用户环境变量会一起继承
-- 不做跨 shell 语法翻译
+- 默认跟随启动 `pyr` 的当前终端
+- 当前 Python 进程环境会继续继承给子进程
+- 不自动做跨 shell 语法翻译
 
-这意味着：
+也就是说，shell task 的目标语义就是：
 
-- Windows 下如果你是从 PowerShell 启动 `pyr`，shell task 默认按 PowerShell 语义执行
-- Windows 下如果你是从 cmd 启动 `pyr`，shell task 默认按 cmd 语义执行
-- Linux / macOS 默认跟随启动 `pyr` 的当前 shell
-- 只有显式把 `_pyruns_settings.yaml` 里的 `shell_mode` 改成 `custom`，才会启用 `shell_executable`
+> 尽量等价于“在你启动 `pyr` 的那个终端里，再手动执行一次同样的命令”
 
-## 页面说明
+![Shell Generator](docs/assets/shell_generator.png)
 
-### Home / Dashboard
+## 接入方式
 
-- 展示任务摘要
-- 展示 CPU、RAM、GPU 状态
-- GPU 卡片现在会显示利用率、显存占用/总量
-- 点击 GPU 卡片可以查看对应 GPU 的进程占用明细
-- 刷新节奏跟随 `header_refresh_interval`
+### 模式 1：零侵入接入 `argparse`
 
-### Generator
-
-- Script workspace 下支持 `form` / `yaml`
-- Shell workspace 下支持 `shell`
-- 支持 batch 语法
-- 支持 pinned 参数
-- 现在会直接展示当前 shell runtime 信息，帮助确认 follow/custom 状态
-
-### Manager
-
-- 搜索、过滤、分页、批量运行、批量删除
-- pinned tasks 单独展示
-- 任务卡片支持直接运行、查看日志、删除
-- 搜索框支持多行输入，换行按 AND 语义过滤
-
-### Monitor
-
-- xterm.js 实时查看日志
-- 支持历史 log 文件切换
-- 支持导出多任务日志
-- 现在切换任务时会更严格地隔离 websocket 流，避免把别的任务日志串进来
-- 直接从侧边栏点进 `Monitor` 时默认不自动选任务；只有从任务入口显式跳转时才会带着选中项进入
-
-## 快速开始
-
-### 安装
-
-```bash
-pip install pyruns
-```
-
-### 打开一个脚本工作区
+如果你的脚本本来就是用 `argparse`：
 
 ```bash
 pyr train.py
 ```
 
-如果你有现成模板：
+Pyruns 会尝试提取参数定义，生成可编辑表单，并把你在界面里修改后的值再拼回命令行参数。
+
+### 模式 2：基于 YAML 模板接入
+
+如果你的脚本通过 `pyruns.load()` 读取配置：
 
 ```bash
-pyr train.py config_default.yaml
+pyr train.py my_config.yaml
 ```
 
-### 打开 shell 工作区
+首次运行时，Pyruns 会把这份模板作为 `config_default.yaml` 保存下来。之后再次运行：
 
-先打开一个普通脚本工作区，然后在左侧切到 `Open Shell Mode`。
+```bash
+pyr train.py
+```
 
-生成的 shell 任务会落到：
+系统会继续围绕这个工作区进行调参、生成和运行。
+
+### 模式 3：CLI 交互模式
+
+如果你在无头服务器上，或者更偏爱命令行操作，可以直接进入 CLI 交互模式：
+
+```bash
+pyr cli train.py
+```
+
+CLI 和 Web UI 使用同一套磁盘工作区与任务数据，操作结果天然互通。
+
+## 实际上手示例
+
+仓库中的 `examples/` 已经提供了可以直接运行的示例。
+
+### 示例 1：Argparse 原生支持
+
+目录：
 
 ```text
-<project>/_pyruns_/_shell_/tasks/<task_name>/config.sh
+examples/1_argparse_script/
 ```
 
-## `_pyruns_settings.yaml`
+适合展示的页面通常是：
 
-工作区设置文件位于：
+- `Generator` 表单页
+- `Manager` 中展开后的任务卡片
+
+### 示例 2：使用 `pyruns.load()` 加载 YAML
+
+目录：
+
+```text
+examples/2_pyruns_config/
+```
+
+这一类脚本更适合展示：
+
+- 独立 `config.yaml` 任务快照
+- `Task Info` / `Env` 等任务详情
+
+![Task Detail](docs/assets/task_info.png)
+
+## 页面模块
+
+### Generator
+
+Generator 是参数编辑与任务生成的入口。  
+这一页要做的不是“展示所有字段”，而是让你在高密度信息里依然能快速找到重点参数、快速生成任务。
+
+![Generator Preview](docs/assets/tab_generator.png)
+
+你可以在这里做这些事：
+
+- 选择模板
+- 用 `Form` 模式快速调整参数
+- 用 `YAML` 模式编辑完整配置
+- 用 `Shell` 模式直接写命令正文
+- 使用 pin 把关键参数固定在视线里
+- 预览 batch 展开的结果
+
+### Manager
+
+Manager 是任务调度台。  
+这里不只是“看任务”，更是“处理任务”。
+
+![Manager Preview](docs/assets/tab_manager.png)
+
+它支持：
+
+- 多行搜索
+- 状态筛选
+- 批量运行 / 删除
+- pinned tasks 独立展示
+- 任务详情抽屉
+- 一键跳转到 Monitor 看日志
+
+### Monitor
+
+Monitor 是运行中任务的观测面。  
+它承担的是“让日志真正变得可工作”，而不是只把 stdout 放在页面上。
+
+它支持：
+
+- 实时日志流
+- 历史日志切换
+- 终端复制
+- 按任务勾选导出 CSV
+- 与 Manager / Task Detail 形成来回联动
+
+## 配置入口
+
+工作区配置文件位于：
 
 ```text
 <project>/_pyruns_/_pyruns_settings.yaml
 ```
 
-当前比较重要的键：
+比较重要的键包括：
 
-| 键 | 说明 |
-| --- | --- |
-| `ui_port` | Web UI 端口 |
-| `header_refresh_interval` | Dashboard/Header 刷新间隔，单位秒 |
-| `generator_form_columns` | Generator 表单列数 |
-| `manager_columns` | Manager 卡片列数 |
-| `manager_max_workers` | 批量运行最大 worker 数 |
-| `manager_execution_mode` | `thread` 或 `process` |
-| `monitor_chunk_size` | Monitor 单次日志块大小 |
-| `monitor_scrollback` | Monitor 最大历史滚动行数 |
-| `monitor_sidebar_width_pct` | Monitor 左侧任务栏宽度百分比 |
-| `shell_mode` | `follow` 或 `custom` |
-| `shell_executable` | 仅当 `shell_mode: custom` 时生效 |
+- `header_refresh_interval`
+- `generator_form_columns`
+- `manager_columns`
+- `manager_execution_mode`
+- `monitor_sidebar_width_pct`
+- `shell_mode`
+- `shell_executable`
 
-推荐理解方式：
+其中 shell 相关最重要的理解方式是：
 
 - 默认保持 `shell_mode: follow`
-- 只有你明确需要固定某个 shell 路径时，才设置 `custom`
+- 只有明确需要固定某个 shell 时，才切到 `custom`
 
-## 开发说明
-
-### 前端开发
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### 前端打包到 Python 包
-
-```bash
-cd frontend
-npm run build
-```
-
-构建结果会写入：
-
-```text
-pyruns/web/static/
-```
-
-### 运行测试
-
-```bash
-pytest -q
-```
-
-## 推荐继续阅读
+## 文档导航
 
 - [快速开始](docs/getting-started.md)
+- [页面展示](docs/showcase.md)
+- [界面指南](docs/ui-guide.md)
 - [配置说明](docs/configuration.md)
 - [架构说明](docs/architecture.md)
-- [UI 指南](docs/ui-guide.md)
 - [批量语法](docs/batch-syntax.md)
 - [CLI 指南](docs/cli-guide.md)
 

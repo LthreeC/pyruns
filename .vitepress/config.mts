@@ -10,7 +10,10 @@ export default defineConfig({
     sidebar: [
       {
         text: "快速开始",
-        items: [{ text: "🚀 安装与快速开始", link: "/docs/getting-started" }],
+        items: [
+          { text: "🚀 安装与快速开始", link: "/docs/getting-started" },
+          { text: "✨ 页面展示", link: "/docs/showcase" },
+        ],
       },
       {
         text: "核心指南",

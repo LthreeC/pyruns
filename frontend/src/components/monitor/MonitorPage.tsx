@@ -292,27 +292,11 @@ export default function MonitorPage() {
   const handleExport = useCallback(async () => {
     const names = [...exportIds]
     if (!names.length) return
-
-    const lines: string[] = []
-    for (const name of names) {
-      try {
-        const logs = await api.getTaskLogs(name, undefined, undefined, 50000)
-        lines.push(`${'='.repeat(60)}`)
-        lines.push(`TASK: ${name}`)
-        lines.push(`${'='.repeat(60)}`)
-        lines.push(logs.content || '(no logs)')
-        lines.push('')
-      } catch {
-        lines.push(`TASK: ${name} (failed to load logs)`)
-        lines.push('')
-      }
-    }
-
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const blob = await api.exportTasksCsv(names)
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`
+    anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`
     anchor.click()
     URL.revokeObjectURL(url)
   }, [exportIds])

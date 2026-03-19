@@ -1,10 +1,13 @@
 # 架构说明
 
-当前 Pyruns 的主链路可以概括成一句话：
+Pyruns 当前的核心设计其实可以浓缩成一句话：
 
-> React 前端驱动 FastAPI 运行时，运行时调用 core 层管理磁盘工作区，所有任务状态最终以磁盘文件为准。
+> React 前端负责把体验做顺，FastAPI 运行时负责把状态串起来，core 层负责把任务真正落到磁盘并执行，磁盘才是最终真实来源。
 
-## 1. 总体结构
+这不是一个“先有页面、再去猜状态”的系统。  
+它是一个“先把任务结构稳稳落下，再让 UI 把它看清楚”的系统。
+
+## 1. 整体结构
 
 ```text
 CLI / Launcher
@@ -18,22 +21,22 @@ Utils / File IO / Settings (pyruns/utils)
 Workspace on disk          (_pyruns_/...)
 ```
 
-前端构建链路：
+前端交付链路则是：
 
 ```text
 frontend/  --build-->  pyruns/web/static/
 ```
 
-## 2. 分层职责
+## 2. 这套分层为什么顺
 
-## `frontend/`
+### `frontend/`
 
 负责：
 
 - 页面和交互
 - Zustand 状态管理
 - 轮询与 websocket
-- xterm.js / CodeMirror 等前端展示层
+- xterm.js / CodeMirror 等展示层
 
 关键页面：
 
@@ -42,128 +45,125 @@ frontend/  --build-->  pyruns/web/static/
 - `manager`
 - `monitor`
 
-## `pyruns/web/`
+这层的重点是体验，不负责伪造真实状态。
+
+### `pyruns/web/`
 
 负责：
 
 - FastAPI app 组装
 - API 路由
 - 当前 workspace runtime
-- 把前端请求映射到 core 层
+- 聚合 dashboard、task list、task logs、workspace info
 
 关键文件：
 
 - `pyruns/web/app.py`
 - `pyruns/web/runtime.py`
 
-### `runtime.py`
+其中 `runtime.py` 是 Web 层最重要的状态枢纽之一，负责把“当前打开的是哪个工作区、当前使用什么 shell runtime、当前 tasks 目录在哪里”这些运行时信息统一组织起来。
 
-这是 Web 层最重要的状态中枢之一，负责：
+### `pyruns/core/`
 
-- 当前 `root_dir`
-- 当前 `tasks_dir`
-- 当前 settings
-- `TaskManager` / `TaskGenerator` / `SystemMonitor` 的懒加载
-- dashboard、task list、task logs、workspace info 等 API 数据聚合
+这是 Pyruns 真正干活的地方。
 
-## `pyruns/core/`
+#### `task_generator.py`
 
-负责真正的业务逻辑。
-
-### `task_generator.py`
-
-负责把“用户要创建什么任务”落到磁盘：
+负责把“用户想生成什么任务”真正写到磁盘：
 
 - config task 写 `config.yaml`
 - shell task 写 `config.sh`
 - 同时生成 `task_info.json`
 
-### `task_manager.py`
+#### `task_manager.py`
 
 负责任务管理：
 
 - 扫描磁盘任务
 - 刷新任务状态
-- 排队、批量运行、删除、重命名、pin
-- 把任务生命周期保持和磁盘文件同步
+- 批量运行、删除、pin
+- 让内存视图始终跟磁盘文件对齐
 
-### `executor.py`
+#### `executor.py`
 
-负责执行任务：
+负责实际执行任务：
 
 - 根据 `task_kind` 选择命令构造方式
 - config task 注入 `__PYRUNS_CONFIG__`
-- shell task 解析当前 shell runtime
-- 采集 stdout/stderr 到 `run_logs/runN.log`
-- 通过事件总线把实时日志推给 Monitor websocket
+- shell task 解析 shell runtime
+- 采集 stdout / stderr 到 `run_logs`
+- 把实时日志推给 Monitor websocket
 
-### `system_metrics.py`
+#### `system_metrics.py`
 
 负责系统指标：
 
 - CPU
 - RAM
-- NVIDIA GPU 利用率、显存占用
+- NVIDIA GPU 利用率
+- 显存占用 / 总量
 - GPU 进程明细
 
-## `pyruns/utils/`
+### `pyruns/utils/`
 
-负责偏底层但可复用的能力。
+这一层不高调，但很关键。它让整个系统不用数据库也能稳定工作。
 
-### `settings.py`
+#### `settings.py`
 
 - 读写 `_pyruns_settings.yaml`
 - 合并默认值
-- 暴露 save/load/get
+- 提供 save / load / get
 
-### `shell_runtime.py`
+#### `shell_runtime.py`
 
 - 解析 `shell_mode`
-- 检测 follow/custom
+- 区分 `follow` / `custom`
 - 检测当前启动终端
-- 给 executor / frontend / runtime 提供统一 shell runtime 信息
+- 给 executor、runtime、frontend 提供统一 shell runtime 信息
 
-### `task_files.py`
+#### `task_files.py`
 
-- 统一 task payload 文件的读写入口
+- 统一 task payload 文件读写
 - 归一化 `workspace_kind` / `task_kind`
 
-### `info_io.py`
+#### `info_io.py`
 
-- `task_info.json`
-- `script_info.json`
-- log 文件路径解析
+- 读写 `task_info.json`
+- 读写 `script_info.json`
+- 解析日志路径
 
-### `log_io.py`
+#### `log_io.py`
 
-- 日志文件读取
-- 编码回退
-- 终端换行标准化
+- 读取日志文件
+- 处理编码回退
+- 标准化终端换行
 
-### `sort_utils.py`
+#### `sort_utils.py`
 
 - 搜索和排序逻辑
 - Manager / Monitor 多行搜索的 AND 语义
 
-## 3. 磁盘是真实状态源
+## 3. 磁盘是最终状态源
 
 这是 Pyruns 很重要的设计原则。
 
-前端和内存态都只是运行时视图，真正的任务状态最终落在磁盘：
+前端状态和运行时内存都只是视图。  
+真正能被信任、能被恢复、能被共享的是磁盘上的这些文件：
 
 - `task_info.json`
 - `config.yaml` / `config.sh`
 - `run_logs/`
 
-这么做的好处：
+这带来的好处很直接：
 
-- 页面刷新后仍然可恢复
+- 页面刷新后状态可恢复
 - 不依赖数据库
-- CLI / Web UI 共用同一套任务状态
+- CLI / Web UI 可以共用同一套任务状态
+- 任务本身很容易检查、备份、迁移
 
 ## 4. 两条工作流
 
-## Script Workspace 工作流
+### Script Workspace 工作流
 
 ```text
 pyr train.py
@@ -175,7 +175,7 @@ pyr train.py
   → executor injects __PYRUNS_CONFIG__
 ```
 
-## Shell Workspace 工作流
+### Shell Workspace 工作流
 
 ```text
 Open Shell Mode
@@ -189,13 +189,15 @@ Open Shell Mode
 
 ## 5. shell 执行策略
 
-当前 shell 执行策略的目标不是“模拟 bash”，而是“尽量跟随你启动 `pyr` 的原终端”。
+Pyruns 对 shell 模式的理解不是“模拟 bash”，而是：
 
-默认：
+> 尽量跟随你启动 `pyr` 的原终端
+
+默认值：
 
 - `shell_mode = follow`
 
-只有显式改成：
+只有显式切到：
 
 - `shell_mode = custom`
 
@@ -205,7 +207,7 @@ Open Shell Mode
 
 - 跟随 PowerShell：按 PowerShell 语义执行
 - 跟随 cmd：按 cmd 语义执行
-- wrapper 的职责只是把任务文本交给原生终端
+- wrapper 只负责把任务文本交给原生终端
 - 不做跨 shell 翻译
 
 ### Linux / macOS
@@ -213,34 +215,55 @@ Open Shell Mode
 - 默认跟随当前 shell
 - 强调 follow，而不是“bash 优先”
 
-## 6. 前端日志流
+## 6. 前端日志流为什么稳定
 
 Monitor 页面依赖两种数据源：
 
 ### 初始历史加载
 
 - `GET /api/tasks/{name}/logs`
-- 读取历史日志内容
 
 ### 运行中增量流
 
 - `WS /api/tasks/{name}/logs/stream`
-- executor 通过 `log_emitter` 推送增量 chunk
 
-当前实现重点：
+当前实现重点包括：
 
-- 切任务时会重置 store 的日志选择状态
+- 切任务时会重置日志选择状态
 - websocket chunk 会校验任务身份，避免串到错误任务
-- 历史日志读取会标准化终端换行，避免 xterm 出现“逐行右移”的假缩进
+- 历史日志会做终端换行标准化，避免 xterm 出现“逐行右移”的假缩进
 
-## 7. UI 交付路径
+## 7. UI 为什么适合做 GitHub Pages 展示
 
-当前 UI 交付链路是：
+现在的 React UI 已经足够完整，完全可以做一个静态展示版：
 
-```text
-frontend/
-  └─ build
-      └─ pyruns/web/static/
-```
+- Dashboard 展示假系统指标
+- Generator 展示表单 / YAML / Shell 三种态
+- Manager 展示任务卡片和详情抽屉
+- Monitor 展示模拟日志流和终端界面
 
-FastAPI 会直接服务 `pyruns/web/static/` 里的构建产物，因此前端改动最终都应该落回这条链路。
+也就是说，GitHub Pages 很适合承载：
+
+- 文档站
+- 截图展示
+- mock 数据驱动的静态 UI demo
+
+不适合承载的部分则是：
+
+- 真正执行任务
+- 实时 FastAPI runtime
+- 真实任务调度
+
+## 8. 推荐补图位置
+
+如果你想让这一页更有展示感，最适合补的图是：
+
+- 一张整体架构流程图
+- 一张前端到 `pyruns/web/static/` 的交付链路图
+- 一张 shell follow/custom 语义的流程示意图
+
+如果后面要补图，建议统一放在：
+
+- `/docs/assets/architecture_overview.png`
+- `/docs/assets/build_pipeline.png`
+- `/docs/assets/shell_runtime_flow.png`

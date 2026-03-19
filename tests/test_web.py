@@ -314,6 +314,29 @@ def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
     assert payload["items"][0]["preview"]
 
 
+def test_generator_range_syntax_survives_yaml_parsing(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/api/generator/create",
+        json={
+            "name_prefix": "range-demo",
+            "mode": "form",
+            "yaml_text": "epochs: 30:40:1\nmodel: tiny\n",
+            "template_value": "config_default.yaml",
+            "append_timestamp": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 10
+    assert payload["items"][0]["name"] == "range-demo_[1-of-10]"
+    assert payload["items"][-1]["name"] == "range-demo_[10-of-10]"
+
+
 def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

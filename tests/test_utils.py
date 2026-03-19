@@ -941,6 +941,13 @@ class TestParsePipeValue:
         assert mode == "product"
         assert parts == ["a", "b", "c"]
 
+    def test_range_colon_syntax(self):
+        result = _parse_pipe_value("30:40:1")
+        assert result is not None
+        parts, mode = result
+        assert mode == "product"
+        assert parts == [str(v) for v in range(30, 40)]
+
 
 # ═══════════════════════════════════════════════════════════════
 #  generate_batch_configs
@@ -1021,6 +1028,13 @@ class TestGenerateBatchConfigs:
             assert c["model"]["name"] == "resnet"
             assert c["model"]["layers"] == 50
 
+    def test_range_string_generates_batch(self):
+        cfg = {"epochs": "30:40:1", "optimizer": "adam"}
+        configs = generate_batch_configs(cfg)
+        assert len(configs) == 10
+        assert [item["epochs"] for item in configs] == list(range(30, 40))
+        assert all(item["optimizer"] == "adam" for item in configs)
+
 
 # ═══════════════════════════════════════════════════════════════
 #  count_batch_configs
@@ -1049,6 +1063,9 @@ class TestCountBatchConfigs:
         n = count_batch_configs(sample_config_mixed)
         configs = generate_batch_configs(sample_config_mixed)
         assert n == len(configs)
+
+    def test_range_colon_count(self):
+        assert count_batch_configs({"epochs": "30:40:1"}) == 10
 
 
 # ═══════════════════════════════════════════════════════════════
