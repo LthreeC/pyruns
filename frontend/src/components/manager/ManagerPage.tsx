@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle, ChevronDown, MousePointer2, Pin, Play, RotateCcw, Rows3, Square, Terminal, Trash2,
 } from 'lucide-react'
@@ -37,6 +37,8 @@ export default function ManagerPage() {
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const focusTaskName = searchParams.get('task')
 
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
@@ -44,6 +46,29 @@ export default function ManagerPage() {
   useEffect(() => {
     void fetchTasks()
   }, [query, statusFilter, offset, fetchTasks])
+
+  useEffect(() => {
+    if (!focusTaskName) {
+      return
+    }
+
+    let cancelled = false
+    void api.getTask(focusTaskName).then(task => {
+      if (!cancelled) {
+        setDetailTask(task)
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        const next = new URLSearchParams(searchParams)
+        next.delete('task')
+        setSearchParams(next, { replace: true })
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [focusTaskName, searchParams, setSearchParams])
 
   const allSelected = tasks.length > 0 && tasks.every(task => selectedIds.has(task.name))
   const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
@@ -110,6 +135,16 @@ export default function ManagerPage() {
     }
     setDetailTask(task)
   }
+
+  const closeDetailPanel = useCallback(() => {
+    setDetailTask(null)
+    if (!searchParams.get('task')) {
+      return
+    }
+    const next = new URLSearchParams(searchParams)
+    next.delete('task')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -314,7 +349,7 @@ export default function ManagerPage() {
       />
 
       {detailTask && (
-        <TaskDetailPanel task={detailTask} onClose={() => setDetailTask(null)} onRefresh={fetchTasks} />
+        <TaskDetailPanel task={detailTask} onClose={closeDetailPanel} onRefresh={fetchTasks} />
       )}
     </div>
   )

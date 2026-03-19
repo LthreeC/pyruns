@@ -1,4 +1,4 @@
-import { useCallback, useState, type ElementType } from 'react'
+import { useCallback, useState, type ElementType, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity,
@@ -50,6 +50,11 @@ export default function DashboardPage() {
 
   const summary = data?.summary
   const activeGpu = metrics?.gpus.find(gpu => gpuKey(gpu) === activeGpuKey) ?? null
+  const gpuCount = metrics?.gpus.length ?? 0
+  const gpuProcessCount = metrics?.gpus.reduce((total, gpu) => total + gpu.processes.length, 0) ?? 0
+  const averageGpuUtil = gpuCount
+    ? (metrics?.gpus.reduce((total, gpu) => total + gpu.util, 0) ?? 0) / gpuCount
+    : 0
 
   return (
     <>
@@ -69,7 +74,7 @@ export default function DashboardPage() {
               </div>
               <div>
                 <div className="text-xl font-semibold tabular-nums text-txt-primary">
-                  {loading ? '—' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
+                  {loading ? '--' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
                 </div>
                 <div className="text-2xs text-txt-tertiary">{label}</div>
               </div>
@@ -77,8 +82,8 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="rounded-lg border border-border-subtle bg-surface-raised lg:col-span-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2.2fr)_minmax(18rem,1fr)]">
+          <div className="rounded-lg border border-border-subtle bg-surface-raised">
             <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
               <h2 className="text-sm font-medium text-txt-primary">Recent Tasks</h2>
               <button
@@ -101,38 +106,12 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex flex-col gap-4">
-            {metrics && (
-              <div className="rounded-lg border border-border-subtle bg-surface-raised p-4">
-                <h2 className="mb-3 text-sm font-medium text-txt-primary">System</h2>
-                <div className="space-y-2.5">
-                  <MetricBar label="CPU" value={metrics.cpu_percent} icon={Cpu} />
-                  <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} />
-                </div>
-
-                <div className="mt-4 space-y-2">
-                  {metrics.gpus?.length ? (
-                    metrics.gpus.map(gpu => (
-                      <GpuMetricCard
-                        key={gpuKey(gpu)}
-                        gpu={gpu}
-                        onClick={() => setActiveGpuKey(gpuKey(gpu))}
-                      />
-                    ))
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-border-subtle bg-surface-overlay/50 px-3 py-3 text-2xs text-txt-tertiary">
-                      No NVIDIA GPU metrics detected.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
             <div className="rounded-lg border border-border-subtle bg-surface-raised p-4">
               <h2 className="mb-3 text-sm font-medium text-txt-primary">Workspace</h2>
               <div className="space-y-2 text-xs">
-                <InfoRow label="Script" value={workspace?.script_name || '—'} />
+                <InfoRow label="Script" value={workspace?.script_name || '--'} />
                 <InfoRow label="Templates" value={String(data?.template_count ?? 0)} />
-                <InfoRow label="Path" value={workspace?.run_root || '—'} mono />
+                <InfoRow label="Path" value={workspace?.run_root || '--'} mono />
               </div>
               <button
                 type="button"
@@ -142,6 +121,72 @@ export default function DashboardPage() {
                 <Wand2 className="h-3.5 w-3.5" /> Generate Tasks
               </button>
             </div>
+
+            <div className="rounded-lg border border-border-subtle bg-surface-raised p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-medium text-txt-primary">System</h2>
+                  <p className="mt-1 text-2xs text-txt-tertiary">Auto-refreshes every {refreshIntervalSec}s.</p>
+                </div>
+                {gpuCount > 0 && (
+                  <div className="rounded-full border border-sky-500/15 bg-sky-500/8 px-2.5 py-1 text-2xs text-sky-300">
+                    {gpuCount} GPU{gpuCount > 1 ? 's' : ''} online
+                  </div>
+                )}
+              </div>
+
+              {metrics ? (
+                <>
+                  <div className="mt-3 space-y-2.5">
+                    <MetricBar label="CPU" value={metrics.cpu_percent} icon={Cpu} />
+                    <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} />
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
+                    <SummaryChip label="GPU Util Avg" value={`${averageGpuUtil.toFixed(0)}%`} tone="sky" />
+                    <SummaryChip label="GPU Processes" value={String(gpuProcessCount)} tone={gpuProcessCount ? 'emerald' : 'slate'} />
+                    <SummaryChip label="Refresh" value={`${refreshIntervalSec}s`} tone="slate" />
+                  </div>
+                </>
+              ) : (
+                <div className="mt-3 rounded-lg border border-dashed border-border-subtle bg-surface-overlay/50 px-3 py-4 text-2xs text-txt-tertiary">
+                  Loading system metrics...
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-border-subtle bg-surface-raised">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
+            <div>
+              <h2 className="text-sm font-medium text-txt-primary">GPU Fleet</h2>
+              <p className="mt-1 text-2xs text-txt-tertiary">
+                Click any GPU card to inspect active processes and VRAM usage.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-2xs">
+              <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>
+              <SummaryPill>{gpuProcessCount} active proc{gpuProcessCount === 1 ? '' : 's'}</SummaryPill>
+            </div>
+          </div>
+
+          <div className="p-4">
+            {metrics?.gpus?.length ? (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                {metrics.gpus.map(gpu => (
+                  <GpuMetricCard
+                    key={gpuKey(gpu)}
+                    gpu={gpu}
+                    onClick={() => setActiveGpuKey(gpuKey(gpu))}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border-subtle bg-surface-overlay/50 px-3 py-8 text-center text-2xs text-txt-tertiary">
+                No NVIDIA GPU metrics detected.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -168,6 +213,7 @@ function TaskRow({ task, onClick }: { task: Task; onClick: () => void }) {
 function MetricBar({ label, value, icon: Icon }: { label: string; value: number; icon: ElementType }) {
   const pct = Math.min(100, Math.max(0, value))
   const color = pct > 90 ? 'bg-rose-500' : pct > 70 ? 'bg-amber-500' : 'bg-emerald-500'
+
   return (
     <div className="flex items-center gap-2">
       <Icon className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
@@ -175,7 +221,7 @@ function MetricBar({ label, value, icon: Icon }: { label: string; value: number;
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-overlay">
         <div className={clsx('h-full rounded-full transition-all duration-500', color)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-8 text-right text-2xs tabular-nums text-txt-secondary">{pct.toFixed(0)}%</span>
+      <span className="w-10 text-right text-2xs tabular-nums text-txt-secondary">{pct.toFixed(0)}%</span>
     </div>
   )
 }
@@ -206,11 +252,11 @@ function GpuMetricCard({ gpu, onClick }: { gpu: GPUMetric; onClick: () => void }
         <UsageTrack label="VRAM" value={memoryPct} tone="memory" />
       </div>
 
-      <div className="mt-3 flex items-center justify-between text-2xs text-txt-secondary">
+      <div className="mt-3 flex items-center justify-between gap-3 text-2xs text-txt-secondary">
         <span className="tabular-nums">
           {formatMemory(gpu.mem_used)} / {formatMemory(gpu.mem_total)}
         </span>
-        <span className="inline-flex items-center gap-1">
+        <span className="inline-flex items-center gap-1 whitespace-nowrap">
           {processCount} proc{processCount === 1 ? '' : 's'}
           <ChevronRight className="h-3 w-3" />
         </span>
@@ -253,7 +299,7 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-[0.18em] text-txt-tertiary">GPU Detail</div>
             <div className="mt-1 truncate text-base font-semibold text-txt-primary">
-              GPU {gpu.index} · {gpu.name}
+              GPU {gpu.index} | {gpu.name}
             </div>
             <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary">{gpu.uuid}</div>
           </div>
@@ -289,7 +335,7 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
                   key={`${process.pid}-${process.name}`}
                   className="grid grid-cols-[96px_minmax(0,1fr)_140px] gap-3 border-b border-border-subtle/80 px-4 py-3 text-sm last:border-b-0"
                 >
-                  <span className="font-mono text-txt-secondary">{process.pid >= 0 ? process.pid : '—'}</span>
+                  <span className="font-mono text-txt-secondary">{process.pid >= 0 ? process.pid : '--'}</span>
                   <span className="truncate text-txt-primary" title={process.name}>{process.name}</span>
                   <span className="text-right font-mono text-txt-secondary">{formatMemory(process.memory_mb)}</span>
                 </div>
@@ -323,6 +369,37 @@ function DetailChip({
       <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">{label}</div>
       <div className="mt-1 truncate text-sm font-semibold">{value}</div>
     </div>
+  )
+}
+
+function SummaryChip({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone: 'emerald' | 'sky' | 'slate'
+}) {
+  const toneClass = {
+    emerald: 'border-emerald-500/15 bg-emerald-500/10 text-emerald-300',
+    sky: 'border-sky-500/15 bg-sky-500/10 text-sky-300',
+    slate: 'border-border-subtle bg-surface-overlay text-txt-secondary',
+  }[tone]
+
+  return (
+    <div className={clsx('rounded-lg border px-3 py-2.5', toneClass)}>
+      <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">{label}</div>
+      <div className="mt-1 text-sm font-semibold">{value}</div>
+    </div>
+  )
+}
+
+function SummaryPill({ children }: { children: ReactNode }) {
+  return (
+    <span className="rounded-full border border-border-subtle bg-surface-overlay px-2.5 py-1 text-txt-secondary">
+      {children}
+    </span>
   )
 }
 

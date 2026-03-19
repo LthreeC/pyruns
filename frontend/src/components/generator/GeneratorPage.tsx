@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
+import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
+import type { Extension } from '@codemirror/state'
+import { EditorView } from '@codemirror/view'
+import { oneDark } from '@codemirror/theme-one-dark'
+import { tags as t } from '@lezer/highlight'
 import {
   AlertTriangle,
   ChevronDown,
@@ -22,9 +27,204 @@ import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
 
 const DEFAULT_SHELL_TEMPLATE = ''
+const YAML_EXTENSION = yamlLanguage()
+const LIGHT_EDITOR_THEME = EditorView.theme({
+  '&': {
+    color: '#1f2937',
+    backgroundColor: 'transparent',
+  },
+  '.cm-content': {
+    caretColor: '#2563eb',
+  },
+  '.cm-cursor, .cm-dropCursor': {
+    borderLeftColor: '#2563eb',
+  },
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
+    backgroundColor: 'rgba(37, 99, 235, 0.18)',
+  },
+  '.cm-activeLine': {
+    backgroundColor: 'rgba(15, 23, 42, 0.04)',
+  },
+  '.cm-gutters': {
+    color: '#94a3b8',
+    backgroundColor: 'rgba(248, 250, 252, 0.92)',
+    borderRight: '1px solid rgba(203, 213, 225, 0.7)',
+  },
+  '.cm-activeLineGutter': {
+    backgroundColor: 'rgba(226, 232, 240, 0.65)',
+    color: '#64748b',
+  },
+})
+const DARK_EDITOR_THEME = [
+  oneDark,
+  EditorView.theme({
+    '&': {
+      backgroundColor: 'transparent',
+    },
+    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
+      backgroundColor: 'rgba(38, 79, 120, 0.55)',
+    },
+    '.cm-activeLine': {
+      backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    },
+    '.cm-gutters': {
+      backgroundColor: 'rgba(15, 23, 42, 0.78)',
+      borderRight: '1px solid rgba(51, 65, 85, 0.95)',
+    },
+    '.cm-activeLineGutter': {
+      backgroundColor: 'rgba(30, 41, 59, 0.82)',
+    },
+  }),
+]
+const SHELL_LANGUAGE = StreamLanguage.define({
+  startState: () => ({ inString: null as '"' | "'" | null }),
+  token(stream, state) {
+    if (stream.sol()) {
+      state.inString = null
+    }
+    if (stream.eatSpace()) {
+      return null
+    }
+    if (stream.peek() === '#') {
+      stream.skipToEnd()
+      return 'comment'
+    }
+    if (state.inString) {
+      let escaped = false
+      while (!stream.eol()) {
+        const next = stream.next()
+        if (escaped) {
+          escaped = false
+          continue
+        }
+        if (next === '\\') {
+          escaped = true
+          continue
+        }
+        if (next === state.inString) {
+          state.inString = null
+          break
+        }
+      }
+      return 'string'
+    }
+    const quote = stream.peek()
+    if (quote === '"' || quote === "'") {
+      state.inString = quote
+      stream.next()
+      return 'string'
+    }
+    if (stream.match(/^\$\{[^}]+\}/) || stream.match(/^\$[A-Za-z_][\w]*/)) {
+      return 'variableName'
+    }
+    if (stream.match(/^--?[A-Za-z][\w-]*/)) {
+      return 'attributeName'
+    }
+    if (stream.match(/^(?:&&|\|\||<<|>>|[|&;<>])/)) {
+      return 'operator'
+    }
+    if (stream.match(/^(?:\d+\.\d+|\d+)/)) {
+      return 'number'
+    }
+    if (stream.match(/^(?:if|then|elif|else|fi|for|while|until|do|done|case|esac|function|in)\b/)) {
+      return 'keyword'
+    }
+    if (stream.match(/^(?:echo|cd|export|set|unset|pwd|test|source|cat|python|conda|pip|git|ls|cp|mv|rm|mkdir|touch|exit)\b/)) {
+      return 'builtin'
+    }
+    if (stream.match(/^[A-Za-z_][\w-]*(?==)/)) {
+      return 'definition'
+    }
+    stream.next()
+    return null
+  },
+})
+const LIGHT_EDITOR_HIGHLIGHT = syntaxHighlighting(HighlightStyle.define([
+  { tag: [t.keyword, t.controlKeyword], color: '#0000ff' },
+  { tag: [t.name, t.variableName], color: '#001080' },
+  { tag: [t.propertyName, t.attributeName, t.definition(t.variableName)], color: '#795e26' },
+  { tag: [t.number, t.integer, t.float], color: '#098658' },
+  { tag: [t.bool, t.null], color: '#0000ff' },
+  { tag: [t.string, t.special(t.string)], color: '#a31515' },
+  { tag: [t.comment, t.lineComment], color: '#008000', fontStyle: 'italic' },
+  { tag: [t.operator, t.separator], color: '#111827' },
+  { tag: [t.brace, t.squareBracket, t.paren], color: '#111827' },
+]), { fallback: false })
+const DARK_EDITOR_HIGHLIGHT = syntaxHighlighting(HighlightStyle.define([
+  { tag: [t.keyword, t.controlKeyword], color: '#569cd6' },
+  { tag: [t.name, t.variableName], color: '#9cdcfe' },
+  { tag: [t.propertyName, t.attributeName, t.definition(t.variableName)], color: '#dcdcaa' },
+  { tag: [t.number, t.integer, t.float], color: '#b5cea8' },
+  { tag: [t.bool, t.null], color: '#569cd6' },
+  { tag: [t.string, t.special(t.string)], color: '#ce9178' },
+  { tag: [t.comment, t.lineComment], color: '#6a9955', fontStyle: 'italic' },
+  { tag: [t.operator, t.separator], color: '#d4d4d4' },
+  { tag: [t.brace, t.squareBracket, t.paren], color: '#d4d4d4' },
+]), { fallback: false })
+
+function getEditorExtensions(mode: 'yaml' | 'shell', theme: 'light' | 'dark'): Extension[] {
+  const baseTheme = theme === 'dark' ? DARK_EDITOR_THEME : [LIGHT_EDITOR_THEME]
+  const highlighting = theme === 'dark' ? DARK_EDITOR_HIGHLIGHT : LIGHT_EDITOR_HIGHLIGHT
+  const language = mode === 'yaml' ? YAML_EXTENSION : SHELL_LANGUAGE
+  return [...baseTheme, language, highlighting]
+}
 
 function hasBatchExpression(text: string) {
   return text.includes('|') || /-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?/.test(text)
+}
+
+function buildGeneratedTemplateValue(task: { name?: string; config_file?: string; task_kind?: string }) {
+  if ((task.task_kind || 'config') !== 'config' || !task.name) {
+    return ''
+  }
+  return `tasks/${task.name}/${task.config_file || 'config.yaml'}`
+}
+
+function getBatchTriggerKind(text: string) {
+  const trimmed = text.trim()
+  if (/^-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?$/.test(trimmed)) {
+    return 'range'
+  }
+  if (trimmed.includes('|')) {
+    return trimmed.startsWith('(') && trimmed.endsWith(')') ? 'zip' : 'product'
+  }
+  return 'batch'
+}
+
+function inferParamType(value: any): keyof typeof PARAM_TYPE_STYLES {
+  if (value === null || value === undefined) {
+    return 'null'
+  }
+  if (typeof value === 'boolean') {
+    return 'bool'
+  }
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? 'int' : 'float'
+  }
+  if (Array.isArray(value)) {
+    return 'list'
+  }
+  return 'str'
+}
+
+function buildTypeMap(config: Record<string, any> | null, prefix = ''): Record<string, keyof typeof PARAM_TYPE_STYLES> {
+  if (!config) {
+    return {}
+  }
+
+  const result: Record<string, keyof typeof PARAM_TYPE_STYLES> = {}
+  for (const [key, value] of Object.entries(config)) {
+    if (key.startsWith('_meta')) {
+      continue
+    }
+    const fullKey = prefix ? `${prefix}.${key}` : key
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      Object.assign(result, buildTypeMap(value, fullKey))
+      continue
+    }
+    result[fullKey] = inferParamType(value)
+  }
+  return result
 }
 
 export default function GeneratorPage() {
@@ -63,6 +263,8 @@ export default function GeneratorPage() {
   const shellRuntime = workspace?.shell_runtime
   const editorMode = isShellWorkspace ? 'shell' : viewMode === 'shell' ? 'form' : viewMode
   const codeMirrorTheme = theme === 'dark' ? 'dark' : 'light'
+  const yamlEditorExtensions = useMemo(() => getEditorExtensions('yaml', codeMirrorTheme), [codeMirrorTheme])
+  const shellEditorExtensions = useMemo(() => getEditorExtensions('shell', codeMirrorTheme), [codeMirrorTheme])
 
   useEffect(() => {
     if (isShellWorkspace) {
@@ -118,12 +320,12 @@ export default function GeneratorPage() {
     }
   }, [editorMode, yamlText])
 
-  const batchParams = useMemo(() => {
+  const batchTriggerDetails = useMemo(() => {
     if (!parsedConfig) {
-      return [] as string[]
+      return [] as { key: string; value: string; kind: string }[]
     }
 
-    const result: string[] = []
+    const result: { key: string; value: string; kind: string }[] = []
     const walk = (obj: Record<string, any>, prefix = '') => {
       for (const [key, value] of Object.entries(obj)) {
         const fullKey = prefix ? `${prefix}.${key}` : key
@@ -131,7 +333,11 @@ export default function GeneratorPage() {
           typeof value === 'string'
           && (value.includes('|') || /^\s*-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?\s*$/.test(value.trim()))
         ) {
-          result.push(fullKey)
+          result.push({
+            key: fullKey,
+            value,
+            kind: getBatchTriggerKind(value),
+          })
           continue
         }
         if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -143,8 +349,16 @@ export default function GeneratorPage() {
     walk(parsedConfig)
     return result
   }, [parsedConfig])
+  const batchParams = useMemo(() => batchTriggerDetails.map(item => item.key), [batchTriggerDetails])
+  const declaredTypeMap = useMemo(
+    () => buildTypeMap(templateContent?.parsed_config || parsedConfig),
+    [parsedConfig, templateContent?.parsed_config]
+  )
 
   const hasBatchSyntax = editorMode === 'form' && hasBatchExpression(yamlText)
+  const batchHintText = previewData?.count
+    ? `Batch syntax detected. ${previewData.count} tasks will be created after confirmation.`
+    : 'Batch syntax detected. A preview opens before creating multiple tasks.'
 
   const doCreate = useCallback(async () => {
     setGenerating(true)
@@ -160,14 +374,35 @@ export default function GeneratorPage() {
         append_timestamp: appendTimestamp,
       })
       setPreviewOpen(false)
-      setSuccess(`Created ${result.count} ${result.task_kind === 'shell' ? 'shell task' : 'task'}${result.count > 1 ? 's' : ''}`)
+      setPreviewData(null)
+
+      let selectedGeneratedTask = ''
+      const generatedTemplateValue = !isShellWorkspace && result.items.length > 0
+        ? buildGeneratedTemplateValue(result.items[0])
+        : ''
+
+      if (generatedTemplateValue) {
+        try {
+          await fetchTemplates()
+          await loadTemplate(generatedTemplateValue)
+          selectedGeneratedTask = result.items[0].name
+        } catch {
+          selectedGeneratedTask = ''
+        }
+      }
+
+      setSuccess(
+        selectedGeneratedTask
+          ? `Created ${result.count} ${result.task_kind === 'shell' ? 'shell task' : 'task'}${result.count > 1 ? 's' : ''}. Selected ${selectedGeneratedTask}.`
+          : `Created ${result.count} ${result.task_kind === 'shell' ? 'shell task' : 'task'}${result.count > 1 ? 's' : ''}`
+      )
       window.setTimeout(() => setSuccess(''), 4000)
     } catch (err: any) {
       setError(err.message)
     } finally {
       setGenerating(false)
     }
-  }, [appendTimestamp, editorMode, isShellWorkspace, namePrefix, selectedTemplate, shellText, yamlText])
+  }, [appendTimestamp, editorMode, fetchTemplates, isShellWorkspace, loadTemplate, namePrefix, selectedTemplate, shellText, yamlText])
 
   const handleGenerate = useCallback(async () => {
     setError('')
@@ -263,7 +498,7 @@ export default function GeneratorPage() {
       </div>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="min-w-0 flex-1 overflow-y-auto" style={{ flexBasis: '78%' }}>
+        <div className="min-w-0 flex flex-1 flex-col overflow-hidden" style={{ flexBasis: '78%' }}>
           {!isShellWorkspace && loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="animate-pulse text-xs text-txt-tertiary">Loading template...</div>
@@ -272,15 +507,26 @@ export default function GeneratorPage() {
             <FormEditor
               config={parsedConfig}
               columns={columns}
+              declaredTypeMap={declaredTypeMap}
               pinnedParams={pinnedParams}
               batchParams={batchParams}
               onTogglePin={togglePin}
               onChange={data => setYamlText(yamlStringify(data))}
             />
           ) : editorMode === 'yaml' ? (
-            <YamlEditor value={yamlText} onChange={setYamlText} theme={codeMirrorTheme} />
+            <YamlEditor
+              value={yamlText}
+              onChange={setYamlText}
+              theme={codeMirrorTheme}
+              extensions={yamlEditorExtensions}
+            />
           ) : (
-            <ShellEditor value={shellText} onChange={setShellText} theme={codeMirrorTheme} />
+            <ShellEditor
+              value={shellText}
+              onChange={setShellText}
+              theme={codeMirrorTheme}
+              extensions={shellEditorExtensions}
+            />
           )}
         </div>
 
@@ -406,11 +652,11 @@ export default function GeneratorPage() {
               onClick={handleGenerate}
               disabled={generating}
             >
-              {generating ? 'Creating...' : editorMode === 'shell' ? 'Create Shell Task' : 'Generate Tasks'}
+              {generating ? 'Creating...' : editorMode === 'shell' ? 'Create Shell Task' : hasBatchSyntax ? 'Preview Batch Tasks' : 'Generate Tasks'}
             </ActionButton>
             <div className="mt-2 text-center text-2xs text-txt-tertiary">
               {editorMode === 'form' && hasBatchSyntax
-                ? 'Preview opens automatically for batch generation.'
+                ? batchHintText
                 : editorMode === 'shell'
                   ? 'Creates one config.sh task immediately.'
                   : 'Creates one task immediately.'}
@@ -427,6 +673,25 @@ export default function GeneratorPage() {
         onConfirm={doCreate}
         onCancel={() => setPreviewOpen(false)}
       >
+        {batchTriggerDetails.length > 0 && (
+          <div className="space-y-2 rounded-lg border border-border-subtle bg-surface-overlay/70 p-3">
+            <div className="text-xs font-medium text-txt-primary">Batch triggers</div>
+            <div className="flex flex-wrap gap-1.5">
+              {batchTriggerDetails.map(item => (
+                <div
+                  key={item.key}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-surface-raised px-2 py-1 text-2xs"
+                  title={item.value}
+                >
+                  <span className="font-mono text-txt-primary">{item.key}</span>
+                  <span className="rounded-full border border-border-subtle bg-surface-overlay px-1.5 py-0.5 uppercase tracking-[0.12em] text-[10px] text-txt-secondary">
+                    {item.kind}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {previewData?.items && (
           <div className="mt-2 max-h-60 space-y-1 overflow-y-auto">
             {previewData.items.map((item: any) => (
@@ -452,6 +717,7 @@ export default function GeneratorPage() {
 function FormEditor({
   config,
   columns,
+  declaredTypeMap,
   pinnedParams,
   batchParams,
   onTogglePin,
@@ -459,6 +725,7 @@ function FormEditor({
 }: {
   config: Record<string, any> | null
   columns: number
+  declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
   pinnedParams: string[]
   batchParams: string[]
   onTogglePin: (key: string) => void
@@ -477,8 +744,6 @@ function FormEditor({
   }
 
   const allKeys = Object.keys(data).filter(key => !key.startsWith('_meta'))
-  const pinned = pinnedParams.filter(key => key in data)
-  const unpinned = allKeys.filter(key => !pinnedParams.includes(key))
 
   const handleChange = (key: string, value: any) => {
     const next = { ...data, [key]: value }
@@ -487,34 +752,9 @@ function FormEditor({
   }
 
   return (
-    <div className="p-3">
-      {pinned.length > 0 && (
-        <CompactSection
-          title="Pinned"
-          subtitle={`${pinned.length} parameter${pinned.length > 1 ? 's' : ''}`}
-          icon={<Pin className="h-3.5 w-3.5 text-accent" />}
-          accent
-          className="mb-3"
-          bodyClassName="p-1.5"
-        >
-          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
-            {pinned.map(key => (
-              <ParamRow
-                key={key}
-                name={key}
-                value={data[key]}
-                pinned
-                batchActive={batchParams.includes(key)}
-                onChange={value => handleChange(key, value)}
-                onTogglePin={() => onTogglePin(key)}
-              />
-            ))}
-          </div>
-        </CompactSection>
-      )}
-
+    <div className="h-full overflow-y-auto p-3">
       <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
-        {unpinned.map(key => {
+        {allKeys.map(key => {
           const value = data[key]
           if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
             return (
@@ -523,6 +763,7 @@ function FormEditor({
                   name={key}
                   data={value}
                   columns={columns}
+                  declaredTypeMap={declaredTypeMap}
                   pinnedParams={pinnedParams}
                   batchParams={batchParams}
                   prefix={key}
@@ -537,7 +778,8 @@ function FormEditor({
               key={key}
               name={key}
               value={value}
-              pinned={false}
+              declaredType={declaredTypeMap[key]}
+              pinned={pinnedParams.includes(key)}
               batchActive={batchParams.includes(key)}
               onChange={next => handleChange(key, next)}
               onTogglePin={() => onTogglePin(key)}
@@ -553,6 +795,7 @@ function NestedSection({
   name,
   data,
   columns,
+  declaredTypeMap,
   pinnedParams,
   batchParams,
   prefix,
@@ -562,6 +805,7 @@ function NestedSection({
   name: string
   data: Record<string, any>
   columns: number
+  declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
   pinnedParams: string[]
   batchParams: string[]
   prefix: string
@@ -582,8 +826,8 @@ function NestedSection({
         className="flex w-full items-center gap-1.5 border-b border-border-subtle px-2.5 py-1.5 text-left transition-colors hover:bg-surface-overlay"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary" /> : <ChevronRight className="h-3.5 w-3.5 text-txt-tertiary" />}
-        <span className="truncate text-sm font-medium text-txt-primary" title={name}>{name}</span>
-            <span className="rounded-full border border-border-subtle px-1.5 py-0.5 text-2xs text-txt-tertiary">
+        <span className="truncate text-sm font-semibold text-txt-primary" title={name}>{name}</span>
+        <span className="rounded-full border border-border-subtle px-1.5 py-0.5 text-2xs font-medium text-txt-secondary">
           {Object.keys(data).length}
         </span>
       </button>
@@ -599,6 +843,7 @@ function NestedSection({
                       name={key}
                       data={value}
                       columns={columns}
+                      declaredTypeMap={declaredTypeMap}
                       pinnedParams={pinnedParams}
                       batchParams={batchParams}
                       prefix={fullKey}
@@ -613,6 +858,7 @@ function NestedSection({
                   key={key}
                   name={key}
                   value={value}
+                  declaredType={declaredTypeMap[fullKey]}
                   pinned={pinnedParams.includes(fullKey)}
                   batchActive={batchParams.includes(fullKey)}
                   onChange={next => handleChange(key, next)}
@@ -630,6 +876,7 @@ function NestedSection({
 function ParamRow({
   name,
   value,
+  declaredType,
   pinned,
   batchActive,
   onChange,
@@ -637,16 +884,13 @@ function ParamRow({
 }: {
   name: string
   value: any
+  declaredType?: keyof typeof PARAM_TYPE_STYLES
   pinned?: boolean
   batchActive?: boolean
   onChange: (value: any) => void
   onTogglePin: () => void
 }) {
-  const originalType = value === null || value === undefined ? 'null'
-    : typeof value === 'boolean' ? 'bool'
-    : typeof value === 'number' ? (Number.isInteger(value) ? 'int' : 'float')
-    : Array.isArray(value) ? 'list'
-    : 'str'
+  const originalType = declaredType || inferParamType(value)
 
   const [localValue, setLocalValue] = useState(stringifyEditable(value))
 
@@ -713,7 +957,7 @@ function ParamRow({
         <Pin className="h-3 w-3" />
       </button>
 
-      <span className="max-w-[34%] flex-none truncate text-xs font-medium text-txt-primary" title={name}>
+      <span className="max-w-[34%] flex-none truncate text-xs font-semibold text-txt-primary" title={name}>
         {name}
       </span>
 
@@ -772,19 +1016,21 @@ function YamlEditor({
   value,
   onChange,
   theme,
+  extensions,
 }: {
   value: string
   onChange: (value: string) => void
   theme: 'light' | 'dark'
+  extensions: any[]
 }) {
   return (
     <div className="h-full p-3">
-      <div className="h-full overflow-hidden rounded-md border border-border-subtle bg-surface-raised">
+      <div className="generator-code-editor">
         <CodeMirror
           value={value}
           height="100%"
           theme={theme}
-          extensions={[yamlLanguage()]}
+          extensions={extensions}
           onChange={nextValue => onChange(nextValue)}
         />
       </div>
@@ -796,18 +1042,21 @@ function ShellEditor({
   value,
   onChange,
   theme,
+  extensions,
 }: {
   value: string
   onChange: (value: string) => void
   theme: 'light' | 'dark'
+  extensions: any[]
 }) {
   return (
     <div className="h-full p-3">
-      <div className="h-full overflow-hidden rounded-md border border-border-subtle bg-surface-raised">
+      <div className="generator-code-editor">
         <CodeMirror
           value={value}
           height="100%"
           theme={theme}
+          extensions={extensions}
           onChange={nextValue => onChange(nextValue)}
         />
       </div>

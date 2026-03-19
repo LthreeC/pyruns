@@ -13,6 +13,7 @@ import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
+import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import type { LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
@@ -27,6 +28,7 @@ export default function MonitorPage() {
 
   const [sidebarQuery, setSidebarQuery] = useState('')
   const [exportMode, setExportMode] = useState(false)
+  const [detailTask, setDetailTask] = useState<Task | null>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -37,8 +39,8 @@ export default function MonitorPage() {
   const liveLogNameRef = useRef('')
 
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
-  const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 24)
-  const sidebarWidthPct = Number.isFinite(sidebarWidthRaw) ? Math.min(36, Math.max(18, sidebarWidthRaw)) : 24
+  const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
+  const sidebarWidthPct = Number.isFinite(sidebarWidthRaw) ? sidebarWidthRaw : 14
   const terminalVisible = Boolean(selectedTaskName)
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
 
@@ -214,6 +216,22 @@ export default function MonitorPage() {
     })
   }, [tasks, selectedTaskName])
 
+  useEffect(() => {
+    if (!detailTask) {
+      return
+    }
+
+    const refreshed = tasks.find(task => task.name === detailTask.name)
+    if (!refreshed) {
+      setDetailTask(null)
+      return
+    }
+
+    if (refreshed !== detailTask) {
+      setDetailTask(refreshed)
+    }
+  }, [detailTask, tasks])
+
   const selectedTask = tasks.find(task => task.name === selectedTaskName)
   const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
@@ -303,7 +321,7 @@ export default function MonitorPage() {
     <div className="flex h-full overflow-hidden">
       <aside
         className="flex flex-col overflow-hidden border-r border-border-subtle bg-surface-raised"
-        style={{ width: `${sidebarWidthPct}%`, minWidth: 210, maxWidth: 360 }}
+        style={{ width: `${sidebarWidthPct}%` }}
       >
         <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
@@ -453,6 +471,10 @@ export default function MonitorPage() {
                 </ActionButton>
               )}
 
+              <ActionButton variant="accentTint" onClick={() => setDetailTask(selectedTask)}>
+                View Details
+              </ActionButton>
+
               {availableLogs.length > 1 && (
                 <div className="relative">
                   <select
@@ -484,6 +506,16 @@ export default function MonitorPage() {
           )}
         </div>
       </div>
+
+      {detailTask && (
+        <TaskDetailPanel
+          task={detailTask}
+          onClose={() => setDetailTask(null)}
+          onRefresh={() => {
+            void fetchTasks()
+          }}
+        />
+      )}
     </div>
   )
 }

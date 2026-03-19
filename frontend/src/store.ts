@@ -11,18 +11,69 @@ import type {
 import * as api from './api'
 
 let monitorRequestSeq = 0
+const THEME_STORAGE_KEY = 'pyruns_theme'
+const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
+const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
 
 interface ThemeState {
   theme: 'dark' | 'light'
   toggle: () => void
 }
 
+function resolveInitialTheme(): 'dark' | 'light' {
+  if (typeof window === 'undefined') {
+    return 'light'
+  }
+  return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
+}
+
+function readStoredNumber(key: string, fallback: number) {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+  const raw = window.localStorage.getItem(key)
+  if (!raw) {
+    return fallback
+  }
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function readStoredStringArray(key: string) {
+  if (typeof window === 'undefined') {
+    return [] as string[]
+  }
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) {
+      return []
+    }
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+export function applyThemeClass(theme: 'dark' | 'light') {
+  if (typeof document === 'undefined') {
+    return
+  }
+  document.documentElement.classList.remove('light', 'dark')
+  document.documentElement.classList.add(theme)
+}
+
+const initialTheme = resolveInitialTheme()
+applyThemeClass(initialTheme)
+
 export const useThemeStore = create<ThemeState>((set, get) => ({
-  theme: (localStorage.getItem('pyruns_theme') as 'dark' | 'light') || 'dark',
+  theme: initialTheme,
   toggle() {
     const next = get().theme === 'dark' ? 'light' : 'dark'
-    localStorage.setItem('pyruns_theme', next)
-    document.documentElement.className = next === 'dark' ? 'dark' : 'light'
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(THEME_STORAGE_KEY, next)
+    }
+    applyThemeClass(next)
     set({ theme: next })
   },
 }))
@@ -115,12 +166,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   statusFilter: 'All',
   selectedIds: new Set(),
   loading: false,
-  columns: parseInt(localStorage.getItem('pyruns_manager_cols') || '5'),
+  columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5),
   setQuery(q) { set({ query: q, offset: 0 }) },
   setStatusFilter(s) { set({ statusFilter: s, offset: 0 }) },
   setOffset(o) { set({ offset: o }) },
   setColumns(n) {
-    localStorage.setItem('pyruns_manager_cols', String(n))
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MANAGER_COLS_STORAGE_KEY, String(n))
+    }
     set({ columns: n })
   },
   async fetchTasks() {
@@ -196,7 +249,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   shellText: '',
   namePrefix: 'task',
   appendTimestamp: true,
-  pinnedParams: JSON.parse(localStorage.getItem('pyruns_pinned_params') || '[]'),
+  pinnedParams: readStoredStringArray(PINNED_PARAMS_STORAGE_KEY),
   loading: false,
   async fetchTemplates() {
     const res = await api.getTemplates()
@@ -232,7 +285,9 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     const pins = [...get().pinnedParams]
     const idx = pins.indexOf(key)
     if (idx >= 0) pins.splice(idx, 1); else pins.push(key)
-    localStorage.setItem('pyruns_pinned_params', JSON.stringify(pins))
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(PINNED_PARAMS_STORAGE_KEY, JSON.stringify(pins))
+    }
     set({ pinnedParams: pins })
   },
 }))

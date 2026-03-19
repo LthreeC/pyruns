@@ -84,7 +84,7 @@ ui_page_size: {SETTINGS_DEFAULTS.get("ui_page_size")}                   # cards 
 # Monitor
 monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
 monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # max lines in history
-monitor_sidebar_width_pct: {SETTINGS_DEFAULTS.get("monitor_sidebar_width_pct")}     # monitor sidebar width (18-36)
+monitor_sidebar_width_pct: {SETTINGS_DEFAULTS.get("monitor_sidebar_width_pct")}     # monitor sidebar width (% of page)
 
 # Logging
 log_enabled: {SETTINGS_DEFAULTS.get("log_enabled")}

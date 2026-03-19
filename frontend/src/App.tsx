@@ -6,7 +6,7 @@ import GeneratorPage from '@/components/generator/GeneratorPage'
 import ManagerPage from '@/components/manager/ManagerPage'
 import MonitorPage from '@/components/monitor/MonitorPage'
 import LauncherPage from '@/components/launcher/LauncherPage'
-import { useWorkspaceStore, useThemeStore } from '@/store'
+import { applyThemeClass, useWorkspaceStore, useThemeStore } from '@/store'
 
 export default function App() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -14,9 +14,8 @@ export default function App() {
   const fetchWorkspace = useWorkspaceStore(s => s.fetch)
   const theme = useThemeStore(s => s.theme)
 
-  // Apply theme class on mount and change
   useEffect(() => {
-    document.documentElement.className = theme === 'dark' ? 'dark' : 'light'
+    applyThemeClass(theme)
   }, [theme])
 
   useEffect(() => {

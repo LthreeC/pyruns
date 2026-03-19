@@ -98,7 +98,7 @@ def test_workspace_endpoint_returns_metadata(tmp_path):
     assert payload["script_name"] == "main"
     assert payload["workspace_kind"] == WORKSPACE_KIND_SCRIPT
     assert payload["settings"]["shell_mode"] == "follow"
-    assert payload["settings"]["monitor_sidebar_width_pct"] == 24
+    assert payload["settings"]["monitor_sidebar_width_pct"] == 15
     assert payload["shell_runtime"]["mode"] == "follow"
     assert payload["shell_runtime"]["display_name"] == "PowerShell"
     assert payload["templates"]
