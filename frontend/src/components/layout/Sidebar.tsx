@@ -41,6 +41,21 @@ export default function Sidebar() {
   const handlePickScript = async () => {
     setPicking(true)
     try {
+      const nextWorkspace = shellWorkspaceActive
+        ? await api.pickLauncherShellRoot()
+        : await api.pickLauncherScript()
+      setWorkspace(nextWorkspace)
+      navigate('/')
+    } catch {
+      // User-cancelled picker should stay quiet.
+    } finally {
+      setPicking(false)
+    }
+  }
+
+  const handlePickScriptWorkspace = async () => {
+    setPicking(true)
+    try {
       const nextWorkspace = await api.pickLauncherScript()
       setWorkspace(nextWorkspace)
       navigate('/')
@@ -57,7 +72,7 @@ export default function Sidebar() {
       if (shellWorkspaceActive) {
         const nextWorkspace = await exitShellWorkspace()
         if (!nextWorkspace) {
-          await handlePickScript()
+          await handlePickScriptWorkspace()
           return
         }
       } else {
@@ -110,7 +125,7 @@ export default function Sidebar() {
         >
           <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
             <FileCode className="h-3.5 w-3.5" />
-            <span>{shellWorkspaceActive ? 'Workspace Target' : 'Script File'}</span>
+            <span>{shellWorkspaceActive ? 'Shell Folder' : 'Script File'}</span>
             <div className="flex-1 border-t border-border-subtle/80" />
             {picking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronsUpDown className="h-3.5 w-3.5" />}
           </div>
@@ -124,9 +139,9 @@ export default function Sidebar() {
           <div className="mt-3 text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">Workspace</div>
           <div
             className="mt-1 truncate text-2xs text-txt-secondary"
-            title={workspace?.run_root || 'Choose a Python script or open the shell workspace'}
+            title={workspace?.run_root || 'Choose a Python script or choose a shell workspace folder'}
           >
-            {workspace?.run_root || 'Choose a Python script or open the shell workspace'}
+            {workspace?.run_root || 'Choose a Python script or choose a shell workspace folder'}
           </div>
         </button>
 

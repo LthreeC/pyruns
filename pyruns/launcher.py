@@ -60,6 +60,8 @@ def shell_workspace_root_for_run_root(run_root: str) -> str:
     normalized = normalize_path(run_root)
     if os.path.basename(normalized) == SHELL_WORKSPACE_NAME:
         return normalized
+    if os.path.basename(normalized) == DEFAULT_ROOT_NAME:
+        return normalize_path(os.path.join(normalized, SHELL_WORKSPACE_NAME))
     return normalize_path(os.path.join(os.path.dirname(normalized), SHELL_WORKSPACE_NAME))
 
 
@@ -173,6 +175,27 @@ def choose_script_file(initial_dir: str | None = None) -> str | None:
             initialdir=initial_dir or os.getcwd(),
             title="Select Python script",
             filetypes=[("Python files", "*.py"), ("All files", "*.*")],
+        )
+        root.destroy()
+        return normalize_path(path) if path else None
+    except Exception:
+        return None
+
+
+def choose_directory(initial_dir: str | None = None) -> str | None:
+    """Open a native directory picker and return one folder path."""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askdirectory(
+            initialdir=initial_dir or os.getcwd(),
+            title="Select shell workspace directory",
+            mustexist=False,
         )
         root.destroy()
         return normalize_path(path) if path else None

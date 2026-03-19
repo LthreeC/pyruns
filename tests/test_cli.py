@@ -364,6 +364,36 @@ class TestResolveWorkspace:
             assert ws is None
 
 
+class TestEntryPoint:
+    def test_pyr_without_args_opens_shell_workspace(self, tmp_path, monkeypatch, capsys):
+        from pyruns.cli import pyr
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["pyr"])
+
+        with patch("pyruns.cli.bootstrap_shell_workspace", return_value=str(tmp_path / "_pyruns_" / "_shell_")) as mock_bootstrap:
+            with patch("pyruns.cli._launch_ui") as mock_launch:
+                pyr()
+
+        mock_bootstrap.assert_called_once_with(str(tmp_path / "_pyruns_").replace("\\", "/"))
+        mock_launch.assert_called_once_with("/generator")
+        captured = capsys.readouterr()
+        assert "Starting shell workspace" in captured.out
+        assert "Generator" in captured.out
+
+    def test_help_mentions_shell_start(self, monkeypatch, capsys):
+        from pyruns.cli import pyr
+
+        monkeypatch.setattr("sys.argv", ["pyr", "help"])
+
+        with pytest.raises(SystemExit):
+            pyr()
+
+        captured = capsys.readouterr()
+        assert "Start web app in shell mode for current directory" in captured.out
+        assert "pyr ui" in captured.out
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Resolve targets helper
 # ═══════════════════════════════════════════════════════════════

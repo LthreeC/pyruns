@@ -34,6 +34,27 @@ Pyruns 的配置不是“堆一页键值对”。
 
 ## 2. 工作区目录结构
 
+先看一句最重要的话：
+
+- `script` workspace 围绕一个 Python 脚本组织
+- `shell` workspace 围绕一个目录里的命令任务组织
+
+## 2.5 Script vs Shell：配置层面的区别
+
+| 项目 | `script` 模式 | `shell` 模式 |
+| --- | --- | --- |
+| 工作区对象 | 一个 Python 脚本 | 一个目录 |
+| 常见入口 | `pyr train.py` | `pyr` |
+| 任务文件 | `config.yaml` | `config.sh` |
+| 典型用途 | 脚本调参、模板配置、批量实验 | 命令任务、批处理、终端工作流 |
+| 运行重点 | 参数配置与脚本运行 | 原生命令执行 |
+| `__PYRUNS_CONFIG__` | 可能使用 | 不使用 |
+
+如果你在犹豫该选哪一个，经验上可以这样判断：
+
+- 只要你有明确的 Python 入口脚本，优先选 `script`
+- 只有当你真正想管理的是“目录里的命令任务”时，再选 `shell`
+
 ### Script Workspace
 
 ```text

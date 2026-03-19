@@ -165,3 +165,6 @@ export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =
 
 export const pickLauncherScript = () =>
   request<WorkspaceInfo>('/api/launcher/pick-script', { method: 'POST' })
+
+export const pickLauncherShellRoot = () =>
+  request<WorkspaceInfo>('/api/launcher/pick-shell-root', { method: 'POST' })

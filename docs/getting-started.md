@@ -15,6 +15,33 @@
 pip install pyruns
 ```
 
+安装完成后，建议优先记住这两个入口：
+
+```bash
+# 围绕某个 Python 脚本打开 script workspace
+pyr train.py
+
+# 围绕某个 Python 脚本并导入一份 YAML 模板
+pyr train.py my_config.yaml
+```
+
+这两条是 Pyruns 的首选主路径。  
+`pyr` 直接打开 shell workspace 当然也可以，但更适合作为补充方案，而不是用户第一眼看到的默认入口。
+
+## 1.5 先看懂两种模式
+
+Pyruns 现在有两种很明确的工作模式：
+
+| 模式 | 入口 | 核心对象 | 任务文件 | 适合场景 |
+| --- | --- | --- | --- | --- |
+| `script` | `pyr train.py` / `pyr train.py my_config.yaml` | Python 脚本 | `config.yaml` | 参数调优、训练脚本、配置模板、批量实验 |
+| `shell` | `pyr` | 当前目录 | `config.sh` | 终端命令任务、PowerShell / cmd / bash 工作流 |
+
+可以把它们理解成：
+
+- `script` 模式：Pyruns 在帮你管理“脚本驱动的实验”
+- `shell` 模式：Pyruns 在帮你管理“目录驱动的命令任务”
+
 如果你在做本地开发：
 
 ```bash
@@ -56,23 +83,17 @@ pyr train.py my_config.yaml
 
 它会把 `my_config.yaml` 作为当前工作区的默认模板。
 
-## 3. Script Workspace 适合什么
+## 3. 直接打开当前目录的 Shell Workspace
 
-Script workspace 最适合两类脚本：
+如果你现在还没有固定脚本，只是想先把当前目录里的命令任务纳入 Pyruns：
 
-### `argparse` 脚本
+```bash
+pyr
+```
 
-Pyruns 会尽量提取参数定义，生成可编辑表单，再把修改后的值拼回命令行参数。
+这条命令会直接打开当前目录的 shell workspace，并进入 React UI。
 
-### `pyruns.load()` 脚本
-
-Pyruns 会为每个任务写入独立的 `config.yaml`，并在执行时通过 `__PYRUNS_CONFIG__` 指向它。
-
-## 4. 打开 Shell Workspace
-
-先进入一个普通 script workspace，然后在左侧点击 `Open Shell Mode`。
-
-切换后，工作区会变成：
+对应的工作区结构是：
 
 ```text
 project/
@@ -90,6 +111,24 @@ _pyruns_/_shell_/tasks/<task_name>/config.sh
 
 ![Shell Generator 预览](/docs/assets/shell_generator.png)
 
+## 4. Script Workspace 适合什么
+
+Script workspace 最适合两类脚本：
+
+### `argparse` 脚本
+
+Pyruns 会尽量提取参数定义，生成可编辑表单，再把修改后的值拼回命令行参数。
+
+### `pyruns.load()` 脚本
+
+Pyruns 会为每个任务写入独立的 `config.yaml`，并在执行时通过 `__PYRUNS_CONFIG__` 指向它。
+
+这也是为什么 `script` 模式通常应该被当作首选入口：
+
+- 它更适合标准 Python 实验脚本
+- 它和参数编辑、模板管理、batch 生成的结合最自然
+- 它更符合大多数用户第一次接触 Pyruns 时的预期
+
 ## 5. shell 的默认语义
 
 shell 模式最重要的一点不是“像不像 bash”，而是：
@@ -104,6 +143,13 @@ shell 模式最重要的一点不是“像不像 bash”，而是：
 - conda 环境会继承
 - `PATH` 会继承
 - 启动 `pyr` 时已有的环境变量会继承
+
+同时要注意，shell 模式和 script 模式的任务并不是一回事：
+
+- script 模式的任务核心是 `config.yaml`
+- shell 模式的任务核心是 `config.sh`
+- script 模式更强调“参数如何组织”
+- shell 模式更强调“命令如何直接执行”
 
 平台差异只体现在“跟随谁”：
 
@@ -150,7 +196,22 @@ shell_executable: /bin/bash
 
 ![Monitor 预览](/docs/assets/tab_monitor.png)
 
-## 7. 第一个 shell 任务示例
+## 7. `pyr` / `pyr ui` / `pyr cli` 分别做什么
+
+- `pyr`
+  直接打开当前目录的 shell workspace。
+- `pyr ui`
+  打开 launcher，更适合先选脚本再进入 script workspace。
+- `pyr cli`
+  进入交互式 CLI；如果当前目录已有工作区，会直接接管这份工作区。
+
+如果你忘了入口差异，可以随时运行：
+
+```bash
+pyr help
+```
+
+## 8. 第一个 shell 任务示例
 
 进入 shell workspace 后，在 Generator 中输入：
 
@@ -171,7 +232,7 @@ python --version
 - 你写的语法必须匹配当前 follow/custom 对应的 shell
 - Pyruns 不会把 PowerShell 自动翻译成 bash，也不会反过来翻译
 
-## 8. 第一个 batch 示例
+## 9. 第一个 batch 示例
 
 在 script workspace 的 `form` 或 `yaml` 模式里：
 
@@ -189,7 +250,7 @@ optimizer: adam | sgd
 
 批量生成完成之后，最适合继续去看的页面就是 Manager，因为任务会以独立卡片的形式稳定落盘，状态和历史都会马上变得可见。
 
-## 9. 前端开发与打包
+## 10. 前端开发与打包
 
 前端源码在：
 

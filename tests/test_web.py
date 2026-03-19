@@ -370,6 +370,24 @@ def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     assert (task_dir / SHELL_CONFIG_FILENAME).read_text(encoding="utf-8") == "echo hello from shell\n"
 
 
+def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    target_dir = tmp_path / "shell_project"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("pyruns.web.runtime.choose_directory", return_value=str(target_dir)):
+        response = client.post("/api/launcher/pick-shell-root")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace_kind"] == WORKSPACE_KIND_SHELL
+    assert payload["run_root"].endswith("_pyruns_/_shell_")
+    assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
+
+
 def test_tasks_endpoint_supports_offset_pagination(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")

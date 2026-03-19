@@ -19,7 +19,13 @@ from pyruns._config import (
     SHELL_WORKSPACE_NAME,
     ensure_root_dir,
 )
-from pyruns.launcher import bootstrap_from_cli, launcher_query, list_config_candidates, normalize_path
+from pyruns.launcher import (
+    bootstrap_from_cli,
+    bootstrap_shell_workspace,
+    launcher_query,
+    list_config_candidates,
+    normalize_path,
+)
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -31,11 +37,12 @@ _HELP = textwrap.dedent(
     pyruns v{_VERSION}
 
     USAGE
-        pyr                            Start the launcher and choose a workspace
         pyr <script.py>                Start web app for a script
         pyr <script.py> [config.yaml]  Start web app and import a custom YAML config
+        pyr                            Start web app in shell mode for current directory
+        pyr ui                         Start the launcher and choose a script workspace
         pyr dev <script.py>            Start web app in dev mode (hot-reload)
-        pyr cli                        Enter interactive CLI mode
+        pyr cli [script.py]            Enter interactive CLI mode
         pyr <command> [args]           Run a CLI command directly
 
     CLI COMMANDS
@@ -48,12 +55,13 @@ _HELP = textwrap.dedent(
         fg <%N|name|#>        Tail a task's log inline (Ctrl+C to detach)
 
     EXAMPLES
-        pyr
         pyr train.py
         pyr train.py settings.yaml
+        pyr
+        pyr ui
+        pyr cli train.py
         pyr ls
         pyr run 1
-        pyr cli
     """.strip()
 )
 
@@ -154,7 +162,7 @@ def _dispatch_cli(args: list[str]) -> None:
     logger.debug("workspace=%s", workspace)
     if not workspace:
         print("No pyruns workspace found in current directory.")
-        print("Hint: run `pyr` or `pyr <script.py>` first to initialize a workspace.")
+        print("Hint: run `pyr` to open a shell workspace, or `pyr <script.py>` to open a script workspace first.")
         sys.exit(1)
 
     task_manager = _init_task_manager(workspace)
@@ -212,10 +220,27 @@ def _handle_ui_launch(filepath: str, custom_yaml: str | None) -> None:
     _launch_ui(start_path)
 
 
+def _launch_shell_workspace_ui() -> None:
+    """Launch the web UI directly into the current directory's shell workspace."""
+
+    root_dir = normalize_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
+    ensure_root_dir(root_dir)
+    shell_root = bootstrap_shell_workspace(root_dir)
+    print("[pyruns] Starting shell workspace for current directory")
+    print(f"[pyruns] Workspace: {shell_root}")
+    print("[pyruns] Recommended main flow: `pyr <script.py>` or `pyr <script.py> <config.yaml>`")
+    print("[pyruns] Tip: open Generator and write commands in Shell mode")
+    _launch_ui("/generator")
+
+
 def pyr() -> None:
     """Main ``pyr`` console entry point."""
 
-    argv = list(sys.argv[1:]) or ["ui"]
+    argv = list(sys.argv[1:])
+    if not argv:
+        _launch_shell_workspace_ui()
+        return
+
     arg = argv[0]
 
     if arg in ("help", "-h", "--help"):
@@ -236,6 +261,8 @@ def pyr() -> None:
 
     if arg == "ui" and len(argv) == 1:
         ensure_root_dir()
+        print("[pyruns] Opening launcher")
+        print("[pyruns] Tip: choose a Python script to enter script workspace mode")
         _launch_ui(launcher_query())
         return
 

@@ -23,7 +23,21 @@ It tries to stay aligned with what you already have:
 ```bash
 pip install pyruns
 pyr train.py
+pyr train.py my_config.yaml
+pyr
 ```
+
+The recommended first-glance entrypoints are:
+
+- `pyr train.py`
+- `pyr train.py my_config.yaml`
+
+These are the primary paths new users should see first.  
+`pyr` is still available, but it works better as a secondary entry for shell and command-task workflows.
+
+The newer Home view also gives the workspace a clearer entry surface: system status, task overview, and GPU usage are visible before you dive into generation, orchestration, or logs.
+
+![Home](docs/assets/tab_home.png)
 
 ## Why it feels useful
 
@@ -95,6 +109,21 @@ For shell-driven workflows, this matters even more:
 
 ## Two workspace modes
 
+The shortest way to distinguish them is:
+
+- `script` mode builds a workspace around a Python script
+- `shell` mode builds a workspace around command tasks in a directory
+
+| Mode | Entry | What you select | Task file | Best for |
+| --- | --- | --- | --- | --- |
+| `script` | `pyr train.py` / `pyr train.py config.yaml` | a Python script | `config.yaml` | `argparse`, `pyruns.load()`, config-driven experiments |
+| `shell` | `pyr` | the current directory | `config.sh` | PowerShell / cmd / bash command tasks and terminal workflows |
+
+The key difference is not visual. It is what Pyruns is actually managing:
+
+- `script` mode manages “a script plus config tasks”
+- `shell` mode manages “a directory plus command tasks”
+
 ### 1. Script Workspace
 
 When you open a normal Python script, Pyruns builds a dedicated workspace around it:
@@ -115,8 +144,12 @@ This is the right fit for:
 - `argparse` scripts
 - `pyruns.load()` / `pyruns.read()` workflows
 - Python tasks that should keep a separate `config.yaml` snapshot per run
+- workflows where parameter editing, templates, and batch generation come first
 
 ### 2. Shell Workspace
+
+When you switch into shell mode, Pyruns is no longer centered on a `.py` file.  
+It becomes centered on a directory.
 
 When you switch into shell mode, the workspace becomes:
 
@@ -140,6 +173,12 @@ The key idea is not “bash compatibility”. It is this:
 - follow the terminal that launched `pyr`
 - inherit the current Python process environment
 - do not auto-translate syntax across shells
+
+So shell mode is better understood as:
+
+- turning terminal history into managed tasks
+- grouping command workflows from one directory into Manager / Monitor
+- preserving the feel of “run this in the terminal I already use”
 
 So the target behavior of a shell task is:
 
@@ -185,6 +224,26 @@ pyr cli train.py
 
 The CLI and the Web UI share the same workspace and task data on disk.
 
+### Mode 4: open a shell workspace directly
+
+If you do not want to start from a Python entry script and only want to manage command tasks in the current directory:
+
+```bash
+pyr
+```
+
+This creates and opens:
+
+```text
+<current_dir>/_pyruns_/_shell_
+```
+
+This is especially useful for:
+
+- command-driven experiments
+- PowerShell / cmd / bash task collections
+- workflows that begin as shell commands before becoming more structured scripts
+
 ## Practical examples
 
 The repository already includes runnable examples under `examples/`.
@@ -218,6 +277,20 @@ This one is especially good for showing:
 ![Task Detail](docs/assets/task_info.png)
 
 ## Interface modules
+
+### Home
+
+Home is the first-glance overview after entering a workspace.  
+Its job is to answer “what is happening right now?” before pushing you into a task list.
+
+![Home Preview](docs/assets/tab_home.png)
+
+This page is useful for quickly scanning:
+
+- task totals and status distribution
+- active vs done vs failed state
+- GPU and system resource usage
+- where to jump next: Generator, Manager, or Monitor
 
 ### Generator
 

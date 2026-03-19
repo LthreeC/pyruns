@@ -18,5 +18,6 @@ _pyruns_/
 
 .vitepress/dist/
 .vitepress/cache/
+.vitepress/.temp/
 
 .npm-cache/

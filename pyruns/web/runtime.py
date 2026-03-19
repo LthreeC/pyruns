@@ -26,6 +26,7 @@ from pyruns.core.report import build_export_csv
 from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
+    choose_directory,
     choose_script_file,
     list_config_candidates,
     list_script_candidates,
@@ -736,5 +737,23 @@ class PyrunsRuntime:
         if not script_path:
             raise ValueError("No script selected.")
         workspace = bootstrap_workspace(script_path)
+        self.reload(workspace)
+        return self.get_workspace_info()
+
+    def pick_and_open_shell_workspace(self) -> Dict[str, Any]:
+        """Open a native folder picker and activate that directory's shell workspace."""
+
+        current_root = self.root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
+        if current_root:
+            initial_dir = os.path.dirname(os.path.dirname(str(current_root)))
+        else:
+            initial_dir = os.getcwd()
+
+        selected_dir = choose_directory(initial_dir)
+        if not selected_dir:
+            raise ValueError("No directory selected.")
+
+        project_root = normalize_path(os.path.join(selected_dir, _cfg.DEFAULT_ROOT_NAME))
+        workspace = bootstrap_shell_workspace(project_root)
         self.reload(workspace)
         return self.get_workspace_info()

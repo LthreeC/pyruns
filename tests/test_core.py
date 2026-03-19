@@ -15,7 +15,9 @@ from unittest.mock import patch, MagicMock
 from pyruns._config import (
     ENV_KEY_CONFIG,
     CONFIG_FILENAME,
+    DEFAULT_ROOT_NAME,
     SHELL_CONFIG_FILENAME,
+    SHELL_WORKSPACE_NAME,
     TASK_INFO_FILENAME,
     RECORDS_KEY,
     TASK_KIND_CONFIG,
@@ -26,6 +28,7 @@ from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
 from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator, create_task_object
+from pyruns.launcher import shell_workspace_root_for_run_root
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 
@@ -438,6 +441,24 @@ def test_shell_runtime_custom_mode_uses_explicit_shell_executable(tmp_path):
     assert runtime["mode"] == "custom"
     assert runtime["source"] == "custom_shell"
     assert runtime["executable"] == "/custom/shell"
+
+
+def test_shell_workspace_root_uses_project_root_when_given_pyruns_root(tmp_path):
+    project_root = tmp_path / DEFAULT_ROOT_NAME
+    project_root.mkdir(parents=True)
+
+    shell_root = shell_workspace_root_for_run_root(str(project_root))
+
+    assert shell_root == str(project_root / SHELL_WORKSPACE_NAME).replace("\\", "/")
+
+
+def test_shell_workspace_root_uses_parent_pyruns_root_when_given_script_workspace(tmp_path):
+    script_root = tmp_path / DEFAULT_ROOT_NAME / "main"
+    script_root.mkdir(parents=True)
+
+    shell_root = shell_workspace_root_for_run_root(str(script_root))
+
+    assert shell_root == str(tmp_path / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME).replace("\\", "/")
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

@@ -292,6 +292,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/launcher/pick-shell-root")
+    def pick_launcher_shell_root() -> dict[str, Any]:
+        try:
+            return get_runtime().pick_and_open_shell_workspace()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/tasks")
     def get_tasks(
         query: str = "",

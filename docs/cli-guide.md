@@ -2,6 +2,45 @@
 
 当你在无头服务器 (Headless Server) 上运行模型，或者偏爱纯命令行操作，不想通过浏览器映射端口时，Pyruns 提供的 **CLI 交互模式** 能够为你提供与 Web UI 完全对等的功能体验。这不仅包括了任务生成、任务运行与后台排队调度，还包含彩色的独立日志流跟随和实时的图形化资源监视。
 
+## 顶层入口先分清
+
+在进入 `cli` 子命令之前，先把 `pyr` 顶层入口记清楚：
+
+```bash
+pyr
+```
+
+- 直接打开当前目录的 shell workspace
+- 适合先管理 shell / PowerShell / cmd / bash 命令任务
+- 会直接进入 Web UI
+
+```bash
+pyr ui
+```
+
+- 打开 launcher
+- 适合先选脚本，再进入 script workspace
+
+```bash
+pyr <script.py>
+```
+
+- 直接围绕某个 Python 脚本建立 script workspace
+- 适合 argparse / `pyruns.load()` 风格脚本
+
+```bash
+pyr cli [script.py]
+```
+
+- 进入交互式 CLI
+- 适合无头服务器、SSH、纯终端场景
+
+如果你想随时查看这些入口说明，也可以直接运行：
+
+```bash
+pyr help
+```
+
 ## 启动 CLI
 
 你可以通过两种形式调用 CLI：
