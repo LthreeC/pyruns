@@ -12,7 +12,13 @@ import textwrap
 import traceback
 
 from pyruns import __version__ as _VERSION
-from pyruns._config import DEFAULT_ROOT_NAME, ENV_KEY_ROOT, ensure_root_dir
+from pyruns._config import (
+    DEFAULT_ROOT_NAME,
+    ENV_KEY_ROOT,
+    SCRIPT_INFO_FILENAME,
+    SHELL_WORKSPACE_NAME,
+    ensure_root_dir,
+)
 from pyruns.launcher import bootstrap_from_cli, launcher_query, list_config_candidates, normalize_path
 from pyruns.utils import get_logger
 
@@ -35,7 +41,6 @@ _HELP = textwrap.dedent(
     CLI COMMANDS
         ls [query]            List tasks (with optional filter)
         gen [template]        Generate tasks from YAML config
-        gen --args [template] Generate tasks in args mode (args: "...")
         run <name|#>          Run task(s) by name or index
         delete <name|#>       Soft-delete task(s)
         jobs                  Show running/queued tasks
@@ -79,8 +84,10 @@ def _resolve_workspace(script_path: str | None = None) -> str | None:
 
         target_abs = normalize_path(script_path)
         for entry in os.listdir(pyruns_dir):
+            if entry == SHELL_WORKSPACE_NAME:
+                continue
             workspace = os.path.join(pyruns_dir, entry)
-            script_info_path = os.path.join(workspace, "script_info.json")
+            script_info_path = os.path.join(workspace, SCRIPT_INFO_FILENAME)
             if not os.path.isfile(script_info_path):
                 continue
             try:
@@ -95,8 +102,10 @@ def _resolve_workspace(script_path: str | None = None) -> str | None:
     best_candidate = None
     latest_time = -1.0
     for entry in os.listdir(pyruns_dir):
+        if entry == SHELL_WORKSPACE_NAME:
+            continue
         workspace = os.path.join(pyruns_dir, entry)
-        script_info_path = os.path.join(workspace, "script_info.json")
+        script_info_path = os.path.join(workspace, SCRIPT_INFO_FILENAME)
         if not os.path.isfile(script_info_path):
             continue
         try:

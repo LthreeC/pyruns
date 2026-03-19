@@ -13,7 +13,13 @@ import yaml
 from unittest.mock import patch, MagicMock
 
 from pyruns._config import (
-    ENV_KEY_CONFIG, CONFIG_FILENAME, TASK_INFO_FILENAME, RECORDS_KEY,
+    ENV_KEY_CONFIG,
+    CONFIG_FILENAME,
+    SHELL_CONFIG_FILENAME,
+    TASK_INFO_FILENAME,
+    RECORDS_KEY,
+    TASK_KIND_CONFIG,
+    TASK_KIND_SHELL,
 )
 from pyruns.core.config_manager import ConfigNode, ConfigManager
 from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
@@ -21,6 +27,7 @@ from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator, create_task_object
 from pyruns.utils.batch_utils import generate_batch_configs
+from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 
 def test_config_node_init():
     data = {
@@ -166,8 +173,18 @@ def test_system_monitor_sample(mock_subprocess, mock_psutil):
     mock_mem.percent = 60.0
     mock_psutil.virtual_memory.return_value = mock_mem
     
-    # Setup GPU mock
-    mock_subprocess.return_value = b"0, 45.0, 4000.0, 8000.0\n1, 90.0, 8000.0, 8000.0\n"
+    # Setup GPU + process mocks
+    mock_subprocess.side_effect = [
+        (
+            b"0, NVIDIA RTX 4090, GPU-AAA, 45.0, 4000.0, 8000.0\n"
+            b"1, NVIDIA RTX 4080, GPU-BBB, 90.0, 8000.0, 8000.0\n"
+        ),
+        (
+            b"GPU-AAA, 1234, python.exe, 2048\n"
+            b"GPU-AAA, 9999, tensorboard.exe, 256\n"
+            b"GPU-BBB, 5678, train.py, 4096\n"
+        ),
+    ]
     
     monitor = SystemMonitor()
     metrics = monitor.sample()
@@ -179,13 +196,19 @@ def test_system_monitor_sample(mock_subprocess, mock_psutil):
     # Assert GPU
     gpus = metrics["gpus"]
     assert len(gpus) == 2
+    assert gpus[0]["id"] == 0
     assert gpus[0]["index"] == 0
+    assert gpus[0]["name"] == "NVIDIA RTX 4090"
+    assert gpus[0]["uuid"] == "GPU-AAA"
     assert gpus[0]["util"] == 45.0
     assert gpus[0]["mem_used"] == 4000.0
     assert gpus[0]["mem_total"] == 8000.0
+    assert [proc["pid"] for proc in gpus[0]["processes"]] == [1234, 9999]
     
     assert gpus[1]["index"] == 1
+    assert gpus[1]["name"] == "NVIDIA RTX 4080"
     assert gpus[1]["util"] == 90.0
+    assert gpus[1]["processes"][0]["name"] == "train.py"
     
     assert monitor._gpu_cache == gpus
 
@@ -213,11 +236,26 @@ def test_system_monitor_gpu_error(mock_subprocess, mock_psutil):
 @patch("pyruns.core.system_metrics.subprocess.check_output")
 def test_system_monitor_gpu_empty(mock_subprocess):
     # Setup GPU to return empty (e.g. no GPUs or driver not loaded properly but command succeeds)
-    mock_subprocess.return_value = b"   \n\n\n"
+    mock_subprocess.side_effect = [b"   \n\n\n", b""]
     
     monitor = SystemMonitor()
     gpus = monitor._get_gpu_metrics()
     assert gpus == []
+
+
+@patch("pyruns.core.system_metrics.subprocess.check_output")
+def test_system_monitor_gpu_process_query_failure_still_returns_gpu_summary(mock_subprocess):
+    mock_subprocess.side_effect = [
+        b"0, NVIDIA RTX 4090, GPU-AAA, 45.0, 4000.0, 8000.0\n",
+        Exception("process query failed"),
+    ]
+
+    monitor = SystemMonitor()
+    gpus = monitor._get_gpu_metrics()
+
+    assert len(gpus) == 1
+    assert gpus[0]["name"] == "NVIDIA RTX 4090"
+    assert gpus[0]["processes"] == []
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -232,6 +270,9 @@ def test_prepare_env():
     
     env2 = _prepare_env(task_dir="/fake/dir")
     assert env2[ENV_KEY_CONFIG] == os.path.join("/fake/dir", CONFIG_FILENAME)
+
+    env3 = _prepare_env(task_dir="/fake/dir", task_kind=TASK_KIND_SHELL, config_file=SHELL_CONFIG_FILENAME)
+    assert ENV_KEY_CONFIG not in env3
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -271,35 +312,146 @@ def test_build_command_non_argparse(mock_detect):
     assert cmd[1] == "train.py"
 
 
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-def test_build_command_args_mode(mock_detect):
-    mock_detect.return_value = ("hydra", None)
-    script_path = "train.py"
-    config = {
-        "run_script": "python -m demo.train",
-        "args": "model=vit \\\n dataset=imagenet \\\n train.epochs=300",
+@patch("pyruns.core.executor._resolve_shell_executable")
+def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
+    monkeypatch.setattr("pyruns.core.executor.os.name", "posix", raising=False)
+    mock_shell.return_value = "/bin/bash"
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script_path = task_dir / SHELL_CONFIG_FILENAME
+    script_path.write_text("echo hello\n", encoding="utf-8")
+
+    cmd, wd = _build_command(
+        None,
+        None,
+        None,
+        {},
+        task_kind=TASK_KIND_SHELL,
+        task_dir=str(task_dir),
+        config_file=SHELL_CONFIG_FILENAME,
+    )
+
+    assert cmd == ["/bin/bash", str(script_path)]
+    assert wd == str(task_dir)
+
+
+@patch("pyruns.core.executor._resolve_shell_executable")
+def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch):
+    monkeypatch.setattr("pyruns.core.executor.os.name", "nt", raising=False)
+    mock_shell.return_value = r"C:\Windows\System32\cmd.exe"
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script_path = task_dir / SHELL_CONFIG_FILENAME
+    script_path.write_text("#!/usr/bin/env bash\necho hello\n", encoding="utf-8")
+
+    cmd, wd = _build_command(
+        None,
+        None,
+        None,
+        {},
+        task_kind=TASK_KIND_SHELL,
+        task_dir=str(task_dir),
+        config_file=SHELL_CONFIG_FILENAME,
+    )
+
+    wrapper_path = task_dir / ".pyruns_shell_run.cmd"
+    assert cmd == [r"C:\Windows\System32\cmd.exe", "/d", "/c", str(wrapper_path)]
+    assert wd == str(task_dir)
+    assert wrapper_path.exists()
+    wrapper_content = wrapper_path.read_text(encoding="utf-8-sig")
+    assert "#!/usr/bin/env bash" not in wrapper_content
+    assert "echo hello" in wrapper_content
+
+
+@patch("pyruns.core.executor._resolve_shell_executable")
+def test_build_command_shell_task_windows_powershell(mock_shell, tmp_path, monkeypatch):
+    monkeypatch.setattr("pyruns.core.executor.os.name", "nt", raising=False)
+    mock_shell.return_value = r"C:\Program Files\PowerShell\7\pwsh.exe"
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script_path = task_dir / SHELL_CONFIG_FILENAME
+    script_path.write_text("#!/usr/bin/env bash\nWrite-Host 'hello'\n", encoding="utf-8")
+
+    cmd, wd = _build_command(
+        None,
+        None,
+        None,
+        {},
+        task_kind=TASK_KIND_SHELL,
+        task_dir=str(task_dir),
+        config_file=SHELL_CONFIG_FILENAME,
+    )
+
+    wrapper_path = task_dir / ".pyruns_shell_run.ps1"
+    assert cmd == [
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(wrapper_path),
+    ]
+    assert wd == str(task_dir)
+    assert wrapper_path.exists()
+    wrapper_content = wrapper_path.read_text(encoding="utf-8-sig")
+    assert "#!/usr/bin/env bash" not in wrapper_content
+    assert "Write-Host 'hello'" in wrapper_content
+    assert "[Console]::OutputEncoding" in wrapper_content
+    assert "$OutputEncoding = $__pyrunsUtf8" in wrapper_content
+
+
+@patch("pyruns.utils.shell_runtime.get_follow_shell_runtime")
+def test_shell_runtime_follow_mode_ignores_shell_executable_setting(mock_follow_shell, tmp_path):
+    workspace = tmp_path / "_pyruns_" / "main"
+    workspace.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text("shell_mode: follow\nshell_executable: bash.exe\n", encoding="utf-8")
+    mock_follow_shell.return_value = {
+        "mode": "follow",
+        "source": "follow_terminal",
+        "terminal_kind": "powershell",
+        "display_name": "PowerShell",
+        "executable": r"C:\Program Files\PowerShell\7\pwsh.exe",
+        "available": True,
     }
-    cmd, wd = _build_command(None, script_path, None, config, run_mode="args")
-    assert cmd[0] == "python"
-    assert cmd[1] == "-m"
-    assert cmd[2] == "demo.train"
-    assert "model=vit" in cmd
-    assert "dataset=imagenet" in cmd
-    assert "train.epochs=300" in cmd
+
+    runtime = get_shell_runtime_for_workspace(str(workspace))
+
+    assert runtime["mode"] == "follow"
+    assert runtime["terminal_kind"] == "powershell"
+    assert runtime["executable"] == r"C:\Program Files\PowerShell\7\pwsh.exe"
+
+
+def test_shell_runtime_custom_mode_uses_explicit_shell_executable(tmp_path):
+    workspace = tmp_path / "_pyruns_" / "main"
+    workspace.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "shell_mode: custom\nshell_executable: /custom/shell\n",
+        encoding="utf-8",
+    )
+
+    runtime = get_shell_runtime_for_workspace(str(workspace))
+
+    assert runtime["mode"] == "custom"
+    assert runtime["source"] == "custom_shell"
+    assert runtime["executable"] == "/custom/shell"
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
-def test_build_command_hydra_requires_args(mock_detect):
+def test_build_command_hydra_requires_shell_workspace(mock_detect):
     mock_detect.return_value = ("hydra", None)
-    with pytest.raises(RuntimeError):
-        _build_command(None, "train.py", None, {"args": ""}, run_mode="config")
+    with pytest.raises(RuntimeError, match="shell workspace/task"):
+        _build_command(None, "train.py", None, {})
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
-def test_build_command_unknown_requires_args_mode(mock_detect):
+def test_build_command_unknown_requires_shell_workspace(mock_detect):
     mock_detect.return_value = ("unknown", None)
     with pytest.raises(RuntimeError, match="Unable to detect script config mode safely"):
-        _build_command(None, "train.py", None, {}, run_mode="config")
+        _build_command(None, "train.py", None, {})
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -476,7 +628,7 @@ def test_log_emitter_isolation():
 
 class TestCreateTaskObject:
     def test_basic_fields(self):
-        obj = create_task_object("/tmp/task1", "my-task", {"lr": 0.01})
+        obj = create_task_object("/tmp/task1", "my-task", config={"lr": 0.01})
         assert obj["dir"] == "/tmp/task1"
         assert obj["name"] == "my-task"
         assert obj["status"] == "pending"
@@ -484,11 +636,22 @@ class TestCreateTaskObject:
         assert obj["env"] == {}
 
     def test_created_at_format(self):
-        obj = create_task_object("/tmp", "t", {})
+        obj = create_task_object("/tmp", "t", config={})
         # Should be like "2026-02-12 15:30:00"
         assert len(obj["created_at"]) == 19
         assert "-" in obj["created_at"]
         assert "_" in obj["created_at"]  # 2026-02-12_15-30-00
+
+    def test_shell_task_fields(self):
+        obj = create_task_object(
+            "/tmp/task-shell",
+            "shell-task",
+            task_kind=TASK_KIND_SHELL,
+            config_text="echo hello\n",
+        )
+        assert obj["task_kind"] == TASK_KIND_SHELL
+        assert obj["config_file"] == SHELL_CONFIG_FILENAME
+        assert obj["config_text"] == "echo hello\n"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -582,18 +745,25 @@ class TestTaskGeneratorCreateTask:
         folder = os.path.basename(task["dir"])
         assert folder.startswith("task_")
 
-    def test_run_mode_written_per_task(self, tmp_path):
+    def test_task_kind_written_per_task(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
-        task_cfg = gen.create_task("cfg-task", {"x": 1}, run_mode="config")
-        task_args = gen.create_task("args-task", {"args": "model=vit"}, run_mode="args")
+        task_cfg = gen.create_task("cfg-task", {"x": 1}, task_kind=TASK_KIND_CONFIG)
+        task_shell = gen.create_shell_task("shell-task", "echo shell\n")
 
         with open(os.path.join(task_cfg["dir"], "task_info.json"), "r", encoding="utf-8") as f:
             info_cfg = json.load(f)
-        with open(os.path.join(task_args["dir"], "task_info.json"), "r", encoding="utf-8") as f:
-            info_args = json.load(f)
+        with open(os.path.join(task_shell["dir"], "task_info.json"), "r", encoding="utf-8") as f:
+            info_shell = json.load(f)
 
-        assert info_cfg["run_mode"] == "config"
-        assert info_args["run_mode"] == "args"
+        assert info_cfg["task_kind"] == TASK_KIND_CONFIG
+        assert info_cfg["config_file"] == CONFIG_FILENAME
+        assert info_shell["task_kind"] == TASK_KIND_SHELL
+        assert info_shell["config_file"] == SHELL_CONFIG_FILENAME
+
+    def test_invalid_task_kind_is_rejected(self, tmp_path):
+        gen = TaskGenerator(root_dir=str(tmp_path))
+        with pytest.raises(ValueError, match="Unsupported task kind"):
+            gen.create_task("invalid", {"x": 1}, task_kind="unknown-kind")
 
 
 # ═══════════════════════════════════════════════════════════════

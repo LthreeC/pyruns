@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { ChevronDown, Download, FileDown, Pin, Play, Rows3, Square } from 'lucide-react'
 import clsx from 'clsx'
-import { useMonitorStore, useTaskStore } from '@/store'
+import { useMonitorStore, useTaskStore, useWorkspaceStore } from '@/store'
 import { useLogStream } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
@@ -13,15 +13,16 @@ import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
-import type { Task } from '@/types'
+import type { LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
 
 export default function MonitorPage() {
   const { tasks, fetchTasks } = useTaskStore()
+  const workspace = useWorkspaceStore(state => state.workspace)
   const {
     selectedTaskName, logContent, availableLogs, selectedLog, exportIds,
-    selectTask, selectLogFile, toggleExport, selectAllExport, clearExport,
+    selectTask, selectLogFile, appendLog, toggleExport, selectAllExport, clearExport,
   } = useMonitorStore()
 
   const [sidebarQuery, setSidebarQuery] = useState('')
@@ -31,9 +32,13 @@ export default function MonitorPage() {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
   const renderedLogRef = useRef<{ key: string; content: string } | null>(null)
-  const initialSelectionResolvedRef = useRef(false)
+  const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
+  const selectedLogRef = useRef(selectedLog)
+  const liveLogNameRef = useRef('')
 
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
+  const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 24)
+  const sidebarWidthPct = Number.isFinite(sidebarWidthRaw) ? Math.min(36, Math.max(18, sidebarWidthRaw)) : 24
   const terminalVisible = Boolean(selectedTaskName)
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
 
@@ -72,6 +77,26 @@ export default function MonitorPage() {
         brightCyan: '#22D3EE',
         brightWhite: '#FAFAFA',
       },
+    })
+
+    term.attachCustomKeyEventHandler(event => {
+      const isCopyShortcut = (event.ctrlKey || event.metaKey)
+        && !event.altKey
+        && event.key.toLowerCase() === 'c'
+      if (!isCopyShortcut) {
+        return true
+      }
+
+      const selection = term.getSelection()
+      if (!selection) {
+        return true
+      }
+
+      event.preventDefault()
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(selection).catch(() => {})
+      }
+      return false
     })
 
     const fitAddon = new FitAddon()
@@ -176,68 +201,10 @@ export default function MonitorPage() {
     renderedLogRef.current = { key: renderKey, content: logContent }
   }, [renderKey, selectedTaskName, logContent])
 
-  const handleChunk = useCallback((text: string) => {
-    xtermRef.current?.write(text)
-    const currentKey = `${selectedTaskName ?? ''}::${selectedLog || ''}`
-    const previous = renderedLogRef.current
-    renderedLogRef.current = {
-      key: currentKey,
-      content: previous?.key === currentKey ? `${previous.content}${text}` : text,
-    }
-  }, [selectedTaskName, selectedLog])
-
-  const getPreferredTask = useCallback((items: Task[]) => {
-    const activeTasks = items
-      .filter(task => task.status === 'running' || task.status === 'queued')
-      .sort((a, b) => {
-        const aTime = a.start_times?.[a.start_times.length - 1] || a.created_at || ''
-        const bTime = b.start_times?.[b.start_times.length - 1] || b.created_at || ''
-        return String(bTime).localeCompare(String(aTime))
-      })
-
-    if (activeTasks.length > 0) {
-      return activeTasks[0]
-    }
-
-    if (selectedTaskName) {
-      const existing = items.find(task => task.name === selectedTaskName)
-      if (existing) {
-        return existing
-      }
-    }
-
-    return items[0] || null
-  }, [selectedTaskName])
-
-  useEffect(() => {
-    if (tasks.length === 0) {
-      initialSelectionResolvedRef.current = false
-      useMonitorStore.setState({
-        selectedTaskName: null,
-        logContent: '',
-        logOffset: 0,
-        availableLogs: [],
-        selectedLog: '',
-      })
-      return
-    }
-
-    if (initialSelectionResolvedRef.current) return
-    const preferred = getPreferredTask(tasks)
-    if (!preferred) return
-    initialSelectionResolvedRef.current = true
-    void selectTask(preferred.name)
-  }, [tasks, getPreferredTask, selectTask])
-
   useEffect(() => {
     if (tasks.length === 0 || !selectedTaskName) return
     const stillExists = tasks.some(task => task.name === selectedTaskName)
     if (stillExists) return
-    const fallback = getPreferredTask(tasks)
-    if (fallback) {
-      void selectTask(fallback.name)
-      return
-    }
     useMonitorStore.setState({
       selectedTaskName: null,
       logContent: '',
@@ -245,16 +212,33 @@ export default function MonitorPage() {
       availableLogs: [],
       selectedLog: '',
     })
-  }, [tasks, selectedTaskName, getPreferredTask, selectTask])
+  }, [tasks, selectedTaskName])
 
   const selectedTask = tasks.find(task => task.name === selectedTaskName)
   const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
+  selectedTaskNameRef.current = selectedTaskName
+  selectedLogRef.current = selectedLog
+  liveLogNameRef.current = liveLogName
+
+  const handleChunk = useCallback((message: LogStreamMessage) => {
+    const activeTaskName = selectedTaskNameRef.current
+    if (!activeTaskName || message.task_name !== activeTaskName) {
+      return
+    }
+
+    const activeLog = selectedLogRef.current
+    if (activeLog && activeLog !== liveLogNameRef.current) {
+      return
+    }
+
+    appendLog(message.content)
+  }, [appendLog])
 
   useLogStream({ taskName: selectedTaskName, onChunk: handleChunk, enabled: isLive })
 
   const filteredTasks = sidebarQuery
-    ? tasks.filter(task => task.name.toLowerCase().includes(sidebarQuery.toLowerCase()))
+    ? tasks.filter(task => matchesTaskQuery(task, sidebarQuery))
     : tasks
   const pinnedTasks = filteredTasks.filter(task => task.pinned)
   const otherTasks = filteredTasks.filter(task => !task.pinned)
@@ -317,8 +301,11 @@ export default function MonitorPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <aside className="flex w-[24%] min-w-[210px] max-w-[320px] flex-col overflow-hidden border-r border-border-subtle bg-surface-raised">
-        <div className="border-b border-border-subtle px-3 py-2.5">
+      <aside
+        className="flex flex-col overflow-hidden border-r border-border-subtle bg-surface-raised"
+        style={{ width: `${sidebarWidthPct}%`, minWidth: 210, maxWidth: 360 }}
+      >
+        <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
             <div>
               <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">Monitor</div>
@@ -331,7 +318,7 @@ export default function MonitorPage() {
           <SearchInput value={sidebarQuery} onChange={setSidebarQuery} placeholder="Filter tasks..." debounceMs={150} />
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2.5 py-2.5">
+        <div className="flex-1 overflow-y-auto px-2 py-2">
           {pinnedTasks.length > 0 && (
             <CompactSection
               title="Pinned"
@@ -339,7 +326,7 @@ export default function MonitorPage() {
               icon={<Pin className="h-3.5 w-3.5 text-accent" />}
               accent
               className="mb-3"
-              bodyClassName="space-y-1.5 p-1.5"
+              bodyClassName="space-y-1 p-1"
             >
               {pinnedTasks.map(task => (
                 <SidebarItem
@@ -358,7 +345,7 @@ export default function MonitorPage() {
             title="Tasks"
             subtitle={`${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
             icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
-            bodyClassName="space-y-1.5 p-1.5"
+            bodyClassName="space-y-1 p-1"
           >
             {otherTasks.length === 0 && pinnedTasks.length === 0 ? (
               <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">No tasks</div>
@@ -377,7 +364,7 @@ export default function MonitorPage() {
           </CompactSection>
         </div>
 
-        <div className="border-t border-border-subtle px-3 py-2.5">
+        <div className="border-t border-border-subtle px-2.5 py-2">
           {!exportMode ? (
             <ActionButton
               icon={<FileDown className="h-3.5 w-3.5" />}
@@ -519,7 +506,7 @@ function SidebarItem({
       type="button"
       onClick={onClick}
       className={clsx(
-        'flex w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-left transition-colors',
+        'flex w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'
@@ -550,4 +537,28 @@ function StatusDot({ status }: { status: TaskStatus }) {
   }
 
   return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[status])} />
+}
+
+function matchesTaskQuery(task: Task, query: string) {
+  const haystack = [
+    task.name,
+    task.notes,
+    task.preview_text,
+    task.search_text,
+    task.config_text,
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase()
+
+  const terms = query
+    .split(/\r?\n/)
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean)
+
+  if (terms.length === 0) {
+    return true
+  }
+
+  return terms.every(term => haystack.includes(term))
 }

@@ -12,9 +12,9 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANT_STYLES: Record<ActionButtonVariant, string> = {
-  primary: 'border border-accent bg-accent text-white shadow-sm hover:bg-accent-hover',
-  success: 'border border-emerald-500/25 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/16',
-  danger: 'border border-rose-500/25 bg-rose-500/10 text-rose-300 hover:bg-rose-500/16',
+  primary: 'border border-accent bg-accent text-white shadow-sm shadow-accent/20 hover:bg-accent-hover',
+  success: 'border border-emerald-700/80 bg-emerald-600 text-white shadow-sm shadow-emerald-950/30 hover:bg-emerald-500',
+  danger: 'border border-rose-800/80 bg-rose-600 text-white shadow-sm shadow-rose-950/30 hover:bg-rose-500',
   ghost: 'border border-border-subtle bg-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
   accentTint: 'border border-accent/25 bg-accent/8 text-accent hover:bg-accent/12',
 }

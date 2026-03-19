@@ -1,118 +1,159 @@
-"""
-Low-level log file I/O helpers (append, read).
+"""Low-level log file I/O helpers used by the Monitor and log endpoints."""
 
-Moved from core/ to utils/ — these are pure I/O utilities, not business logic.
-"""
+from __future__ import annotations
+
+import locale
 import os
 from typing import Tuple
 
 
+def _log_decode_candidates() -> list[str]:
+    """Return preferred encodings for persisted log files."""
+
+    candidates = ["utf-8-sig", "utf-8"]
+    preferred = str(locale.getpreferredencoding(False) or "").strip()
+    if preferred and preferred.lower() not in {item.lower() for item in candidates}:
+        candidates.append(preferred)
+
+    if os.name == "nt":
+        for encoding in ("gbk", "cp936", "cp65001"):
+            if encoding.lower() not in {item.lower() for item in candidates}:
+                candidates.append(encoding)
+
+    return candidates
+
+
+def _decode_with_encoding(data: bytes, encoding: str, *, errors: str = "strict") -> str | None:
+    """Decode ``data`` with one encoding, returning ``None`` when it fails."""
+
+    try:
+        return data.decode(encoding, errors=errors)
+    except (LookupError, UnicodeDecodeError):
+        return None
+
+
+def decode_log_bytes(data: bytes) -> str:
+    """Decode raw log bytes with UTF-8 first and sensible Windows fallbacks."""
+
+    if not data:
+        return ""
+
+    for encoding in _log_decode_candidates():
+        text = _decode_with_encoding(data, encoding)
+        if text is not None:
+            return text
+
+    utf8_replace = _decode_with_encoding(data, "utf-8", errors="replace") or ""
+    # Tail reads can start mid-codepoint; prefer UTF-8 when only a few bytes break.
+    if utf8_replace.count("\ufffd") <= max(2, len(data) // 2048):
+        return utf8_replace
+
+    fallback_candidates: list[tuple[int, int, str]] = []
+    for rank, encoding in enumerate(_log_decode_candidates()):
+        text = _decode_with_encoding(data, encoding, errors="replace")
+        if text is not None:
+            fallback_candidates.append((text.count("\ufffd"), rank, text))
+
+    if fallback_candidates:
+        fallback_candidates.sort(key=lambda item: (item[0], item[1]))
+        return fallback_candidates[0][2]
+
+    return data.decode("utf-8", errors="replace")
+
+
+def normalize_log_newlines(text: str) -> str:
+    """Normalize log text for terminal rendering."""
+
+    if not text:
+        return ""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
 def append_log(log_path: str, message: str) -> None:
     """Append text to a log file safely."""
+
     try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(message)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(message)
     except Exception:
         pass
 
 
 def read_log(log_path: str) -> str:
-    """Read log content safely (legacy full read)."""
+    """Read the full decoded log content from disk."""
+
     if not os.path.exists(log_path):
         return ""
+
     try:
-        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
+        with open(log_path, "rb") as handle:
+            return normalize_log_newlines(decode_log_bytes(handle.read()))
     except Exception:
         return ""
 
 
 def read_log_chunk(log_path: str, offset: int) -> Tuple[str, int]:
-    """Read new content from log file starting at *offset*.
+    """Read new content from log file starting at ``offset``."""
 
-    Returns ``(content, new_offset)``.\n    If file was truncated (size < offset), resets to beginning —
-    this handles log rotation / overwrite scenarios gracefully.
-    """
     if not os.path.exists(log_path):
         return "", 0
-        
+
     try:
-        # Check size first to detect truncation
         size = os.path.getsize(log_path)
         if size < offset:
-            offset = 0  # file truncated/rotated -> reset
-            
-        with open(log_path, "rb") as f:
-            f.seek(offset)
-            new_bytes = f.read()
-            new_offset = f.tell()
-            
+            offset = 0
+
+        with open(log_path, "rb") as handle:
+            handle.seek(offset)
+            new_bytes = handle.read()
+            new_offset = handle.tell()
+
         if not new_bytes:
             return "", new_offset
-            
-        return new_bytes.decode("utf-8", errors="replace"), new_offset
+
+        return normalize_log_newlines(decode_log_bytes(new_bytes)), new_offset
     except Exception:
         return "", offset
 
 
 def read_last_bytes(log_path: str, n_bytes: int = 10000) -> Tuple[str, int]:
-    """
-    Read the last `n_bytes` of a log file.
-    
-    Returns:
-        (content, new_offset) where new_offset is at the END of the file.
-    """
+    """Read the last ``n_bytes`` from a log file."""
+
     if not os.path.exists(log_path):
         return "", 0
-        
+
     try:
         size = os.path.getsize(log_path)
         start = max(0, size - n_bytes)
-        
-        with open(log_path, "rb") as f:
-            f.seek(start)
-            content = f.read().decode("utf-8", errors="replace")
-            # If we started in middle, we might have partial line/char garbage at start?
-            # Ideally we skip to first newline, but for now simple tail is fine.
+
+        with open(log_path, "rb") as handle:
+            handle.seek(start)
+            content = normalize_log_newlines(decode_log_bytes(handle.read()))
             return content, size
     except Exception:
         return "", 0
 
 
 def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> Tuple[str, int]:
-    """
-    Read up to `max_bytes` from file at `offset`.
-    
-    Ensures safe UTF-8 decoding by back-tracking to the last newline if a chunk
-    boundary splits a multi-byte character or ANSI sequence.
-    
-    Returns:
-        (text, new_offset)
-    """
+    """Read up to ``max_bytes`` from ``filepath`` at ``offset`` safely."""
+
     if not os.path.exists(filepath):
         return "", offset
-        
+
     file_size = os.path.getsize(filepath)
     if offset >= file_size:
         return "", file_size
-        
-    with open(filepath, "rb") as f:
-        f.seek(offset)
-        chunk = f.read(max_bytes)
-        
+
+    with open(filepath, "rb") as handle:
+        handle.seek(offset)
+        chunk = handle.read(max_bytes)
+
         if not chunk:
             return "", offset
-            
-        # If we didn't read until the end, backtrack to last newline
-        # to ensure we don't present partial lines/colors
+
         if offset + len(chunk) < file_size:
-            last_newline = chunk.rfind(b'\n')
+            last_newline = chunk.rfind(b"\n")
             if last_newline != -1:
-                chunk = chunk[:last_newline + 1]
-                
-        # Decode and normalize newlines for xterm.js
-        # First collapse any existing \r\n to \n, then convert all \n to \r\n
-        # to avoid double-conversion (\r\n → \r\r\n) when log already has \r\n
-        text = chunk.decode("utf-8", errors="replace")
-        text = text.replace('\r\n', '\n').replace('\n', '\r\n')
-        return text, offset + len(chunk)
+                chunk = chunk[: last_newline + 1]
+
+        return normalize_log_newlines(decode_log_bytes(chunk)), offset + len(chunk)

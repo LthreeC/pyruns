@@ -5,9 +5,9 @@ import os
 import json
 from nicegui import ui
 
-from pyruns._config import CONFIG_FILENAME
 from pyruns.utils.info_io import load_task_info
 from pyruns.utils.info_io import get_log_options, resolve_log_path
+from pyruns.utils.task_files import resolve_task_config_file
 from pyruns.ui.theme import (
     STATUS_ICONS, DIALOG_BACKDROP, DIALOG_HEADER_DARK, TOOLBAR_LIGHT,
     BTN_PRIMARY, TAB_PANEL_FULL, LABEL_BOLD_TRACKING, INPUT_BORDERLESS_PROPS, INPUT_OUTLINED_CLASSES, TEXTAREA_FULL_BORDERLESS,
@@ -97,7 +97,11 @@ def build_task_dialog(selected: dict, task_manager):
                     TABS_CLASSES
                 ) as tabs:
                     ui.tab("task_info", label="Task Info", icon="info").classes("px-4")
-                    ui.tab("config", label="Config", icon="tune").classes("px-4")
+                    ui.tab(
+                        "config",
+                        label="Script" if t.get("task_kind") == "shell" else "Config",
+                        icon="terminal" if t.get("task_kind") == "shell" else "tune",
+                    ).classes("px-4")
                     ui.tab("notes", label="Notes", icon="edit_note").classes("px-4")
                     ui.tab("env", label="Env Vars", icon="vpn_key").classes("px-4")
 
@@ -150,14 +154,15 @@ def build_task_dialog(selected: dict, task_manager):
 
         def fetch_data():
             task_info = load_task_info(task["dir"])
-            
-            cfg_path = os.path.join(task["dir"], CONFIG_FILENAME)
+
+            cfg_file = resolve_task_config_file(task_info, task.get("task_kind"))
+            cfg_path = os.path.join(task["dir"], cfg_file)
             try:
                 with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg = f.read().strip() or "# Empty config"
+                    cfg = f.read().strip() or f"# Empty {cfg_file}"
             except Exception:
-                cfg = "# No config.yaml"
-                
+                cfg = f"# No {cfg_file}"
+
             return task_info, cfg
 
         try:
@@ -216,7 +221,10 @@ def _build_tab_task_info(t, info_obj, selected, task_manager):
 def _build_tab_config(t, cfg_text):
     """Config tab — readonly YAML viewer."""
     with ui.tab_panel("config"):
-        readonly_code_viewer(cfg_text, mode="yaml")
+        readonly_code_viewer(
+            cfg_text,
+            mode="python" if t.get("task_kind") == "shell" else "yaml",
+        )
 
 
 def _build_tab_notes(t, info_obj, task_manager=None):

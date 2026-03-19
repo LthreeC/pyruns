@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from pyruns._config import DEFAULT_UI_PORT
 from pyruns.utils.events import log_emitter
+from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.web.runtime import PyrunsRuntime
 from pyruns.utils import get_logger
 
@@ -86,10 +87,9 @@ class GeneratorCreateRequest(BaseModel):
     """Task generation payload for the React generator workspace."""
 
     name_prefix: str = Field(min_length=1)
-    run_mode: str = Field(default="yaml", min_length=1)
+    mode: str = Field(default="form", min_length=1)
     yaml_text: str = ""
-    args_text: str = ""
-    run_script: str = ""
+    shell_text: str = ""
     template_value: str = ""
     append_timestamp: bool = True
 
@@ -97,10 +97,9 @@ class GeneratorCreateRequest(BaseModel):
 class GeneratorPreviewRequest(BaseModel):
     """Task preview payload for the React generator workspace."""
 
-    run_mode: str = Field(default="yaml", min_length=1)
+    mode: str = Field(default="form", min_length=1)
     yaml_text: str = ""
-    args_text: str = ""
-    run_script: str = ""
+    shell_text: str = ""
     template_value: str = ""
 
 
@@ -182,6 +181,7 @@ def _schedule_browser_open(url: str, *, delay_seconds: float = 0.8) -> None:
 
 def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     """Create the Pyruns FastAPI app."""
+    get_follow_shell_runtime()
     app = FastAPI(title="Pyruns API", version="0.1.6")
     app.add_middleware(
         CORSMiddleware,
@@ -215,6 +215,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/workspace/shell")
+    def open_shell_workspace() -> dict[str, Any]:
+        try:
+            return get_runtime().open_shell_workspace()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/templates")
     def get_templates() -> dict[str, Any]:
         return {"items": get_runtime().list_templates()}
@@ -231,10 +238,9 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         try:
             return get_runtime().create_tasks_from_template(
                 name_prefix=payload.name_prefix,
-                run_mode=payload.run_mode,
+                mode=payload.mode,
                 yaml_text=payload.yaml_text,
-                args_text=payload.args_text,
-                run_script=payload.run_script,
+                shell_text=payload.shell_text,
                 template_value=payload.template_value,
                 append_timestamp=payload.append_timestamp,
             )
@@ -245,10 +251,9 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     def preview_tasks_from_generator(payload: GeneratorPreviewRequest) -> dict[str, Any]:
         try:
             return get_runtime().preview_tasks_from_template(
-                run_mode=payload.run_mode,
+                mode=payload.mode,
                 yaml_text=payload.yaml_text,
-                args_text=payload.args_text,
-                run_script=payload.run_script,
+                shell_text=payload.shell_text,
                 template_value=payload.template_value,
             )
         except ValueError as exc:
@@ -346,6 +351,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             task = get_runtime().start_task(task_name, execution_mode)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "task": task}
 
     @app.post("/api/tasks/{task_name}/cancel")

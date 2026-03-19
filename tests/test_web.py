@@ -4,7 +4,15 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from pyruns._config import CONFIG_FILENAME, TASKS_DIR
+from pyruns._config import (
+    CONFIG_FILENAME,
+    SHELL_CONFIG_FILENAME,
+    TASKS_DIR,
+    TASK_KIND_CONFIG,
+    TASK_KIND_SHELL,
+    WORKSPACE_KIND_SCRIPT,
+    WORKSPACE_KIND_SHELL,
+)
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
@@ -19,7 +27,13 @@ def _make_workspace(root: Path, name: str) -> Path:
     script_path = root / f"{name}.py"
     script_path.write_text("print('hello')\n", encoding="utf-8")
     (workspace / "script_info.json").write_text(
-        json.dumps({"script_name": name, "script_path": str(script_path)}),
+        json.dumps(
+            {
+                "script_name": name,
+                "script_path": str(script_path),
+                "workspace_kind": WORKSPACE_KIND_SCRIPT,
+            }
+        ),
         encoding="utf-8",
     )
     (workspace / "config_default.yaml").write_text("lr: 0.01\n", encoding="utf-8")
@@ -39,6 +53,8 @@ def _add_task(workspace: Path, name: str, status: str = "pending", log_text: str
             "status": status,
             "progress": 1.0 if status == "completed" else 0.0,
             "created_at": "2026-03-17_12-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
             "start_times": start_times,
             "finish_times": [],
             "pids": pids,
@@ -66,12 +82,25 @@ def test_workspace_endpoint_returns_metadata(tmp_path):
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    response = client.get("/api/workspace")
+    with patch("pyruns.web.runtime.get_shell_runtime_for_workspace", return_value={
+        "mode": "follow",
+        "source": "follow_terminal",
+        "terminal_kind": "powershell",
+        "display_name": "PowerShell",
+        "executable": r"C:\Program Files\PowerShell\7\pwsh.exe",
+        "available": True,
+    }):
+        response = client.get("/api/workspace")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["run_root"].endswith("_pyruns_/main")
     assert payload["script_name"] == "main"
+    assert payload["workspace_kind"] == WORKSPACE_KIND_SCRIPT
+    assert payload["settings"]["shell_mode"] == "follow"
+    assert payload["settings"]["monitor_sidebar_width_pct"] == 24
+    assert payload["shell_runtime"]["mode"] == "follow"
+    assert payload["shell_runtime"]["display_name"] == "PowerShell"
     assert payload["templates"]
     assert payload["workspace_ready"] is True
 
@@ -84,7 +113,7 @@ def test_root_serves_react_frontend_shell(tmp_path):
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Pyruns Studio" in response.text
+    assert "<title>Pyruns</title>" in response.text
     assert '<div id="root"></div>' in response.text
     assert "assets/" in response.text
 
@@ -252,7 +281,7 @@ def test_template_content_and_generator_create_endpoints(tmp_path):
         "/api/generator/create",
         json={
             "name_prefix": "demo",
-            "run_mode": "yaml",
+            "mode": "form",
             "yaml_text": "lr: 0.1 | 0.2\nmodel: tiny\n",
             "template_value": "config_default.yaml",
             "append_timestamp": False,
@@ -273,7 +302,7 @@ def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
     response = client.post(
         "/api/generator/preview",
         json={
-            "run_mode": "yaml",
+            "mode": "form",
             "yaml_text": "lr: 0.1 | 0.2\nmodel: tiny\n",
             "template_value": "config_default.yaml",
         },
@@ -283,6 +312,39 @@ def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
     payload = response.json()
     assert payload["count"] == 2
     assert payload["items"][0]["preview"]
+
+
+def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    shell_response = client.post("/api/workspace/shell")
+
+    assert shell_response.status_code == 200
+    shell_payload = shell_response.json()
+    assert shell_payload["workspace_kind"] == WORKSPACE_KIND_SHELL
+    assert shell_payload["script_name"] == "_shell_"
+    assert shell_payload["templates"] == []
+
+    create_response = client.post(
+        "/api/generator/create",
+        json={
+            "name_prefix": "shell-demo",
+            "mode": "shell",
+            "shell_text": "echo hello from shell\n",
+            "append_timestamp": False,
+        },
+    )
+
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    assert payload["count"] == 1
+    assert payload["task_kind"] == TASK_KIND_SHELL
+    task = payload["items"][0]
+    assert task["task_kind"] == TASK_KIND_SHELL
+    task_dir = Path(task["dir"])
+    assert (task_dir / SHELL_CONFIG_FILENAME).read_text(encoding="utf-8") == "echo hello from shell\n"
 
 
 def test_tasks_endpoint_supports_offset_pagination(tmp_path):

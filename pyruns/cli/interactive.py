@@ -18,7 +18,7 @@ _CLI_HELP = f"""
   {_BOLD}gen{_RESET} [template]        Generate tasks from YAML template
   {_BOLD}run{_RESET} <name|#>          Run task(s) by name or index
   {_BOLD}delete{_RESET} <name|#>       Soft-delete task(s) to .trash
-  {_BOLD}open{_RESET} <name|#> [task]  Open config.yaml (or task_info.json)
+  {_BOLD}open{_RESET} <name|#> [task]  Open the task payload file (or task_info.json)
   {_BOLD}log{_RESET} <name|#>          View last run log
   {_BOLD}fg{_RESET} <name|#>           Tail log in real-time (Ctrl+C to detach)
   {_BOLD}jobs{_RESET}                  Show running/queued tasks

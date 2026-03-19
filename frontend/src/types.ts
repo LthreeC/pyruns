@@ -1,9 +1,15 @@
-/* ── Task ── */
+export type TaskKind = 'config' | 'shell'
+export type WorkspaceKind = 'script' | 'shell'
+export type GeneratorMode = 'form' | 'yaml' | 'shell'
+
 export interface Task {
   name: string
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed'
   dir: string
   config: Record<string, any>
+  config_text: string
+  config_file: string
+  task_kind: TaskKind
   pinned: boolean
   notes: string
   env: Record<string, string>
@@ -13,14 +19,13 @@ export interface Task {
   pids: number[]
   progress: number
   run_index: number
-  run_mode: string
   preview_text: string
   search_text: string
   records: any[]
   tracks: any[]
+  _load_error?: string
 }
 
-/* ── Paginated task list ── */
 export interface TaskPage {
   items: Task[]
   total: number
@@ -29,15 +34,24 @@ export interface TaskPage {
   has_more: boolean
 }
 
-/* ── Workspace ── */
 export interface WorkspaceInfo {
   run_root: string
   tasks_dir: string
   script_path: string
   script_name: string
+  workspace_kind: WorkspaceKind
   workspace_ready: boolean
   settings: Record<string, any>
+  shell_runtime?: ShellRuntimeInfo
   templates: TemplateOption[]
+}
+
+export interface ShellRuntimeInfo {
+  mode: 'follow' | 'custom'
+  source: string
+  terminal_kind: string
+  display_name: string
+  executable: string
 }
 
 export interface TemplateOption {
@@ -51,13 +65,10 @@ export interface TemplateContent {
   path: string
   content: string
   read_only: boolean
-  mode_hint: 'yaml' | 'args'
-  args_text: string
-  run_script: string
+  mode_hint: 'yaml' | 'shell'
   parsed_config: Record<string, any> | null
 }
 
-/* ── Dashboard ── */
 export interface DashboardSummary {
   total: number
   running: number
@@ -75,12 +86,11 @@ export interface Dashboard {
   active_task: Task | null
 }
 
-/* ── Generator ── */
 export interface GeneratorResult {
   count: number
   items: Task[]
   recent_tasks: Task[]
-  run_mode: string
+  task_kind: TaskKind
 }
 
 export interface PreviewItem {
@@ -92,10 +102,9 @@ export interface PreviewItem {
 export interface GeneratorPreview {
   count: number
   items: PreviewItem[]
-  run_mode: string
+  task_kind: TaskKind
 }
 
-/* ── Logs ── */
 export interface TaskLogs {
   task_name: string
   selected_log: string
@@ -110,14 +119,29 @@ export interface LogStreamMessage {
   content: string
 }
 
-/* ── System ── */
+export interface GPUProcessInfo {
+  pid: number
+  name: string
+  memory_mb: number
+}
+
+export interface GPUMetric {
+  id: number
+  index: number
+  name: string
+  uuid: string
+  util: number
+  mem_used: number
+  mem_total: number
+  processes: GPUProcessInfo[]
+}
+
 export interface SystemMetrics {
   cpu_percent: number
   mem_percent: number
-  gpus: { id: number; name: string; util: number; mem_used: number; mem_total: number }[]
+  gpus: GPUMetric[]
 }
 
-/* ── Launcher ── */
 export interface ScriptCandidate {
   script_path: string
   script_name: string

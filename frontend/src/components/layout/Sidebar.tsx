@@ -5,7 +5,7 @@ import {
   Sun, Moon, ChevronsUpDown, Loader2, FileCode,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useWorkspaceStore, useThemeStore } from '@/store'
+import { useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
 import * as api from '@/api'
 
 const NAV_ITEMS = [
@@ -18,10 +18,25 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const workspace = useWorkspaceStore(s => s.workspace)
   const setWorkspace = useWorkspaceStore(s => s.setWorkspace)
+  const openShellWorkspace = useWorkspaceStore(s => s.openShellWorkspace)
+  const exitShellWorkspace = useWorkspaceStore(s => s.exitShellWorkspace)
   const { theme, toggle } = useThemeStore()
   const navigate = useNavigate()
   const [picking, setPicking] = useState(false)
+  const [openingShell, setOpeningShell] = useState(false)
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
+  const shellWorkspaceActive = workspace?.workspace_kind === 'shell'
+  const workspaceLabel = shellWorkspaceActive ? '_shell_' : (scriptFileName || 'Choose .py file')
+
+  const clearMonitorSelection = () => {
+    useMonitorStore.setState({
+      selectedTaskName: null,
+      logContent: '',
+      logOffset: 0,
+      availableLogs: [],
+      selectedLog: '',
+    })
+  }
 
   const handlePickScript = async () => {
     setPicking(true)
@@ -36,13 +51,33 @@ export default function Sidebar() {
     }
   }
 
+  const handleToggleShellWorkspace = async () => {
+    setOpeningShell(true)
+    try {
+      if (shellWorkspaceActive) {
+        const nextWorkspace = await exitShellWorkspace()
+        if (!nextWorkspace) {
+          await handlePickScript()
+          return
+        }
+      } else {
+        await openShellWorkspace()
+      }
+      navigate('/generator')
+    } finally {
+      setOpeningShell(false)
+    }
+  }
+
   return (
     <aside className="flex h-screen w-sidebar min-w-[180px] max-w-[260px] flex-none flex-col border-r border-border-subtle bg-surface-raised">
       <div className="flex h-12 items-center gap-2 border-b border-border-subtle px-4">
         <Rocket className="h-4 w-4 text-accent" />
         <div className="min-w-0">
           <div className="text-sm font-semibold tracking-tight text-txt-primary">Pyruns</div>
-          <div className="text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">workspace console</div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
+            {shellWorkspaceActive ? 'shell workspace' : 'script workspace'}
+          </div>
         </div>
       </div>
 
@@ -52,6 +87,7 @@ export default function Sidebar() {
             key={to}
             to={to}
             end={end}
+            onClick={to === '/monitor' ? clearMonitorSelection : undefined}
             className={({ isActive }) => clsx(
               'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors',
               isActive
@@ -74,24 +110,40 @@ export default function Sidebar() {
         >
           <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
             <FileCode className="h-3.5 w-3.5" />
-            <span>Script File</span>
+            <span>{shellWorkspaceActive ? 'Workspace Target' : 'Script File'}</span>
             <div className="flex-1 border-t border-border-subtle/80" />
             {picking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronsUpDown className="h-3.5 w-3.5" />}
           </div>
           <div
             className="mt-3 truncate rounded-lg border border-border-subtle bg-surface-raised px-3 py-2 font-mono text-sm font-medium text-txt-primary"
-            title={scriptFileName || 'Choose a Python script'}
+            title={workspaceLabel}
           >
-            {scriptFileName || 'Choose .py file'}
+            {workspaceLabel}
           </div>
 
           <div className="mt-3 text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">Workspace</div>
           <div
             className="mt-1 truncate text-2xs text-txt-secondary"
-            title={workspace?.run_root || 'Click to choose a Python script and switch workspace'}
+            title={workspace?.run_root || 'Choose a Python script or open the shell workspace'}
           >
-            {workspace?.run_root || 'Click to choose a Python script and switch workspace'}
+            {workspace?.run_root || 'Choose a Python script or open the shell workspace'}
           </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void handleToggleShellWorkspace()}
+          disabled={openingShell}
+          className={clsx(
+            'mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:opacity-60',
+            shellWorkspaceActive
+              ? 'border-accent/25 bg-accent/10 text-accent'
+              : 'border-border-subtle bg-surface-raised text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
+          )}
+          title={shellWorkspaceActive ? 'Exit shell mode' : 'Open the shared shell workspace'}
+        >
+          {openingShell ? <Loader2 className="h-4 w-4 animate-spin" /> : <Terminal className="h-4 w-4" />}
+          <span>{shellWorkspaceActive ? 'Exit Shell Mode' : 'Open Shell Mode'}</span>
         </button>
 
         <button

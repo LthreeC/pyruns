@@ -1,28 +1,14 @@
-# 安装与快速开始
+# 快速开始
 
-5 分钟上手 Pyruns 的完整工作流。
+这份文档对应当前 React + FastAPI 主链路版本。
 
----
-
-## 系统要求
-
-| 项目 | 要求 | 备注 |
-|------|------|------|
-| Python | ≥ 3.8 | 推荐 `conda` 或 `venv` 虚拟环境 |
-| 操作系统 | Windows / Linux / macOS | 跨平台 |
-| GPU 监控 | NVIDIA GPU + `nvidia-smi` | 可选，有则自动在顶部显示 GPU 利用率 |
-
----
-
-## 安装
-
-**pip（推荐）**
+## 1. 安装
 
 ```bash
 pip install pyruns
 ```
 
-**源码安装（开发者）**
+开发模式：
 
 ```bash
 git clone https://github.com/LthreeC/pyruns.git
@@ -30,159 +16,190 @@ cd pyruns
 pip install -e .
 ```
 
-核心依赖仅三项：`nicegui`（Web 框架）、`pyyaml`（配置解析）、`psutil`（系统指标采集）。不会给你的环境引入重量级框架。
-
-> 💡 **设计目标**：Pyruns 不是 MLflow 或 W&B 的替代品，而是一个**开箱即用的本地调参助手**。让你在不改变现有工作流的前提下，用最低学习成本获得参数管理和实验追踪的便利。
-
----
-
-## 四种启动模式
-
-### 模式一：自动解析 Argparse（推荐）
-
-适用于任何使用 `parser.add_argument(...)` 的 Python 脚本，无需改动任何代码。
+## 2. 打开第一个脚本工作区
 
 ```bash
 pyr train.py
 ```
 
-执行后 Pyruns 会：
+执行后会围绕脚本创建工作区：
 
-1. 通过 AST 静态分析隐式提取出文件中所有的 `argparse` 参数定义
-2. 在 `_pyruns_/train/` 下生成 `config_default.yaml`（含默认值与 help 文本）
-3. 启动 Web UI 并在浏览器中呈现参数配置表单
+```text
+project/
+├─ train.py
+└─ _pyruns_/
+   ├─ _pyruns_settings.yaml
+   └─ train/
+      ├─ script_info.json
+      ├─ config_default.yaml
+      └─ tasks/
+```
 
-### 模式二：自定义 YAML 配置
+其中：
 
-当脚本不使用命令行参数，而是直接在代码深处调用 `pyruns.load()` 读取配置时，你只需要在首次运行时传入一个模板：
+- `script_info.json` 保存脚本和工作区元信息
+- `config_default.yaml` 是 Generator 的默认模板
+- `tasks/` 下是每一个生成出来的任务
+
+如果你已经有一个 YAML 模板，也可以这样启动：
 
 ```bash
 pyr train.py my_config.yaml
-# → my_config.yaml 将会自动被拷贝为 _pyruns_/train/config_default.yaml 作为表单原型
 ```
 
-由于已经保存了原型，后续运行无需再指定 YAML，仅仅需要这么跑：
+它会把 `my_config.yaml` 作为当前工作区的默认模板。
 
-```bash
-pyr train.py
-```
+## 3. 什么时候适合 Script Workspace
 
-如需更换最初的参数模板，再次带上另一个文件名传入即可覆盖。
+Script workspace 适合这两类脚本：
 
-### 模式三：完全等价的 CLI 命令行模式
+### `argparse` 脚本
 
-当你没有图形界面或仅需在纯终端下操作，你可以直接使用 `cli` 命令进入。CLI 与 UI 具有同等的功能级别：
+Pyruns 会尝试提取参数定义，生成表单，并把修改后的值再拼回命令行参数。
 
-```bash
-pyr cli train.py
-```
+### `pyruns.load()` 脚本
 
-这不仅会自动准备好 `_pyruns_` 工作区，还会唤起一个类似于 Linux 终端下的交互式 REPL：
-- 使用 `ls` 查看所有任务（或使用 `ls -i` 进入交互式筛选）
-- 使用 `gen [yaml_path]` 调用你的默认编辑器编辑参数并生成任务
-- 使用 `run [任务名或编号]` 执行任务，并**自动流式显示颜色终端输出**
-- 使用 `stat -i` 显示类似 `gpustat` 和 `htop` 的系统实时状态
+Pyruns 会为每个任务写入 `config.yaml`，并在执行时通过 `__PYRUNS_CONFIG__` 指向它。
 
-### 模式四：命令行 / Args 模式（兼容任意框架）
+## 4. 打开 Shell Workspace
 
-当你的脚本使用 Hydra、Fire、Click 或其他框架时，可以通过 Args 模式将 Pyruns 作为任务管理层：
+先进入一个普通 script workspace，然后在左侧点击 `Open Shell Mode`。
 
-```yaml
-# 示例：管理 Hydra 实验
-run_script: "python -m my_project.train"
-args: |
-  model=vit
-  dataset=imagenet
-  training.lr=0.001
-```
-
-Pyruns 会将 `args` 的内容作为命令行参数追加到 `run_script` 后执行。只要脚本能通过命令行参数启动，就可以用 Pyruns 的批量生成语法（如 `training.lr: 0.001 | 0.01 | 0.1`）自动创建多组实验。
-
----
-
-## 动手实践：第一个实验
-
-### 1. 准备脚本
-
-```python
-# train.py
-import argparse
-import time
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--lr", type=float, default=0.001, help="学习率")
-parser.add_argument("--epochs", type=int, default=10, help="训练轮数")
-parser.add_argument("--batch_size", type=int, default=32, help="批大小")
-args = parser.parse_args()
-
-print(f"[INIT] LR={args.lr}, EPOCHS={args.epochs}, BATCH={args.batch_size}")
-for epoch in range(args.epochs):
-    time.sleep(0.5)
-    print(f"Epoch {epoch+1}/{args.epochs} done")
-```
-
-### 2. 启动 UI
-
-```bash
-pyr train.py
-```
-
-> 开发与调试时，推荐使用 `pyr dev train.py`（开启后端热重载）。
-
-### 3. Generator — 配置参数
-
-你的默认浏览器会自动打开 `http://localhost:8099`，并显示从 `train.py` 解析出的参数表单。
-
-![Generator](assets/tab_generator.png)
-
-1. 在左侧表单中修改基础参数，或在右下角 YAML 输入框中使用类似 `lr: 0.001 | 0.01` 的语法定义参数网格。
-2. （可选）为这组任务设定一个统一的前缀，例如 `fast-tuning`。
-3. 点击 **GENERATE**，系统将解析参数网格并在后台生成对应的多个隔离任务记录。
-
-### 4. Manager — 并行调度任务
-
-切换到 Manager 页面：
-
-1. 刚刚生成的所有任务会出现在列表中，并处于灰色的 `Pending` 状态。
-2. 勾选需要执行的任务卡片（或使用全选功能），然后在右上角控制面板中设定并发 `Workers` 数，接着点击 **RUN SELECTED**。
-3. 被成功调度的任务状态将过渡到橙色的 `Running` 状态。
-
-![Manager](assets/tab_manager.png)
-
-### 5. Monitor — 追踪流式日志
-
-在处理多个并发任务时，如需检视特定任务的输出表现或异常堆栈，可切换至 Monitor 页面：
-在左侧任务队列中选中目标项目，右侧终端面板即可实时显示其标准输出。
-
-![Monitor](assets/tab_monitor.png)
-
----
-
-## 隔离的工作区机制
-
-为确保项目源码空间清洁以及多次实验环境配置的独立性，任何运行历史都会隔离并映射在当前运行目录的子结构下：
+切换后工作区变为：
 
 ```text
-your_project/
-├── train.py
-└── _pyruns_/
-    ├── _pyruns_settings.yaml      # 全局界面行为偏好规范
-    └── train/                     # 按入口脚本同名的独立分块
-        ├── script_info.json       # 绑定绝对路径与解析类型
-        ├── config_default.yaml    # 提取的默认基础配置
-        └── tasks/
-            ├── fast_tuning-[1-of-6]/
-            │   ├── task_info.json # 承载时间戳、历次运行 PID 及聚合监控结构等状态机数据
-            │   ├── config.yaml    # 固定的任务运行专属环境变量快照
-            │   └── run_logs/
-            │       └── run1.log   # 终端输出捕捉切片
-            └── .trash/            # 执行软删除操作产生的缓冲区域
+project/
+└─ _pyruns_/
+   └─ _shell_/
+      ├─ script_info.json
+      └─ tasks/
 ```
 
----
+这里的 shell 任务会保存为：
+
+```text
+_pyruns_/_shell_/tasks/<task_name>/config.sh
+```
+
+## 5. shell 默认执行语义
+
+当前默认规则非常简单：
+
+- `shell_mode: follow`
+- 跟随启动 `pyr` 的当前终端 / shell
+- 不自动做 shell 语法翻译
+- 继续继承当前 Python 进程环境
+
+这意味着：
+
+- conda 环境会继承
+- `PATH` 会继承
+- 你在启动 `pyr` 时已有的环境变量会继承
+
+平台差异只体现在“跟随谁”：
+
+- Windows：通常跟随 PowerShell 或 cmd
+- Linux / macOS：通常跟随当前 POSIX shell
+
+如果你确实要改成固定 shell，可在 `_pyruns_settings.yaml` 中写：
+
+```yaml
+shell_mode: custom
+shell_executable: C:\Program Files\PowerShell\7\pwsh.exe
+```
+
+或者：
+
+```yaml
+shell_mode: custom
+shell_executable: /bin/bash
+```
+
+## 6. 三个主页面怎么用
+
+### Generator
+
+- script workspace：`form` / `yaml`
+- shell workspace：`shell`
+- 可做单任务，也可做 batch 批量任务
+
+### Manager
+
+- 查找任务
+- 批量运行 / 删除
+- 打开日志
+- 查看任务详情
+
+### Monitor
+
+- 实时日志
+- 历史日志切换
+- 多任务日志导出
+- 直接从侧边栏进入时默认空选中
+
+## 7. 第一个 shell 任务示例
+
+进入 shell workspace 后，在 Generator 中输入：
+
+```powershell
+Write-Host "hello from pyruns shell"
+python --version
+```
+
+或者在 Linux/macOS 下：
+
+```bash
+echo "hello from pyruns shell"
+python --version
+```
+
+注意：
+
+- 你写的语法必须匹配当前 follow/custom 对应的 shell
+- Pyruns 不会把 PowerShell 自动翻译成 bash，也不会反过来翻译
+
+## 8. 第一个 batch 任务示例
+
+在 script workspace 的 `form` 或 `yaml` 模式里：
+
+```yaml
+lr: 0.001 | 0.01 | 0.1
+batch_size: 32 | 64
+optimizer: adam | sgd
+```
+
+这会展开成多个独立任务，每个任务都拥有自己的：
+
+- `task_info.json`
+- `config.yaml`
+- `run_logs/runN.log`
+
+## 9. 前端开发与打包
+
+前端源码：
+
+```text
+frontend/
+```
+
+打包命令：
+
+```bash
+cd frontend
+npm run build
+```
+
+打包结果：
+
+```text
+pyruns/web/static/
+```
+
+后端会直接服务这里的静态资源。
 
 ## 下一步
 
-- [UI 界面进阶操作](ui-guide.md) — 分析界面内各组件的互动功能（参数置顶、并发限制、批量导出等）
-- [批量参数语法解析](batch-syntax.md) — 规则定义如 Product (`|`) 与 Zip (`(|)`) 联合网格化操作
-- [内部 API 规范](api-reference.md) — 利用 `pyruns.read()` 及扩展 `record()` 自主调用功能详细指导
+- [配置说明](configuration.md)
+- [架构说明](architecture.md)
+- [UI 指南](ui-guide.md)
+- [CLI 指南](cli-guide.md)

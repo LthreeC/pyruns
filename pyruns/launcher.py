@@ -1,4 +1,4 @@
-﻿"""Shared launcher discovery and workspace bootstrap helpers."""
+"""Shared launcher discovery and workspace bootstrap helpers."""
 
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ from pyruns._config import (
     DEFAULT_ROOT_NAME,
     ENV_KEY_ROOT,
     SCRIPT_INFO_FILENAME,
+    SHELL_WORKSPACE_NAME,
+    TASKS_DIR,
+    WORKSPACE_KIND_SCRIPT,
+    WORKSPACE_KIND_SHELL,
 )
 from pyruns.utils.info_io import load_script_info
 from pyruns.utils.parse_utils import (
@@ -34,17 +38,48 @@ def normalize_path(path: str) -> str:
     return os.path.abspath(path).replace("\\", "/")
 
 
-def workspace_root_for_script(script_path: str) -> str:
-    """Return the canonical workspace path for a script."""
+def workspace_root_parent_for_script(script_path: str) -> str:
+    """Return the project-level ``_pyruns_`` directory for a script."""
 
     normalized = normalize_path(script_path)
     script_dir = os.path.dirname(normalized)
+    return normalize_path(os.path.join(script_dir, DEFAULT_ROOT_NAME))
+
+
+def workspace_root_for_script(script_path: str) -> str:
+    """Return the canonical script workspace path for a script."""
+
+    normalized = normalize_path(script_path)
     script_base = os.path.splitext(os.path.basename(normalized))[0]
-    return normalize_path(os.path.join(script_dir, DEFAULT_ROOT_NAME, script_base))
+    return normalize_path(os.path.join(workspace_root_parent_for_script(normalized), script_base))
+
+
+def shell_workspace_root_for_run_root(run_root: str) -> str:
+    """Return the canonical shell workspace path for a project workspace root."""
+
+    normalized = normalize_path(run_root)
+    if os.path.basename(normalized) == SHELL_WORKSPACE_NAME:
+        return normalized
+    return normalize_path(os.path.join(os.path.dirname(normalized), SHELL_WORKSPACE_NAME))
+
+
+def _read_script_info(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _is_shell_workspace_info(info: dict[str, Any], workspace_name: str) -> bool:
+    return (
+        str(info.get("workspace_kind", "") or "") == WORKSPACE_KIND_SHELL
+        or str(info.get("script_name", "") or "") == SHELL_WORKSPACE_NAME
+        or workspace_name == SHELL_WORKSPACE_NAME
+    )
 
 
 def resolve_workspace_for_script(script_path: str) -> str | None:
-    """Return the existing workspace for *script_path* if present."""
+    """Return the existing script workspace for *script_path* if present."""
 
     normalized = normalize_path(script_path)
     candidate = workspace_root_for_script(normalized)
@@ -66,6 +101,8 @@ def resolve_workspace_for_script(script_path: str) -> str | None:
                 info = json.load(handle)
         except Exception:
             continue
+        if _is_shell_workspace_info(info, entry):
+            continue
         if info.get("script_name") == target_base or normalize_path(str(info.get("script_path", ""))) == normalized:
             return normalize_path(workspace)
     return None
@@ -83,9 +120,8 @@ def list_script_candidates(base_dir: str | None = None) -> list[dict[str, Any]]:
             script_info_path = workspace / SCRIPT_INFO_FILENAME
             if not script_info_path.is_file():
                 continue
-            try:
-                info = json.loads(script_info_path.read_text(encoding="utf-8"))
-            except Exception:
+            info = _read_script_info(script_info_path)
+            if not info or _is_shell_workspace_info(info, workspace.name):
                 continue
             script_path = normalize_path(str(info.get("script_path", "") or ""))
             script_name = str(info.get("script_name", "") or workspace.name)
@@ -179,7 +215,7 @@ def list_config_candidates(script_path: str) -> list[dict[str, Any]]:
 
 
 def list_workspace_candidates(script_path: str, config_path: str | None = None) -> list[dict[str, Any]]:
-    """Return the inferred workspace destination for a script/config pair."""
+    """Return the inferred script workspace destination for a script/config pair."""
 
     normalized = normalize_path(script_path)
     workspace_path = resolve_workspace_for_script(normalized) or workspace_root_for_script(normalized)
@@ -196,27 +232,35 @@ def list_workspace_candidates(script_path: str, config_path: str | None = None) 
     ]
 
 
+def _write_script_info(workspace_path: str, payload: dict[str, Any]) -> None:
+    script_info_path = os.path.join(workspace_path, SCRIPT_INFO_FILENAME)
+    with open(script_info_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
 def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str:
     """Prepare a script workspace and optionally import a selected YAML config."""
 
     filepath = normalize_path(script_path)
     file_dir = os.path.dirname(filepath)
     script_base = os.path.splitext(os.path.basename(filepath))[0]
-    pyruns_dir = normalize_path(os.path.join(file_dir, DEFAULT_ROOT_NAME))
+    pyruns_dir = workspace_root_parent_for_script(filepath)
     script_dir = normalize_path(os.path.join(pyruns_dir, script_base))
 
     os.makedirs(script_dir, exist_ok=True)
+    os.makedirs(os.path.join(script_dir, TASKS_DIR), exist_ok=True)
     ensure_settings_file(pyruns_dir)
 
-    script_info_path = os.path.join(script_dir, SCRIPT_INFO_FILENAME)
-    if not os.path.exists(script_info_path):
-        script_info = {
-            "script_name": script_base,
-            "script_path": filepath,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        with open(script_info_path, "w", encoding="utf-8") as handle:
-            json.dump(script_info, handle, indent=4)
+    script_info = {
+        "workspace_kind": WORKSPACE_KIND_SCRIPT,
+        "script_name": script_base,
+        "script_path": filepath,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    existing = load_script_info(script_dir)
+    if existing.get("last_used_template"):
+        script_info["last_used_template"] = existing["last_used_template"]
+    _write_script_info(script_dir, script_info)
 
     config_default_path = os.path.join(script_dir, CONFIG_DEFAULT_FILENAME)
     mode, _ = detect_config_source_fast(filepath)
@@ -230,8 +274,7 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
         params = extract_argparse_params(filepath)
         generate_config_file(script_dir, filepath, params)
     elif mode == "pyruns_load" and not os.path.exists(config_default_path):
-        # Allow the UI launcher to open the workspace even before a default config exists.
-        # Generator can import or create the working YAML later.
+        # Generator can import or create a YAML template later.
         pass
 
     if mode == "argparse":
@@ -241,13 +284,38 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
     return script_dir
 
 
+def bootstrap_shell_workspace(run_root: str) -> str:
+    """Prepare the project-level shell workspace derived from the current run root."""
+
+    shell_root = shell_workspace_root_for_run_root(run_root)
+    parent_root = os.path.dirname(shell_root)
+
+    os.makedirs(shell_root, exist_ok=True)
+    os.makedirs(os.path.join(shell_root, TASKS_DIR), exist_ok=True)
+    ensure_settings_file(parent_root)
+
+    existing = load_script_info(shell_root)
+    payload = {
+        "workspace_kind": WORKSPACE_KIND_SHELL,
+        "script_name": SHELL_WORKSPACE_NAME,
+        "script_path": "",
+        "last_used_template": "",
+        "created_at": existing.get("created_at", time.strftime("%Y-%m-%d %H:%M:%S")),
+    }
+    _write_script_info(shell_root, payload)
+
+    os.environ[ENV_KEY_ROOT] = shell_root
+    return shell_root
+
+
 def read_workspace_summary(workspace_path: str) -> dict[str, Any]:
-    """Load script metadata for a workspace path."""
+    """Load workspace metadata for a workspace path."""
 
     normalized = normalize_path(workspace_path)
     script_info = load_script_info(normalized)
     return {
         "workspace_path": normalized,
+        "workspace_kind": str(script_info.get("workspace_kind", "") or ""),
         "script_name": str(script_info.get("script_name", "") or ""),
         "script_path": str(script_info.get("script_path", "") or ""),
     }
@@ -272,4 +340,3 @@ def bootstrap_from_cli(script_path: str, custom_yaml: str | None = None) -> str:
     except FileNotFoundError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-

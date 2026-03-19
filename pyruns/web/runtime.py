@@ -10,17 +10,27 @@ from typing import Any, Callable, Dict, List
 import yaml
 
 import pyruns._config as _cfg
-from pyruns._config import CONFIG_DEFAULT_FILENAME, SCRIPT_INFO_FILENAME, TASKS_DIR
+from pyruns._config import (
+    CONFIG_DEFAULT_FILENAME,
+    CONFIG_FILENAME,
+    SCRIPT_INFO_FILENAME,
+    SHELL_WORKSPACE_NAME,
+    TASKS_DIR,
+    TASK_KIND_CONFIG,
+    TASK_KIND_SHELL,
+)
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.launcher import (
+    bootstrap_shell_workspace,
     bootstrap_workspace,
     choose_script_file,
     list_config_candidates,
     list_script_candidates,
     list_workspace_candidates,
     normalize_path,
+    shell_workspace_root_for_run_root,
 )
 from pyruns.utils import get_now_str
 from pyruns.utils.batch_utils import generate_batch_configs
@@ -32,10 +42,11 @@ from pyruns.utils.config_utils import (
 )
 from pyruns.utils.info_io import get_log_options, load_script_info, resolve_log_path
 from pyruns.utils.log_io import read_last_bytes, read_log_chunk
-from pyruns.utils.parse_utils import split_cli_args
 from pyruns.utils.settings import ensure_settings_file, load_settings
+from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, task_sort_key
 from pyruns.utils.info_io import validate_task_name
+from pyruns.utils.task_files import build_task_preview_and_search, normalize_workspace_kind
 
 
 TaskManagerFactory = Callable[[str], TaskManager]
@@ -133,19 +144,25 @@ class PyrunsRuntime:
     def get_workspace_info(self) -> Dict[str, Any]:
         """Return current workspace metadata for the frontend."""
         script_info = load_script_info(self.root_dir)
-        workspace_ready = bool(script_info.get("script_name"))
+        workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
+        workspace_ready = bool(script_info.get("script_name") or workspace_kind)
         return {
             "run_root": self.root_dir,
             "tasks_dir": self.tasks_dir,
             "script_path": str(script_info.get("script_path", "") or ""),
             "script_name": str(script_info.get("script_name", "") or ""),
+            "workspace_kind": workspace_kind,
             "workspace_ready": workspace_ready,
             "settings": dict(self.settings),
+            "shell_runtime": get_shell_runtime_for_workspace(self.root_dir),
             "templates": self.list_templates(),
         }
 
     def list_templates(self) -> List[Dict[str, str]]:
         """Return loadable template options for the Generator page."""
+        script_info = load_script_info(self.root_dir)
+        if normalize_workspace_kind(script_info.get("workspace_kind")) == _cfg.WORKSPACE_KIND_SHELL:
+            return []
         options = list_template_files(self.root_dir)
         return [{"value": value, "label": label} for value, label in options.items()]
 
@@ -167,7 +184,7 @@ class PyrunsRuntime:
         return normalized
 
     def get_template_content(self, template_value: str) -> Dict[str, Any]:
-        """Return the raw YAML text and metadata for one template."""
+        """Return the raw template text and metadata for one template."""
 
         path = self.resolve_template_path(template_value)
         with open(path, "r", encoding="utf-8") as handle:
@@ -177,16 +194,15 @@ class PyrunsRuntime:
             (item["label"] for item in self.list_templates() if item["value"] == template_value),
             os.path.basename(path),
         )
-        mode_hint = "yaml"
+        script_info = load_script_info(self.root_dir)
+        workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
+        mode_hint = "shell" if (workspace_kind == _cfg.WORKSPACE_KIND_SHELL or path.endswith(".sh")) else "yaml"
         data: Any = None
-        try:
-            data = yaml.safe_load(content)
-            if isinstance(data, dict):
-                keys = [key for key in data.keys() if not str(key).startswith("_meta")]
-                if set(keys).issubset({"args", "run_script"}):
-                    mode_hint = "args"
-        except yaml.YAMLError:
-            mode_hint = "yaml"
+        if mode_hint == "yaml":
+            try:
+                data = yaml.safe_load(content)
+            except yaml.YAMLError:
+                data = None
 
         return {
             "value": template_value,
@@ -195,8 +211,6 @@ class PyrunsRuntime:
             "content": content,
             "read_only": os.path.basename(path) == CONFIG_DEFAULT_FILENAME,
             "mode_hint": mode_hint,
-            "args_text": str(data.get("args", "") or "") if isinstance(data, dict) else "",
-            "run_script": str(data.get("run_script", "") or "") if isinstance(data, dict) else "",
             "parsed_config": data if isinstance(data, dict) else None,
         }
 
@@ -314,6 +328,8 @@ class PyrunsRuntime:
     def start_task(self, task_name: str, execution_mode: str | None = None) -> Dict[str, Any]:
         """Start one task and return the updated snapshot."""
         task = self.require_task(task_name)
+        if task.get("_load_error"):
+            raise ValueError(str(task["_load_error"]))
         self.task_manager.start_task_now(task_name, execution_mode)
         return self.get_task(task_name) or task
 
@@ -339,7 +355,9 @@ class PyrunsRuntime:
             task_name = str(name or "").strip()
             if not task_name or task_name in seen:
                 continue
-            self.require_task(task_name, refresh=False)
+            task = self.require_task(task_name, refresh=False)
+            if task.get("_load_error"):
+                raise ValueError(str(task["_load_error"]))
             normalized_names.append(task_name)
             seen.add(task_name)
 
@@ -467,18 +485,25 @@ class PyrunsRuntime:
         """Return a fresh system metrics snapshot."""
         return self.metrics_sampler.sample()
 
+    def open_shell_workspace(self) -> Dict[str, Any]:
+        """Prepare and activate the project-level shell workspace."""
+
+        current_root = self.root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
+        shell_root = bootstrap_shell_workspace(current_root)
+        self.reload(shell_root)
+        return self.get_workspace_info()
+
     def create_tasks_from_template(
         self,
         *,
         name_prefix: str,
-        run_mode: str,
+        mode: str,
         yaml_text: str = "",
-        args_text: str = "",
-        run_script: str = "",
+        shell_text: str = "",
         template_value: str = "",
         append_timestamp: bool = True,
     ) -> Dict[str, Any]:
-        """Create one or many tasks from YAML or args-mode input."""
+        """Create one or many tasks from script-yaml or shell input."""
 
         normalized_prefix = str(name_prefix or "").strip() or "task"
         if append_timestamp:
@@ -488,49 +513,57 @@ class PyrunsRuntime:
         if err:
             raise ValueError(err)
 
-        mode = str(run_mode or "yaml").strip().lower()
-        if mode not in {"yaml", "config", "args"}:
-            raise ValueError(f"Unsupported run mode: {run_mode}")
+        workspace_kind = self.get_workspace_info().get("workspace_kind", _cfg.WORKSPACE_KIND_SCRIPT)
+        editor_mode = str(mode or "form").strip().lower()
 
-        if mode == "args":
-            run_script_text = str(run_script or "").strip()
-            if not run_script_text:
-                raise ValueError("Args mode requires a run script command.")
-            split_cli_args(run_script_text)
-            split_cli_args(str(args_text or ""))
-            base_config: Dict[str, Any] = {
-                "run_script": run_script_text,
-                "args": str(args_text or ""),
+        if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
+            if editor_mode != "shell":
+                raise ValueError("Shell workspace only supports shell mode.")
+            content = str(shell_text or "")
+            if not content.strip():
+                raise ValueError("Shell mode requires non-empty script content.")
+            task = self.task_generator.create_shell_task(normalized_prefix, content)
+            self.task_manager.add_task(task)
+            page = self.list_tasks(limit=12, refresh=False)
+            return {
+                "count": 1,
+                "items": [task],
+                "recent_tasks": page.items,
+                "task_kind": TASK_KIND_SHELL,
             }
-            task_run_mode = "args"
-        else:
-            try:
-                parsed = yaml.safe_load(str(yaml_text or ""))
-            except yaml.YAMLError as exc:
-                raise ValueError(f"Invalid YAML: {exc}") from exc
 
-            if parsed is None:
-                base_config = {}
-            elif isinstance(parsed, dict):
-                base_config = parsed
-            else:
-                raise ValueError("YAML content must be a mapping at the root.")
-
-            task_run_mode = "config"
-            if template_value:
-                try:
-                    orig_config = load_yaml_strict(self.resolve_template_path(template_value))
-                except Exception:
-                    orig_config = {}
-            else:
-                orig_config = {}
+        if editor_mode not in {"form", "yaml"}:
+            raise ValueError(f"Unsupported generator mode: {mode}")
 
         try:
-            configs = generate_batch_configs(base_config)
-        except ValueError as exc:
-            raise ValueError(str(exc)) from exc
+            parsed = yaml.safe_load(str(yaml_text or ""))
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Invalid YAML: {exc}") from exc
 
-        if task_run_mode == "config" and template_value and orig_config:
+        if parsed is None:
+            base_config = {}
+        elif isinstance(parsed, dict):
+            base_config = parsed
+        else:
+            raise ValueError("YAML content must be a mapping at the root.")
+
+        if template_value:
+            try:
+                orig_config = load_yaml_strict(self.resolve_template_path(template_value))
+            except Exception:
+                orig_config = {}
+        else:
+            orig_config = {}
+
+        if editor_mode == "form":
+            try:
+                configs = generate_batch_configs(base_config)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+        else:
+            configs = [base_config]
+
+        if template_value and orig_config:
             err_msg = validate_config_types_against_template(orig_config, configs)
             if err_msg:
                 raise ValueError(err_msg)
@@ -538,7 +571,7 @@ class PyrunsRuntime:
         tasks = self.task_generator.create_tasks(
             configs,
             normalized_prefix,
-            run_mode=task_run_mode,
+            task_kind=TASK_KIND_CONFIG,
         )
         self.task_manager.add_tasks(tasks)
         page = self.list_tasks(limit=12, refresh=False)
@@ -546,64 +579,76 @@ class PyrunsRuntime:
             "count": len(tasks),
             "items": [item for item in tasks],
             "recent_tasks": page.items,
-            "run_mode": task_run_mode,
+            "task_kind": TASK_KIND_CONFIG,
         }
 
     def preview_tasks_from_template(
         self,
         *,
-        run_mode: str,
+        mode: str,
         yaml_text: str = "",
-        args_text: str = "",
-        run_script: str = "",
+        shell_text: str = "",
         template_value: str = "",
     ) -> Dict[str, Any]:
-        """Preview batch expansion without creating tasks."""
+        """Preview task expansion without creating tasks."""
 
-        mode = str(run_mode or "yaml").strip().lower()
-        if mode not in {"yaml", "config", "args"}:
-            raise ValueError(f"Unsupported run mode: {run_mode}")
+        workspace_kind = self.get_workspace_info().get("workspace_kind", _cfg.WORKSPACE_KIND_SCRIPT)
+        editor_mode = str(mode or "form").strip().lower()
 
-        if mode == "args":
-            run_script_text = str(run_script or "").strip()
-            if not run_script_text:
-                raise ValueError("Args mode requires a run script command.")
-            split_cli_args(run_script_text)
-            split_cli_args(str(args_text or ""))
-            base_config: Dict[str, Any] = {
-                "run_script": run_script_text,
-                "args": str(args_text or ""),
+        if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
+            if editor_mode != "shell":
+                raise ValueError("Shell workspace only supports shell mode.")
+            content = str(shell_text or "")
+            if not content.strip():
+                raise ValueError("Shell mode requires non-empty script content.")
+            preview_text, _ = build_task_preview_and_search(
+                task_kind=TASK_KIND_SHELL,
+                config_text=content,
+            )
+            return {
+                "count": 1,
+                "items": [
+                    {
+                        "index": 1,
+                        "preview": preview_text,
+                        "config": {},
+                    }
+                ],
+                "task_kind": TASK_KIND_SHELL,
             }
-            task_run_mode = "args"
-            orig_config: Dict[str, Any] = {}
-        else:
-            try:
-                parsed = yaml.safe_load(str(yaml_text or ""))
-            except yaml.YAMLError as exc:
-                raise ValueError(f"Invalid YAML: {exc}") from exc
 
-            if parsed is None:
-                base_config = {}
-            elif isinstance(parsed, dict):
-                base_config = parsed
-            else:
-                raise ValueError("YAML content must be a mapping at the root.")
-
-            task_run_mode = "config"
-            if template_value:
-                try:
-                    orig_config = load_yaml_strict(self.resolve_template_path(template_value))
-                except Exception:
-                    orig_config = {}
-            else:
-                orig_config = {}
+        if editor_mode not in {"form", "yaml"}:
+            raise ValueError(f"Unsupported generator mode: {mode}")
 
         try:
-            configs = generate_batch_configs(base_config)
-        except ValueError as exc:
-            raise ValueError(str(exc)) from exc
+            parsed = yaml.safe_load(str(yaml_text or ""))
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Invalid YAML: {exc}") from exc
 
-        if task_run_mode == "config" and template_value and orig_config:
+        if parsed is None:
+            base_config = {}
+        elif isinstance(parsed, dict):
+            base_config = parsed
+        else:
+            raise ValueError("YAML content must be a mapping at the root.")
+
+        if template_value:
+            try:
+                orig_config = load_yaml_strict(self.resolve_template_path(template_value))
+            except Exception:
+                orig_config = {}
+        else:
+            orig_config = {}
+
+        if editor_mode == "form":
+            try:
+                configs = generate_batch_configs(base_config)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+        else:
+            configs = [base_config]
+
+        if template_value and orig_config:
             err_msg = validate_config_types_against_template(orig_config, configs)
             if err_msg:
                 raise ValueError(err_msg)
@@ -622,7 +667,7 @@ class PyrunsRuntime:
         return {
             "count": len(configs),
             "items": preview_items,
-            "run_mode": task_run_mode,
+            "task_kind": TASK_KIND_CONFIG,
         }
 
     def list_launcher_scripts(self) -> List[Dict[str, Any]]:

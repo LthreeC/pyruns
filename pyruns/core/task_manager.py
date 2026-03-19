@@ -12,7 +12,6 @@ from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pyruns._config import (
-    CONFIG_FILENAME,
     ERROR_LOG_FILENAME,
     RUN_LOGS_DIR,
     TASK_INFO_FILENAME,
@@ -21,7 +20,6 @@ from pyruns._config import (
 )
 from pyruns.core.executor import run_task_worker
 from pyruns.utils import get_logger, get_now_str
-from pyruns.utils.config_utils import build_config_preview_and_search_text, load_yaml_strict
 from pyruns.utils.info_io import (
     ensure_run_slot,
     load_task_info,
@@ -31,6 +29,11 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.events import event_sys
+from pyruns.utils.task_files import (
+    build_task_preview_and_search,
+    read_task_payload,
+    resolve_task_config_file,
+)
 
 logger = get_logger(__name__)
 
@@ -191,20 +194,6 @@ class TaskManager:
         if not os.path.exists(info_path):
             return None
 
-        config_path = next(
-            (
-                path
-                for path in (
-                    os.path.join(task_dir, CONFIG_FILENAME),
-                    os.path.join(task_dir, "parameters.yaml"),
-                )
-                if os.path.exists(path)
-            ),
-            None,
-        )
-        config_data: Dict[str, Any] = {}
-        load_error = ""
-
         try:
             info = load_task_info(task_dir)
             if not info:
@@ -212,6 +201,8 @@ class TaskManager:
         except Exception as exc:
             logger.error("Error loading info for %s: %s", dir_name, exc)
             return None
+
+        task_kind, config_data, config_text, load_error = read_task_payload(task_dir, info)
 
         task_name = dir_name
         if info.get("status") == "running" and task_name not in self._running_ids:
@@ -222,15 +213,6 @@ class TaskManager:
                 )
                 info = load_task_info(task_dir)
                 logger.warning("%s: running but process gone; marked failed", dir_name)
-
-        if not config_path:
-            load_error = "config.yaml is missing"
-        else:
-            try:
-                config_data = load_yaml_strict(config_path)
-            except Exception as exc:
-                load_error = str(exc)
-                logger.error("Error loading config for %s: %s", dir_name, exc)
 
         try:
             mtime_ns = os.stat(info_path).st_mtime_ns
@@ -243,16 +225,19 @@ class TaskManager:
             "status": info.get("status", "pending"),
             "created_at": info.get("created_at"),
             "config": config_data,
+            "config_text": config_text,
+            "config_file": resolve_task_config_file(info, task_kind or None),
             "log": "",
             "progress": info.get("progress", 0.0),
             "env": info.get("env", {}),
             "pinned": info.get("pinned", False),
             "script": info.get("script"),
-            "run_mode": info.get("run_mode", "config"),
+            "task_kind": task_kind or str(info.get("task_kind", "") or ""),
             "start_times": info.get("start_times", []),
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
             "records": len(info.get("records", [])),
+            "tracks": len(info.get("tracks", [])),
             "notes": info.get("notes", ""),
             "_load_error": load_error,
             "_mtime": (mtime_ns / 1_000_000_000) if mtime_ns else 0.0,
@@ -346,6 +331,9 @@ class TaskManager:
                 task = self._resolve_identifier_locked(identifier)
                 if not task:
                     continue
+                if task.get("_load_error"):
+                    logger.warning("Skip queuing %s: %s", task["name"], task["_load_error"])
+                    continue
                 task["status"] = "queued"
                 run_index = max(int(task.get("run_index", 0) or 0), len(task.get("start_times", []))) + 1
                 task["run_index"] = run_index
@@ -373,6 +361,9 @@ class TaskManager:
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if target:
+                if target.get("_load_error"):
+                    logger.warning("Skip running %s: %s", target["name"], target["_load_error"])
+                    return
                 target["status"] = "running"
                 run_index = max(int(target.get("run_index", 0) or 0), len(target.get("start_times", []))) + 1
                 target["run_index"] = run_index
@@ -419,6 +410,9 @@ class TaskManager:
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("completed", "failed"):
+                return False
+            if target.get("_load_error"):
+                logger.warning("Skip re-queuing %s: %s", target["name"], target["_load_error"])
                 return False
 
             run_index = max(int(target.get("run_index", 0) or 0), len(target.get("start_times", []))) + 1
@@ -847,7 +841,8 @@ class TaskManager:
             tuple(task.get("pids", [])),
             task.get("records"),
             task.get("pinned"),
-            task.get("run_mode"),
+            task.get("task_kind"),
+            task.get("config_file"),
             task.get("notes", ""),
         )
 
@@ -867,23 +862,35 @@ class TaskManager:
                 "env": info.get("env", task.get("env", {})),
                 "pinned": info.get("pinned", task.get("pinned", False)),
                 "script": info.get("script", task.get("script")),
-                "run_mode": info.get("run_mode", task.get("run_mode", "config")),
+                "task_kind": info.get("task_kind", task.get("task_kind", "config")),
+                "config_file": info.get(
+                    "config_file",
+                    resolve_task_config_file(info, task.get("task_kind", "config")),
+                ),
                 "start_times": info.get("start_times", []),
                 "finish_times": info.get("finish_times", []),
                 "pids": info.get("pids", []),
                 "records": len(info.get("records", [])),
+                "tracks": len(info.get("tracks", [])),
                 "notes": info.get("notes", ""),
                 "run_index": int(info.get("run_index", info.get("_run_index", task.get("run_index", 0))) or 0),
             }
         )
+        loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)
+        task["task_kind"] = loaded_kind or task.get("task_kind", "config")
+        task["config"] = loaded_config
+        task["config_text"] = loaded_text
+        task["_load_error"] = load_error
         if mtime_ns is not None:
             task["_mtime_ns"] = mtime_ns
             task["_mtime"] = mtime_ns / 1_000_000_000
         self._refresh_derived_fields(task)
 
     def _refresh_derived_fields(self, task: Dict[str, Any]) -> None:
-        preview_text, search_text = build_config_preview_and_search_text(
-            task.get("config", {}) or {},
+        preview_text, search_text = build_task_preview_and_search(
+            task_kind=str(task.get("task_kind", "config") or "config"),
+            config=task.get("config", {}) or {},
+            config_text=str(task.get("config_text", "") or ""),
             task_name=str(task.get("name", "") or ""),
             notes=str(task.get("notes", "") or ""),
         )

@@ -25,6 +25,8 @@ from pyruns._config import (
     DEFAULT_MANAGER_EXECUTION_MODE,
     DEFAULT_MONITOR_CHUNK_SIZE,
     DEFAULT_MONITOR_SCROLLBACK,
+    DEFAULT_MONITOR_SIDEBAR_WIDTH_PCT,
+    DEFAULT_SHELL_MODE,
 )
 
 
@@ -36,7 +38,7 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     # Generator
     "generator_form_columns": DEFAULT_GENERATOR_FORM_COLUMNS,
     "generator_auto_timestamp": DEFAULT_GENERATOR_AUTO_TIMESTAMP,
-    "generator_mode": DEFAULT_GENERATOR_MODE,  # form | yaml | args
+    "generator_mode": DEFAULT_GENERATOR_MODE,  # script workspace only: form | yaml
     # Manager
     "manager_columns": DEFAULT_MANAGER_COLUMNS,
     "manager_max_workers": DEFAULT_MANAGER_MAX_WORKERS,
@@ -45,9 +47,13 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     # Monitor
     "monitor_chunk_size": DEFAULT_MONITOR_CHUNK_SIZE,
     "monitor_scrollback": DEFAULT_MONITOR_SCROLLBACK,
+    "monitor_sidebar_width_pct": DEFAULT_MONITOR_SIDEBAR_WIDTH_PCT,
     # Logging
     "log_enabled": False,
     "log_level": "INFO",
+    # Shell
+    "shell_mode": DEFAULT_SHELL_MODE,
+    "shell_executable": "",
     # Persisted UI state
     "pinned_params": [],
 }
@@ -67,7 +73,7 @@ header_refresh_interval: {SETTINGS_DEFAULTS.get("header_refresh_interval")}
 # Generator
 generator_form_columns: {SETTINGS_DEFAULTS.get("generator_form_columns")}          # parameter editor columns (1-9)
 generator_auto_timestamp: {SETTINGS_DEFAULTS.get("generator_auto_timestamp")}
-generator_mode: {SETTINGS_DEFAULTS.get("generator_mode")}               # form | yaml | args
+generator_mode: {SETTINGS_DEFAULTS.get("generator_mode")}               # script workspace only: form | yaml
 
 # Manager
 manager_columns: {SETTINGS_DEFAULTS.get("manager_columns")}
@@ -78,10 +84,15 @@ ui_page_size: {SETTINGS_DEFAULTS.get("ui_page_size")}                   # cards 
 # Monitor
 monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
 monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # max lines in history
+monitor_sidebar_width_pct: {SETTINGS_DEFAULTS.get("monitor_sidebar_width_pct")}     # monitor sidebar width (18-36)
 
 # Logging
 log_enabled: {SETTINGS_DEFAULTS.get("log_enabled")}
 log_level: {SETTINGS_DEFAULTS.get("log_level")}                    # DEBUG | INFO | WARNING | ERROR | CRITICAL
+
+# Shell
+shell_mode: {SETTINGS_DEFAULTS.get("shell_mode")}                  # follow | custom
+shell_executable: {SETTINGS_DEFAULTS.get("shell_executable")}
 
 """
 

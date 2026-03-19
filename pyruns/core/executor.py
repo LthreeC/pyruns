@@ -1,4 +1,4 @@
-"""Run a single task as a subprocess and persist its lifecycle."""
+﻿"""Run a single task as a subprocess and persist its lifecycle."""
 
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ from pyruns._config import (
     ERROR_LOG_FILENAME,
     RECORDS_KEY,
     RUN_LOGS_DIR,
+    SHELL_CONFIG_FILENAME,
+    TASK_KIND_CONFIG,
+    TASK_KIND_SHELL,
     TRACKS_KEY,
 )
 from pyruns.utils import get_logger, get_now_str
@@ -23,16 +26,18 @@ from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import (
     ensure_run_slot,
     load_task_info,
-    save_task_info,
     update_task_info,
 )
-from pyruns.utils.log_io import append_log
+from pyruns.utils.log_io import normalize_log_newlines
+from pyruns.utils.shell_runtime import get_shell_runtime_for_task
+from pyruns.utils.task_files import normalize_task_kind
 
 logger = get_logger(__name__)
 
 
 def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
     """Build a more visible lifecycle banner for task start/finish logs."""
+
     title = phase.upper()
     return (
         f"[PYRUNS] {'=' * 20} {title} {'=' * 20}\n"
@@ -43,15 +48,21 @@ def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
 
 def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
+    *,
     task_dir: Optional[str] = None,
+    task_kind: str = TASK_KIND_CONFIG,
+    config_file: str = CONFIG_FILENAME,
 ) -> Dict[str, str]:
     """Build the subprocess environment."""
+
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
-    if task_dir:
-        env[ENV_KEY_CONFIG] = os.path.join(task_dir, CONFIG_FILENAME)
+    if task_dir and normalize_task_kind(task_kind) == TASK_KIND_CONFIG:
+        env[ENV_KEY_CONFIG] = os.path.join(task_dir, config_file or CONFIG_FILENAME)
+    else:
+        env.pop(ENV_KEY_CONFIG, None)
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
     return env
@@ -59,9 +70,119 @@ def _prepare_env(
 
 def _get_log_path(task_dir: str, run_index: int) -> str:
     """Return ``run_logs/runN.log`` and create the directory when needed."""
+
     log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
     os.makedirs(log_dir, exist_ok=True)
     return os.path.join(log_dir, f"run{run_index}.log")
+
+
+def _resolve_shell_executable(task_dir: str | None = None) -> str:
+    """Resolve the shell executable used for shell tasks."""
+    runtime = get_shell_runtime_for_task(task_dir)
+    shell_path = str(runtime.get("executable", "") or "").strip()
+    if shell_path and bool(runtime.get("available", False)):
+        return shell_path
+
+    if runtime.get("mode") == "custom":
+        raise RuntimeError(
+            "shell_mode=custom requires a valid shell_executable in "
+            "_pyruns_settings.yaml before running shell tasks."
+        )
+
+    raise RuntimeError(
+        "Unable to resolve the current terminal shell for shell tasks. "
+        "Start pyr from the shell you want to follow, or switch to "
+        "shell_mode=custom in _pyruns_settings.yaml."
+    )
+
+
+def _is_posix_shell_executable(shell_path: str) -> bool:
+    """Return True when the resolved shell should execute the script directly."""
+
+    name = os.path.basename(shell_path).lower()
+    return name in {"bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "fish", "fish.exe"}
+
+
+def _is_powershell_executable(shell_path: str) -> bool:
+    """Return True when the resolved shell uses PowerShell script semantics."""
+
+    name = os.path.basename(shell_path).lower()
+    return "powershell" in name or name.startswith("pwsh")
+
+
+def _read_shell_script_body(script_path: str) -> str:
+    """Read the stored shell script and strip any shebang for native wrappers."""
+
+    with open(script_path, "r", encoding="utf-8") as handle:
+        body = handle.read()
+
+    if body.startswith("#!"):
+        _, _, remainder = body.partition("\n")
+        body = remainder
+    return body.lstrip("\r\n")
+
+
+def _powershell_utf8_preamble() -> str:
+    """Force PowerShell wrapper I/O through UTF-8 for stable log capture."""
+
+    return "\n".join(
+        [
+            "$__pyrunsUtf8 = [System.Text.UTF8Encoding]::new($false)",
+            "[Console]::InputEncoding = $__pyrunsUtf8",
+            "[Console]::OutputEncoding = $__pyrunsUtf8",
+            "$OutputEncoding = $__pyrunsUtf8",
+        ]
+    )
+
+
+def _materialize_windows_shell_wrapper(task_dir: str, script_path: str, shell_path: str) -> Tuple[List[str], str]:
+    """Create a native Windows wrapper script around the stored shell task body."""
+
+    if _is_posix_shell_executable(shell_path):
+        return [shell_path, script_path], task_dir
+
+    script_body = _read_shell_script_body(script_path)
+    if _is_powershell_executable(shell_path):
+        wrapper_path = os.path.join(task_dir, ".pyruns_shell_run.ps1")
+        wrapper_body = "\n".join(
+            [
+                _powershell_utf8_preamble(),
+                script_body.rstrip() or "exit 0",
+            ]
+        )
+        with open(wrapper_path, "w", encoding="utf-8-sig", newline="\r\n") as handle:
+            handle.write(wrapper_body)
+        return [
+            shell_path,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            wrapper_path,
+        ], task_dir
+
+    wrapper_path = os.path.join(task_dir, ".pyruns_shell_run.cmd")
+    wrapper_lines = [
+        "@echo off",
+        "setlocal",
+        "chcp 65001 >nul",
+        script_body.rstrip() or "exit /b 0",
+    ]
+    with open(wrapper_path, "w", encoding="utf-8-sig", newline="\r\n") as handle:
+        handle.write("\r\n".join(wrapper_lines) + "\r\n")
+    return [shell_path, "/d", "/c", wrapper_path], task_dir
+
+
+def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], str]:
+    script_path = os.path.join(task_dir, config_file or SHELL_CONFIG_FILENAME)
+    if not os.path.exists(script_path):
+        raise FileNotFoundError(script_path)
+    shell_path = _resolve_shell_executable(task_dir)
+    if os.name == "nt":
+        return _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
+    return [shell_path, script_path], task_dir
 
 
 def _build_command(
@@ -69,35 +190,32 @@ def _build_command(
     script_path,
     meta_workdir,
     config,
-    run_mode: str = "config",
+    *,
+    task_kind: str = TASK_KIND_CONFIG,
+    task_dir: str | None = None,
+    config_file: str = CONFIG_FILENAME,
 ) -> Tuple[Any, Optional[str]]:
-    """Build the subprocess command list from task metadata + config."""
+    """Build the subprocess command list from task metadata + payload."""
+
+    normalized_kind = normalize_task_kind(task_kind)
+    if normalized_kind == TASK_KIND_SHELL:
+        if not task_dir:
+            raise RuntimeError("Shell task execution requires a task directory")
+        return _build_shell_command(task_dir, config_file or SHELL_CONFIG_FILENAME)
+
     command = meta_cmd or config.get("command")
     workdir = meta_workdir
 
     if not command and script_path:
         cmd_list: List[str] = [sys.executable, script_path]
 
-        config_source = "unknown"
-        from pyruns.utils.parse_utils import detect_config_source_fast
+        from pyruns.utils.parse_utils import detect_config_source_fast, extract_argparse_params
 
         config_source, _ = detect_config_source_fast(script_path)
 
-        mode = str(run_mode or "config").strip().lower()
-
-        if mode == "args":
-            from pyruns.utils.parse_utils import split_cli_args
-
-            run_script = str(config.get("run_script", "") or "").strip()
-            script_cmd = split_cli_args(run_script) if run_script else []
-            cmd_list = script_cmd if script_cmd else [sys.executable, script_path]
-            cli_args = split_cli_args(config.get("args", ""))
-            cmd_list.extend(cli_args)
-        elif config_source == "argparse":
+        if config_source == "argparse":
             positional_order: List[str] = []
             try:
-                from pyruns.utils.parse_utils import extract_argparse_params
-
                 ap_params = extract_argparse_params(script_path)
                 for dest, info in ap_params.items():
                     raw_name = info.get("name", "")
@@ -132,12 +250,12 @@ def _build_command(
                     cmd_list.append(str(value))
         elif config_source == "hydra":
             raise RuntimeError(
-                "Hydra script detected. Use Args mode in Generator (run_mode='args')."
+                "Hydra script detected. Use a shell workspace/task to launch it explicitly."
             )
         elif config_source == "unknown":
             raise RuntimeError(
-                "Unable to detect script config mode safely. "
-                "Use Args mode, or integrate via argparse / pyruns.load()."
+                "Unable to detect script config mode safely. Use a shell workspace/task, "
+                "or integrate via argparse / pyruns.load()."
             )
 
         command = cmd_list
@@ -155,6 +273,7 @@ def _append_error_summary(
     detail_lines: List[str],
 ) -> None:
     """Append one failure/error summary block into ``error.log``."""
+
     err_log_path = os.path.join(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME)
     os.makedirs(os.path.dirname(err_log_path), exist_ok=True)
     block = (
@@ -163,8 +282,8 @@ def _append_error_summary(
         + "\n".join(detail_lines)
         + f"\n{'=' * 70}\n"
     )
-    with open(err_log_path, "a", encoding="utf-8") as f:
-        f.write(block)
+    with open(err_log_path, "a", encoding="utf-8") as handle:
+        handle.write(block)
 
 
 def run_task_worker(
@@ -176,26 +295,27 @@ def run_task_worker(
     run_index: int = 1,
 ) -> Dict[str, Any]:
     """Worker function executed in a separate thread/process."""
+
     logger.info("Task %s starting  run=#%d", name, run_index)
 
     log_path = _get_log_path(task_dir, run_index)
     task_meta = load_task_info(task_dir)
+    task_kind = normalize_task_kind(task_meta.get("task_kind"))
+    config_file = str(task_meta.get("config_file", "") or "")
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
     meta_workdir = task_meta.get("workdir")
 
     workspace_dir = os.path.dirname(os.path.dirname(task_dir))
     script_info_path = os.path.join(workspace_dir, "script_info.json")
-    if os.path.exists(script_info_path):
+    if task_kind == TASK_KIND_CONFIG and os.path.exists(script_info_path):
         try:
-            with open(script_info_path, "r", encoding="utf-8") as f:
-                s_info = __import__("json").load(f)
+            with open(script_info_path, "r", encoding="utf-8") as handle:
+                s_info = __import__("json").load(handle)
             info_script = s_info.get("script_path")
             if info_script and os.path.exists(info_script):
                 script_path = info_script
             elif info_script and not os.path.exists(info_script):
-                # Drive letter or mount point may have changed (e.g. OneDrive).
-                # Try to find the script relative to the workspace parent.
                 script_basename = os.path.basename(info_script)
                 pyruns_parent = os.path.dirname(os.path.dirname(workspace_dir))
                 candidate = os.path.join(pyruns_parent, script_basename)
@@ -203,7 +323,8 @@ def run_task_worker(
                     script_path = candidate
                     logger.info(
                         "script_info path stale (%s), resolved to %s",
-                        info_script, candidate,
+                        info_script,
+                        candidate,
                     )
         except Exception as exc:
             logger.warning("Failed to read script_info.json from %s: %s", workspace_dir, exc)
@@ -222,26 +343,34 @@ def run_task_worker(
             script_path,
             meta_workdir,
             config,
-            run_mode=str(task_meta.get("run_mode", "config") or "config"),
+            task_kind=task_kind,
+            task_dir=task_dir,
+            config_file=config_file or (
+                SHELL_CONFIG_FILENAME if task_kind == TASK_KIND_SHELL else CONFIG_FILENAME
+            ),
         )
         logger.debug("Built command: %s  workdir=%s", command, workdir)
 
         if not command:
             raise NotImplementedError("No command to run (simulation mode not implemented)")
 
-        env = _prepare_env(env_vars, task_dir=task_dir)
+        env = _prepare_env(
+            env_vars,
+            task_dir=task_dir,
+            task_kind=task_kind,
+            config_file=config_file or CONFIG_FILENAME,
+        )
         env["PYRUNS_RUN_INDEX"] = str(run_index)
 
         if workdir and not os.path.isdir(workdir):
-            fallback = os.path.dirname(script_path) if script_path else os.getcwd()
+            fallback = task_dir if task_kind == TASK_KIND_SHELL else (os.path.dirname(script_path) if script_path else os.getcwd())
             logger.warning(
-                "Workdir '%s' is invalid, falling back to script dir '%s'",
+                "Workdir '%s' is invalid, falling back to '%s'",
                 workdir,
                 fallback,
             )
             workdir = fallback
 
-        # Normalize string commands to list to avoid shell=True injection risk
         if isinstance(command, str):
             command = shlex.split(command, posix=(os.name != "nt"))
 
@@ -256,7 +385,8 @@ def run_task_worker(
 
         start_str = get_now_str()
         start_log = _lifecycle_banner("start", name, start_str)
-        append_log(log_path, start_log)
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write(start_log)
         log_emitter.emit(name, start_log.replace("\n", "\r\n"))
 
         def _mark_started(info: Dict[str, Any]) -> None:
@@ -270,19 +400,17 @@ def run_task_worker(
 
         def _tee_output() -> None:
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            with open(log_path, "ab") as lf:
+            with open(log_path, "ab") as handle:
                 for chunk in iter(lambda: proc.stdout.read1(4096), b""):
                     if not chunk:
                         break
-                    lf.write(chunk)
-                    lf.flush()
-                    text = decoder.decode(chunk)
-                    text = text.replace("\r\n", "\n").replace("\n", "\r\n")
+                    handle.write(chunk)
+                    handle.flush()
+                    text = normalize_log_newlines(decoder.decode(chunk))
                     log_emitter.emit(name, text)
                 tail = decoder.decode(b"", final=True)
                 if tail:
-                    tail = tail.replace("\r\n", "\n").replace("\n", "\r\n")
-                    log_emitter.emit(name, tail)
+                    log_emitter.emit(name, normalize_log_newlines(tail))
 
         reader_thread = threading.Thread(target=_tee_output, daemon=True)
         reader_thread.start()
@@ -294,7 +422,8 @@ def run_task_worker(
         end_str = get_now_str()
 
         finish_log = _lifecycle_banner("finish", name, end_str)
-        append_log(log_path, finish_log)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(finish_log)
         log_emitter.emit(name, finish_log.replace("\n", "\r\n"))
 
         def _mark_finished(info: Dict[str, Any]) -> None:
@@ -366,3 +495,4 @@ def run_task_worker(
         )
         logger.error("%s", block)
         return {"status": "failed", "progress": 0.0, "error": str(exc)}
+

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, type ComponentType } from 'react'
 import { X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check } from 'lucide-react'
 import clsx from 'clsx'
+import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
 import type { Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
@@ -74,7 +75,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
-    { key: 'config', label: 'Config', icon: Settings },
+    { key: 'config', label: task.task_kind === 'shell' ? 'Script' : 'Config', icon: Settings },
     { key: 'notes', label: 'Notes', icon: StickyNote },
     { key: 'env', label: 'Env', icon: Variable },
   ]
@@ -262,7 +263,8 @@ function InfoTab({ task }: { task: Task }) {
   const rows: [string, string][] = [
     ['Status', task.status],
     ['Created', task.created_at],
-    ['Run Mode', task.run_mode || 'standard'],
+    ['Task Kind', task.task_kind],
+    ['Config File', task.config_file],
     ['Run Index', String(task.run_index || 1)],
     ['Directory', task.dir],
   ]
@@ -275,6 +277,9 @@ function InfoTab({ task }: { task: Task }) {
   }
   if (task.pids?.length) {
     rows.push(['PIDs', task.pids.join(', ')])
+  }
+  if (task._load_error) {
+    rows.push(['Load Error', task._load_error])
   }
 
   return (
@@ -290,16 +295,21 @@ function InfoTab({ task }: { task: Task }) {
 }
 
 function ConfigTab({ task }: { task: Task }) {
-  const yaml = task.config
-    ? Object.entries(task.config)
-        .filter(([key]) => !key.startsWith('_meta'))
-        .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
-        .join('\n')
-    : '(empty)'
+  const normalizedConfig = Object.fromEntries(
+    Object.entries(task.config || {}).filter(([key]) => !key.startsWith('_meta'))
+  )
+  const content = task.config_text?.trim()
+    ? task.config_text
+    : Object.keys(normalizedConfig).length > 0
+      ? yamlStringify(normalizedConfig)
+      : '(empty)'
 
   return (
-    <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
-      {yaml}
-    </pre>
+    <div className="space-y-2">
+      <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">{task.config_file}</div>
+      <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
+        {content}
+      </pre>
+    </div>
   )
 }

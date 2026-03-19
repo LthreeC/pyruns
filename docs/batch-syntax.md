@@ -1,248 +1,143 @@
-# 批量生成语法
+# 批量语法
 
-Pyruns 支持在 YAML 配置值中使用管道语法声明多值参数，自动生成所有参数组合的任务。
+批量语法只用于脚本工作区的 `form` 模式。
 
----
+不适用场景：
 
-## 语法总览
+- `yaml` 模式：固定只生成一个配置任务
+- `shell` 模式：固定只生成一个 shell 任务
 
-| 语法 | 名称 | 效果 | 示例 |
-|------|------|------|------|
-| `a \| b \| c` | Product（笛卡尔积） | 与其他 Product 参数全排列组合 | 3 值 × 2 值 = 6 组合 |
-| `(a \| b \| c)` | Zip（配对组合） | 按位置一一对应，所有 Zip 长度须一致 | 3 值 → 3 组合 |
+## 支持的三种写法
 
-两种语法可混合使用，总任务数 = Product 各参数值数量之积 × Zip 长度。
-
----
-
-## Product — 笛卡尔积
-
-使用 `|` 分隔多个值：
+### 1. Product
 
 ```yaml
 lr: 0.001 | 0.01 | 0.1
-batch_size: 32 | 64
+optimizer: adam | sgd
 ```
 
-**效果**：生成所有可能的组合（笛卡尔积）。
+含义：
 
+- 所有候选值做笛卡尔积
+
+结果：
+
+```text
+3 × 2 = 6 tasks
 ```
-lr=0.001, batch_size=32
-lr=0.001, batch_size=64
-lr=0.01,  batch_size=32
-lr=0.01,  batch_size=64
-lr=0.1,   batch_size=32
-lr=0.1,   batch_size=64
-```
 
-**总数**：3 × 2 = **6 个任务**
-
----
-
-## Zip — 配对组合
-
-使用括号 `(|)` 包裹管道符及其元素：
+### 2. Zip
 
 ```yaml
 seed: (1 | 2 | 3)
-name: (alpha | beta | gamma)
+tag: (a | b | c)
 ```
 
-**效果**：按位置配对组合（行为类似 Python 内置的 `zip()` 函数）。
+含义：
 
+- 按位置一一配对
+
+结果：
+
+```text
+(1, a)
+(2, b)
+(3, c)
 ```
-seed=1, name=alpha
-seed=2, name=beta
-seed=3, name=gamma
+
+要求：
+
+- 所有 zip 参数长度必须一致
+
+### 3. 数值区间
+
+```yaml
+epoch: 10:100:10
 ```
 
-**总数**：**3 个任务**
+含义：
 
-**约束**：所有应用 Zip 语法声明的参数所包含的元素数量必须绝对一致。
+- 展开为数值序列
 
----
+结果：
+
+```text
+10, 20, 30, ..., 100
+```
+
+也支持：
+
+```yaml
+x: 1:5
+```
+
+表示默认步长为 `1`。
 
 ## 混合使用
 
-Product 和 Zip 原则可以共同混用组合：
-
 ```yaml
-# Product 参数
-lr: 0.001 | 0.01 | 0.1
-batch_size: 32 | 64
-
-# Zip 参数
+lr: 0.001 | 0.01
+optimizer: adam | sgd
 seed: (1 | 2 | 3)
-name: (alpha | beta | gamma)
-
-# 固定参数
-epochs: 100
-model: resnet50
+tag: (exp_a | exp_b | exp_c)
+epoch: 10:30:10
 ```
 
-**总数**：Product 组合数 × Zip 组合数 = (3 × 2) × 3 = **18 个任务**
+总数计算：
 
-**公式**：$\text{Total} = \prod(\text{product counts}) \times \text{zip length}$
+```text
+Product: 2 × 2 × 3 = 12
+Zip: 3
+Total: 12 × 3 = 36
+```
 
----
+## 嵌套参数
 
-## 完整示例
-
-### 输入配置
+语法同样适用于嵌套字段：
 
 ```yaml
-# 超参搜索实验
 training:
   lr: 0.001 | 0.01
-  optimizer: adam | sgd
 
 model:
-  hidden_size: 128 | 256
-
-# 控制变量 — 每组实验固定种子
-seed: (42 | 123 | 777)
-run_name: (trial_a | trial_b | trial_c)
-
-# 其余参数固定
-epochs: 50
-dataset: cifar10
+  hidden: 128 | 256
 ```
 
-### 生成的任务列表
+## 生成后的落盘结果
 
-| # | lr | optimizer | hidden_size | seed | run_name |
-|---|------|-----------|-------------|------|----------|
-| 1 | 0.001 | adam | 128 | 42 | trial_a |
-| 2 | 0.001 | adam | 128 | 123 | trial_b |
-| 3 | 0.001 | adam | 128 | 777 | trial_c |
-| 4 | 0.001 | adam | 256 | 42 | trial_a |
-| ... | ... | ... | ... | ... | ... |
-| 24 | 0.01 | sgd | 256 | 777 | trial_c |
+批量展开后，每个任务会得到自己的 `config.yaml`：
 
-**总数**：(2 × 2 × 2) × 3 = **24 个任务**
-
-### 生成后的持久化目录
-
-```
-_pyruns_/
-├── my-exp-[1-of-24]/
-│   ├── task_info.json
-│   ├── config.yaml     ← lr=0.001, optimizer=adam, hidden_size=128, seed=42
-│   └── run_logs/
-│       └── run1.log
-├── my-exp-[2-of-24]/
-│   ├── config.yaml     ← lr=0.001, optimizer=adam, hidden_size=128, seed=123
-│   └── ...
-└── my-exp-[24-of-24]/
-    └── ...
+```text
+_pyruns_/<script>/tasks/<task_name>/
+├─ task_info.json
+├─ config.yaml
+└─ run_logs/
 ```
 
----
+每个任务里的 `config.yaml` 都是该任务独立的最终快照。
 
-## 类型推断规则
+## 常见错误
 
-管道语法中的各类数据节点会自动依据 Python SafeLoader 协议尝试推断类型：
-
-| 输入示例 | 目标推断类型 |
-|------|--------|
-| `0.001` | `float` |
-| `42` | `int` |
-| `true` | `bool` |
-| `adam` | `str` |
-| `[1, 2]` | `list` |
-| `None` | `NoneType` |
-
----
-
-## 嵌套参数支持
-
-管道语法同样实用于多维且深层嵌套字典叶子节点：
-
-```yaml
-model:
-  architecture: resnet | vgg | densenet
-  layers:
-    hidden: 128 | 256
-    output: 10
-```
-
-生成阶段后台函数 `flatten_dict()` 展开其为一维空间以便交叉：
-
-```
-model.architecture: resnet | vgg | densenet   → product, 3 values
-model.layers.hidden: 128 | 256                → product, 2 values
-model.layers.output: 10                       → fixed
-```
-
-总任务数：3 × 2 = **6**
-
----
-
-## 确认对话框
-
-当检测到管道语法时（任务数 > 1），点击 GENERATE 会弹出确认对话框：
-
-```
-┌─────────────────────────────────────────┐
-│ 🔮 批量生成确认                    [24] │
-├─────────────────────────────────────────┤
-│ 任务前缀: my-exp                        │
-│ my-exp-[1-of-24] ~ my-exp-[24-of-24]   │
-│                                          │
-│ 🔀 Product 参数 (笛卡尔积)  2×2×2 = 8  │
-│ ├─ lr:           0.001 | 0.01           │
-│ ├─ optimizer:    adam | sgd             │
-│ └─ hidden_size:  128 | 256             │
-│                                          │
-│ 🔗 Zip 参数 (配对组合)          ×3      │
-│ ├─ seed:      42 | 123 | 777           │
-│ └─ run_name:  trial_a | trial_b | ...  │
-│                                          │
-│ 📊 Total = 2 × 2 × 2 × 3 = 24         │
-├─────────────────────────────────────────┤
-│                    [取消]  [确认生成 24] │
-└─────────────────────────────────────────┘
-```
-
-## `_meta_desc` 字段
-
-每个生成的配置会自动附加一个 `_meta_desc` 字段，记录该任务与其他任务不同的参数值：
-
-```yaml
-# config.yaml
-lr: 0.001
-optimizer: adam
-hidden_size: 128
-seed: 42
-run_name: trial_a
-_meta_desc: "lr=0.001, optimizer=adam, hidden_size=128, seed=42, run_name=trial_a"
-```
-
-此字段以 `_meta` 开头，在保存到 `config.yaml` 时会被自动过滤。
-
-## 错误处理
-
-### Zip 长度不匹配
+### Zip 长度不一致
 
 ```yaml
 seed: (1 | 2 | 3)
-name: (alpha | beta)       # ← 只有 2 个值！
+tag: (a | b)
 ```
 
-**错误**：`ValueError: All (zip) parameters must have equal length. Got: seed=3, name=2`
+会报错，因为 zip 长度不同。
 
-### 无管道语法
+### YAML 根节点不是 mapping
 
-如果配置中没有任何 `|` 语法，点击 GENERATE 将直接生成 1 个任务，无需确认。
+```yaml
+- 1
+- 2
+```
 
-## 相关 API
+Generator 只接受对象型根节点。
 
-| 函数 | 模块 | 用途 |
-|------|------|------|
-| `generate_batch_configs()` | `utils.config_utils` | 生成所有参数组合 |
-| `count_batch_configs()` | `utils.config_utils` | 预览任务数量 |
-| `strip_batch_pipes()` | `utils.config_utils` | 去除管道语法（取首个值） |
-| `_parse_pipe_value()` | `utils.config_utils` | 解析单个值的管道语法 |
-| `flatten_dict()` | `utils.config_utils` | 展平嵌套字典 |
-| `unflatten_dict()` | `utils.config_utils` | 还原嵌套字典 |
+## 建议
 
+- 参数很多时优先用 `form` 模式检查批量范围
+- 确认预览数量合理后再生成
+- 对于一次性脚本内容，直接使用 shell workspace，不要再回退到旧 args 思路

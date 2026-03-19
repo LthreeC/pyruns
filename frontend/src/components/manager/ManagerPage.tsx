@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ChevronDown, MousePointer2, Pin, Play, RotateCcw, Rows3, Square, Terminal, Trash2,
+  AlertTriangle, ChevronDown, MousePointer2, Pin, Play, RotateCcw, Rows3, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useMonitorStore, useTaskStore } from '@/store'
@@ -33,6 +33,7 @@ export default function ManagerPage() {
   const [executionMode, setExecutionMode] = useState('thread')
   const [maxWorkers, setMaxWorkers] = useState(2)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [deleteTask, setDeleteTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
   const navigate = useNavigate()
@@ -72,6 +73,16 @@ export default function ManagerPage() {
     setSelectMode(false)
     await fetchTasks()
   }, [selectedIds, clearSelection, fetchTasks])
+
+  const handleDeleteTask = useCallback(async () => {
+    if (!deleteTask) return
+    await api.batchDeleteTasks([deleteTask.name])
+    if (detailTask?.name === deleteTask.name) {
+      setDetailTask(null)
+    }
+    setDeleteTask(null)
+    await fetchTasks()
+  }, [deleteTask, detailTask, fetchTasks])
 
   const handleTaskAction = useCallback(async (task: Task, action: 'run' | 'cancel' | 'rerun') => {
     if (action === 'run' || action === 'rerun') {
@@ -119,7 +130,7 @@ export default function ManagerPage() {
           <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
         </div>
 
-        <div className="w-56">
+        <div className="w-64 max-w-full">
           <SearchInput value={query} onChange={setQuery} placeholder="Search tasks..." />
         </div>
 
@@ -240,6 +251,7 @@ export default function ManagerPage() {
                   onCardClick={handleCardClick}
                   onTaskAction={handleTaskAction}
                   onPin={handlePin}
+                  onDelete={setDeleteTask}
                   onMonitor={task => {
                     void useMonitorStore.getState().selectTask(task.name)
                     navigate('/monitor')
@@ -262,6 +274,7 @@ export default function ManagerPage() {
                 onCardClick={handleCardClick}
                 onTaskAction={handleTaskAction}
                 onPin={handlePin}
+                onDelete={setDeleteTask}
                 onMonitor={task => {
                   void useMonitorStore.getState().selectTask(task.name)
                   navigate('/monitor')
@@ -290,6 +303,16 @@ export default function ManagerPage() {
         onCancel={() => setDeleteConfirm(false)}
       />
 
+      <ConfirmDialog
+        open={Boolean(deleteTask)}
+        title="Delete Task"
+        description={deleteTask ? `Move '${deleteTask.name}' to trash?` : ''}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        onConfirm={handleDeleteTask}
+        onCancel={() => setDeleteTask(null)}
+      />
+
       {detailTask && (
         <TaskDetailPanel task={detailTask} onClose={() => setDetailTask(null)} onRefresh={fetchTasks} />
       )}
@@ -305,6 +328,7 @@ function TaskGrid({
   onCardClick,
   onTaskAction,
   onPin,
+  onDelete,
   onMonitor,
 }: {
   tasks: Task[]
@@ -314,6 +338,7 @@ function TaskGrid({
   onCardClick: (task: Task) => void
   onTaskAction: (task: Task, action: 'run' | 'cancel' | 'rerun') => void | Promise<void>
   onPin: (task: Task) => void | Promise<void>
+  onDelete: (task: Task) => void
   onMonitor: (task: Task) => void
 }) {
   if (tasks.length === 0) {
@@ -331,6 +356,7 @@ function TaskGrid({
           onClick={() => onCardClick(task)}
           onAction={action => void onTaskAction(task, action)}
           onPin={() => void onPin(task)}
+          onDelete={() => onDelete(task)}
           onMonitor={() => onMonitor(task)}
         />
       ))}
@@ -345,6 +371,7 @@ function TaskCard({
   onClick,
   onAction,
   onPin,
+  onDelete,
   onMonitor,
 }: {
   task: Task
@@ -353,10 +380,13 @@ function TaskCard({
   onClick: () => void
   onAction: (action: 'run' | 'cancel' | 'rerun') => void
   onPin: () => void
+  onDelete: () => void
   onMonitor: () => void
 }) {
   const actionBtn = getActionButton(task)
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
+  const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'config'
+  const cardDescription = task._load_error || task.preview_text || 'No preview available.'
 
   return (
     <div
@@ -391,7 +421,7 @@ function TaskCard({
       <div className="flex items-center gap-2 pr-7">
         <StatusBadge status={task.status as TaskStatus} />
         <span className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
-          {task.run_mode || 'standard'}
+          {taskKindLabel}
         </span>
       </div>
 
@@ -399,8 +429,10 @@ function TaskCard({
         {task.name}
       </div>
 
-      <div className="mt-1 min-h-[30px] text-2xs leading-5 text-txt-secondary" title={task.preview_text || 'No preview available.'}>
-        <div className="truncate-2">{task.preview_text || 'No preview available.'}</div>
+      <div className="mt-1 min-h-[30px] text-2xs leading-5 text-txt-secondary" title={cardDescription}>
+        <div className={clsx('truncate-2', task._load_error && 'text-rose-400')}>
+          {cardDescription}
+        </div>
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
@@ -408,6 +440,13 @@ function TaskCard({
         <span title={`Run #${Math.max(task.run_index || 1, 1)}`}>Run #{Math.max(task.run_index || 1, 1)}</span>
         <span className="truncate" title={folderName}>{folderName}</span>
       </div>
+
+      {task._load_error && (
+        <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-400" title={task._load_error}>
+          <AlertTriangle className="h-3 w-3" />
+          <span className="truncate">Task load error</span>
+        </div>
+      )}
 
       {!selectMode && (
         <div className="mt-2.5 flex items-center justify-end gap-1 border-t border-border-subtle pt-1.5">
@@ -435,6 +474,17 @@ function TaskCard({
           >
             <Terminal className="h-3.5 w-3.5" />
           </button>
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation()
+              onDelete()
+            }}
+            title="Delete task"
+            className="rounded-md p-1.5 text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
     </div>
@@ -442,6 +492,10 @@ function TaskCard({
 }
 
 function getActionButton(task: Task) {
+  if (task._load_error) {
+    return null
+  }
+
   switch (task.status) {
     case 'pending':
     case 'failed':

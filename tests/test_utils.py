@@ -28,7 +28,7 @@ from pyruns.utils.config_utils import (
     preview_config_line, validate_config_types_against_template,
 )
 from pyruns.utils.log_io import (
-    append_log, read_log, read_log_chunk, read_last_bytes, safe_read_log,
+    append_log, decode_log_bytes, read_log, read_log_chunk, read_last_bytes, safe_read_log,
 )
 from pyruns.utils.parse_utils import (
     detect_config_source_fast, extract_argparse_params,
@@ -218,11 +218,11 @@ def test_append_read_log(tmp_path):
     
     # Append creates file
     append_log(log_file, "Line 1\n")
-    assert read_log(log_file) == "Line 1\n"
+    assert read_log(log_file).replace("\r", "") == "Line 1\n"
     
     # Append adds
     append_log(log_file, "Line 2\n")
-    assert read_log(log_file) == "Line 1\nLine 2\n"
+    assert read_log(log_file).replace("\r", "") == "Line 1\nLine 2\n"
 
 
 def test_read_log_chunk(tmp_path):
@@ -269,7 +269,7 @@ def test_read_last_bytes(tmp_path):
         f.write(content)
         
     text, offset = read_last_bytes(log_file, 12)
-    assert len(text) == 12
+    assert len(text.replace("\r", "")) == 12
     assert "World\n" in text.replace("\r", "")
     assert offset == len(content)
     
@@ -302,6 +302,13 @@ def test_safe_read_log(tmp_path):
     # Return string will be up to the newline.
     assert text2.replace("\r", "") == "A" * 100 + "\n"
     assert off2 == 101 # exactly after the newline
+
+
+def test_decode_log_bytes_falls_back_to_gbk_for_windows_logs(monkeypatch):
+    text = "测试 PowerShell 输出"
+    encoded = text.encode("gbk")
+    monkeypatch.setattr("pyruns.utils.log_io.os.name", "nt", raising=False)
+    assert decode_log_bytes(encoded) == text
 
 
 # ═══════════════════════════════════════════════════════════════

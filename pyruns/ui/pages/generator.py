@@ -14,7 +14,7 @@ from nicegui import ui
 from typing import Dict, Any
 
 from pyruns.utils.config_utils import list_template_files, load_yaml_strict
-from pyruns.utils.info_io import load_script_info, save_script_info
+from pyruns.utils.info_io import load_script_info, save_script_info, validate_task_name
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils import get_logger, get_now_str, client_connected
 from pyruns.ui.components.param_editor import recursive_param_editor
@@ -39,6 +39,7 @@ from pyruns.ui.theme import (
 from pyruns.ui.widgets import dir_picker, _ensure_css
 from pyruns._config import (
     DEFAULT_GENERATOR_MODE, DEFAULT_GENERATOR_FORM_COLUMNS, DEFAULT_GENERATOR_AUTO_TIMESTAMP,
+    SHELL_CONFIG_FILENAME, TASK_KIND_CONFIG, WORKSPACE_KIND_SHELL,
 )
 
 logger = get_logger(__name__)
@@ -58,6 +59,8 @@ def render_generator_page(
     from pyruns.utils.settings import get as _get_setting
     script_info = load_script_info(str(state.get("run_root", "")).replace("\\", "/"))
     script_path = script_info.get("script_path", "")
+    workspace_kind = str(script_info.get("workspace_kind", "") or "").strip().lower()
+    is_shell_workspace = workspace_kind == WORKSPACE_KIND_SHELL
     script_mode = "unknown"
     # If stored path doesn't exist (e.g. drive letter changed), try resolving from run_root
     if script_path and not os.path.exists(script_path):
@@ -78,13 +81,11 @@ def render_generator_page(
         except Exception:
             script_mode = "unknown"
 
-    # Backward compatibility: keep reading the legacy `generate_mode` key.
-    legacy_mode = str(_get_setting("generate_mode", "") or "").lower()
     saved_mode = str(
-        _get_setting("generator_mode", legacy_mode or DEFAULT_GENERATOR_MODE)
+        _get_setting("generator_mode", DEFAULT_GENERATOR_MODE)
         or DEFAULT_GENERATOR_MODE
     ).lower()
-    initial_mode = saved_mode if saved_mode in ("form", "yaml", "args") else "form"
+    initial_mode = "shell" if is_shell_workspace else (saved_mode if saved_mode in ("form", "yaml") else "form")
 
     view_mode = {"current": initial_mode}
     initial_cols = int(_get_setting("generator_form_columns", DEFAULT_GENERATOR_FORM_COLUMNS))
@@ -116,6 +117,9 @@ def render_generator_page(
         file_select = ui.select(
             [], label="Template"
         ).props(INPUT_PROPS).classes(GENERATOR_TEMPLATE_SELECT_CLASSES)
+        file_select.set_visibility(not is_shell_workspace)
+        if is_shell_workspace:
+            ui.badge("Shell Workspace").props("color=indigo-1 text-color=indigo-8").classes("text-[11px]")
 
         # Read-only indicator for config_default.yaml
         with ui.row().classes(ROW_CENTER_GAP_1):
@@ -127,6 +131,8 @@ def render_generator_page(
             tpl_lock.set_visibility(False)
 
         def on_file_select_change() -> None:
+            if is_shell_workspace:
+                return
             if not file_select.value:
                 return
             val = file_select.value
@@ -166,12 +172,6 @@ def render_generator_page(
                 state["config_data"] = config_data
                 state["config_path"] = path
                 yaml_holder["text"] = _dict_to_yaml(config_data)
-                if _is_args_only_config(config_data):
-                    args_holder["text"] = str(config_data.get("args", "") or "")
-                    run_script_holder["text"] = str(config_data.get("run_script", "") or _default_run_script(script_path))
-                    view_mode["current"] = "args"
-                elif view_mode["current"] == "args":
-                    view_mode["current"] = "form"
                 logger.debug("Loaded template: %s", val)
                 try:
                     if client_connected():
@@ -182,6 +182,11 @@ def render_generator_page(
         file_select.on_value_change(on_file_select_change)
 
         def refresh_files(new_selection=None) -> None:
+            if is_shell_workspace:
+                file_select.set_options({})
+                file_select.value = None
+                file_select.update()
+                return
             curr_run_root = str(state.get("run_root")).replace("\\", "/")
             options = list_template_files(curr_run_root)
             file_select.set_options(options)
@@ -218,12 +223,12 @@ def render_generator_page(
             icon="refresh", on_click=refresh_files
         ).props(REFRESH_ICON_BTN_PROPS)
 
-        if not file_select.options:
+        if not is_shell_workspace and not file_select.options:
             refresh_files()
 
-        if script_mode in ("hydra", "unknown") and not config_default_exists:
+        if (not is_shell_workspace) and script_mode in ("hydra", "unknown") and not config_default_exists:
             ui.notify(
-                "No config_default.yaml detected for this script; Args mode is the default.",
+                "No config_default.yaml detected for this script yet.",
                 type="info",
                 icon="info",
                 timeout=3500,
@@ -268,6 +273,7 @@ def render_generator_page(
                 _editor_toolbar(
                     view_mode, form_cols, expansions_ref,
                     state, yaml_holder, args_holder, run_script_holder, editor_area,
+                    is_shell_workspace,
                 )
 
                 if not config_data and view_mode["current"] in ("form", "yaml"):
@@ -277,17 +283,17 @@ def render_generator_page(
                     )
                     return
 
-                if view_mode["current"] in ("form", "yaml") and script_mode in ("hydra", "unknown"):
+                if (not is_shell_workspace) and view_mode["current"] in ("form", "yaml") and script_mode in ("hydra", "unknown"):
                     with ui.row().classes(
                         GENERATOR_WARNING_ROW_CLASSES
                     ):
                         ui.icon("warning", size="16px").classes("text-amber-600 mt-0.5")
                         msg = (
                             "This script looks like Hydra/unknown parser. "
-                            "Config mode may not match runtime behavior. Prefer Args mode."
+                            "Config mode may not match runtime behavior."
                         )
                         if not config_default_exists:
-                            msg += " No config_default.yaml found; defaulting to Args mode is recommended."
+                            msg += " No config_default.yaml found yet."
                         ui.label(msg).classes("text-xs text-amber-700 leading-5")
 
                 if view_mode["current"] == "form":
@@ -303,7 +309,7 @@ def render_generator_page(
                 elif view_mode["current"] == "yaml":
                     _render_yaml_view(yaml_holder)
                 else:
-                    _render_args_view(args_holder, run_script_holder, script_path)
+                    _render_shell_view(args_holder)
 
             editor_area()
             _editor_area_ref[0] = editor_area
@@ -314,7 +320,7 @@ def render_generator_page(
                 state, view_mode, yaml_holder, args_holder,
                 run_script_holder, script_path,
                 task_generator, task_manager,
-                refresh_files
+                refresh_files, is_shell_workspace
             )
 
 
@@ -326,6 +332,7 @@ def render_generator_page(
 def _editor_toolbar(
     view_mode, form_cols, expansions_ref,
     state, yaml_holder, args_holder, run_script_holder, editor_area,
+    is_shell_workspace: bool = False,
 ) -> None:
     with ui.row().classes(GENERATOR_TOOLBAR_CLASSES):
         with ui.row().classes(f"{ROW_CENTER_GAP_2} min-w-0"):
@@ -364,27 +371,29 @@ def _editor_toolbar(
                 )
 
             with ui.row().classes(GENERATOR_VIEW_TOGGLE_WRAP_CLASSES):
-                _toggle_btn(
-                    "Form", "view_list",
-                    view_mode["current"] == "form",
-                    lambda: _switch_view(
-                        "form", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
-                    ),
-                )
-                _toggle_btn(
-                    "YAML", "code",
-                    view_mode["current"] == "yaml",
-                    lambda: _switch_view(
-                        "yaml", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
-                    ),
-                )
-                _toggle_btn(
-                    "Args", "terminal",
-                    view_mode["current"] == "args",
-                    lambda: _switch_view(
-                        "args", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
-                    ),
-                )
+                if is_shell_workspace:
+                    _toggle_btn(
+                        "Shell", "terminal",
+                        True,
+                        lambda: _switch_view(
+                            "shell", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
+                        ),
+                    )
+                else:
+                    _toggle_btn(
+                        "Form", "view_list",
+                        view_mode["current"] == "form",
+                        lambda: _switch_view(
+                            "form", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
+                        ),
+                    )
+                    _toggle_btn(
+                        "YAML", "code",
+                        view_mode["current"] == "yaml",
+                        lambda: _switch_view(
+                            "yaml", state, yaml_holder, args_holder, run_script_holder, view_mode, editor_area
+                        ),
+                    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -394,7 +403,7 @@ def _editor_toolbar(
 
 def _settings_panel(
     state, view_mode, yaml_holder, args_holder, run_script_holder, script_path,
-    task_generator, task_manager, refresh_files
+    task_generator, task_manager, refresh_files, is_shell_workspace: bool = False
 ):
     from pyruns.utils.settings import get as _get_ws_setting, save_setting
 
@@ -415,33 +424,18 @@ def _settings_panel(
         ).props("dense color=indigo").classes(TEXT_MUTED_XS + " mb-3")
         use_ts_chk.on_value_change(lambda e: save_setting("generator_auto_timestamp", bool(e.value)))
 
-        _batch_syntax_hint()
-        ui.separator().classes("mb-2")
+        if not is_shell_workspace:
+            _batch_syntax_hint()
+            ui.separator().classes("mb-2")
 
         async def handle_generate():
-            if view_mode["current"] == "yaml":
-                if not _sync_yaml_to_config(yaml_holder["text"], state):
-                    return
-
-            run_mode = "args" if view_mode["current"] == "args" else "config"
-            if run_mode == "args":
-                target_config = {
-                    "run_script": str(run_script_holder.get("text", "") or _default_run_script(script_path)),
-                    "args": str(args_holder.get("text", "") or ""),
-                }
-            else:
-                target_config = state.get("config_data") or {}
-                if not state.get("config_data"):
-                    ui.notify("No config loaded, running with empty configuration.", type="info")
-
             prefix = state["task_name_input"].strip()
             if not prefix:
                 prefix = "task"
-                
+
             if use_ts_chk.value:
                 prefix = f"{prefix}_{get_now_str()}"
 
-            from pyruns.utils.info_io import validate_task_name
             err = validate_task_name(prefix, task_manager.tasks_dir)
             if err:
                 ui.notify(
@@ -449,6 +443,34 @@ def _settings_panel(
                     type="negative", icon="error",
                 )
                 return
+
+            if is_shell_workspace:
+                shell_text = str(args_holder.get("text", "") or "")
+                if not shell_text.strip():
+                    ui.notify("Shell script cannot be empty.", type="negative", icon="error")
+                    return
+                try:
+                    from nicegui import run
+                    task = await run.io_bound(
+                        task_generator.create_shell_task, prefix, shell_text
+                    )
+                    task_manager.add_task(task)
+                    logger.info("Generated shell task '%s'", prefix)
+                    ui.notify(
+                        "Generated 1 shell task",
+                        type="positive", icon="add_circle",
+                    )
+                except Exception as e:
+                    ui.notify(f"Generation error: {e}", type="negative", icon="error")
+                return
+
+            if view_mode["current"] == "yaml":
+                if not _sync_yaml_to_config(yaml_holder["text"], state):
+                    return
+
+            target_config = state.get("config_data") or {}
+            if not state.get("config_data"):
+                ui.notify("No config loaded, running with empty configuration.", type="info")
 
             try:
                 configs = generate_batch_configs(target_config)
@@ -459,8 +481,7 @@ def _settings_panel(
 
             # --- Type Checking against Original Template ---
             if (
-                run_mode == "config"
-                and state.get("config_path")
+                state.get("config_path")
                 and os.path.exists(state["config_path"])
                 and target_config
             ):
@@ -486,7 +507,7 @@ def _settings_panel(
                 try:
                     from nicegui import run
                     tasks = await run.io_bound(
-                        task_generator.create_tasks, configs, prefix, run_mode
+                        task_generator.create_tasks, configs, prefix, TASK_KIND_CONFIG
                     )
                     task_manager.add_tasks(tasks)
                     logger.info("Generated %d task(s) with prefix '%s'", len(configs), prefix)
@@ -500,7 +521,8 @@ def _settings_panel(
                     if tasks:
                         from pyruns._config import TASKS_DIR, CONFIG_FILENAME
                         new_rel = f"{TASKS_DIR}/{tasks[0]['name']}/{CONFIG_FILENAME}"
-                    refresh_files(new_selection=new_rel)
+                    if not is_shell_workspace:
+                        refresh_files(new_selection=new_rel)
                     
                 except Exception as e:
                     ui.notify(f"Generation error: {e}", type="negative", icon="error")
@@ -510,12 +532,13 @@ def _settings_panel(
                     if tasks_list:
                         from pyruns._config import TASKS_DIR, CONFIG_FILENAME
                         new_rel = f"{TASKS_DIR}/{tasks_list[0]['name']}/{CONFIG_FILENAME}"
-                    refresh_files(new_selection=new_rel)
+                    if not is_shell_workspace:
+                        refresh_files(new_selection=new_rel)
 
                 show_batch_confirm(
                     configs, prefix, target_config,
                     task_generator, task_manager,
-                    run_mode=run_mode,
+                    task_kind=TASK_KIND_CONFIG,
                     on_success=on_batch_success
                 )
 
@@ -527,7 +550,7 @@ def _settings_panel(
         )
 
         ui.label(
-            "No | → Direct Gen  .  Given | → Batch Gen After Confirm"
+            "Single config generates immediately. Batch syntax opens confirmation first."
         ).classes("text-[11px] text-slate-400 mt-3 text-center w-full")
 
 
@@ -570,16 +593,13 @@ def _switch_view(target, state, yaml_holder, args_holder, run_script_holder, vie
                 state["config_data"] = parsed
         except yaml.YAMLError:
             pass
-    elif current == "args":
+    elif current == "shell":
         args_holder["text"] = str(args_holder.get("text", "") or "")
 
     if target == "yaml":
         yaml_holder["text"] = _dict_to_yaml(state.get("config_data", {}))
-    elif target == "args":
-        cfg = state.get("config_data") or {}
-        if _is_args_only_config(cfg):
-            args_holder["text"] = str(cfg.get("args", "") or "")
-            run_script_holder["text"] = str(cfg.get("run_script", "") or "")
+    elif target == "shell":
+        args_holder["text"] = str(args_holder.get("text", "") or "")
     view_mode["current"] = target
     try:
         from pyruns.utils.settings import save_setting
@@ -650,31 +670,18 @@ def _render_yaml_view(yaml_holder: dict) -> None:
     cm.on_value_change(lambda e: yaml_holder.update({"text": e.value}))
 
 
-def _render_args_view(args_holder: dict, run_script_holder: dict, script_path: str) -> None:
+def _render_shell_view(args_holder: dict) -> None:
     with ui.column().classes(GENERATOR_ARGS_CONTAINER_CLASSES):
         with ui.row().classes(ROW_CENTER_GAP_2):
             ui.icon("terminal", size="18px").classes("text-emerald-600")
-            ui.label("Args Mode").classes(LABEL_BOLD_TRACKING + " text-slate-800")
-            ui.badge("run as: <run_script> <args>").props(
+            ui.label("Shell Mode").classes(LABEL_BOLD_TRACKING + " text-slate-800")
+            ui.badge("saved as config.sh").props(
                 "color=emerald-1 text-color=emerald-8"
             ).classes("text-[11px]")
 
-        with ui.expansion("Run Script (Advanced)", icon="settings", value=False).classes(
-            GENERATOR_ARGS_EXPANSION_CLASSES
-        ):
-            ui.input(
-                value=str(run_script_holder.get("text", "") or _default_run_script(script_path)),
-                label="run_script",
-                placeholder='python "path/to/train.py"  or  python -m package.module',
-            ).props("outlined dense").classes(GENERATOR_ARGS_RUNSCRIPT_INPUT_CLASSES).on_value_change(
-                lambda e: run_script_holder.update({"text": e.value})
-            )
-
         ui.textarea(
             value=str(args_holder.get("text", "") or ""),
-            placeholder=(
-                "args here"
-            ),
+            placeholder="echo hello",
         ).props(
             "outlined autogrow input-style='font-family:Consolas,Monaco,monospace;line-height:1.5;'"
         ).classes(GENERATOR_ARGS_TEXTAREA_CLASSES).on_value_change(

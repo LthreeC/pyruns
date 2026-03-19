@@ -1,9 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { createLogStream } from '@/api'
+import type { LogStreamMessage } from '@/types'
 
 interface UseLogStreamOptions {
   taskName: string | null
-  onChunk: (text: string) => void
+  onChunk: (message: LogStreamMessage) => void
   enabled?: boolean
 }
 
@@ -26,10 +27,13 @@ export function useLogStream({ taskName, onChunk, enabled = true }: UseLogStream
     wsRef.current = ws
 
     ws.onmessage = (ev) => {
+      if (wsRef.current !== ws) {
+        return
+      }
       try {
-        const msg = JSON.parse(ev.data)
+        const msg = JSON.parse(ev.data) as LogStreamMessage
         if (msg.type === 'chunk' && msg.content) {
-          onChunkRef.current(msg.content)
+          onChunkRef.current(msg)
         }
       } catch { /* ignore parse errors */ }
     }
@@ -37,8 +41,12 @@ export function useLogStream({ taskName, onChunk, enabled = true }: UseLogStream
     ws.onerror = () => ws.close()
 
     return () => {
+      ws.onmessage = null
+      ws.onerror = null
+      if (wsRef.current === ws) {
+        wsRef.current = null
+      }
       ws.close()
-      wsRef.current = null
     }
   }, [taskName, enabled, disconnect])
 

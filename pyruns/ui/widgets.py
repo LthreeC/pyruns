@@ -23,11 +23,10 @@ _CSS_CLIENTS: set = set()
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _CSS_DIR = os.path.join(_STATIC_DIR, "css")
-_LEGACY_CSS_PATH = os.path.join(_STATIC_DIR, "pyruns.css")
 
 
 def _load_global_css() -> str:
-    """Load categorized CSS files; fallback to legacy monolithic stylesheet."""
+    """Load categorized CSS files from the shared static directory."""
     css_parts = []
     if os.path.isdir(_CSS_DIR):
         for name in sorted(os.listdir(_CSS_DIR)):
@@ -36,10 +35,6 @@ def _load_global_css() -> str:
             path = os.path.join(_CSS_DIR, name)
             with open(path, "r", encoding="utf-8") as f:
                 css_parts.append(f.read())
-
-    if not css_parts and os.path.exists(_LEGACY_CSS_PATH):
-        with open(_LEGACY_CSS_PATH, "r", encoding="utf-8") as f:
-            css_parts.append(f.read())
 
     return "\n\n".join(css_parts)
 

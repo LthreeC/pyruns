@@ -16,9 +16,16 @@ import tempfile
 import subprocess
 from typing import List, Optional
 
-from pyruns._config import CONFIG_DEFAULT_FILENAME, TASKS_DIR, RUN_LOGS_DIR
+from pyruns._config import (
+    CONFIG_DEFAULT_FILENAME,
+    RUN_LOGS_DIR,
+    TASKS_DIR,
+    TASK_INFO_FILENAME,
+    TASK_KIND_CONFIG,
+)
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks
 from pyruns.utils.config_utils import load_yaml, preview_config_line
+from pyruns.utils.task_files import resolve_task_config_file
 from pyruns.cli.display import (
     print_task_table, print_jobs, print_task_detail,
     _BOLD, _RESET, _DIM, _colored, _STATUS_STYLES,
@@ -127,24 +134,7 @@ def cmd_generate(tm, args: List[str] = None) -> None:
     from pyruns.utils.batch_utils import generate_batch_configs
 
     args = args or []
-    args_mode = "--args" in args
-    args = [a for a in args if a != "--args"]
-
     workspace_dir = os.path.dirname(tm.tasks_dir)
-
-    def _default_run_script() -> str:
-        script_info_path = os.path.join(workspace_dir, "script_info.json")
-        if os.path.exists(script_info_path):
-            try:
-                import json
-                with open(script_info_path, "r", encoding="utf-8") as f:
-                    info = json.load(f) or {}
-                sp = str(info.get("script_path", "") or "")
-                if sp:
-                    return f'python "{sp}"'
-            except Exception:
-                pass
-        return "python"
 
     template_path = None
     if args:
@@ -158,19 +148,11 @@ def cmd_generate(tm, args: List[str] = None) -> None:
     if not template_path:
         template_path = os.path.join(workspace_dir, CONFIG_DEFAULT_FILENAME)
 
-    if args_mode and (not template_path or not os.path.exists(template_path)):
-        import yaml
-        template_content = yaml.safe_dump(
-            {"run_script": _default_run_script(), "args": ""},
-            sort_keys=False,
-            allow_unicode=True,
-        )
-    else:
-        if not os.path.exists(template_path):
-            print(f"  Template not found: {template_path}")
-            return
-        with open(template_path, "r", encoding="utf-8") as f:
-            template_content = f.read()
+    if not os.path.exists(template_path):
+        print(f"  Template not found: {template_path}")
+        return
+    with open(template_path, "r", encoding="utf-8") as f:
+        template_content = f.read()
 
     header = (
         "# ── Pyruns Task Generator ────────────────────────────\n"
@@ -231,8 +213,7 @@ def cmd_generate(tm, args: List[str] = None) -> None:
     name_prefix = input("  Task name prefix (blank=auto): ").strip()
 
     gen = TaskGenerator(root_dir=tm.tasks_dir)
-    run_mode = "args" if args_mode else "config"
-    new_tasks = gen.create_tasks(configs, name_prefix, run_mode=run_mode)
+    new_tasks = gen.create_tasks(configs, name_prefix, task_kind=TASK_KIND_CONFIG)
     for t in new_tasks:
         tm.add_task(t)
 
@@ -416,7 +397,7 @@ def cmd_log(tm, args: List[str] = None) -> None:
 
 
 def cmd_open(tm, args: List[str] = None) -> None:
-    """``open <name|index> [config|task]`` —open a task's config.yaml or task_info.json in the editor."""
+    """``open <name|index> [config|task]`` —open a task payload file or task_info.json in the editor."""
     if not args:
         print("  Usage: open <name|index> [config|task]")
         return
@@ -428,13 +409,12 @@ def cmd_open(tm, args: List[str] = None) -> None:
     # Open the first matched target
     target = targets[0]
     task_dir = target.get("dir")
-    from pyruns._config import CONFIG_FILENAME, TASK_INFO_FILENAME
     
     file_type = args[1].lower() if len(args) > 1 else "config"
     if file_type == "task":
         config_path = os.path.join(task_dir, TASK_INFO_FILENAME)
     else:
-        config_path = os.path.join(task_dir, CONFIG_FILENAME)
+        config_path = os.path.join(task_dir, resolve_task_config_file(target))
     
     if not os.path.exists(config_path):
         print(f"  File not found: {config_path}")

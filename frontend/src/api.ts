@@ -1,8 +1,17 @@
 import type {
-  Task, TaskPage, WorkspaceInfo, TemplateContent,
-  Dashboard, GeneratorResult, GeneratorPreview,
-  TaskLogs, SystemMetrics,
-  ScriptCandidate, ConfigCandidate, WorkspaceCandidate,
+  Dashboard,
+  GeneratorPreview,
+  GeneratorResult,
+  Task,
+  TaskLogs,
+  TaskPage,
+  TemplateContent,
+  WorkspaceInfo,
+  SystemMetrics,
+  ScriptCandidate,
+  ConfigCandidate,
+  WorkspaceCandidate,
+  GeneratorMode,
 } from './types'
 
 const BASE = ''
@@ -19,34 +28,41 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-/* ── Workspace ── */
 export const getWorkspace = () => request<WorkspaceInfo>('/api/workspace')
 export const setRunRoot = (path: string) =>
   request<WorkspaceInfo>('/api/workspace/run-root', { method: 'POST', body: JSON.stringify({ path }) })
+export const openShellWorkspace = () =>
+  request<WorkspaceInfo>('/api/workspace/shell', { method: 'POST' })
 
-/* ── Templates ── */
 export const getTemplates = () => request<{ items: { value: string; label: string }[] }>('/api/templates')
 export const getTemplateContent = (value: string) =>
   request<TemplateContent>(`/api/templates/content?value=${encodeURIComponent(value)}`)
 
-/* ── Generator ── */
 export const createTasks = (payload: {
-  name_prefix: string; run_mode: string; yaml_text?: string
-  args_text?: string; run_script?: string; template_value?: string; append_timestamp?: boolean
+  name_prefix: string
+  mode: GeneratorMode
+  yaml_text?: string
+  shell_text?: string
+  template_value?: string
+  append_timestamp?: boolean
 }) => request<GeneratorResult>('/api/generator/create', { method: 'POST', body: JSON.stringify(payload) })
 
 export const previewTasks = (payload: {
-  run_mode: string; yaml_text?: string; args_text?: string
-  run_script?: string; template_value?: string
+  mode: GeneratorMode
+  yaml_text?: string
+  shell_text?: string
+  template_value?: string
 }) => request<GeneratorPreview>('/api/generator/preview', { method: 'POST', body: JSON.stringify(payload) })
 
-/* ── Dashboard ── */
 export const getDashboard = (refresh = true, recentLimit = 6) =>
   request<Dashboard>(`/api/dashboard?refresh=${refresh}&recent_limit=${recentLimit}`)
 
-/* ── Tasks ── */
 export const getTasks = (params: {
-  query?: string; status?: string; offset?: number; limit?: number; refresh?: boolean
+  query?: string
+  status?: string
+  offset?: number
+  limit?: number
+  refresh?: boolean
 } = {}) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
@@ -68,12 +84,14 @@ export const batchRunTasks = (taskNames: string[], executionMode?: string, maxWo
 
 export const batchDeleteTasks = (taskNames: string[]) =>
   request<{ count: number; deleted: string[] }>('/api/tasks/batch/delete', {
-    method: 'POST', body: JSON.stringify({ task_names: taskNames }),
+    method: 'POST',
+    body: JSON.stringify({ task_names: taskNames }),
   })
 
 export const runTask = (name: string, executionMode?: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/run`, {
-    method: 'POST', body: JSON.stringify({ execution_mode: executionMode }),
+    method: 'POST',
+    body: JSON.stringify({ execution_mode: executionMode }),
   })
 
 export const cancelTask = (name: string) =>
@@ -81,22 +99,26 @@ export const cancelTask = (name: string) =>
 
 export const pinTask = (name: string, pinned?: boolean) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/pin`, {
-    method: 'POST', body: JSON.stringify({ pinned }),
+    method: 'POST',
+    body: JSON.stringify({ pinned }),
   })
 
 export const updateNotes = (name: string, notes: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/notes`, {
-    method: 'PATCH', body: JSON.stringify({ notes }),
+    method: 'PATCH',
+    body: JSON.stringify({ notes }),
   })
 
 export const updateEnv = (name: string, env: Record<string, any>) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/env`, {
-    method: 'PATCH', body: JSON.stringify({ env }),
+    method: 'PATCH',
+    body: JSON.stringify({ env }),
   })
 
 export const renameTask = (name: string, newName: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/rename`, {
-    method: 'POST', body: JSON.stringify({ new_name: newName }),
+    method: 'POST',
+    body: JSON.stringify({ new_name: newName }),
   })
 
 export const getTaskLogs = (name: string, logFileName?: string, offset?: number, tailBytes = 12000) => {
@@ -112,10 +134,8 @@ export function createLogStream(taskName: string): WebSocket {
   return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream`)
 }
 
-/* ── System ── */
 export const getMetrics = () => request<SystemMetrics>('/api/system/metrics')
 
-/* ── Launcher ── */
 export const getLauncherScripts = () => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts')
 export const getLauncherConfigs = (script: string) =>
   request<{ items: ConfigCandidate[] }>(`/api/launcher/configs?script=${encodeURIComponent(script)}`)
@@ -126,7 +146,8 @@ export const getLauncherWorkspaces = (script: string, config?: string) => {
 }
 export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =>
   request<WorkspaceInfo>('/api/launcher/open', {
-    method: 'POST', body: JSON.stringify({ script_path: scriptPath, config_path: configPath }),
+    method: 'POST',
+    body: JSON.stringify({ script_path: scriptPath, config_path: configPath }),
   })
 
 export const pickLauncherScript = () =>

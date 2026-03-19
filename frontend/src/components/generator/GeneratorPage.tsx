@@ -1,24 +1,55 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import CodeMirror from '@uiw/react-codemirror'
+import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
 import {
-  AlertTriangle, ChevronDown, ChevronRight, FileCode, LayoutGrid, Pin, Sparkles,
-  Terminal as TermIcon,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  FileCode,
+  LayoutGrid,
+  Pin,
+  Sparkles,
+  Terminal,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml'
-import { useGeneratorStore, useWorkspaceStore } from '@/store'
+import { useGeneratorStore, useThemeStore, useWorkspaceStore } from '@/store'
 import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
+import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
+
+const DEFAULT_SHELL_TEMPLATE = ''
+
+function hasBatchExpression(text: string) {
+  return text.includes('|') || /-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?/.test(text)
+}
 
 export default function GeneratorPage() {
   const workspace = useWorkspaceStore(state => state.workspace)
+  const theme = useThemeStore(state => state.theme)
   const {
-    templates, selectedTemplate, templateContent, viewMode, yamlText, argsText, runScript,
-    namePrefix, appendTimestamp, pinnedParams, loading,
-    fetchTemplates, loadTemplate, setViewMode, setYamlText, setArgsText, setRunScript,
-    setNamePrefix, setAppendTimestamp, togglePin,
+    templates,
+    selectedTemplate,
+    templateContent,
+    viewMode,
+    yamlText,
+    shellText,
+    namePrefix,
+    appendTimestamp,
+    pinnedParams,
+    loading,
+    fetchTemplates,
+    loadTemplate,
+    clearTemplate,
+    setViewMode,
+    setYamlText,
+    setShellText,
+    setNamePrefix,
+    setAppendTimestamp,
+    togglePin,
   } = useGeneratorStore()
 
   const [columns, setColumns] = useState(5)
@@ -28,29 +59,71 @@ export default function GeneratorPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
-  useEffect(() => {
-    void fetchTemplates()
-  }, [workspace?.run_root, fetchTemplates])
+  const isShellWorkspace = workspace?.workspace_kind === 'shell'
+  const shellRuntime = workspace?.shell_runtime
+  const editorMode = isShellWorkspace ? 'shell' : viewMode === 'shell' ? 'form' : viewMode
+  const codeMirrorTheme = theme === 'dark' ? 'dark' : 'light'
 
   useEffect(() => {
-    if (templates.length > 0 && !selectedTemplate) {
+    if (isShellWorkspace) {
+      clearTemplate()
+      if (viewMode !== 'shell') {
+        setViewMode('shell')
+      }
+      if (DEFAULT_SHELL_TEMPLATE && !shellText.trim()) {
+        setShellText(DEFAULT_SHELL_TEMPLATE)
+      }
+      return
+    }
+
+    if (viewMode === 'shell') {
+      setViewMode('form')
+    }
+  }, [clearTemplate, isShellWorkspace, setShellText, setViewMode, shellText, viewMode])
+
+  useEffect(() => {
+    if (!workspace?.run_root || isShellWorkspace) {
+      return
+    }
+    void fetchTemplates()
+  }, [fetchTemplates, isShellWorkspace, workspace?.run_root])
+
+  useEffect(() => {
+    if (isShellWorkspace) {
+      return
+    }
+
+    if (templates.length === 0) {
+      if (selectedTemplate) {
+        clearTemplate()
+      }
+      return
+    }
+
+    const selectedStillExists = templates.some(template => template.value === selectedTemplate)
+    if (!selectedStillExists) {
       void loadTemplate(templates[0].value)
     }
-  }, [templates, selectedTemplate, loadTemplate])
+  }, [clearTemplate, isShellWorkspace, loadTemplate, selectedTemplate, templates])
 
   const parsedConfig = useMemo(() => {
-    if (viewMode === 'args') return null
+    if (editorMode !== 'form') {
+      return null
+    }
+
     try {
       return (yamlParse(yamlText) as Record<string, any>) || {}
     } catch {
       return null
     }
-  }, [yamlText, viewMode])
+  }, [editorMode, yamlText])
 
   const batchParams = useMemo(() => {
-    if (!parsedConfig) return [] as string[]
-    const result: string[] = []
+    if (!parsedConfig) {
+      return [] as string[]
+    }
 
+    const result: string[] = []
     const walk = (obj: Record<string, any>, prefix = '') => {
       for (const [key, value] of Object.entries(obj)) {
         const fullKey = prefix ? `${prefix}.${key}` : key
@@ -59,7 +132,9 @@ export default function GeneratorPage() {
           && (value.includes('|') || /^\s*-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?\s*$/.test(value.trim()))
         ) {
           result.push(fullKey)
-        } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          continue
+        }
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
           walk(value, fullKey)
         }
       }
@@ -69,9 +144,7 @@ export default function GeneratorPage() {
     return result
   }, [parsedConfig])
 
-  const hasBatchSyntax = viewMode === 'args'
-    ? argsText.includes('|') || /-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?/.test(argsText)
-    : yamlText.includes('|') || /-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?/.test(yamlText)
+  const hasBatchSyntax = editorMode === 'form' && hasBatchExpression(yamlText)
 
   const doCreate = useCallback(async () => {
     setGenerating(true)
@@ -80,38 +153,31 @@ export default function GeneratorPage() {
     try {
       const result = await api.createTasks({
         name_prefix: namePrefix || 'task',
-        run_mode: viewMode === 'args' ? 'args' : 'yaml',
-        yaml_text: viewMode !== 'args' ? yamlText : '',
-        args_text: viewMode === 'args' ? argsText : '',
-        run_script: viewMode === 'args' ? runScript : '',
-        template_value: selectedTemplate,
+        mode: editorMode,
+        yaml_text: editorMode === 'shell' ? '' : yamlText,
+        shell_text: editorMode === 'shell' ? shellText : '',
+        template_value: isShellWorkspace ? undefined : selectedTemplate,
         append_timestamp: appendTimestamp,
       })
       setPreviewOpen(false)
-      setSuccess(`Created ${result.count} task(s)`)
-      void fetchTemplates()
-      setTimeout(() => setSuccess(''), 4000)
+      setSuccess(`Created ${result.count} ${result.task_kind === 'shell' ? 'shell task' : 'task'}${result.count > 1 ? 's' : ''}`)
+      window.setTimeout(() => setSuccess(''), 4000)
     } catch (err: any) {
       setError(err.message)
     } finally {
       setGenerating(false)
     }
-  }, [
-    viewMode, yamlText, argsText, runScript, namePrefix,
-    appendTimestamp, selectedTemplate, fetchTemplates,
-  ])
+  }, [appendTimestamp, editorMode, isShellWorkspace, namePrefix, selectedTemplate, shellText, yamlText])
 
   const handleGenerate = useCallback(async () => {
     setError('')
     setSuccess('')
 
-    if (hasBatchSyntax && !previewOpen) {
+    if (editorMode === 'form' && hasBatchSyntax && !previewOpen) {
       try {
         const preview = await api.previewTasks({
-          run_mode: viewMode === 'args' ? 'args' : 'yaml',
-          yaml_text: viewMode !== 'args' ? yamlText : '',
-          args_text: viewMode === 'args' ? argsText : '',
-          run_script: viewMode === 'args' ? runScript : '',
+          mode: editorMode,
+          yaml_text: yamlText,
           template_value: selectedTemplate,
         })
         setPreviewData(preview)
@@ -123,26 +189,33 @@ export default function GeneratorPage() {
     }
 
     await doCreate()
-  }, [viewMode, yamlText, argsText, runScript, selectedTemplate, hasBatchSyntax, previewOpen, doCreate])
+  }, [doCreate, editorMode, hasBatchSyntax, previewOpen, selectedTemplate, yamlText])
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2">
-        <div className="relative">
-          <select
-            value={selectedTemplate}
-            onChange={event => void loadTemplate(event.target.value)}
-            title="Select template"
-            className="max-w-[320px] appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
-          >
-            {templates.map(template => (
-              <option key={template.value} value={template.value}>{template.label}</option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-        </div>
+        {!isShellWorkspace ? (
+          <div className="relative">
+            <select
+              value={selectedTemplate}
+              onChange={event => void loadTemplate(event.target.value)}
+              title="Select template"
+              className="max-w-[320px] appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+            >
+              {templates.map(template => (
+                <option key={template.value} value={template.value}>{template.label}</option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+          </div>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-accent/20 bg-accent/8 px-3 py-1.5 text-xs font-medium text-accent">
+            <Terminal className="h-3.5 w-3.5" />
+            <span>Shell Workspace</span>
+          </span>
+        )}
 
-        {viewMode === 'form' && (
+        {editorMode === 'form' && (
           <div className="relative">
             <select
               value={columns}
@@ -158,7 +231,7 @@ export default function GeneratorPage() {
           </div>
         )}
 
-        {templateContent?.read_only && (
+        {!isShellWorkspace && templateContent?.read_only && (
           <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-2xs text-amber-400">
             <AlertTriangle className="h-3 w-3" />
             <span>Read-only</span>
@@ -168,21 +241,21 @@ export default function GeneratorPage() {
         <div className="flex-1" />
 
         <div className="flex items-center rounded-lg border border-border-subtle bg-surface-overlay p-0.5">
-          {(['form', 'yaml', 'args'] as const).map(mode => (
+          {(isShellWorkspace ? ['shell'] : ['form', 'yaml']).map(mode => (
             <button
               key={mode}
               type="button"
-              onClick={() => setViewMode(mode)}
+              onClick={() => setViewMode(mode as 'form' | 'yaml' | 'shell')}
               className={clsx(
                 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
-                viewMode === mode
+                editorMode === mode
                   ? 'bg-surface-raised text-txt-primary'
                   : 'text-txt-secondary hover:text-txt-primary'
               )}
             >
               {mode === 'form' && <LayoutGrid className="h-3 w-3" />}
               {mode === 'yaml' && <FileCode className="h-3 w-3" />}
-              {mode === 'args' && <TermIcon className="h-3 w-3" />}
+              {mode === 'shell' && <Terminal className="h-3 w-3" />}
               <span>{mode.charAt(0).toUpperCase() + mode.slice(1)}</span>
             </button>
           ))}
@@ -191,11 +264,11 @@ export default function GeneratorPage() {
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="min-w-0 flex-1 overflow-y-auto" style={{ flexBasis: '78%' }}>
-          {loading ? (
+          {!isShellWorkspace && loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="animate-pulse text-xs text-txt-tertiary">Loading template...</div>
             </div>
-          ) : viewMode === 'form' ? (
+          ) : editorMode === 'form' ? (
             <FormEditor
               config={parsedConfig}
               columns={columns}
@@ -204,31 +277,25 @@ export default function GeneratorPage() {
               onTogglePin={togglePin}
               onChange={data => setYamlText(yamlStringify(data))}
             />
-          ) : viewMode === 'yaml' ? (
-            <YamlEditor value={yamlText} onChange={setYamlText} />
+          ) : editorMode === 'yaml' ? (
+            <YamlEditor value={yamlText} onChange={setYamlText} theme={codeMirrorTheme} />
           ) : (
-            <ArgsEditor
-              argsText={argsText}
-              runScript={runScript}
-              onArgsChange={setArgsText}
-              onRunScriptChange={setRunScript}
-              scriptPath={workspace?.script_path || ''}
-            />
+            <ShellEditor value={shellText} onChange={setShellText} theme={codeMirrorTheme} />
           )}
         </div>
 
         <aside
-          className="flex w-[296px] flex-col gap-3 overflow-y-auto border-l border-border-subtle bg-surface-raised p-3"
-          style={{ minWidth: 280, maxWidth: 304 }}
+          className="flex w-[286px] flex-col gap-2.5 overflow-y-auto border-l border-border-subtle bg-surface-raised p-2.5"
+          style={{ minWidth: 268, maxWidth: 296 }}
         >
-          <CompactSection title="Naming" bodyClassName="space-y-3 p-2.5">
+          <CompactSection title="Naming" bodyClassName="space-y-2.5 p-2">
             <div>
               <label className="block text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Task Prefix</label>
               <input
                 value={namePrefix}
                 onChange={event => setNamePrefix(event.target.value)}
                 placeholder="task"
-                className="mt-2 w-full rounded-md border border-border-subtle bg-surface-overlay px-3 py-2 text-sm font-medium text-txt-primary outline-none transition-colors focus:border-border"
+                className="mt-1.5 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-sm font-medium text-txt-primary outline-none transition-colors focus:border-border"
               />
             </div>
             <label className="inline-flex items-center gap-2 text-xs text-txt-secondary">
@@ -242,12 +309,12 @@ export default function GeneratorPage() {
             </label>
           </CompactSection>
 
-          {batchParams.length > 0 && (
+          {editorMode === 'form' && batchParams.length > 0 && (
             <CompactSection
               title="Pinned Batch Inputs"
               icon={<Pin className="h-3.5 w-3.5 text-accent" />}
               accent
-              bodyClassName="space-y-2 p-2.5"
+              bodyClassName="space-y-1.5 p-2"
             >
               <div className="text-2xs text-accent">
                 {batchParams.length} batch-sensitive field{batchParams.length > 1 ? 's' : ''}
@@ -256,7 +323,7 @@ export default function GeneratorPage() {
                 {batchParams.map(param => (
                   <span
                     key={param}
-                    className="rounded-md border border-accent/20 bg-accent/8 px-2 py-1 font-mono text-2xs text-accent"
+                    className="rounded-md border border-accent/20 bg-accent/8 px-1.5 py-0.5 font-mono text-2xs text-accent"
                     title={param}
                   >
                     {param}
@@ -266,20 +333,57 @@ export default function GeneratorPage() {
             </CompactSection>
           )}
 
-          <CompactSection title="Batch Syntax" bodyClassName="space-y-2 p-2.5">
-            <div className="text-2xs leading-relaxed text-txt-secondary">
-              <span className="text-txt-primary">Product</span>: `lr: 0.001 | 0.01 | 0.1`
-            </div>
-            <div className="text-2xs leading-relaxed text-txt-secondary">
-              <span className="text-txt-primary">Zip</span>: `seed: (1 | 2 | 3)`
-            </div>
-            <div className="text-2xs leading-relaxed text-txt-secondary">
-              <span className="text-txt-primary">Range</span>: `epoch: 10:100:1`
-            </div>
-          </CompactSection>
+          {editorMode === 'form' && (
+            <CompactSection title="Batch Syntax" bodyClassName="space-y-1.5 p-2">
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                <span className="text-txt-primary">Product</span>: `lr: 0.001 | 0.01 | 0.1`
+              </div>
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                <span className="text-txt-primary">Zip</span>: `seed: (1 | 2 | 3)`
+              </div>
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                <span className="text-txt-primary">Range</span>: `epoch: 10:100:1`
+              </div>
+            </CompactSection>
+          )}
+
+          {editorMode === 'yaml' && (
+            <CompactSection title="YAML Mode" bodyClassName="space-y-1.5 p-2">
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                YAML mode creates exactly one <code className="text-txt-primary">config.yaml</code> task.
+              </div>
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                Switch back to <span className="text-txt-primary">Form</span> for batch expansion and parameter pinning.
+              </div>
+            </CompactSection>
+          )}
+
+          {editorMode === 'shell' && (
+            <CompactSection
+              title="Shell Mode"
+              icon={<Terminal className="h-3.5 w-3.5 text-accent" />}
+              accent
+              bodyClassName="space-y-1.5 p-2"
+            >
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                Shell mode creates one <code className="text-txt-primary">config.sh</code> task at a time.
+              </div>
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                The script runs inside <code className="text-txt-primary">_shell_</code> by following the terminal that launched <code className="text-txt-primary">pyr</code>.
+              </div>
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                {shellRuntime?.mode === 'custom'
+                  ? <>Custom shell active: <code className="text-txt-primary">{shellRuntime.executable || 'unset'}</code></>
+                  : <>Current shell: <code className="text-txt-primary">{shellRuntime?.display_name || 'Follow current terminal'}</code></>}
+              </div>
+              <div className="text-2xs leading-relaxed text-txt-secondary">
+                To override the default, set <code className="text-txt-primary">shell_mode: custom</code> and <code className="text-txt-primary">shell_executable</code> in <code className="text-txt-primary">_pyruns_settings.yaml</code>.
+              </div>
+            </CompactSection>
+          )}
 
           {(error || success) && (
-            <CompactSection title="Status" bodyClassName="space-y-2 p-2.5">
+            <CompactSection title="Status" bodyClassName="space-y-1.5 p-2">
               {error && (
                 <div className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400" title={error}>
                   {error}
@@ -302,10 +406,14 @@ export default function GeneratorPage() {
               onClick={handleGenerate}
               disabled={generating}
             >
-              {generating ? 'Generating...' : 'Generate Tasks'}
+              {generating ? 'Creating...' : editorMode === 'shell' ? 'Create Shell Task' : 'Generate Tasks'}
             </ActionButton>
             <div className="mt-2 text-center text-2xs text-txt-tertiary">
-              {hasBatchSyntax ? 'Preview opens automatically for batch generation.' : 'Creates tasks immediately.'}
+              {editorMode === 'form' && hasBatchSyntax
+                ? 'Preview opens automatically for batch generation.'
+                : editorMode === 'shell'
+                  ? 'Creates one config.sh task immediately.'
+                  : 'Creates one task immediately.'}
             </div>
           </div>
         </aside>
@@ -387,7 +495,7 @@ function FormEditor({
           icon={<Pin className="h-3.5 w-3.5 text-accent" />}
           accent
           className="mb-3"
-          bodyClassName="p-2"
+          bodyClassName="p-1.5"
         >
           <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
             {pinned.map(key => (
@@ -471,16 +579,16 @@ function NestedSection({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 border-b border-border-subtle px-3 py-2 text-left transition-colors hover:bg-surface-overlay"
+        className="flex w-full items-center gap-1.5 border-b border-border-subtle px-2.5 py-1.5 text-left transition-colors hover:bg-surface-overlay"
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary" /> : <ChevronRight className="h-3.5 w-3.5 text-txt-tertiary" />}
         <span className="truncate text-sm font-medium text-txt-primary" title={name}>{name}</span>
-        <span className="rounded-full border border-border-subtle px-2 py-0.5 text-2xs text-txt-tertiary">
+            <span className="rounded-full border border-border-subtle px-1.5 py-0.5 text-2xs text-txt-tertiary">
           {Object.keys(data).length}
         </span>
       </button>
       {open && (
-        <div className="p-2.5">
+        <div className="p-2">
           <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
             {Object.entries(data).filter(([key]) => !key.startsWith('_meta')).map(([key, value]) => {
               const fullKey = `${prefix}.${key}`
@@ -551,8 +659,14 @@ function ParamRow({
   const commitValue = () => {
     const next = localValue.trim()
     if (originalType === 'bool' && !hasBatch) {
-      if (next === 'true' || next === 'True' || next === '1') { onChange(true); return }
-      if (next === 'false' || next === 'False' || next === '0') { onChange(false); return }
+      if (next === 'true' || next === 'True' || next === '1') {
+        onChange(true)
+        return
+      }
+      if (next === 'false' || next === 'False' || next === '0') {
+        onChange(false)
+        return
+      }
     }
     if ((originalType === 'int' || originalType === 'float') && !hasBatch && next !== '' && !Number.isNaN(Number(next))) {
       onChange(originalType === 'int' ? Math.round(Number(next)) : Number(next))
@@ -577,11 +691,13 @@ function ParamRow({
   }
 
   return (
-    <div className={clsx(
-      'flex items-center gap-1.5 rounded-md border px-2 py-1.5 transition-colors',
-      pinned ? 'border-accent/20 bg-accent/5' : 'border-border-subtle bg-surface-raised hover:border-border',
-      (hasBatch || batchActive) && 'border-amber-500/20 bg-amber-500/5',
-    )}>
+    <div
+      className={clsx(
+        'flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors',
+        pinned ? 'border-accent/20 bg-accent/5' : 'border-border-subtle bg-surface-raised hover:border-border',
+        (hasBatch || batchActive) && 'border-amber-500/20 bg-amber-500/5',
+      )}
+    >
       <button
         type="button"
         onClick={event => {
@@ -601,7 +717,10 @@ function ParamRow({
         {name}
       </span>
 
-      <span className="flex-none rounded-full border border-border-subtle bg-surface-overlay px-1.5 py-0.5 text-[10px] font-mono text-txt-secondary">
+      <span className={clsx(
+        'flex-none rounded-full border px-1.5 py-0.5 text-[10px] font-mono',
+        PARAM_TYPE_STYLES[originalType]
+      )}>
         {originalType}
       </span>
 
@@ -649,58 +768,49 @@ function ParamRow({
   )
 }
 
-function YamlEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function YamlEditor({
+  value,
+  onChange,
+  theme,
+}: {
+  value: string
+  onChange: (value: string) => void
+  theme: 'light' | 'dark'
+}) {
   return (
     <div className="h-full p-3">
-      <textarea
-        value={value}
-        onChange={event => onChange(event.target.value)}
-        spellCheck={false}
-        className="h-full min-h-[640px] w-full resize-none rounded-md border border-border-subtle bg-surface-raised p-4 font-mono text-xs leading-relaxed text-txt-primary outline-none transition-colors focus:border-border"
-        placeholder="# Enter YAML configuration..."
-      />
+      <div className="h-full overflow-hidden rounded-md border border-border-subtle bg-surface-raised">
+        <CodeMirror
+          value={value}
+          height="100%"
+          theme={theme}
+          extensions={[yamlLanguage()]}
+          onChange={nextValue => onChange(nextValue)}
+        />
+      </div>
     </div>
   )
 }
 
-function ArgsEditor({
-  argsText,
-  runScript,
-  onArgsChange,
-  onRunScriptChange,
-  scriptPath,
+function ShellEditor({
+  value,
+  onChange,
+  theme,
 }: {
-  argsText: string
-  runScript: string
-  onArgsChange: (value: string) => void
-  onRunScriptChange: (value: string) => void
-  scriptPath: string
+  value: string
+  onChange: (value: string) => void
+  theme: 'light' | 'dark'
 }) {
   return (
-    <div className="flex h-full flex-col gap-3 p-3">
-      <section className="rounded-md border border-border-subtle bg-surface-raised p-3">
-        <label className="mb-2 block text-xs font-medium text-txt-primary">Run Script</label>
-        <input
-          value={runScript || `python ${scriptPath}`}
-          onChange={event => onRunScriptChange(event.target.value)}
-          className="w-full rounded-md border border-border-subtle bg-surface-overlay px-3 py-2 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
-          placeholder="python script.py"
+    <div className="h-full p-3">
+      <div className="h-full overflow-hidden rounded-md border border-border-subtle bg-surface-raised">
+        <CodeMirror
+          value={value}
+          height="100%"
+          theme={theme}
+          onChange={nextValue => onChange(nextValue)}
         />
-      </section>
-
-      <section className="flex min-h-0 flex-1 flex-col rounded-md border border-border-subtle bg-surface-raised p-3">
-        <label className="mb-2 block text-xs font-medium text-txt-primary">Arguments</label>
-        <textarea
-          value={argsText}
-          onChange={event => onArgsChange(event.target.value)}
-          spellCheck={false}
-          className="min-h-[220px] flex-1 resize-y rounded-md border border-border-subtle bg-surface-overlay px-3 py-3 font-mono text-xs leading-relaxed text-txt-primary outline-none transition-colors focus:border-border"
-          placeholder="model=vit dataset=imagenet train.epochs=300"
-        />
-        <div className="mt-2 text-2xs text-txt-tertiary">
-          Use <code className="text-txt-secondary">|</code> or `10:100:1` style ranges for batch generation.
-        </div>
-      </section>
+      </div>
     </div>
   )
 }

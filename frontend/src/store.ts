@@ -1,10 +1,17 @@
 import { create } from 'zustand'
-import type { Task, WorkspaceInfo, TemplateContent, Dashboard, ScriptCandidate, ConfigCandidate } from './types'
+import type {
+  ConfigCandidate,
+  Dashboard,
+  GeneratorMode,
+  ScriptCandidate,
+  Task,
+  TemplateContent,
+  WorkspaceInfo,
+} from './types'
 import * as api from './api'
 
 let monitorRequestSeq = 0
 
-/* ── Theme Store ── */
 interface ThemeState {
   theme: 'dark' | 'light'
   toggle: () => void
@@ -20,37 +27,62 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   },
 }))
 
-/* ── Workspace Store ── */
 interface WorkspaceState {
   workspace: WorkspaceInfo | null
+  lastScriptWorkspace: WorkspaceInfo | null
   loading: boolean
   fetch: () => Promise<void>
   setWorkspace: (workspace: WorkspaceInfo | null) => void
   setRunRoot: (path: string) => Promise<void>
+  openShellWorkspace: () => Promise<void>
+  exitShellWorkspace: () => Promise<WorkspaceInfo | null>
 }
 
-export const useWorkspaceStore = create<WorkspaceState>((set) => ({
+export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspace: null,
+  lastScriptWorkspace: null,
   loading: false,
   async fetch() {
     set({ loading: true })
     try {
       const ws = await api.getWorkspace()
-      set({ workspace: ws })
+      set(state => ({
+        workspace: ws,
+        lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
+      }))
     } finally {
       set({ loading: false })
     }
   },
   setWorkspace(workspace) {
-    set({ workspace })
+    set(state => ({
+      workspace,
+      lastScriptWorkspace: workspace?.workspace_kind === 'script' ? workspace : state.lastScriptWorkspace,
+    }))
   },
   async setRunRoot(path: string) {
     const ws = await api.setRunRoot(path)
-    set({ workspace: ws })
+    set(state => ({
+      workspace: ws,
+      lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
+    }))
+  },
+  async openShellWorkspace() {
+    const ws = await api.openShellWorkspace()
+    set(state => ({ workspace: ws, lastScriptWorkspace: state.lastScriptWorkspace }))
+  },
+  async exitShellWorkspace() {
+    const nextWorkspace = get().lastScriptWorkspace
+    if (!nextWorkspace?.run_root) {
+      return null
+    }
+
+    const ws = await api.setRunRoot(nextWorkspace.run_root)
+    set({ workspace: ws, lastScriptWorkspace: ws })
+    return ws
   },
 }))
 
-/* ── Task Store ── */
 interface TaskState {
   tasks: Task[]
   total: number
@@ -113,7 +145,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   setSelectedIds(ids) { set({ selectedIds: ids }) },
 }))
 
-/* ── Dashboard Store ── */
 interface DashboardState {
   data: Dashboard | null
   loading: boolean
@@ -134,25 +165,23 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   },
 }))
 
-/* ── Generator Store ── */
 interface GeneratorState {
   templates: { value: string; label: string }[]
   selectedTemplate: string
   templateContent: TemplateContent | null
-  viewMode: 'form' | 'yaml' | 'args'
+  viewMode: GeneratorMode
   yamlText: string
-  argsText: string
-  runScript: string
+  shellText: string
   namePrefix: string
   appendTimestamp: boolean
   pinnedParams: string[]
   loading: boolean
   fetchTemplates: () => Promise<void>
   loadTemplate: (value: string) => Promise<void>
-  setViewMode: (m: 'form' | 'yaml' | 'args') => void
+  clearTemplate: () => void
+  setViewMode: (m: GeneratorMode) => void
   setYamlText: (t: string) => void
-  setArgsText: (t: string) => void
-  setRunScript: (t: string) => void
+  setShellText: (t: string) => void
   setNamePrefix: (n: string) => void
   setAppendTimestamp: (b: boolean) => void
   togglePin: (key: string) => void
@@ -164,8 +193,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   templateContent: null,
   viewMode: 'form',
   yamlText: '',
-  argsText: '',
-  runScript: '',
+  shellText: '',
   namePrefix: 'task',
   appendTimestamp: true,
   pinnedParams: JSON.parse(localStorage.getItem('pyruns_pinned_params') || '[]'),
@@ -175,27 +203,32 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     set({ templates: res.items })
   },
   async loadTemplate(value: string) {
+    if (!value) {
+      set({ selectedTemplate: '', templateContent: null, yamlText: '' })
+      return
+    }
     set({ loading: true, selectedTemplate: value })
     try {
       const content = await api.getTemplateContent(value)
       set({
         templateContent: content,
         yamlText: content.content,
-        argsText: content.args_text,
-        runScript: content.run_script,
-        viewMode: content.mode_hint === 'args' ? 'args' : get().viewMode,
+        shellText: content.mode_hint === 'shell' ? content.content : get().shellText,
+        viewMode: content.mode_hint === 'shell' ? 'shell' : get().viewMode === 'shell' ? 'yaml' : get().viewMode,
       })
     } finally {
       set({ loading: false })
     }
   },
+  clearTemplate() {
+    set({ selectedTemplate: '', templateContent: null })
+  },
   setViewMode(m) { set({ viewMode: m }) },
   setYamlText(t) { set({ yamlText: t }) },
-  setArgsText(t) { set({ argsText: t }) },
-  setRunScript(t) { set({ runScript: t }) },
+  setShellText(t) { set({ shellText: t }) },
   setNamePrefix(n) { set({ namePrefix: n }) },
   setAppendTimestamp(b) { set({ appendTimestamp: b }) },
-  togglePin(key: string) {
+  togglePin(key) {
     const pins = [...get().pinnedParams]
     const idx = pins.indexOf(key)
     if (idx >= 0) pins.splice(idx, 1); else pins.push(key)
@@ -204,7 +237,6 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   },
 }))
 
-/* ── Monitor Store ── */
 interface MonitorState {
   selectedTaskName: string | null
   logContent: string
@@ -232,7 +264,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   exportIds: new Set(),
   async selectTask(name: string) {
     const requestId = ++monitorRequestSeq
-    set({ selectedTaskName: name, logContent: '', logOffset: 0, loading: true })
+    set({
+      selectedTaskName: name,
+      logContent: '',
+      logOffset: 0,
+      availableLogs: [],
+      selectedLog: '',
+      loading: true,
+    })
     try {
       const logs = await api.getTaskLogs(name, undefined, undefined, 50000)
       if (requestId !== monitorRequestSeq || get().selectedTaskName !== name) {
@@ -254,7 +293,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     const { selectedTaskName } = get()
     if (!selectedTaskName) return
     const requestId = ++monitorRequestSeq
-    set({ selectedLog: logName, loading: true })
+    set({ selectedLog: logName, logContent: '', logOffset: 0, loading: true })
     try {
       const logs = await api.getTaskLogs(selectedTaskName, logName, undefined, 50000)
       if (
@@ -264,7 +303,12 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       ) {
         return
       }
-      set({ logContent: logs.content, logOffset: logs.offset })
+      set({
+        logContent: logs.content,
+        logOffset: logs.offset,
+        availableLogs: logs.available_logs,
+        selectedLog: logs.selected_log,
+      })
     } finally {
       if (requestId === monitorRequestSeq) {
         set({ loading: false })
@@ -275,18 +319,17 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     set(s => ({ logContent: s.logContent + text }))
   },
   clearLog() { set({ logContent: '', logOffset: 0 }) },
-  toggleExport(name: string) {
+  toggleExport(name) {
     const ids = new Set(get().exportIds)
     if (ids.has(name)) ids.delete(name); else ids.add(name)
     set({ exportIds: ids })
   },
-  selectAllExport(names: string[]) {
+  selectAllExport(names) {
     set({ exportIds: new Set(names) })
   },
   clearExport() { set({ exportIds: new Set() }) },
 }))
 
-/* ── Launcher Store ── */
 interface LauncherState {
   scripts: ScriptCandidate[]
   configs: ConfigCandidate[]
@@ -326,7 +369,7 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
       set({ loading: false })
     }
   },
-  selectConfig(path: string) {
+  selectConfig(path) {
     set({ selectedConfig: path, step: 2 })
   },
   async openWorkspace() {
