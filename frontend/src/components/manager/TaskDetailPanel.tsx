@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, type ComponentType } from 'react'
+import { useState, useCallback, useEffect, useRef, type ComponentType } from 'react'
 import { X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check } from 'lucide-react'
 import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
@@ -15,28 +15,64 @@ interface Props {
 
 type Tab = 'info' | 'config' | 'notes' | 'env'
 
+function buildEnvPairs(task: Task): [string, string][] {
+  return Object.entries(task.env || {}).map(([key, value]) => [key, String(value)])
+}
+
 export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('info')
   const [notes, setNotes] = useState(task.notes || '')
-  const [envPairs, setEnvPairs] = useState<[string, string][]>(
-    Object.entries(task.env || {}).map(([key, value]) => [key, String(value)])
-  )
+  const [envPairs, setEnvPairs] = useState<[string, string][]>(buildEnvPairs(task))
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(task.name)
+  const [notesDirty, setNotesDirty] = useState(false)
+  const [envDirty, setEnvDirty] = useState(false)
+  const previousTaskNameRef = useRef(task.name)
 
   useEffect(() => {
+    const previousTaskName = previousTaskNameRef.current
+    previousTaskNameRef.current = task.name
+
+    if (previousTaskName === task.name) {
+      return
+    }
+
     setTab('info')
     setNotes(task.notes || '')
-    setEnvPairs(Object.entries(task.env || {}).map(([key, value]) => [key, String(value)]))
+    setEnvPairs(buildEnvPairs(task))
     setNewName(task.name)
     setRenaming(false)
-  }, [task])
+    setNotesDirty(false)
+    setEnvDirty(false)
+  }, [task.name])
+
+  useEffect(() => {
+    if (notesDirty || previousTaskNameRef.current !== task.name) {
+      return
+    }
+    setNotes(task.notes || '')
+  }, [task.name, task.notes, notesDirty])
+
+  useEffect(() => {
+    if (envDirty || previousTaskNameRef.current !== task.name) {
+      return
+    }
+    setEnvPairs(buildEnvPairs(task))
+  }, [task.name, task.env, envDirty])
+
+  useEffect(() => {
+    if (renaming) {
+      return
+    }
+    setNewName(task.name)
+  }, [task.name, renaming])
 
   const handleSaveNotes = useCallback(async () => {
     setSaving(true)
     try {
       await api.updateNotes(task.name, notes)
+      setNotesDirty(false)
       onRefresh()
     } finally {
       setSaving(false)
@@ -48,6 +84,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     const env = Object.fromEntries(envPairs.filter(([key]) => key.trim()))
     try {
       await api.updateEnv(task.name, env)
+      setEnvDirty(false)
       onRefresh()
     } finally {
       setSaving(false)
@@ -178,7 +215,10 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
             <div className="flex h-full flex-col gap-3">
               <textarea
                 value={notes}
-                onChange={event => setNotes(event.target.value)}
+                onChange={event => {
+                  setNotes(event.target.value)
+                  setNotesDirty(true)
+                }}
                 placeholder="Add notes..."
                 className="min-h-[220px] flex-1 resize-none rounded-lg border border-border-subtle bg-surface-overlay p-3 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
               />
@@ -205,6 +245,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                       const next = [...envPairs]
                       next[index] = [event.target.value, value]
                       setEnvPairs(next)
+                      setEnvDirty(true)
                     }}
                     placeholder="KEY"
                     className="w-2/5 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
@@ -215,13 +256,17 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                       const next = [...envPairs]
                       next[index] = [key, event.target.value]
                       setEnvPairs(next)
+                      setEnvDirty(true)
                     }}
                     placeholder="value"
                     className="flex-1 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
                   />
                   <button
                     type="button"
-                    onClick={() => setEnvPairs(envPairs.filter((_, pairIndex) => pairIndex !== index))}
+                    onClick={() => {
+                      setEnvPairs(envPairs.filter((_, pairIndex) => pairIndex !== index))
+                      setEnvDirty(true)
+                    }}
                     className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-rose-400"
                     title="Remove"
                   >
@@ -233,7 +278,10 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setEnvPairs([...envPairs, ['', '']])}
+                  onClick={() => {
+                    setEnvPairs([...envPairs, ['', '']])
+                    setEnvDirty(true)
+                  }}
                   className="text-xs text-txt-secondary transition-colors hover:text-txt-primary"
                 >
                   + Add variable
