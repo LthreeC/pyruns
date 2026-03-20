@@ -9,7 +9,7 @@ Pyruns 的配置不是“堆一页键值对”。
 
 理解了这三层，很多行为都会一下子变得顺理成章。
 
-![任务详情与配置语义示意](/docs/assets/task_info.png)
+![任务详情与配置语义示意](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
 
 ## 1. 两个最重要的概念
 

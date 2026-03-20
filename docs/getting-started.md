@@ -7,7 +7,7 @@
 
 在开始之前，先看一眼现在的界面，会更容易进入状态。
 
-![Generator 预览](/docs/assets/tab_generator.png)
+![Generator 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 ## 1. 安装
 
@@ -109,7 +109,7 @@ project/
 _pyruns_/_shell_/tasks/<task_name>/config.sh
 ```
 
-![Shell Generator 预览](/docs/assets/shell_generator.png)
+![Shell Generator 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
 
 ## 4. Script Workspace 适合什么
 
@@ -192,9 +192,9 @@ shell_executable: /bin/bash
 - 多任务日志导出
 - 从 tab 直接进入时默认空选中
 
-![Manager 预览](/docs/assets/tab_manager.png)
+![Manager 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
-![Monitor 预览](/docs/assets/tab_monitor.png)
+![Monitor 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
 ## 7. `pyr` / `pyr ui` / `pyr cli` 分别做什么
 

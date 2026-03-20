@@ -12,7 +12,7 @@
 - 更少噪声
 - 更像实验工作台，而不是资讯面板
 
-![Generator 全页界面](/docs/assets/tab_generator.png)
+![Generator 全页界面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 ## 侧边栏与工作区
 
@@ -89,14 +89,14 @@ Generator 是整个 UI 最像“工作台”的页面。
 - 落盘文件为 `config.sh`
 - 默认跟随启动 `pyr` 的终端语义执行
 
-![Shell Generator](/docs/assets/shell_generator.png)
+![Shell Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
 
 ## Manager
 
 Manager 是任务的调度台。  
 你不只是看见任务，而是要快速决定“接下来对它做什么”。
 
-![Manager 全页界面](/docs/assets/tab_manager.png)
+![Manager 全页界面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
 建议这里放：
 
@@ -133,13 +133,13 @@ Manager 是任务的调度台。
 - `config` 任务显示 `config.yaml`
 - `shell` 任务显示 `config.sh`
 
-![任务详情面板](/docs/assets/task_info.png)
+![任务详情面板](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
 
 ## Monitor
 
 Monitor 的目标不是“把日志显示出来”，而是把日志变成一个可工作的界面。
 
-![Monitor 全页界面](/docs/assets/tab_monitor.png)
+![Monitor 全页界面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
 建议这里放：
 
@@ -165,7 +165,7 @@ Monitor 的目标不是“把日志显示出来”，而是把日志变成一个
 
 Monitor 支持选择多个任务并导出，适合快速聚合一批日志做对照或归档。
 
-![Shell Monitor](/docs/assets/shell_monitor.png)
+![Shell Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_monitor.png)
 
 ## Dashboard
 

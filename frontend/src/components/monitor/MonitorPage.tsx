@@ -22,7 +22,7 @@ export default function MonitorPage() {
   const { tasks, fetchTasks } = useTaskStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
-    selectedTaskName, logContent, availableLogs, selectedLog, exportIds,
+    selectedTaskName, logContent, availableLogs, selectedLog, loading, exportIds,
     selectTask, selectLogFile, appendLog, toggleExport, selectAllExport, clearExport,
   } = useMonitorStore()
 
@@ -154,6 +154,7 @@ export default function MonitorPage() {
   }, [terminalVisible])
 
   const renderKey = `${selectedTaskName ?? ''}::${selectedLog || ''}`
+  const shouldShowNoLogPlaceholder = !loading && availableLogs.length === 0 && !selectedLog
 
   useEffect(() => {
     const term = xtermRef.current
@@ -174,7 +175,7 @@ export default function MonitorPage() {
       term.reset()
       if (logContent) {
         term.write(logContent)
-      } else {
+      } else if (shouldShowNoLogPlaceholder) {
         term.write('\x1b[2m  < NO LOG >\x1b[0m\r\n')
       }
       renderedLogRef.current = { key: renderKey, content: logContent }
@@ -195,13 +196,13 @@ export default function MonitorPage() {
       term.reset()
       if (logContent) {
         term.write(logContent)
-      } else {
+      } else if (shouldShowNoLogPlaceholder) {
         term.write('\x1b[2m  < NO LOG >\x1b[0m\r\n')
       }
     }
 
     renderedLogRef.current = { key: renderKey, content: logContent }
-  }, [renderKey, selectedTaskName, logContent])
+  }, [renderKey, selectedTaskName, logContent, shouldShowNoLogPlaceholder])
 
   useEffect(() => {
     if (tasks.length === 0 || !selectedTaskName) return

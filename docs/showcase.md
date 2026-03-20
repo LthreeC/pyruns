@@ -8,7 +8,7 @@
 Home 不是一个装饰性首页。  
 它更像工作区的入口仪表盘，先把系统状态、任务概览和 GPU 资源整理出来，让你一打开页面就知道现在该先去哪里。
 
-![Home 页面](/docs/assets/tab_home.png)
+![Home 页面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
 
 这一页适合承担的价值是：
 
@@ -24,7 +24,7 @@ Home 不是一个装饰性首页。
 Generator 是 Pyruns 的第一张脸。  
 它不应该像一张“参数登记表”，而应该像一张真的可以开工的实验工作台。
 
-![Generator 页面](/docs/assets/tab_generator.png)
+![Generator 页面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 这一页最核心的价值有三层：
 
@@ -43,7 +43,7 @@ Generator 是 Pyruns 的第一张脸。
 
 对于 shell 工作流，Generator 会明显切换成另一种状态：
 
-![Shell Generator 页面](/docs/assets/shell_generator.png)
+![Shell Generator 页面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
 
 这里展示的是：
 
@@ -56,7 +56,7 @@ Generator 是 Pyruns 的第一张脸。
 
 Manager 的意义不在于“列出任务”，而在于让你迅速判断下一步要对任务做什么。
 
-![Manager 页面](/docs/assets/tab_manager.png)
+![Manager 页面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
 这一页现在重点承担这些能力：
 
@@ -69,7 +69,7 @@ Manager 的意义不在于“列出任务”，而在于让你迅速判断下一
 
 当你打开任务详情时，Manager 也会切换成更像“实验档案页”的视角：
 
-![任务详情面板](/docs/assets/task_info.png)
+![任务详情面板](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
 
 这张图最能说明 Pyruns 的一个核心设计点：
 
@@ -88,7 +88,7 @@ Manager 的意义不在于“列出任务”，而在于让你迅速判断下一
 Monitor 的目标不是“在浏览器里打印文本”。  
 它的目标是给日志一个真正可观察、可切换、可复制、可导出的页面。
 
-![Monitor 页面](/docs/assets/tab_monitor.png)
+![Monitor 页面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
 这张图体现的是主监控视角：
 
@@ -98,7 +98,7 @@ Monitor 的目标不是“在浏览器里打印文本”。
 
 而在 shell 工作流里，Monitor 的气质会更明确：
 
-![Shell Monitor 页面](/docs/assets/shell_monitor.png)
+![Shell Monitor 页面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_monitor.png)
 
 这张图最适合强调：
 

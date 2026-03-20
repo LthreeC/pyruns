@@ -264,6 +264,6 @@ Monitor 页面依赖两种数据源：
 
 如果后面要补图，建议统一放在：
 
-- `/docs/assets/architecture_overview.png`
-- `/docs/assets/build_pipeline.png`
-- `/docs/assets/shell_runtime_flow.png`
+- `https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/architecture_overview.png`
+- `https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/build_pipeline.png`
+- `https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_runtime_flow.png`

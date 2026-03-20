@@ -31,7 +31,7 @@ export default function ManagerPage() {
   } = useTaskStore()
 
   const [executionMode, setExecutionMode] = useState('thread')
-  const [maxWorkers, setMaxWorkers] = useState(2)
+  const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [deleteTask, setDeleteTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
@@ -80,14 +80,28 @@ export default function ManagerPage() {
     failed: tasks.filter(task => task.status === 'failed').length,
   }), [tasks, total])
 
+  const normalizeWorkerInput = useCallback((value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return 1
+    }
+    const parsed = Number.parseInt(trimmed, 10)
+    if (!Number.isFinite(parsed)) {
+      return 1
+    }
+    return Math.min(32, Math.max(1, parsed))
+  }, [])
+
   const handleRunSelected = useCallback(async () => {
     const names = [...selectedIds]
     if (!names.length) return
+    const maxWorkers = normalizeWorkerInput(maxWorkersInput)
+    setMaxWorkersInput(String(maxWorkers))
     await api.batchRunTasks(names, executionMode, maxWorkers)
     clearSelection()
     setSelectMode(false)
     await fetchTasks()
-  }, [selectedIds, executionMode, maxWorkers, clearSelection, fetchTasks])
+  }, [selectedIds, executionMode, maxWorkersInput, normalizeWorkerInput, clearSelection, fetchTasks])
 
   const handleDeleteSelected = useCallback(async () => {
     const names = [...selectedIds]
@@ -217,8 +231,9 @@ export default function ManagerPage() {
                 type="number"
                 min={1}
                 max={32}
-                value={maxWorkers}
-                onChange={event => setMaxWorkers(Math.max(1, +event.target.value))}
+                value={maxWorkersInput}
+                onChange={event => setMaxWorkersInput(event.target.value)}
+                onBlur={() => setMaxWorkersInput(current => String(normalizeWorkerInput(current)))}
                 title="Max workers"
                 className="w-12 rounded-md border border-border-subtle bg-surface-overlay px-1.5 py-1 text-xs tabular-nums text-txt-primary outline-none transition-colors focus:border-border"
               />

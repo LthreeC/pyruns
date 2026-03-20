@@ -325,8 +325,10 @@ class TaskManager:
         if max_workers is not None:
             self.max_workers = max(1, int(max_workers))
 
-        to_sync: list[tuple[str, int]] = []
+        to_sync: list[tuple[str, str, int]] = []
+        to_submit: list[tuple[Dict[str, Any], int]] = []
         with self._lock:
+            available_slots = max(0, int(self.max_workers) - len(self._running_ids))
             for identifier in task_ids:
                 task = self._resolve_identifier_locked(identifier)
                 if not task:
@@ -334,19 +336,30 @@ class TaskManager:
                 if task.get("_load_error"):
                     logger.warning("Skip queuing %s: %s", task["name"], task["_load_error"])
                     continue
-                task["status"] = "queued"
                 run_index = max(int(task.get("run_index", 0) or 0), len(task.get("start_times", []))) + 1
                 task["run_index"] = run_index
-                to_sync.append((task["name"], run_index))
+                if available_slots > 0:
+                    task["status"] = "running"
+                    self._running_ids.add(task["name"])
+                    to_submit.append((task, run_index))
+                    to_sync.append((task["name"], "running", run_index))
+                    available_slots -= 1
+                else:
+                    task["status"] = "queued"
+                    to_sync.append((task["name"], "queued", run_index))
             self._recompute_processing_flag_locked()
         self.trigger_update()
 
-        def _job() -> None:
-            logger.info("Queued %d task(s) for execution. Processing IO...", len(to_sync))
-            for task_id, run_index in to_sync:
-                self._sync_status_to_disk(task_id, "queued", run_index=run_index)
-
-        threading.Thread(target=_job, daemon=True).start()
+        logger.info(
+            "Prepared %d task(s) for execution (%d immediate, %d queued)",
+            len(to_sync),
+            len(to_submit),
+            max(0, len(to_sync) - len(to_submit)),
+        )
+        for task_id, status, run_index in to_sync:
+            self._sync_status_to_disk(task_id, status, run_index=run_index)
+        for task, run_index in to_submit:
+            self._submit_task(task, run_index, independent=False)
 
     def start_task_now(
         self,
@@ -374,36 +387,7 @@ class TaskManager:
             return
 
         self.trigger_update()
-
-        try:
-            with self._executor_lock:
-                if not self._independent_executor:
-                    cls = ProcessPoolExecutor if execution_mode == "process" else ThreadPoolExecutor
-                    self._independent_executor = cls(max_workers=32)
-
-            future = self._independent_executor.submit(
-                run_task_worker,
-                target["dir"],
-                target["name"],
-                target["created_at"],
-                target["config"],
-                target.get("env", {}),
-                run_index,
-            )
-            future.add_done_callback(lambda fut, tid=target["name"]: self._on_task_done(fut, tid))
-            logger.debug("Submitted task %s to independent executor", target["name"])
-        except Exception as exc:
-            with self._lock:
-                self._running_ids.discard(target["name"])
-                target["status"] = "failed"
-                self._mark_failed_on_disk(target)
-                self._recompute_processing_flag_locked()
-            logger.error("Failed to submit task %s: %s", target["name"], exc)
-
-        threading.Thread(
-            target=lambda: self._sync_status_to_disk(target["name"], "running", run_index=run_index),
-            daemon=True,
-        ).start()
+        self._submit_task(target, run_index, independent=True, execution_mode=execution_mode)
 
     def rerun_task(self, task_id: str) -> bool:
         """Queue a completed or failed task again."""
@@ -541,18 +525,30 @@ class TaskManager:
             target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("queued", "running"):
                 return False
+            previous_status = str(target["status"])
 
             if target["status"] == "running":
                 pid = self._latest_pid_from_disk(target)
                 if pid:
                     kill_process(int(pid))
                 self._running_ids.discard(target["name"])
+                self._persist_pending_stop_summary(
+                    target,
+                    event="stopped",
+                    reason="cancelled_by_user",
+                    detail_lines=[f"previous_status={previous_status}"],
+                )
+            else:
+                self._mark_failed_on_disk(
+                    target,
+                    event="stopped",
+                    reason="cancelled_by_user",
+                    detail_lines=[f"previous_status={previous_status}"],
+                )
 
             target["status"] = "failed"
             self._recompute_processing_flag_locked()
             logger.info("Cancelled task %s", target["name"])
-
-        self._mark_failed_on_disk(target)
         self.trigger_update()
         return True
 
@@ -565,13 +561,19 @@ class TaskManager:
                 if not target or target in targets:
                     continue
                 if target["status"] in ("running", "queued"):
+                    previous_status = str(target["status"])
                     if target["status"] == "running":
                         pid = self._latest_pid_from_disk(target)
                         if pid:
                             kill_process(int(pid))
                         self._running_ids.discard(target["name"])
                     target["status"] = "failed"
-                    self._mark_failed_on_disk(target)
+                    self._mark_failed_on_disk(
+                        target,
+                        event="stopped",
+                        reason="deleted_while_active",
+                        detail_lines=[f"previous_status={previous_status}"],
+                    )
                 if target in self.tasks:
                     self.tasks.remove(target)
                 targets.append(target)
@@ -644,30 +646,7 @@ class TaskManager:
                     time.sleep(0.1)
                     continue
 
-                try:
-                    future = self._executor.submit(
-                        run_task_worker,
-                        target["dir"],
-                        target["name"],
-                        target["created_at"],
-                        target["config"],
-                        target.get("env", {}),
-                        run_index,
-                    )
-                    future.add_done_callback(lambda fut, tid=target["name"]: self._on_task_done(fut, tid))
-                    logger.debug(
-                        "Submitted task %s to executor (running=%d/%d)",
-                        target["name"],
-                        len(self._running_ids),
-                        self.max_workers,
-                    )
-                except Exception as exc:
-                    with self._lock:
-                        self._running_ids.discard(target["name"])
-                        target["status"] = "failed"
-                        self._mark_failed_on_disk(target)
-                        self._recompute_processing_flag_locked()
-                    logger.error("Failed to submit task %s: %s", target["name"], exc)
+                self._submit_task(target, run_index, independent=False)
             except Exception as exc:
                 logger.error("Scheduler error: %s", exc, exc_info=True)
                 time.sleep(1)
@@ -704,6 +683,63 @@ class TaskManager:
                     return task, run_index
             self._recompute_processing_flag_locked()
         return None, 1
+
+    def _submit_task(
+        self,
+        target: Dict[str, Any],
+        run_index: int,
+        *,
+        independent: bool,
+        execution_mode: str | None = None,
+    ) -> None:
+        """Persist a running state and submit one task to the chosen executor."""
+
+        self._sync_status_to_disk(target["name"], "running", run_index=run_index)
+
+        try:
+            if independent:
+                mode = execution_mode or self.execution_mode
+                with self._executor_lock:
+                    if not self._independent_executor:
+                        cls = ProcessPoolExecutor if mode == "process" else ThreadPoolExecutor
+                        self._independent_executor = cls(max_workers=32)
+                executor = self._independent_executor
+            else:
+                self._ensure_executor()
+                executor = self._executor
+
+            assert executor is not None
+            future = executor.submit(
+                run_task_worker,
+                target["dir"],
+                target["name"],
+                target["created_at"],
+                target["config"],
+                target.get("env", {}),
+                run_index,
+            )
+            future.add_done_callback(lambda fut, tid=target["name"]: self._on_task_done(fut, tid))
+            logger.debug(
+                "Submitted task %s to %s executor (running=%d/%d)",
+                target["name"],
+                "independent" if independent else "batch",
+                len(self._running_ids),
+                self.max_workers,
+            )
+        except Exception as exc:
+            with self._lock:
+                self._running_ids.discard(target["name"])
+                target["status"] = "failed"
+                self._recompute_processing_flag_locked()
+            self._mark_failed_on_disk(
+                target,
+                reason="submission_error",
+                detail_lines=[
+                    f"exception={type(exc).__name__}: {exc}",
+                    f"independent={independent}",
+                ],
+            )
+            logger.error("Failed to submit task %s: %s", target["name"], exc)
 
     def _on_task_done(self, future: Future, task_id: str) -> None:
         """Handle worker completion and pull final state from disk."""
@@ -742,7 +778,11 @@ class TaskManager:
 
         # Disk I/O outside the lock to avoid potential deadlock
         if need_mark_failed and task_ref:
-            self._mark_failed_on_disk(task_ref)
+            self._mark_failed_on_disk(
+                task_ref,
+                reason="worker_exception",
+                detail_lines=[f"exception={type(worker_error).__name__}: {worker_error}"],
+            )
 
         self.trigger_update()
 
@@ -759,17 +799,12 @@ class TaskManager:
                 if not task or task["status"] not in ("running", "queued"):
                     continue
                 task["status"] = "failed"
-                self._mark_failed_on_disk(task)
-                log_dir = os.path.join(task["dir"], RUN_LOGS_DIR)
-                os.makedirs(log_dir, exist_ok=True)
-                error_log = os.path.join(log_dir, ERROR_LOG_FILENAME)
-                try:
-                    with open(error_log, "a", encoding="utf-8") as handle:
-                        handle.write(
-                            f"\n[{get_now_str()}] Task forcibly terminated due to system shutdown or Ctrl+C.\n"
-                        )
-                except Exception as exc:
-                    logger.error("Failed to write error.log for %s: %s", task["name"], exc)
+                self._mark_failed_on_disk(
+                    task,
+                    event="stopped",
+                    reason="system_shutdown",
+                    detail_lines=["detail=Task forcibly terminated due to system shutdown or Ctrl+C."],
+                )
             self._recompute_processing_flag_locked()
         finally:
             self._lock.release()
@@ -807,7 +842,73 @@ class TaskManager:
 
         update_task_info(task_dir, _apply)
 
-    def _mark_failed_on_disk(self, task: Dict[str, Any]) -> None:
+    def _append_error_summary(
+        self,
+        task_dir: str,
+        *,
+        title: str,
+        detail_lines: List[str],
+    ) -> None:
+        """Append a structured failure/cancel summary block into error.log."""
+
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
+        os.makedirs(log_dir, exist_ok=True)
+        error_log = os.path.join(log_dir, ERROR_LOG_FILENAME)
+        block = (
+            f"\n\n{'=' * 70}\n"
+            f"[PYRUNS] {title}\n"
+            + "\n".join(detail_lines)
+            + f"\n{'=' * 70}\n"
+        )
+        try:
+            with open(error_log, "a", encoding="utf-8") as handle:
+                handle.write(block)
+        except Exception as exc:
+            logger.error("Failed to write error.log for %s: %s", task.get("name"), exc)
+
+    def _persist_pending_stop_summary(
+        self,
+        task: Dict[str, Any],
+        *,
+        event: str,
+        reason: str,
+        detail_lines: List[str] | None = None,
+    ) -> None:
+        """Store a stop summary on the active run so the worker can flush one final block."""
+
+        task_dir = task["dir"]
+        finish_now = get_now_str()
+        run_index = int(task.get("run_index", 0) or 0)
+
+        def _apply(task_info: Dict[str, Any]) -> None:
+            slot_count = run_slot_count(task_info)
+            target_index = max(run_index, slot_count)
+            if target_index > 0:
+                slot = ensure_run_slot(task_info, target_index)
+                if not task_info["finish_times"][slot]:
+                    task_info["finish_times"][slot] = finish_now
+            task_info["status"] = "failed"
+            task_info["progress"] = 0.0
+            task_info["_pending_stop_summary"] = {
+                "run_index": max(target_index, 1),
+                "event": event,
+                "reason": reason,
+                "detail_lines": list(detail_lines or []),
+            }
+
+        updated = update_task_info(task_dir, _apply)
+        if "status" in task:
+            self._apply_info_to_task(task, updated)
+            task["status"] = "failed"
+
+    def _mark_failed_on_disk(
+        self,
+        task: Dict[str, Any],
+        *,
+        event: str = "failed",
+        reason: str | None = None,
+        detail_lines: List[str] | None = None,
+    ) -> None:
         """Persist a failed state and finalize the active run slot if needed."""
         task_dir = task["dir"]
         finish_now = get_now_str()
@@ -825,6 +926,17 @@ class TaskManager:
             task_info["progress"] = 0.0
 
         updated = update_task_info(task_dir, _apply)
+        if reason or detail_lines:
+            display_run_index = max(run_index, int(updated.get("run_index", 0) or 0), 1)
+            lines: List[str] = []
+            if reason:
+                lines.append(f"reason={reason}")
+            lines.extend(detail_lines or [])
+            self._append_error_summary(
+                task_dir,
+                title=f"Run #{display_run_index} {event} at {finish_now}",
+                detail_lines=lines,
+            )
         if "status" in task:
             self._apply_info_to_task(task, updated)
             task["status"] = "failed"

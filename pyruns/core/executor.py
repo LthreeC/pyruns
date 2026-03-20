@@ -286,6 +286,25 @@ def _append_error_summary(
         handle.write(block)
 
 
+def _consume_pending_stop_summary(task_dir: str, run_index: int) -> Dict[str, Any] | None:
+    """Pop one pending stop summary for the finished run, if present."""
+
+    captured: Dict[str, Any] = {}
+
+    def _apply(info: Dict[str, Any]) -> None:
+        raw = info.get("_pending_stop_summary")
+        if not isinstance(raw, dict):
+            return
+        raw_index = int(raw.get("run_index", 0) or 0)
+        if raw_index != int(run_index):
+            return
+        captured.update(raw)
+        info.pop("_pending_stop_summary", None)
+
+    update_task_info(task_dir, _apply)
+    return captured or None
+
+
 def run_task_worker(
     task_dir: str,
     name: str,
@@ -443,17 +462,36 @@ def run_task_worker(
         update_task_info(task_dir, _mark_finished)
 
         if status == "failed":
-            _append_error_summary(
-                task_dir,
-                run_index=run_index,
-                title=f"Run #{run_index} failed at {end_str}",
-                detail_lines=[
-                    f"reason=exit_code {ret}",
-                    f"command={command!r}",
-                    f"workdir={workdir!r}",
-                    f"log={log_path}",
-                ],
-            )
+            stop_summary = _consume_pending_stop_summary(task_dir, run_index)
+            if stop_summary:
+                detail_lines = [f"reason={stop_summary.get('reason', 'stopped')}"]
+                detail_lines.extend(list(stop_summary.get("detail_lines", []) or []))
+                detail_lines.extend(
+                    [
+                        f"exit_code={ret}",
+                        f"command={command!r}",
+                        f"workdir={workdir!r}",
+                        f"log={log_path}",
+                    ]
+                )
+                _append_error_summary(
+                    task_dir,
+                    run_index=run_index,
+                    title=f"Run #{run_index} {stop_summary.get('event', 'stopped')} at {end_str}",
+                    detail_lines=detail_lines,
+                )
+            else:
+                _append_error_summary(
+                    task_dir,
+                    run_index=run_index,
+                    title=f"Run #{run_index} failed at {end_str}",
+                    detail_lines=[
+                        f"reason=exit_code {ret}",
+                        f"command={command!r}",
+                        f"workdir={workdir!r}",
+                        f"log={log_path}",
+                    ],
+                )
 
         logger.info("Task %s finished  status=%s", name, status)
         return {"status": status, "progress": progress}
