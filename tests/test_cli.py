@@ -264,6 +264,19 @@ class TestCmdList:
         # baseline should be filtered out since filter matches name
         # (filter_tasks does substring search on name + config)
 
+    def test_list_with_status_and_limit(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_list
+
+        _add_task(workspace, "done-a", "completed")
+        _add_task(workspace, "done-b", "completed")
+        _add_task(workspace, "queued-a", "queued")
+        task_manager.scan_disk()
+
+        cmd_list(task_manager, ["--status", "completed", "--limit", "1"])
+        captured = capsys.readouterr()
+        assert "queued-a" not in captured.out
+        assert "1 total" in captured.out
+
 
 class TestCmdJobs:
     def test_jobs_empty(self, task_manager, capsys):
@@ -312,6 +325,29 @@ class TestCmdRun:
                 cmd_run(task_manager, ["target-task"])
             mock_start.assert_called_once_with("target-task")
 
+    def test_run_single_detach_skips_fg(self, workspace, task_manager):
+        from pyruns.cli.commands import cmd_run
+
+        _add_task(workspace, "detach-task", "pending")
+        task_manager.scan_disk()
+
+        with patch.object(task_manager, "start_task_now") as mock_start:
+            with patch("pyruns.cli.commands.cmd_fg") as mock_fg:
+                cmd_run(task_manager, ["detach-task", "--detach"])
+            mock_start.assert_called_once_with("detach-task")
+            mock_fg.assert_not_called()
+
+    def test_run_batch_with_flags(self, workspace, task_manager):
+        from pyruns.cli.commands import cmd_run
+
+        _add_task(workspace, "batch-a", "pending")
+        _add_task(workspace, "batch-b", "pending")
+        task_manager.scan_disk()
+
+        with patch.object(task_manager, "start_batch_tasks") as mock_batch:
+            cmd_run(task_manager, ["batch-a", "batch-b", "--workers", "3", "--mode", "process", "--detach"])
+            mock_batch.assert_called_once_with(["batch-a", "batch-b"], execution_mode="process", max_workers=3)
+
 
 class TestCmdDelete:
     def test_delete_no_args(self, task_manager, capsys):
@@ -341,6 +377,62 @@ class TestCmdDelete:
                 mock_del.assert_not_called()
         captured = capsys.readouterr()
         assert "Cancelled" in captured.out
+
+    def test_delete_yes_skips_prompt(self, workspace, task_manager):
+        from pyruns.cli.commands import cmd_delete
+
+        _add_task(workspace, "fast-delete", "completed")
+        task_manager.scan_disk()
+
+        with patch("builtins.input") as mock_input:
+            with patch.object(task_manager, "delete_tasks") as mock_del:
+                cmd_delete(task_manager, ["fast-delete", "--yes"])
+            mock_del.assert_called_once_with(["fast-delete"])
+            mock_input.assert_not_called()
+
+
+class TestCmdShow:
+    def test_show_prints_task_detail(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_show
+
+        _add_task(workspace, "detail-task", "completed", config={"lr": 0.02, "epochs": 10})
+        task_manager.scan_disk()
+
+        cmd_show(task_manager, ["detail-task"])
+        captured = capsys.readouterr()
+        assert "detail-task" in captured.out
+        assert "Status:" in captured.out
+
+
+class TestCmdExport:
+    def test_export_csv_to_explicit_path(self, workspace, task_manager, tmp_path):
+        from pyruns.cli.commands import cmd_export
+
+        _add_task(workspace, "export-task", "completed")
+        task_manager.scan_disk()
+        output_path = tmp_path / "tasks.csv"
+
+        cmd_export(task_manager, ["export-task", "--output", str(output_path)])
+
+        assert output_path.exists()
+        content = output_path.read_text(encoding="utf-8")
+        assert "name,status,run,start_time,finish_time,pid" in content
+        assert "export-task" in content
+
+    def test_export_status_filter_limits_output(self, workspace, task_manager, tmp_path):
+        from pyruns.cli.commands import cmd_export
+
+        _add_task(workspace, "export-completed", "completed")
+        _add_task(workspace, "export-pending", "pending")
+        task_manager.scan_disk()
+        output_path = tmp_path / "filtered.csv"
+
+        cmd_export(task_manager, ["--all", "--status", "completed", "--output", str(output_path)])
+
+        assert output_path.exists()
+        content = output_path.read_text(encoding="utf-8")
+        assert "export-completed" in content
+        assert "export-pending" not in content
 
 
 
@@ -393,6 +485,16 @@ class TestEntryPoint:
         captured = capsys.readouterr()
         assert "Start web app in shell mode for current directory" in captured.out
         assert "pyr ui" in captured.out
+
+    def test_direct_info_command_dispatches_to_cli(self, monkeypatch):
+        from pyruns.cli import pyr
+
+        monkeypatch.setattr("sys.argv", ["pyr", "info"])
+
+        with patch("pyruns.cli._dispatch_cli") as mock_dispatch:
+            pyr()
+
+        mock_dispatch.assert_called_once_with(["info"])
 
 
 class TestScriptLaunchRules:
@@ -469,6 +571,17 @@ class TestInteractive:
             run_interactive(task_manager)
         captured = capsys.readouterr()
         assert "Pyruns CLI" in captured.out
+
+    def test_entry_shows_task_overview(self, workspace, task_manager, capsys):
+        from pyruns.cli.interactive import run_interactive
+
+        _add_task(workspace, "overview-task", "completed")
+        task_manager.scan_disk()
+
+        with patch("builtins.input", side_effect=["exit"]):
+            run_interactive(task_manager)
+        captured = capsys.readouterr()
+        assert "overview-task" in captured.out
 
     def test_help_command(self, task_manager, capsys):
         from pyruns.cli.interactive import run_interactive

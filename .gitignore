@@ -20,4 +20,6 @@ _pyruns_/
 .vitepress/cache/
 .vitepress/.temp/
 
+.tmp/
+
 .npm-cache/

@@ -1,352 +1,536 @@
 """
-CLI commands —ls, gen, run, delete, jobs, fg.
-
-Each command is a plain function that takes a ``TaskManager`` (and optional args)
-and prints results to stdout.  All task lifecycle logic is delegated to
-``core.task_manager`` and ``core.task_generator`` so CLI and UI share the same
-business logic.
+CLI commands for listing, inspecting, running, deleting, and exporting tasks.
 """
-import os
-import shlex
-import shutil
 
-import sys
-import time
-import tempfile
+from __future__ import annotations
+
+import json
+import os
+import queue
+import shlex
 import subprocess
-from typing import List, Optional
+import sys
+import tempfile
+import time
+from typing import Any
+
+import psutil
 
 from pyruns._config import (
     CONFIG_DEFAULT_FILENAME,
     RUN_LOGS_DIR,
-    TASKS_DIR,
     TASK_INFO_FILENAME,
     TASK_KIND_CONFIG,
 )
-from pyruns.utils.sort_utils import task_sort_key, filter_tasks
-from pyruns.utils.config_utils import load_yaml, preview_config_line
-from pyruns.utils.task_files import resolve_task_config_file
 from pyruns.cli.display import (
-    print_task_table, print_jobs, print_task_detail,
-    _BOLD, _RESET, _DIM, _colored, _STATUS_STYLES,
+    _BOLD,
+    _DIM,
+    _RESET,
+    _STATUS_STYLES,
+    _colored,
+    _get_terminal_width,
+    print_jobs,
+    print_task_detail,
+    print_task_table,
 )
+from pyruns.core.report import build_export_csv, build_export_json, export_timestamp
+from pyruns.core.system_metrics import SystemMonitor
+from pyruns.core.task_generator import TaskGenerator
 from pyruns.utils import get_logger
+from pyruns.utils.batch_utils import generate_batch_configs
+from pyruns.utils.config_utils import load_yaml, preview_config_line
+from pyruns.utils.events import log_emitter
+from pyruns.utils.info_io import load_task_info
+from pyruns.utils.sort_utils import filter_tasks, task_sort_key
+from pyruns.utils.task_files import resolve_task_config_file
 
 logger = get_logger(__name__)
 
+_VALID_STATUSES = {"pending", "queued", "running", "completed", "failed"}
 
-# ════════════════════════════════════════════════════════════════
-#  Helpers
-# ════════════════════════════════════════════════════════════════
 
-def _sorted_tasks(tm) -> list:
+def _sorted_tasks(tm) -> list[dict[str, Any]]:
     """Return tasks sorted identically to the UI Manager page."""
-    valid = [t for t in tm.tasks if t is not None]
+    valid = [task for task in tm.tasks if task is not None]
     return sorted(valid, key=task_sort_key, reverse=True)
 
 
-def _get_git_editor() -> str:
-    """
-    100% 像素级复刻 git/editor.c 中的 git_editor() 逻辑
-    """
-    # 1. 瀵瑰簲 getenv("GIT_EDITOR")
-    editor = os.environ.get("GIT_EDITOR")
-    if editor: return editor
+def _consume_flag(args: list[str], *names: str) -> tuple[bool, list[str]]:
+    found = False
+    remaining: list[str] = []
+    for arg in args:
+        if arg in names:
+            found = True
+            continue
+        remaining.append(arg)
+    return found, remaining
 
-    # 2. 瀵瑰簲 editor_program (鍗?git config core.editor)
+
+def _consume_option(args: list[str], *names: str) -> tuple[str | None, list[str]]:
+    remaining: list[str] = []
+    index = 0
+    value: str | None = None
+
+    while index < len(args):
+        arg = args[index]
+        matched = next((name for name in names if arg == name or arg.startswith(f"{name}=")), None)
+        if matched is None:
+            remaining.append(arg)
+            index += 1
+            continue
+
+        if "=" in arg:
+            value = arg.split("=", 1)[1]
+            index += 1
+            continue
+
+        if index + 1 >= len(args):
+            print(f"  Missing value for {matched}")
+            return None, remaining
+
+        value = args[index + 1]
+        index += 2
+
+    return value, remaining
+
+
+def _consume_multi_option(args: list[str], *names: str) -> tuple[list[str], list[str]]:
+    remaining: list[str] = []
+    values: list[str] = []
+    index = 0
+
+    while index < len(args):
+        arg = args[index]
+        matched = next((name for name in names if arg == name or arg.startswith(f"{name}=")), None)
+        if matched is None:
+            remaining.append(arg)
+            index += 1
+            continue
+
+        if "=" in arg:
+            values.extend(part.strip() for part in arg.split("=", 1)[1].split(",") if part.strip())
+            index += 1
+            continue
+
+        if index + 1 >= len(args):
+            print(f"  Missing value for {matched}")
+            return values, remaining
+
+        values.extend(part.strip() for part in args[index + 1].split(",") if part.strip())
+        index += 2
+
+    return values, remaining
+
+
+def _parse_limit(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"  Invalid limit: {raw}")
+        return None
+    if value <= 0:
+        print("  Limit must be greater than 0.")
+        return None
+    return value
+
+
+def _parse_workers(raw: str | None) -> int:
+    if raw is None:
+        return 1
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"  Invalid workers value: {raw}")
+        return 1
+    if value <= 0:
+        print("  Workers must be greater than 0. Falling back to 1.")
+        return 1
+    return value
+
+
+def _normalize_mode(raw: str | None) -> str:
+    if not raw:
+        return "thread"
+    mode = raw.strip().lower()
+    if mode in {"thread", "process"}:
+        return mode
+    print(f"  Unknown mode '{raw}'. Falling back to thread.")
+    return "thread"
+
+
+def _normalize_status_filters(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        status = value.strip().lower()
+        if not status:
+            continue
+        if status not in _VALID_STATUSES:
+            print(f"  Unknown status filter: {value}")
+            continue
+        normalized.append(status)
+    return normalized
+
+
+def _apply_status_filter(tasks: list[dict[str, Any]], statuses: list[str]) -> list[dict[str, Any]]:
+    if not statuses:
+        return tasks
+    allowed = set(statuses)
+    return [task for task in tasks if (task.get("status") or "pending") in allowed]
+
+
+def _refresh_tasks(tm) -> list[dict[str, Any]]:
+    tm.refresh_from_disk(check_all=True)
+    return _sorted_tasks(tm)
+
+
+def _get_git_editor() -> str:
+    """Resolve an editor command with Git-like precedence."""
+    editor = os.environ.get("GIT_EDITOR")
+    if editor:
+        return editor
+
     try:
         editor = subprocess.check_output(
-            ["git", "config", "--get", "core.editor"], 
-            stderr=subprocess.DEVNULL, text=True
+            ["git", "config", "--get", "core.editor"],
+            stderr=subprocess.DEVNULL,
+            text=True,
         ).strip()
-        if editor: return editor
+        if editor:
+            return editor
     except Exception:
         pass
 
-    # 3. 瀵瑰簲 getenv("VISUAL")
     editor = os.environ.get("VISUAL")
-    if editor: return editor
+    if editor:
+        return editor
 
-    # 4. 瀵瑰簲 getenv("EDITOR")
     editor = os.environ.get("EDITOR")
-    if editor: return editor
+    if editor:
+        return editor
 
-    # 5. 额外彩蛋：如果用户连 Git 都没配，但确实在 VSCode/Cursor 终端里，帮他一把
-    term = os.environ.get("TERM_PROGRAM", "")
-    if term == "vscode":
+    term_program = os.environ.get("TERM_PROGRAM", "")
+    if term_program == "vscode":
         ipc = os.environ.get("VSCODE_IPC_HOOK_CLI", "").lower()
-        if "cursor" in ipc: return "cursor --wait"
-        return "code --wait"
+        return "cursor --wait" if "cursor" in ipc else "code --wait"
 
-    # 6. 瀵瑰簲 DEFAULT_EDITOR
     return "notepad" if os.name == "nt" else "vi"
 
-def _resolve_targets(tm, args: List[str]) -> list:
+
+def _resolve_targets(tm, args: list[str]) -> list[dict[str, Any]]:
     """Resolve user-provided names or 1-based indices to task dicts."""
-    sorted_tasks = _sorted_tasks(tm)
-    targets = []
+    sorted_tasks = _refresh_tasks(tm)
+    targets: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+
     for arg in args:
+        task = None
         try:
-            idx = int(arg)
-            if 1 <= idx <= len(sorted_tasks):
-                targets.append(sorted_tasks[idx - 1])
-                continue
+            index = int(arg)
         except ValueError:
-            pass
-        for t in sorted_tasks:
-            if t.get("name") == arg:
-                targets.append(t)
-                break
-        else:
-            matches = [t for t in sorted_tasks if arg.lower() in t.get("name", "").lower()]
-            if len(matches) == 1:
-                targets.append(matches[0])
-            elif len(matches) > 1:
-                print(f"  Ambiguous name '{arg}', matches: {[m['name'] for m in matches]}")
+            index = None
+
+        if index is not None:
+            if 1 <= index <= len(sorted_tasks):
+                task = sorted_tasks[index - 1]
             else:
-                print(f"  Task not found: '{arg}'")
+                print(f"  Task index out of range: {arg}")
+                continue
+        else:
+            task = next((item for item in sorted_tasks if item.get("name") == arg), None)
+            if task is None:
+                matches = [item for item in sorted_tasks if arg.lower() in (item.get("name") or "").lower()]
+                if len(matches) == 1:
+                    task = matches[0]
+                elif len(matches) > 1:
+                    names = ", ".join(match["name"] for match in matches)
+                    print(f"  Ambiguous name '{arg}', matches: {names}")
+                    continue
+                else:
+                    print(f"  Task not found: '{arg}'")
+                    continue
+
+        name = task.get("name")
+        if name and name not in seen_names:
+            targets.append(task)
+            seen_names.add(name)
+
     return targets
 
 
-# ════════════════════════════════════════════════════════════════
-#  Commands
-# ════════════════════════════════════════════════════════════════
+def _resolve_export_tasks(tm, raw_targets: list[str], statuses: list[str], include_all: bool) -> list[dict[str, Any]]:
+    if include_all or not raw_targets:
+        tasks = _refresh_tasks(tm)
+    else:
+        tasks = _resolve_targets(tm, raw_targets)
+    return _apply_status_filter(tasks, statuses)
 
-def cmd_list(tm, args: List[str] = None) -> None:
-    """``ls [query]`` —list tasks with optional filter."""
-    args = args or []
-    if "-i" in args:
-        args_without_i = [a for a in args if a != "-i"]
+
+def _format_task_names(tasks: list[dict[str, Any]]) -> list[str]:
+    return [task["name"] for task in tasks if task.get("name")]
+
+
+def _print_skipped_running(tasks: list[dict[str, Any]]) -> None:
+    for task in tasks:
+        print(f"  Skipping '{task['name']}' because it is already {task.get('status')}.")
+
+
+def cmd_list(tm, args: list[str] | None = None) -> None:
+    """List tasks with optional filter and status controls."""
+    raw_args = list(args or [])
+    interactive, raw_args = _consume_flag(raw_args, "-i", "--interactive")
+    status_values, raw_args = _consume_multi_option(raw_args, "-s", "--status")
+    limit_raw, raw_args = _consume_option(raw_args, "-n", "--limit")
+
+    if interactive:
         from pyruns.cli.interactive_ls import run_interactive_ls
-        run_interactive_ls(tm, query=" ".join(args_without_i))
+
+        run_interactive_ls(tm, query=" ".join(raw_args).strip())
         return
 
-    query = " ".join(args)
-    tasks = _sorted_tasks(tm)
+    statuses = _normalize_status_filters(status_values)
+    limit = _parse_limit(limit_raw)
+    query = " ".join(raw_args).strip()
+
+    tasks = _refresh_tasks(tm)
+    tasks = _apply_status_filter(tasks, statuses)
     if query:
         tasks = filter_tasks(tasks, query)
-    print_task_table(tasks)
+    if limit is not None:
+        tasks = tasks[:limit]
+
+    title = "Tasks"
+    if statuses:
+        title = f"Tasks [{', '.join(statuses)}]"
+    print_task_table(tasks, title=title)
 
 
-def cmd_generate(tm, args: List[str] = None) -> None:
-    """``gen [template_path]`` —open editor for YAML config, create tasks on save."""
-    from pyruns.core.task_generator import TaskGenerator
-    from pyruns.utils.batch_utils import generate_batch_configs
+def cmd_show(tm, args: list[str] | None = None) -> None:
+    """Show detailed task information."""
+    raw_args = list(args or [])
+    if not raw_args:
+        print("  Usage: show <name|index> [name|index ...]")
+        return
 
-    args = args or []
+    targets = _resolve_targets(tm, raw_args)
+    if not targets:
+        return
+
+    for task in targets:
+        print_task_detail(task)
+
+
+def cmd_generate(tm, args: list[str] | None = None) -> None:
+    """Open editor for YAML config and generate tasks on save."""
+    raw_args = list(args or [])
     workspace_dir = os.path.dirname(tm.tasks_dir)
 
     template_path = None
-    if args:
-        candidate = args[0]
+    if raw_args:
+        candidate = raw_args[0]
         if os.path.exists(candidate):
             template_path = candidate
         else:
             candidate = os.path.join(workspace_dir, candidate)
             if os.path.exists(candidate):
                 template_path = candidate
+
     if not template_path:
         template_path = os.path.join(workspace_dir, CONFIG_DEFAULT_FILENAME)
 
     if not os.path.exists(template_path):
         print(f"  Template not found: {template_path}")
         return
-    with open(template_path, "r", encoding="utf-8") as f:
-        template_content = f.read()
+
+    with open(template_path, "r", encoding="utf-8") as handle:
+        template_content = handle.read()
 
     header = (
-        "# ── Pyruns Task Generator ────────────────────────────\n"
-        "# Edit parameters below, then SAVE and CLOSE to generate tasks.\n"
-        "# Use pipe syntax for batch: lr: 0.001 | 0.01 | 0.1\n"
-        "# Lines starting with # are comments.\n"
-        "# ───────────────────────────────────────────────────\n\n"
+        "# Pyruns Task Generator\n"
+        "# Edit parameters below, then save and close to generate tasks.\n"
+        "# Use pipe syntax for batch values: lr: 0.001 | 0.01 | 0.1\n"
+        "# Lines starting with # are comments.\n\n"
     )
 
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yaml", prefix="pyruns_gen_",
-        delete=False, encoding="utf-8",
-    ) as tmp:
-        tmp.write(header + template_content)
-        tmp_path = tmp.name
+        mode="w",
+        suffix=".yaml",
+        prefix="pyruns_gen_",
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        handle.write(header + template_content)
+        temp_path = handle.name
 
-    # ---------------------------------------------------------
-    # 核心执行逻辑：完全效仿 Git 的 launch_specified_editor
-    # ---------------------------------------------------------
     editor = _get_git_editor()
-    
-    # 完美复刻 Git 的提示语：hint: Waiting for your editor to close the file..."
-    print(f"  hint: Waiting for your editor '{editor}' to close the file...")
-    
+    print(f"  Waiting for editor '{editor}' to close the file...")
+
     try:
-        cmd_list = shlex.split(editor, posix=(os.name != "nt")) + [tmp_path]
-        subprocess.run(cmd_list, check=True)
-        
-    except Exception as e:
-        print(f"  error: there was a problem with the editor '{editor}'")
-        os.unlink(tmp_path)
+        command = shlex.split(editor, posix=(os.name != "nt")) + [temp_path]
+        subprocess.run(command, check=True)
+    except Exception:
+        print(f"  Failed to launch editor '{editor}'.")
+        os.unlink(temp_path)
         return
 
-    # 代码走到这里，说明用户已经在 IDE 里保存，并关闭了页签
-    config = load_yaml(tmp_path)
+    config = load_yaml(temp_path)
     try:
-        os.unlink(tmp_path)
+        os.unlink(temp_path)
     except OSError:
         pass
 
     if not config:
-        print("  Empty config —no tasks generated.")
+        print("  Empty config; no tasks generated.")
         return
 
     configs = generate_batch_configs(config)
-    n = len(configs)
-
-    for i, cfg in enumerate(configs):
+    total = len(configs)
+    for index, cfg in enumerate(configs, 1):
         preview = preview_config_line(cfg, max_items=5)
-        tag = f"[{i+1}/{n}]" if n > 1 else ""
-        print(f"  {tag} {preview}")
+        prefix = f"[{index}/{total}] " if total > 1 else ""
+        print(f"  {prefix}{preview}")
 
-    answer = input(f"\n  Generate {n} task(s)? [Y/n] ").strip().lower()
-    if answer and answer not in ("y", "yes"):
+    answer = input(f"\n  Generate {total} task(s)? [Y/n] ").strip().lower()
+    if answer and answer not in {"y", "yes"}:
         print("  Cancelled.")
         return
 
     name_prefix = input("  Task name prefix (blank=auto): ").strip()
+    generator = TaskGenerator(root_dir=tm.tasks_dir)
+    new_tasks = generator.create_tasks(configs, name_prefix, task_kind=TASK_KIND_CONFIG)
+    for task in new_tasks:
+        tm.add_task(task)
 
-    gen = TaskGenerator(root_dir=tm.tasks_dir)
-    new_tasks = gen.create_tasks(configs, name_prefix, task_kind=TASK_KIND_CONFIG)
-    for t in new_tasks:
-        tm.add_task(t)
-
-    print(f"\n  ✔Created {len(new_tasks)} task(s)")
-    for t in new_tasks:
-        print(f"    —{t['name']}")
+    print(f"\n  Created {len(new_tasks)} task(s)")
+    for task in new_tasks:
+        print(f"    - {task['name']}")
     print()
 
 
-def cmd_run(tm, args: List[str] = None) -> None:
-    """``run <name|index> [...]`` —run tasks. Multiple args triggers batch mode.
+def cmd_run(tm, args: list[str] | None = None) -> None:
+    """Run one or more tasks with direct batch controls."""
+    raw_args = list(args or [])
+    detach, raw_args = _consume_flag(raw_args, "-d", "--detach", "--no-follow")
+    workers_raw, raw_args = _consume_option(raw_args, "-w", "--workers")
+    mode_raw, raw_args = _consume_option(raw_args, "-m", "--mode")
 
-    Single task: submits and auto-attaches to the log stream (like UI).
-    Multiple tasks: prompts for batch settings, submits and returns.
-    """
-    if not args:
-        print("  Usage: run <name|index> [name|index ...]")
+    if not raw_args:
+        print("  Usage: run <name|index> [name|index ...] [--workers N] [--mode thread|process] [--detach]")
         return
 
-    targets = _resolve_targets(tm, args)
+    mode = _normalize_mode(mode_raw)
+    workers = _parse_workers(workers_raw)
+    targets = _resolve_targets(tm, raw_args)
     if not targets:
         return
 
-    if len(targets) == 1:
-        t = targets[0]
-        if t.get("status") == "running":
-            print(f"  '{t['name']}' is already running —skipping.")
-            return
-        print(f"  Starting '{t['name']}'...")
-        tm.start_task_now(t["name"])
-        print(f"  ✔Submitted 1 task\n")
-        # Auto-attach: stream log output in real-time (like fg)
-        time.sleep(0.3)  # brief pause for log file to be created
-        cmd_fg(tm, [t["name"]])
-    else:
-        # Batch mode
-        names = [t["name"] for t in targets if t.get("status") not in ("running", "queued")]
-        if not names:
-            print("  No runnable tasks found.")
-            return
-        print(f"\n  {_BOLD}Batch Run{_RESET}  ({len(names)} task(s))")
-        for n in names:
-            print(f"    —{n}")
-        try:
-            mw = input(f"\n  Max workers (default=1): ").strip()
-            max_workers = int(mw) if mw else 1
-            mode = input(f"  Mode [thread/process] (default=thread): ").strip().lower()
-            if mode not in ("process",):
-                mode = "thread"
-            tm.start_batch_tasks(names, execution_mode=mode, max_workers=max_workers)
-            print(f"\n  ✔Submitted {len(names)} task(s) in {mode} mode (workers={max_workers})")
-        except KeyboardInterrupt:
-            print("\n  Cancelled.")
-    print()
-
-
-def cmd_delete(tm, args: List[str] = None) -> None:
-    """``delete <name|index> [...]`` —soft-delete tasks to .trash."""
-    if not args:
-        print("  Usage: delete <name|index> [name|index ...]")
+    runnable = [task for task in targets if task.get("status") not in {"running", "queued"}]
+    skipped = [task for task in targets if task.get("status") in {"running", "queued"}]
+    if skipped:
+        _print_skipped_running(skipped)
+    if not runnable:
+        print("  No runnable tasks found.")
         return
 
-    targets = _resolve_targets(tm, args)
+    if len(runnable) == 1:
+        task = runnable[0]
+        if workers_raw is not None and workers != 1:
+            print("  Note: --workers is ignored when running a single task immediately.")
+        print(f"  Starting '{task['name']}'...")
+        if mode_raw is None:
+            tm.start_task_now(task["name"])
+        else:
+            tm.start_task_now(task["name"], execution_mode=mode)
+        print("  Submitted 1 task.")
+        if detach:
+            print()
+            return
+        time.sleep(0.3)
+        cmd_fg(tm, [task["name"]])
+        return
+
+    task_names = _format_task_names(runnable)
+    print(f"\n  {_BOLD}Batch Run{_RESET}  ({len(task_names)} task(s))")
+    for name in task_names:
+        print(f"    - {name}")
+    tm.start_batch_tasks(task_names, execution_mode=mode, max_workers=workers)
+    print(f"\n  Submitted {len(task_names)} task(s) in {mode} mode (workers={workers})\n")
+
+
+def cmd_delete(tm, args: list[str] | None = None) -> None:
+    """Soft-delete tasks to .trash with optional non-interactive confirm."""
+    raw_args = list(args or [])
+    confirmed, raw_args = _consume_flag(raw_args, "-y", "--yes")
+
+    if not raw_args:
+        print("  Usage: delete <name|index> [name|index ...] [-y|--yes]")
+        return
+
+    targets = _resolve_targets(tm, raw_args)
     if not targets:
         return
 
-    # Confirm
-    names = [t["name"] for t in targets]
+    names = _format_task_names(targets)
     print(f"  Will delete: {', '.join(names)}")
-    answer = input("  Confirm? [y/N] ").strip().lower()
-    if answer not in ("y", "yes"):
-        print("  Cancelled.")
-        return
+    if not confirmed:
+        answer = input("  Confirm? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("  Cancelled.")
+            return
 
-    task_ids = [t["name"] for t in targets]
-    tm.delete_tasks(task_ids)
-    print(f"\n  {_colored('✔Deleted', _STATUS_STYLES['failed'])} {len(targets)} task(s)\n")
-
-
-def cmd_jobs(tm, args: List[str] = None) -> None:
-    """``jobs`` —show running/queued tasks in Linux jobs style."""
-    tm.refresh_from_disk(check_all=True)
-    tasks = _sorted_tasks(tm)
-    print_jobs(tasks)
+    tm.delete_tasks(names)
+    print(f"\n  {_colored('Deleted', _STATUS_STYLES['failed'])} {len(targets)} task(s)\n")
 
 
-def cmd_fg(tm, args: List[str] = None) -> None:
-    """``fg <name|index>`` —tail a task's log file inline (Ctrl+C to exit)."""
-    import queue as _queue
-    import time
-    from pyruns.utils.events import log_emitter
-    from pyruns.utils.info_io import load_task_info
+def cmd_jobs(tm, args: list[str] | None = None) -> None:
+    """Show running and queued tasks in Linux-jobs style."""
+    _refresh_tasks(tm)
+    print_jobs(_sorted_tasks(tm))
 
-    if not args:
+
+def cmd_fg(tm, args: list[str] | None = None) -> None:
+    """Tail a task log inline until detached."""
+    raw_args = list(args or [])
+    if not raw_args:
         print("  Usage: fg <name|index>")
         return
 
-    targets = _resolve_targets(tm, [args[0]])
+    targets = _resolve_targets(tm, [raw_args[0]])
     if not targets:
         return
-    task_dir = targets[0].get("dir")
-    task_name = targets[0].get("name", "unknown")
 
-    # Determine which log file strictly represents the current operation
+    task = targets[0]
+    task_dir = task.get("dir")
+    task_name = task.get("name", "unknown")
+
     tm.refresh_from_disk(task_ids=[task_name])
-    t_info = load_task_info(task_dir) or {}
-    run_idx = t_info.get("run_index", 1) if t_info.get("status") in ("running", "queued") else max(1, len(t_info.get("start_times", [])))
-    
-    from pyruns._config import RUN_LOGS_DIR
-    target_log = os.path.join(task_dir, RUN_LOGS_DIR, f"run{run_idx}.log")
+    task_info = load_task_info(task_dir) or {}
+    if task_info.get("status") in {"running", "queued"}:
+        run_index = task_info.get("run_index", 1)
+    else:
+        run_index = max(1, len(task_info.get("start_times", [])))
 
-    print(f"\n  {_BOLD}── {task_name} ──{_RESET}  (Ctrl+C to exit)\n")
+    target_log = os.path.join(task_dir, RUN_LOGS_DIR, f"run{run_index}.log")
+    print(f"\n  {_BOLD}== {task_name} =={_RESET}  (Ctrl+C to detach)\n")
 
-    # Wait up to 1s for the file to be created if it's currently queued
     for _ in range(10):
         if os.path.exists(target_log):
             break
         time.sleep(0.1)
 
-    # Dump existing historical chunk of THIS specific run ONLY
     try:
-        with open(target_log, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
+        with open(target_log, "r", encoding="utf-8", errors="replace") as handle:
+            content = handle.read()
             if content:
-                sys.stdout.write(content.replace('\r\n', '\n'))
+                sys.stdout.write(content.replace("\r\n", "\n"))
                 sys.stdout.flush()
     except Exception:
         pass
 
-    log_queue: _queue.Queue = _queue.Queue()
-    _DONE = object()
+    log_queue: queue.Queue = queue.Queue()
 
-    def _on_chunk(chunk: str):
+    def _on_chunk(chunk: str) -> None:
         log_queue.put(chunk)
 
     log_emitter.subscribe(task_name, _on_chunk)
@@ -356,24 +540,20 @@ def cmd_fg(tm, args: List[str] = None) -> None:
             try:
                 while True:
                     chunk = log_queue.get(timeout=0.2)
-                    if chunk is _DONE:
-                        raise StopIteration
-                    sys.stdout.write(chunk.replace('\r\n', '\n'))
+                    sys.stdout.write(chunk.replace("\r\n", "\n"))
                     sys.stdout.flush()
-            except _queue.Empty:
+            except queue.Empty:
                 pass
-            except StopIteration:
-                break
 
-            # Poll status to see if task finished
-            found = next((t for t in tm.tasks if t and t.get("name") == task_name), None)
-            if found and found.get("status") not in ("running", "queued"):
+            task_map = {item.get("name"): item for item in _refresh_tasks(tm)}
+            current = task_map.get(task_name)
+            if current and current.get("status") not in {"running", "queued"}:
                 while not log_queue.empty():
-                    sys.stdout.write(log_queue.get_nowait().replace('\r\n', '\n'))
+                    sys.stdout.write(log_queue.get_nowait().replace("\r\n", "\n"))
                     sys.stdout.flush()
-                status_str = found.get("status", "unknown")
-                style = _STATUS_STYLES.get(status_str, "")
-                print(f"\n\n  {_colored(f'Task {status_str}', style)}\n")
+                status = current.get("status", "unknown")
+                style = _STATUS_STYLES.get(status, "")
+                print(f"\n\n  {_colored(f'Task {status}', style)}\n")
                 break
     except KeyboardInterrupt:
         print(f"\n\n  {_DIM}Detached from {task_name}{_RESET}\n")
@@ -381,185 +561,215 @@ def cmd_fg(tm, args: List[str] = None) -> None:
         log_emitter.unsubscribe(task_name, _on_chunk)
 
 
-def cmd_log(tm, args: List[str] = None) -> None:
-    """``log <name|index>`` —view log files in alt-screen viewer."""
-    if not args:
+def cmd_log(tm, args: list[str] | None = None) -> None:
+    """View log files for a task in the alternate-screen viewer."""
+    raw_args = list(args or [])
+    if not raw_args:
         print("  Usage: log <name|index>")
         return
 
-    targets = _resolve_targets(tm, [args[0]])
+    targets = _resolve_targets(tm, [raw_args[0]])
     if not targets:
         return
-    target = targets[0]
 
     from pyruns.cli.interactive_ls import _view_log
-    _view_log(target)
+
+    _view_log(targets[0])
 
 
-def cmd_open(tm, args: List[str] = None) -> None:
-    """``open <name|index> [config|task]`` —open a task payload file or task_info.json in the editor."""
-    if not args:
+def cmd_open(tm, args: list[str] | None = None) -> None:
+    """Open a task config or task_info.json in the editor."""
+    raw_args = list(args or [])
+    if not raw_args:
         print("  Usage: open <name|index> [config|task]")
         return
-        
-    targets = _resolve_targets(tm, [args[0]])
+
+    targets = _resolve_targets(tm, [raw_args[0]])
     if not targets:
         return
-        
-    # Open the first matched target
+
     target = targets[0]
     task_dir = target.get("dir")
-    
-    file_type = args[1].lower() if len(args) > 1 else "config"
-    if file_type == "task":
-        config_path = os.path.join(task_dir, TASK_INFO_FILENAME)
-    else:
-        config_path = os.path.join(task_dir, resolve_task_config_file(target))
-    
-    if not os.path.exists(config_path):
-        print(f"  File not found: {config_path}")
+    file_type = raw_args[1].lower() if len(raw_args) > 1 else "config"
+    target_path = (
+        os.path.join(task_dir, TASK_INFO_FILENAME)
+        if file_type == "task"
+        else os.path.join(task_dir, resolve_task_config_file(target))
+    )
+
+    if not os.path.exists(target_path):
+        print(f"  File not found: {target_path}")
         return
-        
-    # Non-blocking: open in editor and return immediately
+
     editor = _get_git_editor()
-    # Strip --wait flag for open (we don't want to block the REPL)
     editor_no_wait = editor.replace(" --wait", "").replace(" -w", "")
-    print(f"  Opening {os.path.basename(config_path)} ...")
+    print(f"  Opening {os.path.basename(target_path)} ...")
     try:
-        cmd_list = shlex.split(editor_no_wait, posix=(os.name != "nt")) + [config_path]
-        subprocess.Popen(cmd_list)
-    except Exception as e:
-        print(f"  Failed to open editor: {e}")
+        command = shlex.split(editor_no_wait, posix=(os.name != "nt")) + [target_path]
+        subprocess.Popen(command)
+    except Exception as exc:
+        print(f"  Failed to open editor: {exc}")
 
 
-def cmd_stat(tm, args: List[str] = None) -> None:
-    """``stat`` / ``status`` —show system metrics. Use ``stat -i`` for live refresh."""
-    args = args or []
-    interactive = "-i" in args
-    
+def cmd_export(tm, args: list[str] | None = None) -> None:
+    """Export tasks to CSV or JSON."""
+    raw_args = list(args or [])
+    include_all, raw_args = _consume_flag(raw_args, "-a", "--all")
+    status_values, raw_args = _consume_multi_option(raw_args, "-s", "--status")
+    format_raw, raw_args = _consume_option(raw_args, "-f", "--format")
+    output_raw, raw_args = _consume_option(raw_args, "-o", "--output")
+
+    statuses = _normalize_status_filters(status_values)
+    export_tasks = _resolve_export_tasks(tm, raw_args, statuses, include_all)
+    if not export_tasks:
+        print("  No tasks matched for export.")
+        return
+
+    export_format = "json" if (format_raw or "").lower() == "json" else "csv"
+    output_path = output_raw or f"pyruns_export_{export_timestamp()}.{export_format}"
+    content = build_export_json(export_tasks) if export_format == "json" else build_export_csv(export_tasks)
+
+    if not content:
+        print("  No exportable data found.")
+        return
+
+    with open(output_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(content)
+
+    print(f"  Exported {len(export_tasks)} task(s) to {os.path.abspath(output_path)}")
+
+
+def cmd_stat(tm, args: list[str] | None = None) -> None:
+    """Show system metrics once or in live-refresh mode."""
+    raw_args = list(args or [])
+    interactive, _ = _consume_flag(raw_args, "-i", "--interactive")
     if interactive:
         _stat_interactive()
-    else:
-        _stat_once()
+        return
+    _stat_once()
 
 
-def cmd_info(tm, args: List[str] = None) -> None:
-    """``info`` —show current workspace info."""
-    import json
-    from pyruns.cli.display import _get_terminal_width
-
+def cmd_info(tm, args: list[str] | None = None) -> None:
+    """Show current workspace and task summary information."""
     print(f"\n  {_BOLD}Workspace Info{_RESET}")
-    tw = _get_terminal_width()
-    sep = f"  {'─' * (tw - 4)}"
-    print(sep)
+    separator = f"  {'-' * max(8, _get_terminal_width() - 4)}"
+    print(separator)
 
-    tasks_dir = getattr(tm, 'tasks_dir', None)
-    ws_dir = os.path.dirname(tasks_dir) if tasks_dir else None
-
-    if ws_dir:
-        print(f"  Workspace:  {ws_dir}")
-        script_info_path = os.path.join(ws_dir, "script_info.json")
+    tasks_dir = getattr(tm, "tasks_dir", None)
+    workspace_dir = os.path.dirname(tasks_dir) if tasks_dir else None
+    if workspace_dir:
+        print(f"  Workspace:  {workspace_dir}")
+        script_info_path = os.path.join(workspace_dir, "script_info.json")
         if os.path.exists(script_info_path):
             try:
-                with open(script_info_path, "r", encoding="utf-8") as f:
-                    info = json.load(f)
+                with open(script_info_path, "r", encoding="utf-8") as handle:
+                    info = json.load(handle)
                 print(f"  Script:     {info.get('script_name', 'N/A')}")
-                sp = info.get('script_path', '')
-                if sp:
-                    print(f"  Path:       {sp}")
+                script_path = info.get("script_path", "")
+                if script_path:
+                    print(f"  Path:       {script_path}")
             except Exception:
                 pass
     else:
         print(f"  {_DIM}No workspace detected.{_RESET}")
 
-    print(f"  Tasks:      {len(tm.tasks)} total")
-    active = sum(1 for t in tm.tasks if t and t.get('status') in ('running', 'queued'))
-    if active:
-        print(f"  Active:     {active} running/queued")
-    print(sep)
+    tasks = _refresh_tasks(tm)
+    print(f"  Tasks:      {len(tasks)} total")
+    counts = {status: 0 for status in sorted(_VALID_STATUSES)}
+    for task in tasks:
+        counts[(task.get("status") or "pending")] += 1
+    print(
+        "  Statuses:   "
+        f"pending={counts['pending']}, queued={counts['queued']}, "
+        f"running={counts['running']}, completed={counts['completed']}, failed={counts['failed']}"
+    )
+    print(separator)
     print()
 
 
 def _stat_once() -> None:
-    """Print system metrics once."""
-    from pyruns.core.system_metrics import SystemMonitor
-    from pyruns.cli.display import _get_terminal_width
-    
+    """Print one snapshot of CPU, RAM, and GPU usage."""
     monitor = SystemMonitor()
     metrics = monitor.sample()
-    
     cpu = metrics.get("cpu_percent", 0)
-    mem = metrics.get("mem_percent", 0)
-    mem_info = __import__('psutil').virtual_memory()
+    memory_percent = metrics.get("mem_percent", 0)
+    memory_info = psutil.virtual_memory()
     gpus = metrics.get("gpus", [])
-    
-    tw = _get_terminal_width()
-    sep = f"  {'─' * (tw - 4)}"
-    
+
+    separator = f"  {'-' * max(8, _get_terminal_width() - 4)}"
     print(f"\n  {_BOLD}System Metrics{_RESET}")
-    print(sep)
-    
+    print(separator)
     print(f"  CPU:  {_bar(cpu)}")
-    print(f"  RAM:  {_bar(mem)}  ({mem_info.used // (1024**2):,} / {mem_info.total // (1024**2):,} MB)")
-    
+    print(
+        "  RAM:  "
+        f"{_bar(memory_percent)}  ({memory_info.used // (1024 ** 2):,} / "
+        f"{memory_info.total // (1024 ** 2):,} MB)"
+    )
+
     if gpus:
         print()
-        for g in gpus:
-            util = g.get("util", 0)
-            mu = g.get("mem_used", 0)
-            mt = max(g.get("mem_total", 1), 1)
-            mp = (mu / mt) * 100
-            idx = g.get("index", "?")
-            print(f"  GPU {idx}:  {_bar(util)}  VRAM {_bar(mp)}  ({int(mu)} / {int(mt)} MB)")
+        for gpu in gpus:
+            util = gpu.get("util", 0)
+            mem_used = gpu.get("mem_used", 0)
+            mem_total = max(gpu.get("mem_total", 1), 1)
+            mem_percent = (mem_used / mem_total) * 100
+            index = gpu.get("index", "?")
+            print(
+                f"  GPU {index}:  {_bar(util)}  "
+                f"VRAM {_bar(mem_percent)}  ({int(mem_used)} / {int(mem_total)} MB)"
+            )
     else:
         print(f"\n  {_DIM}No GPUs detected.{_RESET}")
-        
-    print(sep)
+
+    print(separator)
     print()
 
 
 def _stat_interactive() -> None:
-    """Auto-refresh stat view (like gpustat -i)."""
-    from pyruns.core.system_metrics import SystemMonitor
-    from pyruns.cli.display import _get_terminal_width
-    import psutil as _psutil
-    
+    """Continuously refresh system metrics until Ctrl+C."""
     monitor = SystemMonitor()
-    
-    # Enter alt screen
     sys.stdout.write("\033[?1049h")
     sys.stdout.flush()
-    
+
     try:
         while True:
             metrics = monitor.sample()
             cpu = metrics.get("cpu_percent", 0)
-            mem = metrics.get("mem_percent", 0)
-            mem_info = _psutil.virtual_memory()
+            memory_percent = metrics.get("mem_percent", 0)
+            memory_info = psutil.virtual_memory()
             gpus = metrics.get("gpus", [])
-            tw = _get_terminal_width()
-            sep = f"  {'─' * (tw - 4)}"
-            
-            out = ["\033[2J\033[H"]
-            out.append(f"\n  {_BOLD}System Metrics{_RESET}  {_DIM}(refreshing every 1s, press Ctrl+C to exit){_RESET}\n")
-            out.append(sep + "\n")
-            out.append(f"  CPU:  {_bar(cpu)}\n")
-            out.append(f"  RAM:  {_bar(mem)}  ({mem_info.used // (1024**2):,} / {mem_info.total // (1024**2):,} MB)\n")
-            
+            separator = f"  {'-' * max(8, _get_terminal_width() - 4)}"
+
+            output = ["\033[2J\033[H"]
+            output.append(
+                f"\n  {_BOLD}System Metrics{_RESET}  "
+                f"{_DIM}(refreshing every 1s, press Ctrl+C to exit){_RESET}\n"
+            )
+            output.append(separator + "\n")
+            output.append(f"  CPU:  {_bar(cpu)}\n")
+            output.append(
+                "  RAM:  "
+                f"{_bar(memory_percent)}  ({memory_info.used // (1024 ** 2):,} / "
+                f"{memory_info.total // (1024 ** 2):,} MB)\n"
+            )
+
             if gpus:
-                out.append("\n")
-                for g in gpus:
-                    util = g.get("util", 0)
-                    mu = g.get("mem_used", 0)
-                    mt = max(g.get("mem_total", 1), 1)
-                    mp = (mu / mt) * 100
-                    idx = g.get("index", "?")
-                    out.append(f"  GPU {idx}:  {_bar(util)}  VRAM {_bar(mp)}  ({int(mu)} / {int(mt)} MB)\n")
+                output.append("\n")
+                for gpu in gpus:
+                    util = gpu.get("util", 0)
+                    mem_used = gpu.get("mem_used", 0)
+                    mem_total = max(gpu.get("mem_total", 1), 1)
+                    mem_percent = (mem_used / mem_total) * 100
+                    index = gpu.get("index", "?")
+                    output.append(
+                        f"  GPU {index}:  {_bar(util)}  "
+                        f"VRAM {_bar(mem_percent)}  ({int(mem_used)} / {int(mem_total)} MB)\n"
+                    )
             else:
-                out.append(f"\n  {_DIM}No GPUs detected.{_RESET}\n")
-            
-            out.append(sep + "\n")
-            sys.stdout.write("".join(out))
+                output.append(f"\n  {_DIM}No GPUs detected.{_RESET}\n")
+
+            output.append(separator + "\n")
+            sys.stdout.write("".join(output))
             sys.stdout.flush()
             time.sleep(1)
     except KeyboardInterrupt:
@@ -572,48 +782,36 @@ def _stat_interactive() -> None:
 
 def _bar(percent: float, width: int = 30) -> str:
     """Render a colored progress bar."""
-    p = max(0, min(100, percent))
-    filled = int(width * p / 100)
+    clamped = max(0.0, min(100.0, float(percent)))
+    filled = int(width * clamped / 100)
     empty = width - filled
-    if p < 60:
-        color = "\033[32m"  # Green
-    elif p < 85:
-        color = "\033[33m"  # Yellow
+    if clamped < 60:
+        color = "\033[32m"
+    elif clamped < 85:
+        color = "\033[33m"
     else:
-        color = "\033[31m"  # Red
-    return f"{color}{'#' * filled}{_DIM}{'.' * empty}{_RESET}  {color}{percent:5.1f}%{_RESET}"
+        color = "\033[31m"
+    return f"{color}{'#' * filled}{_DIM}{'.' * empty}{_RESET}  {color}{clamped:5.1f}%{_RESET}"
 
-
-
-
-
-# ════════════════════════════════════════════════════════════════
-#  Command registry
-# ════════════════════════════════════════════════════════════════
 
 COMMANDS = {
-    "ls":       cmd_list,
-    "list":     cmd_list,
-
-    "gen":      cmd_generate,
+    "ls": cmd_list,
+    "list": cmd_list,
+    "show": cmd_show,
+    "inspect": cmd_show,
+    "gen": cmd_generate,
     "generate": cmd_generate,
-    "gentask":  cmd_generate,
-
-    "run":      cmd_run,
-    "delete":   cmd_delete,
-    "del":      cmd_delete,
-    "rm":       cmd_delete,
-    
-    "open":     cmd_open,
-    
-    "log":      cmd_log,
-
-    "fg":       cmd_fg,
-    
-    
-    "jobs":     cmd_jobs,
-    "stat":     cmd_stat,
-    "status":   cmd_stat,
-    
-    "info":     cmd_info,
+    "gentask": cmd_generate,
+    "run": cmd_run,
+    "delete": cmd_delete,
+    "del": cmd_delete,
+    "rm": cmd_delete,
+    "open": cmd_open,
+    "export": cmd_export,
+    "log": cmd_log,
+    "fg": cmd_fg,
+    "jobs": cmd_jobs,
+    "stat": cmd_stat,
+    "status": cmd_stat,
+    "info": cmd_info,
 }

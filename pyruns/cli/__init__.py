@@ -12,6 +12,7 @@ import textwrap
 import traceback
 
 from pyruns import __version__ as _VERSION
+from pyruns.cli.commands import COMMANDS
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
     ENV_KEY_ROOT,
@@ -29,7 +30,7 @@ from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
-_CLI_COMMANDS = {"cli", "ls", "list", "gen", "generate", "run", "delete", "del", "rm", "jobs", "log", "fg"}
+_CLI_COMMANDS = frozenset({"cli", *COMMANDS.keys()})
 
 _HELP = textwrap.dedent(
     f"""
@@ -45,13 +46,18 @@ _HELP = textwrap.dedent(
         pyr <command> [args]           Run a CLI command directly
 
     CLI COMMANDS
-        ls [query]            List tasks (with optional filter)
-        gen [template]        Generate tasks from YAML config
-        run <name|#>          Run task(s) by name or index
-        delete <name|#>       Soft-delete task(s)
-        jobs                  Show running/queued tasks
-        log <%N|name|#>       View a task's log in alt-screen viewer
-        fg <%N|name|#>        Tail a task's log inline (Ctrl+C to detach)
+        ls [query]                    List tasks (supports --status, --limit, -i)
+        show <name|#>                 Show detailed task info
+        gen [template]                Generate tasks from YAML config
+        run <name|# ...>              Run task(s); multi-task supports --workers/--mode
+        delete <name|# ...> [-y]      Soft-delete task(s)
+        open <name|#> [config|task]   Open config.yaml or task_info.json in editor
+        export [targets]              Export task data (csv/json)
+        jobs                          Show running/queued tasks
+        stat [-i]                     Show system metrics
+        info                          Show current workspace info
+        log <name|#>                  View a task's log in alt-screen viewer
+        fg <name|#>                   Tail a task's log inline (Ctrl+C to detach)
 
     EXAMPLES
         pyr train.py
@@ -60,7 +66,11 @@ _HELP = textwrap.dedent(
         pyr ui
         pyr cli train.py
         pyr ls
+        pyr ls --status completed --limit 20
+        pyr show 1
         pyr run 1
+        pyr run 1 2 3 --workers 3 --detach
+        pyr export --format json
     """.strip()
 )
 

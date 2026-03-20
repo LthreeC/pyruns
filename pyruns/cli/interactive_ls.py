@@ -1,87 +1,89 @@
 """
-Interactive terminal UI for ``ls -i`` command.
-
-Provides a scrollable, multi-select task list with quick-action hotkeys.
-Uses VT100 alternate screen buffer for clean enter/exit.
+Interactive terminal task browser for ``pyr ls -i``.
 """
+
+from __future__ import annotations
+
 import os
+import queue
+import select
+import shutil
 import sys
-import time as _time
+import time
 
+from pyruns.cli.display import _BOLD, _DIM, _RESET, _get_terminal_width, _status_str, _truncate
+from pyruns.core.report import build_export_csv, build_export_json, export_timestamp
+from pyruns.utils.events import log_emitter
+from pyruns.utils.info_io import get_log_options, load_task_info, resolve_log_path
 from pyruns.utils.sort_utils import filter_tasks
-from pyruns.utils.info_io import get_log_options, resolve_log_path
-from pyruns.cli.display import (
-    _get_terminal_width, _truncate, _status_str,
-    _BOLD, _RESET, _DIM,
-)
 
-
-# ── Cross-platform single-key reader ──────────────────────────
 if os.name == "nt":
     import msvcrt
 
-    def _flush_input():
+    def _flush_input() -> None:
         while msvcrt.kbhit():
             msvcrt.getch()
 
     def getch() -> str:
-        ch = msvcrt.getch()
-        if ch in (b"\x00", b"\xe0"):
-            ch2 = msvcrt.getch()
-            if ch2 == b"\x48": return "up"
-            if ch2 == b"\x50": return "down"
+        chunk = msvcrt.getch()
+        if chunk in (b"\x00", b"\xe0"):
+            code = msvcrt.getch()
+            if code == b"\x48":
+                return "up"
+            if code == b"\x50":
+                return "down"
             return ""
         try:
-            return ch.decode("utf-8", errors="ignore")
+            return chunk.decode("utf-8", errors="ignore")
         except Exception:
             return ""
-else:
-    import tty, termios, select
 
-    def _flush_input():
-        fd = sys.stdin.fileno()
-        while select.select([fd], [], [], 0)[0]:
-            os.read(fd, 1024)
+else:
+    import termios
+    import tty
+
+    def _flush_input() -> None:
+        file_descriptor = sys.stdin.fileno()
+        while select.select([file_descriptor], [], [], 0)[0]:
+            os.read(file_descriptor, 1024)
 
     def getch() -> str:
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
+        file_descriptor = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(file_descriptor)
         try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                ch2 = sys.stdin.read(1)
-                if ch2 == "[":
-                    ch3 = sys.stdin.read(1)
-                    if ch3 == "A": return "up"
-                    if ch3 == "B": return "down"
-            return ch
+            tty.setraw(file_descriptor)
+            chunk = sys.stdin.read(1)
+            if chunk == "\x1b":
+                next_char = sys.stdin.read(1)
+                if next_char == "[":
+                    arrow = sys.stdin.read(1)
+                    if arrow == "A":
+                        return "up"
+                    if arrow == "B":
+                        return "down"
+            return chunk
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_settings)
 
 
-# ── Screen helpers ─────────────────────────────────────────────
-
-def _enter_alt():
+def _enter_alt() -> None:
     sys.stdout.write("\033[?1049h")
     sys.stdout.flush()
-    _time.sleep(0.05)
+    time.sleep(0.05)
     _flush_input()
 
-def _leave_alt():
+
+def _leave_alt() -> None:
     sys.stdout.write("\033[?1049l")
     sys.stdout.flush()
 
 
-# ── Main Interactive Loop ──────────────────────────────────────
-
-def run_interactive_ls(tm, query=""):
+def run_interactive_ls(tm, query: str = "") -> None:
     from pyruns.cli.commands import _sorted_tasks, cmd_open
 
     cursor = 0
-    selected: set = set()
+    selected: set[str] = set()
     in_filter = False
-
     _enter_alt()
 
     try:
@@ -90,63 +92,67 @@ def run_interactive_ls(tm, query=""):
             all_tasks = _sorted_tasks(tm)
             tasks = filter_tasks(all_tasks, query) if query else all_tasks
 
-            if tasks and cursor >= len(tasks):
-                cursor = len(tasks) - 1
             if not tasks:
                 cursor = 0
+            else:
+                cursor = min(cursor, len(tasks) - 1)
 
-            # ── Build frame ──
-            out = ["\033[2J\033[H"]
-            tw = _get_terminal_width()
-            n_sel = len(selected)
+            output = ["\033[2J\033[H"]
+            terminal_width = _get_terminal_width()
+            selected_count = len(selected)
 
             title = f"  {_BOLD}Pyruns Interactive View{_RESET}  [ {len(tasks)} tasks"
-            if n_sel:
-                title += f" | {n_sel} selected"
+            if selected_count:
+                title += f" | {selected_count} selected"
             title += " ]"
             if query:
                 title += f"  {_DIM}(filter: '{query}'){_RESET}"
-            out.append(f"\n{title}\n\n")
+            output.append(f"\n{title}\n\n")
 
-            idx_w = max(3, len(str(len(tasks))))
-            status_w = 13
-            time_w = 19
-            name_w = max(12, tw - idx_w - 3 - status_w - time_w - 16)
+            index_width = max(3, len(str(len(tasks) or 1)))
+            status_width = 13
+            time_width = 19
+            name_width = max(12, terminal_width - index_width - status_width - time_width - 16)
 
-            out.append(f"       {'#':<{idx_w}}  {'Status':<{status_w}} {'Name':<{name_w}}  {'Created':<{time_w}}\n")
-            out.append(f"  {'─' * (tw - 4)}\n")
+            output.append(f"       {'#':<{index_width}}  {'Status':<{status_width}} {'Name':<{name_width}}  {'Created':<{time_width}}\n")
+            output.append(f"  {'-' * max(8, terminal_width - 4)}\n")
 
             if not tasks:
-                out.append(f"  {_DIM}No tasks found.{_RESET}\n")
+                output.append(f"  {_DIM}No tasks found.{_RESET}\n")
             else:
-                win = 20
-                start = max(0, cursor - win // 2)
-                end = min(len(tasks), start + win)
-                if end - start < win and len(tasks) > win:
-                    start = max(0, end - win)
+                window = 20
+                start = max(0, cursor - window // 2)
+                end = min(len(tasks), start + window)
+                if end - start < window and len(tasks) > window:
+                    start = max(0, end - window)
 
-                for i in range(start, end):
-                    t = tasks[i]
-                    is_cur = (i == cursor)
-                    tname = t.get("name") or ""
-                    checked = tname in selected
-                    chk = f"\033[33m■\033[0m" if checked else " "
-                    name = _truncate(tname or "unnamed", name_w)
-                    created = (t.get("created_at") or "")[:time_w]
-                    runs = len(t.get("start_times") or [])
-                    sc = _status_str(t.get("status") or "pending", runs)
-
-                    ptr = f"{_BOLD}\033[36m>\033[0m" if is_cur else " "
-                    if is_cur:
-                        out.append(f"{ptr} [{chk}] {i+1:<{idx_w}}  {sc} {_BOLD}{name:<{name_w}}{_RESET}  {_DIM}{created}{_RESET}\n")
+                for index in range(start, end):
+                    task = tasks[index]
+                    is_current = index == cursor
+                    task_name = task.get("name") or ""
+                    checked = task_name in selected
+                    checkbox = f"\033[33mx\033[0m" if checked else " "
+                    name = _truncate(task_name or "unnamed", name_width)
+                    created = (task.get("created_at") or "")[:time_width]
+                    runs = len(task.get("start_times") or [])
+                    status_cell = _status_str(task.get("status") or "pending", runs)
+                    pointer = f"{_BOLD}\033[36m>\033[0m" if is_current else " "
+                    if is_current:
+                        output.append(
+                            f"{pointer} [{checkbox}] {index + 1:<{index_width}}  "
+                            f"{status_cell} {_BOLD}{name:<{name_width}}{_RESET}  {_DIM}{created}{_RESET}\n"
+                        )
                     else:
-                        out.append(f"{ptr} [{chk}] {i+1:<{idx_w}}  {sc} {name:<{name_w}}  {_DIM}{created}{_RESET}\n")
+                        output.append(
+                            f"{pointer} [{checkbox}] {index + 1:<{index_width}}  "
+                            f"{status_cell} {name:<{name_width}}  {_DIM}{created}{_RESET}\n"
+                        )
 
-            out.append(f"\n  {'─' * (tw - 4)}\n")
+            output.append(f"\n  {'-' * max(8, terminal_width - 4)}\n")
 
             if in_filter:
-                out.append(f"  {_BOLD}Filter:{_RESET} type query (empty=clear)\n")
-                sys.stdout.write("".join(out))
+                output.append(f"  {_BOLD}Filter:{_RESET} type query (empty=clear)\n")
+                sys.stdout.write("".join(output))
                 sys.stdout.flush()
                 try:
                     query = input(f"  {_BOLD}Search: {_RESET}").strip()
@@ -157,339 +163,294 @@ def run_interactive_ls(tm, query=""):
                 _flush_input()
                 continue
 
-            keys = (
-                f"  {_BOLD}KEYS:{_RESET} "
-                f"[c] Select  [a] All  "
-                f"[r] Run  [b] Batch  "
-                f"[d] Delete  "
-                f"[o] Open  [l] Log  [e] Env  [x] Export  "
-                f"[f] Filter  [q] Quit"
+            output.append(
+                f"  {_BOLD}KEYS:{_RESET} [c] Select  [a] All  [r] Run  [b] Batch  "
+                f"[d] Delete  [o] Open  [l] Log  [e] Env  [x] Export  [f] Filter  [q] Quit\n"
             )
-            out.append(keys + "\n")
-            sys.stdout.write("".join(out))
+            sys.stdout.write("".join(output))
             sys.stdout.flush()
 
             key = getch()
-
             if key in ("up", "k"):
                 cursor = max(0, cursor - 1)
-            elif key in ("down", "j"):
-                if tasks:
-                    cursor = min(len(tasks) - 1, cursor + 1)
-            elif key in ("q", "\x03"):
+                continue
+            if key in ("down", "j") and tasks:
+                cursor = min(len(tasks) - 1, cursor + 1)
+                continue
+            if key in ("q", "\x03"):
                 break
-            elif key in ("f", "/"):
+            if key in ("f", "/"):
                 in_filter = True
+                continue
 
-            # Select
-            elif key == "c" and tasks:
-                tname = tasks[cursor].get("name", "")
-                if tname in selected:
-                    selected.discard(tname)
+            if key == "c" and tasks:
+                task_name = tasks[cursor].get("name", "")
+                if task_name in selected:
+                    selected.discard(task_name)
                 else:
-                    selected.add(tname)
+                    selected.add(task_name)
+                continue
 
-            elif key == "a":
-                all_names = {t.get("name", "") for t in tasks}
-                if selected >= all_names:
+            if key == "a":
+                visible_names = {task.get("name", "") for task in tasks}
+                if visible_names and selected >= visible_names:
                     selected.clear()
                 else:
-                    selected = all_names.copy()
+                    selected = visible_names.copy()
+                continue
 
-            # Run single
-            elif key == "r" and tasks:
-                t = tasks[cursor]
-                if t.get("status") not in ("running", "queued"):
-                    tm.start_task_now(t["name"])
+            if key == "r" and tasks:
+                task = tasks[cursor]
+                if task.get("status") not in {"running", "queued"}:
+                    tm.start_task_now(task["name"])
+                continue
 
-            # Batch run selected
-            elif key == "b" and selected:
+            if key == "b" and selected:
                 _leave_alt()
                 _batch_run(tm, tasks, selected)
                 selected.clear()
                 _enter_alt()
+                continue
 
-            # Delete
-            elif key == "d" and tasks:
-                targets = [t for t in tasks if t.get("name") in selected] if selected else [tasks[cursor]]
+            if key == "d" and tasks:
+                targets = [task for task in tasks if task.get("name") in selected] if selected else [tasks[cursor]]
                 _leave_alt()
                 _delete_tasks(tm, targets)
                 selected.clear()
                 _enter_alt()
+                continue
 
-            # Open
-            elif key == "o" and tasks:
+            if key == "o" and tasks:
                 cmd_open(tm, [tasks[cursor]["name"]])
+                continue
 
-            # Log
-            elif key == "l" and tasks:
+            if key == "l" and tasks:
                 _leave_alt()
                 _view_log(tasks[cursor])
                 _enter_alt()
+                continue
 
-            # Env
-            elif key == "e" and tasks:
+            if key == "e" and tasks:
                 _leave_alt()
                 _edit_env(tm, tasks[cursor])
                 _enter_alt()
+                continue
 
-            # Export
-            elif key == "x":
-                export_tasks = [t for t in tasks if t.get("name") in selected] if selected else tasks
+            if key == "x":
+                export_tasks = [task for task in tasks if task.get("name") in selected] if selected else tasks
                 _leave_alt()
                 _do_export(export_tasks)
                 input(f"\n  {_DIM}Press Enter to return...{_RESET}")
                 _enter_alt()
-
     finally:
         _leave_alt()
         print(f"  {_DIM}Exited interactive mode.{_RESET}\n")
 
 
-# ── Sub-actions ────────────────────────────────────────────────
-
-def _batch_run(tm, tasks, selected):
+def _batch_run(tm, tasks: list[dict[str, object]], selected: set[str]) -> None:
     """Prompt for batch settings and run selected tasks."""
-    names = [t["name"] for t in tasks if t.get("name") in selected and t.get("status") not in ("running", "queued")]
+    names = [
+        task["name"]
+        for task in tasks
+        if task.get("name") in selected and task.get("status") not in {"running", "queued"}
+    ]
     if not names:
         print(f"\n  {_DIM}No runnable tasks selected.{_RESET}")
         input(f"  {_DIM}Press Enter to return...{_RESET}")
         return
 
     print(f"\n  {_BOLD}Batch Run{_RESET}  ({len(names)} task(s))")
-    for n in names:
-        print(f"    • {n}")
+    for name in names:
+        print(f"    - {name}")
 
     try:
-        mw = input(f"\n  Max workers (default=1): ").strip()
-        max_workers = int(mw) if mw else 1
-        mode = input(f"  Mode [thread/process] (default=thread): ").strip().lower()
-        if mode not in ("process",):
+        workers_raw = input("\n  Max workers (default=1): ").strip()
+        max_workers = int(workers_raw) if workers_raw else 1
+        mode = input("  Mode [thread/process] (default=thread): ").strip().lower()
+        if mode not in {"process"}:
             mode = "thread"
-
         tm.start_batch_tasks(names, execution_mode=mode, max_workers=max_workers)
-        print(f"\n  ✔ Submitted {len(names)} task(s) in {mode} mode (workers={max_workers})")
+        print(f"\n  Submitted {len(names)} task(s) in {mode} mode (workers={max_workers})")
     except KeyboardInterrupt:
-        print(f"\n  Cancelled.")
+        print("\n  Cancelled.")
+
     input(f"  {_DIM}Press Enter to return...{_RESET}")
 
 
-def _delete_tasks(tm, targets):
+def _delete_tasks(tm, targets: list[dict[str, object]]) -> None:
     """Delete tasks with confirmation."""
-    names = [t["name"] for t in targets]
+    names = [task["name"] for task in targets]
     print(f"\n  {_BOLD}Delete Tasks{_RESET}")
-    for n in names:
-        print(f"    • {n}")
+    for name in names:
+        print(f"    - {name}")
 
     try:
         answer = input(f"\n  Delete {len(names)} task(s)? [y/N] ").strip().lower()
-        if answer in ("y", "yes"):
+        if answer in {"y", "yes"}:
             tm.delete_tasks(names)
-            print(f"  ✔ Deleted {len(names)} task(s)")
+            print(f"  Deleted {len(names)} task(s)")
         else:
-            print(f"  Cancelled.")
+            print("  Cancelled.")
     except KeyboardInterrupt:
-        print(f"\n  Cancelled.")
+        print("\n  Cancelled.")
+
     input(f"  {_DIM}Press Enter to return...{_RESET}")
 
 
-def _view_log(task):
-    """View log files in alt-screen with n/p navigation.
-
-    Uses log_emitter for real-time streaming (same mechanism as the UI),
-    with file read only for historical content on initial draw.
-    """
-    import queue as _queue
-    import shutil
-    import threading
-    from pyruns.utils.events import log_emitter
-
+def _view_log(task: dict[str, object]) -> None:
+    """View log files in alt-screen with next/prev navigation."""
     task_dir = task.get("dir")
     task_name = task.get("name", "unknown")
-    opts = get_log_options(task_dir)
-
-    if not opts:
+    options = get_log_options(task_dir)
+    if not options:
         print(f"\n  {_DIM}No log files for '{task_name}'{_RESET}")
         input(f"  {_DIM}Press Enter to return...{_RESET}")
         return
 
-    keys = list(opts.keys())
-    # Default: latest log (by mtime)
+    keys = list(options.keys())
     default_path = resolve_log_path(task_dir)
-    current_idx = 0
+    current_index = 0
     if default_path:
-        for i, k in enumerate(keys):
-            if opts[k] == default_path:
-                current_idx = i
+        for index, key in enumerate(keys):
+            if options[key] == default_path:
+                current_index = index
                 break
 
-    # ── State for real-time streaming ──
-    log_queue: _queue.Queue = _queue.Queue()
+    live_queue: queue.Queue[str] = queue.Queue()
 
-    def _on_live_chunk(chunk: str):
-        log_queue.put(chunk)
+    def _on_live_chunk(chunk: str) -> None:
+        live_queue.put(chunk)
 
-    # Enter alt-screen
     sys.stdout.write("\033[?1049h")
     sys.stdout.flush()
-
     needs_redraw = True
 
     try:
-        # Subscribe to log_emitter for live updates
         log_emitter.subscribe(task_name, _on_live_chunk)
-
         while True:
-            log_name = keys[current_idx]
-            log_path = opts[log_name]
-            tw = _get_terminal_width()
-            sep = f"  {'─' * (tw - 4)}"
+            log_name = keys[current_index]
+            log_path = options[log_name]
+            terminal_width = _get_terminal_width()
+            separator = f"  {'-' * max(8, terminal_width - 4)}"
             nav = f"  {_BOLD}KEYS:{_RESET} [n] Next log  [p] Prev log  [q] Back"
 
             if needs_redraw:
-                opts = get_log_options(task_dir)
-                if not opts:
-                    opts = {log_name: log_path}
-                keys = list(opts.keys())
-                # Ensure current_idx is within bounds
-                current_idx = min(current_idx, len(keys) - 1)
-                log_name = keys[current_idx]
-                log_path = opts[log_name]
+                options = get_log_options(task_dir) or {log_name: log_path}
+                keys = list(options.keys())
+                current_index = min(current_index, len(keys) - 1)
+                log_name = keys[current_index]
+                log_path = options[log_name]
 
-                out = ["\033[2J\033[H"]
-                out.append(f"\n  {_BOLD}── {task_name} ──{_RESET}  {log_name}  ({current_idx + 1}/{len(keys)})\n")
-                out.append(sep + "\n")
-
+                output = ["\033[2J\033[H"]
+                output.append(f"\n  {_BOLD}== {task_name} =={_RESET}  {log_name}  ({current_index + 1}/{len(keys)})\n")
+                output.append(separator + "\n")
                 try:
-                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read()
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                        content = handle.read()
                     if content:
                         lines = content.splitlines()
-                        term_h = shutil.get_terminal_size().lines - 8
-                        if len(lines) > term_h:
-                            out.append(f"  {_DIM}... ({len(lines) - term_h} lines omitted) ...{_RESET}\n\n")
-                            lines = lines[-term_h:]
+                        terminal_height = shutil.get_terminal_size().lines - 8
+                        if len(lines) > terminal_height:
+                            output.append(f"  {_DIM}... ({len(lines) - terminal_height} lines omitted) ...{_RESET}\n\n")
+                            lines = lines[-terminal_height:]
                         for line in lines:
-                            out.append(f"  {line}\n")
+                            output.append(f"  {line}\n")
                     else:
-                        out.append(f"  {_DIM}(empty - waiting for output...){_RESET}\n")
-                except Exception as e:
-                    out.append(f"  Error: {e}\n")
+                        output.append(f"  {_DIM}(empty - waiting for output...){_RESET}\n")
+                except Exception as exc:
+                    output.append(f"  Error: {exc}\n")
 
-                out.append(f"\n{sep}\n")
-                out.append(nav + "\n")
-                sys.stdout.write("".join(out))
+                output.append(f"\n{separator}\n")
+                output.append(nav + "\n")
+                sys.stdout.write("".join(output))
                 sys.stdout.flush()
                 needs_redraw = False
 
-                # Clear any queued chunks that are already in the file content
-                while not log_queue.empty():
+                while not live_queue.empty():
                     try:
-                        log_queue.get_nowait()
-                    except _queue.Empty:
+                        live_queue.get_nowait()
+                    except queue.Empty:
                         break
 
-            # ── Live tail: drain real-time chunks from log_emitter ──
             try:
                 while True:
-                    chunk = log_queue.get_nowait()
-                    # Move cursor up to overwrite keys/sep, print chunk, reprint keys/sep
-                    sys.stdout.write("\033[3A")  # Move up 3 lines (nav, empty line, sep)
-                    sys.stdout.write("\033[J")   # Clear from cursor to end
-                    # Convert \r\n back to \n for raw terminal
-                    for line in chunk.replace('\r\n', '\n').splitlines():
+                    chunk = live_queue.get_nowait()
+                    sys.stdout.write("\033[3A")
+                    sys.stdout.write("\033[J")
+                    for line in chunk.replace("\r\n", "\n").splitlines():
                         sys.stdout.write(f"  {line}\n")
-                    sys.stdout.write(f"\n{sep}\n")
+                    sys.stdout.write(f"\n{separator}\n")
                     sys.stdout.write(nav + "\n")
                     sys.stdout.flush()
-            except _queue.Empty:
+            except queue.Empty:
                 pass
 
-            # ── Non-blocking key check (cross-platform) ──
             if os.name == "nt":
-                import msvcrt
                 if msvcrt.kbhit():
                     key = getch()
-                    if key in ("q", "\x03"):
-                        break
-                    elif key == "n":
-                        current_idx = (current_idx + 1) % len(keys)
-                        needs_redraw = True
-                    elif key == "p":
-                        current_idx = (current_idx - 1) % len(keys)
-                        needs_redraw = True
                 else:
-                    _time.sleep(0.05)
+                    time.sleep(0.05)
+                    continue
             else:
-                import select
-                if select.select([sys.stdin], [], [], 0.05)[0]:
-                    key = getch()
-                    if key in ("q", "\x03"):
-                        break
-                    elif key == "n":
-                        current_idx = (current_idx + 1) % len(keys)
-                        needs_redraw = True
-                    elif key == "p":
-                        current_idx = (current_idx - 1) % len(keys)
-                        needs_redraw = True
+                if not select.select([sys.stdin], [], [], 0.05)[0]:
+                    continue
+                key = getch()
 
+            if key in ("q", "\x03"):
+                break
+            if key == "n":
+                current_index = (current_index + 1) % len(keys)
+                needs_redraw = True
+            elif key == "p":
+                current_index = (current_index - 1) % len(keys)
+                needs_redraw = True
     finally:
         log_emitter.unsubscribe(task_name, _on_live_chunk)
         sys.stdout.write("\033[?1049l")
         sys.stdout.flush()
 
 
-def _edit_env(tm, t):
-    """Edit custom_env for a task via task_info.json."""
-    from pyruns.utils.info_io import load_task_info
-
-    print(f"\n  {_BOLD}Environment Variables for '{t['name']}'{_RESET}")
+def _edit_env(tm, task: dict[str, object]) -> None:
+    """Edit task env values via task_info.json."""
+    print(f"\n  {_BOLD}Environment Variables for '{task['name']}'{_RESET}")
     print(f"  {_DIM}Type KEY=VALUE to set, or KEY to delete. Blank to cancel.{_RESET}\n")
 
-    info = load_task_info(t["dir"])
+    info = load_task_info(task["dir"]) or {}
     env = info.get("env", {}) or {}
-
     if not env:
         print(f"  {_DIM}(No custom variables){_RESET}")
     else:
-        for k, v in env.items():
-            print(f"    {k} = {v}")
+        for key, value in env.items():
+            print(f"    {key} = {value}")
 
     try:
         pair = input(f"\n  {_BOLD}ENV>{_RESET} ").strip()
-        if pair:
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                env[k.strip()] = v.strip()
-            else:
-                env.pop(pair.strip(), None)
-            tm.update_task_env(t["name"], env)
+        if not pair:
+            return
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            env[key.strip()] = value.strip()
+        else:
+            env.pop(pair.strip(), None)
+        tm.update_task_env(task["name"], env)
     except KeyboardInterrupt:
         pass
 
 
-def _do_export(tasks):
-    """Export tasks to CSV or JSON file."""
-    from pyruns.core.report import build_export_csv, build_export_json, export_timestamp
-
+def _do_export(tasks: list[dict[str, object]]) -> None:
+    """Export tasks to CSV or JSON."""
     print(f"\n  {_BOLD}Export Tasks{_RESET}")
     print(f"  {_DIM}Exporting {len(tasks)} task(s){_RESET}\n")
-    fmt = input(f"  Format? [csv/json] (default: csv): ").strip().lower()
-    if fmt not in ("json",):
-        fmt = "csv"
+    export_format = input("  Format? [csv/json] (default: csv): ").strip().lower()
+    if export_format != "json":
+        export_format = "csv"
 
-    ts = export_timestamp()
-    filename = f"pyruns_export_{ts}.{fmt}"
-
-    if fmt == "json":
-        content = build_export_json(tasks)
-    else:
-        content = build_export_csv(tasks)
-
+    filename = f"pyruns_export_{export_timestamp()}.{export_format}"
+    content = build_export_json(tasks) if export_format == "json" else build_export_csv(tasks)
     if not content:
         print(f"  {_DIM}No data to export.{_RESET}")
         return
 
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
-    print(f"\n  ✔ Exported to {_BOLD}{os.path.abspath(filename)}{_RESET}")
+    with open(filename, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    print(f"\n  Exported to {_BOLD}{os.path.abspath(filename)}{_RESET}")
