@@ -864,7 +864,7 @@ class TaskManager:
             with open(error_log, "a", encoding="utf-8") as handle:
                 handle.write(block)
         except Exception as exc:
-            logger.error("Failed to write error.log for %s: %s", task.get("name"), exc)
+            logger.error("Failed to write error.log for %s: %s", task_dir, exc)
 
     def _persist_pending_stop_summary(
         self,
