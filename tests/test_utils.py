@@ -1184,6 +1184,15 @@ class TestFilterTasksMultiline:
         filtered = filter_tasks(tasks, "device:null\n")
         assert len(filtered) == 1
 
+    def test_search_text_space_normalization(self):
+        tasks = [
+            {"name": "t1", "status": "running", "search_text": "device : null\nbatch_size: 32"},
+            {"name": "t2", "status": "running", "search_text": "device: cuda:0\nbatch_size: 32"},
+        ]
+        filtered = filter_tasks(tasks, "device:null\nbatch_size:32")
+        assert len(filtered) == 1
+        assert filtered[0]["name"] == "t1"
+
 
 
 class TestPipeEscaping:
