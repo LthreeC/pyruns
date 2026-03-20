@@ -13,6 +13,7 @@ import * as api from './api'
 let monitorRequestSeq = 0
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
+const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
 
 interface ThemeState {
@@ -227,6 +228,7 @@ interface GeneratorState {
   shellText: string
   namePrefix: string
   appendTimestamp: boolean
+  columns: number
   pinnedParams: string[]
   loading: boolean
   fetchTemplates: () => Promise<void>
@@ -237,6 +239,7 @@ interface GeneratorState {
   setShellText: (t: string) => void
   setNamePrefix: (n: string) => void
   setAppendTimestamp: (b: boolean) => void
+  setColumns: (n: number) => void
   togglePin: (key: string) => void
 }
 
@@ -249,6 +252,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   shellText: '',
   namePrefix: 'task',
   appendTimestamp: true,
+  columns: readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5),
   pinnedParams: readStoredStringArray(PINNED_PARAMS_STORAGE_KEY),
   loading: false,
   async fetchTemplates() {
@@ -281,6 +285,12 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   setShellText(t) { set({ shellText: t }) },
   setNamePrefix(n) { set({ namePrefix: n }) },
   setAppendTimestamp(b) { set({ appendTimestamp: b }) },
+  setColumns(n) {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(GENERATOR_COLS_STORAGE_KEY, String(n))
+    }
+    set({ columns: n })
+  },
   togglePin(key) {
     const pins = [...get().pinnedParams]
     const idx = pins.indexOf(key)

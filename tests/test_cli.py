@@ -6,7 +6,8 @@ import json
 import pytest
 from unittest.mock import patch
 
-from pyruns._config import CONFIG_FILENAME, TASKS_DIR
+from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, TASKS_DIR
+from pyruns.launcher import bootstrap_workspace
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils.config_utils import save_yaml
 
@@ -392,6 +393,33 @@ class TestEntryPoint:
         captured = capsys.readouterr()
         assert "Start web app in shell mode for current directory" in captured.out
         assert "pyr ui" in captured.out
+
+
+class TestScriptLaunchRules:
+    def test_pyruns_load_requires_yaml_on_first_launch(self, tmp_path):
+        script_path = tmp_path / "train.py"
+        script_path.write_text(
+            "import pyruns\ncfg = pyruns.load()\nprint(cfg)\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(FileNotFoundError, match="needs a YAML template on first launch"):
+            bootstrap_workspace(str(script_path))
+
+    def test_pyruns_load_reuses_workspace_default_yaml_after_first_launch(self, tmp_path):
+        script_path = tmp_path / "train.py"
+        script_path.write_text(
+            "import pyruns\ncfg = pyruns.load()\nprint(cfg)\n",
+            encoding="utf-8",
+        )
+
+        workspace = tmp_path / "_pyruns_" / "train"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / CONFIG_DEFAULT_FILENAME).write_text("lr: 0.01\n", encoding="utf-8")
+
+        resolved = bootstrap_workspace(str(script_path))
+
+        assert resolved.replace("\\", "/").endswith("_pyruns_/train")
 
 
 # ═══════════════════════════════════════════════════════════════

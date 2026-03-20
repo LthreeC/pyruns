@@ -23,7 +23,6 @@ from pyruns.launcher import (
     bootstrap_from_cli,
     bootstrap_shell_workspace,
     launcher_query,
-    list_config_candidates,
     normalize_path,
 )
 from pyruns.utils import get_logger
@@ -202,22 +201,8 @@ def _handle_ui_launch(filepath: str, custom_yaml: str | None) -> None:
         sys.exit(1)
 
     ensure_root_dir()
-    start_path = "/"
-
-    if custom_yaml:
-        _setup_env(normalized, custom_yaml)
-    else:
-        configs = list_config_candidates(normalized)
-        selectable = [item for item in configs if item.get("kind") != "workspace_default"]
-        if len(selectable) > 1:
-            os.environ.pop(ENV_KEY_ROOT, None)
-            start_path = launcher_query(normalized)
-        elif len(selectable) == 1:
-            _setup_env(normalized, selectable[0]["path"])
-        else:
-            _setup_env(normalized)
-
-    _launch_ui(start_path)
+    _setup_env(normalized, custom_yaml)
+    _launch_ui("/")
 
 
 def _launch_shell_workspace_ui() -> None:

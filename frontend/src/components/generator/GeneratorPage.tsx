@@ -239,6 +239,7 @@ export default function GeneratorPage() {
     shellText,
     namePrefix,
     appendTimestamp,
+    columns,
     pinnedParams,
     loading,
     fetchTemplates,
@@ -249,10 +250,10 @@ export default function GeneratorPage() {
     setShellText,
     setNamePrefix,
     setAppendTimestamp,
+    setColumns,
     togglePin,
   } = useGeneratorStore()
 
-  const [columns, setColumns] = useState(5)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewData, setPreviewData] = useState<any>(null)
   const [generating, setGenerating] = useState(false)

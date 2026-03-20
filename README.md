@@ -1,6 +1,6 @@
 # pyruns
 
-![logo](docs/assets/pyruns_logo2.png)
+![logo](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/pyruns_logo2.png)
 
 [English](README-en.md) | **简体中文**
 
@@ -12,7 +12,7 @@
 > Python 实验管理 Web UI 工具：参数可视化编辑、批量任务生成、任务调度管理、实时日志流式查看与 CSV 指标导出。  
 > 全流程本地运行，围绕磁盘工作区组织状态，让脚本实验这件事终于变得清楚、直接、可追踪。
 
-![Generator](docs/assets/tab_generator.png)
+![Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 Pyruns 为 Python 脚本提供基于本地浏览器的图形界面。它的核心思路不是“接管你的工程”，而是尽量贴着你已经在用的工作方式走：
 
@@ -40,7 +40,7 @@ pyr
 
 除了 Generator / Manager / Monitor，现在首页也会先把系统状态、任务概览和 GPU 资源收拢成一个更适合“刚打开就快速判断下一步”的入口。
 
-![Home](docs/assets/tab_home.png)
+![Home](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
 
 ## 为什么它顺手
 
@@ -91,11 +91,11 @@ Pyruns 会为每个任务保存：
 
 多个任务一起跑的时候，最难受的就是终端输出互相穿插。Pyruns 把每个任务的输出都隔离到独立日志文件，并在 `Monitor` 页面里提供更像真实终端的实时查看体验。
 
-![Monitor](docs/assets/tab_monitor.png)
+![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
 对于 shell 工作流，这点尤其重要：
 
-![Shell Monitor](docs/assets/shell_monitor.png)
+![Shell Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_monitor.png)
 
 ## 核心特性
 
@@ -187,7 +187,7 @@ _pyruns_/_shell_/tasks/<task_name>/config.sh
 
 > 尽量等价于“在你启动 `pyr` 的那个终端里，再手动执行一次同样的命令”
 
-![Shell Generator](docs/assets/shell_generator.png)
+![Shell Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
 
 ## 接入方式
 
@@ -277,7 +277,7 @@ examples/2_pyruns_config/
 - 独立 `config.yaml` 任务快照
 - `Task Info` / `Env` 等任务详情
 
-![Task Detail](docs/assets/task_info.png)
+![Task Detail](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
 
 ## 页面模块
 
@@ -286,7 +286,7 @@ examples/2_pyruns_config/
 Home 是进入工作区后的第一眼总览。  
 它负责先把“现在这台机器和这份工作区处于什么状态”讲清楚，而不是让你一上来就扎进任务列表。
 
-![Home Preview](docs/assets/tab_home.png)
+![Home Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
 
 这一页适合先看：
 
@@ -300,7 +300,7 @@ Home 是进入工作区后的第一眼总览。
 Generator 是参数编辑与任务生成的入口。  
 这一页要做的不是“展示所有字段”，而是让你在高密度信息里依然能快速找到重点参数、快速生成任务。
 
-![Generator Preview](docs/assets/tab_generator.png)
+![Generator Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 你可以在这里做这些事：
 
@@ -316,7 +316,7 @@ Generator 是参数编辑与任务生成的入口。
 Manager 是任务调度台。  
 这里不只是“看任务”，更是“处理任务”。
 
-![Manager Preview](docs/assets/tab_manager.png)
+![Manager Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
 它支持：
 

@@ -297,8 +297,11 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
         params = extract_argparse_params(filepath)
         generate_config_file(script_dir, filepath, params)
     elif mode == "pyruns_load" and not os.path.exists(config_default_path):
-        # Generator can import or create a YAML template later.
-        pass
+        raise FileNotFoundError(
+            "This script uses pyruns.load() and needs a YAML template on first launch. "
+            "Run `pyr <script.py> <config.yaml>` once, then later `pyr <script.py>` will reuse "
+            f"`{CONFIG_DEFAULT_FILENAME}` automatically."
+        )
 
     if mode == "argparse":
         ensure_config_default(script_dir)

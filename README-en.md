@@ -1,6 +1,6 @@
 # pyruns
 
-![logo](docs/assets/pyruns_logo2.png)
+![logo](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/pyruns_logo2.png)
 
 [简体中文](README.md) | **English**
 
@@ -12,7 +12,7 @@
 > A local Web UI for Python experiment work: visual parameter editing, batch task generation, task orchestration, real-time terminal logs, and CSV metric export.  
 > Everything runs locally, everything is disk-backed, and everything stays close to the scripts and terminals you already use.
 
-![Generator](docs/assets/tab_generator.png)
+![Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 Pyruns is designed around a simple idea: experiment tooling should feel closer to your real workflow, not further away from it.
 
@@ -42,7 +42,7 @@ These are the primary paths new users should see first.
 
 The newer Home view also gives the workspace a clearer entry surface: system status, task overview, and GPU usage are visible before you dive into generation, orchestration, or logs.
 
-![Home](docs/assets/tab_home.png)
+![Home](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
 
 ## Why it feels useful
 
@@ -93,11 +93,11 @@ The result is simple: tasks do not disappear after they finish. They leave behin
 
 When several tasks run at once, mixed stdout is the fastest way to lose context. Pyruns isolates task output into separate log files and gives it a dedicated terminal-like surface in `Monitor`.
 
-![Monitor](docs/assets/tab_monitor.png)
+![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
 For shell-driven workflows, this matters even more:
 
-![Shell Monitor](docs/assets/shell_monitor.png)
+![Shell Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_monitor.png)
 
 ## Core capabilities
 
@@ -189,7 +189,7 @@ So the target behavior of a shell task is:
 
 > as close as possible to manually running the same command in the terminal that started `pyr`
 
-![Shell Generator](docs/assets/shell_generator.png)
+![Shell Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
 
 ## How to connect Pyruns
 
@@ -279,7 +279,7 @@ This one is especially good for showing:
 - per-task `config.yaml` snapshots
 - task detail tabs such as `Task Info` and environment metadata
 
-![Task Detail](docs/assets/task_info.png)
+![Task Detail](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
 
 ## Interface modules
 
@@ -288,7 +288,7 @@ This one is especially good for showing:
 Home is the first-glance overview after entering a workspace.  
 Its job is to answer “what is happening right now?” before pushing you into a task list.
 
-![Home Preview](docs/assets/tab_home.png)
+![Home Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
 
 This page is useful for quickly scanning:
 
@@ -302,7 +302,7 @@ This page is useful for quickly scanning:
 The Generator is where parameter editing and task creation happen.  
 It should feel fast, dense, and focused, not bloated.
 
-![Generator Preview](docs/assets/tab_generator.png)
+![Generator Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
 You can use it to:
 
@@ -318,7 +318,7 @@ You can use it to:
 Manager is the orchestration layer.  
 This is where “seeing tasks” becomes “acting on tasks”.
 
-![Manager Preview](docs/assets/tab_manager.png)
+![Manager Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
 It supports:
 
