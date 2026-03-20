@@ -11,6 +11,8 @@ _INACTIVE_TIE_PRIORITIES = {
     "completed": 2,
     "pending": 1,
 }
+_NON_DIGIT_PATTERN = re.compile(r"\D+")
+_COLON_SPACES_PATTERN = re.compile(r"\s*:\s*")
 
 
 def _timestamp_weight(task: Dict[str, object]) -> int:
@@ -25,7 +27,7 @@ def _timestamp_weight(task: Dict[str, object]) -> int:
     else:
         timestamp = task.get("created_at") or ""
 
-    digits = "".join(ch for ch in str(timestamp) if ch.isdigit())
+    digits = _NON_DIGIT_PATTERN.sub("", str(timestamp))
     return int(digits) if digits else 0
 
 
@@ -59,10 +61,11 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
             except Exception:
                 yaml_str = str(task.get("config", {})).lower()
             text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}".lower()
-            normalized_blob = re.sub(r"\s*:\s*", ":", text_blob)
+            normalized_blob = text_blob
+        normalized_blob = _COLON_SPACES_PATTERN.sub(":", normalized_blob)
 
         for line in query_lines:
-            normalized_line = re.sub(r"\s*:\s*", ":", line)
+            normalized_line = _COLON_SPACES_PATTERN.sub(":", line)
             if normalized_line not in normalized_blob:
                 return False
         return True
