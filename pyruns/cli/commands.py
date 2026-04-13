@@ -63,6 +63,19 @@ def _emit_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _read_workspace_script_info(workspace_dir: str | None) -> dict[str, Any]:
+    if not workspace_dir:
+        return {}
+    script_info_path = os.path.join(workspace_dir, "script_info.json")
+    if not os.path.exists(script_info_path):
+        return {}
+    try:
+        with open(script_info_path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return {}
+
+
 def _consume_flag(args: list[str], *names: str) -> tuple[bool, list[str]]:
     found = False
     remaining: list[str] = []
@@ -697,6 +710,7 @@ def cmd_info(tm, args: list[str] | None = None) -> None:
     tasks = _refresh_tasks(tm)
     tasks_dir = getattr(tm, "tasks_dir", None)
     workspace_dir = os.path.dirname(tasks_dir) if tasks_dir else None
+    script_info = _read_workspace_script_info(workspace_dir)
     counts = {status: 0 for status in sorted(_VALID_STATUSES)}
     for task in tasks:
         counts[(task.get("status") or "pending")] += 1
@@ -704,21 +718,11 @@ def cmd_info(tm, args: list[str] | None = None) -> None:
     if _json_enabled():
         payload = {
             "workspace": workspace_dir or "",
-            "script_name": "",
-            "script_path": "",
+            "script_name": str(script_info.get("script_name", "") or ""),
+            "script_path": str(script_info.get("script_path", "") or ""),
             "task_count": len(tasks),
             "status_counts": counts,
         }
-        if workspace_dir:
-            script_info_path = os.path.join(workspace_dir, "script_info.json")
-            if os.path.exists(script_info_path):
-                try:
-                    with open(script_info_path, "r", encoding="utf-8") as handle:
-                        info = json.load(handle)
-                    payload["script_name"] = str(info.get("script_name", "") or "")
-                    payload["script_path"] = str(info.get("script_path", "") or "")
-                except Exception:
-                    pass
         _emit_json(payload)
         return
 
@@ -728,17 +732,11 @@ def cmd_info(tm, args: list[str] | None = None) -> None:
 
     if workspace_dir:
         print(f"  Workspace:  {workspace_dir}")
-        script_info_path = os.path.join(workspace_dir, "script_info.json")
-        if os.path.exists(script_info_path):
-            try:
-                with open(script_info_path, "r", encoding="utf-8") as handle:
-                    info = json.load(handle)
-                print(f"  Script:     {info.get('script_name', 'N/A')}")
-                script_path = info.get("script_path", "")
-                if script_path:
-                    print(f"  Path:       {script_path}")
-            except Exception:
-                pass
+        if script_info:
+            print(f"  Script:     {script_info.get('script_name', 'N/A')}")
+            script_path = script_info.get("script_path", "")
+            if script_path:
+                print(f"  Path:       {script_path}")
     else:
         print(f"  {_DIM}No workspace detected.{_RESET}")
 

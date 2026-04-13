@@ -148,8 +148,7 @@ def normalize_direct_command(command: str, args: list[str]) -> list[str]:
 
     if cmd in {"jobs", "info"}:
         parser = _NoExitParser(prog=cmd, add_help=False)
-        ns = parser.parse_args(args)
-        _ = ns
+        parser.parse_args(args)
         return []
 
     return args
