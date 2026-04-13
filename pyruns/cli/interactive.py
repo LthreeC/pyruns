@@ -37,7 +37,7 @@ _CLI_HELP = f"""
 def run_interactive(tm) -> None:
     """Enter the interactive REPL loop."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print(f"  {_DIM}Interactive CLI requires a TTY terminal.{_RESET}")
+        print("  Interactive CLI requires a TTY terminal.")
         return
 
     print(f"\n  {_BOLD}Pyruns CLI{_RESET}  (type 'help' for commands, 'exit' to quit)\n")
