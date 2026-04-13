@@ -101,16 +101,16 @@ def normalize_direct_command(command: str, args: list[str]) -> list[str]:
 
     if cmd in {"show", "inspect", "log", "fg"}:
         parser = _NoExitParser(prog=cmd, add_help=False)
-        parser.add_argument("target", nargs=1)
+        parser.add_argument("target")
         ns = parser.parse_args(args)
-        return list(ns.target)
+        return [ns.target]
 
     if cmd in {"open"}:
         parser = _NoExitParser(prog=cmd, add_help=False)
-        parser.add_argument("target", nargs=1)
+        parser.add_argument("target")
         parser.add_argument("file_type", nargs="?")
         ns = parser.parse_args(args)
-        out = list(ns.target)
+        out = [ns.target]
         if ns.file_type:
             out.append(ns.file_type)
         return out
