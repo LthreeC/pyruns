@@ -546,6 +546,15 @@ class TestDispatchCLI:
 
         assert observed["args"] == ["task-a", "--workers", "2"]
 
+    def test_global_flags_only_apply_before_command(self):
+        from pyruns.cli import _dispatch_cli
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with pytest.raises(SystemExit) as exc:
+                    _dispatch_cli(["run", "task-a", "--json"])
+        assert exc.value.code == 2
+
     def test_unknown_command_exit_2(self):
         from pyruns.cli import _dispatch_cli
 

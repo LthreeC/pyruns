@@ -12,7 +12,6 @@ import sys
 import textwrap
 import traceback
 from contextlib import redirect_stdout
-from io import StringIO
 
 from pyruns import __version__ as _VERSION
 from pyruns.cli.commands import COMMANDS
@@ -37,6 +36,26 @@ logger = get_logger(__name__)
 
 _CLI_COMMANDS = frozenset({"cli", *COMMANDS.keys()})
 _ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+
+class _NullWriter:
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+
+class _AnsiStrippingWriter:
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def write(self, text: str) -> int:
+        self._wrapped.write(_ANSI_PATTERN.sub("", text))
+        return len(text)
+
+    def flush(self) -> None:
+        self._wrapped.flush()
 
 _HELP = textwrap.dedent(
     f"""
@@ -203,23 +222,18 @@ def _dispatch_cli(args: list[str]) -> None:
             print(f"Error: {exc.message}")
             sys.exit(exc.code)
 
-        buffer = StringIO() if (global_options.quiet or global_options.no_color) else None
+        output_override = None
+        if global_options.quiet:
+            output_override = _NullWriter()
+        elif global_options.no_color:
+            output_override = _AnsiStrippingWriter(sys.stdout)
         try:
-            if buffer is not None:
-                with redirect_stdout(buffer):
+            if output_override is not None:
+                with redirect_stdout(output_override):
                     handler(task_manager, normalized_args)
-                output = buffer.getvalue()
-                if not global_options.quiet:
-                    if global_options.no_color:
-                        output = _ANSI_PATTERN.sub("", output)
-                    print(output, end="")
             else:
                 handler(task_manager, normalized_args)
         except Exception as exc:
-            if buffer is not None:
-                buffered = buffer.getvalue()
-                if buffered and not global_options.quiet:
-                    print(_ANSI_PATTERN.sub("", buffered) if global_options.no_color else buffered, end="")
             print(f"Command failed: {type(exc).__name__}: {exc}")
             sys.exit(1)
     finally:

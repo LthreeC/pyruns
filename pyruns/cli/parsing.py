@@ -38,19 +38,23 @@ def _positive_int(raw: str) -> int:
 
 def parse_global_options(argv: list[str]) -> tuple[GlobalCLIOptions, list[str]]:
     options = GlobalCLIOptions()
-    remaining: list[str] = []
-    for arg in argv:
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
         if arg == "--json":
             options.json = True
+            index += 1
             continue
         if arg == "--quiet":
             options.quiet = True
+            index += 1
             continue
         if arg == "--no-color":
             options.no_color = True
+            index += 1
             continue
-        remaining.append(arg)
-    return options, remaining
+        break
+    return options, argv[index:]
 
 
 def normalize_direct_command(command: str, args: list[str]) -> list[str]:
