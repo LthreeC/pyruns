@@ -81,6 +81,10 @@ def _leave_alt() -> None:
 def run_interactive_ls(tm, query: str = "") -> None:
     from pyruns.cli.commands import _sorted_tasks, cmd_open
 
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"  {_DIM}Interactive list view requires a TTY terminal.{_RESET}")
+        return
+
     cursor = 0
     selected: set[str] = set()
     in_filter = False
@@ -299,6 +303,10 @@ def _delete_tasks(tm, targets: list[dict[str, object]]) -> None:
 
 def _view_log(task: dict[str, object]) -> None:
     """View log files in alt-screen with next/prev navigation."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"\n  {_DIM}Interactive log view requires a TTY terminal.{_RESET}")
+        return
+
     task_dir = task.get("dir")
     task_name = task.get("name", "unknown")
     options = get_log_options(task_dir)

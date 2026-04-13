@@ -55,6 +55,14 @@ def _sorted_tasks(tm) -> list[dict[str, Any]]:
     return sorted(valid, key=task_sort_key, reverse=True)
 
 
+def _json_enabled() -> bool:
+    return os.environ.get("PYRUNS_CLI_JSON", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _emit_json(payload: Any) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 def _consume_flag(args: list[str], *names: str) -> tuple[bool, list[str]]:
     found = False
     remaining: list[str] = []
@@ -284,10 +292,14 @@ def cmd_list(tm, args: list[str] | None = None) -> None:
     limit_raw, raw_args = _consume_option(raw_args, "-n", "--limit")
 
     if interactive:
-        from pyruns.cli.interactive_ls import run_interactive_ls
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("  Interactive list view requires a TTY terminal; falling back to normal list output.")
+            interactive = False
+        else:
+            from pyruns.cli.interactive_ls import run_interactive_ls
 
-        run_interactive_ls(tm, query=" ".join(raw_args).strip())
-        return
+            run_interactive_ls(tm, query=" ".join(raw_args).strip())
+            return
 
     statuses = _normalize_status_filters(status_values)
     limit = _parse_limit(limit_raw)
@@ -299,6 +311,16 @@ def cmd_list(tm, args: list[str] | None = None) -> None:
         tasks = filter_tasks(tasks, query)
     if limit is not None:
         tasks = tasks[:limit]
+
+    if _json_enabled():
+        _emit_json(
+            {
+                "title": "Tasks" if not statuses else f"Tasks [{', '.join(statuses)}]",
+                "count": len(tasks),
+                "tasks": tasks,
+            }
+        )
+        return
 
     title = "Tasks"
     if statuses:
@@ -315,6 +337,10 @@ def cmd_show(tm, args: list[str] | None = None) -> None:
 
     targets = _resolve_targets(tm, raw_args)
     if not targets:
+        return
+
+    if _json_enabled():
+        _emit_json({"count": len(targets), "tasks": targets})
         return
 
     for task in targets:
@@ -485,7 +511,11 @@ def cmd_delete(tm, args: list[str] | None = None) -> None:
 
 def cmd_jobs(tm, args: list[str] | None = None) -> None:
     """Show running and queued tasks in Linux-jobs style."""
-    _refresh_tasks(tm)
+    tasks = _refresh_tasks(tm)
+    active = [task for task in tasks if task.get("status") in ("running", "queued")]
+    if _json_enabled():
+        _emit_json({"count": len(active), "tasks": active})
+        return
     print_jobs(_sorted_tasks(tm))
 
 
@@ -636,6 +666,16 @@ def cmd_export(tm, args: list[str] | None = None) -> None:
     with open(output_path, "w", encoding="utf-8", newline="") as handle:
         handle.write(content)
 
+    if _json_enabled():
+        _emit_json(
+            {
+                "count": len(export_tasks),
+                "format": export_format,
+                "output": os.path.abspath(output_path),
+            }
+        )
+        return
+
     print(f"  Exported {len(export_tasks)} task(s) to {os.path.abspath(output_path)}")
 
 
@@ -643,6 +683,9 @@ def cmd_stat(tm, args: list[str] | None = None) -> None:
     """Show system metrics once or in live-refresh mode."""
     raw_args = list(args or [])
     interactive, _ = _consume_flag(raw_args, "-i", "--interactive")
+    if interactive and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("  Interactive stat view requires a TTY terminal; showing one snapshot instead.")
+        interactive = False
     if interactive:
         _stat_interactive()
         return
@@ -651,12 +694,38 @@ def cmd_stat(tm, args: list[str] | None = None) -> None:
 
 def cmd_info(tm, args: list[str] | None = None) -> None:
     """Show current workspace and task summary information."""
+    tasks = _refresh_tasks(tm)
+    tasks_dir = getattr(tm, "tasks_dir", None)
+    workspace_dir = os.path.dirname(tasks_dir) if tasks_dir else None
+    counts = {status: 0 for status in sorted(_VALID_STATUSES)}
+    for task in tasks:
+        counts[(task.get("status") or "pending")] += 1
+
+    if _json_enabled():
+        payload = {
+            "workspace": workspace_dir or "",
+            "script_name": "",
+            "script_path": "",
+            "task_count": len(tasks),
+            "status_counts": counts,
+        }
+        if workspace_dir:
+            script_info_path = os.path.join(workspace_dir, "script_info.json")
+            if os.path.exists(script_info_path):
+                try:
+                    with open(script_info_path, "r", encoding="utf-8") as handle:
+                        info = json.load(handle)
+                    payload["script_name"] = str(info.get("script_name", "") or "")
+                    payload["script_path"] = str(info.get("script_path", "") or "")
+                except Exception:
+                    pass
+        _emit_json(payload)
+        return
+
     print(f"\n  {_BOLD}Workspace Info{_RESET}")
     separator = f"  {'-' * max(8, _get_terminal_width() - 4)}"
     print(separator)
 
-    tasks_dir = getattr(tm, "tasks_dir", None)
-    workspace_dir = os.path.dirname(tasks_dir) if tasks_dir else None
     if workspace_dir:
         print(f"  Workspace:  {workspace_dir}")
         script_info_path = os.path.join(workspace_dir, "script_info.json")
@@ -673,11 +742,7 @@ def cmd_info(tm, args: list[str] | None = None) -> None:
     else:
         print(f"  {_DIM}No workspace detected.{_RESET}")
 
-    tasks = _refresh_tasks(tm)
     print(f"  Tasks:      {len(tasks)} total")
-    counts = {status: 0 for status in sorted(_VALID_STATUSES)}
-    for task in tasks:
-        counts[(task.get("status") or "pending")] += 1
     print(
         "  Statuses:   "
         f"pending={counts['pending']}, queued={counts['queued']}, "

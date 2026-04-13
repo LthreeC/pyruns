@@ -5,6 +5,7 @@ Interactive CLI REPL for ``pyr cli``.
 from __future__ import annotations
 
 import shlex
+import sys
 import traceback
 
 from pyruns.cli.commands import COMMANDS, cmd_list
@@ -35,6 +36,10 @@ _CLI_HELP = f"""
 
 def run_interactive(tm) -> None:
     """Enter the interactive REPL loop."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"  {_DIM}Interactive CLI requires a TTY terminal.{_RESET}")
+        return
+
     print(f"\n  {_BOLD}Pyruns CLI{_RESET}  (type 'help' for commands, 'exit' to quit)\n")
     cmd_list(tm, ["--limit", "12"])
 

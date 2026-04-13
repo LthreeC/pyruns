@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
 import traceback
+from contextlib import redirect_stdout
+from io import StringIO
 
 from pyruns import __version__ as _VERSION
 from pyruns.cli.commands import COMMANDS
+from pyruns.cli.parsing import CLIParseError, parse_global_options, normalize_direct_command
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
     ENV_KEY_ROOT,
@@ -25,12 +29,14 @@ from pyruns.launcher import (
     bootstrap_shell_workspace,
     launcher_query,
     normalize_path,
+    resolve_workspace_for_script,
 )
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
 _CLI_COMMANDS = frozenset({"cli", *COMMANDS.keys()})
+_ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
 _HELP = textwrap.dedent(
     f"""
@@ -58,6 +64,11 @@ _HELP = textwrap.dedent(
         info                          Show current workspace info
         log <name|#>                  View a task's log in alt-screen viewer
         fg <name|#>                   Tail a task's log inline (Ctrl+C to detach)
+
+    GLOBAL FLAGS (for direct CLI commands)
+        --json                        Output machine-readable JSON when supported
+        --quiet                       Suppress command stdout output
+        --no-color                    Strip ANSI colors from command output
 
     EXAMPLES
         pyr train.py
@@ -94,27 +105,7 @@ def _resolve_workspace(script_path: str | None = None) -> str | None:
         return None
 
     if script_path:
-        target_base = os.path.splitext(os.path.basename(script_path))[0]
-        candidate = os.path.join(pyruns_dir, target_base)
-        if os.path.isdir(candidate):
-            return candidate
-
-        target_abs = normalize_path(script_path)
-        for entry in os.listdir(pyruns_dir):
-            if entry == SHELL_WORKSPACE_NAME:
-                continue
-            workspace = os.path.join(pyruns_dir, entry)
-            script_info_path = os.path.join(workspace, SCRIPT_INFO_FILENAME)
-            if not os.path.isfile(script_info_path):
-                continue
-            try:
-                with open(script_info_path, "r", encoding="utf-8") as handle:
-                    info = json.load(handle)
-            except Exception:
-                continue
-            if info.get("script_name") == target_base or normalize_path(str(info.get("script_path", ""))) == target_abs:
-                return workspace
-        return None
+        return resolve_workspace_for_script(script_path)
 
     best_candidate = None
     latest_time = -1.0
@@ -162,6 +153,18 @@ def _init_task_manager(workspace: str):
 def _dispatch_cli(args: list[str]) -> None:
     """Handle direct CLI commands and interactive CLI mode."""
 
+    try:
+        global_options, args = parse_global_options(args)
+    except CLIParseError as exc:
+        print(f"Error: {exc.message}")
+        sys.exit(exc.code)
+
+    previous_json = os.environ.get("PYRUNS_CLI_JSON")
+    if global_options.json:
+        os.environ["PYRUNS_CLI_JSON"] = "1"
+    else:
+        os.environ.pop("PYRUNS_CLI_JSON", None)
+
     script_path = None
     if len(args) > 1 and args[1].endswith(".py") and os.path.exists(args[1]):
         script_path = args[1]
@@ -175,21 +178,55 @@ def _dispatch_cli(args: list[str]) -> None:
         sys.exit(1)
 
     task_manager = _init_task_manager(workspace)
-    if not args or args[0] == "cli":
-        from pyruns.cli.interactive import run_interactive
+    try:
+        if not args or args[0] == "cli":
+            from pyruns.cli.interactive import run_interactive
 
-        run_interactive(task_manager)
-        return
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                print("Interactive CLI mode requires a TTY terminal.")
+                sys.exit(1)
+            run_interactive(task_manager)
+            return
 
-    from pyruns.cli.commands import COMMANDS
+        from pyruns.cli.commands import COMMANDS
 
-    cmd_name = args[0].lower()
-    handler = COMMANDS.get(cmd_name)
-    if handler is None:
-        print(f"Unknown command: '{cmd_name}'")
-        print("Run 'pyr help' for available commands.")
-        sys.exit(1)
-    handler(task_manager, args[1:])
+        cmd_name = args[0].lower()
+        handler = COMMANDS.get(cmd_name)
+        if handler is None:
+            print(f"Unknown command: '{cmd_name}'")
+            print("Run 'pyr help' for available commands.")
+            sys.exit(2)
+
+        try:
+            normalized_args = normalize_direct_command(cmd_name, args[1:])
+        except CLIParseError as exc:
+            print(f"Error: {exc.message}")
+            sys.exit(exc.code)
+
+        buffer = StringIO() if (global_options.quiet or global_options.no_color) else None
+        try:
+            if buffer is not None:
+                with redirect_stdout(buffer):
+                    handler(task_manager, normalized_args)
+                output = buffer.getvalue()
+                if not global_options.quiet:
+                    if global_options.no_color:
+                        output = _ANSI_PATTERN.sub("", output)
+                    print(output, end="")
+            else:
+                handler(task_manager, normalized_args)
+        except Exception as exc:
+            if buffer is not None:
+                buffered = buffer.getvalue()
+                if buffered and not global_options.quiet:
+                    print(_ANSI_PATTERN.sub("", buffered) if global_options.no_color else buffered, end="")
+            print(f"Command failed: {type(exc).__name__}: {exc}")
+            sys.exit(1)
+    finally:
+        if previous_json is None:
+            os.environ.pop("PYRUNS_CLI_JSON", None)
+        else:
+            os.environ["PYRUNS_CLI_JSON"] = previous_json
 
 
 def _launch_ui(start_path: str = "/") -> None:
