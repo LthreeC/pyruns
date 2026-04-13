@@ -531,6 +531,21 @@ class TestDispatchCLI:
                     _dispatch_cli(["run", "--workers", "0", "task-a"])
         assert exc.value.code == 2
 
+    def test_valid_direct_command_args_are_forwarded(self):
+        from pyruns.cli import _dispatch_cli
+
+        observed: dict[str, object] = {}
+
+        def _fake_run(_tm, cmd_args):
+            observed["args"] = cmd_args
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with patch.dict("pyruns.cli.commands.COMMANDS", {"run": _fake_run}, clear=False):
+                    _dispatch_cli(["run", "--workers", "2", "task-a"])
+
+        assert observed["args"] == ["task-a", "--workers", "2"]
+
     def test_unknown_command_exit_2(self):
         from pyruns.cli import _dispatch_cli
 

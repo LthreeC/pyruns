@@ -350,6 +350,7 @@ def cmd_show(tm, args: list[str] | None = None) -> None:
 
     targets = _resolve_targets(tm, raw_args)
     if not targets:
+        print("  No tasks matched.")
         return
 
     if _json_enabled():

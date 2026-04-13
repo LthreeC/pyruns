@@ -61,7 +61,7 @@ def normalize_direct_command(command: str, args: list[str]) -> list[str]:
         parser.add_argument("-i", "--interactive", action="store_true")
         parser.add_argument("-s", "--status", action="append", default=[])
         parser.add_argument("-n", "--limit", type=_positive_int)
-        parser.add_argument("query", nargs="*")
+        parser.add_argument("search_terms", nargs="*")
         ns = parser.parse_args(args)
         out: list[str] = []
         if ns.interactive:
@@ -70,7 +70,7 @@ def normalize_direct_command(command: str, args: list[str]) -> list[str]:
             out.extend(["--status", value])
         if ns.limit is not None:
             out.extend(["--limit", str(ns.limit)])
-        out.extend(ns.query)
+        out.extend(ns.search_terms)
         return out
 
     if cmd in {"run"}:
