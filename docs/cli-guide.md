@@ -41,6 +41,16 @@ pyr cli [script.py]
 pyr help
 ```
 
+## 直接命令模式新增全局参数
+
+当你使用 `pyr <command> ...`（例如 `pyr ls`、`pyr info`）时，支持如下全局参数：
+
+- `--json`：在支持的命令上输出机器可读 JSON
+- `--quiet`：静默标准输出（适合自动化脚本）
+- `--no-color`：去除 ANSI 颜色控制字符
+
+> 说明：这些全局参数用于“直接命令模式”，不会改变 `pyr` / `pyr ui` 的 UI 启动行为。
+
 ## 启动 CLI
 
 你可以通过两种形式调用 CLI：

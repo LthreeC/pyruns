@@ -277,6 +277,30 @@ class TestCmdList:
         assert "queued-a" not in captured.out
         assert "1 total" in captured.out
 
+    def test_list_json_output(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_list
+
+        _add_task(workspace, "json-task", "completed")
+        task_manager.scan_disk()
+
+        with patch.dict("os.environ", {"PYRUNS_CLI_JSON": "1"}):
+            cmd_list(task_manager, [])
+        captured = capsys.readouterr()
+        assert '"tasks"' in captured.out
+        assert "json-task" in captured.out
+
+    def test_list_interactive_non_tty_falls_back(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_list
+
+        _add_task(workspace, "fallback-task", "completed")
+        task_manager.scan_disk()
+
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stdout.isatty", return_value=False):
+            cmd_list(task_manager, ["-i"])
+        captured = capsys.readouterr()
+        assert "requires a TTY terminal" in captured.out
+        assert "fallback-task" in captured.out
+
 
 class TestCmdJobs:
     def test_jobs_empty(self, task_manager, capsys):
@@ -497,6 +521,65 @@ class TestEntryPoint:
         mock_dispatch.assert_called_once_with(["info"])
 
 
+class TestDispatchCLI:
+    def test_invalid_direct_command_args_exit_2(self):
+        from pyruns.cli import _dispatch_cli
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with pytest.raises(SystemExit) as exc:
+                    _dispatch_cli(["run", "--workers", "0", "task-a"])
+        assert exc.value.code == 2
+
+    def test_unknown_command_exit_2(self):
+        from pyruns.cli import _dispatch_cli
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with pytest.raises(SystemExit) as exc:
+                    _dispatch_cli(["not-a-command"])
+        assert exc.value.code == 2
+
+    def test_cli_mode_requires_tty(self):
+        from pyruns.cli import _dispatch_cli
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with patch("sys.stdin.isatty", return_value=False), patch("sys.stdout.isatty", return_value=False):
+                    with pytest.raises(SystemExit) as exc:
+                        _dispatch_cli(["cli"])
+        assert exc.value.code == 1
+
+    def test_no_color_flag_strips_ansi(self, capsys):
+        from pyruns.cli import _dispatch_cli
+
+        def _fake_command(_tm, _args):
+            print("\033[31mhello\033[0m")
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with patch.dict("pyruns.cli.commands.COMMANDS", {"fake": _fake_command}, clear=False):
+                    _dispatch_cli(["--no-color", "fake"])
+
+        captured = capsys.readouterr()
+        assert "hello" in captured.out
+        assert "\033[" not in captured.out
+
+    def test_quiet_flag_suppresses_output(self, capsys):
+        from pyruns.cli import _dispatch_cli
+
+        def _fake_command(_tm, _args):
+            print("should-not-be-visible")
+
+        with patch("pyruns.cli._resolve_workspace", return_value="/tmp/_pyruns_/main"):
+            with patch("pyruns.cli._init_task_manager", return_value=object()):
+                with patch.dict("pyruns.cli.commands.COMMANDS", {"fake": _fake_command}, clear=False):
+                    _dispatch_cli(["--quiet", "fake"])
+
+        captured = capsys.readouterr()
+        assert "should-not-be-visible" not in captured.out
+
+
 class TestScriptLaunchRules:
     def test_pyruns_load_requires_yaml_on_first_launch(self, tmp_path):
         script_path = tmp_path / "train.py"
@@ -567,10 +650,18 @@ class TestResolveTargets:
 class TestInteractive:
     def test_exit_command(self, task_manager, capsys):
         from pyruns.cli.interactive import run_interactive
-        with patch("builtins.input", side_effect=["exit"]):
-            run_interactive(task_manager)
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True):
+            with patch("builtins.input", side_effect=["exit"]):
+                run_interactive(task_manager)
         captured = capsys.readouterr()
         assert "Pyruns CLI" in captured.out
+
+    def test_non_tty_shows_hint(self, task_manager, capsys):
+        from pyruns.cli.interactive import run_interactive
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stdout.isatty", return_value=False):
+            run_interactive(task_manager)
+        captured = capsys.readouterr()
+        assert "requires a TTY terminal" in captured.out
 
     def test_entry_shows_task_overview(self, workspace, task_manager, capsys):
         from pyruns.cli.interactive import run_interactive
@@ -578,22 +669,25 @@ class TestInteractive:
         _add_task(workspace, "overview-task", "completed")
         task_manager.scan_disk()
 
-        with patch("builtins.input", side_effect=["exit"]):
-            run_interactive(task_manager)
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True):
+            with patch("builtins.input", side_effect=["exit"]):
+                run_interactive(task_manager)
         captured = capsys.readouterr()
         assert "overview-task" in captured.out
 
     def test_help_command(self, task_manager, capsys):
         from pyruns.cli.interactive import run_interactive
-        with patch("builtins.input", side_effect=["help", "exit"]):
-            run_interactive(task_manager)
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True):
+            with patch("builtins.input", side_effect=["help", "exit"]):
+                run_interactive(task_manager)
         captured = capsys.readouterr()
         assert "Commands" in captured.out
 
     def test_unknown_command(self, task_manager, capsys):
         from pyruns.cli.interactive import run_interactive
-        with patch("builtins.input", side_effect=["foobar", "exit"]):
-            run_interactive(task_manager)
+        with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True):
+            with patch("builtins.input", side_effect=["foobar", "exit"]):
+                run_interactive(task_manager)
         captured = capsys.readouterr()
         assert "Unknown command" in captured.out
 
@@ -601,7 +695,8 @@ class TestInteractive:
         from pyruns.cli.interactive import run_interactive
         # Should exit gracefully without raising
         try:
-            with patch("builtins.input", side_effect=KeyboardInterrupt):
-                run_interactive(task_manager)
+            with patch("sys.stdin.isatty", return_value=True), patch("sys.stdout.isatty", return_value=True):
+                with patch("builtins.input", side_effect=KeyboardInterrupt):
+                    run_interactive(task_manager)
         except KeyboardInterrupt:
             pytest.fail("KeyboardInterrupt was not caught by run_interactive")
