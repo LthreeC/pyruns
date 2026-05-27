@@ -122,6 +122,7 @@ export interface LogStreamMessage {
 
 export interface GPUProcessInfo {
   pid: number
+  user: string
   name: string
   memory_mb: number
 }

@@ -64,14 +64,17 @@ def test_react_dashboard_polling_waits_for_network_work():
     assert "api.getMetrics().then(setMetrics)" in source
 
 
-def test_react_dashboard_has_clear_constrained_workspace_layout():
+def test_react_dashboard_uses_full_width_clear_workspace_layout():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "max-w-[1600px]" in source
+    assert "max-w-[1600px]" not in source
+    assert "mx-auto" not in source
+    assert "flex w-full flex-col" in source
     assert "const workspaceKindLabel" in source
     assert "Shell Workspace" in source
     assert "border border-border-default bg-surface-raised" in source
     assert "Start New Task" in source
+    assert "workspacePathSegments" in source
 
 
 def test_react_sidebar_active_workspace_state_is_visually_clear():
@@ -80,6 +83,16 @@ def test_react_sidebar_active_workspace_state_is_visually_clear():
     assert "border-l-2 border-accent" in source
     assert "bg-accent/10 text-accent" in source
     assert "Shell mode active" in source
+
+
+def test_react_gpu_process_dialog_shows_process_owner():
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "user: string" in types
+    assert "grid-cols-[88px_132px_minmax(0,1fr)_120px]" in dashboard
+    assert "<span>User</span>" in dashboard
+    assert "process.user || 'unknown'" in dashboard
 
 
 def test_react_monitor_sidebar_width_is_clamped():

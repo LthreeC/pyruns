@@ -49,6 +49,17 @@ class SystemMonitor:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _process_username(pid: int) -> str:
+        """Best-effort owner lookup for an OS process."""
+
+        if pid < 0:
+            return "unknown"
+        try:
+            return psutil.Process(pid).username() or "unknown"
+        except Exception:
+            return "unknown"
+
     def _query_nvidia_smi(self, fields: str, *, scope: str) -> str:
         """Run one ``nvidia-smi`` CSV query and return stripped text."""
 
@@ -87,8 +98,10 @@ class SystemMonitor:
             if not gpu_uuid:
                 continue
 
+            pid = self._coerce_int(pid_raw, default=-1)
             process_info = {
-                "pid": self._coerce_int(pid_raw, default=-1),
+                "pid": pid,
+                "user": self._process_username(pid),
                 "name": process_name or "unknown",
                 "memory_mb": self._coerce_float(memory_raw, default=0.0),
             }
