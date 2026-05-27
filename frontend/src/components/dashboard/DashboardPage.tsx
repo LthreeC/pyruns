@@ -51,6 +51,9 @@ export default function DashboardPage() {
   usePolling(refreshDashboard, refreshIntervalSec * 1000, true, true)
 
   const summary = data?.summary
+  const isShellWorkspace = workspace?.workspace_kind === 'shell'
+  const workspaceKindLabel = isShellWorkspace ? 'Shell Workspace' : 'Script Workspace'
+  const workspaceName = workspace?.script_name || (isShellWorkspace ? '_shell_' : 'No workspace selected')
   const activeGpu = metrics?.gpus.find(gpu => gpuKey(gpu) === activeGpuKey) ?? null
   const gpuCount = metrics?.gpus.length ?? 0
   const gpuProcessCount = metrics?.gpus.reduce((total, gpu) => total + gpu.processes.length, 0) ?? 0
@@ -60,137 +63,154 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="h-full overflow-y-auto p-6">
-        <div className="mb-6">
-          <h1 className="text-lg font-semibold text-txt-primary">Dashboard</h1>
-          <p className="mt-1 text-xs text-txt-tertiary">
-            {workspace?.script_name ? `Workspace: ${workspace.script_name}` : 'Welcome to Pyruns'}
-          </p>
-        </div>
-
-        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {STAT_CARDS.map(({ key, label, icon: Icon, color }) => (
-            <div key={key} className="flex items-center gap-3 border-l border-border-subtle py-2 pl-3">
-              <div className={clsx('p-1', color)}>
-                <Icon className="h-4 w-4" />
+      <div className="h-full overflow-y-auto bg-surface-base">
+        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-5 px-5 py-5 2xl:px-8">
+          <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border-default pb-4">
+            <div className="min-w-0">
+              <div className="mb-1 inline-flex items-center rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
+                {workspaceKindLabel}
               </div>
-              <div>
-                <div className="text-xl font-semibold tabular-nums text-txt-primary">
-                  {loading ? '--' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
+              <h1 className="text-xl font-semibold text-txt-primary">Dashboard</h1>
+              <p className="mt-1 truncate text-xs text-txt-tertiary" title={workspace?.run_root || workspaceName}>
+                {workspaceName} - {workspace?.run_root || 'Open a workspace to start'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/generator')}
+              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent/90"
+            >
+              <Wand2 className="h-4 w-4" /> Start New Task
+            </button>
+          </header>
+
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {STAT_CARDS.map(({ key, label, icon: Icon, color }) => (
+              <div key={key} className="rounded-md border border-border-default bg-surface-raised px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className={clsx('rounded-md bg-surface-overlay p-2', color)}>
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-xl font-semibold tabular-nums text-txt-primary">
+                      {loading ? '--' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
+                    </div>
+                    <div className="text-2xs text-txt-tertiary">{label}</div>
+                  </div>
                 </div>
-                <div className="text-2xs text-txt-tertiary">{label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2.2fr)_minmax(22rem,1fr)]">
+            <section className="rounded-md border border-border-default bg-surface-raised">
+              <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
+                <h2 className="text-sm font-medium text-txt-primary">Recent Tasks</h2>
+                <button
+                  type="button"
+                  onClick={() => navigate('/manager')}
+                  className="flex items-center gap-1 text-2xs text-txt-tertiary transition-colors hover:text-accent"
+                >
+                  View all <ArrowRight className="h-3 w-3" />
+                </button>
+              </div>
+              <div className="divide-y divide-border-subtle">
+                {!data?.recent_tasks?.length ? (
+                  <div className="py-8 text-center text-xs text-txt-tertiary">No tasks yet</div>
+                ) : (
+                  data.recent_tasks.map(task => (
+                    <TaskRow key={task.name} task={task} onClick={() => openTaskInMonitor(task)} />
+                  ))
+                )}
+              </div>
+            </section>
+
+            <div className="flex flex-col gap-4">
+              <section className="rounded-md border border-border-default bg-surface-raised p-4">
+                <h2 className="mb-3 text-sm font-medium text-txt-primary">Workspace</h2>
+                <div className="space-y-2 text-xs">
+                  <InfoRow label="Mode" value={workspaceKindLabel} />
+                  <InfoRow label="Script" value={workspace?.script_name || '--'} />
+                  <InfoRow label="Templates" value={String(data?.template_count ?? 0)} />
+                  <InfoRow label="Path" value={workspace?.run_root || '--'} mono />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => navigate('/generator')}
+                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-accent/10 px-3 py-2 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
+                >
+                  <Wand2 className="h-3.5 w-3.5" /> Generate Tasks
+                </button>
+              </section>
+
+              <section className="rounded-md border border-border-default bg-surface-raised p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-medium text-txt-primary">System</h2>
+                    <p className="mt-1 text-2xs text-txt-tertiary">Auto-refreshes every {refreshIntervalSec}s.</p>
+                  </div>
+                  {gpuCount > 0 && (
+                    <div className="rounded-md bg-sky-500/8 px-2.5 py-1 text-2xs text-sky-300">
+                      {gpuCount} GPU{gpuCount > 1 ? 's' : ''} online
+                    </div>
+                  )}
+                </div>
+
+                {metrics ? (
+                  <>
+                    <div className="mt-3 space-y-2.5">
+                      <MetricBar label="CPU" value={metrics.cpu_percent} icon={Cpu} />
+                      <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} />
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
+                      <SummaryChip label="GPU Util Avg" value={`${averageGpuUtil.toFixed(0)}%`} tone="sky" />
+                      <SummaryChip label="GPU Processes" value={String(gpuProcessCount)} tone={gpuProcessCount ? 'emerald' : 'slate'} />
+                      <SummaryChip label="Refresh" value={`${refreshIntervalSec}s`} tone="slate" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-3 rounded-md bg-surface-overlay/50 px-3 py-4 text-2xs text-txt-tertiary">
+                    Loading system metrics...
+                  </div>
+                )}
+              </section>
+            </div>
+          </div>
+
+          <section className="rounded-md border border-border-default bg-surface-raised">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
+              <div>
+                <h2 className="text-sm font-medium text-txt-primary">GPU Fleet</h2>
+                <p className="mt-1 text-2xs text-txt-tertiary">
+                  Click any GPU card to inspect active processes and VRAM usage.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-2xs">
+                <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>
+                <SummaryPill>{gpuProcessCount} active proc{gpuProcessCount === 1 ? '' : 's'}</SummaryPill>
               </div>
             </div>
-          ))}
-        </div>
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2.2fr)_minmax(18rem,1fr)]">
-          <section>
-            <div className="flex items-center justify-between border-b border-border-subtle py-2">
-              <h2 className="text-sm font-medium text-txt-primary">Recent Tasks</h2>
-              <button
-                type="button"
-                onClick={() => navigate('/manager')}
-                className="flex items-center gap-1 text-2xs text-txt-tertiary transition-colors hover:text-accent"
-              >
-                View all <ArrowRight className="h-3 w-3" />
-              </button>
-            </div>
-            <div className="divide-y divide-border-subtle">
-              {!data?.recent_tasks?.length ? (
-                <div className="py-8 text-center text-xs text-txt-tertiary">No tasks yet</div>
+            <div className="p-4">
+              {metrics?.gpus?.length ? (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                  {metrics.gpus.map(gpu => (
+                    <GpuMetricCard
+                      key={gpuKey(gpu)}
+                      gpu={gpu}
+                      onClick={() => setActiveGpuKey(gpuKey(gpu))}
+                    />
+                  ))}
+                </div>
               ) : (
-                data.recent_tasks.map(task => (
-                  <TaskRow key={task.name} task={task} onClick={() => openTaskInMonitor(task)} />
-                ))
+                <div className="rounded-md bg-surface-overlay/50 px-3 py-8 text-center text-2xs text-txt-tertiary">
+                  No NVIDIA GPU metrics detected.
+                </div>
               )}
             </div>
           </section>
-
-          <div className="flex flex-col gap-4">
-            <section className="border-t border-border-subtle pt-4">
-              <h2 className="mb-3 text-sm font-medium text-txt-primary">Workspace</h2>
-              <div className="space-y-2 text-xs">
-                <InfoRow label="Script" value={workspace?.script_name || '--'} />
-                <InfoRow label="Templates" value={String(data?.template_count ?? 0)} />
-                <InfoRow label="Path" value={workspace?.run_root || '--'} mono />
-              </div>
-              <button
-                type="button"
-                onClick={() => navigate('/generator')}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-accent/10 px-3 py-2 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
-              >
-                <Wand2 className="h-3.5 w-3.5" /> Generate Tasks
-              </button>
-            </section>
-
-            <section className="border-t border-border-subtle pt-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-medium text-txt-primary">System</h2>
-                  <p className="mt-1 text-2xs text-txt-tertiary">Auto-refreshes every {refreshIntervalSec}s.</p>
-                </div>
-                {gpuCount > 0 && (
-                  <div className="rounded-md bg-sky-500/8 px-2.5 py-1 text-2xs text-sky-300">
-                    {gpuCount} GPU{gpuCount > 1 ? 's' : ''} online
-                  </div>
-                )}
-              </div>
-
-              {metrics ? (
-                <>
-                  <div className="mt-3 space-y-2.5">
-                    <MetricBar label="CPU" value={metrics.cpu_percent} icon={Cpu} />
-                    <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} />
-                  </div>
-
-                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
-                    <SummaryChip label="GPU Util Avg" value={`${averageGpuUtil.toFixed(0)}%`} tone="sky" />
-                    <SummaryChip label="GPU Processes" value={String(gpuProcessCount)} tone={gpuProcessCount ? 'emerald' : 'slate'} />
-                    <SummaryChip label="Refresh" value={`${refreshIntervalSec}s`} tone="slate" />
-                  </div>
-                </>
-              ) : (
-                <div className="mt-3 rounded-md bg-surface-overlay/50 px-3 py-4 text-2xs text-txt-tertiary">
-                  Loading system metrics...
-                </div>
-              )}
-            </section>
-          </div>
         </div>
-
-        <section className="mt-6">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle py-3">
-            <div>
-              <h2 className="text-sm font-medium text-txt-primary">GPU Fleet</h2>
-              <p className="mt-1 text-2xs text-txt-tertiary">
-                Click any GPU card to inspect active processes and VRAM usage.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-2xs">
-              <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>
-              <SummaryPill>{gpuProcessCount} active proc{gpuProcessCount === 1 ? '' : 's'}</SummaryPill>
-            </div>
-          </div>
-
-          <div className="py-4">
-            {metrics?.gpus?.length ? (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
-                {metrics.gpus.map(gpu => (
-                  <GpuMetricCard
-                    key={gpuKey(gpu)}
-                    gpu={gpu}
-                    onClick={() => setActiveGpuKey(gpuKey(gpu))}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-md bg-surface-overlay/50 px-3 py-8 text-center text-2xs text-txt-tertiary">
-                No NVIDIA GPU metrics detected.
-              </div>
-            )}
-          </div>
-        </section>
       </div>
 
       <GpuProcessDialog gpu={activeGpu} onClose={() => setActiveGpuKey(null)} />

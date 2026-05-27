@@ -64,6 +64,24 @@ def test_react_dashboard_polling_waits_for_network_work():
     assert "api.getMetrics().then(setMetrics)" in source
 
 
+def test_react_dashboard_has_clear_constrained_workspace_layout():
+    source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "max-w-[1600px]" in source
+    assert "const workspaceKindLabel" in source
+    assert "Shell Workspace" in source
+    assert "border border-border-default bg-surface-raised" in source
+    assert "Start New Task" in source
+
+
+def test_react_sidebar_active_workspace_state_is_visually_clear():
+    source = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+
+    assert "border-l-2 border-accent" in source
+    assert "bg-accent/10 text-accent" in source
+    assert "Shell mode active" in source
+
+
 def test_react_monitor_sidebar_width_is_clamped():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 

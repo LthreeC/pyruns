@@ -169,10 +169,10 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
             end={end}
             onClick={to === '/monitor' ? clearMonitorSelection : undefined}
             className={({ isActive }) => clsx(
-              'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors',
+              'flex items-center gap-2.5 rounded-md py-2 pl-2.5 pr-3 text-sm transition-colors',
               isActive
-                ? 'bg-surface-overlay text-txt-primary'
-                : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
+                ? 'border-l-2 border-accent bg-accent/10 text-accent'
+                : 'border-l-2 border-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
             )}
           >
             <Icon className="h-4 w-4 flex-none" />
@@ -207,6 +207,11 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
           >
             {workspace?.run_root || 'Choose a Python script or choose a shell workspace folder'}
           </div>
+          {shellWorkspaceActive && (
+            <div className="mt-2 rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
+              Shell mode active
+            </div>
+          )}
         </button>
 
         {pickerError && (

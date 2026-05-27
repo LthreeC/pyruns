@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import time
 from pathlib import Path
@@ -10,12 +11,13 @@ from pyruns._config import (
     CMD_CONFIG_FILENAME,
     POWERSHELL_CONFIG_FILENAME,
     RECORDS_KEY,
+    RUN_LOGS_DIR,
     SHELL_CONFIG_FILENAME,
     TASK_INFO_FILENAME,
     TRACKS_KEY,
 )
 from pyruns.core.task_generator import TaskGenerator
-from pyruns.launcher import bootstrap_workspace, list_config_candidates, list_script_candidates
+from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace, list_config_candidates, list_script_candidates
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import load_yaml
 from pyruns.web.runtime import PyrunsRuntime
@@ -228,6 +230,88 @@ def test_multi_script_example_is_discoverable_by_launcher(tmp_path):
     eval_configs = list_config_candidates(str(example / "evaluate.py"))
     eval_labels = {item["label"] for item in eval_configs}
     assert "configs/eval.yaml" in eval_labels
+
+
+def test_multi_script_project_train_and_eval_run_through_runtime(tmp_path):
+    example = _copy_example(tmp_path, "7_multi_script_project")
+
+    train_workspace = bootstrap_workspace(
+        str(example / "train.py"),
+        str(example / "configs" / "train_cpu.yaml"),
+    )
+    train_runtime = PyrunsRuntime(train_workspace)
+    train_created = train_runtime.create_tasks_from_template(
+        name_prefix="multi-train",
+        mode="yaml",
+        yaml_text=(example / "configs" / "train_cpu.yaml").read_text(encoding="utf-8"),
+        append_timestamp=False,
+    )
+    train_name = train_created["items"][0]["name"]
+    train_runtime.start_task(train_name)
+    train_task = _wait_for_task(train_runtime, train_name)
+
+    assert train_task["status"] == "completed"
+    train_info = _task_info(train_task)
+    assert train_info[RECORDS_KEY][0]["model"] == "small"
+    assert train_info[RECORDS_KEY][0]["seed"] == 17
+    assert len(train_info[TRACKS_KEY][0]["loss"]) == 3
+
+    eval_workspace = bootstrap_workspace(
+        str(example / "evaluate.py"),
+        str(example / "configs" / "eval.yaml"),
+    )
+    eval_runtime = PyrunsRuntime(eval_workspace)
+    eval_created = eval_runtime.create_tasks_from_template(
+        name_prefix="multi-eval",
+        mode="yaml",
+        yaml_text=(example / "configs" / "eval.yaml").read_text(encoding="utf-8"),
+        append_timestamp=False,
+    )
+    eval_name = eval_created["items"][0]["name"]
+    eval_runtime.start_task(eval_name)
+    eval_task = _wait_for_task(eval_runtime, eval_name)
+
+    assert eval_task["status"] == "completed"
+    eval_info = _task_info(eval_task)
+    assert eval_info[RECORDS_KEY][0]["split"] == "validation"
+    assert eval_info[RECORDS_KEY][0]["score"] == 0.69
+    assert len(eval_info[TRACKS_KEY][0]["score"]) == 3
+
+
+def test_shell_workspace_runs_task_with_env_inherited_by_subprocess(tmp_path):
+    if os.name == "nt":
+        shell_executable = shutil.which("pwsh") or shutil.which("powershell")
+        shell_text = 'Write-Output "shell_env_marker=$env:PYRUNS_EXAMPLE_ENV"\n'
+    else:
+        shell_executable = shutil.which("sh") or shutil.which("bash")
+        shell_text = 'echo "shell_env_marker=$PYRUNS_EXAMPLE_ENV"\n'
+
+    if not shell_executable:
+        pytest.skip("No supported shell executable is available for this platform.")
+
+    workspace = bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+    settings_path = Path(workspace).parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "shell_mode: custom\n"
+        f"shell_executable: {json.dumps(shell_executable)}\n",
+        encoding="utf-8",
+    )
+    runtime = PyrunsRuntime(workspace)
+    created = runtime.create_tasks_from_template(
+        name_prefix="shell-env",
+        mode="shell",
+        shell_text=shell_text,
+        append_timestamp=False,
+    )
+    task_name = created["items"][0]["name"]
+    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-env-ok"})
+
+    runtime.start_task(task_name)
+    task = _wait_for_task(runtime, task_name)
+
+    assert task["status"] == "completed"
+    log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
+    assert "shell_env_marker=shell-env-ok" in log_text
 
 
 def test_shell_workspace_payload_examples_create_runtime_specific_tasks(tmp_path):

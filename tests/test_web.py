@@ -1,4 +1,5 @@
 ﻿import json
+import socket
 from pathlib import Path
 from unittest.mock import patch
 
@@ -75,6 +76,39 @@ def _build_runtime(workspace: Path) -> PyrunsRuntime:
             return TaskManager(tasks_dir=tasks_dir, lazy_scan=False)
 
     return PyrunsRuntime(root_dir=str(workspace), task_manager_factory=make_task_manager)
+
+
+def test_find_available_port_increments_when_start_port_is_busy():
+    from pyruns.web import app as web_app
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy_socket:
+        busy_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        busy_socket.bind(("127.0.0.1", 0))
+        busy_socket.listen(1)
+        busy_port = int(busy_socket.getsockname()[1])
+
+        resolved_port = web_app.find_available_port(busy_port, host="127.0.0.1")
+
+    assert resolved_port > busy_port
+
+
+def test_main_uses_resolved_dynamic_port_for_server_and_browser(monkeypatch):
+    from pyruns.web import app as web_app
+
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(web_app, "find_available_port", lambda port, host="127.0.0.1": 8101)
+    monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
+    monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
+
+    web_app.main(open_browser=True, start_path="/generator?launcher=1")
+
+    assert captured["port"] == 8101
+    assert captured["browser_url"] == "http://127.0.0.1:8101/generator?launcher=1"
 
 
 def test_workspace_endpoint_returns_metadata(tmp_path):
@@ -190,6 +224,68 @@ def test_launcher_configs_reports_when_load_script_needs_first_yaml(tmp_path):
     payload = response.json()
     assert payload["requires_config_template"] is True
     assert payload["config_source"] == "pyruns_load"
+    assert not (tmp_path / "_pyruns_" / "load_train").exists()
+
+
+def test_launcher_open_load_script_with_yaml_import_clears_first_launch_requirement(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "load_train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+    config_path = tmp_path / "configs" / "base.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("lr: 0.01\nepochs: 1\n", encoding="utf-8")
+
+    before = client.get("/api/launcher/configs", params={"script": str(script_path)}).json()
+    assert before["requires_config_template"] is True
+
+    response = client.post(
+        "/api/launcher/open",
+        json={"script_path": str(script_path), "config_path": str(config_path)},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    workspace_root = Path(payload["run_root"])
+    assert payload["script_name"] == "load_train"
+    assert (workspace_root / "config_default.yaml").read_text(encoding="utf-8") == "lr: 0.01\nepochs: 1\n"
+    after = client.get("/api/launcher/configs", params={"script": str(script_path)}).json()
+    assert after["requires_config_template"] is False
+    assert after["items"][0]["kind"] == "workspace_default"
+
+
+def test_launcher_open_argparse_script_generates_default_config_without_yaml(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "train.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "import argparse",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--epochs', type=int, default=3)",
+                "args = parser.parse_args()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    info = client.get("/api/launcher/configs", params={"script": str(script_path)}).json()
+    assert info["config_source"] == "argparse"
+    assert info["requires_config_template"] is False
+
+    response = client.post("/api/launcher/open", json={"script_path": str(script_path)})
+
+    assert response.status_code == 200
+    payload = response.json()
+    workspace_root = Path(payload["run_root"])
+    assert payload["script_name"] == "train"
+    assert (workspace_root / "tasks").is_dir()
+    default_text = (workspace_root / "config_default.yaml").read_text(encoding="utf-8")
+    assert "epochs: 3" in default_text
 
 
 def test_launcher_configs_endpoint_rejects_invalid_script_path(tmp_path):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import threading
 import time
 import webbrowser
@@ -183,6 +184,28 @@ def _schedule_browser_open(url: str, *, delay_seconds: float = 0.8) -> None:
             return
 
     threading.Thread(target=_open, daemon=True).start()
+
+
+def find_available_port(start_port: int, *, host: str = "127.0.0.1", max_attempts: int = 100) -> int:
+    """Return the first local TCP port available at or after ``start_port``."""
+
+    try:
+        start = int(start_port)
+    except (TypeError, ValueError):
+        start = DEFAULT_UI_PORT
+    if start < 1 or start > 65535:
+        start = DEFAULT_UI_PORT
+
+    stop = min(65535, start + max(0, int(max_attempts)))
+    for port in range(start, stop + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, port))
+            except OSError:
+                continue
+            return port
+
+    raise RuntimeError(f"No available UI port found from {start} to {stop}")
 
 
 def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
@@ -556,13 +579,17 @@ def main(
 ) -> None:
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
-    port = int(runtime.settings.get("ui_port", DEFAULT_UI_PORT))
+    host = "127.0.0.1"
+    configured_port = int(runtime.settings.get("ui_port", DEFAULT_UI_PORT))
+    port = find_available_port(configured_port, host=host)
+    if port != configured_port:
+        print(f"[pyruns] Port {configured_port} is busy; using {port} instead.")
     should_open_browser = (not reload) if open_browser is None else open_browser
     if should_open_browser:
-        _schedule_browser_open(f"http://127.0.0.1:{port}{start_path}")
+        _schedule_browser_open(f"http://{host}:{port}{start_path}")
     uvicorn.run(
         "pyruns.web.app:create_app" if reload else create_app(runtime),
-        host="127.0.0.1",
+        host=host,
         port=port,
         reload=reload,
         factory=reload,

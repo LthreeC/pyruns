@@ -65,7 +65,7 @@ SETTINGS_TEMPLATE = f"""\
 # Delete this file to reset all values to defaults.
 
 # Server
-ui_port: {SETTINGS_DEFAULTS.get("ui_port")}
+ui_port: {SETTINGS_DEFAULTS.get("ui_port")}                    # preferred start port; busy ports auto-increment
 
 # Header
 header_refresh_interval: {SETTINGS_DEFAULTS.get("header_refresh_interval")}
