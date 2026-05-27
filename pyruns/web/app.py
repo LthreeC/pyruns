@@ -182,7 +182,7 @@ def _schedule_browser_open(url: str, *, delay_seconds: float = 0.8) -> None:
 def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
-    app = FastAPI(title="Pyruns API", version="0.1.6")
+    app = FastAPI(title="Pyruns API", version="0.2.3")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
