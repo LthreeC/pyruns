@@ -12,6 +12,7 @@ import * as api from './api'
 
 let taskRequestSeq = 0
 let monitorRequestSeq = 0
+let launcherRequestSeq = 0
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
@@ -431,37 +432,57 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
   step: 0,
   loading: false,
   async fetchScripts() {
+    const requestId = ++launcherRequestSeq
     set({ loading: true })
     try {
       const res = await api.getLauncherScripts()
-      set({ scripts: res.items, step: 0 })
+      if (requestId !== launcherRequestSeq) {
+        return
+      }
+      set(state => ({ scripts: res.items, step: state.selectedScript ? state.step : 0 }))
     } finally {
-      set({ loading: false })
+      if (requestId === launcherRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   async selectScript(path: string) {
+    const requestId = ++launcherRequestSeq
     set({ selectedScript: path, loading: true })
     try {
       const res = await api.getLauncherConfigs(path)
+      if (requestId !== launcherRequestSeq) {
+        return
+      }
       set({ configs: res.items, step: 1 })
     } finally {
-      set({ loading: false })
+      if (requestId === launcherRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   selectConfig(path) {
+    launcherRequestSeq += 1
     set({ selectedConfig: path, step: 2 })
   },
   async openWorkspace() {
+    const requestId = ++launcherRequestSeq
     const { selectedScript, selectedConfig } = get()
     set({ loading: true })
     try {
       const workspace = await api.openLauncherWorkspace(selectedScript, selectedConfig || undefined)
+      if (requestId !== launcherRequestSeq) {
+        return
+      }
       useWorkspaceStore.getState().setWorkspace(workspace)
     } finally {
-      set({ loading: false })
+      if (requestId === launcherRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   reset() {
+    launcherRequestSeq += 1
     set({ scripts: [], configs: [], selectedScript: '', selectedConfig: '', step: 0 })
   },
 }))

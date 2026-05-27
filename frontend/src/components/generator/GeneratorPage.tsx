@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
@@ -11,10 +11,13 @@ import {
   ChevronDown,
   ChevronRight,
   FileCode,
+  Hash,
   LayoutGrid,
+  ListChecks,
   Pin,
   Sparkles,
   Terminal,
+  Workflow,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml'
@@ -25,6 +28,7 @@ import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
+import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
 
 const DEFAULT_SHELL_TEMPLATE = ''
 const YAML_EXTENSION = yamlLanguage()
@@ -191,6 +195,42 @@ function getBatchTriggerKind(text: string) {
   return 'batch'
 }
 
+function formatBatchKind(kind: string) {
+  return kind.charAt(0).toUpperCase() + kind.slice(1)
+}
+
+function compactPreviewText(text: string) {
+  return String(text || '').replace(/,\s+/g, '  ·  ')
+}
+
+function formatFullTaskTooltip(item: PreviewItem) {
+  try {
+    const yaml = yamlStringify(item.config || {}).trim()
+    return yaml || item.preview
+  } catch {
+    return item.preview
+  }
+}
+
+function getShellConfigFilename(runtime?: ShellRuntimeInfo) {
+  const kind = String(runtime?.terminal_kind || '').toLowerCase()
+  if (kind === 'powershell') {
+    return 'config.ps1'
+  }
+  if (kind === 'cmd') {
+    return 'config.cmd'
+  }
+  if (kind === 'fish') {
+    return 'config.fish'
+  }
+  return 'config.sh'
+}
+
+function pathLeaf(path?: string) {
+  const parts = String(path || '').split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || ''
+}
+
 type ParamType = keyof typeof PARAM_TYPE_STYLES
 
 interface PinnedParamRow {
@@ -199,6 +239,12 @@ interface PinnedParamRow {
   value: any
   declaredType?: ParamType
   batchActive: boolean
+}
+
+interface BatchTriggerDetail {
+  key: string
+  value: string
+  kind: string
 }
 
 function isNestedGroup(value: any) {
@@ -339,7 +385,7 @@ export default function GeneratorPage() {
   } = useGeneratorStore()
 
   const [previewOpen, setPreviewOpen] = useState(false)
-  const [previewData, setPreviewData] = useState<any>(null)
+  const [previewData, setPreviewData] = useState<GeneratorPreview | null>(null)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -407,10 +453,10 @@ export default function GeneratorPage() {
 
   const batchTriggerDetails = useMemo(() => {
     if (!parsedConfig) {
-      return [] as { key: string; value: string; kind: string }[]
+      return [] as BatchTriggerDetail[]
     }
 
-    const result: { key: string; value: string; kind: string }[] = []
+    const result: BatchTriggerDetail[] = []
     const walk = (obj: Record<string, any>, prefix = '') => {
       for (const [key, value] of Object.entries(obj)) {
         const fullKey = prefix ? `${prefix}.${key}` : key
@@ -696,27 +742,7 @@ export default function GeneratorPage() {
           )}
 
           {editorMode === 'shell' && (
-            <CompactSection
-              title="Shell Mode"
-              icon={<Terminal className="h-3.5 w-3.5 text-accent" />}
-              accent
-              bodyClassName="space-y-1.5 p-2"
-            >
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                Shell mode creates one shell task file that matches the active shell, such as <code className="text-txt-primary">config.sh</code> or <code className="text-txt-primary">config.ps1</code>.
-              </div>
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                The script runs inside <code className="text-txt-primary">_shell_</code> by following the terminal that launched <code className="text-txt-primary">pyr</code>.
-              </div>
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                {shellRuntime?.mode === 'custom'
-                  ? <>Custom shell active: <code className="text-txt-primary">{shellRuntime.executable || 'unset'}</code></>
-                  : <>Current shell: <code className="text-txt-primary">{shellRuntime?.display_name || 'Follow current terminal'}</code></>}
-              </div>
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                To override the default, set <code className="text-txt-primary">shell_mode: custom</code> and <code className="text-txt-primary">shell_executable</code> in <code className="text-txt-primary">_pyruns_settings.yaml</code>.
-              </div>
-            </CompactSection>
+            <ShellRuntimePanel runtime={shellRuntime} runRoot={workspace?.run_root} />
           )}
 
           {(error || success) && (
@@ -761,48 +787,194 @@ export default function GeneratorPage() {
       <ConfirmDialog
         open={previewOpen}
         title="Batch Preview"
-        description={previewData ? `${previewData.count} task(s) will be created` : ''}
+        description="Review the expansion before writing task folders."
         confirmLabel="Generate All"
+        size="lg"
         onConfirm={doCreate}
         onCancel={() => setPreviewOpen(false)}
       >
-        {batchTriggerDetails.length > 0 && (
-          <div className="space-y-2 rounded-lg border border-border-subtle bg-surface-overlay/70 p-3">
-            <div className="text-xs font-medium text-txt-primary">Batch triggers</div>
-            <div className="flex flex-wrap gap-1.5">
-              {batchTriggerDetails.map(item => (
-                <div
-                  key={item.key}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-surface-raised px-2 py-1 text-2xs"
-                  title={item.value}
-                >
-                  <span className="font-mono text-txt-primary">{item.key}</span>
-                  <span className="rounded-full border border-border-subtle bg-surface-overlay px-1.5 py-0.5 uppercase tracking-[0.12em] text-[10px] text-txt-secondary">
-                    {item.kind}
+        <BatchPreviewContent preview={previewData} triggers={batchTriggerDetails} />
+      </ConfirmDialog>
+    </div>
+  )
+}
+
+function BatchPreviewContent({
+  preview,
+  triggers,
+}: {
+  preview: GeneratorPreview | null
+  triggers: BatchTriggerDetail[]
+}) {
+  const count = preview?.count || 0
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <BatchPreviewMetric
+          icon={<Hash className="h-3.5 w-3.5" />}
+          label="Tasks to create"
+          value={count ? String(count) : '-'}
+          accent
+        />
+        <BatchPreviewMetric
+          icon={<Workflow className="h-3.5 w-3.5" />}
+          label="Batch triggers"
+          value={String(triggers.length)}
+        />
+      </div>
+
+      {triggers.length > 0 && (
+        <section className="rounded-lg border border-border-subtle bg-surface-overlay/60 p-3">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-txt-primary">
+            <Workflow className="h-3.5 w-3.5 text-accent" />
+            <span>Batch triggers</span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {triggers.map(item => (
+              <div
+                key={item.key}
+                className="min-w-0 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-2"
+                title={item.value}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-txt-primary">
+                    {item.key}
+                  </span>
+                  <span className="flex-none rounded-full border border-accent/20 bg-accent/8 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-accent">
+                    {formatBatchKind(item.kind)}
                   </span>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {previewData?.items && (
-          <div className="mt-2 max-h-60 space-y-1 overflow-y-auto">
-            {previewData.items.map((item: any) => (
-              <div
-                key={item.index}
-                className="rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs font-mono text-txt-secondary"
-              >
-                #{item.index}: {item.preview}
+                <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary">
+                  {item.value}
+                </div>
               </div>
             ))}
-            {previewData.count > previewData.items.length && (
-              <div className="px-2 text-2xs text-txt-tertiary">
-                ...and {previewData.count - previewData.items.length} more
-              </div>
-            )}
+          </div>
+        </section>
+      )}
+
+      <BatchPreviewList items={preview?.items || []} count={count} />
+    </div>
+  )
+}
+
+function BatchPreviewMetric({
+  icon,
+  label,
+  value,
+  accent = false,
+}: {
+  icon: ReactNode
+  label: string
+  value: string
+  accent?: boolean
+}) {
+  return (
+    <div
+      className={clsx(
+        'rounded-lg border px-3 py-2.5',
+        accent ? 'border-accent/20 bg-accent/8' : 'border-border-subtle bg-surface-overlay/60',
+      )}
+    >
+      <div className={clsx('mb-1 flex items-center gap-1.5 text-2xs', accent ? 'text-accent' : 'text-txt-tertiary')}>
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="text-xl font-semibold leading-none text-txt-primary">{value}</div>
+    </div>
+  )
+}
+
+function BatchPreviewList({
+  items,
+  count,
+}: {
+  items: PreviewItem[]
+  count: number
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-border-subtle bg-surface-overlay/60">
+      <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-txt-primary">
+          <ListChecks className="h-3.5 w-3.5 text-accent" />
+          <span>Task samples</span>
+        </div>
+        <span className="text-2xs text-txt-tertiary">
+          {items.length ? `First ${items.length}` : 'No preview'}
+        </span>
+      </div>
+      <div className="max-h-[320px] space-y-1.5 overflow-y-auto p-2">
+        {items.map(item => (
+          <div
+            key={item.index}
+            className="grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-2"
+            title={formatFullTaskTooltip(item)}
+          >
+            <span className="rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-center font-mono text-2xs font-semibold text-txt-secondary">
+              #{item.index}
+            </span>
+            <span className="min-w-0 break-words font-mono text-xs leading-relaxed text-txt-secondary">
+              {compactPreviewText(item.preview)}
+            </span>
+          </div>
+        ))}
+        {count > items.length && (
+          <div className="rounded-md border border-dashed border-border-subtle px-3 py-2 text-xs text-txt-tertiary">
+            Plus {count - items.length} more task{count - items.length > 1 ? 's' : ''}
           </div>
         )}
-      </ConfirmDialog>
+      </div>
+    </section>
+  )
+}
+
+function ShellRuntimePanel({
+  runtime,
+  runRoot,
+}: {
+  runtime?: ShellRuntimeInfo
+  runRoot?: string
+}) {
+  const currentShell = runtime?.mode === 'custom'
+    ? 'Custom shell'
+    : runtime?.display_name || 'Follow current terminal'
+  const executable = runtime?.executable || 'Auto-detect'
+  const mode = runtime?.mode === 'custom' ? 'Custom' : 'Follow'
+
+  return (
+    <CompactSection
+      title="Shell Runtime"
+      icon={<Terminal className="h-3.5 w-3.5 text-accent" />}
+      accent
+      bodyClassName="space-y-2 p-2.5"
+    >
+      <ShellRuntimeRow label="Current shell" value={currentShell} />
+      <ShellRuntimeRow label="Resolved file" value={getShellConfigFilename(runtime)} mono />
+      <ShellRuntimeRow label="Workspace folder" value={pathLeaf(runRoot) || '_shell_'} mono />
+      <ShellRuntimeRow label="Mode" value={mode} />
+      <div className="truncate rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 font-mono text-2xs text-txt-tertiary" title={executable}>
+        {executable}
+      </div>
+    </CompactSection>
+  )
+}
+
+function ShellRuntimeRow({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 text-2xs">
+      <span className="text-txt-tertiary">{label}</span>
+      <span className={clsx('min-w-0 truncate text-right text-txt-primary', mono && 'font-mono')} title={value}>
+        {value}
+      </span>
     </div>
   )
 }

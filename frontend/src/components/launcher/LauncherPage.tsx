@@ -21,13 +21,17 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const [manualScriptPath, setManualScriptPath] = useState('')
   const [manualConfigPath, setManualConfigPath] = useState('')
   const [manualShellRootPath, setManualShellRootPath] = useState('')
+  const [launchMode, setLaunchMode] = useState<'python' | 'shell'>('python')
   const [error, setError] = useState('')
+  const scriptPathReady = manualScriptPath.trim().length > 0
+  const shellPathReady = manualShellRootPath.trim().length > 0
 
   useEffect(() => {
     void fetchScripts()
     // Pre-select from URL params
     const scriptParam = searchParams.get('script')
     if (scriptParam) {
+      setLaunchMode('python')
       setManualScriptPath(scriptParam)
       void selectScript(scriptParam)
     }
@@ -124,24 +128,15 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   }, [manualShellRootPath, navigate, onClose, setWorkspace])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
       <div className="bg-surface-raised border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-3 px-6 py-4 border-b border-border-subtle">
           <Rocket className="w-5 h-5 text-accent" />
           <div>
             <h2 className="text-sm font-semibold text-zinc-100">Launch Workspace</h2>
-            <p className="text-2xs text-zinc-500 mt-0.5">Select a script and configuration to get started</p>
+            <p className="text-2xs text-zinc-500 mt-0.5">Choose a workspace type</p>
           </div>
-        </div>
-
-        {/* Steps indicator */}
-        <div className="flex items-center gap-2 px-6 py-3 border-b border-border-subtle">
-          <StepIndicator num={1} label="Script" active={step === 0} done={step > 0} />
-          <ChevronRight className="w-3 h-3 text-zinc-600" />
-          <StepIndicator num={2} label="Config" active={step === 1} done={step > 1} />
-          <ChevronRight className="w-3 h-3 text-zinc-600" />
-          <StepIndicator num={3} label="Open" active={step === 2} done={false} />
         </div>
 
         {/* Content */}
@@ -152,87 +147,65 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          {loading && (
-            <div className="flex items-center justify-center py-12">
-              <div className="text-xs text-zinc-500 animate-pulse">Loading...</div>
+          {step === 0 && (
+            <div className="space-y-3">
+              <LaunchChoiceTabs launchMode={launchMode} onChange={setLaunchMode} />
+
+              {launchMode === 'python' ? (
+                <>
+                  <ModeActionPanel
+                    launchMode={launchMode}
+                    pathValue={manualScriptPath}
+                    pathReady={scriptPathReady}
+                    onPathChange={setManualScriptPath}
+                    onManualOpen={handleManualScript}
+                    onBrowseOpen={handlePickScript}
+                  />
+
+                  <div className="rounded-lg border border-border-subtle bg-surface-overlay/40">
+                    <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
+                      <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                        Detected Scripts
+                      </span>
+                      {loading ? (
+                        <span className="text-2xs text-zinc-500">Scanning current directory...</span>
+                      ) : (
+                        <span className="text-2xs text-zinc-600">{scripts.length} found</span>
+                      )}
+                    </div>
+                    <div className="max-h-56 overflow-y-auto p-2">
+                      {scripts.length === 0 ? (
+                        <div className="px-3 py-8 text-center text-xs text-zinc-600">
+                          No Python scripts found in the current directory.
+                        </div>
+                      ) : (
+                        scripts.map(script => (
+                          <ScriptItem
+                            key={script.script_path || script.workspace_path}
+                            script={script}
+                            onClick={() => selectScript(script.script_path)}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <ModeActionPanel
+                  launchMode={launchMode}
+                  pathValue={manualShellRootPath}
+                  pathReady={shellPathReady}
+                  onPathChange={setManualShellRootPath}
+                  onManualOpen={handleManualShellRoot}
+                  onBrowseOpen={handlePickShellRoot}
+                />
+              )}
             </div>
           )}
 
-          {!loading && step === 0 && (
-            <div className="space-y-3">
-              {scripts.length === 0 ? (
-                <div className="text-center py-12 text-xs text-zinc-600">
-                  No Python scripts found in the current directory.
-                </div>
-              ) : (
-                scripts.map(script => (
-                  <ScriptItem
-                    key={script.script_path || script.workspace_path}
-                    script={script}
-                    onClick={() => selectScript(script.script_path)}
-                  />
-                ))
-              )}
-              <div className="rounded-lg border border-border-subtle bg-surface-overlay/50 p-3">
-                <div className="flex items-center gap-2">
-                  <FileSearch className="h-4 w-4 text-zinc-500" />
-                  <input
-                    value={manualScriptPath}
-                    onChange={event => setManualScriptPath(event.target.value)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        void handleManualScript()
-                      }
-                    }}
-                    placeholder="Absolute or relative path to train.py"
-                    className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
-                  />
-                  <button
-                    onClick={() => void handleManualScript()}
-                    className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
-                  >
-                    Use Path
-                  </button>
-                </div>
-                <div className="mt-2 flex items-center gap-2">
-                  <FolderPlus className="h-4 w-4 text-zinc-500" />
-                  <input
-                    value={manualShellRootPath}
-                    onChange={event => setManualShellRootPath(event.target.value)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        void handleManualShellRoot()
-                      }
-                    }}
-                    placeholder="Path to shell project folder"
-                    className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
-                  />
-                  <button
-                    onClick={() => void handleManualShellRoot()}
-                    className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
-                  >
-                    Open Folder
-                  </button>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    onClick={() => void handlePickScript()}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-2xs text-zinc-400 transition-colors hover:text-zinc-200"
-                  >
-                    <FileSearch className="h-3.5 w-3.5" />
-                    Browse Script
-                  </button>
-                  <button
-                    onClick={() => void handlePickShellRoot()}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-2xs text-zinc-400 transition-colors hover:text-zinc-200"
-                  >
-                    <FolderPlus className="h-3.5 w-3.5" />
-                    Open Shell Folder
-                  </button>
-                </div>
-              </div>
+          {loading && step !== 0 && (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-xs text-zinc-500 animate-pulse">Loading...</div>
             </div>
           )}
 
@@ -339,16 +312,103 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   )
 }
 
-function StepIndicator({ num, label, active, done }: { num: number; label: string; active: boolean; done: boolean }) {
+function LaunchChoiceTabs({
+  launchMode,
+  onChange,
+}: {
+  launchMode: 'python' | 'shell'
+  onChange: (mode: 'python' | 'shell') => void
+}) {
   return (
-    <div className="flex items-center gap-1.5">
-      <span className={clsx(
-        'w-5 h-5 rounded-full flex items-center justify-center text-2xs font-medium',
-        active ? 'bg-accent text-white' : done ? 'bg-accent/20 text-accent' : 'bg-surface-overlay text-zinc-600'
-      )}>
-        {done ? '✓' : num}
-      </span>
-      <span className={clsx('text-xs', active ? 'text-zinc-200' : 'text-zinc-500')}>{label}</span>
+    <div className="grid gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 p-1 md:grid-cols-2">
+      <button
+        type="button"
+        onClick={() => onChange('python')}
+        className={clsx(
+          'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
+          launchMode === 'python'
+            ? 'bg-accent text-white shadow-sm shadow-accent/20'
+            : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
+        )}
+      >
+        <FileSearch className="h-4 w-4" />
+        Python
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('shell')}
+        className={clsx(
+          'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
+          launchMode === 'shell'
+            ? 'bg-accent text-white shadow-sm shadow-accent/20'
+            : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
+        )}
+      >
+        <FolderPlus className="h-4 w-4" />
+        Shell
+      </button>
+    </div>
+  )
+}
+
+function ModeActionPanel({
+  launchMode,
+  pathValue,
+  pathReady,
+  onPathChange,
+  onManualOpen,
+  onBrowseOpen,
+}: {
+  launchMode: 'python' | 'shell'
+  pathValue: string
+  pathReady: boolean
+  onPathChange: (value: string) => void
+  onManualOpen: () => void | Promise<void>
+  onBrowseOpen: () => void | Promise<void>
+}) {
+  const isPython = launchMode === 'python'
+  const Icon = isPython ? FileSearch : FolderPlus
+  const browseLabel = isPython ? 'Browse & Open Script' : 'Browse & Open Folder'
+  const manualLabel = isPython ? 'Select Script Path' : 'Open Folder Path'
+  const placeholder = isPython ? 'Absolute or relative path to train.py' : 'Path to shell project folder'
+
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface-overlay/50 p-3">
+      <button
+        type="button"
+        onClick={() => void onBrowseOpen()}
+        className={clsx(
+          'mb-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors',
+          isPython
+            ? 'bg-accent text-white hover:bg-accent-hover'
+            : 'border border-accent/30 bg-accent/10 text-accent hover:bg-accent/20',
+        )}
+      >
+        <Icon className="h-3.5 w-3.5" />
+        {browseLabel}
+      </button>
+      <div className="flex items-center gap-2">
+        <input
+          value={pathValue}
+          onChange={event => onPathChange(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void onManualOpen()
+            }
+          }}
+          placeholder={placeholder}
+          className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+        />
+        <button
+          type="button"
+          disabled={!pathReady}
+          onClick={() => void onManualOpen()}
+          className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {manualLabel}
+        </button>
+      </div>
     </div>
   )
 }

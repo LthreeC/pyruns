@@ -36,7 +36,7 @@ from pyruns.launcher import shell_workspace_root_for_run_root
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils.config_utils import save_yaml
-from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
+from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace, get_shell_runtime_for_workspace
 
 
 def test_prepare_env_allows_child_to_import_current_pyruns_from_script_workdir(tmp_path, monkeypatch):
@@ -606,6 +606,18 @@ def test_shell_runtime_custom_mode_uses_explicit_shell_executable(tmp_path):
     assert runtime["mode"] == "custom"
     assert runtime["source"] == "custom_shell"
     assert runtime["executable"] == "/custom/shell"
+
+
+def test_shell_runtime_config_filename_tracks_custom_shell_kind(tmp_path):
+    workspace = tmp_path / "_pyruns_" / "main"
+    workspace.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+
+    settings_path.write_text("shell_mode: custom\nshell_executable: sh\n", encoding="utf-8")
+    assert get_shell_config_filename_for_workspace(str(workspace)) == SHELL_CONFIG_FILENAME
+
+    settings_path.write_text("shell_mode: custom\nshell_executable: pwsh.exe\n", encoding="utf-8")
+    assert get_shell_config_filename_for_workspace(str(workspace)) == POWERSHELL_CONFIG_FILENAME
 
 
 def test_shell_workspace_root_uses_project_root_when_given_pyruns_root(tmp_path):

@@ -147,15 +147,6 @@ export default function Sidebar() {
 
         <button
           type="button"
-          onClick={() => navigate('/?launcher=1')}
-          className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-border-subtle bg-surface-raised px-3 py-2 text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
-        >
-          <Rocket className="h-4 w-4" />
-          <span>Open Launcher</span>
-        </button>
-
-        <button
-          type="button"
           onClick={() => void handleToggleShellWorkspace()}
           disabled={openingShell}
           className={clsx(

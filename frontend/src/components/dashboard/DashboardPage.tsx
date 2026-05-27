@@ -292,7 +292,7 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
   const memoryPct = gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total) * 100 : 0
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
         className="w-full max-w-2xl rounded-2xl border border-border-subtle bg-surface-raised shadow-[0_24px_80px_-48px_rgba(15,23,42,0.95)]"
         onClick={event => event.stopPropagation()}
