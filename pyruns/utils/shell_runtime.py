@@ -7,7 +7,11 @@ import shutil
 from functools import lru_cache
 from typing import Any, Dict
 
-from pyruns._config import ENV_KEY_SHELL
+from pyruns._config import (
+    ENV_KEY_SHELL,
+    SHELL_CONFIG_FILENAME,
+    SHELL_KIND_TO_CONFIG_FILENAME,
+)
 from pyruns.utils.settings import load_settings
 
 try:
@@ -197,3 +201,17 @@ def get_shell_runtime_for_task(task_dir: str | None = None) -> Dict[str, Any]:
     """Return the effective shell runtime configuration for one task directory."""
 
     return get_shell_runtime_for_workspace(_shell_settings_root_for_task(task_dir))
+
+
+def get_shell_config_filename_for_workspace(settings_root: str | None = None) -> str:
+    """Return the on-disk shell payload filename for one workspace."""
+
+    runtime = get_shell_runtime_for_workspace(settings_root)
+    terminal_kind = str(runtime.get("terminal_kind", "") or "").strip().lower()
+    return SHELL_KIND_TO_CONFIG_FILENAME.get(terminal_kind, SHELL_CONFIG_FILENAME)
+
+
+def get_shell_config_filename_for_task(task_dir: str | None = None) -> str:
+    """Return the on-disk shell payload filename for one task directory."""
+
+    return get_shell_config_filename_for_workspace(_shell_settings_root_for_task(task_dir))

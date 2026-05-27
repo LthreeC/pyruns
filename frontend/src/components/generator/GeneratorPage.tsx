@@ -619,7 +619,7 @@ export default function GeneratorPage() {
               bodyClassName="space-y-1.5 p-2"
             >
               <div className="text-2xs leading-relaxed text-txt-secondary">
-                Shell mode creates one <code className="text-txt-primary">config.sh</code> task at a time.
+                Shell mode creates one shell task file that matches the active shell, such as <code className="text-txt-primary">config.sh</code> or <code className="text-txt-primary">config.ps1</code>.
               </div>
               <div className="text-2xs leading-relaxed text-txt-secondary">
                 The script runs inside <code className="text-txt-primary">_shell_</code> by following the terminal that launched <code className="text-txt-primary">pyr</code>.
@@ -667,7 +667,7 @@ export default function GeneratorPage() {
                 : editorMode === 'yaml' && yamlContainsBatchSyntax
                   ? 'YAML mode does not expand batch syntax. Switch back to Form mode.'
                 : editorMode === 'shell'
-                  ? 'Creates one config.sh task immediately.'
+                  ? 'Creates one shell task immediately.'
                   : 'Creates one task immediately.'}
             </div>
           </div>

@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from unittest.mock import patch, MagicMock
 from pyruns._config import (
     ENV_KEY_CONFIG,
     CONFIG_FILENAME,
+    POWERSHELL_CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
@@ -35,6 +37,25 @@ from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
+
+
+def test_prepare_env_allows_child_to_import_current_pyruns_from_script_workdir(tmp_path, monkeypatch):
+    """Experiment scripts run from their own cwd but still need pyruns APIs."""
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    env = _prepare_env(task_dir=str(tmp_path), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "-c", "import pyruns; print(pyruns.__file__)"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).is_file()
+
 
 def test_config_node_init():
     data = {
@@ -294,7 +315,7 @@ def test_build_command_argparse(mock_extract, mock_detect):
     script_path = "train.py"
     config = {"lr": 0.05, "epochs": 10, "flag": True}
     
-    cmd, wd = _build_command(None, script_path, None, config)
+    cmd, wd, cleanup_paths = _build_command(None, script_path, None, config)
     
     # sys.executable, train.py, --lr, 0.05, --epochs, 10, --flag
     assert cmd[0] == sys.executable
@@ -302,6 +323,75 @@ def test_build_command_argparse(mock_extract, mock_detect):
     assert "--lr" in cmd
     assert "0.05" in cmd
     assert "--flag" in cmd
+    assert cleanup_paths == []
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_uses_declared_flags_and_bool_actions(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "batch_size": {"name": "--batch-size", "default": 32},
+        "use_amp": {"name": "--use-amp", "action": "store_true", "default": False},
+        "cache": {"name": "--no-cache", "action": "store_false", "default": True},
+    }
+
+    cmd, _, _ = _build_command(
+        None,
+        "train.py",
+        None,
+        {"batch_size": 64, "use_amp": True, "cache": False},
+    )
+
+    assert "--batch-size" in cmd
+    assert "--batch_size" not in cmd
+    assert cmd[cmd.index("--batch-size") + 1] == "64"
+    assert "--use-amp" in cmd
+    assert "--no-cache" in cmd
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_groups_nargs_list_values(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "layers": {"name": "--layers", "nargs": "+", "default": [64]},
+    }
+
+    cmd, _, _ = _build_command(None, "train.py", None, {"layers": [128, 256]})
+
+    assert cmd.count("--layers") == 1
+    index = cmd.index("--layers")
+    assert cmd[index:index + 3] == ["--layers", "128", "256"]
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_boolean_optional_and_typed_bool(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "compile": {
+            "name": "--compile",
+            "action": "argparse.BooleanOptionalAction",
+            "default": True,
+        },
+        "enabled": {
+            "name": "--enabled",
+            "type": "bool",
+            "default": True,
+        },
+    }
+
+    cmd, _, _ = _build_command(
+        None,
+        "train.py",
+        None,
+        {"compile": False, "enabled": False},
+    )
+
+    assert "--no-compile" in cmd
+    assert "--enabled" in cmd
+    assert cmd[cmd.index("--enabled") + 1] == "False"
     
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -311,12 +401,13 @@ def test_build_command_non_argparse(mock_detect):
     script_path = "train.py"
     config = {"lr": 0.05}
     
-    cmd, wd = _build_command(None, script_path, None, config)
+    cmd, wd, cleanup_paths = _build_command(None, script_path, None, config)
     
     # Should only contain python and script, no args appended
     assert len(cmd) == 2
     assert cmd[0] == sys.executable
     assert cmd[1] == "train.py"
+    assert cleanup_paths == []
 
 
 @patch("pyruns.core.executor._resolve_shell_executable")
@@ -328,7 +419,7 @@ def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
     script_path = task_dir / SHELL_CONFIG_FILENAME
     script_path.write_text("echo hello\n", encoding="utf-8")
 
-    cmd, wd = _build_command(
+    cmd, wd, cleanup_paths = _build_command(
         None,
         None,
         None,
@@ -340,6 +431,7 @@ def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
 
     assert cmd == ["/bin/bash", str(script_path)]
     assert wd == str(task_dir)
+    assert cleanup_paths == []
 
 
 @patch("pyruns.core.executor._resolve_shell_executable")
@@ -351,7 +443,7 @@ def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch)
     script_path = task_dir / SHELL_CONFIG_FILENAME
     script_path.write_text("#!/usr/bin/env bash\necho hello\n", encoding="utf-8")
 
-    cmd, wd = _build_command(
+    cmd, wd, cleanup_paths = _build_command(
         None,
         None,
         None,
@@ -361,13 +453,15 @@ def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch)
         config_file=SHELL_CONFIG_FILENAME,
     )
 
-    wrapper_path = task_dir / ".pyruns_shell_run.cmd"
+    wrapper_path = Path(cleanup_paths[0])
     assert cmd == [r"C:\Windows\System32\cmd.exe", "/d", "/c", str(wrapper_path)]
     assert wd == str(task_dir)
     assert wrapper_path.exists()
+    assert wrapper_path.parent != task_dir
     wrapper_content = wrapper_path.read_text(encoding="utf-8-sig")
     assert "#!/usr/bin/env bash" not in wrapper_content
     assert "echo hello" in wrapper_content
+    wrapper_path.unlink()
 
 
 @patch("pyruns.core.executor._resolve_shell_executable")
@@ -379,7 +473,7 @@ def test_build_command_shell_task_windows_powershell(mock_shell, tmp_path, monke
     script_path = task_dir / SHELL_CONFIG_FILENAME
     script_path.write_text("#!/usr/bin/env bash\nWrite-Host 'hello'\n", encoding="utf-8")
 
-    cmd, wd = _build_command(
+    cmd, wd, cleanup_paths = _build_command(
         None,
         None,
         None,
@@ -388,8 +482,7 @@ def test_build_command_shell_task_windows_powershell(mock_shell, tmp_path, monke
         task_dir=str(task_dir),
         config_file=SHELL_CONFIG_FILENAME,
     )
-
-    wrapper_path = task_dir / ".pyruns_shell_run.ps1"
+    wrapper_path = Path(cleanup_paths[0])
     assert cmd == [
         r"C:\Program Files\PowerShell\7\pwsh.exe",
         "-NoLogo",
@@ -402,11 +495,13 @@ def test_build_command_shell_task_windows_powershell(mock_shell, tmp_path, monke
     ]
     assert wd == str(task_dir)
     assert wrapper_path.exists()
+    assert wrapper_path.parent != task_dir
     wrapper_content = wrapper_path.read_text(encoding="utf-8-sig")
     assert "#!/usr/bin/env bash" not in wrapper_content
     assert "Write-Host 'hello'" in wrapper_content
     assert "[Console]::OutputEncoding" in wrapper_content
     assert "$OutputEncoding = $__pyrunsUtf8" in wrapper_content
+    wrapper_path.unlink()
 
 
 @patch("pyruns.utils.shell_runtime.get_follow_shell_runtime")
@@ -798,6 +893,7 @@ class TestCreateTaskObject:
             task_kind=TASK_KIND_SHELL,
             config_text="echo hello\n",
         )
+        assert obj["config_mode"] == TASK_KIND_SHELL
         assert obj["task_kind"] == TASK_KIND_SHELL
         assert obj["config_file"] == SHELL_CONFIG_FILENAME
         assert obj["config_text"] == "echo hello\n"
@@ -886,6 +982,10 @@ class TestTaskGeneratorCreateTask:
         assert t1["dir"] != t2["dir"]
         assert os.path.isdir(t1["dir"])
         assert os.path.isdir(t2["dir"])
+        assert t2["name"] == os.path.basename(t2["dir"])
+        with open(os.path.join(t2["dir"], "task_info.json"), "r", encoding="utf-8") as f:
+            info = json.load(f)
+        assert info["name"] == t2["name"]
 
     def test_empty_prefix_uses_timestamp(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
@@ -897,7 +997,8 @@ class TestTaskGeneratorCreateTask:
     def test_task_kind_written_per_task(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         task_cfg = gen.create_task("cfg-task", {"x": 1}, task_kind=TASK_KIND_CONFIG)
-        task_shell = gen.create_shell_task("shell-task", "echo shell\n")
+        with patch("pyruns.core.task_generator.get_shell_config_filename_for_workspace", return_value=SHELL_CONFIG_FILENAME):
+            task_shell = gen.create_shell_task("shell-task", "echo shell\n")
 
         with open(os.path.join(task_cfg["dir"], "task_info.json"), "r", encoding="utf-8") as f:
             info_cfg = json.load(f)
@@ -905,14 +1006,34 @@ class TestTaskGeneratorCreateTask:
             info_shell = json.load(f)
 
         assert info_cfg["task_kind"] == TASK_KIND_CONFIG
+        assert info_cfg["config_mode"] == TASK_KIND_CONFIG
         assert info_cfg["config_file"] == CONFIG_FILENAME
         assert info_shell["task_kind"] == TASK_KIND_SHELL
+        assert info_shell["config_mode"] == TASK_KIND_SHELL
         assert info_shell["config_file"] == SHELL_CONFIG_FILENAME
+
+    def test_create_shell_task_uses_runtime_specific_payload_filename(self, tmp_path):
+        gen = TaskGenerator(root_dir=str(tmp_path))
+
+        with patch(
+            "pyruns.core.task_generator.get_shell_config_filename_for_workspace",
+            return_value=POWERSHELL_CONFIG_FILENAME,
+        ):
+            task_shell = gen.create_shell_task("shell-task", "Write-Host 'hello'\n")
+
+        assert task_shell["config_mode"] == TASK_KIND_SHELL
+        assert task_shell["config_file"] == POWERSHELL_CONFIG_FILENAME
+        assert os.path.exists(os.path.join(task_shell["dir"], POWERSHELL_CONFIG_FILENAME))
 
     def test_invalid_task_kind_is_rejected(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         with pytest.raises(ValueError, match="Unsupported task kind"):
             gen.create_task("invalid", {"x": 1}, task_kind="unknown-kind")
+
+    def test_invalid_task_name_is_rejected(self, tmp_path):
+        gen = TaskGenerator(root_dir=str(tmp_path))
+        with pytest.raises(ValueError, match="invalid characters"):
+            gen.create_task("bad/name", {"x": 1})
 
 
 # ═══════════════════════════════════════════════════════════════

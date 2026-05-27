@@ -112,7 +112,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
-    { key: 'config', label: task.task_kind === 'shell' ? 'Script' : 'Config', icon: Settings },
+    { key: 'config', label: (task.config_mode || task.task_kind) === 'shell' ? 'Script' : 'Config', icon: Settings },
     { key: 'notes', label: 'Notes', icon: StickyNote },
     { key: 'env', label: 'Env', icon: Variable },
   ]
@@ -307,37 +307,112 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   )
 }
 
+function getTaskMode(task: Task): string {
+  return (task.config_mode || task.task_kind) === 'shell' ? 'shell' : 'config'
+}
+
+function formatScalarValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') {
+    return '(none)'
+  }
+  return String(value)
+}
+
+function formatRecordValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '(empty)'
+  }
+  if (typeof value !== 'object') {
+    return String(value)
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0 ? yamlStringify(value).trim() : '(empty)'
+  }
+  return Object.keys(value as Record<string, unknown>).length > 0
+    ? yamlStringify(value as Record<string, unknown>).trim()
+    : '(empty)'
+}
+
+function buildRunEntries(task: Task) {
+  const totalRuns = Math.max(
+    task.start_times?.length ?? 0,
+    task.finish_times?.length ?? 0,
+    task.pids?.length ?? 0,
+    task.records?.length ?? 0,
+    task.run_index || 0
+  )
+
+  return Array.from({ length: totalRuns }, (_, index) => ({
+    index: index + 1,
+    start: task.start_times?.[index] || '',
+    finish: task.finish_times?.[index] || '',
+    pid: task.pids?.[index],
+    record: task.records?.[index],
+  }))
+}
+
 function InfoTab({ task }: { task: Task }) {
   const rows: [string, string][] = [
     ['Status', task.status],
     ['Created', task.created_at],
-    ['Task Kind', task.task_kind],
-    ['Config File', task.config_file],
+    ['Mode', getTaskMode(task)],
     ['Run Index', String(task.run_index || 1)],
     ['Directory', task.dir],
   ]
 
-  if (task.start_times?.length) {
-    rows.push(['Last Start', task.start_times[task.start_times.length - 1]])
-  }
-  if (task.finish_times?.length) {
-    rows.push(['Last Finish', task.finish_times[task.finish_times.length - 1]])
-  }
-  if (task.pids?.length) {
-    rows.push(['PIDs', task.pids.join(', ')])
-  }
   if (task._load_error) {
     rows.push(['Load Error', task._load_error])
   }
 
+  const runs = buildRunEntries(task)
+
   return (
-    <div className="space-y-2">
-      {rows.map(([label, value]) => (
-        <div key={label} className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 border-b border-border-subtle py-2">
-          <span className="text-xs text-txt-tertiary">{label}</span>
-          <span className="break-all font-mono text-xs text-txt-primary">{value}</span>
-        </div>
-      ))}
+    <div className="space-y-5">
+      <section className="space-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 border-b border-border-subtle py-2">
+            <span className="text-xs text-txt-tertiary">{label}</span>
+            <span className="break-all font-mono text-xs text-txt-primary">{value}</span>
+          </div>
+        ))}
+      </section>
+
+      <section className="space-y-2">
+        <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Run History</div>
+        {runs.length === 0 ? (
+          <div className="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-3 text-xs text-txt-secondary">
+            No runs recorded yet.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {runs.map(run => (
+              <div key={run.index} className="rounded-lg border border-border-subtle bg-surface-overlay/70 p-3">
+                <div className="mb-2 text-xs font-medium text-txt-primary">Run #{run.index}</div>
+                <div className="space-y-1.5">
+                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Start</span>
+                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.start)}</span>
+                  </div>
+                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Finish</span>
+                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.finish)}</span>
+                  </div>
+                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">PID</span>
+                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.pid)}</span>
+                  </div>
+                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Record</span>
+                    <pre className="overflow-auto whitespace-pre-wrap rounded-md border border-border-subtle bg-surface-raised p-2 font-mono text-xs leading-relaxed text-txt-primary">
+                      {formatRecordValue(run.record)}
+                    </pre>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
@@ -354,7 +429,8 @@ function ConfigTab({ task }: { task: Task }) {
 
   return (
     <div className="space-y-2">
-      <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">{task.config_file}</div>
+      <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Payload File</div>
+      <div className="font-mono text-xs text-txt-primary">{task.config_file}</div>
       <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
         {content}
       </pre>

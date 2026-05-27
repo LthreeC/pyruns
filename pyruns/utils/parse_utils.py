@@ -146,6 +146,15 @@ def _extract_value(node: ast.AST) -> Any:
         return node.value
     if isinstance(node, ast.Name):
         return node.id
+    if isinstance(node, ast.Attribute):
+        owner = _extract_value(node.value)
+        return f"{owner}.{node.attr}" if owner else node.attr
+    if isinstance(node, ast.UnaryOp):
+        operand = _extract_value(node.operand)
+        if isinstance(node.op, ast.USub) and isinstance(operand, (int, float)):
+            return -operand
+        if isinstance(node.op, ast.UAdd) and isinstance(operand, (int, float)):
+            return operand
     if isinstance(node, ast.List):
         return [_extract_value(x) for x in node.elts]
     if isinstance(node, ast.Tuple):

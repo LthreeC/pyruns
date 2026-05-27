@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,7 +31,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.log_io import normalize_log_newlines
 from pyruns.utils.shell_runtime import get_shell_runtime_for_task
-from pyruns.utils.task_files import normalize_task_kind
+from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
 
 logger = get_logger(__name__)
 
@@ -44,6 +45,25 @@ def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
         f"[PYRUNS] Task {name} {phase.lower()}ed at {timestamp}\n"
         f"[PYRUNS] {'=' * (42 + len(title))}\n"
     )
+
+
+def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
+    """Ensure child scripts can import the same pyruns package as the parent."""
+
+    if not path or not os.path.isdir(path):
+        return
+
+    existing = str(env.get("PYTHONPATH", "") or "")
+    entries = [entry for entry in existing.split(os.pathsep) if entry]
+    normalized_entries = {
+        os.path.normcase(os.path.abspath(entry))
+        for entry in entries
+    }
+    normalized_path = os.path.normcase(os.path.abspath(path))
+    if normalized_path in normalized_entries:
+        return
+
+    env["PYTHONPATH"] = path if not existing else f"{path}{os.pathsep}{existing}"
 
 
 def _prepare_env(
@@ -65,6 +85,8 @@ def _prepare_env(
         env.pop(ENV_KEY_CONFIG, None)
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
+    package_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+    _prepend_pythonpath(env, package_parent)
     return env
 
 
@@ -135,23 +157,46 @@ def _powershell_utf8_preamble() -> str:
     )
 
 
-def _materialize_windows_shell_wrapper(task_dir: str, script_path: str, shell_path: str) -> Tuple[List[str], str]:
+def _write_temp_shell_wrapper(
+    *,
+    suffix: str,
+    content: str,
+    encoding: str,
+    newline: str,
+) -> str:
+    """Write one temporary wrapper file outside the task directory."""
+
+    fd, wrapper_path = tempfile.mkstemp(prefix="pyruns-shell-", suffix=suffix)
+    os.close(fd)
+    with open(wrapper_path, "w", encoding=encoding, newline=newline) as handle:
+        handle.write(content)
+    return wrapper_path
+
+
+def _materialize_windows_shell_wrapper(
+    task_dir: str,
+    script_path: str,
+    shell_path: str,
+) -> Tuple[List[str], str, List[str]]:
     """Create a native Windows wrapper script around the stored shell task body."""
 
     if _is_posix_shell_executable(shell_path):
-        return [shell_path, script_path], task_dir
+        return [shell_path, script_path], task_dir, []
 
     script_body = _read_shell_script_body(script_path)
     if _is_powershell_executable(shell_path):
-        wrapper_path = os.path.join(task_dir, ".pyruns_shell_run.ps1")
         wrapper_body = "\n".join(
             [
                 _powershell_utf8_preamble(),
                 script_body.rstrip() or "exit 0",
             ]
         )
-        with open(wrapper_path, "w", encoding="utf-8-sig", newline="\r\n") as handle:
-            handle.write(wrapper_body)
+        wrapper_path = _write_temp_shell_wrapper(
+            suffix=".ps1",
+            content=wrapper_body,
+            encoding="utf-8-sig",
+            newline="\r\n",
+        )
         return [
             shell_path,
             "-NoLogo",
@@ -161,28 +206,31 @@ def _materialize_windows_shell_wrapper(task_dir: str, script_path: str, shell_pa
             "Bypass",
             "-File",
             wrapper_path,
-        ], task_dir
+        ], task_dir, [wrapper_path]
 
-    wrapper_path = os.path.join(task_dir, ".pyruns_shell_run.cmd")
     wrapper_lines = [
         "@echo off",
         "setlocal",
         "chcp 65001 >nul",
         script_body.rstrip() or "exit /b 0",
     ]
-    with open(wrapper_path, "w", encoding="utf-8-sig", newline="\r\n") as handle:
-        handle.write("\r\n".join(wrapper_lines) + "\r\n")
-    return [shell_path, "/d", "/c", wrapper_path], task_dir
+    wrapper_path = _write_temp_shell_wrapper(
+        suffix=".cmd",
+        content="\r\n".join(wrapper_lines) + "\r\n",
+        encoding="utf-8-sig",
+        newline="\r\n",
+    )
+    return [shell_path, "/d", "/c", wrapper_path], task_dir, [wrapper_path]
 
 
-def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], str]:
+def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], str, List[str]]:
     script_path = os.path.join(task_dir, config_file or SHELL_CONFIG_FILENAME)
     if not os.path.exists(script_path):
         raise FileNotFoundError(script_path)
     shell_path = _resolve_shell_executable(task_dir)
     if os.name == "nt":
         return _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
-    return [shell_path, script_path], task_dir
+    return [shell_path, script_path], task_dir, []
 
 
 def _build_command(
@@ -194,7 +242,7 @@ def _build_command(
     task_kind: str = TASK_KIND_CONFIG,
     task_dir: str | None = None,
     config_file: str = CONFIG_FILENAME,
-) -> Tuple[Any, Optional[str]]:
+) -> Tuple[Any, Optional[str], List[str]]:
     """Build the subprocess command list from task metadata + payload."""
 
     normalized_kind = normalize_task_kind(task_kind)
@@ -215,6 +263,7 @@ def _build_command(
 
         if config_source == "argparse":
             positional_order: List[str] = []
+            ap_params: Dict[str, Dict[str, Any]] = {}
             try:
                 ap_params = extract_argparse_params(script_path)
                 for dest, info in ap_params.items():
@@ -225,6 +274,63 @@ def _build_command(
                         positional_order.append(dest)
             except Exception:
                 pass
+
+            def _option_flag_for_key(key: str) -> str:
+                info = ap_params.get(key, {}) if isinstance(ap_params, dict) else {}
+                flags = info.get("flags")
+                if not isinstance(flags, (list, tuple)):
+                    raw_name = info.get("name")
+                    flags = [raw_name] if raw_name else []
+                normalized_flags = [str(flag) for flag in flags if str(flag).startswith("-")]
+                long_flags = [flag for flag in normalized_flags if flag.startswith("--")]
+                if long_flags:
+                    return long_flags[0]
+                if normalized_flags:
+                    return normalized_flags[0]
+                return f"--{key}"
+
+            def _append_option(key: str, value: Any) -> None:
+                info = ap_params.get(key, {}) if isinstance(ap_params, dict) else {}
+                action = str(info.get("action", "") or "")
+                nargs = info.get("nargs")
+                flag = _option_flag_for_key(key)
+
+                def _negative_bool_flag(raw_flag: str) -> str:
+                    if raw_flag.startswith("--no-"):
+                        return raw_flag
+                    if raw_flag.startswith("--"):
+                        return f"--no-{raw_flag[2:]}"
+                    return raw_flag
+
+                if isinstance(value, bool):
+                    if action.endswith("BooleanOptionalAction"):
+                        cmd_list.append(flag if value else _negative_bool_flag(flag))
+                    elif action == "store_false":
+                        if not value:
+                            cmd_list.append(flag)
+                    elif action == "store_true":
+                        if value:
+                            cmd_list.append(flag)
+                    elif key in ap_params:
+                        cmd_list.append(flag)
+                        cmd_list.append(str(value))
+                    elif value:
+                        cmd_list.append(flag)
+                    return
+
+                if isinstance(value, list):
+                    if action != "append" and nargs not in (None, ""):
+                        cmd_list.append(flag)
+                        cmd_list.extend(str(item) for item in value)
+                    else:
+                        for item in value:
+                            cmd_list.append(flag)
+                            cmd_list.append(str(item))
+                    return
+
+                if value is not None:
+                    cmd_list.append(flag)
+                    cmd_list.append(str(value))
 
             for key in positional_order:
                 if key in config and config[key] is not None:
@@ -238,16 +344,7 @@ def _build_command(
             for key, value in config.items():
                 if key in positional_order:
                     continue
-                if isinstance(value, bool):
-                    if value:
-                        cmd_list.append(f"--{key}")
-                elif isinstance(value, list):
-                    for item in value:
-                        cmd_list.append(f"--{key}")
-                        cmd_list.append(str(item))
-                elif value is not None:
-                    cmd_list.append(f"--{key}")
-                    cmd_list.append(str(value))
+                _append_option(key, value)
         elif config_source == "hydra":
             raise RuntimeError(
                 "Hydra script detected. Use a shell workspace/task to launch it explicitly."
@@ -262,7 +359,7 @@ def _build_command(
         if not workdir:
             workdir = os.path.dirname(script_path)
 
-    return command, workdir
+    return command, workdir, []
 
 
 def _append_error_summary(
@@ -319,8 +416,8 @@ def run_task_worker(
 
     log_path = _get_log_path(task_dir, run_index)
     task_meta = load_task_info(task_dir)
-    task_kind = normalize_task_kind(task_meta.get("task_kind"))
-    config_file = str(task_meta.get("config_file", "") or "")
+    task_kind = normalize_task_kind(task_meta.get("config_mode", task_meta.get("task_kind")))
+    config_file = resolve_task_config_file(task_meta, task_kind, task_dir)
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
     meta_workdir = task_meta.get("workdir")
@@ -350,6 +447,7 @@ def run_task_worker(
 
     command = None
     workdir = None
+    cleanup_paths: List[str] = []
     proc = None
     status = "failed"
     progress = 0.0
@@ -357,7 +455,7 @@ def run_task_worker(
     end_str = ""
 
     try:
-        command, workdir = _build_command(
+        command, workdir, cleanup_paths = _build_command(
             meta_cmd,
             script_path,
             meta_workdir,
@@ -533,4 +631,11 @@ def run_task_worker(
         )
         logger.error("%s", block)
         return {"status": "failed", "progress": 0.0, "error": str(exc)}
+    finally:
+        for cleanup_path in cleanup_paths:
+            try:
+                if cleanup_path and os.path.exists(cleanup_path):
+                    os.remove(cleanup_path)
+            except OSError:
+                logger.debug("Failed to remove temporary shell wrapper: %s", cleanup_path)
 

@@ -115,6 +115,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("dataset")
 parser.add_argument("-q", dest="quiet_mode", action="store_true")
 parser.add_argument("--device", choices=["cpu", "cuda"], nargs="?", default="cpu")
+parser.add_argument("--limit", type=int, default=-1)
 """
     p_script.write_text(code, encoding="utf-8")
     params = extract_argparse_params(str(p_script))
@@ -123,6 +124,22 @@ parser.add_argument("--device", choices=["cpu", "cuda"], nargs="?", default="cpu
     assert params["quiet_mode"]["default"] is False
     assert params["device"]["choices"] == ["cpu", "cuda"]
     assert params["device"]["nargs"] == "?"
+    assert params["limit"]["default"] == -1
+
+
+def test_extract_argparse_params_supports_boolean_optional_action(tmp_path):
+    p_script = tmp_path / "boolean_optional.py"
+    code = """
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
+"""
+    p_script.write_text(code, encoding="utf-8")
+
+    params = extract_argparse_params(str(p_script))
+
+    assert params["compile"]["action"] == "argparse.BooleanOptionalAction"
+    assert params["compile"]["default"] is True
 
 
 def test_argparse_params_to_dict():

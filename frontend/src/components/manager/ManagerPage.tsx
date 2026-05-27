@@ -435,7 +435,7 @@ function TaskCard({
 }) {
   const actionBtn = getActionButton(task)
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
-  const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'config'
+  const taskKindLabel = (task.config_mode || task.task_kind) === 'shell' ? 'shell' : 'config'
   const cardDescription = task._load_error || task.preview_text || 'No preview available.'
 
   return (

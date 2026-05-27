@@ -9,6 +9,7 @@ export interface Task {
   config: Record<string, any>
   config_text: string
   config_file: string
+  config_mode: TaskKind
   task_kind: TaskKind
   pinned: boolean
   notes: string

@@ -13,7 +13,8 @@ from pyruns._config import (
     TASK_KIND_TO_CONFIG_FILENAME,
 )
 from pyruns.utils import get_logger, get_now_str
-from pyruns.utils.info_io import load_script_info, save_task_info
+from pyruns.utils.info_io import load_script_info, save_task_info, validate_task_name
+from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
     normalize_task_kind,
@@ -59,6 +60,7 @@ def create_task_object(
         "config": config or {},
         "config_text": config_text if normalized_kind == TASK_KIND_SHELL else "",
         "config_file": resolved_config_file,
+        "config_mode": normalized_kind,
         "task_kind": normalized_kind,
         "log": "",
         "progress": 0.0,
@@ -68,8 +70,8 @@ def create_task_object(
         "start_times": [],
         "finish_times": [],
         "pids": [],
-        "records": 0,
-        "tracks": 0,
+        "records": [],
+        "tracks": [],
         "notes": "",
         "preview_text": preview_text,
         "search_text": search_text,
@@ -114,6 +116,7 @@ class TaskGenerator:
         config_text: str = "",
         group_index: str = "",
         task_kind: str = TASK_KIND_CONFIG,
+        config_file: str | None = None,
     ) -> Dict[str, Any]:
         """Create one task folder with task metadata, task payload, and ``run_logs/``."""
 
@@ -123,15 +126,21 @@ class TaskGenerator:
             base_name = f"task_{timestamp}"
 
         folder_name = f"{base_name}_{group_index}" if group_index else base_name
+        name_error = validate_task_name(folder_name)
+        if name_error:
+            raise ValueError(name_error)
         if os.path.exists(os.path.join(self.root_dir, folder_name)):
             folder_name = f"{folder_name}_{int(time.time() * 1000)}"
+            name_error = validate_task_name(folder_name)
+            if name_error:
+                raise ValueError(name_error)
 
         task_dir = os.path.join(self.root_dir, folder_name)
         os.makedirs(task_dir, exist_ok=True)
 
-        display_name = f"{base_name}_{group_index}" if group_index else base_name
+        display_name = folder_name
         normalized_kind = _resolve_requested_task_kind(task_kind)
-        resolved_config_file = TASK_KIND_TO_CONFIG_FILENAME[normalized_kind]
+        resolved_config_file = config_file or TASK_KIND_TO_CONFIG_FILENAME[normalized_kind]
         clean_config = self._clean_task_config(config or {})
         clean_config_text = str(config_text or "")
 
@@ -150,6 +159,7 @@ class TaskGenerator:
             "progress": task_obj["progress"],
             "created_at": task_obj["created_at"],
             "pinned": task_obj["pinned"],
+            "config_mode": normalized_kind,
             "task_kind": normalized_kind,
             "config_file": resolved_config_file,
             "start_times": [],
@@ -204,11 +214,14 @@ class TaskGenerator:
         name_prefix: str,
         shell_text: str,
     ) -> Dict[str, Any]:
-        """Create a single shell task backed by ``config.sh``."""
+        """Create a single shell task backed by one shell-native payload file."""
+
+        config_file = get_shell_config_filename_for_workspace(os.path.dirname(self.root_dir))
 
         return self.create_task(
             name_prefix,
             config=None,
             config_text=shell_text,
             task_kind=TASK_KIND_SHELL,
+            config_file=config_file,
         )

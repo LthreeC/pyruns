@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple
 
 from pyruns._config import (
     CONFIG_FILENAME,
+    SHELL_CONFIG_FILENAMES,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
     TASK_KIND_TO_CONFIG_FILENAME,
@@ -32,19 +33,27 @@ def normalize_task_kind(value: Any) -> str:
     return kind if kind in TASK_KINDS else TASK_KIND_CONFIG
 
 
-def resolve_task_config_file(info: Dict[str, Any], task_kind: str | None = None) -> str:
-    normalized_kind = normalize_task_kind(task_kind or info.get("task_kind"))
+def resolve_task_config_file(
+    info: Dict[str, Any],
+    task_kind: str | None = None,
+    task_dir: str | None = None,
+) -> str:
+    normalized_kind = normalize_task_kind(task_kind or info.get("config_mode", info.get("task_kind")))
     config_file = str(info.get("config_file", "") or "").strip()
     if config_file:
         return config_file
+    if normalized_kind == TASK_KIND_SHELL and task_dir:
+        for candidate in SHELL_CONFIG_FILENAMES:
+            if os.path.exists(os.path.join(task_dir, candidate)):
+                return candidate
     return TASK_KIND_TO_CONFIG_FILENAME.get(normalized_kind, CONFIG_FILENAME)
 
 
-def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[Dict[str, Any], str, str, str]:
+def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str, str]:
     """Return ``(task_kind, config, config_text, load_error)`` for one task."""
 
-    task_kind = normalize_task_kind(info.get("task_kind"))
-    config_file = resolve_task_config_file(info, task_kind)
+    task_kind = normalize_task_kind(info.get("config_mode", info.get("task_kind")))
+    config_file = resolve_task_config_file(info, task_kind, task_dir)
     config_path = os.path.join(task_dir, config_file)
 
     if not os.path.exists(config_path):

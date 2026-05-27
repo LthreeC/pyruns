@@ -350,15 +350,19 @@ def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     assert shell_payload["script_name"] == "_shell_"
     assert shell_payload["templates"] == []
 
-    create_response = client.post(
-        "/api/generator/create",
-        json={
-            "name_prefix": "shell-demo",
-            "mode": "shell",
-            "shell_text": "echo hello from shell\n",
-            "append_timestamp": False,
-        },
-    )
+    with patch(
+        "pyruns.core.task_generator.get_shell_config_filename_for_workspace",
+        return_value=SHELL_CONFIG_FILENAME,
+    ):
+        create_response = client.post(
+            "/api/generator/create",
+            json={
+                "name_prefix": "shell-demo",
+                "mode": "shell",
+                "shell_text": "echo hello from shell\n",
+                "append_timestamp": False,
+            },
+        )
 
     assert create_response.status_code == 200
     payload = create_response.json()
