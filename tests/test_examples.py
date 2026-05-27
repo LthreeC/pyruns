@@ -280,7 +280,9 @@ def test_new_examples_do_not_contain_ui_batch_pipe_syntax():
         path
         for root in roots
         for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".md", ".py", ".yaml", ".yml", ".sh", ".ps1", ".cmd"}
+        if path.is_file()
+        and "_pyruns_" not in path.parts
+        and path.suffix.lower() in {".md", ".py", ".yaml", ".yml", ".sh", ".ps1", ".cmd"}
     ]
 
     assert checked_files

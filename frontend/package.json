@@ -15,10 +15,8 @@
     "zustand": "^5.0.2",
     "@xterm/xterm": "^5.5.0",
     "@xterm/addon-fit": "^0.10.0",
-    "@xterm/addon-web-links": "^0.11.0",
     "@uiw/react-codemirror": "^4.23.7",
     "@codemirror/lang-yaml": "^6.1.2",
-    "@codemirror/lang-json": "^6.0.1",
     "lucide-react": "^0.460.0",
     "clsx": "^2.1.1",
     "yaml": "^2.6.1"

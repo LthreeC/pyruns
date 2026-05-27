@@ -441,6 +441,34 @@ def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
     assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
 
 
+def test_open_shell_root_endpoint_accepts_manual_directory_path(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    target_dir = tmp_path / "manual_shell_project"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    response = client.post("/api/launcher/open-shell-root", json={"path": str(target_dir)})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace_kind"] == WORKSPACE_KIND_SHELL
+    assert payload["run_root"].endswith("_pyruns_/_shell_")
+    assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
+
+
+def test_open_shell_root_endpoint_rejects_missing_manual_directory(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.post("/api/launcher/open-shell-root", json={"path": str(tmp_path / "missing")})
+
+    assert response.status_code == 400
+    assert "Shell folder" in response.json()["detail"]
+
+
 def test_tasks_endpoint_supports_offset_pagination(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")

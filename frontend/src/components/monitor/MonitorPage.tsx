@@ -46,7 +46,9 @@ export default function MonitorPage() {
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
-  const sidebarWidthPct = Number.isFinite(sidebarWidthRaw) ? sidebarWidthRaw : 14
+  const sidebarWidthPct = Number.isFinite(sidebarWidthRaw)
+    ? Math.min(35, Math.max(10, sidebarWidthRaw))
+    : 14
   const terminalVisible = Boolean(selectedTaskName)
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
 

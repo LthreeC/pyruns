@@ -4,8 +4,8 @@ Global log event emitter — thread-safe publish-subscribe for real-time logs.
 Executor threads call ``emit()`` from their reader threads;
 Monitor UI calls ``subscribe()`` / ``unsubscribe()`` per task.
 ``emit()`` uses ``call_soon_threadsafe`` to push data into the
-NiceGUI (asyncio) event loop so that ``term.write()`` is always
-called on the correct thread.
+bound asyncio event loop so websocket/UI callbacks run on the
+correct thread.
 """
 import asyncio
 import threading
@@ -59,8 +59,8 @@ class LogEmitter:
         """Broadcast *chunk_text* to all subscribers of *task_name*.
 
         Called from executor reader threads — dispatches into the
-        asyncio event loop via ``call_soon_threadsafe`` so that
-        NiceGUI UI updates happen safely.
+        asyncio event loop via ``call_soon_threadsafe`` so websocket
+        and UI updates happen safely.
 
         For CLI subscribers (no asyncio loop), callbacks are called
         directly from the emit thread — CLI consumers should use

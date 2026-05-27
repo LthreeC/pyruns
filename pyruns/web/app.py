@@ -83,6 +83,12 @@ class LauncherOpenRequest(BaseModel):
     config_path: str | None = None
 
 
+class ShellRootOpenRequest(BaseModel):
+    """Manual shell workspace folder selection payload."""
+
+    path: str = Field(min_length=1)
+
+
 class GeneratorCreateRequest(BaseModel):
     """Task generation payload for the React generator workspace."""
 
@@ -302,6 +308,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     def pick_launcher_shell_root() -> dict[str, Any]:
         try:
             return get_runtime().pick_and_open_shell_workspace()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/launcher/open-shell-root")
+    def open_launcher_shell_root(payload: ShellRootOpenRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().open_shell_workspace_at(payload.path)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

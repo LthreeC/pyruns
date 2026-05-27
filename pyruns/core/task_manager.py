@@ -73,17 +73,6 @@ class TaskManager:
 
         threading.Thread(target=self._scheduler_loop, daemon=True).start()
 
-        import sys
-
-        if "nicegui" in sys.modules:
-            try:
-                from nicegui import app
-
-                if hasattr(app, "on_shutdown"):
-                    app.on_shutdown(self._cleanup_on_shutdown)
-            except Exception:
-                pass
-
         atexit.register(self._cleanup_on_shutdown)
 
     def on_change(self, callback: Callable[[], None]) -> None:

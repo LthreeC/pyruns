@@ -15,7 +15,6 @@ keywords = [
     "hyperparameter-tuning",
     "task-runner",
     "monitoring",
-    "nicegui",
     "machine-learning",
 ]
 classifiers = [
@@ -36,7 +35,7 @@ classifiers = [
 ]
 dependencies = [
     "fastapi>=0.110",
-    "nicegui>=1.4",
+    "pydantic>=1.10,<3",
     "psutil>=5.9",
     "pyyaml>=5.4",
     "uvicorn>=0.29",
@@ -55,6 +54,7 @@ pyruns = "pyruns.cli:pyr"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pyruns*"]
+exclude = ["pyruns.ui*"]
 
 [tool.setuptools.package-data]
 "pyruns" = ["*.css", "**/*.css", "*.html", "**/*.html", "*.js", "**/*.js", "*.txt", "**/*.txt"]

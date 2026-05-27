@@ -36,9 +36,11 @@ export default function DashboardPage() {
   const refreshIntervalRaw = Number(workspace?.settings?.header_refresh_interval ?? 3)
   const refreshIntervalSec = Number.isFinite(refreshIntervalRaw) ? Math.max(1, refreshIntervalRaw) : 3
 
-  const refreshDashboard = useCallback(() => {
-    void fetch()
-    void api.getMetrics().then(setMetrics).catch(() => {})
+  const refreshDashboard = useCallback(async () => {
+    await Promise.all([
+      fetch(),
+      api.getMetrics().then(setMetrics).catch(() => {}),
+    ])
   }, [fetch])
 
   const openTaskInMonitor = useCallback((task: Task) => {

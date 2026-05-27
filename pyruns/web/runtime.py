@@ -757,3 +757,15 @@ class PyrunsRuntime:
         workspace = bootstrap_shell_workspace(project_root)
         self.reload(workspace)
         return self.get_workspace_info()
+
+    def open_shell_workspace_at(self, project_dir: str) -> Dict[str, Any]:
+        """Activate a shell workspace for a user-entered project directory."""
+
+        selected_dir = normalize_path(project_dir)
+        if not os.path.isdir(selected_dir):
+            raise ValueError(f"Shell folder does not exist: {project_dir}")
+
+        project_root = normalize_path(os.path.join(selected_dir, _cfg.DEFAULT_ROOT_NAME))
+        workspace = bootstrap_shell_workspace(project_root)
+        self.reload(workspace)
+        return self.get_workspace_info()

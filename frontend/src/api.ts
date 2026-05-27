@@ -168,3 +168,9 @@ export const pickLauncherScript = () =>
 
 export const pickLauncherShellRoot = () =>
   request<WorkspaceInfo>('/api/launcher/pick-shell-root', { method: 'POST' })
+
+export const openLauncherShellRoot = (path: string) =>
+  request<WorkspaceInfo>('/api/launcher/open-shell-root', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })

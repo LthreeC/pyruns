@@ -20,6 +20,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const [searchParams] = useSearchParams()
   const [manualScriptPath, setManualScriptPath] = useState('')
   const [manualConfigPath, setManualConfigPath] = useState('')
+  const [manualShellRootPath, setManualShellRootPath] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -104,6 +105,24 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     }
   }, [navigate, onClose, setWorkspace])
 
+  const handleManualShellRoot = useCallback(async () => {
+    const shellPath = manualShellRootPath.trim()
+    if (!shellPath) {
+      setError('Enter a folder path.')
+      return
+    }
+
+    setError('')
+    try {
+      const workspace = await api.openLauncherShellRoot(shellPath)
+      setWorkspace(workspace)
+      onClose()
+      navigate('/generator')
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [manualShellRootPath, navigate, onClose, setWorkspace])
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="bg-surface-raised border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
@@ -174,6 +193,27 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
                   >
                     Use Path
+                  </button>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <FolderPlus className="h-4 w-4 text-zinc-500" />
+                  <input
+                    value={manualShellRootPath}
+                    onChange={event => setManualShellRootPath(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void handleManualShellRoot()
+                      }
+                    }}
+                    placeholder="Path to shell project folder"
+                    className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+                  />
+                  <button
+                    onClick={() => void handleManualShellRoot()}
+                    className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
+                  >
+                    Open Folder
                   </button>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">

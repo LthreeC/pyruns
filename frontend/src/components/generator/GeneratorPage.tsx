@@ -191,7 +191,21 @@ function getBatchTriggerKind(text: string) {
   return 'batch'
 }
 
-function inferParamType(value: any): keyof typeof PARAM_TYPE_STYLES {
+type ParamType = keyof typeof PARAM_TYPE_STYLES
+
+interface PinnedParamRow {
+  name: string
+  fullKey: string
+  value: any
+  declaredType?: ParamType
+  batchActive: boolean
+}
+
+function isNestedGroup(value: any) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function inferParamType(value: any): ParamType {
   if (value === null || value === undefined) {
     return 'null'
   }
@@ -207,7 +221,7 @@ function inferParamType(value: any): keyof typeof PARAM_TYPE_STYLES {
   return 'str'
 }
 
-function buildTypeMap(config: Record<string, any> | null, prefix = ''): Record<string, keyof typeof PARAM_TYPE_STYLES> {
+function buildTypeMap(config: Record<string, any> | null, prefix = ''): Record<string, ParamType> {
   if (!config) {
     return {}
   }
@@ -218,13 +232,83 @@ function buildTypeMap(config: Record<string, any> | null, prefix = ''): Record<s
       continue
     }
     const fullKey = prefix ? `${prefix}.${key}` : key
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    if (isNestedGroup(value)) {
       Object.assign(result, buildTypeMap(value, fullKey))
       continue
     }
     result[fullKey] = inferParamType(value)
   }
   return result
+}
+
+function getValueAtPath(data: Record<string, any>, fullKey: string) {
+  const parts = fullKey.split('.').filter(Boolean)
+  let current: any = data
+
+  for (const part of parts) {
+    if (!isNestedGroup(current) || !Object.prototype.hasOwnProperty.call(current, part)) {
+      return undefined
+    }
+    current = current[part]
+  }
+
+  return current
+}
+
+function updateValueAtPath(data: Record<string, any>, fullKey: string, value: any): Record<string, any> {
+  const parts = fullKey.split('.').filter(Boolean)
+  if (parts.length === 0) {
+    return data
+  }
+
+  const [head, ...tail] = parts
+  if (tail.length === 0) {
+    return { ...data, [head]: value }
+  }
+
+  const current = data[head]
+  if (!isNestedGroup(current)) {
+    return data
+  }
+
+  return {
+    ...data,
+    [head]: updateValueAtPath(current, tail.join('.'), value),
+  }
+}
+
+function collectPinnedRows(
+  data: Record<string, any>,
+  pinnedParams: string[],
+  declaredTypeMap: Record<string, ParamType>,
+  batchParams: string[],
+) {
+  const rows: PinnedParamRow[] = []
+  const seen = new Set<string>()
+  const batchSet = new Set(batchParams)
+
+  for (const fullKey of pinnedParams) {
+    if (seen.has(fullKey) || fullKey.split('.').some(part => part.startsWith('_meta'))) {
+      continue
+    }
+    seen.add(fullKey)
+
+    const value = getValueAtPath(data, fullKey)
+    if (value === undefined || isNestedGroup(value)) {
+      continue
+    }
+
+    const parts = fullKey.split('.')
+    rows.push({
+      name: parts[parts.length - 1] || fullKey,
+      fullKey,
+      value,
+      declaredType: declaredTypeMap[fullKey],
+      batchActive: batchSet.has(fullKey),
+    })
+  }
+
+  return rows
 }
 
 export default function GeneratorPage() {
@@ -741,6 +825,11 @@ function FormEditor({
   onChange: (data: Record<string, any>) => void
 }) {
   const [data, setData] = useState<Record<string, any>>(config || {})
+  const pinnedRows = useMemo(
+    () => collectPinnedRows(data, pinnedParams, declaredTypeMap, batchParams),
+    [batchParams, data, declaredTypeMap, pinnedParams]
+  )
+  const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey)), [pinnedRows])
 
   useEffect(() => {
     if (config) {
@@ -760,12 +849,32 @@ function FormEditor({
     onChange(next)
   }
 
+  const handlePinnedChange = (fullKey: string, value: any) => {
+    const next = updateValueAtPath(data, fullKey, value)
+    setData(next)
+    onChange(next)
+  }
+
   return (
     <div className="h-full overflow-y-auto p-3">
+      {pinnedRows.length > 0 && (
+        <PinnedParameters
+          rows={pinnedRows}
+          columns={columns}
+          onTogglePin={onTogglePin}
+          onChange={handlePinnedChange}
+        />
+      )}
+      {pinnedRows.length > 0 && (
+        <div className="mb-2 mt-3 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
+          <LayoutGrid className="h-3.5 w-3.5" />
+          <span>All Parameters</span>
+        </div>
+      )}
       <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
-        {allKeys.map(key => {
+        {allKeys.filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key)).map(key => {
           const value = data[key]
-          if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          if (isNestedGroup(value)) {
             return (
               <div key={key} className="col-span-full">
                 <NestedSection
@@ -774,6 +883,7 @@ function FormEditor({
                   columns={columns}
                   declaredTypeMap={declaredTypeMap}
                   pinnedParams={pinnedParams}
+                  pinnedRowKeys={pinnedRowKeys}
                   batchParams={batchParams}
                   prefix={key}
                   onTogglePin={onTogglePin}
@@ -800,12 +910,51 @@ function FormEditor({
   )
 }
 
+function PinnedParameters({
+  rows,
+  columns,
+  onTogglePin,
+  onChange,
+}: {
+  rows: PinnedParamRow[]
+  columns: number
+  onTogglePin: (key: string) => void
+  onChange: (fullKey: string, value: any) => void
+}) {
+  return (
+    <section className="rounded-md border border-accent/20 bg-accent/5 p-2">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-accent">
+        <Pin className="h-3.5 w-3.5" />
+        <span>Pinned Parameters</span>
+        <span className="rounded-full border border-accent/20 px-1.5 py-0.5 text-2xs font-medium">
+          {rows.length}
+        </span>
+      </div>
+      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+        {rows.map(row => (
+          <ParamRow
+            key={row.fullKey}
+            name={row.fullKey}
+            value={row.value}
+            declaredType={row.declaredType}
+            pinned
+            batchActive={row.batchActive}
+            onChange={next => onChange(row.fullKey, next)}
+            onTogglePin={() => onTogglePin(row.fullKey)}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function NestedSection({
   name,
   data,
   columns,
   declaredTypeMap,
   pinnedParams,
+  pinnedRowKeys,
   batchParams,
   prefix,
   onTogglePin,
@@ -816,6 +965,7 @@ function NestedSection({
   columns: number
   declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
   pinnedParams: string[]
+  pinnedRowKeys: Set<string>
   batchParams: string[]
   prefix: string
   onTogglePin: (key: string) => void
@@ -845,7 +995,7 @@ function NestedSection({
           <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
             {Object.entries(data).filter(([key]) => !key.startsWith('_meta')).map(([key, value]) => {
               const fullKey = `${prefix}.${key}`
-              if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+              if (isNestedGroup(value)) {
                 return (
                   <div key={key} className="col-span-full">
                     <NestedSection
@@ -854,6 +1004,7 @@ function NestedSection({
                       columns={columns}
                       declaredTypeMap={declaredTypeMap}
                       pinnedParams={pinnedParams}
+                      pinnedRowKeys={pinnedRowKeys}
                       batchParams={batchParams}
                       prefix={fullKey}
                       onTogglePin={onTogglePin}
@@ -861,6 +1012,9 @@ function NestedSection({
                     />
                   </div>
                 )
+              }
+              if (pinnedRowKeys.has(fullKey)) {
+                return null
               }
               return (
                 <ParamRow
@@ -958,8 +1112,9 @@ function ParamRow({
           onTogglePin()
         }}
         title={pinned ? 'Unpin' : 'Pin'}
+        aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
         className={clsx(
-          'flex-none rounded-md p-0.5 transition-colors',
+          'flex h-6 w-6 flex-none items-center justify-center rounded-md transition-colors',
           pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
         )}
       >

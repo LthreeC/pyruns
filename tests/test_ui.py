@@ -1,50 +1,73 @@
-from unittest.mock import MagicMock, patch
-
-from pyruns.ui.state import AppState
-import pyruns.ui.components.header as header
-from pyruns.ui.components.header import _shared_metrics_snapshot
+from pathlib import Path
 
 
-def test_app_state_defaults():
-    """Verify default values are set correctly without settings."""
-    state = AppState()
-    assert state.manager_columns == 5
-    assert state.max_workers == 1
-    assert state.execution_mode == "thread"
-    assert state.active_tab == "generator"
+FRONTEND_GENERATOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "generator" / "GeneratorPage.tsx"
+FRONTEND_POLLING = Path(__file__).resolve().parents[1] / "frontend" / "src" / "hooks" / "usePolling.ts"
+FRONTEND_STORE = Path(__file__).resolve().parents[1] / "frontend" / "src" / "store.ts"
+FRONTEND_DASHBOARD = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "dashboard" / "DashboardPage.tsx"
+FRONTEND_MONITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx"
+FRONTEND_LAUNCHER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "launcher" / "LauncherPage.tsx"
+FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.ts"
 
 
-def test_app_state_with_settings():
-    """Verify settings dictionary overrides defaults properly."""
-    settings = {
-        "manager_columns": 3,
-        "manager_max_workers": 4,
-        "manager_execution_mode": "process"
-    }
-    state = AppState(_settings=settings)
-    assert state.manager_columns == 3
-    assert state.max_workers == 4
-    assert state.execution_mode == "process"
+def test_react_generator_pin_promotes_params_without_duplicates():
+    source = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "function PinnedParameters" in source
+    assert "Pinned Parameters" in source
+    assert "collectPinnedRows(data, pinnedParams" in source
+    assert "const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey))" in source
+    assert ".filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))" in source
+    assert "if (pinnedRowKeys.has(fullKey))" in source
 
 
-def test_app_state_partial_settings():
-    """Verify partial settings and type conversion."""
-    settings = {
-        "manager_columns": "4",  # Should be cast to int
-    }
-    state = AppState(_settings=settings)
-    assert state.manager_columns == 4
-    assert state.max_workers == 1  # Should retain default
-    assert state.execution_mode == "thread"
+def test_react_polling_hook_prevents_overlapping_async_ticks():
+    source = FRONTEND_POLLING.read_text(encoding="utf-8")
+
+    assert "callback: () => void | Promise<void>" in source
+    assert "inFlightRef" in source
+    assert "if (inFlightRef.current) {" in source
+    assert "Promise.resolve(result)" in source
 
 
-def test_shared_metrics_snapshot_uses_cache():
-    sampler = MagicMock()
-    sampler.sample.return_value = {"cpu_percent": 12.0, "mem_percent": 34.0, "gpus": []}
-    header._METRICS_CACHE["at"] = 0.0
-    header._METRICS_CACHE["data"] = {"cpu_percent": 0.0, "mem_percent": 0.0, "gpus": []}
-    with patch("pyruns.ui.components.header.time.monotonic", side_effect=[1.0, 1.5]):
-        first = _shared_metrics_snapshot(sampler)
-        second = _shared_metrics_snapshot(sampler)
-    assert first == second
-    assert sampler.sample.call_count == 1
+def test_react_ui_column_preferences_are_clamped():
+    source = FRONTEND_STORE.read_text(encoding="utf-8")
+
+    assert "function clampInteger" in source
+    assert "readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8)" in source
+    assert "readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8)" in source
+    assert "const next = clampInteger(n, 5, 1, 8)" in source
+    assert "const next = clampInteger(n, 5, 2, 8)" in source
+
+
+def test_react_task_fetch_ignores_stale_responses():
+    source = FRONTEND_STORE.read_text(encoding="utf-8")
+
+    assert "let taskRequestSeq = 0" in source
+    assert "const requestId = ++taskRequestSeq" in source
+    assert "if (requestId !== taskRequestSeq) {" in source
+
+
+def test_react_dashboard_polling_waits_for_network_work():
+    source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "const refreshDashboard = useCallback(async () => {" in source
+    assert "await Promise.all([" in source
+    assert "api.getMetrics().then(setMetrics)" in source
+
+
+def test_react_monitor_sidebar_width_is_clamped():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "Math.min(35, Math.max(10, sidebarWidthRaw))" in source
+
+
+def test_react_launcher_supports_manual_shell_folder_paths():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+
+    assert "manualShellRootPath" in launcher
+    assert "handleManualShellRoot" in launcher
+    assert "openLauncherShellRoot(shellPath)" in launcher
+    assert "openLauncherShellRoot" in api
+    assert "/api/launcher/open-shell-root" in api

@@ -35,7 +35,8 @@ from pyruns.utils.settings import ensure_settings_file
 def normalize_path(path: str) -> str:
     """Return a normalized absolute path with forward slashes."""
 
-    return os.path.abspath(path).replace("\\", "/")
+    expanded = os.path.expandvars(os.path.expanduser(str(path)))
+    return os.path.abspath(expanded).replace("\\", "/")
 
 
 def validate_python_script_path(script_path: str) -> str:

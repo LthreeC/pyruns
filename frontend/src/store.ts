@@ -10,6 +10,7 @@ import type {
 } from './types'
 import * as api from './api'
 
+let taskRequestSeq = 0
 let monitorRequestSeq = 0
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
@@ -28,7 +29,12 @@ function resolveInitialTheme(): 'dark' | 'light' {
   return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
 }
 
-function readStoredNumber(key: string, fallback: number) {
+function clampInteger(value: number, fallback: number, min: number, max: number) {
+  const normalized = Number.isFinite(value) ? Math.trunc(value) : fallback
+  return Math.min(max, Math.max(min, normalized))
+}
+
+function readStoredNumber(key: string, fallback: number, min: number, max: number) {
   if (typeof window === 'undefined') {
     return fallback
   }
@@ -37,7 +43,7 @@ function readStoredNumber(key: string, fallback: number) {
     return fallback
   }
   const parsed = Number.parseInt(raw, 10)
-  return Number.isFinite(parsed) ? parsed : fallback
+  return clampInteger(parsed, fallback, min, max)
 }
 
 function readStoredStringArray(key: string) {
@@ -167,24 +173,31 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   statusFilter: 'All',
   selectedIds: new Set(),
   loading: false,
-  columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5),
+  columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8),
   setQuery(q) { set({ query: q, offset: 0 }) },
   setStatusFilter(s) { set({ statusFilter: s, offset: 0 }) },
   setOffset(o) { set({ offset: o }) },
   setColumns(n) {
+    const next = clampInteger(n, 5, 1, 8)
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MANAGER_COLS_STORAGE_KEY, String(n))
+      window.localStorage.setItem(MANAGER_COLS_STORAGE_KEY, String(next))
     }
-    set({ columns: n })
+    set({ columns: next })
   },
   async fetchTasks() {
+    const requestId = ++taskRequestSeq
     const { query, statusFilter, offset, limit } = get()
     set({ loading: true })
     try {
       const page = await api.getTasks({ query, status: statusFilter, offset, limit })
+      if (requestId !== taskRequestSeq) {
+        return
+      }
       set({ tasks: page.items, total: page.total, hasMore: page.has_more })
     } finally {
-      set({ loading: false })
+      if (requestId === taskRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   toggleSelect(name) {
@@ -252,7 +265,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   shellText: '',
   namePrefix: 'task',
   appendTimestamp: true,
-  columns: readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5),
+  columns: readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8),
   pinnedParams: readStoredStringArray(PINNED_PARAMS_STORAGE_KEY),
   loading: false,
   async fetchTemplates() {
@@ -286,10 +299,11 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   setNamePrefix(n) { set({ namePrefix: n }) },
   setAppendTimestamp(b) { set({ appendTimestamp: b }) },
   setColumns(n) {
+    const next = clampInteger(n, 5, 2, 8)
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(GENERATOR_COLS_STORAGE_KEY, String(n))
+      window.localStorage.setItem(GENERATOR_COLS_STORAGE_KEY, String(next))
     }
-    set({ columns: n })
+    set({ columns: next })
   },
   togglePin(key) {
     const pins = [...get().pinnedParams]

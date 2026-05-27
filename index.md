@@ -40,7 +40,7 @@ features:
     details: 采用 _pyruns_ 目录自动隔离不同脚本的实验记录，有效防止数据覆写与冲突。
     icon: ⚙️
   - title: 🎨 现代化 Web 交互
-    details: 基于 NiceGUI 驱动，响应式布局设计，无论是本地桌面还是远程服务器都能完美适配。
+    details: 基于 FastAPI + React 驱动，响应式布局设计，无论是本地桌面还是远程服务器都能完美适配。
     icon: ✨
 
 ---
