@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -18,6 +18,35 @@ import type { LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
 
+const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
+const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
+const MIN_MONITOR_SIDEBAR_WIDTH = 10
+const MAX_MONITOR_SIDEBAR_WIDTH = 35
+
+function clampMonitorSidebarWidth(value: number) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_MONITOR_SIDEBAR_WIDTH
+  }
+  return Math.min(MAX_MONITOR_SIDEBAR_WIDTH, Math.max(MIN_MONITOR_SIDEBAR_WIDTH, value))
+}
+
+function readStoredMonitorSidebarWidth(fallback: number) {
+  if (typeof window === 'undefined') {
+    return clampMonitorSidebarWidth(fallback)
+  }
+
+  try {
+    const stored = Number(window.localStorage.getItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY))
+    if (stored) {
+      return clampMonitorSidebarWidth(stored)
+    }
+  } catch {
+    // Ignore storage failures and keep the workspace default.
+  }
+
+  return clampMonitorSidebarWidth(fallback)
+}
+
 export default function MonitorPage() {
   const { tasks, fetchTasks } = useTaskStore()
   const workspace = useWorkspaceStore(state => state.workspace)
@@ -29,6 +58,7 @@ export default function MonitorPage() {
   const [sidebarQuery, setSidebarQuery] = useState('')
   const [exportMode, setExportMode] = useState(false)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
+  const monitorShellRef = useRef<HTMLDivElement>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -46,15 +76,69 @@ export default function MonitorPage() {
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
-  const sidebarWidthPct = Number.isFinite(sidebarWidthRaw)
+  const settingsSidebarWidthPct = Number.isFinite(sidebarWidthRaw)
     ? Math.min(35, Math.max(10, sidebarWidthRaw))
     : 14
+  const [monitorSidebarWidthPct, setMonitorSidebarWidthPct] = useState(() => readStoredMonitorSidebarWidth(settingsSidebarWidthPct))
+  const [resizingMonitorSidebar, setResizingMonitorSidebar] = useState(false)
   const terminalVisible = Boolean(selectedTaskName)
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
+
+  const startMonitorSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    setResizingMonitorSidebar(true)
+  }, [])
 
   useEffect(() => {
     void fetchTasks()
   }, [fetchTasks])
+
+  useEffect(() => {
+    try {
+      if (!window.localStorage.getItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY)) {
+        setMonitorSidebarWidthPct(settingsSidebarWidthPct)
+      }
+    } catch {
+      setMonitorSidebarWidthPct(settingsSidebarWidthPct)
+    }
+  }, [settingsSidebarWidthPct])
+
+  useEffect(() => {
+    if (!resizingMonitorSidebar) {
+      return
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = monitorShellRef.current?.getBoundingClientRect()
+      const left = rect?.left ?? 0
+      const width = rect?.width || window.innerWidth || 1
+      const next = clampMonitorSidebarWidth(((event.clientX - left) / width) * 100)
+      setMonitorSidebarWidthPct(next)
+      try {
+        window.localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY, String(next))
+      } catch {
+        // Runtime resizing should continue even when persistence is blocked.
+      }
+      window.requestAnimationFrame(() => fitAddonRef.current?.fit())
+    }
+
+    const stopResize = () => setResizingMonitorSidebar(false)
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResize, { once: true })
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResize)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [resizingMonitorSidebar])
 
   useEffect(() => {
     const term = new XTerminal({
@@ -354,10 +438,10 @@ export default function MonitorPage() {
   }, [exportIds])
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div ref={monitorShellRef} className="flex h-full overflow-hidden">
       <aside
         className="flex flex-col overflow-hidden border-r border-border-subtle bg-surface-raised"
-        style={{ width: `${sidebarWidthPct}%` }}
+        style={{ width: `${monitorSidebarWidthPct}%` }}
       >
         <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
@@ -365,7 +449,7 @@ export default function MonitorPage() {
               <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">Monitor</div>
               <div className="text-sm font-medium text-txt-primary">{filteredTasks.length} task views</div>
             </div>
-            <span className="rounded-full border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary">
+            <span className="rounded-md bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary">
               {hasActive ? 'Live polling' : 'Idle polling'}
             </span>
           </div>
@@ -465,6 +549,16 @@ export default function MonitorPage() {
           )}
         </div>
       </aside>
+      <button
+        type="button"
+        aria-label="Resize monitor sidebar"
+        aria-orientation="vertical"
+        onPointerDown={startMonitorSidebarResize}
+        className={clsx(
+          'h-full w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+          resizingMonitorSidebar ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
+        )}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col" style={{ background: '#0A0A0B' }}>
         <div className="flex items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-3 py-2">
@@ -481,7 +575,7 @@ export default function MonitorPage() {
               </div>
 
               {isLive && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-2xs text-emerald-400">
+                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-1 text-2xs text-emerald-400">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
                   Live
                 </span>

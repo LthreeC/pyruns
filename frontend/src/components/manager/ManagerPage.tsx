@@ -492,7 +492,7 @@ function TaskCard({
       </div>
 
       {task._load_error && (
-        <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-400" title={task._load_error}>
+        <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs text-rose-400" title={task._load_error}>
           <AlertTriangle className="h-3 w-3" />
           <span className="truncate">Task load error</span>
         </div>

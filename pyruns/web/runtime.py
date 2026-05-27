@@ -28,6 +28,7 @@ from pyruns.launcher import (
     bootstrap_workspace,
     choose_directory,
     choose_script_file,
+    get_config_selection_metadata,
     list_config_candidates,
     list_script_candidates,
     list_workspace_candidates,
@@ -708,6 +709,15 @@ class PyrunsRuntime:
 
         return list_config_candidates(script_path)
 
+    def get_launcher_config_info(self, script_path: str) -> Dict[str, Any]:
+        """Return config candidates plus first-launch metadata for a script."""
+
+        metadata = get_config_selection_metadata(script_path)
+        return {
+            "items": list_config_candidates(script_path),
+            **metadata,
+        }
+
     def list_launcher_workspaces(
         self,
         script_path: str,
@@ -727,6 +737,16 @@ class PyrunsRuntime:
         workspace = bootstrap_workspace(script_path, config_path or None)
         self.reload(workspace)
         return self.get_workspace_info()
+
+    def pick_launcher_script_path(self) -> Dict[str, Any]:
+        """Open a native script picker and return the selected script without bootstrapping."""
+
+        current_script = self.get_workspace_info().get("script_path", "")
+        initial_dir = os.path.dirname(str(current_script or "")) or os.getcwd()
+        script_path = choose_script_file(initial_dir)
+        if not script_path:
+            raise ValueError("No script selected.")
+        return list_workspace_candidates(script_path)[0]
 
     def pick_and_open_launcher_workspace(self) -> Dict[str, Any]:
         """Open a native script picker and activate the chosen workspace."""

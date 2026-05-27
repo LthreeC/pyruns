@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
@@ -170,7 +178,7 @@ function getEditorExtensions(mode: 'yaml' | 'shell', theme: 'light' | 'dark'): E
   const baseTheme = theme === 'dark' ? DARK_EDITOR_THEME : [LIGHT_EDITOR_THEME]
   const highlighting = theme === 'dark' ? DARK_EDITOR_HIGHLIGHT : LIGHT_EDITOR_HIGHLIGHT
   const language = mode === 'yaml' ? YAML_EXTENSION : SHELL_LANGUAGE
-  return [...baseTheme, language, highlighting]
+  return [...baseTheme, language, highlighting, EditorView.lineWrapping]
 }
 
 function hasBatchExpression(text: string) {
@@ -599,7 +607,7 @@ export default function GeneratorPage() {
         )}
 
         {!isShellWorkspace && templateContent?.read_only && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-2xs text-amber-400">
+          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-2xs text-amber-400">
             <AlertTriangle className="h-3 w-3" />
             <span>Read-only</span>
           </span>
@@ -607,7 +615,7 @@ export default function GeneratorPage() {
 
         <div className="flex-1" />
 
-        <div className="flex items-center rounded-lg border border-border-subtle bg-surface-overlay p-0.5">
+        <div className="flex items-center gap-1">
           {(isShellWorkspace ? ['shell'] : ['form', 'yaml']).map(mode => (
             <button
               key={mode}
@@ -616,7 +624,7 @@ export default function GeneratorPage() {
               className={clsx(
                 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
                 editorMode === mode
-                  ? 'bg-surface-raised text-txt-primary'
+                  ? 'bg-surface-overlay text-txt-primary'
                   : 'text-txt-secondary hover:text-txt-primary'
               )}
             >
@@ -825,7 +833,7 @@ function BatchPreviewContent({
       </div>
 
       {triggers.length > 0 && (
-        <section className="rounded-lg border border-border-subtle bg-surface-overlay/60 p-3">
+        <section className="border-t border-border-subtle pt-3">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-txt-primary">
             <Workflow className="h-3.5 w-3.5 text-accent" />
             <span>Batch triggers</span>
@@ -834,14 +842,14 @@ function BatchPreviewContent({
             {triggers.map(item => (
               <div
                 key={item.key}
-                className="min-w-0 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-2"
+                className="min-w-0 px-0.5 py-1.5"
                 title={item.value}
               >
                 <div className="flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-txt-primary">
                     {item.key}
                   </span>
-                  <span className="flex-none rounded-full border border-accent/20 bg-accent/8 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-accent">
+                  <span className="flex-none rounded-md bg-accent/8 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-accent">
                     {formatBatchKind(item.kind)}
                   </span>
                 </div>
@@ -873,8 +881,8 @@ function BatchPreviewMetric({
   return (
     <div
       className={clsx(
-        'rounded-lg border px-3 py-2.5',
-        accent ? 'border-accent/20 bg-accent/8' : 'border-border-subtle bg-surface-overlay/60',
+        'rounded-md px-3 py-2.5',
+        accent ? 'bg-accent/8' : 'bg-surface-overlay/60',
       )}
     >
       <div className={clsx('mb-1 flex items-center gap-1.5 text-2xs', accent ? 'text-accent' : 'text-txt-tertiary')}>
@@ -894,8 +902,8 @@ function BatchPreviewList({
   count: number
 }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-border-subtle bg-surface-overlay/60">
-      <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
+    <section className="border-t border-border-subtle pt-3">
+      <div className="flex items-center justify-between px-0.5 pb-2">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-txt-primary">
           <ListChecks className="h-3.5 w-3.5 text-accent" />
           <span>Task samples</span>
@@ -904,14 +912,14 @@ function BatchPreviewList({
           {items.length ? `First ${items.length}` : 'No preview'}
         </span>
       </div>
-      <div className="max-h-[320px] space-y-1.5 overflow-y-auto p-2">
+      <div className="max-h-[320px] space-y-1 overflow-y-auto">
         {items.map(item => (
           <div
             key={item.index}
-            className="grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-2"
+            className="grid grid-cols-[56px_minmax(0,1fr)] gap-2 rounded-md px-2 py-2 odd:bg-surface-overlay/40"
             title={formatFullTaskTooltip(item)}
           >
-            <span className="rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-center font-mono text-2xs font-semibold text-txt-secondary">
+            <span className="text-center font-mono text-2xs font-semibold text-txt-secondary">
               #{item.index}
             </span>
             <span className="min-w-0 break-words font-mono text-xs leading-relaxed text-txt-secondary">
@@ -920,7 +928,7 @@ function BatchPreviewList({
           </div>
         ))}
         {count > items.length && (
-          <div className="rounded-md border border-dashed border-border-subtle px-3 py-2 text-xs text-txt-tertiary">
+          <div className="px-2 py-1.5 text-xs text-txt-tertiary">
             Plus {count - items.length} more task{count - items.length > 1 ? 's' : ''}
           </div>
         )}
@@ -953,7 +961,7 @@ function ShellRuntimePanel({
       <ShellRuntimeRow label="Resolved file" value={getShellConfigFilename(runtime)} mono />
       <ShellRuntimeRow label="Workspace folder" value={pathLeaf(runRoot) || '_shell_'} mono />
       <ShellRuntimeRow label="Mode" value={mode} />
-      <div className="truncate rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 font-mono text-2xs text-txt-tertiary" title={executable}>
+      <div className="truncate rounded-md bg-surface-overlay px-2.5 py-2 font-mono text-2xs text-txt-tertiary" title={executable}>
         {executable}
       </div>
     </CompactSection>
@@ -1098,7 +1106,7 @@ function PinnedParameters({
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-accent">
         <Pin className="h-3.5 w-3.5" />
         <span>Pinned Parameters</span>
-        <span className="rounded-full border border-accent/20 px-1.5 py-0.5 text-2xs font-medium">
+        <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-2xs font-medium">
           {rows.length}
         </span>
       </div>
@@ -1158,7 +1166,7 @@ function NestedSection({
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary" /> : <ChevronRight className="h-3.5 w-3.5 text-txt-tertiary" />}
         <span className="truncate text-sm font-semibold text-txt-primary" title={name}>{name}</span>
-        <span className="rounded-full border border-border-subtle px-1.5 py-0.5 text-2xs font-medium text-txt-secondary">
+        <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs font-medium text-txt-secondary">
           {Object.keys(data).length}
         </span>
       </button>
@@ -1298,7 +1306,7 @@ function ParamRow({
       </span>
 
       <span className={clsx(
-        'flex-none rounded-full border px-1.5 py-0.5 text-[10px] font-mono',
+        'flex-none rounded-md px-1.5 py-0.5 text-[10px] font-mono',
         PARAM_TYPE_STYLES[originalType]
       )}>
         {originalType}
@@ -1360,17 +1368,7 @@ function YamlEditor({
   extensions: any[]
 }) {
   return (
-    <div className="h-full p-3">
-      <div className="generator-code-editor">
-        <CodeMirror
-          value={value}
-          height="100%"
-          theme={theme}
-          extensions={extensions}
-          onChange={nextValue => onChange(nextValue)}
-        />
-      </div>
-    </div>
+    <CodeEditorFrame value={value} onChange={onChange} theme={theme} extensions={extensions} />
   )
 }
 
@@ -1386,13 +1384,48 @@ function ShellEditor({
   extensions: any[]
 }) {
   return (
+    <CodeEditorFrame value={value} onChange={onChange} theme={theme} extensions={extensions} />
+  )
+}
+
+function CodeEditorFrame({
+  value,
+  onChange,
+  theme,
+  extensions,
+}: {
+  value: string
+  onChange: (value: string) => void
+  theme: 'light' | 'dark'
+  extensions: any[]
+}) {
+  const editorViewRef = useRef<EditorView | null>(null)
+
+  const focusEditorFromBlankArea = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null
+    if (!target || target.closest('.cm-content') || target.closest('.cm-gutters')) {
+      return
+    }
+
+    const view = editorViewRef.current
+    if (!view) {
+      return
+    }
+
+    event.preventDefault()
+    view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })
+    view.focus()
+  }, [])
+
+  return (
     <div className="h-full p-3">
-      <div className="generator-code-editor">
+      <div className="generator-code-editor cursor-text" onMouseDown={focusEditorFromBlankArea}>
         <CodeMirror
           value={value}
           height="100%"
           theme={theme}
           extensions={extensions}
+          onCreateEditor={view => { editorViewRef.current = view }}
           onChange={nextValue => onChange(nextValue)}
         />
       </div>

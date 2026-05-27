@@ -258,6 +258,19 @@ def list_config_candidates(script_path: str) -> list[dict[str, Any]]:
     )
 
 
+def get_config_selection_metadata(script_path: str) -> dict[str, Any]:
+    """Return launcher metadata about whether a script needs an initial YAML."""
+
+    normalized = validate_python_script_path(script_path)
+    workspace_path = resolve_workspace_for_script(normalized) or workspace_root_for_script(normalized)
+    workspace_default = Path(workspace_path) / CONFIG_DEFAULT_FILENAME
+    mode, _ = detect_config_source_fast(normalized)
+    return {
+        "config_source": mode,
+        "requires_config_template": mode == "pyruns_load" and not workspace_default.is_file(),
+    }
+
+
 def list_workspace_candidates(script_path: str, config_path: str | None = None) -> list[dict[str, Any]]:
     """Return the inferred script workspace destination for a script/config pair."""
 
@@ -306,22 +319,28 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
         script_info["last_used_template"] = existing["last_used_template"]
     _write_script_info(script_dir, script_info)
 
-    config_default_path = os.path.join(script_dir, CONFIG_DEFAULT_FILENAME)
+    config_default_path = normalize_path(os.path.join(script_dir, CONFIG_DEFAULT_FILENAME))
     mode, _ = detect_config_source_fast(filepath)
+    resolved_custom_yaml = ""
 
     if custom_yaml:
         yaml_path = resolve_config_path(custom_yaml, file_dir)
         if not yaml_path or not os.path.exists(yaml_path):
             raise FileNotFoundError(f"Custom config '{custom_yaml}' not found.")
-        shutil.copy2(yaml_path, config_default_path)
+        resolved_custom_yaml = normalize_path(yaml_path)
+        if resolved_custom_yaml == config_default_path:
+            resolved_custom_yaml = ""
+
+    if resolved_custom_yaml:
+        shutil.copy2(resolved_custom_yaml, config_default_path)
     elif mode == "argparse":
         params = extract_argparse_params(filepath)
         generate_config_file(script_dir, filepath, params)
     elif mode == "pyruns_load" and not os.path.exists(config_default_path):
         raise FileNotFoundError(
             "This script uses pyruns.load() and needs a YAML template on first launch. "
-            "Run `pyr <script.py> <config.yaml>` once, then later `pyr <script.py>` will reuse "
-            f"`{CONFIG_DEFAULT_FILENAME}` automatically."
+            "Choose a YAML config in the Launcher, or run `pyr <script.py> <config.yaml>` once. "
+            f"Later `pyr <script.py>` will reuse `{CONFIG_DEFAULT_FILENAME}` automatically."
         )
 
     if mode == "argparse":

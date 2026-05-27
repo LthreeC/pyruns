@@ -97,7 +97,7 @@ body {
   min-height: max(32rem, calc(100vh - 15rem));
   border-radius: 0.5rem;
   border: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(241, 243, 245, 0.92));
+  background: var(--surface-raised);
   overflow: hidden;
 }
 .generator-code-editor .cm-editor {
@@ -106,10 +106,15 @@ body {
 }
 .generator-code-editor .cm-scroller {
   min-height: 100%;
-  overflow: auto;
+  cursor: text;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 .generator-code-editor .cm-content {
   min-height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  white-space: pre-wrap;
   padding: 18px 0;
 }
 .generator-code-editor .cm-line {
@@ -125,7 +130,7 @@ body {
   border-left-color: #2563eb !important;
 }
 .dark .generator-code-editor {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.82));
+  background: var(--surface-raised);
 }
 .dark .generator-code-editor .cm-activeLine {
   background: rgba(59, 130, 246, 0.14) !important;

@@ -276,7 +276,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.get("/api/launcher/configs")
     def get_launcher_configs(script: str) -> dict[str, Any]:
         try:
-            return {"items": get_runtime().list_launcher_configs(script)}
+            return get_runtime().get_launcher_config_info(script)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -301,7 +301,14 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     def pick_launcher_script() -> dict[str, Any]:
         try:
             return get_runtime().pick_and_open_launcher_workspace()
-        except ValueError as exc:
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/launcher/pick-script-path")
+    def pick_launcher_script_path() -> dict[str, Any]:
+        try:
+            return get_runtime().pick_launcher_script_path()
+        except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/launcher/pick-shell-root")

@@ -30,13 +30,13 @@ export default function ConfirmDialog({
   return (
     <dialog
       ref={ref}
-      className={`fixed inset-0 z-50 m-auto w-full ${widthClass} rounded-2xl border border-border-subtle bg-surface-raised p-0 shadow-[0_24px_80px_-48px_rgba(15,23,42,0.95)] backdrop:bg-black/50`}
+      className={`fixed inset-0 z-50 m-auto w-full ${widthClass} rounded-md border border-border-subtle bg-surface-raised p-0 shadow-md backdrop:bg-black/50`}
       onClose={onCancel}
     >
       <div className="p-6">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
-          <button type="button" onClick={onCancel} className="rounded-lg p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary">
+          <button type="button" onClick={onCancel} className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary">
             <X className="w-4 h-4" />
           </button>
         </div>

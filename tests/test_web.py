@@ -177,6 +177,21 @@ def test_launcher_endpoints_discover_scripts_configs_and_workspaces(tmp_path, mo
     assert workspace_items[0]["config_name"] == "secondary.yaml"
 
 
+def test_launcher_configs_reports_when_load_script_needs_first_yaml(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "load_train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+
+    response = client.get("/api/launcher/configs", params={"script": str(script_path)})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["requires_config_template"] is True
+    assert payload["config_source"] == "pyruns_load"
+
+
 def test_launcher_configs_endpoint_rejects_invalid_script_path(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
@@ -234,6 +249,37 @@ def test_launcher_open_endpoint_rejects_directory_script_path(tmp_path):
 
     assert response.status_code == 400
     assert "Python script" in response.json()["detail"]
+
+
+def test_pick_script_endpoint_reports_missing_load_yaml_as_bad_request(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime), raise_server_exceptions=False)
+    script_path = tmp_path / "load_train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+
+    with patch("pyruns.web.runtime.choose_script_file", return_value=str(script_path)):
+        response = client.post("/api/launcher/pick-script")
+
+    assert response.status_code == 400
+    assert "needs a YAML template" in response.json()["detail"]
+
+
+def test_pick_script_path_endpoint_selects_script_without_bootstrapping(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "load_train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+
+    with patch("pyruns.web.runtime.choose_script_file", return_value=str(script_path)):
+        response = client.post("/api/launcher/pick-script-path")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["script_name"] == "load_train"
+    assert payload["script_path"] == str(script_path).replace("\\", "/")
+    assert not (tmp_path / "_pyruns_" / "load_train" / "config_default.yaml").exists()
 
 
 def test_run_root_switch_endpoint_reloads_workspace(tmp_path):

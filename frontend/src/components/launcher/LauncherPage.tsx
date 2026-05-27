@@ -12,7 +12,7 @@ function pathName(path: string) {
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const {
-    scripts, configs, selectedScript, selectedConfig, step, loading,
+    scripts, configs, selectedScript, selectedConfig, requiresConfigTemplate, step, loading,
     fetchScripts, selectScript, selectConfig, openWorkspace,
   } = useLauncherStore()
   const setWorkspace = useWorkspaceStore(state => state.setWorkspace)
@@ -50,6 +50,10 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
   const handleSkipConfig = useCallback(async () => {
     setError('')
+    if (requiresConfigTemplate) {
+      setError('Choose or enter a YAML config path first.')
+      return
+    }
     selectConfig('')
     try {
       await useLauncherStore.getState().openWorkspace()
@@ -58,7 +62,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     } catch (err: any) {
       setError(err.message)
     }
-  }, [selectConfig, onClose, navigate])
+  }, [requiresConfigTemplate, selectConfig, onClose, navigate])
 
   const handleManualScript = useCallback(async () => {
     const scriptPath = manualScriptPath.trim()
@@ -75,27 +79,44 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     }
   }, [manualScriptPath, selectScript])
 
+  const handleSelectScript = useCallback(async (scriptPath: string) => {
+    setError('')
+    try {
+      await selectScript(scriptPath)
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [selectScript])
+
+  const handleSelectConfig = useCallback((configPath: string) => {
+    setError('')
+    selectConfig(configPath)
+  }, [selectConfig])
+
   const handleManualConfig = useCallback(() => {
     const configPath = manualConfigPath.trim()
     if (!configPath) {
+      if (requiresConfigTemplate) {
+        setError('Choose or enter a YAML config path first.')
+        return
+      }
       void handleSkipConfig()
       return
     }
     setError('')
-    selectConfig(configPath)
-  }, [handleSkipConfig, manualConfigPath, selectConfig])
+    handleSelectConfig(configPath)
+  }, [handleSkipConfig, handleSelectConfig, manualConfigPath, requiresConfigTemplate])
 
   const handlePickScript = useCallback(async () => {
     setError('')
     try {
-      const workspace = await api.pickLauncherScript()
-      setWorkspace(workspace)
-      onClose()
-      navigate('/')
+      const selection = await api.pickLauncherScriptPath()
+      setManualScriptPath(selection.script_path)
+      await selectScript(selection.script_path)
     } catch (err: any) {
       setError(err.message)
     }
-  }, [navigate, onClose, setWorkspace])
+  }, [selectScript])
 
   const handlePickShellRoot = useCallback(async () => {
     setError('')
@@ -129,7 +150,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
-      <div className="bg-surface-raised border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md">
         {/* Header */}
         <div className="flex items-center gap-3 px-6 py-4 border-b border-border-subtle">
           <Rocket className="w-5 h-5 text-accent" />
@@ -162,8 +183,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     onBrowseOpen={handlePickScript}
                   />
 
-                  <div className="rounded-lg border border-border-subtle bg-surface-overlay/40">
-                    <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
+                  <div>
+                    <div className="flex items-center justify-between border-b border-border-subtle px-1 py-2">
                       <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
                         Detected Scripts
                       </span>
@@ -173,7 +194,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                         <span className="text-2xs text-zinc-600">{scripts.length} found</span>
                       )}
                     </div>
-                    <div className="max-h-56 overflow-y-auto p-2">
+                    <div className="max-h-56 overflow-y-auto py-1">
                       {scripts.length === 0 ? (
                         <div className="px-3 py-8 text-center text-xs text-zinc-600">
                           No Python scripts found in the current directory.
@@ -183,7 +204,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                           <ScriptItem
                             key={script.script_path || script.workspace_path}
                             script={script}
-                            onClick={() => selectScript(script.script_path)}
+                            onClick={() => void handleSelectScript(script.script_path)}
                           />
                         ))
                       )}
@@ -211,18 +232,33 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
           {!loading && step === 1 && (
             <div className="space-y-1">
-              <div className="text-2xs text-zinc-500 mb-3">
-                Select a config for <span className="text-zinc-300 font-medium">{pathName(selectedScript)}</span>
+              <div className="mb-3 space-y-1">
+                <div className="text-xs font-semibold text-zinc-300">
+                  {requiresConfigTemplate ? 'Choose a YAML config' : 'Select a config'}
+                  {' '}
+                  for <span className="font-mono">{pathName(selectedScript)}</span>
+                </div>
+                <p className="text-2xs leading-relaxed text-zinc-500">
+                  {requiresConfigTemplate
+                    ? 'This script needs a YAML config before first launch. Choose one below or enter a path; pyruns will save it as config_default.yaml for later runs.'
+                    : 'Choose a YAML file for this launch, or open without one when the script can generate its default config.'}
+                </p>
               </div>
               {configs.length === 0 ? (
                 <div className="text-center py-8">
-                  <p className="text-xs text-zinc-600 mb-3">No config files found</p>
-                  <button
-                    onClick={handleSkipConfig}
-                    className="text-xs text-accent hover:text-accent-hover transition-colors"
-                  >
-                    Continue without config →
-                  </button>
+                  <p className="text-xs text-zinc-600 mb-3">
+                    {requiresConfigTemplate
+                      ? 'No YAML configs were found near this script. Enter a config path below.'
+                      : 'No config files found'}
+                  </p>
+                  {!requiresConfigTemplate && (
+                    <button
+                      onClick={handleSkipConfig}
+                      className="text-xs text-accent transition-colors hover:text-accent-hover"
+                    >
+                      Open without config
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>
@@ -230,46 +266,46 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     <ConfigItem
                       key={config.path}
                       config={config}
-                      onClick={() => selectConfig(config.path)}
+                      onClick={() => handleSelectConfig(config.path)}
                     />
                   ))}
-                  <button
-                    onClick={handleSkipConfig}
-                    className="w-full text-left px-3 py-2 text-2xs text-zinc-600 hover:text-zinc-400 transition-colors"
-                  >
-                    Skip — use workspace default
-                  </button>
+                  {!requiresConfigTemplate && (
+                    <button
+                      onClick={handleSkipConfig}
+                      className="w-full px-3 py-2 text-left text-2xs text-zinc-600 transition-colors hover:text-zinc-400"
+                    >
+                      Open without config
+                    </button>
+                  )}
                 </>
               )}
-              <div className="mt-3 rounded-lg border border-border-subtle bg-surface-overlay/50 p-3">
-                <div className="flex items-center gap-2">
-                  <FileCode className="h-4 w-4 text-zinc-500" />
-                  <input
-                    value={manualConfigPath}
-                    onChange={event => setManualConfigPath(event.target.value)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        handleManualConfig()
-                      }
-                    }}
-                    placeholder="Optional path to config.yaml"
-                    className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
-                  />
-                  <button
-                    onClick={handleManualConfig}
-                    className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
-                  >
-                    Use Config
-                  </button>
-                </div>
+              <div className="mt-3 flex items-center gap-2">
+                <FileCode className="h-4 w-4 text-zinc-500" />
+                <input
+                  value={manualConfigPath}
+                  onChange={event => setManualConfigPath(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      handleManualConfig()
+                    }
+                  }}
+                  placeholder={requiresConfigTemplate ? 'Path to config.yaml' : 'Optional path to config.yaml'}
+                  className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+                />
+                <button
+                  onClick={handleManualConfig}
+                  className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
+                >
+                  Use Config
+                </button>
               </div>
             </div>
           )}
 
           {!loading && step === 2 && (
             <div className="flex flex-col items-center py-8 gap-4">
-              <div className="p-3 rounded-full bg-accent/10">
+              <div className="p-2 text-accent">
                 <FolderOpen className="w-6 h-6 text-accent" />
               </div>
               <div className="text-center">
@@ -320,14 +356,14 @@ function LaunchChoiceTabs({
   onChange: (mode: 'python' | 'shell') => void
 }) {
   return (
-    <div className="grid gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 p-1 md:grid-cols-2">
+    <div className="grid gap-2 md:grid-cols-2">
       <button
         type="button"
         onClick={() => onChange('python')}
         className={clsx(
           'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
           launchMode === 'python'
-            ? 'bg-accent text-white shadow-sm shadow-accent/20'
+            ? 'bg-accent text-white'
             : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
         )}
       >
@@ -340,7 +376,7 @@ function LaunchChoiceTabs({
         className={clsx(
           'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
           launchMode === 'shell'
-            ? 'bg-accent text-white shadow-sm shadow-accent/20'
+            ? 'bg-accent text-white'
             : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
         )}
       >
@@ -368,20 +404,20 @@ function ModeActionPanel({
 }) {
   const isPython = launchMode === 'python'
   const Icon = isPython ? FileSearch : FolderPlus
-  const browseLabel = isPython ? 'Browse & Open Script' : 'Browse & Open Folder'
+  const browseLabel = isPython ? 'Browse Script' : 'Browse & Open Folder'
   const manualLabel = isPython ? 'Select Script Path' : 'Open Folder Path'
   const placeholder = isPython ? 'Absolute or relative path to train.py' : 'Path to shell project folder'
 
   return (
-    <div className="rounded-lg border border-border-subtle bg-surface-overlay/50 p-3">
+    <div className="space-y-2">
       <button
         type="button"
         onClick={() => void onBrowseOpen()}
         className={clsx(
-          'mb-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors',
+          'inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors',
           isPython
             ? 'bg-accent text-white hover:bg-accent-hover'
-            : 'border border-accent/30 bg-accent/10 text-accent hover:bg-accent/20',
+            : 'bg-accent/10 text-accent hover:bg-accent/20',
         )}
       >
         <Icon className="h-3.5 w-3.5" />

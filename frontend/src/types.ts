@@ -157,6 +157,12 @@ export interface ConfigCandidate {
   kind: 'workspace_default' | 'script_dir' | 'script_config_dir'
 }
 
+export interface LauncherConfigsResponse {
+  items: ConfigCandidate[]
+  requires_config_template: boolean
+  config_source: string
+}
+
 export interface WorkspaceCandidate {
   workspace_path: string
   script_path: string

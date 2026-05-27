@@ -219,6 +219,39 @@ pyr train.py
 
 the same workspace can continue handling generation, scheduling, and execution.
 
+The UI launcher follows the same rule. `argparse` scripts can open directly.
+For `pyruns.load()` scripts, the first launch needs a YAML file when
+`config_default.yaml` does not exist yet. After a default template exists, Pyruns
+reuses it directly; for `argparse` scripts, the default template is refreshed
+from the current script arguments.
+
+## In-script API
+
+The API exposed to your training script is intentionally small:
+
+| API | Purpose |
+| --- | --- |
+| `pyruns.load()` | Load the current task YAML / JSON config and return a dot-accessible config object. |
+| `pyruns.read(path=None)` | Explicitly read a config file; most scripts can just call `pyruns.load()`. |
+| `pyruns.record(**kwargs)` | Store final metrics for this run, such as `final_loss`, `acc`, or `seed`. Values from the same run are merged into one records slot. |
+| `pyruns.track(**kwargs)` | Append time-series metrics, such as per-epoch `loss` or `acc`, into tracks. |
+| `pyruns.get_task_dir()` | Return the current task directory, or `None` outside a Pyruns task. |
+| `pyruns.get_run_index()` | Return the current run slot, useful when one task is run multiple times. |
+
+Typical usage:
+
+```python
+import pyruns
+
+cfg = pyruns.load()
+
+for epoch in range(cfg.training.epochs):
+    loss = train_one_epoch(cfg)
+    pyruns.track(loss=loss)
+
+pyruns.record(final_loss=loss, seed=cfg.training.seed)
+```
+
 ### Mode 3: CLI interactive mode
 
 If you work on a headless server or simply prefer a terminal workflow:

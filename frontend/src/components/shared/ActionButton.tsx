@@ -12,16 +12,16 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANT_STYLES: Record<ActionButtonVariant, string> = {
-  primary: 'border border-accent bg-accent text-white shadow-sm shadow-accent/20 hover:bg-accent-hover',
-  success: 'border border-emerald-700/80 bg-emerald-600 text-white shadow-sm shadow-emerald-950/30 hover:bg-emerald-500',
-  danger: 'border border-rose-800/80 bg-rose-600 text-white shadow-sm shadow-rose-950/30 hover:bg-rose-500',
-  ghost: 'border border-border-subtle bg-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
-  accentTint: 'border border-accent/25 bg-accent/8 text-accent hover:bg-accent/12',
+  primary: 'bg-accent text-white hover:bg-accent-hover',
+  success: 'bg-emerald-600 text-white hover:bg-emerald-500',
+  danger: 'bg-rose-600 text-white hover:bg-rose-500',
+  ghost: 'bg-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
+  accentTint: 'bg-accent/8 text-accent hover:bg-accent/12',
 }
 
 const SIZE_STYLES: Record<ActionButtonSize, string> = {
   sm: 'gap-1.5 rounded-md px-3 py-1.5 text-xs',
-  md: 'gap-2 rounded-lg px-3.5 py-2 text-sm',
+  md: 'gap-2 rounded-md px-3.5 py-2 text-sm',
 }
 
 export default function ActionButton({

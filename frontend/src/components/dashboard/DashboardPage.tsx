@@ -70,8 +70,8 @@ export default function DashboardPage() {
 
         <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
           {STAT_CARDS.map(({ key, label, icon: Icon, color }) => (
-            <div key={key} className="flex items-center gap-3 rounded-lg border border-border-subtle bg-surface-raised p-4">
-              <div className={clsx('rounded-md bg-surface-overlay p-2', color)}>
+            <div key={key} className="flex items-center gap-3 border-l border-border-subtle py-2 pl-3">
+              <div className={clsx('p-1', color)}>
                 <Icon className="h-4 w-4" />
               </div>
               <div>
@@ -85,8 +85,8 @@ export default function DashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,2.2fr)_minmax(18rem,1fr)]">
-          <div className="rounded-lg border border-border-subtle bg-surface-raised">
-            <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
+          <section>
+            <div className="flex items-center justify-between border-b border-border-subtle py-2">
               <h2 className="text-sm font-medium text-txt-primary">Recent Tasks</h2>
               <button
                 type="button"
@@ -98,17 +98,17 @@ export default function DashboardPage() {
             </div>
             <div className="divide-y divide-border-subtle">
               {!data?.recent_tasks?.length ? (
-                <div className="px-4 py-8 text-center text-xs text-txt-tertiary">No tasks yet</div>
+                <div className="py-8 text-center text-xs text-txt-tertiary">No tasks yet</div>
               ) : (
                 data.recent_tasks.map(task => (
                   <TaskRow key={task.name} task={task} onClick={() => openTaskInMonitor(task)} />
                 ))
               )}
             </div>
-          </div>
+          </section>
 
           <div className="flex flex-col gap-4">
-            <div className="rounded-lg border border-border-subtle bg-surface-raised p-4">
+            <section className="border-t border-border-subtle pt-4">
               <h2 className="mb-3 text-sm font-medium text-txt-primary">Workspace</h2>
               <div className="space-y-2 text-xs">
                 <InfoRow label="Script" value={workspace?.script_name || '--'} />
@@ -122,16 +122,16 @@ export default function DashboardPage() {
               >
                 <Wand2 className="h-3.5 w-3.5" /> Generate Tasks
               </button>
-            </div>
+            </section>
 
-            <div className="rounded-lg border border-border-subtle bg-surface-raised p-4">
+            <section className="border-t border-border-subtle pt-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-medium text-txt-primary">System</h2>
                   <p className="mt-1 text-2xs text-txt-tertiary">Auto-refreshes every {refreshIntervalSec}s.</p>
                 </div>
                 {gpuCount > 0 && (
-                  <div className="rounded-full border border-sky-500/15 bg-sky-500/8 px-2.5 py-1 text-2xs text-sky-300">
+                  <div className="rounded-md bg-sky-500/8 px-2.5 py-1 text-2xs text-sky-300">
                     {gpuCount} GPU{gpuCount > 1 ? 's' : ''} online
                   </div>
                 )}
@@ -151,16 +151,16 @@ export default function DashboardPage() {
                   </div>
                 </>
               ) : (
-                <div className="mt-3 rounded-lg border border-dashed border-border-subtle bg-surface-overlay/50 px-3 py-4 text-2xs text-txt-tertiary">
+                <div className="mt-3 rounded-md bg-surface-overlay/50 px-3 py-4 text-2xs text-txt-tertiary">
                   Loading system metrics...
                 </div>
               )}
-            </div>
+            </section>
           </div>
         </div>
 
-        <div className="mt-4 rounded-lg border border-border-subtle bg-surface-raised">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
+        <section className="mt-6">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle py-3">
             <div>
               <h2 className="text-sm font-medium text-txt-primary">GPU Fleet</h2>
               <p className="mt-1 text-2xs text-txt-tertiary">
@@ -173,7 +173,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="p-4">
+          <div className="py-4">
             {metrics?.gpus?.length ? (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
                 {metrics.gpus.map(gpu => (
@@ -185,12 +185,12 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-border-subtle bg-surface-overlay/50 px-3 py-8 text-center text-2xs text-txt-tertiary">
+              <div className="rounded-md bg-surface-overlay/50 px-3 py-8 text-center text-2xs text-txt-tertiary">
                 No NVIDIA GPU metrics detected.
               </div>
             )}
           </div>
-        </div>
+        </section>
       </div>
 
       <GpuProcessDialog gpu={activeGpu} onClose={() => setActiveGpuKey(null)} />
@@ -236,14 +236,14 @@ function GpuMetricCard({ gpu, onClick }: { gpu: GPUMetric; onClick: () => void }
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-lg border border-sky-500/15 bg-[linear-gradient(135deg,rgba(14,165,233,0.12),rgba(30,41,59,0.18))] px-3 py-3 text-left transition-colors hover:border-sky-400/30 hover:bg-[linear-gradient(135deg,rgba(14,165,233,0.18),rgba(30,41,59,0.28))]"
+      className="w-full rounded-md bg-surface-overlay/60 px-3 py-3 text-left transition-colors hover:bg-surface-overlay"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs font-semibold text-txt-primary">GPU {gpu.index}</div>
           <div className="truncate text-2xs text-sky-100/80">{gpu.name}</div>
         </div>
-        <div className="flex items-center gap-1 rounded-full border border-sky-400/20 bg-sky-500/10 px-2 py-1 text-2xs text-sky-200">
+        <div className="flex items-center gap-1 rounded-md bg-sky-500/10 px-2 py-1 text-2xs text-sky-200">
           <span className="font-medium tabular-nums">{gpu.util.toFixed(0)}%</span>
           <span>util</span>
         </div>
@@ -294,7 +294,7 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-2xl rounded-2xl border border-border-subtle bg-surface-raised shadow-[0_24px_80px_-48px_rgba(15,23,42,0.95)]"
+        className="w-full max-w-2xl rounded-md border border-border-subtle bg-surface-raised shadow-md"
         onClick={event => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
@@ -308,7 +308,7 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary"
+            className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary"
           >
             <X className="h-4 w-4" />
           </button>
@@ -322,11 +322,11 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
 
         <div className="max-h-[420px] overflow-y-auto px-5 py-4">
           {gpu.processes.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border-subtle bg-surface-overlay/60 px-4 py-8 text-center text-sm text-txt-tertiary">
+            <div className="rounded-md bg-surface-overlay/60 px-4 py-8 text-center text-sm text-txt-tertiary">
               No active compute processes reported by NVIDIA for this GPU.
             </div>
           ) : (
-            <div className="overflow-hidden rounded-xl border border-border-subtle">
+            <div className="overflow-hidden rounded-md border border-border-subtle">
               <div className="grid grid-cols-[96px_minmax(0,1fr)_140px] gap-3 border-b border-border-subtle bg-surface-overlay/70 px-4 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary">
                 <span>PID</span>
                 <span>Process</span>
@@ -360,14 +360,14 @@ function DetailChip({
   tone: 'emerald' | 'sky' | 'amber' | 'slate'
 }) {
   const toneClass = {
-    emerald: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300',
-    sky: 'border-sky-500/20 bg-sky-500/10 text-sky-300',
-    amber: 'border-amber-500/20 bg-amber-500/10 text-amber-300',
-    slate: 'border-border-subtle bg-surface-overlay text-txt-secondary',
+    emerald: 'bg-emerald-500/10 text-emerald-300',
+    sky: 'bg-sky-500/10 text-sky-300',
+    amber: 'bg-amber-500/10 text-amber-300',
+    slate: 'bg-surface-overlay text-txt-secondary',
   }[tone]
 
   return (
-    <div className={clsx('rounded-xl border px-3 py-3', toneClass)}>
+    <div className={clsx('rounded-md px-3 py-3', toneClass)}>
       <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">{label}</div>
       <div className="mt-1 truncate text-sm font-semibold">{value}</div>
     </div>
@@ -384,13 +384,13 @@ function SummaryChip({
   tone: 'emerald' | 'sky' | 'slate'
 }) {
   const toneClass = {
-    emerald: 'border-emerald-500/15 bg-emerald-500/10 text-emerald-300',
-    sky: 'border-sky-500/15 bg-sky-500/10 text-sky-300',
-    slate: 'border-border-subtle bg-surface-overlay text-txt-secondary',
+    emerald: 'bg-emerald-500/10 text-emerald-300',
+    sky: 'bg-sky-500/10 text-sky-300',
+    slate: 'bg-surface-overlay text-txt-secondary',
   }[tone]
 
   return (
-    <div className={clsx('rounded-lg border px-3 py-2.5', toneClass)}>
+    <div className={clsx('rounded-md px-3 py-2.5', toneClass)}>
       <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">{label}</div>
       <div className="mt-1 text-sm font-semibold">{value}</div>
     </div>
@@ -399,7 +399,7 @@ function SummaryChip({
 
 function SummaryPill({ children }: { children: ReactNode }) {
   return (
-    <span className="rounded-full border border-border-subtle bg-surface-overlay px-2.5 py-1 text-txt-secondary">
+    <span className="rounded-md bg-surface-overlay px-2.5 py-1 text-txt-secondary">
       {children}
     </span>
   )

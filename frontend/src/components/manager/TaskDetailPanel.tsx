@@ -1,4 +1,11 @@
-import { useState, useCallback, useEffect, useRef, type ComponentType } from 'react'
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type ComponentType,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check } from 'lucide-react'
 import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
@@ -15,6 +22,38 @@ interface Props {
 
 type Tab = 'info' | 'config' | 'notes' | 'env'
 
+const TASK_DETAIL_WIDTH_STORAGE_KEY = 'pyruns.taskDetailPanelWidth'
+const DEFAULT_PANEL_WIDTH = 720
+const MIN_PANEL_WIDTH = 420
+const MAX_PANEL_WIDTH = 1120
+
+function clampPanelWidth(value: number) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_PANEL_WIDTH
+  }
+  const viewportMax = typeof window === 'undefined'
+    ? MAX_PANEL_WIDTH
+    : Math.max(MIN_PANEL_WIDTH, window.innerWidth - 56)
+  return Math.min(Math.min(MAX_PANEL_WIDTH, viewportMax), Math.max(MIN_PANEL_WIDTH, value))
+}
+
+function readStoredPanelWidth() {
+  if (typeof window === 'undefined') {
+    return DEFAULT_PANEL_WIDTH
+  }
+
+  try {
+    const stored = Number(window.localStorage.getItem(TASK_DETAIL_WIDTH_STORAGE_KEY))
+    if (stored) {
+      return clampPanelWidth(stored)
+    }
+  } catch {
+    // Keep the default width when persisted state is unavailable.
+  }
+
+  return clampPanelWidth(window.innerWidth * 0.44)
+}
+
 function buildEnvPairs(task: Task): [string, string][] {
   return Object.entries(task.env || {}).map(([key, value]) => [key, String(value)])
 }
@@ -28,7 +67,15 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [newName, setNewName] = useState(task.name)
   const [notesDirty, setNotesDirty] = useState(false)
   const [envDirty, setEnvDirty] = useState(false)
+  const [panelWidth, setPanelWidth] = useState(readStoredPanelWidth)
+  const [resizingPanel, setResizingPanel] = useState(false)
   const previousTaskNameRef = useRef(task.name)
+
+  const startPanelResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setResizingPanel(true)
+  }, [])
 
   useEffect(() => {
     const previousTaskName = previousTaskNameRef.current
@@ -67,6 +114,39 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     }
     setNewName(task.name)
   }, [task.name, renaming])
+
+  useEffect(() => {
+    if (!resizingPanel) {
+      return
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const next = clampPanelWidth(window.innerWidth - event.clientX)
+      setPanelWidth(next)
+      try {
+        window.localStorage.setItem(TASK_DETAIL_WIDTH_STORAGE_KEY, String(next))
+      } catch {
+        // Resizing still works without persisted storage.
+      }
+    }
+
+    const stopResize = () => setResizingPanel(false)
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResize, { once: true })
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResize)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [resizingPanel])
 
   const handleSaveNotes = useCallback(async () => {
     setSaving(true)
@@ -121,9 +201,20 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30" />
       <div
-        className="animate-slide-in relative flex h-full w-[44%] min-w-[360px] max-w-[1120px] flex-col border-l border-border-subtle bg-surface-raised"
+        className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-56px)] flex-col border-l border-border-subtle bg-surface-raised"
+        style={{ width: panelWidth }}
         onClick={event => event.stopPropagation()}
       >
+        <button
+          type="button"
+          aria-label="Resize task detail panel"
+          aria-orientation="vertical"
+          onPointerDown={startPanelResize}
+          className={clsx(
+            'absolute left-0 top-0 z-10 h-full w-2 -translate-x-1 cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+            resizingPanel ? 'bg-accent/35' : 'bg-transparent hover:bg-accent/20',
+          )}
+        />
         <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
           <StatusBadge status={task.status as TaskStatus} />
 
@@ -380,13 +471,13 @@ function InfoTab({ task }: { task: Task }) {
       <section className="space-y-2">
         <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Run History</div>
         {runs.length === 0 ? (
-          <div className="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-3 text-xs text-txt-secondary">
+          <div className="px-0.5 py-2 text-xs text-txt-secondary">
             No runs recorded yet.
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {runs.map(run => (
-              <div key={run.index} className="rounded-lg border border-border-subtle bg-surface-overlay/70 p-3">
+              <div key={run.index} className="border-t border-border-subtle pt-3">
                 <div className="mb-2 text-xs font-medium text-txt-primary">Run #{run.index}</div>
                 <div className="space-y-1.5">
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
@@ -403,7 +494,7 @@ function InfoTab({ task }: { task: Task }) {
                   </div>
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Record</span>
-                    <pre className="overflow-auto whitespace-pre-wrap rounded-md border border-border-subtle bg-surface-raised p-2 font-mono text-xs leading-relaxed text-txt-primary">
+                    <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-surface-overlay/60 p-2 font-mono text-xs leading-relaxed text-txt-primary">
                       {formatRecordValue(run.record)}
                     </pre>
                   </div>
@@ -431,7 +522,7 @@ function ConfigTab({ task }: { task: Task }) {
     <div className="space-y-2">
       <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Payload File</div>
       <div className="font-mono text-xs text-txt-primary">{task.config_file}</div>
-      <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
+      <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
         {content}
       </pre>
     </div>

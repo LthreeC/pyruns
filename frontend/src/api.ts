@@ -9,7 +9,7 @@ import type {
   WorkspaceInfo,
   SystemMetrics,
   ScriptCandidate,
-  ConfigCandidate,
+  LauncherConfigsResponse,
   WorkspaceCandidate,
   GeneratorMode,
 } from './types'
@@ -151,7 +151,7 @@ export const getMetrics = () => request<SystemMetrics>('/api/system/metrics')
 
 export const getLauncherScripts = () => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts')
 export const getLauncherConfigs = (script: string) =>
-  request<{ items: ConfigCandidate[] }>(`/api/launcher/configs?script=${encodeURIComponent(script)}`)
+  request<LauncherConfigsResponse>(`/api/launcher/configs?script=${encodeURIComponent(script)}`)
 export const getLauncherWorkspaces = (script: string, config?: string) => {
   const sp = new URLSearchParams({ script })
   if (config) sp.set('config', config)
@@ -162,6 +162,9 @@ export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =
     method: 'POST',
     body: JSON.stringify({ script_path: scriptPath, config_path: configPath }),
   })
+
+export const pickLauncherScriptPath = () =>
+  request<WorkspaceCandidate>('/api/launcher/pick-script-path', { method: 'POST' })
 
 export const pickLauncherScript = () =>
   request<WorkspaceInfo>('/api/launcher/pick-script', { method: 'POST' })

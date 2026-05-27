@@ -523,6 +523,33 @@ class TestScriptLaunchRules:
 
         assert resolved.replace("\\", "/").endswith("_pyruns_/train")
 
+    def test_argparse_workspace_default_selection_refreshes_current_defaults(self, tmp_path):
+        script_path = tmp_path / "train.py"
+        script_path.write_text(
+            "\n".join(
+                [
+                    "import argparse",
+                    "parser = argparse.ArgumentParser()",
+                    "parser.add_argument('--epochs', type=int, default=3)",
+                    "args = parser.parse_args()",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        workspace = tmp_path / "_pyruns_" / "train"
+        workspace.mkdir(parents=True, exist_ok=True)
+        default_path = workspace / CONFIG_DEFAULT_FILENAME
+        default_path.write_text("epochs: 99\n", encoding="utf-8")
+
+        resolved = bootstrap_workspace(str(script_path), str(default_path))
+
+        assert resolved.replace("\\", "/").endswith("_pyruns_/train")
+        default_text = default_path.read_text(encoding="utf-8")
+        assert "epochs: 3" in default_text
+        assert "epochs: 99" not in default_text
+
 
 # ═══════════════════════════════════════════════════════════════
 #  Resolve targets helper

@@ -19,10 +19,10 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed']
 
 export const PARAM_TYPE_STYLES = {
-  str: 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  int: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-  float: 'border-teal-500/25 bg-teal-500/10 text-teal-700 dark:text-teal-300',
-  bool: 'border-fuchsia-500/25 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300',
-  list: 'border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300',
-  null: 'border-slate-500/25 bg-slate-500/10 text-slate-700 dark:text-slate-300',
+  str: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
+  int: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  float: 'bg-teal-500/10 text-teal-700 dark:text-teal-300',
+  bool: 'bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300',
+  list: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
+  null: 'bg-slate-500/10 text-slate-700 dark:text-slate-300',
 } as const

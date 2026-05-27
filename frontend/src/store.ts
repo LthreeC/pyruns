@@ -415,6 +415,8 @@ interface LauncherState {
   configs: ConfigCandidate[]
   selectedScript: string
   selectedConfig: string
+  requiresConfigTemplate: boolean
+  configSource: string
   step: number
   loading: boolean
   fetchScripts: () => Promise<void>
@@ -429,6 +431,8 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
   configs: [],
   selectedScript: '',
   selectedConfig: '',
+  requiresConfigTemplate: false,
+  configSource: '',
   step: 0,
   loading: false,
   async fetchScripts() {
@@ -448,13 +452,25 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
   },
   async selectScript(path: string) {
     const requestId = ++launcherRequestSeq
-    set({ selectedScript: path, loading: true })
+    set({
+      selectedScript: path,
+      loading: true,
+      requiresConfigTemplate: false,
+      configSource: '',
+    })
     try {
       const res = await api.getLauncherConfigs(path)
       if (requestId !== launcherRequestSeq) {
         return
       }
-      set({ configs: res.items, step: 1 })
+      const workspaceDefault = res.items.find(item => item.kind === 'workspace_default')
+      set({
+        configs: res.items,
+        selectedConfig: workspaceDefault?.path || '',
+        requiresConfigTemplate: Boolean(res.requires_config_template),
+        configSource: res.config_source || '',
+        step: workspaceDefault ? 2 : 1,
+      })
     } finally {
       if (requestId === launcherRequestSeq) {
         set({ loading: false })
@@ -483,6 +499,14 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
   },
   reset() {
     launcherRequestSeq += 1
-    set({ scripts: [], configs: [], selectedScript: '', selectedConfig: '', step: 0 })
+    set({
+      scripts: [],
+      configs: [],
+      selectedScript: '',
+      selectedConfig: '',
+      requiresConfigTemplate: false,
+      configSource: '',
+      step: 0,
+    })
   },
 }))

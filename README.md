@@ -217,6 +217,35 @@ pyr train.py
 
 系统会继续围绕这个工作区进行调参、生成和运行。
 
+如果从 UI Launcher 里选择脚本，规则也一样：`argparse` 脚本可以直接打开；`pyruns.load()` 脚本第一次没有 `config_default.yaml` 时，需要先选择一份 YAML 作为默认模板。之后只要工作区里已有 `config_default.yaml`，就会直接复用；如果是 `argparse` 脚本，默认模板会按当前脚本参数重新刷新。
+
+## 脚本内 API
+
+Pyruns 暴露给训练脚本的 API 很少，基本就这几个：
+
+| API | 用途 |
+| --- | --- |
+| `pyruns.load()` | 读取当前任务的 YAML / JSON 配置，返回可用点号访问的配置对象。 |
+| `pyruns.read(path=None)` | 显式读取配置文件；通常直接用 `pyruns.load()` 就够了。 |
+| `pyruns.record(**kwargs)` | 写入本次运行的最终指标，例如 `final_loss`、`acc`、`seed`。同一次运行会合并到一个 records 槽位。 |
+| `pyruns.track(**kwargs)` | 写入时间序列指标，例如每个 epoch 的 `loss`、`acc`，会追加到 tracks 里。 |
+| `pyruns.get_task_dir()` | 返回当前任务目录；不在 Pyruns 任务中运行时返回 `None`。 |
+| `pyruns.get_run_index()` | 返回当前 run 槽位；适合一个任务多次运行时区分记录。 |
+
+最常见的脚本写法：
+
+```python
+import pyruns
+
+cfg = pyruns.load()
+
+for epoch in range(cfg.training.epochs):
+    loss = train_one_epoch(cfg)
+    pyruns.track(loss=loss)
+
+pyruns.record(final_loss=loss, seed=cfg.training.seed)
+```
+
 ### 模式 3：CLI 交互模式
 
 如果你在无头服务器上，或者更偏爱命令行操作，可以直接进入 CLI 交互模式：
