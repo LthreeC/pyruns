@@ -220,16 +220,27 @@ def list_config_candidates(script_path: str) -> list[dict[str, Any]]:
             "kind": "workspace_default",
         }
 
-    for pattern in ("*.yaml", "*.yml"):
-        for config_file in sorted(script_dir.glob(pattern)):
-            path = normalize_path(str(config_file))
-            if path in items:
-                continue
-            items[path] = {
-                "path": path,
-                "label": config_file.name,
-                "kind": "script_dir",
-            }
+    search_roots: list[tuple[Path, str]] = [(script_dir, "script_dir")]
+    for folder_name in ("configs", "config", "conf"):
+        candidate_dir = script_dir / folder_name
+        if candidate_dir.is_dir():
+            search_roots.append((candidate_dir, "script_config_dir"))
+
+    for search_root, kind in search_roots:
+        for pattern in ("*.yaml", "*.yml"):
+            for config_file in sorted(search_root.glob(pattern)):
+                path = normalize_path(str(config_file))
+                if path in items:
+                    continue
+                if search_root == script_dir:
+                    label = config_file.name
+                else:
+                    label = config_file.relative_to(script_dir).as_posix()
+                items[path] = {
+                    "path": path,
+                    "label": label,
+                    "kind": kind,
+                }
 
     return sorted(
         items.values(),

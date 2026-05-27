@@ -1,0 +1,6 @@
+checkpoint: ./checkpoints/tiny.pt
+dataset:
+  name: toy
+  split: validation
+eval:
+  steps: 3

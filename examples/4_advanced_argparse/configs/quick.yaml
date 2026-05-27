@@ -1,0 +1,15 @@
+dataset: toy
+layers:
+  - 32
+  - 64
+  - 128
+tag:
+  - smoke
+  - env-check
+compile: false
+use_amp: true
+cache: false
+verbose: 2
+dropout: -1.0
+device: cpu
+seed: 7

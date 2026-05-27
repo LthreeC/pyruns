@@ -392,7 +392,26 @@ def test_build_command_argparse_boolean_optional_and_typed_bool(mock_extract, mo
     assert "--no-compile" in cmd
     assert "--enabled" in cmd
     assert cmd[cmd.index("--enabled") + 1] == "False"
-    
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_count_action_repeats_flag(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "verbose": {
+            "flags": ["-v", "--verbose"],
+            "name": "--verbose",
+            "action": "count",
+            "default": 0,
+        },
+    }
+
+    cmd, _, _ = _build_command(None, "train.py", None, {"verbose": 2})
+
+    assert cmd.count("--verbose") == 2
+    assert "2" not in cmd
+
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 def test_build_command_non_argparse(mock_detect):

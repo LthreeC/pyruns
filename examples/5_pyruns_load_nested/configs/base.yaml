@@ -1,0 +1,15 @@
+experiment:
+  name: nested-smoke
+  output_dir: ./outputs
+model:
+  name: mlp
+  width: 64
+  depth: 2
+training:
+  lr: 0.001
+  batch_size: 16
+  epochs: 3
+  seed: 13
+runtime:
+  device: cpu
+  precision: fp32

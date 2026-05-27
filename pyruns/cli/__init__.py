@@ -224,8 +224,8 @@ def _launch_shell_workspace_ui() -> None:
     print("[pyruns] Starting shell workspace for current directory")
     print(f"[pyruns] Workspace: {shell_root}")
     print("[pyruns] Recommended main flow: `pyr <script.py>` or `pyr <script.py> <config.yaml>`")
-    print("[pyruns] Tip: open Generator and write commands in Shell mode")
-    _launch_ui("/generator")
+    print("[pyruns] Tip: choose a script in Launcher, or cancel it and write commands in Shell Generator mode")
+    _launch_ui("/generator?launcher=1")
 
 
 def pyr() -> None:

@@ -469,7 +469,7 @@ class TestEntryPoint:
                 pyr()
 
         mock_bootstrap.assert_called_once_with(str(tmp_path / "_pyruns_").replace("\\", "/"))
-        mock_launch.assert_called_once_with("/generator")
+        mock_launch.assert_called_once_with("/generator?launcher=1")
         captured = capsys.readouterr()
         assert "Starting shell workspace" in captured.out
         assert "Generator" in captured.out

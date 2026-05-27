@@ -328,6 +328,15 @@ def _build_command(
                             cmd_list.append(str(item))
                     return
 
+                if action == "count":
+                    try:
+                        repeat = int(value)
+                    except (TypeError, ValueError):
+                        repeat = 0
+                    if repeat > 0:
+                        cmd_list.extend([flag] * repeat)
+                    return
+
                 if value is not None:
                     cmd_list.append(flag)
                     cmd_list.append(str(value))

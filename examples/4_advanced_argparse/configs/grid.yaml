@@ -1,0 +1,12 @@
+dataset: toy
+layers:
+  - 64
+  - 128
+tag: grid
+compile: true
+use_amp: false
+cache: true
+verbose: 2
+dropout: 0.1
+device: cpu
+seed: 11

@@ -154,7 +154,7 @@ export interface ScriptCandidate {
 export interface ConfigCandidate {
   path: string
   label: string
-  kind: 'workspace_default' | 'script_dir'
+  kind: 'workspace_default' | 'script_dir' | 'script_config_dir'
 }
 
 export interface WorkspaceCandidate {

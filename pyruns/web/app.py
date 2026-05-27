@@ -516,7 +516,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     else:
 
         @app.get("/{full_path:path}")
-        def serve_frontend_fallback(_full_path: str) -> HTMLResponse:
+        def serve_frontend_fallback(full_path: str) -> HTMLResponse:
             return HTMLResponse(_fallback_frontend_html())
 
     return app

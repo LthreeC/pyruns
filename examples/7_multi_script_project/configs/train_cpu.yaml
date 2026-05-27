@@ -1,0 +1,4 @@
+lr: 0.002
+epochs: 3
+seed: 17
+model: small

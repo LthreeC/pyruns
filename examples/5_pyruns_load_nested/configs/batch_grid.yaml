@@ -1,0 +1,15 @@
+experiment:
+  name: nested-grid
+  output_dir: ./outputs
+model:
+  name: tiny-transformer
+  width: 64
+  depth: 2
+training:
+  lr: 0.003
+  batch_size: 16
+  epochs: 3
+  seed: 22
+runtime:
+  device: cpu
+  precision: fp32
