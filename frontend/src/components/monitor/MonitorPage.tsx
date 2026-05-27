@@ -37,7 +37,13 @@ export default function MonitorPage() {
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const liveLogNameRef = useRef('')
+  const livePollingKeyRef = useRef('')
+  const livePollInFlightRef = useRef(false)
+  const wsStreamActiveRef = useRef(false)
 
+  const selectedTask = tasks.find(task => task.name === selectedTaskName)
+  const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
+  const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
   const sidebarWidthPct = Number.isFinite(sidebarWidthRaw) ? sidebarWidthRaw : 14
@@ -233,12 +239,19 @@ export default function MonitorPage() {
     }
   }, [detailTask, tasks])
 
-  const selectedTask = tasks.find(task => task.name === selectedTaskName)
-  const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
-  const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
   liveLogNameRef.current = liveLogName
+
+  useEffect(() => {
+    const key = `${selectedTaskName ?? ''}::${liveLogName}`
+    if (livePollingKeyRef.current === key) {
+      return
+    }
+    livePollingKeyRef.current = key
+    livePollInFlightRef.current = false
+    wsStreamActiveRef.current = false
+  }, [liveLogName, selectedTaskName])
 
   const handleChunk = useCallback((message: LogStreamMessage) => {
     const activeTaskName = selectedTaskNameRef.current
@@ -251,10 +264,46 @@ export default function MonitorPage() {
       return
     }
 
+    wsStreamActiveRef.current = true
     appendLog(message.content)
   }, [appendLog])
 
   useLogStream({ taskName: selectedTaskName, onChunk: handleChunk, enabled: isLive })
+
+  const pollLiveLog = useCallback(async () => {
+    const activeTaskName = selectedTaskNameRef.current
+    const liveLog = liveLogNameRef.current
+    if (!activeTaskName || !liveLog || wsStreamActiveRef.current || livePollInFlightRef.current) {
+      return
+    }
+
+    livePollInFlightRef.current = true
+    const requestedLog = selectedLogRef.current || liveLog
+    const currentOffset = useMonitorStore.getState().logOffset
+    try {
+      const logs = await api.getTaskLogs(activeTaskName, requestedLog, currentOffset, 50000)
+      if (selectedTaskNameRef.current !== activeTaskName) {
+        return
+      }
+      const stillViewingLog = selectedLogRef.current || liveLogNameRef.current
+      if (logs.selected_log && stillViewingLog && logs.selected_log !== stillViewingLog) {
+        return
+      }
+
+      useMonitorStore.setState(state => ({
+        logContent: logs.content ? state.logContent + logs.content : state.logContent,
+        logOffset: logs.offset,
+        availableLogs: logs.available_logs,
+        selectedLog: state.selectedLog || logs.selected_log,
+      }))
+    } catch {
+      // Keep the monitor quiet; task polling still refreshes status.
+    } finally {
+      livePollInFlightRef.current = false
+    }
+  }, [])
+
+  usePolling(pollLiveLog, 1000, Boolean(isLive), false)
 
   const filteredTasks = sidebarQuery
     ? tasks.filter(task => matchesTaskQuery(task, sidebarQuery))

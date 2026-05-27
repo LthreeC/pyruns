@@ -269,11 +269,17 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
     @app.get("/api/launcher/configs")
     def get_launcher_configs(script: str) -> dict[str, Any]:
-        return {"items": get_runtime().list_launcher_configs(script)}
+        try:
+            return {"items": get_runtime().list_launcher_configs(script)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/launcher/workspaces")
     def get_launcher_workspaces(script: str, config: str | None = None) -> dict[str, Any]:
-        return {"items": get_runtime().list_launcher_workspaces(script, config)}
+        try:
+            return {"items": get_runtime().list_launcher_workspaces(script, config)}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/launcher/open")
     def open_launcher_workspace(payload: LauncherOpenRequest) -> dict[str, Any]:

@@ -38,6 +38,15 @@ def normalize_path(path: str) -> str:
     return os.path.abspath(path).replace("\\", "/")
 
 
+def validate_python_script_path(script_path: str) -> str:
+    """Return a normalized Python script path or raise a user-facing error."""
+
+    filepath = normalize_path(script_path)
+    if not os.path.isfile(filepath) or Path(filepath).suffix.lower() != ".py":
+        raise FileNotFoundError(f"Python script '{script_path}' not found or is not a .py file.")
+    return filepath
+
+
 def workspace_root_parent_for_script(script_path: str) -> str:
     """Return the project-level ``_pyruns_`` directory for a script."""
 
@@ -206,7 +215,7 @@ def choose_directory(initial_dir: str | None = None) -> str | None:
 def list_config_candidates(script_path: str) -> list[dict[str, Any]]:
     """Return YAML config candidates for a script."""
 
-    normalized = normalize_path(script_path)
+    normalized = validate_python_script_path(script_path)
     script_dir = Path(normalized).parent
     workspace_path = resolve_workspace_for_script(normalized) or workspace_root_for_script(normalized)
     workspace_default = Path(workspace_path) / CONFIG_DEFAULT_FILENAME
@@ -251,7 +260,7 @@ def list_config_candidates(script_path: str) -> list[dict[str, Any]]:
 def list_workspace_candidates(script_path: str, config_path: str | None = None) -> list[dict[str, Any]]:
     """Return the inferred script workspace destination for a script/config pair."""
 
-    normalized = normalize_path(script_path)
+    normalized = validate_python_script_path(script_path)
     workspace_path = resolve_workspace_for_script(normalized) or workspace_root_for_script(normalized)
     config_name = Path(config_path).name if config_path else ""
     return [
@@ -275,7 +284,7 @@ def _write_script_info(workspace_path: str, payload: dict[str, Any]) -> None:
 def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str:
     """Prepare a script workspace and optionally import a selected YAML config."""
 
-    filepath = normalize_path(script_path)
+    filepath = validate_python_script_path(script_path)
     file_dir = os.path.dirname(filepath)
     script_base = os.path.splitext(os.path.basename(filepath))[0]
     pyruns_dir = workspace_root_parent_for_script(filepath)

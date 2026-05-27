@@ -177,6 +177,17 @@ def test_launcher_endpoints_discover_scripts_configs_and_workspaces(tmp_path, mo
     assert workspace_items[0]["config_name"] == "secondary.yaml"
 
 
+def test_launcher_configs_endpoint_rejects_invalid_script_path(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/launcher/configs", params={"script": str(tmp_path / "missing.py")})
+
+    assert response.status_code == 400
+    assert "Python script" in response.json()["detail"]
+
+
 def test_launcher_open_endpoint_activates_selected_workspace(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
@@ -197,6 +208,32 @@ def test_launcher_open_endpoint_activates_selected_workspace(tmp_path, monkeypat
     assert payload["script_name"] == "alt"
     assert payload["run_root"].endswith("_pyruns_/alt")
     assert client.get("/api/workspace").json()["script_name"] == "alt"
+
+
+def test_launcher_open_endpoint_rejects_non_python_script_path(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    not_script = tmp_path / "notes.txt"
+    not_script.write_text("not a script\n", encoding="utf-8")
+
+    response = client.post("/api/launcher/open", json={"script_path": str(not_script)})
+
+    assert response.status_code == 400
+    assert "Python script" in response.json()["detail"]
+
+
+def test_launcher_open_endpoint_rejects_directory_script_path(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    directory_path = tmp_path / "configs"
+    directory_path.mkdir()
+
+    response = client.post("/api/launcher/open", json={"script_path": str(directory_path)})
+
+    assert response.status_code == 400
+    assert "Python script" in response.json()["detail"]
 
 
 def test_run_root_switch_endpoint_reloads_workspace(tmp_path):

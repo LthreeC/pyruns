@@ -1,40 +1,108 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { FileCode, FolderOpen, ChevronRight, Rocket, ArrowRight } from 'lucide-react'
+import { FileCode, FolderOpen, ChevronRight, Rocket, ArrowRight, FileSearch, FolderPlus } from 'lucide-react'
 import clsx from 'clsx'
 import { useLauncherStore, useWorkspaceStore } from '@/store'
 import type { ScriptCandidate, ConfigCandidate } from '@/types'
+import * as api from '@/api'
+
+function pathName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const {
     scripts, configs, selectedScript, selectedConfig, step, loading,
-    fetchScripts, selectScript, selectConfig, openWorkspace, reset,
+    fetchScripts, selectScript, selectConfig, openWorkspace,
   } = useLauncherStore()
+  const setWorkspace = useWorkspaceStore(state => state.setWorkspace)
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const [manualScriptPath, setManualScriptPath] = useState('')
+  const [manualConfigPath, setManualConfigPath] = useState('')
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    fetchScripts()
+    void fetchScripts()
     // Pre-select from URL params
     const scriptParam = searchParams.get('script')
     if (scriptParam) {
-      selectScript(scriptParam)
+      setManualScriptPath(scriptParam)
+      void selectScript(scriptParam)
     }
   }, [])
 
   const handleOpen = useCallback(async () => {
-    await openWorkspace()
-    onClose()
-    navigate('/')
-  }, [onClose, navigate])
+    setError('')
+    try {
+      await openWorkspace()
+      onClose()
+      navigate('/')
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [openWorkspace, onClose, navigate])
 
   const handleSkipConfig = useCallback(async () => {
+    setError('')
     selectConfig('')
-    // Open directly without config
-    await useLauncherStore.getState().openWorkspace()
-    onClose()
-    navigate('/')
-  }, [onClose, navigate])
+    try {
+      await useLauncherStore.getState().openWorkspace()
+      onClose()
+      navigate('/')
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [selectConfig, onClose, navigate])
+
+  const handleManualScript = useCallback(async () => {
+    const scriptPath = manualScriptPath.trim()
+    if (!scriptPath) {
+      setError('Enter a Python script path.')
+      return
+    }
+
+    setError('')
+    try {
+      await selectScript(scriptPath)
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [manualScriptPath, selectScript])
+
+  const handleManualConfig = useCallback(() => {
+    const configPath = manualConfigPath.trim()
+    if (!configPath) {
+      void handleSkipConfig()
+      return
+    }
+    setError('')
+    selectConfig(configPath)
+  }, [handleSkipConfig, manualConfigPath, selectConfig])
+
+  const handlePickScript = useCallback(async () => {
+    setError('')
+    try {
+      const workspace = await api.pickLauncherScript()
+      setWorkspace(workspace)
+      onClose()
+      navigate('/')
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [navigate, onClose, setWorkspace])
+
+  const handlePickShellRoot = useCallback(async () => {
+    setError('')
+    try {
+      const workspace = await api.pickLauncherShellRoot()
+      setWorkspace(workspace)
+      onClose()
+      navigate('/generator')
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [navigate, onClose, setWorkspace])
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -59,6 +127,12 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
+          {error && (
+            <div className="mb-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              {error}
+            </div>
+          )}
+
           {loading && (
             <div className="flex items-center justify-center py-12">
               <div className="text-xs text-zinc-500 animate-pulse">Loading...</div>
@@ -66,7 +140,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
           )}
 
           {!loading && step === 0 && (
-            <div className="space-y-1">
+            <div className="space-y-3">
               {scripts.length === 0 ? (
                 <div className="text-center py-12 text-xs text-zinc-600">
                   No Python scripts found in the current directory.
@@ -80,13 +154,52 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   />
                 ))
               )}
+              <div className="rounded-lg border border-border-subtle bg-surface-overlay/50 p-3">
+                <div className="flex items-center gap-2">
+                  <FileSearch className="h-4 w-4 text-zinc-500" />
+                  <input
+                    value={manualScriptPath}
+                    onChange={event => setManualScriptPath(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void handleManualScript()
+                      }
+                    }}
+                    placeholder="Absolute or relative path to train.py"
+                    className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+                  />
+                  <button
+                    onClick={() => void handleManualScript()}
+                    className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
+                  >
+                    Use Path
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => void handlePickScript()}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-2xs text-zinc-400 transition-colors hover:text-zinc-200"
+                  >
+                    <FileSearch className="h-3.5 w-3.5" />
+                    Browse Script
+                  </button>
+                  <button
+                    onClick={() => void handlePickShellRoot()}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-2xs text-zinc-400 transition-colors hover:text-zinc-200"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                    Open Shell Folder
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
           {!loading && step === 1 && (
             <div className="space-y-1">
               <div className="text-2xs text-zinc-500 mb-3">
-                Select a config for <span className="text-zinc-300 font-medium">{selectedScript.split('/').pop()}</span>
+                Select a config for <span className="text-zinc-300 font-medium">{pathName(selectedScript)}</span>
               </div>
               {configs.length === 0 ? (
                 <div className="text-center py-8">
@@ -115,6 +228,29 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   </button>
                 </>
               )}
+              <div className="mt-3 rounded-lg border border-border-subtle bg-surface-overlay/50 p-3">
+                <div className="flex items-center gap-2">
+                  <FileCode className="h-4 w-4 text-zinc-500" />
+                  <input
+                    value={manualConfigPath}
+                    onChange={event => setManualConfigPath(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        handleManualConfig()
+                      }
+                    }}
+                    placeholder="Optional path to config.yaml"
+                    className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+                  />
+                  <button
+                    onClick={handleManualConfig}
+                    className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
+                  >
+                    Use Config
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -125,9 +261,9 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
               </div>
               <div className="text-center">
                 <p className="text-sm text-zinc-200 font-medium">Ready to launch</p>
-                <p className="text-2xs text-zinc-500 mt-1 font-mono">{selectedScript.split('/').pop()}</p>
+                <p className="text-2xs text-zinc-500 mt-1 font-mono">{pathName(selectedScript)}</p>
                 {selectedConfig && (
-                  <p className="text-2xs text-zinc-600 mt-0.5 font-mono">{selectedConfig.split('/').pop()}</p>
+                  <p className="text-2xs text-zinc-600 mt-0.5 font-mono">{pathName(selectedConfig)}</p>
                 )}
               </div>
               <button

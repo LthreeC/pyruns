@@ -319,7 +319,14 @@ def _build_command(
                     return
 
                 if isinstance(value, list):
-                    if action != "append" and nargs not in (None, ""):
+                    if action == "append":
+                        for item in value:
+                            cmd_list.append(flag)
+                            if isinstance(item, (list, tuple)) and nargs not in (None, ""):
+                                cmd_list.extend(str(part) for part in item)
+                            else:
+                                cmd_list.append(str(item))
+                    elif nargs not in (None, ""):
                         cmd_list.append(flag)
                         cmd_list.extend(str(item) for item in value)
                     else:

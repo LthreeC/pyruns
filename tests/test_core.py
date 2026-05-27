@@ -303,6 +303,26 @@ def test_prepare_env():
     assert ENV_KEY_CONFIG not in env3
 
 
+def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrides(monkeypatch):
+    monkeypatch.setenv("CONDA_PREFIX", "/opt/conda/envs/exp")
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "exp")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    monkeypatch.setenv("PYTHONPATH", "/parent/pythonpath")
+
+    env = _prepare_env(
+        extra_env={"CUDA_VISIBLE_DEVICES": "2", "PYRUNS_EXAMPLE_ENV": "task-value"},
+        task_dir="/fake/task",
+        task_kind=TASK_KIND_CONFIG,
+    )
+
+    assert env["CONDA_PREFIX"] == "/opt/conda/envs/exp"
+    assert env["CONDA_DEFAULT_ENV"] == "exp"
+    assert env["CUDA_VISIBLE_DEVICES"] == "2"
+    assert env["PYRUNS_EXAMPLE_ENV"] == "task-value"
+    assert "/parent/pythonpath" in env["PYTHONPATH"]
+    assert env[ENV_KEY_CONFIG] == os.path.join("/fake/task", CONFIG_FILENAME)
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.parse_utils.extract_argparse_params")
 def test_build_command_argparse(mock_extract, mock_detect):
@@ -363,6 +383,33 @@ def test_build_command_argparse_groups_nargs_list_values(mock_extract, mock_dete
     assert cmd.count("--layers") == 1
     index = cmd.index("--layers")
     assert cmd[index:index + 3] == ["--layers", "128", "256"]
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_append_with_nargs_repeats_grouped_values(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "pair": {"name": "--pair", "action": "append", "nargs": 2, "default": []},
+    }
+
+    cmd, _, _ = _build_command(
+        None,
+        "train.py",
+        None,
+        {"pair": [["train", "dev"], ["test", "holdout"]]},
+    )
+
+    assert cmd == [
+        sys.executable,
+        "train.py",
+        "--pair",
+        "train",
+        "dev",
+        "--pair",
+        "test",
+        "holdout",
+    ]
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
