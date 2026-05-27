@@ -50,6 +50,107 @@ def _task_info(task: dict) -> dict:
     return json.loads(info_path.read_text(encoding="utf-8"))
 
 
+def test_basic_argparse_example_runs_through_runtime(tmp_path):
+    example = _copy_example(tmp_path, "1_argparse_script")
+    script = example / "main.py"
+
+    workspace = bootstrap_workspace(str(script))
+    runtime = PyrunsRuntime(workspace)
+    created = runtime.create_tasks_from_template(
+        name_prefix="basic-argparse",
+        mode="yaml",
+        yaml_text="\n".join(
+            [
+                "lr: 0.01",
+                "epochs: 1",
+                "batch_size: 16",
+                "optimizer: sgd",
+                "",
+            ]
+        ),
+        append_timestamp=False,
+    )
+    task_name = created["items"][0]["name"]
+    runtime.start_task(task_name)
+
+    task = _wait_for_task(runtime, task_name)
+
+    assert task["status"] == "completed"
+    info = _task_info(task)
+    assert len(info[TRACKS_KEY][0]["loss"]) == 1
+    assert info[RECORDS_KEY][0]["last_loss"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("script_name", "config_name", "yaml_text"),
+    [
+        (
+            "main1.py",
+            "config1.yaml",
+            "\n".join(
+                [
+                    "lr: 5e-3",
+                    "epochs: 1",
+                    "optimizer: sgd",
+                    "batch_size: 64",
+                    "dropout: 0.2",
+                    "model: resnet50",
+                    "",
+                ]
+            ),
+        ),
+        (
+            "main2.py",
+            "config2.yaml",
+            "\n".join(
+                [
+                    "project:",
+                    '  name: "DeepSense_Alpha"',
+                    "  version: 1.2",
+                    '  output_dir: "./results"',
+                    "model:",
+                    '  type: "Transformer"',
+                    "  layers: 12",
+                    "  dropout: 0.1",
+                    "training:",
+                    "  hyperparams:",
+                    "    lr: 0.0005",
+                    "    epochs: 1",
+                    '    optimizer: "AdamW"',
+                    "    batch_size: 32",
+                    "  resources:",
+                    '    device: "cpu"',
+                    '    precision: "fp16"',
+                    "    gpu_config:",
+                    "      memory_frac: 0.8",
+                    "      allow_growth: true",
+                    "",
+                ]
+            ),
+        ),
+    ],
+)
+def test_pyruns_config_examples_run_through_runtime(tmp_path, script_name, config_name, yaml_text):
+    example = _copy_example(tmp_path, "2_pyruns_config")
+    script = example / script_name
+    config = example / config_name
+
+    workspace = bootstrap_workspace(str(script), str(config))
+    runtime = PyrunsRuntime(workspace)
+    created = runtime.create_tasks_from_template(
+        name_prefix=script.stem,
+        mode="yaml",
+        yaml_text=yaml_text,
+        append_timestamp=False,
+    )
+    task_name = created["items"][0]["name"]
+    runtime.start_task(task_name)
+
+    task = _wait_for_task(runtime, task_name)
+
+    assert task["status"] == "completed"
+
+
 def test_advanced_argparse_example_runs_through_runtime(tmp_path):
     example = _copy_example(tmp_path, "4_advanced_argparse")
     script = example / "main.py"
