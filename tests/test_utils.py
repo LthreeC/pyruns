@@ -678,6 +678,20 @@ class TestResolveLogPath:
         result = resolve_log_path(task_dir)
         assert result.endswith("run2.log")
 
+    def test_resolve_default_prefers_run_log_over_error_log(self, tmp_path):
+        task_dir = str(tmp_path)
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
+        os.makedirs(log_dir)
+        run_log = os.path.join(log_dir, "run1.log")
+        error_log = os.path.join(log_dir, "error.log")
+        open(run_log, "w").close()
+        open(error_log, "w").close()
+        os.utime(run_log, (1000000, 1000000))
+        os.utime(error_log, (2000000, 2000000))
+
+        result = resolve_log_path(task_dir)
+        assert result == run_log
+
     def test_resolve_no_logs(self, tmp_path):
         assert resolve_log_path(str(tmp_path)) is None
 

@@ -101,6 +101,18 @@ def test_react_monitor_sidebar_width_is_clamped():
     assert "Math.min(35, Math.max(10, sidebarWidthRaw))" in source
 
 
+def test_react_monitor_uses_unfiltered_full_task_list():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "monitorTasks: Task[]" in store
+    assert "fetchMonitorTasks: () => Promise<void>" in store
+    assert "api.getTasks({ limit: 0, refresh: true })" in store
+    assert "const { monitorTasks, fetchMonitorTasks } = useTaskStore()" in monitor
+    assert "const selectedTask = monitorTasks.find" in monitor
+    assert "usePolling(fetchMonitorTasks" in monitor
+
+
 def test_react_components_avoid_large_forced_corner_radius():
     forbidden = ("rounded-xl", "rounded-2xl", "rounded-3xl")
     offenders = []

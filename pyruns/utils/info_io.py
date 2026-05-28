@@ -244,7 +244,13 @@ def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Opti
     if log_file_name:
         return opts.get(log_file_name)
     if opts:
-        cached = [(f, p, os.path.getmtime(p)) for f, p in opts.items()]
+        run_logs = {
+            name: path
+            for name, path in opts.items()
+            if name.startswith("run") and name.endswith(".log")
+        }
+        candidates = run_logs or opts
+        cached = [(f, p, os.path.getmtime(p)) for f, p in candidates.items()]
         cached.sort(key=lambda x: x[2], reverse=True)
         return cached[0][1]
     return None

@@ -48,7 +48,7 @@ function readStoredMonitorSidebarWidth(fallback: number) {
 }
 
 export default function MonitorPage() {
-  const { tasks, fetchTasks } = useTaskStore()
+  const { monitorTasks, fetchMonitorTasks } = useTaskStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
     selectedTaskName, logContent, availableLogs, selectedLog, loading, exportIds,
@@ -71,10 +71,10 @@ export default function MonitorPage() {
   const livePollInFlightRef = useRef(false)
   const wsStreamActiveRef = useRef(false)
 
-  const selectedTask = tasks.find(task => task.name === selectedTaskName)
+  const selectedTask = monitorTasks.find(task => task.name === selectedTaskName)
   const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
-  const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
+  const hasActive = monitorTasks.some(task => task.status === 'running' || task.status === 'queued')
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
   const settingsSidebarWidthPct = Number.isFinite(sidebarWidthRaw)
     ? Math.min(35, Math.max(10, sidebarWidthRaw))
@@ -82,7 +82,7 @@ export default function MonitorPage() {
   const [monitorSidebarWidthPct, setMonitorSidebarWidthPct] = useState(() => readStoredMonitorSidebarWidth(settingsSidebarWidthPct))
   const [resizingMonitorSidebar, setResizingMonitorSidebar] = useState(false)
   const terminalVisible = Boolean(selectedTaskName)
-  usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
+  usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
 
   const startMonitorSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -90,8 +90,8 @@ export default function MonitorPage() {
   }, [])
 
   useEffect(() => {
-    void fetchTasks()
-  }, [fetchTasks])
+    void fetchMonitorTasks()
+  }, [fetchMonitorTasks])
 
   useEffect(() => {
     try {
@@ -297,8 +297,8 @@ export default function MonitorPage() {
   }, [renderKey, selectedTaskName, logContent, shouldShowNoLogPlaceholder])
 
   useEffect(() => {
-    if (tasks.length === 0 || !selectedTaskName) return
-    const stillExists = tasks.some(task => task.name === selectedTaskName)
+    if (monitorTasks.length === 0 || !selectedTaskName) return
+    const stillExists = monitorTasks.some(task => task.name === selectedTaskName)
     if (stillExists) return
     useMonitorStore.setState({
       selectedTaskName: null,
@@ -307,14 +307,14 @@ export default function MonitorPage() {
       availableLogs: [],
       selectedLog: '',
     })
-  }, [tasks, selectedTaskName])
+  }, [monitorTasks, selectedTaskName])
 
   useEffect(() => {
     if (!detailTask) {
       return
     }
 
-    const refreshed = tasks.find(task => task.name === detailTask.name)
+    const refreshed = monitorTasks.find(task => task.name === detailTask.name)
     if (!refreshed) {
       setDetailTask(null)
       return
@@ -323,7 +323,7 @@ export default function MonitorPage() {
     if (refreshed !== detailTask) {
       setDetailTask(refreshed)
     }
-  }, [detailTask, tasks])
+  }, [detailTask, monitorTasks])
 
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
@@ -392,8 +392,8 @@ export default function MonitorPage() {
   usePolling(pollLiveLog, 1000, Boolean(isLive), false)
 
   const filteredTasks = sidebarQuery
-    ? tasks.filter(task => matchesTaskQuery(task, sidebarQuery))
-    : tasks
+    ? monitorTasks.filter(task => matchesTaskQuery(task, sidebarQuery))
+    : monitorTasks
   const pinnedTasks = filteredTasks.filter(task => task.pinned)
   const otherTasks = filteredTasks.filter(task => !task.pinned)
   const allExportSelected = filteredTasks.length > 0 && filteredTasks.every(task => exportIds.has(task.name))
@@ -417,13 +417,13 @@ export default function MonitorPage() {
       await api.cancelTask(currentTaskName)
     }
 
-    await fetchTasks()
+    await fetchMonitorTasks()
 
-    const refreshedTasks = useTaskStore.getState().tasks
+    const refreshedTasks = useTaskStore.getState().monitorTasks
     if (refreshedTasks.some(task => task.name === currentTaskName)) {
       await selectTask(currentTaskName)
     }
-  }, [selectedTaskName, selectedTask, fetchTasks, selectTask])
+  }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask])
 
   const handleExport = useCallback(async () => {
     const names = [...exportIds]
@@ -642,7 +642,7 @@ export default function MonitorPage() {
           task={detailTask}
           onClose={() => setDetailTask(null)}
           onRefresh={() => {
-            void fetchTasks()
+            void fetchMonitorTasks()
           }}
         />
       )}

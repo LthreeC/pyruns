@@ -11,6 +11,7 @@ import type {
 import * as api from './api'
 
 let taskRequestSeq = 0
+let monitorTaskRequestSeq = 0
 let monitorRequestSeq = 0
 let launcherRequestSeq = 0
 const THEME_STORAGE_KEY = 'pyruns_theme'
@@ -144,6 +145,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
 interface TaskState {
   tasks: Task[]
+  monitorTasks: Task[]
   total: number
   offset: number
   limit: number
@@ -158,6 +160,7 @@ interface TaskState {
   setOffset: (o: number) => void
   setColumns: (n: number) => void
   fetchTasks: () => Promise<void>
+  fetchMonitorTasks: () => Promise<void>
   toggleSelect: (name: string) => void
   selectAll: () => void
   clearSelection: () => void
@@ -166,6 +169,7 @@ interface TaskState {
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: [],
+  monitorTasks: [],
   total: 0,
   offset: 0,
   limit: 50,
@@ -200,6 +204,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         set({ loading: false })
       }
     }
+  },
+  async fetchMonitorTasks() {
+    const requestId = ++monitorTaskRequestSeq
+    const page = await api.getTasks({ limit: 0, refresh: true })
+    if (requestId !== monitorTaskRequestSeq) {
+      return
+    }
+    set({ monitorTasks: page.items })
   },
   toggleSelect(name) {
     const ids = new Set(get().selectedIds)

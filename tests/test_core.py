@@ -866,6 +866,70 @@ def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_pat
     assert queued_info["status"] == "queued"
 
 
+def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    task = generator.create_task("runner", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with manager._lock:
+        active = manager._tasks_by_name[task["name"]]
+        active["status"] = "running"
+        active["run_index"] = 1
+        manager._running_ids.add(task["name"])
+        manager._recompute_processing_flag_locked()
+
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        manager,
+        "_submit_task",
+        lambda target, run_index, *, independent, execution_mode=None: submitted.append(target["name"]),
+    )
+
+    manager.start_task_now(task["name"])
+
+    assert submitted == []
+    refreshed = manager.get_task(task["name"])
+    assert refreshed["status"] == "running"
+    assert refreshed["run_index"] == 1
+
+
+def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    tasks = [generator.create_task(f"task-{idx}", {"value": idx}) for idx in range(3)]
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with manager._lock:
+        active = manager._tasks_by_name[tasks[0]["name"]]
+        active["status"] = "running"
+        active["run_index"] = 1
+        manager._running_ids.add(active["name"])
+        manager._recompute_processing_flag_locked()
+
+    submitted: list[tuple[str, int, bool]] = []
+
+    def fake_submit(target, run_index, *, independent, execution_mode=None):
+        submitted.append((target["name"], run_index, independent))
+
+    monkeypatch.setattr(manager, "_submit_task", fake_submit)
+
+    manager.start_batch_tasks([task["name"] for task in tasks], max_workers=2)
+
+    assert [item[0] for item in submitted] == [tasks[1]["name"]]
+    statuses = {task["name"]: task["status"] for task in manager.list_tasks()}
+    assert statuses[tasks[0]["name"]] == "running"
+    assert statuses[tasks[1]["name"]] == "running"
+    assert statuses[tasks[2]["name"]] == "queued"
+    assert manager.get_task(tasks[0]["name"])["run_index"] == 1
+
+
 def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

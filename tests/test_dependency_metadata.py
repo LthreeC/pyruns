@@ -24,6 +24,12 @@ def test_ci_installs_declared_web_test_dependencies():
     assert 'pip install -e ".[test,lint]"' in workflow
 
 
+def test_flake8_ignores_local_editor_history():
+    config = (ROOT / ".flake8").read_text(encoding="utf-8")
+
+    assert ".history" in config
+
+
 def test_pages_workflow_uploads_docs_vitepress_dist():
     workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
 

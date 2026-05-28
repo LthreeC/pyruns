@@ -326,6 +326,9 @@ class TaskManager:
                 if task.get("_load_error"):
                     logger.warning("Skip queuing %s: %s", task["name"], task["_load_error"])
                     continue
+                if task.get("status") in ("running", "queued"):
+                    logger.info("Skip queuing active task %s", task["name"])
+                    continue
                 run_index = max(int(task.get("run_index", 0) or 0), len(task.get("start_times", []))) + 1
                 task["run_index"] = run_index
                 if available_slots > 0:
@@ -364,6 +367,9 @@ class TaskManager:
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if target:
+                if target.get("status") in ("running", "queued"):
+                    logger.info("Skip starting active task %s", target["name"])
+                    return
                 if target.get("_load_error"):
                     logger.warning("Skip running %s: %s", target["name"], target["_load_error"])
                     return
