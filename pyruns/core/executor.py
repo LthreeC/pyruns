@@ -66,6 +66,10 @@ def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
     env["PYTHONPATH"] = path if not existing else f"{path}{os.pathsep}{existing}"
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _path_env_key(env: Dict[str, str]) -> str:
     """Return the existing PATH key while preserving platform spelling."""
 
@@ -118,7 +122,7 @@ def _prepend_current_python_to_path(env: Dict[str, str]) -> None:
 
     executable_dir = os.path.dirname(sys.executable)
     candidates = [executable_dir]
-    if os.name == "nt":
+    if _is_windows():
         candidates.append(os.path.join(executable_dir, "Scripts"))
     _prepend_path_entries(env, candidates)
 
@@ -286,7 +290,7 @@ def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], st
     if not os.path.exists(script_path):
         raise FileNotFoundError(script_path)
     shell_path = _resolve_shell_executable(task_dir)
-    if os.name == "nt":
+    if _is_windows():
         return _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
     return [shell_path, script_path], task_dir, []
 
@@ -563,7 +567,7 @@ def run_task_worker(
             workdir = fallback
 
         if isinstance(command, str):
-            command = shlex.split(command, posix=(os.name != "nt"))
+                command = shlex.split(command, posix=not _is_windows())
 
         proc = subprocess.Popen(
             command,

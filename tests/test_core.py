@@ -509,7 +509,7 @@ def test_build_command_non_argparse(mock_detect):
 
 @patch("pyruns.core.executor._resolve_shell_executable")
 def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
-    monkeypatch.setattr("pyruns.core.executor.os.name", "posix", raising=False)
+    monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: False)
     mock_shell.return_value = "/bin/bash"
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -533,7 +533,7 @@ def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
 
 @patch("pyruns.core.executor._resolve_shell_executable")
 def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch):
-    monkeypatch.setattr("pyruns.core.executor.os.name", "nt", raising=False)
+    monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: True)
     mock_shell.return_value = r"C:\Windows\System32\cmd.exe"
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -563,7 +563,7 @@ def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch)
 
 @patch("pyruns.core.executor._resolve_shell_executable")
 def test_build_command_shell_task_windows_powershell(mock_shell, tmp_path, monkeypatch):
-    monkeypatch.setattr("pyruns.core.executor.os.name", "nt", raising=False)
+    monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: True)
     mock_shell.return_value = r"C:\Program Files\PowerShell\7\pwsh.exe"
     task_dir = tmp_path / "task"
     task_dir.mkdir()
