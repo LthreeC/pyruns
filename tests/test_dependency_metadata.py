@@ -18,8 +18,10 @@ def test_ci_installs_declared_web_test_dependencies():
 
     assert "[project.optional-dependencies]" in pyproject
     assert "test = [" in pyproject
+    assert "lint = [" in pyproject
     assert '"httpx>=' in pyproject
-    assert 'pip install -e ".[test]"' in workflow
+    assert '"flake8>=' in pyproject
+    assert 'pip install -e ".[test,lint]"' in workflow
 
 
 def test_frontend_dependencies_do_not_include_unused_editor_or_terminal_addons():

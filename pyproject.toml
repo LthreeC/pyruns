@@ -43,9 +43,11 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "flake8>=7,<8",
     "httpx>=0.24,<1",
     "pytest>=8,<10",
+]
+lint = [
+    "flake8>=7,<8",
 ]
 
 [project.urls]
