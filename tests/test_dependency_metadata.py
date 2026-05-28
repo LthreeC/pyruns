@@ -24,6 +24,13 @@ def test_ci_installs_declared_web_test_dependencies():
     assert 'pip install -e ".[test,lint]"' in workflow
 
 
+def test_pages_workflow_uploads_docs_vitepress_dist():
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+
+    assert "npm run docs:build" in workflow
+    assert "path: docs/.vitepress/dist" in workflow
+
+
 def test_frontend_dependencies_do_not_include_unused_editor_or_terminal_addons():
     package_json = (ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
     package_lock = (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
