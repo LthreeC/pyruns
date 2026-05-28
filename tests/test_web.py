@@ -1,5 +1,7 @@
 ﻿import json
 import socket
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +22,27 @@ from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import save_task_info, update_task_info
 from pyruns.web.app import create_app
 from pyruns.web.runtime import PyrunsRuntime
+
+
+def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
+    """Windows process-spawn imports use __mp_main__ and must not start uvicorn."""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy; runpy.run_module('pyruns.web.app', run_name='__mp_main__')",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "RuntimeWarning" not in output
 
 
 def _make_workspace(root: Path, name: str) -> Path:

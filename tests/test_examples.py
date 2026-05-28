@@ -1,6 +1,8 @@
 import json
 import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +22,7 @@ from pyruns.core.task_generator import TaskGenerator
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace, list_config_candidates, list_script_candidates
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import load_yaml
+from pyruns.utils.shell_runtime import _probe_shell_executable
 from pyruns.web.runtime import PyrunsRuntime
 
 
@@ -81,6 +84,77 @@ def test_basic_argparse_example_runs_through_runtime(tmp_path):
     info = _task_info(task)
     assert len(info[TRACKS_KEY][0]["loss"]) == 1
     assert info[RECORDS_KEY][0]["last_loss"] == 1.0
+
+
+def test_basic_argparse_example_runs_directly_with_strict_console_encoding():
+    script = EXAMPLES_DIR / "1_argparse_script" / "main.py"
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "ascii"
+    env["PYTHONPATH"] = str(EXAMPLES_DIR.parent)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--lr",
+            "0.01",
+            "--epochs",
+            "1",
+            "--batch_size",
+            "16",
+            "--optimizer",
+            "sgd",
+        ],
+        cwd=script.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Training complete." in result.stdout
+
+
+def test_advanced_argparse_example_runs_directly_with_strict_console_encoding():
+    script = EXAMPLES_DIR / "4_advanced_argparse" / "main.py"
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "ascii"
+    env["PYTHONPATH"] = str(EXAMPLES_DIR.parent)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "toy",
+            "--layers",
+            "8",
+            "16",
+            "--tag",
+            "smoke",
+            "--no-compile",
+            "--use-amp",
+            "--no-cache",
+            "-vv",
+            "--dropout",
+            "0.1",
+            "--device",
+            "cpu",
+            "--seed",
+            "7",
+        ],
+        cwd=script.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"compile": false' in result.stdout
+    assert "step=3" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -312,6 +386,74 @@ def test_shell_workspace_runs_task_with_env_inherited_by_subprocess(tmp_path):
     assert task["status"] == "completed"
     log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
     assert "shell_env_marker=shell-env-ok" in log_text
+
+
+def _probe_shell(shell_executable: str, kind: str) -> bool:
+    return _probe_shell_executable(shell_executable, kind)
+
+
+@pytest.mark.parametrize(
+    ("kind", "candidates", "payload_name", "expected_markers"),
+    [
+        (
+            "powershell",
+            ("pwsh", "powershell"),
+            "powershell.ps1",
+            ("shell=powershell", "python_env_marker=shell-payload-ok"),
+        ),
+        (
+            "cmd",
+            ("cmd",),
+            "cmd.cmd",
+            ("shell=cmd", "python_env_marker=shell-payload-ok"),
+        ),
+        (
+            "bash",
+            ("bash", "sh"),
+            "bash_or_wsl.sh",
+            ("shell=bash", "python_env_marker=shell-payload-ok"),
+        ),
+    ],
+)
+def test_shell_workspace_payload_examples_run_through_runtime(
+    tmp_path,
+    kind,
+    candidates,
+    payload_name,
+    expected_markers,
+):
+    shell_executable = next((path for name in candidates if (path := shutil.which(name))), "")
+    if not shell_executable:
+        pytest.skip(f"No {kind} executable is available.")
+    if not _probe_shell(shell_executable, kind):
+        pytest.skip(f"{kind} executable exists but cannot start a no-op command.")
+
+    workspace = bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+    settings_path = Path(workspace).parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "shell_mode: custom\n"
+        f"shell_executable: {json.dumps(shell_executable)}\n",
+        encoding="utf-8",
+    )
+    payload_text = (EXAMPLES_DIR / "6_shell_workspace" / "payloads" / payload_name).read_text(encoding="utf-8")
+
+    runtime = PyrunsRuntime(workspace)
+    created = runtime.create_tasks_from_template(
+        name_prefix=f"{kind}-payload",
+        mode="shell",
+        shell_text=payload_text,
+        append_timestamp=False,
+    )
+    task_name = created["items"][0]["name"]
+    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-payload-ok"})
+
+    runtime.start_task(task_name)
+    task = _wait_for_task(runtime, task_name)
+
+    assert task["status"] == "completed"
+    log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
+    for marker in expected_markers:
+        assert marker in log_text
 
 
 def test_shell_workspace_payload_examples_create_runtime_specific_tasks(tmp_path):

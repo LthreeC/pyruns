@@ -323,6 +323,17 @@ def test_prepare_env():
     assert ENV_KEY_CONFIG not in env3
 
 
+def test_prepare_env_prefers_current_python_executable_on_path(monkeypatch):
+    stale_path = os.pathsep.join(["/not/current/python", "/another/bin"])
+    monkeypatch.setenv("PATH", stale_path)
+
+    env = _prepare_env(task_dir="/fake/dir", task_kind=TASK_KIND_SHELL)
+
+    path_entries = env["PATH"].split(os.pathsep)
+    assert path_entries[0] == os.path.dirname(sys.executable)
+    assert "/not/current/python" in path_entries
+
+
 def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrides(monkeypatch):
     monkeypatch.setenv("CONDA_PREFIX", "/opt/conda/envs/exp")
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "exp")
@@ -626,6 +637,47 @@ def test_shell_runtime_custom_mode_uses_explicit_shell_executable(tmp_path):
     assert runtime["mode"] == "custom"
     assert runtime["source"] == "custom_shell"
     assert runtime["executable"] == "/custom/shell"
+
+
+def test_shell_runtime_custom_mode_marks_known_shell_unavailable_when_it_cannot_start(tmp_path):
+    workspace = tmp_path / "_pyruns_" / "main"
+    workspace.mkdir(parents=True)
+    fake_bash = tmp_path / "bash.exe"
+    fake_bash.write_text("not a real shell", encoding="utf-8")
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "shell_mode: custom\n"
+        f"shell_executable: {json.dumps(str(fake_bash))}\n",
+        encoding="utf-8",
+    )
+
+    runtime = get_shell_runtime_for_workspace(str(workspace))
+
+    assert runtime["terminal_kind"] == "bash"
+    assert runtime["executable"] == str(fake_bash)
+    assert runtime["available"] is False
+
+
+def test_shell_runtime_follow_mode_probes_detected_shell_availability(tmp_path):
+    workspace = tmp_path / "_pyruns_" / "main"
+    workspace.mkdir(parents=True)
+    fake_bash = tmp_path / "follow-bash.exe"
+    fake_bash.write_text("not a real shell", encoding="utf-8")
+
+    with patch("pyruns.utils.shell_runtime.get_follow_shell_runtime") as mock_runtime:
+        mock_runtime.return_value = {
+            "source": "follow_terminal",
+            "terminal_kind": "bash",
+            "display_name": "Bash",
+            "executable": str(fake_bash),
+            "available": True,
+        }
+
+        runtime = get_shell_runtime_for_workspace(str(workspace))
+
+    assert runtime["mode"] == "follow"
+    assert runtime["terminal_kind"] == "bash"
+    assert runtime["available"] is False
 
 
 def test_shell_runtime_config_filename_tracks_custom_shell_kind(tmp_path):

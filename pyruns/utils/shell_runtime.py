@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import tempfile
 from functools import lru_cache
 from typing import Any, Dict
 
@@ -78,6 +80,74 @@ def _resolve_candidate_path(candidate: str) -> str:
     if resolved and os.path.exists(resolved):
         return resolved
     return ""
+
+
+def _probe_windows_posix_script_execution(executable: str) -> bool:
+    """Return True when a POSIX shell can execute a Windows-hosted script."""
+
+    fd, script_path = tempfile.mkstemp(prefix="pyruns-shell-probe-", suffix=".sh")
+    os.close(fd)
+    try:
+        with open(script_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("exit 0\n")
+        result = subprocess.run(
+            [executable, script_path.replace("\\", "/")],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        try:
+            os.remove(script_path)
+        except OSError:
+            pass
+    return result.returncode == 0
+
+
+@lru_cache(maxsize=32)
+def _probe_shell_executable(executable: str, kind: str) -> bool:
+    """Return True when a resolved shell executable can start a no-op command."""
+
+    if not executable or not os.path.exists(executable):
+        return False
+
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind == "powershell":
+        command = [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "exit 0",
+        ]
+    elif normalized_kind == "cmd":
+        command = [executable, "/d", "/c", "exit", "/b", "0"]
+    elif normalized_kind in {"bash", "sh", "zsh", "fish"}:
+        if os.name == "nt":
+            return _probe_windows_posix_script_execution(executable)
+        command = [executable, "-c", "exit 0"]
+    else:
+        return True
+
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def _shell_settings_root_for_task(task_dir: str | None = None) -> str | None:
@@ -181,18 +251,32 @@ def get_shell_runtime_for_workspace(settings_root: str | None = None) -> Dict[st
     mode, configured_shell = _load_shell_preferences(settings_root)
     if mode == SHELL_MODE_CUSTOM:
         raw_executable = configured_shell or str(os.getenv(ENV_KEY_SHELL, "") or "").strip()
-        resolved = _resolve_candidate_path(raw_executable) or raw_executable
+        resolved_path = _resolve_candidate_path(raw_executable)
+        resolved = resolved_path or raw_executable
         kind, display = classify_shell_executable(resolved)
+        available = bool(resolved_path and _probe_shell_executable(resolved_path, kind))
         return {
             "mode": SHELL_MODE_CUSTOM,
             "source": "custom_shell",
             "terminal_kind": kind,
             "display_name": display if kind != "unknown" else "Custom shell",
             "executable": resolved,
-            "available": bool(_resolve_candidate_path(raw_executable)),
+            "available": available,
         }
 
     runtime = dict(get_follow_shell_runtime())
+    raw_executable = str(runtime.get("executable", "") or "").strip()
+    resolved_path = _resolve_candidate_path(raw_executable)
+    resolved = resolved_path or raw_executable
+    kind = str(runtime.get("terminal_kind", "") or "").strip().lower()
+    if not kind or kind == "unknown":
+        kind, display = classify_shell_executable(resolved)
+        runtime["display_name"] = display
+    runtime["terminal_kind"] = kind or "unknown"
+    runtime["executable"] = resolved
+    runtime["available"] = bool(
+        resolved_path and _probe_shell_executable(resolved_path, runtime["terminal_kind"])
+    )
     runtime["mode"] = SHELL_MODE_FOLLOW
     return runtime
 

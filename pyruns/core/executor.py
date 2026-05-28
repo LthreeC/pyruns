@@ -66,6 +66,63 @@ def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
     env["PYTHONPATH"] = path if not existing else f"{path}{os.pathsep}{existing}"
 
 
+def _path_env_key(env: Dict[str, str]) -> str:
+    """Return the existing PATH key while preserving platform spelling."""
+
+    for key in ("PATH", "Path", "path"):
+        if key in env:
+            return key
+    for key in env:
+        if key.upper() == "PATH":
+            return key
+    return "PATH"
+
+
+def _prepend_path_entries(env: Dict[str, str], paths: List[str]) -> None:
+    """Move valid path entries to the front of PATH without duplicates."""
+
+    key = _path_env_key(env)
+    existing = str(env.get(key, "") or "")
+    entries = [entry for entry in existing.split(os.pathsep) if entry]
+    normalized_front: set[str] = set()
+    front: List[str] = []
+    for path in paths:
+        if not path or not os.path.isdir(path):
+            continue
+        normalized = os.path.normcase(os.path.abspath(path))
+        if normalized in normalized_front:
+            continue
+        normalized_front.add(normalized)
+        front.append(path)
+
+    if not front:
+        return
+
+    retained: List[str] = []
+    seen = set(normalized_front)
+    for entry in entries:
+        normalized = os.path.normcase(os.path.abspath(entry))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        retained.append(entry)
+
+    env[key] = os.pathsep.join(front + retained)
+    for duplicate_key in list(env):
+        if duplicate_key != key and duplicate_key.upper() == "PATH":
+            env.pop(duplicate_key, None)
+
+
+def _prepend_current_python_to_path(env: Dict[str, str]) -> None:
+    """Make shell tasks resolve ``python`` to the interpreter running pyruns."""
+
+    executable_dir = os.path.dirname(sys.executable)
+    candidates = [executable_dir]
+    if os.name == "nt":
+        candidates.append(os.path.join(executable_dir, "Scripts"))
+    _prepend_path_entries(env, candidates)
+
+
 def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
     *,
@@ -85,6 +142,7 @@ def _prepare_env(
         env.pop(ENV_KEY_CONFIG, None)
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
+    _prepend_current_python_to_path(env)
     package_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
     _prepend_pythonpath(env, package_parent)
     return env

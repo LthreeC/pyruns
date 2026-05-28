@@ -27,7 +27,7 @@ def main():
     
     args = parser.parse_args()
 
-    print(f"🚀 Starting training with {args.optimizer.upper()} optimizer!", "g"*1000)
+    print(f"Starting training with {args.optimizer.upper()} optimizer!", "g"*1000)
     print(f"Hyperparameters: LR={args.lr}, Batch Size={args.batch_size}")
 
     last_loss = 0
@@ -44,7 +44,7 @@ def main():
     
     # Record the final aggregate metrics to the run
     pyruns.record(last_loss=last_loss)
-    print("✅ Training complete.")
+    print("Training complete.")
 
 if __name__ == "__main__":
     main()

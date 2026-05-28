@@ -8,6 +8,7 @@
 .history/
 .ruff_cache/
 .pytest_cache/
+.playwright-mcp/
 *.egg-info/
 
 node_modules/
@@ -19,7 +20,11 @@ _pyruns_/
 .vitepress/dist/
 .vitepress/cache/
 .vitepress/.temp/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/.vitepress/.temp/
 
 .tmp/
+.tmp-server-*.log
 
 .npm-cache/
