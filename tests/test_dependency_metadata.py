@@ -12,6 +12,16 @@ def test_python_runtime_dependencies_do_not_include_legacy_nicegui():
     assert "pydantic" in pyproject
 
 
+def test_ci_installs_declared_web_test_dependencies():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
+
+    assert "[project.optional-dependencies]" in pyproject
+    assert "test = [" in pyproject
+    assert '"httpx>=' in pyproject
+    assert 'pip install -e ".[test]"' in workflow
+
+
 def test_frontend_dependencies_do_not_include_unused_editor_or_terminal_addons():
     package_json = (ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
     package_lock = (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")

@@ -41,6 +41,13 @@ dependencies = [
     "uvicorn>=0.29",
 ]
 
+[project.optional-dependencies]
+test = [
+    "flake8>=7,<8",
+    "httpx>=0.24,<1",
+    "pytest>=8,<10",
+]
+
 [project.urls]
 Homepage = "https://github.com/LthreeC/pyruns"
 Repository = "https://github.com/LthreeC/pyruns"
