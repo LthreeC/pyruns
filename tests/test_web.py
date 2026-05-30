@@ -390,7 +390,10 @@ def test_pick_script_endpoint_reports_missing_load_yaml_as_bad_request(tmp_path)
     script_path = tmp_path / "load_train.py"
     script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
 
-    with patch("pyruns.web.runtime.choose_script_file", return_value=str(script_path)):
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=True),
+        patch("pyruns.web.runtime.choose_script_file", return_value=str(script_path)),
+    ):
         response = client.post("/api/launcher/pick-script")
 
     assert response.status_code == 400
@@ -404,7 +407,10 @@ def test_pick_script_path_endpoint_selects_script_without_bootstrapping(tmp_path
     script_path = tmp_path / "load_train.py"
     script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
 
-    with patch("pyruns.web.runtime.choose_script_file", return_value=str(script_path)):
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=True),
+        patch("pyruns.web.runtime.choose_script_file", return_value=str(script_path)),
+    ):
         response = client.post("/api/launcher/pick-script-path")
 
     assert response.status_code == 200
@@ -609,7 +615,10 @@ def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
     target_dir = tmp_path / "shell_project"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    with patch("pyruns.web.runtime.choose_directory", return_value=str(target_dir)):
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=True),
+        patch("pyruns.web.runtime.choose_directory", return_value=str(target_dir)),
+    ):
         response = client.post("/api/launcher/pick-shell-root")
 
     assert response.status_code == 200
