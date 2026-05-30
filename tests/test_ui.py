@@ -326,6 +326,16 @@ def test_react_launcher_keeps_path_controls_available_while_script_scan_runs():
     assert "loading && (" not in launcher
 
 
+def test_react_launcher_skips_script_scan_for_initial_shell_mode():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
+    assert "if (initialLaunchMode === 'python')" in launcher
+    assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
+    assert "if (mode === 'python')" in launcher
+    assert "<LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange}" in launcher
+
+
 def test_react_launcher_fetch_does_not_clobber_newer_selection():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
 
@@ -430,8 +440,9 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "openLauncherForConfig" not in sidebar
     assert "searchParams.delete('mode')" in app
     assert "const modeParam = searchParams.get('mode')" in launcher
-    assert "if (modeParam === 'shell' || modeParam === 'python')" in launcher
-    assert "setLaunchMode(modeParam)" in launcher
+    assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
+    assert "setLaunchMode(initialLaunchMode)" in launcher
+    assert "if (initialLaunchMode === 'python')" in launcher
     assert "Open Shell Mode" in sidebar
     assert "Exit Shell Mode" in sidebar
 

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   FileCode, FolderOpen, ChevronRight, Rocket, ArrowRight, FileSearch, FolderPlus,
@@ -55,24 +55,34 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const scriptPathReady = manualScriptPath.trim().length > 0 && scriptValidation.status === 'valid'
   const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
   const nativePickerAvailable = workspace?.native_file_picker === true
+  const scriptsRequestedRef = useRef(false)
+
+  const fetchScriptsOnce = useCallback(() => {
+    if (scriptsRequestedRef.current) {
+      return
+    }
+    scriptsRequestedRef.current = true
+    void fetchScripts()
+  }, [fetchScripts])
 
   useEffect(() => {
     const modeParam = searchParams.get('mode')
     const scriptParam = searchParams.get('script')
-    if (modeParam === 'shell' || modeParam === 'python') {
-      setLaunchMode(modeParam)
-      if (!scriptParam) {
-        resetLauncher()
-        setManualScriptPath('')
-        setManualConfigPath('')
-        setManualShellRootPath('')
-        setError('')
-      }
+    const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'
+
+    setLaunchMode(initialLaunchMode)
+    if (modeParam && !scriptParam) {
+      resetLauncher()
+      setManualScriptPath('')
+      setManualConfigPath('')
+      setManualShellRootPath('')
+      setError('')
+    }
+    if (initialLaunchMode === 'python') {
+      fetchScriptsOnce()
     }
 
-    void fetchScripts()
     if (scriptParam) {
-      setLaunchMode('python')
       setManualScriptPath(scriptParam)
       void selectScript(scriptParam)
     }
@@ -121,6 +131,13 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       })
     return () => { cancelled = true }
   }, [debouncedShellRootPath])
+
+  const handleLaunchModeChange = useCallback((mode: 'python' | 'shell') => {
+    setLaunchMode(mode)
+    if (mode === 'python') {
+      fetchScriptsOnce()
+    }
+  }, [fetchScriptsOnce])
 
   const handleOpen = useCallback(async () => {
     setError('')
@@ -255,7 +272,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
           {step === 0 && (
             <div className="space-y-3">
-              <LaunchChoiceTabs launchMode={launchMode} onChange={setLaunchMode} />
+              <LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange} />
 
               {launchMode === 'python' ? (
                 <>
