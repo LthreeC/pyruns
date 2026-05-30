@@ -77,6 +77,23 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "workspacePathSegments" in source
 
 
+def test_react_dashboard_displays_working_root_and_labels_storage_root():
+    source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "working_root?: string" in types
+    assert "getWorkspaceWorkingPath" in source
+    assert "getWorkspaceStoragePath" in source
+    assert "const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)" in source
+    assert "const workspaceStoragePath = getWorkspaceStoragePath(workspace)" in source
+    assert "splitPathSegments(workspaceWorkingPath)" in source
+    assert "title={workspaceWorkingPath || ''}" in source
+    assert "{workspaceWorkingPath || 'Open a workspace to start'}" in source
+    assert 'InfoRow label="Working" value={workspaceWorkingPath || \'--\'} mono' in source
+    assert 'InfoRow label="Storage" value={workspaceStoragePath || \'--\'} mono' in source
+    assert "splitPathSegments(workspace?.run_root)" not in source
+
+
 def test_react_sidebar_active_workspace_state_is_visually_clear():
     source = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
 
@@ -384,22 +401,33 @@ def test_react_launcher_does_not_show_fake_three_step_progress_for_quick_open():
     assert "Select a script and configuration to get started" not in launcher
 
 
-def test_react_sidebar_uses_direct_workspace_switching_without_launcher_button():
+def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+    app = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
-    assert "handlePickScript" in sidebar
+    assert "const openWorkspaceLauncher = (mode: 'python' | 'shell')" in sidebar
+    assert "nextParams.set('launcher', '1')" in sidebar
+    assert "nextParams.set('mode', mode)" in sidebar
+    assert "nextParams.delete('script')" in sidebar
+    assert "onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}" in sidebar
+    assert "api.pickLauncherShellRoot()" not in sidebar
+    assert "pickLauncherScriptPath" not in sidebar
+    assert "openLauncherForConfig" not in sidebar
+    assert "searchParams.delete('mode')" in app
+    assert "const modeParam = searchParams.get('mode')" in launcher
+    assert "if (modeParam === 'shell' || modeParam === 'python')" in launcher
+    assert "setLaunchMode(modeParam)" in launcher
     assert "Open Shell Mode" in sidebar
     assert "Exit Shell Mode" in sidebar
-    assert "Open Launcher" not in sidebar
 
 
 def test_react_sidebar_routes_load_scripts_to_yaml_selection_without_red_error():
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
 
-    assert "pickLauncherScriptPath" in sidebar
-    assert "requiresConfigTemplate" in sidebar
-    assert "openLauncherForConfig" in sidebar
+    assert "openWorkspaceLauncher('python')" in sidebar
     assert "nextParams.set('launcher', '1')" in sidebar
+    assert "nextParams.set('mode', mode)" in sidebar
     assert "pyruns.load()" not in sidebar
     assert "bg-rose-500/10" not in sidebar
 

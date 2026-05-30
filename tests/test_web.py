@@ -152,6 +152,7 @@ def test_workspace_endpoint_returns_metadata(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["run_root"].endswith("_pyruns_/main")
+    assert payload["working_root"] == str(tmp_path).replace("\\", "/")
     assert payload["script_name"] == "main"
     assert payload["workspace_kind"] == WORKSPACE_KIND_SCRIPT
     assert payload["settings"]["shell_mode"] == "follow"
@@ -605,6 +606,7 @@ def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
     assert payload["run_root"].endswith("_pyruns_/_shell_")
     assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
     assert payload["project_root"] == str(target_dir).replace("\\", "/")
+    assert payload["working_root"] == str(target_dir).replace("\\", "/")
 
 
 def test_open_shell_root_endpoint_accepts_manual_directory_path(tmp_path):
@@ -623,6 +625,7 @@ def test_open_shell_root_endpoint_accepts_manual_directory_path(tmp_path):
     assert payload["run_root"].endswith("_pyruns_/_shell_")
     assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
     assert payload["project_root"] == str(target_dir).replace("\\", "/")
+    assert payload["working_root"] == str(target_dir).replace("\\", "/")
 
 
 def test_open_shell_root_endpoint_rejects_missing_manual_directory(tmp_path):

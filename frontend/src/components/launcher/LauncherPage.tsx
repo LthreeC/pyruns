@@ -37,7 +37,7 @@ function validationFromResult(result: PathValidationResult): PathValidationState
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const {
     scripts, configs, selectedScript, selectedConfig, requiresConfigTemplate, step, loading,
-    fetchScripts, selectScript, selectConfig, openWorkspace,
+    fetchScripts, selectScript, selectConfig, openWorkspace, reset: resetLauncher,
   } = useLauncherStore()
   const setWorkspace = useWorkspaceStore(state => state.setWorkspace)
   const navigate = useNavigate()
@@ -55,9 +55,20 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
 
   useEffect(() => {
-    void fetchScripts()
-    // Pre-select from URL params
+    const modeParam = searchParams.get('mode')
     const scriptParam = searchParams.get('script')
+    if (modeParam === 'shell' || modeParam === 'python') {
+      setLaunchMode(modeParam)
+      if (!scriptParam) {
+        resetLauncher()
+        setManualScriptPath('')
+        setManualConfigPath('')
+        setManualShellRootPath('')
+        setError('')
+      }
+    }
+
+    void fetchScripts()
     if (scriptParam) {
       setLaunchMode('python')
       setManualScriptPath(scriptParam)

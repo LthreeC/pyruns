@@ -16,6 +16,7 @@ import clsx from 'clsx'
 import { useDashboardStore, useMonitorStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import StatusBadge from '@/components/shared/StatusBadge'
+import { getWorkspaceStoragePath, getWorkspaceWorkingPath } from '@/utils/workspace'
 import type { GPUMetric, Task, SystemMetrics } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
@@ -54,7 +55,9 @@ export default function DashboardPage() {
   const isShellWorkspace = workspace?.workspace_kind === 'shell'
   const workspaceKindLabel = isShellWorkspace ? 'Shell Workspace' : 'Script Workspace'
   const workspaceName = workspace?.script_name || (isShellWorkspace ? '_shell_' : 'No workspace selected')
-  const workspacePathSegments = splitPathSegments(workspace?.run_root)
+  const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)
+  const workspaceStoragePath = getWorkspaceStoragePath(workspace)
+  const workspacePathSegments = splitPathSegments(workspaceWorkingPath)
   const activeGpu = metrics?.gpus.find(gpu => gpuKey(gpu) === activeGpuKey) ?? null
   const gpuCount = metrics?.gpus.length ?? 0
   const gpuProcessCount = metrics?.gpus.reduce((total, gpu) => total + gpu.processes.length, 0) ?? 0
@@ -72,8 +75,8 @@ export default function DashboardPage() {
                 <span className="inline-flex items-center rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
                   {workspaceKindLabel}
                 </span>
-                <span className="truncate font-mono text-2xs text-txt-tertiary" title={workspace?.run_root || ''}>
-                  {workspace?.run_root || 'Open a workspace to start'}
+                <span className="truncate font-mono text-2xs text-txt-tertiary" title={workspaceWorkingPath || ''}>
+                  {workspaceWorkingPath || 'Open a workspace to start'}
                 </span>
               </div>
               <h1 className="text-xl font-semibold text-txt-primary">Dashboard</h1>
@@ -136,7 +139,8 @@ export default function DashboardPage() {
                   <InfoRow label="Mode" value={workspaceKindLabel} />
                   <InfoRow label="Script" value={workspace?.script_name || '--'} />
                   <InfoRow label="Templates" value={String(data?.template_count ?? 0)} />
-                  <InfoRow label="Path" value={workspace?.run_root || '--'} mono />
+                  <InfoRow label="Working" value={workspaceWorkingPath || '--'} mono />
+                  <InfoRow label="Storage" value={workspaceStoragePath || '--'} mono />
                 </div>
                 <div className="mt-3">
                   <WorkspacePathTrail name={workspaceName} segments={workspacePathSegments} compact />

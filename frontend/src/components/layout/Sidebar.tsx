@@ -5,8 +5,8 @@ import {
   Sun, Moon, ChevronsUpDown, Loader2, FileCode,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useLauncherStore, useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
-import * as api from '@/api'
+import { useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
+import { getWorkspaceWorkingPath } from '@/utils/workspace'
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
@@ -27,23 +27,17 @@ interface SidebarProps {
 
 export default function Sidebar({ width = 220 }: SidebarProps) {
   const workspace = useWorkspaceStore(s => s.workspace)
-  const setWorkspace = useWorkspaceStore(s => s.setWorkspace)
   const openShellWorkspace = useWorkspaceStore(s => s.openShellWorkspace)
   const exitShellWorkspace = useWorkspaceStore(s => s.exitShellWorkspace)
-  const selectLauncherScript = useLauncherStore(s => s.selectScript)
-  const openLauncherWorkspace = useLauncherStore(s => s.openWorkspace)
   const { theme, toggle } = useThemeStore()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [picking, setPicking] = useState(false)
   const [openingShell, setOpeningShell] = useState(false)
   const [pickerError, setPickerError] = useState('')
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
   const shellWorkspaceActive = workspace?.workspace_kind === 'shell'
   const workspaceLabel = shellWorkspaceActive ? '_shell_' : (scriptFileName || 'Choose .py file')
-  const visibleWorkspacePath = shellWorkspaceActive
-    ? (workspace?.project_root || workspace?.run_root)
-    : workspace?.run_root
+  const visibleWorkspacePath = getWorkspaceWorkingPath(workspace)
 
   const clearMonitorSelection = () => {
     useMonitorStore.setState({
@@ -63,69 +57,14 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
     setPickerError(message)
   }
 
-  const openLauncherForConfig = (scriptPath: string) => {
+  const openWorkspaceLauncher = (mode: 'python' | 'shell') => {
+    setPickerError('')
     const nextParams = new URLSearchParams(searchParams)
     nextParams.set('launcher', '1')
-    nextParams.set('script', scriptPath)
+    nextParams.set('mode', mode)
+    nextParams.delete('script')
+    nextParams.delete('config')
     setSearchParams(nextParams)
-  }
-
-  const openSelectedScriptWorkspace = async () => {
-    const selection = await api.pickLauncherScriptPath()
-    await selectLauncherScript(selection.script_path)
-    const launcherState = useLauncherStore.getState()
-
-    if (launcherState.requiresConfigTemplate && !launcherState.selectedConfig) {
-      openLauncherForConfig(selection.script_path)
-      return false
-    }
-
-    try {
-      await openLauncherWorkspace()
-      return true
-    } catch (err) {
-      if (getPickerErrorMessage(err).includes('needs a YAML template')) {
-        openLauncherForConfig(selection.script_path)
-        return false
-      }
-      throw err
-    }
-  }
-
-  const handlePickScript = async () => {
-    setPickerError('')
-    setPicking(true)
-    try {
-      if (shellWorkspaceActive) {
-        const nextWorkspace = await api.pickLauncherShellRoot()
-        setWorkspace(nextWorkspace)
-        navigate('/generator')
-      } else {
-        const opened = await openSelectedScriptWorkspace()
-        if (opened) {
-          navigate('/')
-        }
-      }
-    } catch (err) {
-      showPickerError(err)
-    } finally {
-      setPicking(false)
-    }
-  }
-
-  const handlePickScriptWorkspace = async () => {
-    setPickerError('')
-    setPicking(true)
-    try {
-      const opened = await openSelectedScriptWorkspace()
-      if (opened) {
-        navigate('/')
-      }
-    } catch (err) {
-      showPickerError(err)
-    } finally {
-      setPicking(false)
-    }
   }
 
   const handleToggleShellWorkspace = async () => {
@@ -135,7 +74,7 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
       if (shellWorkspaceActive) {
         const nextWorkspace = await exitShellWorkspace()
         if (!nextWorkspace) {
-          await handlePickScriptWorkspace()
+          openWorkspaceLauncher('python')
           return
         }
       } else {
@@ -187,15 +126,14 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
       <div className="border-t border-border-subtle p-2.5">
         <button
           type="button"
-          onClick={handlePickScript}
-          disabled={picking}
-          className="w-full rounded-md px-2.5 py-2.5 text-left transition-colors hover:bg-surface-overlay disabled:opacity-60"
+          onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
+          className="w-full rounded-md px-2.5 py-2.5 text-left transition-colors hover:bg-surface-overlay"
         >
           <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
             <FileCode className="h-3.5 w-3.5" />
             <span>{shellWorkspaceActive ? 'Shell Folder' : 'Script File'}</span>
             <div className="flex-1" />
-            {picking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronsUpDown className="h-3.5 w-3.5" />}
+            <ChevronsUpDown className="h-3.5 w-3.5" />
           </div>
           <div
             className="mt-2 truncate font-mono text-sm font-medium text-txt-primary"

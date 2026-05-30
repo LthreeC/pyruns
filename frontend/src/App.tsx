@@ -31,6 +31,7 @@ export default function App() {
   const closeLauncher = () => {
     setShowLauncher(false)
     searchParams.delete('launcher')
+    searchParams.delete('mode')
     searchParams.delete('script')
     searchParams.delete('config')
     setSearchParams(searchParams, { replace: true })

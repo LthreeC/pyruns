@@ -150,13 +150,21 @@ class PyrunsRuntime:
         script_info = load_script_info(self.root_dir)
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
         workspace_ready = bool(script_info.get("script_name") or workspace_kind)
+        script_path = str(script_info.get("script_path", "") or "")
         project_root = str(script_info.get("project_root", "") or "")
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL and not project_root:
             project_root = shell_project_root_for_workspace(self.root_dir)
+        if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
+            working_root = project_root
+        elif script_path:
+            working_root = self._normalize_path(os.path.dirname(script_path))
+        else:
+            working_root = ""
         return {
             "run_root": self.root_dir,
+            "working_root": working_root,
             "tasks_dir": self.tasks_dir,
-            "script_path": str(script_info.get("script_path", "") or ""),
+            "script_path": script_path,
             "script_name": str(script_info.get("script_name", "") or ""),
             "project_root": project_root,
             "workspace_kind": workspace_kind,

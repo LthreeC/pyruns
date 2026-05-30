@@ -514,6 +514,21 @@ def test_build_command_non_argparse(mock_detect):
     assert cleanup_paths == []
 
 
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+def test_build_command_python_task_uses_script_directory_workdir(mock_detect, tmp_path):
+    mock_detect.return_value = ("pyruns_load", None)
+    script_dir = tmp_path / "project"
+    script_dir.mkdir()
+    script_path = script_dir / "train.py"
+    script_path.write_text("print('cwd')\n", encoding="utf-8")
+
+    cmd, wd, cleanup_paths = _build_command(None, str(script_path), None, {})
+
+    assert cmd == [sys.executable, str(script_path)]
+    assert wd == str(script_dir)
+    assert cleanup_paths == []
+
+
 @patch("pyruns.core.executor._resolve_shell_executable")
 def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
     monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: False)

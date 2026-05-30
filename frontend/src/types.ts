@@ -37,6 +37,7 @@ export interface TaskPage {
 
 export interface WorkspaceInfo {
   run_root: string
+  working_root?: string
   tasks_dir: string
   script_path: string
   script_name: string
