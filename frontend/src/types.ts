@@ -38,6 +38,7 @@ export interface TaskPage {
 export interface WorkspaceInfo {
   run_root: string
   working_root?: string
+  native_file_picker?: boolean
   tasks_dir: string
   script_path: string
   script_name: string

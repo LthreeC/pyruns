@@ -32,6 +32,7 @@ from pyruns.launcher import (
     list_config_candidates,
     list_script_candidates,
     list_workspace_candidates,
+    native_picker_available,
     normalize_path,
     shell_project_root_for_workspace,
     shell_workspace_root_for_run_root,
@@ -163,6 +164,7 @@ class PyrunsRuntime:
         return {
             "run_root": self.root_dir,
             "working_root": working_root,
+            "native_file_picker": native_picker_available(),
             "tasks_dir": self.tasks_dir,
             "script_path": script_path,
             "script_name": str(script_info.get("script_name", "") or ""),
@@ -809,6 +811,9 @@ class PyrunsRuntime:
     def pick_launcher_script_path(self) -> Dict[str, Any]:
         """Open a native script picker and return the selected script without bootstrapping."""
 
+        if not native_picker_available():
+            raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
+
         current_script = self.get_workspace_info().get("script_path", "")
         initial_dir = os.path.dirname(str(current_script or "")) or os.getcwd()
         script_path = choose_script_file(initial_dir)
@@ -818,6 +823,9 @@ class PyrunsRuntime:
 
     def pick_and_open_launcher_workspace(self) -> Dict[str, Any]:
         """Open a native script picker and activate the chosen workspace."""
+
+        if not native_picker_available():
+            raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
 
         current_script = self.get_workspace_info().get("script_path", "")
         initial_dir = os.path.dirname(str(current_script or "")) or os.getcwd()
@@ -830,6 +838,9 @@ class PyrunsRuntime:
 
     def pick_and_open_shell_workspace(self) -> Dict[str, Any]:
         """Open a native folder picker and activate that directory's shell workspace."""
+
+        if not native_picker_available():
+            raise ValueError("Native folder picker is unavailable on this server. Enter the path manually.")
 
         current_root = self.root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
         if current_root:

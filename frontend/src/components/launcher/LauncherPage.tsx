@@ -39,6 +39,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     scripts, configs, selectedScript, selectedConfig, requiresConfigTemplate, step, loading,
     fetchScripts, selectScript, selectConfig, openWorkspace, reset: resetLauncher,
   } = useLauncherStore()
+  const workspace = useWorkspaceStore(state => state.workspace)
   const setWorkspace = useWorkspaceStore(state => state.setWorkspace)
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -53,6 +54,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const debouncedShellRootPath = useDebouncedValue(manualShellRootPath.trim(), 300)
   const scriptPathReady = manualScriptPath.trim().length > 0 && scriptValidation.status === 'valid'
   const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
+  const nativePickerAvailable = workspace?.native_file_picker === true
 
   useEffect(() => {
     const modeParam = searchParams.get('mode')
@@ -262,6 +264,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     pathValue={manualScriptPath}
                     pathReady={scriptPathReady}
                     validation={scriptValidation}
+                    pickerAvailable={nativePickerAvailable}
                     onPathChange={setManualScriptPath}
                     onManualOpen={handleManualScript}
                     onBrowseOpen={handlePickScript}
@@ -301,6 +304,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   pathValue={manualShellRootPath}
                   pathReady={shellPathReady}
                   validation={shellValidation}
+                  pickerAvailable={nativePickerAvailable}
                   onPathChange={setManualShellRootPath}
                   onManualOpen={handleManualShellRoot}
                   onBrowseOpen={handlePickShellRoot}
@@ -477,6 +481,7 @@ function ModeActionPanel({
   pathValue,
   pathReady,
   validation,
+  pickerAvailable,
   onPathChange,
   onManualOpen,
   onBrowseOpen,
@@ -485,13 +490,14 @@ function ModeActionPanel({
   pathValue: string
   pathReady: boolean
   validation: PathValidationState
+  pickerAvailable: boolean
   onPathChange: (value: string) => void
   onManualOpen: () => void | Promise<void>
   onBrowseOpen: () => void | Promise<void>
 }) {
   const isPython = launchMode === 'python'
   const Icon = isPython ? FileSearch : FolderPlus
-  const browseLabel = isPython ? 'Browse Script' : 'Browse & Open Folder'
+  const browseLabel = pickerAvailable ? (isPython ? 'Browse Script' : 'Browse & Open Folder') : 'Browse Unavailable'
   const manualLabel = isPython ? 'Select Script Path' : 'Open Folder Path'
   const placeholder = isPython ? 'Absolute or relative path to train.py' : 'Path to shell project folder'
 
@@ -499,9 +505,10 @@ function ModeActionPanel({
     <div className="space-y-2">
       <button
         type="button"
+        disabled={!pickerAvailable}
         onClick={() => void onBrowseOpen()}
         className={clsx(
-          'inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors',
+          'inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
           isPython
             ? 'bg-accent text-white hover:bg-accent-hover'
             : 'bg-accent/10 text-accent hover:bg-accent/20',
@@ -510,6 +517,11 @@ function ModeActionPanel({
         <Icon className="h-3.5 w-3.5" />
         {browseLabel}
       </button>
+      {!pickerAvailable && (
+        <div className="px-1 text-2xs text-zinc-500">
+          Native picker unavailable on this server; enter the path manually.
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <input
           value={pathValue}

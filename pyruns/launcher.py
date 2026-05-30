@@ -48,6 +48,14 @@ def validate_python_script_path(script_path: str) -> str:
     return filepath
 
 
+def native_picker_available() -> bool:
+    """Return whether this process can safely open a native file picker."""
+
+    if os.name == "nt" or sys.platform == "darwin":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def workspace_root_parent_for_script(script_path: str) -> str:
     """Return the project-level ``_pyruns_`` directory for a script."""
 

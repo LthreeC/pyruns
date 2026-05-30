@@ -263,6 +263,20 @@ def test_react_launcher_supports_manual_shell_folder_paths():
     assert "/api/launcher/open-shell-root" in api
 
 
+def test_react_launcher_disables_browse_when_native_picker_unavailable():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "native_file_picker?: boolean" in types
+    assert "const workspace = useWorkspaceStore(state => state.workspace)" in launcher
+    assert "const nativePickerAvailable = workspace?.native_file_picker === true" in launcher
+    assert "pickerAvailable={nativePickerAvailable}" in launcher
+    assert "pickerAvailable: boolean" in launcher
+    assert "disabled={!pickerAvailable}" in launcher
+    assert "Browse Unavailable" in launcher
+    assert "Native picker unavailable on this server; enter the path manually." in launcher
+
+
 def test_react_launcher_browse_script_enters_config_selection_before_opening():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")

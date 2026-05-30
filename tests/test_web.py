@@ -163,6 +163,18 @@ def test_workspace_endpoint_returns_metadata(tmp_path):
     assert payload["workspace_ready"] is True
 
 
+def test_workspace_endpoint_reports_native_picker_capability(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    with patch("pyruns.web.runtime.native_picker_available", return_value=False):
+        response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    assert response.json()["native_file_picker"] is False
+
+
 def test_root_serves_react_frontend_shell(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
@@ -607,6 +619,22 @@ def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
     assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
     assert payload["project_root"] == str(target_dir).replace("\\", "/")
     assert payload["working_root"] == str(target_dir).replace("\\", "/")
+
+
+def test_pick_shell_root_endpoint_rejects_unavailable_native_picker(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=False),
+        patch("pyruns.web.runtime.choose_directory") as choose_directory_mock,
+    ):
+        response = client.post("/api/launcher/pick-shell-root")
+
+    assert response.status_code == 400
+    assert "Enter the path manually" in response.json()["detail"]
+    choose_directory_mock.assert_not_called()
 
 
 def test_open_shell_root_endpoint_accepts_manual_directory_path(tmp_path):
