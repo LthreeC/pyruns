@@ -1,13 +1,37 @@
 import { useEffect, useCallback, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { FileCode, FolderOpen, ChevronRight, Rocket, ArrowRight, FileSearch, FolderPlus } from 'lucide-react'
+import {
+  FileCode, FolderOpen, ChevronRight, Rocket, ArrowRight, FileSearch, FolderPlus,
+  CheckCircle2, AlertTriangle, Loader2,
+} from 'lucide-react'
 import clsx from 'clsx'
 import { useLauncherStore, useWorkspaceStore } from '@/store'
-import type { ScriptCandidate, ConfigCandidate } from '@/types'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import type { ScriptCandidate, ConfigCandidate, PathValidationResult } from '@/types'
 import * as api from '@/api'
 
 function pathName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
+
+type PathValidationState = {
+  status: 'idle' | 'checking' | 'valid' | 'invalid'
+  message: string
+  normalizedPath: string
+}
+
+const emptyValidation: PathValidationState = {
+  status: 'idle',
+  message: '',
+  normalizedPath: '',
+}
+
+function validationFromResult(result: PathValidationResult): PathValidationState {
+  return {
+    status: result.ok ? 'valid' : 'invalid',
+    message: result.message,
+    normalizedPath: result.normalized_path,
+  }
 }
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
@@ -23,8 +47,12 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const [manualShellRootPath, setManualShellRootPath] = useState('')
   const [launchMode, setLaunchMode] = useState<'python' | 'shell'>('python')
   const [error, setError] = useState('')
-  const scriptPathReady = manualScriptPath.trim().length > 0
-  const shellPathReady = manualShellRootPath.trim().length > 0
+  const [scriptValidation, setScriptValidation] = useState<PathValidationState>(emptyValidation)
+  const [shellValidation, setShellValidation] = useState<PathValidationState>(emptyValidation)
+  const debouncedScriptPath = useDebouncedValue(manualScriptPath.trim(), 300)
+  const debouncedShellRootPath = useDebouncedValue(manualShellRootPath.trim(), 300)
+  const scriptPathReady = manualScriptPath.trim().length > 0 && scriptValidation.status === 'valid'
+  const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
 
   useEffect(() => {
     void fetchScripts()
@@ -36,6 +64,50 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       void selectScript(scriptParam)
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!debouncedScriptPath) {
+      setScriptValidation(emptyValidation)
+      return () => { cancelled = true }
+    }
+
+    setScriptValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '' })
+    api.validateLauncherPath('python', debouncedScriptPath)
+      .then(result => {
+        if (!cancelled) {
+          setScriptValidation(validationFromResult(result))
+        }
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setScriptValidation({ status: 'invalid', message: err.message, normalizedPath: '' })
+        }
+      })
+    return () => { cancelled = true }
+  }, [debouncedScriptPath])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!debouncedShellRootPath) {
+      setShellValidation(emptyValidation)
+      return () => { cancelled = true }
+    }
+
+    setShellValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '' })
+    api.validateLauncherPath('shell', debouncedShellRootPath)
+      .then(result => {
+        if (!cancelled) {
+          setShellValidation(validationFromResult(result))
+        }
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setShellValidation({ status: 'invalid', message: err.message, normalizedPath: '' })
+        }
+      })
+    return () => { cancelled = true }
+  }, [debouncedShellRootPath])
 
   const handleOpen = useCallback(async () => {
     setError('')
@@ -178,6 +250,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     launchMode={launchMode}
                     pathValue={manualScriptPath}
                     pathReady={scriptPathReady}
+                    validation={scriptValidation}
                     onPathChange={setManualScriptPath}
                     onManualOpen={handleManualScript}
                     onBrowseOpen={handlePickScript}
@@ -216,6 +289,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   launchMode={launchMode}
                   pathValue={manualShellRootPath}
                   pathReady={shellPathReady}
+                  validation={shellValidation}
                   onPathChange={setManualShellRootPath}
                   onManualOpen={handleManualShellRoot}
                   onBrowseOpen={handlePickShellRoot}
@@ -391,6 +465,7 @@ function ModeActionPanel({
   launchMode,
   pathValue,
   pathReady,
+  validation,
   onPathChange,
   onManualOpen,
   onBrowseOpen,
@@ -398,6 +473,7 @@ function ModeActionPanel({
   launchMode: 'python' | 'shell'
   pathValue: string
   pathReady: boolean
+  validation: PathValidationState
   onPathChange: (value: string) => void
   onManualOpen: () => void | Promise<void>
   onBrowseOpen: () => void | Promise<void>
@@ -430,7 +506,9 @@ function ModeActionPanel({
           onKeyDown={event => {
             if (event.key === 'Enter') {
               event.preventDefault()
-              void onManualOpen()
+              if (pathReady) {
+                void onManualOpen()
+              }
             }
           }}
           placeholder={placeholder}
@@ -445,6 +523,31 @@ function ModeActionPanel({
           {manualLabel}
         </button>
       </div>
+      <PathValidationHint validation={validation} />
+    </div>
+  )
+}
+
+function PathValidationHint({ validation }: { validation: PathValidationState }) {
+  if (validation.status === 'idle') {
+    return null
+  }
+
+  const valid = validation.status === 'valid'
+  const checking = validation.status === 'checking'
+  const Icon = valid ? CheckCircle2 : checking ? Loader2 : AlertTriangle
+  const text = valid && validation.normalizedPath ? validation.normalizedPath : validation.message
+
+  return (
+    <div
+      className={clsx(
+        'flex items-center gap-1.5 truncate px-1 text-2xs font-mono',
+        valid ? 'text-emerald-300' : checking ? 'text-zinc-500' : 'text-amber-300',
+      )}
+      title={text}
+    >
+      <Icon className={clsx('h-3 w-3 flex-none', checking && 'animate-spin')} />
+      <span className="truncate">{text}</span>
     </div>
   )
 }

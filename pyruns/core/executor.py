@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import json
 import os
 import shlex
 import subprocess
@@ -13,11 +14,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pyruns._config import (
     CONFIG_FILENAME,
+    DEFAULT_ROOT_NAME,
     ENV_KEY_CONFIG,
     ERROR_LOG_FILENAME,
     RECORDS_KEY,
     RUN_LOGS_DIR,
+    SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
+    SHELL_WORKSPACE_NAME,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
     TRACKS_KEY,
@@ -235,6 +239,36 @@ def _write_temp_shell_wrapper(
     return wrapper_path
 
 
+def _normalize_execution_path(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(str(path)))).replace("\\", "/")
+
+
+def _resolve_shell_workdir(task_dir: str) -> str:
+    """Return the project directory where shell payloads should execute."""
+
+    workspace_dir = os.path.dirname(os.path.dirname(task_dir))
+    script_info_path = os.path.join(workspace_dir, SCRIPT_INFO_FILENAME)
+    if os.path.exists(script_info_path):
+        try:
+            with open(script_info_path, "r", encoding="utf-8") as handle:
+                info = json.load(handle)
+            project_root = str(info.get("project_root", "") or "").strip()
+            if project_root:
+                resolved = _normalize_execution_path(project_root)
+                if os.path.isdir(resolved):
+                    return resolved
+        except Exception as exc:
+            logger.warning("Failed to read shell workspace project root from %s: %s", script_info_path, exc)
+
+    parent_root = os.path.dirname(workspace_dir)
+    if os.path.basename(workspace_dir) == SHELL_WORKSPACE_NAME and os.path.basename(parent_root) == DEFAULT_ROOT_NAME:
+        project_root = _normalize_execution_path(os.path.dirname(parent_root))
+        if os.path.isdir(project_root):
+            return project_root
+
+    return task_dir
+
+
 def _materialize_windows_shell_wrapper(
     task_dir: str,
     script_path: str,
@@ -290,9 +324,11 @@ def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], st
     if not os.path.exists(script_path):
         raise FileNotFoundError(script_path)
     shell_path = _resolve_shell_executable(task_dir)
+    workdir = _resolve_shell_workdir(task_dir)
     if _is_windows():
-        return _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
-    return [shell_path, script_path], task_dir, []
+        command, _, cleanup_paths = _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
+        return command, workdir, cleanup_paths
+    return [shell_path, script_path], workdir, []
 
 
 def _build_command(

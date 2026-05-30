@@ -310,6 +310,10 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         except FileNotFoundError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/launcher/validate-path")
+    def validate_launcher_path(kind: str = Query(min_length=1), path: str = Query(min_length=1)) -> dict[str, Any]:
+        return get_runtime().validate_launcher_path(kind, path)
+
     @app.post("/api/launcher/open")
     def open_launcher_workspace(payload: LauncherOpenRequest) -> dict[str, Any]:
         try:

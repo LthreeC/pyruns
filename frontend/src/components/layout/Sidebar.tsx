@@ -41,6 +41,9 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
   const shellWorkspaceActive = workspace?.workspace_kind === 'shell'
   const workspaceLabel = shellWorkspaceActive ? '_shell_' : (scriptFileName || 'Choose .py file')
+  const visibleWorkspacePath = shellWorkspaceActive
+    ? (workspace?.project_root || workspace?.run_root)
+    : workspace?.run_root
 
   const clearMonitorSelection = () => {
     useMonitorStore.setState({
@@ -203,9 +206,9 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
 
           <div
             className="mt-1 truncate text-2xs text-txt-tertiary"
-            title={workspace?.run_root || 'Choose a Python script or choose a shell workspace folder'}
+            title={visibleWorkspacePath || 'Choose a Python script or choose a shell workspace folder'}
           >
-            {workspace?.run_root || 'Choose a Python script or choose a shell workspace folder'}
+            {visibleWorkspacePath || 'Choose a Python script or choose a shell workspace folder'}
           </div>
           {shellWorkspaceActive && (
             <div className="mt-2 rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">

@@ -33,6 +33,7 @@ from pyruns.launcher import (
     list_script_candidates,
     list_workspace_candidates,
     normalize_path,
+    shell_project_root_for_workspace,
     shell_workspace_root_for_run_root,
 )
 from pyruns.utils import get_now_str
@@ -149,11 +150,15 @@ class PyrunsRuntime:
         script_info = load_script_info(self.root_dir)
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
         workspace_ready = bool(script_info.get("script_name") or workspace_kind)
+        project_root = str(script_info.get("project_root", "") or "")
+        if workspace_kind == _cfg.WORKSPACE_KIND_SHELL and not project_root:
+            project_root = shell_project_root_for_workspace(self.root_dir)
         return {
             "run_root": self.root_dir,
             "tasks_dir": self.tasks_dir,
             "script_path": str(script_info.get("script_path", "") or ""),
             "script_name": str(script_info.get("script_name", "") or ""),
+            "project_root": project_root,
             "workspace_kind": workspace_kind,
             "workspace_ready": workspace_ready,
             "settings": dict(self.settings),
@@ -737,6 +742,61 @@ class PyrunsRuntime:
         workspace = bootstrap_workspace(script_path, config_path or None)
         self.reload(workspace)
         return self.get_workspace_info()
+
+    def validate_launcher_path(self, kind: str, path: str) -> Dict[str, Any]:
+        """Validate a manually entered launcher path without changing workspace state."""
+
+        path_text = str(path or "").strip()
+        kind_text = str(kind or "").strip().lower()
+        if not path_text:
+            return {
+                "ok": False,
+                "kind": kind_text,
+                "normalized_path": "",
+                "path_type": "",
+                "message": "Path is empty.",
+            }
+
+        normalized = normalize_path(path_text)
+
+        if kind_text in {"python", "script", "py"}:
+            ok = os.path.isfile(normalized) and normalized.lower().endswith(".py")
+            return {
+                "ok": ok,
+                "kind": "python",
+                "normalized_path": normalized,
+                "path_type": "file" if os.path.isfile(normalized) else "",
+                "message": "Python script found." if ok else f"Python script does not exist or is not a .py file: {path_text}",
+            }
+
+        if kind_text in {"shell", "folder", "directory", "dir"}:
+            ok = os.path.isdir(normalized)
+            return {
+                "ok": ok,
+                "kind": "shell",
+                "normalized_path": normalized,
+                "path_type": "directory" if ok else "",
+                "message": "Shell folder found." if ok else f"Shell folder does not exist: {path_text}",
+            }
+
+        if kind_text in {"config", "yaml", "yml"}:
+            suffix = os.path.splitext(normalized)[1].lower()
+            ok = os.path.isfile(normalized) and suffix in {".yaml", ".yml"}
+            return {
+                "ok": ok,
+                "kind": "config",
+                "normalized_path": normalized,
+                "path_type": "file" if os.path.isfile(normalized) else "",
+                "message": "YAML config found." if ok else f"YAML config does not exist or is not a .yaml/.yml file: {path_text}",
+            }
+
+        return {
+            "ok": False,
+            "kind": kind_text,
+            "normalized_path": normalized,
+            "path_type": "",
+            "message": f"Unsupported launcher path kind: {kind}",
+        }
 
     def pick_launcher_script_path(self) -> Dict[str, Any]:
         """Open a native script picker and return the selected script without bootstrapping."""

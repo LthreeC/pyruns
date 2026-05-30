@@ -604,6 +604,7 @@ def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
     assert payload["workspace_kind"] == WORKSPACE_KIND_SHELL
     assert payload["run_root"].endswith("_pyruns_/_shell_")
     assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
+    assert payload["project_root"] == str(target_dir).replace("\\", "/")
 
 
 def test_open_shell_root_endpoint_accepts_manual_directory_path(tmp_path):
@@ -621,6 +622,7 @@ def test_open_shell_root_endpoint_accepts_manual_directory_path(tmp_path):
     assert payload["workspace_kind"] == WORKSPACE_KIND_SHELL
     assert payload["run_root"].endswith("_pyruns_/_shell_")
     assert Path(payload["run_root"]).parent == target_dir / "_pyruns_"
+    assert payload["project_root"] == str(target_dir).replace("\\", "/")
 
 
 def test_open_shell_root_endpoint_rejects_missing_manual_directory(tmp_path):
@@ -632,6 +634,39 @@ def test_open_shell_root_endpoint_rejects_missing_manual_directory(tmp_path):
 
     assert response.status_code == 400
     assert "Shell folder" in response.json()["detail"]
+
+
+def test_launcher_validate_path_endpoint_checks_manual_paths(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "train.py"
+    script_path.write_text("print('train')\n", encoding="utf-8")
+    shell_dir = tmp_path / "shell_project"
+    shell_dir.mkdir()
+
+    script_response = client.get(
+        "/api/launcher/validate-path",
+        params={"kind": "python", "path": str(script_path)},
+    )
+    shell_response = client.get(
+        "/api/launcher/validate-path",
+        params={"kind": "shell", "path": str(shell_dir)},
+    )
+    missing_response = client.get(
+        "/api/launcher/validate-path",
+        params={"kind": "shell", "path": str(tmp_path / "missing")},
+    )
+
+    assert script_response.status_code == 200
+    assert script_response.json()["ok"] is True
+    assert script_response.json()["normalized_path"] == str(script_path).replace("\\", "/")
+    assert shell_response.status_code == 200
+    assert shell_response.json()["ok"] is True
+    assert shell_response.json()["normalized_path"] == str(shell_dir).replace("\\", "/")
+    assert missing_response.status_code == 200
+    assert missing_response.json()["ok"] is False
+    assert "does not exist" in missing_response.json()["message"]
 
 
 def test_tasks_endpoint_supports_offset_pagination(tmp_path):

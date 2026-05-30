@@ -56,12 +56,19 @@ def workspace_root_parent_for_script(script_path: str) -> str:
     return normalize_path(os.path.join(script_dir, DEFAULT_ROOT_NAME))
 
 
+def workspace_name_for_script_base(script_base: str) -> str:
+    """Return a filesystem-safe workspace directory name for a Python script."""
+
+    return f"py{SHELL_WORKSPACE_NAME}" if script_base == SHELL_WORKSPACE_NAME else script_base
+
+
 def workspace_root_for_script(script_path: str) -> str:
     """Return the canonical script workspace path for a script."""
 
     normalized = normalize_path(script_path)
     script_base = os.path.splitext(os.path.basename(normalized))[0]
-    return normalize_path(os.path.join(workspace_root_parent_for_script(normalized), script_base))
+    workspace_name = workspace_name_for_script_base(script_base)
+    return normalize_path(os.path.join(workspace_root_parent_for_script(normalized), workspace_name))
 
 
 def shell_workspace_root_for_run_root(run_root: str) -> str:
@@ -75,6 +82,16 @@ def shell_workspace_root_for_run_root(run_root: str) -> str:
     return normalize_path(os.path.join(os.path.dirname(normalized), SHELL_WORKSPACE_NAME))
 
 
+def shell_project_root_for_workspace(shell_root: str) -> str:
+    """Return the user project directory represented by a shell workspace."""
+
+    normalized = normalize_path(shell_root)
+    parent_root = os.path.dirname(normalized)
+    if os.path.basename(normalized) == SHELL_WORKSPACE_NAME and os.path.basename(parent_root) == DEFAULT_ROOT_NAME:
+        return normalize_path(os.path.dirname(parent_root))
+    return normalize_path(os.path.dirname(normalized))
+
+
 def _read_script_info(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -85,7 +102,6 @@ def _read_script_info(path: Path) -> dict[str, Any]:
 def _is_shell_workspace_info(info: dict[str, Any], workspace_name: str) -> bool:
     return (
         str(info.get("workspace_kind", "") or "") == WORKSPACE_KIND_SHELL
-        or str(info.get("script_name", "") or "") == SHELL_WORKSPACE_NAME
         or workspace_name == SHELL_WORKSPACE_NAME
     )
 
@@ -302,7 +318,7 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
     file_dir = os.path.dirname(filepath)
     script_base = os.path.splitext(os.path.basename(filepath))[0]
     pyruns_dir = workspace_root_parent_for_script(filepath)
-    script_dir = normalize_path(os.path.join(pyruns_dir, script_base))
+    script_dir = workspace_root_for_script(filepath)
 
     os.makedirs(script_dir, exist_ok=True)
     os.makedirs(os.path.join(script_dir, TASKS_DIR), exist_ok=True)
@@ -355,6 +371,7 @@ def bootstrap_shell_workspace(run_root: str) -> str:
 
     shell_root = shell_workspace_root_for_run_root(run_root)
     parent_root = os.path.dirname(shell_root)
+    project_root = shell_project_root_for_workspace(shell_root)
 
     os.makedirs(shell_root, exist_ok=True)
     os.makedirs(os.path.join(shell_root, TASKS_DIR), exist_ok=True)
@@ -365,6 +382,7 @@ def bootstrap_shell_workspace(run_root: str) -> str:
         "workspace_kind": WORKSPACE_KIND_SHELL,
         "script_name": SHELL_WORKSPACE_NAME,
         "script_path": "",
+        "project_root": project_root,
         "last_used_template": "",
         "created_at": existing.get("created_at", time.strftime("%Y-%m-%d %H:%M:%S")),
     }

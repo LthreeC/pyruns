@@ -40,6 +40,7 @@ export interface WorkspaceInfo {
   tasks_dir: string
   script_path: string
   script_name: string
+  project_root?: string
   workspace_kind: WorkspaceKind
   workspace_ready: boolean
   settings: Record<string, any>
@@ -171,4 +172,12 @@ export interface WorkspaceCandidate {
   config_path: string
   config_name: string
   exists: boolean
+}
+
+export interface PathValidationResult {
+  ok: boolean
+  kind: 'python' | 'shell' | 'config' | string
+  normalized_path: string
+  path_type: 'file' | 'directory' | ''
+  message: string
 }

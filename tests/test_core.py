@@ -20,6 +20,7 @@ from pyruns._config import (
     CONFIG_FILENAME,
     POWERSHELL_CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
+    SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
     TASK_INFO_FILENAME,
@@ -33,7 +34,13 @@ from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator, create_task_object
 from pyruns.core.task_manager import TaskManager
-from pyruns.launcher import shell_workspace_root_for_run_root
+from pyruns.launcher import (
+    bootstrap_shell_workspace,
+    bootstrap_workspace,
+    list_script_candidates,
+    shell_workspace_root_for_run_root,
+    workspace_root_for_script,
+)
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.info_io import save_task_info
 from pyruns.utils.config_utils import save_yaml
@@ -532,6 +539,36 @@ def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
 
 
 @patch("pyruns.core.executor._resolve_shell_executable")
+def test_build_command_shell_task_uses_project_root_workdir(mock_shell, tmp_path, monkeypatch):
+    monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: False)
+    mock_shell.return_value = "/bin/bash"
+    project_root = tmp_path / "project"
+    task_dir = project_root / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME / "tasks" / "task"
+    task_dir.mkdir(parents=True)
+    workspace_dir = task_dir.parents[1]
+    (workspace_dir / SCRIPT_INFO_FILENAME).write_text(
+        json.dumps({"workspace_kind": "shell", "project_root": str(project_root)}),
+        encoding="utf-8",
+    )
+    script_path = task_dir / SHELL_CONFIG_FILENAME
+    script_path.write_text("pwd\n", encoding="utf-8")
+
+    cmd, wd, cleanup_paths = _build_command(
+        None,
+        None,
+        None,
+        {},
+        task_kind=TASK_KIND_SHELL,
+        task_dir=str(task_dir),
+        config_file=SHELL_CONFIG_FILENAME,
+    )
+
+    assert cmd == ["/bin/bash", str(script_path)]
+    assert wd == str(project_root).replace("\\", "/")
+    assert cleanup_paths == []
+
+
+@patch("pyruns.core.executor._resolve_shell_executable")
 def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch):
     monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: True)
     mock_shell.return_value = r"C:\Windows\System32\cmd.exe"
@@ -708,6 +745,50 @@ def test_shell_workspace_root_uses_parent_pyruns_root_when_given_script_workspac
     shell_root = shell_workspace_root_for_run_root(str(script_root))
 
     assert shell_root == str(tmp_path / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME).replace("\\", "/")
+
+
+def test_shell_named_python_script_uses_reserved_safe_workspace_dir(tmp_path):
+    script_path = tmp_path / "_shell_.py"
+    script_path.write_text(
+        "\n".join(
+            [
+                "import argparse",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--epochs', type=int, default=3)",
+                "parser.parse_args()",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    expected_workspace = str(tmp_path / DEFAULT_ROOT_NAME / f"py{SHELL_WORKSPACE_NAME}").replace("\\", "/")
+
+    assert workspace_root_for_script(str(script_path)) == expected_workspace
+    workspace = bootstrap_workspace(str(script_path))
+    info = json.loads(Path(workspace, SCRIPT_INFO_FILENAME).read_text(encoding="utf-8"))
+
+    assert workspace == expected_workspace
+    assert info["workspace_kind"] == "script"
+    assert info["script_name"] == "_shell_"
+    assert shell_workspace_root_for_run_root(workspace) == str(
+        tmp_path / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME
+    ).replace("\\", "/")
+    assert any(
+        item["script_name"] == "_shell_" and item["workspace_path"] == expected_workspace
+        for item in list_script_candidates(str(tmp_path))
+    )
+
+
+def test_bootstrap_shell_workspace_records_project_root(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    shell_root = bootstrap_shell_workspace(str(project_root / DEFAULT_ROOT_NAME))
+    info = json.loads(Path(shell_root, SCRIPT_INFO_FILENAME).read_text(encoding="utf-8"))
+
+    assert shell_root == str(project_root / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME).replace("\\", "/")
+    assert info["project_root"] == str(project_root).replace("\\", "/")
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

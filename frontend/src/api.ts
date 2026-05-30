@@ -12,6 +12,7 @@ import type {
   LauncherConfigsResponse,
   WorkspaceCandidate,
   GeneratorMode,
+  PathValidationResult,
 } from './types'
 
 const BASE = ''
@@ -157,6 +158,12 @@ export const getLauncherWorkspaces = (script: string, config?: string) => {
   if (config) sp.set('config', config)
   return request<{ items: WorkspaceCandidate[] }>(`/api/launcher/workspaces?${sp}`)
 }
+
+export const validateLauncherPath = (kind: 'python' | 'shell' | 'config', path: string) =>
+  request<PathValidationResult>(
+    `/api/launcher/validate-path?kind=${encodeURIComponent(kind)}&path=${encodeURIComponent(path)}`,
+  )
+
 export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =>
   request<WorkspaceInfo>('/api/launcher/open', {
     method: 'POST',
