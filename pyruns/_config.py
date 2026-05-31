@@ -13,6 +13,7 @@ import os
 ENV_KEY_ROOT = "__PYRUNS_ROOT__"
 ENV_KEY_CONFIG = "__PYRUNS_CONFIG__"
 ENV_KEY_SHELL = "PYRUNS_SHELL_EXECUTABLE"
+ENV_KEY_RUN_INDEX = "PYRUNS_RUN_INDEX"
 
 # Directory / file names
 DEFAULT_ROOT_NAME = "_pyruns_"
@@ -41,6 +42,7 @@ POWERSHELL_CONFIG_FILENAME = "config.ps1"
 CMD_CONFIG_FILENAME = "config.cmd"
 FISH_CONFIG_FILENAME = "config.fish"
 RUN_LOGS_DIR = "run_logs"
+ARTIFACTS_DIR = "artifacts"
 ERROR_LOG_FILENAME = "error.log"
 TRASH_DIR = ".trash"
 RECORDS_KEY = "records"
@@ -50,7 +52,8 @@ SETTINGS_FILENAME = "_pyruns_settings.yaml"
 # Workspace / task kinds
 WORKSPACE_KIND_SCRIPT = "script"
 WORKSPACE_KIND_SHELL = "shell"
-TASK_KIND_CONFIG = "config"
+TASK_KIND_PYTHON = "python"
+TASK_KIND_CONFIG = TASK_KIND_PYTHON
 TASK_KIND_SHELL = "shell"
 
 WORKSPACE_KINDS = (

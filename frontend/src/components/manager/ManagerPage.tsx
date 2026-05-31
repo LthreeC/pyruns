@@ -607,38 +607,40 @@ export default function ManagerPage() {
                   dragOverTarget === 'pinned' && 'bg-accent/8 ring-1 ring-accent/30',
                 )}
               >
-              <CompactSection
-                title="Pinned"
-                subtitle={dragOverTarget === 'pinned' ? 'Drop to pin or reorder' : `${pinnedTasks.length} pinned task${pinnedTasks.length > 1 ? 's' : ''}`}
-                icon={<Pin className="h-3.5 w-3.5 text-accent" />}
-                accent
-                bodyClassName="p-2"
-              >
-                {pinnedTasks.length === 0 ? (
-                  <div className="px-2 py-5 text-center text-xs font-medium text-accent">
-                    Drop here to pin
-                  </div>
-                ) : (
-                  <TaskGrid
-                    tasks={pinnedTasks}
-                    columns={columns}
-                    query={query}
-                    draggedTaskName={draggedTaskName}
-                    dropIntent={dropIntent}
-                    selectedIds={selectedIds}
-                    selectMode={selectMode}
-                    onCardClick={handleCardClick}
-                    onTaskAction={handleTaskAction}
-                    onPin={handlePin}
-                    onDelete={setDeleteTask}
-                    onMonitor={task => {
-                      void useMonitorStore.getState().selectTask(task.name)
-                      navigate('/monitor')
-                    }}
-                    onPointerDown={handleTaskPointerDown}
-                  />
-                )}
-              </CompactSection>
+                <CompactSection
+                  title="Pinned Tasks"
+                  subtitle={dragOverTarget === 'pinned' ? 'Drop to pin or reorder' : undefined}
+                  count={pinnedTasks.length}
+                  icon={<Pin className="h-3.5 w-3.5 text-accent" />}
+                  accent
+                  className="rounded-md border border-accent/20 bg-accent/5 p-2"
+                  bodyClassName="pt-0"
+                >
+                  {pinnedTasks.length === 0 ? (
+                    <div className="px-2 py-5 text-center text-xs font-medium text-accent">
+                      Drop here to pin
+                    </div>
+                  ) : (
+                    <TaskGrid
+                      tasks={pinnedTasks}
+                      columns={columns}
+                      query={query}
+                      draggedTaskName={draggedTaskName}
+                      dropIntent={dropIntent}
+                      selectedIds={selectedIds}
+                      selectMode={selectMode}
+                      onCardClick={handleCardClick}
+                      onTaskAction={handleTaskAction}
+                      onPin={handlePin}
+                      onDelete={setDeleteTask}
+                      onMonitor={task => {
+                        void useMonitorStore.getState().selectTask(task.name)
+                        navigate('/monitor')
+                      }}
+                      onPointerDown={handleTaskPointerDown}
+                    />
+                  )}
+                </CompactSection>
               </div>
             )}
 
@@ -811,7 +813,7 @@ function TaskCard({
 }) {
   const actionBtn = getActionButton(task)
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
-  const taskKindLabel = (task.config_mode || task.task_kind) === 'shell' ? 'shell' : 'config'
+  const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
   const cardDescription = task._load_error || task.preview_text || 'No preview available.'
   const searchMatches = getTaskSearchMatches(task, query)
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
@@ -1027,7 +1029,7 @@ function getTaskSearchMatches(task: Task, query: string): TaskSearchMatch[] {
   const envText = Object.entries(task.env || {})
     .map(([key, value]) => `${key}: ${value}`)
     .join('\n')
-  const configText = (task.config_mode || task.task_kind) === 'shell'
+  const configText = task.task_kind === 'shell'
     ? task.config_text || task.preview_text || ''
     : flattenTaskConfig(task.config || {}).join('\n')
 
@@ -1036,7 +1038,7 @@ function getTaskSearchMatches(task: Task, query: string): TaskSearchMatch[] {
     { label: 'Notes', detail: task.notes || '' },
     { label: 'Env', detail: envText },
     {
-      label: (task.config_mode || task.task_kind) === 'shell' ? 'Script' : 'Config',
+      label: task.task_kind === 'shell' ? 'Script' : 'Config',
       detail: configText,
     },
   ]

@@ -12,6 +12,7 @@ This example is designed to exercise common training-script argument patterns:
 - choices
 - inherited environment variables
 - `pyruns.track()` and `pyruns.record()`
+- `pyruns.artifact_dir()` writing `artifacts/runN/summary.json`
 
 Start the workspace with:
 

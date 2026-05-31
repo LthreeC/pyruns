@@ -197,7 +197,7 @@ function hasBatchExpression(text: string) {
 }
 
 function buildGeneratedTemplateValue(task: { name?: string; config_file?: string; task_kind?: string }) {
-  if ((task.task_kind || 'config') !== 'config' || !task.name) {
+  if ((task.task_kind || 'python') !== 'python' || !task.name) {
     return ''
   }
   return `tasks/${task.name}/${task.config_file || 'config.yaml'}`
@@ -548,7 +548,7 @@ export default function GeneratorPage() {
 
       setCreatedSummary({
         count: result.count,
-        taskKind: result.task_kind === 'shell' ? 'shell task' : 'task',
+        taskKind: result.task_kind === 'shell' ? 'shell task' : 'python task',
         firstTaskName: result.items[0]?.name || selectedGeneratedTask,
       })
       setGenerationStatus('created')
@@ -1195,14 +1195,14 @@ function PinnedParameters({
   onChange: (fullKey: string, value: any) => void
 }) {
   return (
-    <section className="rounded-md border border-accent/20 bg-accent/5 p-2">
-      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-accent">
-        <Pin className="h-3.5 w-3.5" />
-        <span>Pinned Parameters</span>
-        <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-2xs font-medium">
-          {rows.length}
-        </span>
-      </div>
+    <CompactSection
+      title="Pinned Parameters"
+      count={rows.length}
+      icon={<Pin className="h-3.5 w-3.5 text-accent" />}
+      accent
+      className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
+      bodyClassName="pt-0"
+    >
       <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
         {rows.map(row => (
           <ParamRow
@@ -1217,7 +1217,7 @@ function PinnedParameters({
           />
         ))}
       </div>
-    </section>
+    </CompactSection>
   )
 }
 

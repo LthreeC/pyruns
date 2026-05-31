@@ -39,7 +39,7 @@ python train.py model=small_net optimizer=adam train.epochs=2
 
 Advanced `argparse` coverage: positional args, `nargs`, append flags,
 `BooleanOptionalAction`, `store_true`, `store_false`, negative defaults,
-choices, and `count`.
+choices, `count`, and a small `artifacts/runN/summary.json` output.
 
 ```bash
 pyr examples/4_advanced_argparse/main.py examples/4_advanced_argparse/configs/quick.yaml

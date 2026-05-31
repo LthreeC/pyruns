@@ -1239,7 +1239,6 @@ class TestCreateTaskObject:
             task_kind=TASK_KIND_SHELL,
             config_text="echo hello\n",
         )
-        assert obj["config_mode"] == TASK_KIND_SHELL
         assert obj["task_kind"] == TASK_KIND_SHELL
         assert obj["config_file"] == SHELL_CONFIG_FILENAME
         assert obj["config_text"] == "echo hello\n"
@@ -1352,10 +1351,10 @@ class TestTaskGeneratorCreateTask:
             info_shell = json.load(f)
 
         assert info_cfg["task_kind"] == TASK_KIND_CONFIG
-        assert info_cfg["config_mode"] == TASK_KIND_CONFIG
+        assert "config_mode" not in info_cfg
         assert info_cfg["config_file"] == CONFIG_FILENAME
         assert info_shell["task_kind"] == TASK_KIND_SHELL
-        assert info_shell["config_mode"] == TASK_KIND_SHELL
+        assert "config_mode" not in info_shell
         assert info_shell["config_file"] == SHELL_CONFIG_FILENAME
 
     def test_create_shell_task_uses_runtime_specific_payload_filename(self, tmp_path):
@@ -1367,9 +1366,39 @@ class TestTaskGeneratorCreateTask:
         ):
             task_shell = gen.create_shell_task("shell-task", "Write-Host 'hello'\n")
 
-        assert task_shell["config_mode"] == TASK_KIND_SHELL
+        assert task_shell["task_kind"] == TASK_KIND_SHELL
         assert task_shell["config_file"] == POWERSHELL_CONFIG_FILENAME
         assert os.path.exists(os.path.join(task_shell["dir"], POWERSHELL_CONFIG_FILENAME))
+
+    def test_legacy_config_task_kind_is_loaded_as_python(self, tmp_path):
+        task_dir = tmp_path / "legacy-task"
+        task_dir.mkdir()
+        save_task_info(str(task_dir), {
+            "name": "legacy-task",
+            "status": "pending",
+            "created_at": "2026-01-01_00-00-00",
+            "config_mode": "config",
+            "config_file": CONFIG_FILENAME,
+        })
+        save_yaml(str(task_dir / CONFIG_FILENAME), {"x": 1})
+
+        manager = TaskManager(tasks_dir=str(tmp_path), lazy_scan=False)
+        task = manager.get_task("legacy-task")
+
+        assert task is not None
+        assert task["task_kind"] == TASK_KIND_CONFIG
+        assert task["config_file"] == CONFIG_FILENAME
+
+    def test_legacy_config_task_kind_input_writes_python(self, tmp_path):
+        gen = TaskGenerator(root_dir=str(tmp_path))
+        task = gen.create_task("legacy-input", {"x": 1}, task_kind="config")
+
+        with open(os.path.join(task["dir"], "task_info.json"), "r", encoding="utf-8") as f:
+            info = json.load(f)
+
+        assert task["task_kind"] == TASK_KIND_CONFIG
+        assert info["task_kind"] == TASK_KIND_CONFIG
+        assert "config_mode" not in info
 
     def test_invalid_task_kind_is_rejected(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))

@@ -65,6 +65,20 @@ def main() -> None:
         env_marker=summary["env_marker"],
     )
 
+    artifact_dir = pyruns.artifact_dir()
+    summary_path = os.path.join(artifact_dir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "run_index": pyruns.get_run_index(),
+                "final_loss": loss,
+                "env_marker": summary["env_marker"],
+            },
+            f,
+            indent=2,
+            sort_keys=True,
+        )
+
 
 if __name__ == "__main__":
     main()

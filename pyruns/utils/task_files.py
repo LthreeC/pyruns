@@ -22,6 +22,13 @@ from pyruns.utils.config_utils import (
     save_yaml,
 )
 
+TASK_KIND_ALIASES = {
+    "config": TASK_KIND_CONFIG,
+    "py": TASK_KIND_CONFIG,
+    "python": TASK_KIND_CONFIG,
+    TASK_KIND_SHELL: TASK_KIND_SHELL,
+}
+
 
 def normalize_workspace_kind(value: Any) -> str:
     kind = str(value or "").strip().lower()
@@ -30,7 +37,12 @@ def normalize_workspace_kind(value: Any) -> str:
 
 def normalize_task_kind(value: Any) -> str:
     kind = str(value or "").strip().lower()
-    return kind if kind in TASK_KINDS else TASK_KIND_CONFIG
+    return TASK_KIND_ALIASES.get(kind, TASK_KIND_CONFIG)
+
+
+def is_known_task_kind(value: Any) -> bool:
+    kind = str(value or "").strip().lower()
+    return not kind or kind in TASK_KIND_ALIASES or kind in TASK_KINDS
 
 
 def resolve_task_config_file(
@@ -38,7 +50,7 @@ def resolve_task_config_file(
     task_kind: str | None = None,
     task_dir: str | None = None,
 ) -> str:
-    normalized_kind = normalize_task_kind(task_kind or info.get("config_mode", info.get("task_kind")))
+    normalized_kind = normalize_task_kind(task_kind or info.get("task_kind", info.get("config_mode")))
     config_file = str(info.get("config_file", "") or "").strip()
     if config_file:
         return config_file
@@ -52,7 +64,7 @@ def resolve_task_config_file(
 def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str, str]:
     """Return ``(task_kind, config, config_text, load_error)`` for one task."""
 
-    task_kind = normalize_task_kind(info.get("config_mode", info.get("task_kind")))
+    task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
     config_file = resolve_task_config_file(info, task_kind, task_dir)
     config_path = os.path.join(task_dir, config_file)
 

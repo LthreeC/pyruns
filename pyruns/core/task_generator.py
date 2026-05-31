@@ -17,6 +17,7 @@ from pyruns.utils.info_io import load_script_info, save_task_info, validate_task
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
+    is_known_task_kind,
     normalize_task_kind,
     write_task_payload,
 )
@@ -28,10 +29,9 @@ def _resolve_requested_task_kind(task_kind: str) -> str:
     """Normalize task-kind input and reject unsupported values."""
 
     requested_kind = str(task_kind or TASK_KIND_CONFIG).strip().lower()
-    normalized_kind = normalize_task_kind(requested_kind)
-    if normalized_kind != requested_kind:
+    if not is_known_task_kind(requested_kind):
         raise ValueError(f"Unsupported task kind: {task_kind}")
-    return normalized_kind
+    return normalize_task_kind(requested_kind)
 
 
 def create_task_object(
@@ -60,7 +60,6 @@ def create_task_object(
         "config": config or {},
         "config_text": config_text if normalized_kind == TASK_KIND_SHELL else "",
         "config_file": resolved_config_file,
-        "config_mode": normalized_kind,
         "task_kind": normalized_kind,
         "log": "",
         "progress": 0.0,
@@ -159,7 +158,6 @@ class TaskGenerator:
             "progress": task_obj["progress"],
             "created_at": task_obj["created_at"],
             "pinned": task_obj["pinned"],
-            "config_mode": normalized_kind,
             "task_kind": normalized_kind,
             "config_file": resolved_config_file,
             "start_times": [],

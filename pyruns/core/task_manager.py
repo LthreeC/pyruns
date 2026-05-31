@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from pyruns._config import (
     ERROR_LOG_FILENAME,
     RUN_LOGS_DIR,
+    TASK_KIND_CONFIG,
     TASK_INFO_FILENAME,
     TASKS_DIR,
     TRASH_DIR,
@@ -31,6 +32,7 @@ from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.events import event_sys
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
+    normalize_task_kind,
     read_task_payload,
     resolve_task_config_file,
 )
@@ -222,8 +224,7 @@ class TaskManager:
             "pinned": info.get("pinned", False),
             "task_order": info.get("task_order"),
             "script": info.get("script"),
-            "config_mode": task_kind or str(info.get("config_mode", info.get("task_kind", "")) or ""),
-            "task_kind": task_kind or str(info.get("task_kind", "") or ""),
+            "task_kind": task_kind or normalize_task_kind(info.get("task_kind", info.get("config_mode"))),
             "start_times": info.get("start_times", []),
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
@@ -1029,7 +1030,6 @@ class TaskManager:
             tuple(repr(item) for item in (task.get("records", []) or [])),
             task.get("pinned"),
             task.get("task_order"),
-            task.get("config_mode"),
             task.get("task_kind"),
             task.get("config_file"),
             task.get("notes", ""),
@@ -1052,9 +1052,16 @@ class TaskManager:
                 "pinned": info.get("pinned", task.get("pinned", False)),
                 "task_order": info.get("task_order", task.get("task_order")),
                 "script": info.get("script", task.get("script")),
-                "config_mode": info.get("config_mode", info.get("task_kind", task.get("config_mode", "config"))),
-                "task_kind": info.get("task_kind", task.get("task_kind", "config")),
-                "config_file": resolve_task_config_file(info, task.get("task_kind", "config"), task["dir"]),
+                "task_kind": normalize_task_kind(
+                    info.get("task_kind", info.get("config_mode", task.get("task_kind", TASK_KIND_CONFIG)))
+                ),
+                "config_file": resolve_task_config_file(
+                    info,
+                    normalize_task_kind(
+                        info.get("task_kind", info.get("config_mode", task.get("task_kind", TASK_KIND_CONFIG)))
+                    ),
+                    task["dir"],
+                ),
                 "start_times": info.get("start_times", []),
                 "finish_times": info.get("finish_times", []),
                 "pids": info.get("pids", []),
@@ -1065,8 +1072,7 @@ class TaskManager:
             }
         )
         loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)
-        task["config_mode"] = loaded_kind or task.get("config_mode", "config")
-        task["task_kind"] = loaded_kind or task.get("task_kind", "config")
+        task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
         task["config"] = loaded_config
         task["config_text"] = loaded_text
         task["_load_error"] = load_error
@@ -1077,7 +1083,7 @@ class TaskManager:
 
     def _refresh_derived_fields(self, task: Dict[str, Any]) -> None:
         preview_text, search_text = build_task_preview_and_search(
-            task_kind=str(task.get("task_kind", "config") or "config"),
+            task_kind=str(task.get("task_kind", TASK_KIND_CONFIG) or TASK_KIND_CONFIG),
             config=task.get("config", {}) or {},
             config_text=str(task.get("config_text", "") or ""),
             task_name=str(task.get("name", "") or ""),

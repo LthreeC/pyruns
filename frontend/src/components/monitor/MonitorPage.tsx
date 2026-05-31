@@ -554,12 +554,12 @@ export default function MonitorPage() {
         <div className="flex-1 overflow-y-auto px-2 py-2">
           {pinnedTasks.length > 0 && (
             <CompactSection
-              title="Pinned"
-              subtitle={`${pinnedTasks.length} pinned`}
+              title="Pinned Tasks"
+              count={pinnedTasks.length}
               icon={<Pin className="h-3.5 w-3.5 text-accent" />}
               accent
-              className="mb-3"
-              bodyClassName="space-y-1 p-1"
+              className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
+              bodyClassName="space-y-1 pt-0"
             >
               {pinnedTasks.map(task => (
                 <SidebarItem

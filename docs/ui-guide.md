@@ -130,7 +130,7 @@ Manager 是任务的调度台。
 
 其中：
 
-- `config` 任务显示 `config.yaml`
+- `python` 任务显示 `config.yaml`
 - `shell` 任务显示 `config.sh`
 
 ![任务详情面板](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)

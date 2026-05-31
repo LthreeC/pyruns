@@ -231,10 +231,12 @@ Pyruns 暴露给训练脚本的 API 很少，基本就这几个：
 | `pyruns.track(**kwargs)` | 写入时间序列指标，例如每个 epoch 的 `loss`、`acc`，会追加到 tracks 里。 |
 | `pyruns.get_task_dir()` | 返回当前任务目录；不在 Pyruns 任务中运行时返回 `None`。 |
 | `pyruns.get_run_index()` | 返回当前 run 槽位；适合一个任务多次运行时区分记录。 |
+| `pyruns.artifact_dir()` | 返回当前 run 的输出目录：`artifacts/runN`；会自动创建。 |
 
 最常见的脚本写法：
 
 ```python
+import os
 import pyruns
 
 cfg = pyruns.load()
@@ -244,6 +246,11 @@ for epoch in range(cfg.training.epochs):
     pyruns.track(loss=loss)
 
 pyruns.record(final_loss=loss, seed=cfg.training.seed)
+
+artifact_dir = pyruns.artifact_dir()
+metrics_path = os.path.join(artifact_dir, "metrics.json")
+with open(metrics_path, "w", encoding="utf-8") as f:
+    f.write("{}")
 ```
 
 ### 模式 3：CLI 交互模式

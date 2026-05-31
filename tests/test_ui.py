@@ -24,6 +24,9 @@ def test_react_generator_pin_promotes_params_without_duplicates():
 
     assert "function PinnedParameters" in source
     assert "Pinned Parameters" in source
+    assert 'title="Pinned Parameters"' in source
+    assert "count={rows.length}" in source
+    assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in source
     assert "collectPinnedRows(data, pinnedParams" in source
     assert "const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey))" in source
     assert ".filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))" in source
@@ -129,6 +132,9 @@ def test_react_monitor_uses_unfiltered_full_task_list():
     assert "const { monitorTasks, fetchMonitorTasks } = useTaskStore()" in monitor
     assert "const selectedTask = monitorTasks.find" in monitor
     assert "usePolling(fetchMonitorTasks" in monitor
+    assert 'title="Pinned Tasks"' in monitor
+    assert "count={pinnedTasks.length}" in monitor
+    assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
 
 
 def test_react_components_avoid_large_forced_corner_radius():
@@ -311,6 +317,20 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "getTaskSearchMatches(task, query)" in source
     assert "Matched in" in source
     assert "Drop here to pin" in source
+    assert 'title="Pinned Tasks"' in source
+    assert "count={pinnedTasks.length}" in source
+    assert 'className="rounded-md border border-accent/20 bg-accent/5 p-2"' in source
+    assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in source
+    assert "task.config_mode" not in source
+
+
+def test_react_task_detail_uses_python_shell_task_mode_labels():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+
+    assert "function isShellTask(task: Task)" in source
+    assert "return task.task_kind === 'shell'" in source
+    assert "return isShellTask(task) ? 'shell' : 'python'" in source
+    assert "task.config_mode" not in source
 
 
 def test_react_theme_uses_more_readable_base_type_and_muted_text():

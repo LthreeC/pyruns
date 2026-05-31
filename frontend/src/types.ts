@@ -1,4 +1,4 @@
-export type TaskKind = 'config' | 'shell'
+export type TaskKind = 'python' | 'shell'
 export type WorkspaceKind = 'script' | 'shell'
 export type GeneratorMode = 'form' | 'yaml' | 'shell'
 
@@ -9,7 +9,7 @@ export interface Task {
   config: Record<string, any>
   config_text: string
   config_file: string
-  config_mode: TaskKind
+  config_mode?: TaskKind | 'config'
   task_kind: TaskKind
   pinned: boolean
   task_order?: number | null

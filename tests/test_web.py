@@ -819,6 +819,19 @@ def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
     _add_task(workspace, "alpha")
     _add_task(workspace, "beta")
     _add_task(workspace, "gamma")
+    created_at_by_task = {
+        "alpha": "2026-05-29_12-00-00",
+        "beta": "2026-05-31_12-00-00",
+        "gamma": "2026-05-30_12-00-00",
+    }
+    for task_name, created_at in created_at_by_task.items():
+        task_dir = workspace / TASKS_DIR / task_name
+
+        def apply(info, value=created_at):
+            info["created_at"] = value
+
+        update_task_info(str(task_dir), apply)
+
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
@@ -843,6 +856,49 @@ def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
     assert [item["name"] for item in listed[:3]] == ["gamma", "alpha", "beta"]
     assert gamma_info["pinned"] is True
     assert gamma_info["task_order"] == 0
+
+
+def test_tasks_endpoint_keeps_active_and_new_tasks_ahead_of_old_manual_order(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "completed-old", status="completed")
+    _add_task(workspace, "pending-old")
+    _add_task(workspace, "running-old", status="running")
+    _add_task(workspace, "new-pending")
+
+    updates = {
+        "completed-old": {
+            "created_at": "2026-05-28_02-25-46",
+            "task_order": 0,
+        },
+        "pending-old": {
+            "created_at": "2026-05-28_02-25-47",
+            "task_order": 1,
+        },
+        "running-old": {
+            "created_at": "2026-05-28_02-25-48",
+            "start_times": ["2026-05-28_02-25-48"],
+            "task_order": 2,
+        },
+        "new-pending": {
+            "created_at": "2026-05-31_22-50-00",
+        },
+    }
+    for task_name, patch_data in updates.items():
+        task_dir = workspace / TASKS_DIR / task_name
+
+        def apply(info, data=patch_data):
+            info.update(data)
+
+        update_task_info(str(task_dir), apply)
+
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks", params={"limit": 0, "refresh": True})
+
+    assert response.status_code == 200
+    names = [item["name"] for item in response.json()["items"]]
+    assert names[:4] == ["running-old", "new-pending", "completed-old", "pending-old"]
 
 
 def test_logs_websocket_streams_live_chunks(tmp_path):

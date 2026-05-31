@@ -276,6 +276,70 @@ class TestAddMonitor:
         assert records[0] == {}  # empty placeholder for run 1
         assert records[1] == {"epoch": 10, "loss": 0.1}
 
+    def test_get_run_index_uses_current_run_env(self, tmp_path, monkeypatch):
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        monkeypatch.setenv("PYRUNS_RUN_INDEX", "3")
+
+        import pyruns
+
+        assert pyruns.get_run_index() == 3
+
+    def test_get_artifact_dir_returns_current_run_directory(self, tmp_path, monkeypatch):
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        monkeypatch.setenv("PYRUNS_RUN_INDEX", "2")
+
+        import pyruns
+
+        artifact_dir = pyruns.get_artifact_dir()
+
+        assert artifact_dir == os.path.join(task_dir, "artifacts", "run2")
+        assert os.path.isdir(artifact_dir)
+
+    def test_artifact_dir_returns_current_run_directory(self, tmp_path, monkeypatch):
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        monkeypatch.setenv("PYRUNS_RUN_INDEX", "2")
+
+        import pyruns
+
+        artifact_dir = pyruns.artifact_dir()
+        output = os.path.join(artifact_dir, "metrics.json")
+        with open(output, "w", encoding="utf-8") as f:
+            f.write("{}")
+
+        assert output == os.path.join(task_dir, "artifacts", "run2", "metrics.json")
+        with open(output, encoding="utf-8") as f:
+            assert f.read() == "{}"
+
+    def test_get_artifact_dir_has_no_skip_create_option(self):
+        import pyruns
+
+        with pytest.raises(TypeError):
+            pyruns.get_artifact_dir(create=False)
+
+    def test_get_artifact_dir_uses_cwd_outside_pyruns(self, tmp_path, monkeypatch):
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.delenv(ENV_KEY_CONFIG, raising=False)
+        monkeypatch.delenv("PYRUNS_RUN_INDEX", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        import pyruns
+
+        artifact_dir = pyruns.get_artifact_dir()
+
+        assert artifact_dir == os.path.join(str(tmp_path), "artifacts", "run1")
+        assert os.path.isdir(artifact_dir)
+
     def test_dict_and_kwargs_combined(self, tmp_path, monkeypatch):
         """record({...}, key=val) should merge both."""
         task_dir = self._make_task_dir(tmp_path)

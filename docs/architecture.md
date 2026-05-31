@@ -71,7 +71,7 @@ frontend/  --build-->  pyruns/web/static/
 
 负责把“用户想生成什么任务”真正写到磁盘：
 
-- config task 写 `config.yaml`
+- python task 写 `config.yaml`
 - shell task 写 `config.sh`
 - 同时生成 `task_info.json`
 
@@ -89,7 +89,7 @@ frontend/  --build-->  pyruns/web/static/
 负责实际执行任务：
 
 - 根据 `task_kind` 选择命令构造方式
-- config task 注入 `__PYRUNS_CONFIG__`
+- python task 注入 `__PYRUNS_CONFIG__`
 - shell task 解析 shell runtime
 - 采集 stdout / stderr 到 `run_logs`
 - 把实时日志推给 Monitor websocket
@@ -170,7 +170,7 @@ pyr train.py
   → bootstrap_workspace(...)
   → _pyruns_/train/
   → Generator(form / yaml)
-  → TaskGenerator.create_tasks(..., task_kind="config")
+  → TaskGenerator.create_tasks(..., task_kind="python")
   → tasks/<task_name>/config.yaml
   → executor injects __PYRUNS_CONFIG__
 ```

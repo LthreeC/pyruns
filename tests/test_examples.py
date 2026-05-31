@@ -122,35 +122,42 @@ def test_advanced_argparse_example_runs_directly_with_strict_console_encoding():
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "ascii"
     env["PYTHONPATH"] = str(EXAMPLES_DIR.parent)
+    artifact_root = script.parent / "artifacts"
+    if artifact_root.exists():
+        shutil.rmtree(artifact_root)
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            "toy",
-            "--layers",
-            "8",
-            "16",
-            "--tag",
-            "smoke",
-            "--no-compile",
-            "--use-amp",
-            "--no-cache",
-            "-vv",
-            "--dropout",
-            "0.1",
-            "--device",
-            "cpu",
-            "--seed",
-            "7",
-        ],
-        cwd=script.parent,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "toy",
+                "--layers",
+                "8",
+                "16",
+                "--tag",
+                "smoke",
+                "--no-compile",
+                "--use-amp",
+                "--no-cache",
+                "-vv",
+                "--dropout",
+                "0.1",
+                "--device",
+                "cpu",
+                "--seed",
+                "7",
+            ],
+            cwd=script.parent,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    finally:
+        if artifact_root.exists():
+            shutil.rmtree(artifact_root)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"compile": false' in result.stdout
@@ -257,6 +264,11 @@ def test_advanced_argparse_example_runs_through_runtime(tmp_path):
     assert record["env_marker"] == "example-env-ok"
     assert len(tracks["loss"]) == 3
     assert len(tracks["throughput"]) == 3
+    artifact_path = Path(task["dir"]) / "artifacts" / "run1" / "summary.json"
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert artifact["run_index"] == 1
+    assert artifact["final_loss"] == record["final_loss"]
+    assert artifact["env_marker"] == "example-env-ok"
 
 
 def test_pyruns_load_nested_example_runs_through_runtime(tmp_path):

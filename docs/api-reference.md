@@ -86,6 +86,29 @@ pyruns.track("acc", 0.91)
 
 返回当前运行槽位；如果不在 Pyruns 环境里返回 `None`。
 
+### `pyruns.artifact_dir()`
+
+返回当前 run 的文件输出目录，并自动创建目录。
+
+目录固定为：
+
+```text
+<task_dir>/artifacts/runN
+```
+
+如果不在 Pyruns 任务环境里，则使用当前工作目录下的 `artifacts/run1`。
+
+示例：
+
+```python
+import os
+
+artifact_dir = pyruns.artifact_dir()
+metrics_path = os.path.join(artifact_dir, "metrics.json")
+with open(metrics_path, "w", encoding="utf-8") as f:
+    f.write("{}")
+```
+
 ## Web API 概览
 
 主入口：

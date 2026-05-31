@@ -338,7 +338,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
-    { key: 'config', label: (task.config_mode || task.task_kind) === 'shell' ? 'Script' : 'Config', icon: Settings },
+    { key: 'config', label: isShellTask(task) ? 'Script' : 'Config', icon: Settings },
     { key: 'notes', label: 'Notes', icon: StickyNote },
     { key: 'env', label: 'Env', icon: Variable },
   ]
@@ -615,8 +615,12 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   )
 }
 
+function isShellTask(task: Task) {
+  return task.task_kind === 'shell'
+}
+
 function getTaskMode(task: Task): string {
-  return (task.config_mode || task.task_kind) === 'shell' ? 'shell' : 'config'
+  return isShellTask(task) ? 'shell' : 'python'
 }
 
 function formatScalarValue(value: unknown): string {

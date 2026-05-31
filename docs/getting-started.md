@@ -247,6 +247,7 @@ optimizer: adam | sgd
 - `task_info.json`
 - `config.yaml`
 - `run_logs/runN.log`
+- `artifacts/runN/`（当脚本通过 `pyruns.artifact_dir()` 保存文件时）
 
 批量生成完成之后，最适合继续去看的页面就是 Manager，因为任务会以独立卡片的形式稳定落盘，状态和历史都会马上变得可见。
 

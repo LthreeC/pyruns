@@ -9,8 +9,10 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, Optional
 
 from ._config import (
+    ARTIFACTS_DIR,
     CONFIG_DEFAULT_FILENAME,
     ENV_KEY_CONFIG,
+    ENV_KEY_RUN_INDEX,
     RECORDS_KEY,
     ROOT_DIR,
     TRACKS_KEY,
@@ -98,6 +100,17 @@ def ensure_config_default(root_dir: str = None):
     return path
 
 
+def _get_env_run_index() -> Optional[int]:
+    raw = str(os.environ.get(ENV_KEY_RUN_INDEX, "") or "").strip()
+    if not raw:
+        return None
+    try:
+        run_index = int(raw)
+    except ValueError:
+        return None
+    return run_index if run_index > 0 else None
+
+
 def record(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
     """Append or merge record data into the current task's ``records`` slot."""
     if data is not None and not isinstance(data, dict):
@@ -117,10 +130,8 @@ def record(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
     task_dir = os.path.dirname(pyr_config)
     for _attempt in range(5):
         try:
-            run_index_str = os.environ.get("PYRUNS_RUN_INDEX")
-            if run_index_str and run_index_str.isdigit():
-                run_index = int(run_index_str)
-            else:
+            run_index = _get_env_run_index()
+            if run_index is None:
                 info = load_task_info(task_dir, raise_error=True)
                 run_index = max(1, run_slot_count(info))
 
@@ -150,10 +161,8 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
     task_dir = os.path.dirname(pyr_config)
     for _attempt in range(5):
         try:
-            run_index_str = os.environ.get("PYRUNS_RUN_INDEX")
-            if run_index_str and run_index_str.isdigit():
-                run_index = int(run_index_str)
-            else:
+            run_index = _get_env_run_index()
+            if run_index is None:
                 info = load_task_info(task_dir, raise_error=True)
                 run_index = max(1, run_slot_count(info))
 
@@ -182,5 +191,24 @@ def get_run_index() -> Optional[int]:
     pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if not pyr_config:
         return None
+    env_run_index = _get_env_run_index()
+    if env_run_index is not None:
+        return env_run_index
     info = load_task_info(os.path.dirname(pyr_config), raise_error=True)
     return run_slot_count(info)
+
+
+def get_artifact_dir() -> str:
+    """Return the current run's artifact directory, creating it when needed."""
+    task_dir = get_task_dir()
+    base_dir = task_dir if task_dir else os.getcwd()
+
+    run_index = get_run_index() or _get_env_run_index() or 1
+    artifact_dir = os.path.join(base_dir, ARTIFACTS_DIR, f"run{run_index}")
+    os.makedirs(artifact_dir, exist_ok=True)
+    return artifact_dir
+
+
+def artifact_dir() -> str:
+    """Return the current run's artifact directory, creating it when needed."""
+    return get_artifact_dir()

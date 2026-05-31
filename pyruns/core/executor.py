@@ -16,6 +16,7 @@ from pyruns._config import (
     CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
     ENV_KEY_CONFIG,
+    ENV_KEY_RUN_INDEX,
     ERROR_LOG_FILENAME,
     RECORDS_KEY,
     RUN_LOGS_DIR,
@@ -530,7 +531,7 @@ def run_task_worker(
 
     log_path = _get_log_path(task_dir, run_index)
     task_meta = load_task_info(task_dir)
-    task_kind = normalize_task_kind(task_meta.get("config_mode", task_meta.get("task_kind")))
+    task_kind = normalize_task_kind(task_meta.get("task_kind", task_meta.get("config_mode")))
     config_file = resolve_task_config_file(task_meta, task_kind, task_dir)
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
@@ -591,7 +592,7 @@ def run_task_worker(
             task_kind=task_kind,
             config_file=config_file or CONFIG_FILENAME,
         )
-        env["PYRUNS_RUN_INDEX"] = str(run_index)
+        env[ENV_KEY_RUN_INDEX] = str(run_index)
 
         if workdir and not os.path.isdir(workdir):
             fallback = task_dir if task_kind == TASK_KIND_SHELL else (os.path.dirname(script_path) if script_path else os.getcwd())

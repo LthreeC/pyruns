@@ -103,7 +103,7 @@ For shell-driven workflows, this matters even more:
 
 | Capability | What it gives you |
 | --- | --- |
-| `React Generator` | `Form`, `YAML`, and `Shell` entry modes for config tasks and shell tasks. |
+| `React Generator` | `Form`, `YAML`, and `Shell` entry modes for Python tasks and shell tasks. |
 | `Form batch expansion` | Batch syntax with `|`, `(|)`, and `start:stop:step` for cartesian, zip, and range expansion. |
 | `YAML single-task mode` | `YAML` mode stays focused on creating one clean `config.yaml` task at a time. |
 | `Shell Workspace` | Shell tasks are stored as `config.sh` and follow the terminal that launched `pyr` by default. |
@@ -126,7 +126,7 @@ The shortest way to distinguish them is:
 
 The key difference is not visual. It is what Pyruns is actually managing:
 
-- `script` mode manages “a script plus config tasks”
+- `script` mode manages “a script plus Python tasks”
 - `shell` mode manages “a directory plus command tasks”
 
 ### 1. Script Workspace
@@ -237,10 +237,12 @@ The API exposed to your training script is intentionally small:
 | `pyruns.track(**kwargs)` | Append time-series metrics, such as per-epoch `loss` or `acc`, into tracks. |
 | `pyruns.get_task_dir()` | Return the current task directory, or `None` outside a Pyruns task. |
 | `pyruns.get_run_index()` | Return the current run slot, useful when one task is run multiple times. |
+| `pyruns.artifact_dir()` | Return the current run output directory, `artifacts/runN`, and create it automatically. |
 
 Typical usage:
 
 ```python
+import os
 import pyruns
 
 cfg = pyruns.load()
@@ -250,6 +252,11 @@ for epoch in range(cfg.training.epochs):
     pyruns.track(loss=loss)
 
 pyruns.record(final_loss=loss, seed=cfg.training.seed)
+
+artifact_dir = pyruns.artifact_dir()
+metrics_path = os.path.join(artifact_dir, "metrics.json")
+with open(metrics_path, "w", encoding="utf-8") as f:
+    f.write("{}")
 ```
 
 ### Mode 3: CLI interactive mode

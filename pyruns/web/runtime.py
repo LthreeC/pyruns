@@ -79,16 +79,27 @@ class TaskPage:
 
 
 def _task_order_key(task: Dict[str, Any]) -> tuple:
-    """Sort by persisted manual order, then by normal activity rank."""
+    """Sort active and fresh tasks first while preserving explicit manual order."""
+    active_rank, time_rank, inactive_tie = task_sort_key(task)
+
     order = task.get("task_order")
+    order_group = 0
+    order_rank = -time_rank
     if order is not None:
         try:
-            return (0, float(order), str(task.get("name", "")))
+            order_group = 1
+            order_rank = float(order)
         except (TypeError, ValueError):
             pass
 
-    active_rank, time_rank, inactive_tie = task_sort_key(task)
-    return (1, -active_rank, -time_rank, -inactive_tie, str(task.get("name", "")))
+    return (
+        -active_rank,
+        order_group,
+        order_rank,
+        -inactive_tie,
+        -time_rank,
+        str(task.get("name", "")),
+    )
 
 
 class PyrunsRuntime:

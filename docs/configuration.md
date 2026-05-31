@@ -24,7 +24,7 @@ Pyruns 的配置不是“堆一页键值对”。
 
 表示任务实际保存和执行的内容是什么：
 
-- `config`
+- `python`
 - `shell`
 
 这两个概念不要混淆：
@@ -78,16 +78,18 @@ _pyruns_/
 
 ## 3. 任务目录结构
 
-### config 任务
+### Python 任务
 
 ```text
 tasks/<task_name>/
 ├─ task_info.json
 ├─ config.yaml
-└─ run_logs/
+├─ run_logs/
    ├─ run1.log
    ├─ run2.log
    └─ error.log
+└─ artifacts/
+   └─ run1/
 ```
 
 ### shell 任务
@@ -96,16 +98,19 @@ tasks/<task_name>/
 tasks/<task_name>/
 ├─ task_info.json
 ├─ config.sh
-└─ run_logs/
+├─ run_logs/
    ├─ run1.log
    ├─ run2.log
    └─ error.log
+└─ artifacts/
+   └─ run1/
 ```
 
 注意：
 
 - Windows 下也仍然落盘为 `config.sh`
 - 变化的是执行策略，不是任务模型
+- `artifacts/runN/` 只在脚本通过 `pyruns.artifact_dir()` 写入时创建
 
 ## 4. `script_info.json`
 
@@ -131,7 +136,7 @@ tasks/<task_name>/
 
 ## 5. `task_info.json`
 
-无论是 config 任务还是 shell 任务，都会保留统一的生命周期元信息。
+无论是 Python 任务还是 shell 任务，都会保留统一的生命周期元信息。
 
 典型字段如下：
 
@@ -141,7 +146,7 @@ tasks/<task_name>/
   "status": "pending",
   "progress": 0.0,
   "created_at": "2026-03-19_12-00-00",
-  "task_kind": "config",
+  "task_kind": "python",
   "config_file": "config.yaml",
   "start_times": [],
   "finish_times": [],
@@ -256,9 +261,9 @@ shell_executable: ""
 - 默认跟随当前 shell
 - 直接按当前 shell 语义执行
 
-## 9. config 任务执行约束
+## 9. Python 任务执行约束
 
-config 任务仍然是 Python 任务主链路：
+Python 任务仍然是脚本工作区的主链路：
 
 - 每个任务有自己的 `config.yaml`
 - executor 会注入 `__PYRUNS_CONFIG__`
