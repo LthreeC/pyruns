@@ -233,6 +233,36 @@ class TestDisplay:
 
 
 class TestCmdList:
+    def test_sorted_tasks_matches_manager_order(self):
+        from pyruns.cli.commands import _sorted_tasks
+
+        class DummyTaskManager:
+            tasks = [
+                {
+                    "name": "manual-completed",
+                    "status": "completed",
+                    "created_at": "2026-05-28_02-25-46",
+                    "task_order": 0,
+                },
+                {
+                    "name": "fresh-new",
+                    "status": "pending",
+                    "created_at": "2026-05-31_22-50-00",
+                },
+                {
+                    "name": "pinned-fresh",
+                    "status": "pending",
+                    "created_at": "2026-05-31_22-55-00",
+                    "pinned": True,
+                },
+            ]
+
+        assert [task["name"] for task in _sorted_tasks(DummyTaskManager())] == [
+            "pinned-fresh",
+            "fresh-new",
+            "manual-completed",
+        ]
+
     def test_list_empty(self, task_manager, capsys):
         from pyruns.cli.commands import cmd_list
         cmd_list(task_manager)

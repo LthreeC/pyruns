@@ -1,15 +1,76 @@
 experiment:
   name: nested-smoke
   output_dir: ./outputs
+  tags:
+    project: demo
+    stage: smoke
+  tracking:
+    cadence:
+      log_every: 1
+      checkpoint_every: 2
+dataset:
+  name: toy
+  split:
+    train: train[:80%]
+    validation: train[80%:]
+  preprocessing:
+    tokenizer:
+      name: whitespace
+      options:
+        lowercase: true
+        strip_accents: false
+        max_length: 128
+    augmentation:
+      enabled: false
+      policy:
+        mixup: 0.0
+        noise:
+          type: gaussian
+          std: 0.0
 model:
   name: mlp
-  width: 64
-  depth: 2
+  encoder:
+    blocks:
+      depth: 2
+      width: 64
+      residual:
+        enabled: true
+        scale: 0.5
+    activation:
+      name: relu
+      dropout: 0.1
+    normalization:
+      type: layernorm
+      eps: 0.00001
+  head:
+    output_dim: 2
+    calibration:
+      enabled: true
+      method: temperature
+      temperature: 1.0
 training:
-  lr: 0.001
-  batch_size: 16
-  epochs: 3
   seed: 13
+  epochs: 3
+  batch:
+    size: 16
+    gradient_accumulation: 1
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.001
+      weight_decay: 0.01
+      betas:
+        - 0.9
+        - 0.999
+  schedule:
+    warmup:
+      steps: 10
+      ratio: 0.1
+    cosine:
+      min_lr: 0.00001
 runtime:
   device: cpu
   precision: fp32
+  compile:
+    enabled: false
+    backend: eager

@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyruns"
-version = "0.2.6"
+version = "0.2.6.1"
 description = "Lightweight web UI for managing, running, and monitoring Python experiments."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.8"
+requires-python = ">=3.8.1"
 authors = [{ name = "LthreeC", email = "lanshiL3C@gmail.com" }]
 keywords = [
     "experiment-management",

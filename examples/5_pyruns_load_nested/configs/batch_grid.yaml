@@ -1,15 +1,76 @@
 experiment:
   name: nested-grid
   output_dir: ./outputs
+  tags:
+    project: demo
+    stage: grid
+  tracking:
+    cadence:
+      log_every: 1
+      checkpoint_every: 1
+dataset:
+  name: toy
+  split:
+    train: train[:90%]
+    validation: train[90%:]
+  preprocessing:
+    tokenizer:
+      name: whitespace
+      options:
+        lowercase: false
+        strip_accents: true
+        max_length: 256
+    augmentation:
+      enabled: true
+      policy:
+        mixup: 0.1
+        noise:
+          type: gaussian
+          std: 0.05
 model:
   name: tiny-transformer
-  width: 64
-  depth: 2
+  encoder:
+    blocks:
+      depth: 3
+      width: 128
+      residual:
+        enabled: true
+        scale: 0.7
+    activation:
+      name: gelu
+      dropout: 0.2
+    normalization:
+      type: rmsnorm
+      eps: 0.000001
+  head:
+    output_dim: 2
+    calibration:
+      enabled: true
+      method: temperature
+      temperature: 0.9
 training:
-  lr: 0.003
-  batch_size: 16
-  epochs: 3
   seed: 22
+  epochs: 3
+  batch:
+    size: 32
+    gradient_accumulation: 2
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.0007
+      weight_decay: 0.02
+      betas:
+        - 0.9
+        - 0.98
+  schedule:
+    warmup:
+      steps: 20
+      ratio: 0.15
+    cosine:
+      min_lr: 0.00002
 runtime:
   device: cpu
-  precision: fp32
+  precision: bf16
+  compile:
+    enabled: false
+    backend: inductor

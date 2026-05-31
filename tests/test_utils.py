@@ -36,7 +36,7 @@ from pyruns.utils.parse_utils import (
     argparse_params_to_dict, resolve_config_path, generate_config_file, split_cli_args,
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
-from pyruns.utils.sort_utils import task_sort_key, filter_tasks
+from pyruns.utils.sort_utils import task_sort_key, filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import (
     load_task_info, save_task_info, load_record_data,
     get_log_options, resolve_log_path, validate_task_name,
@@ -492,6 +492,57 @@ def test_task_sort_key():
         "start_times": ["2023-10-07"]
     }
     assert task_sort_key(task7) == (0, 20231007, 2)
+
+
+def test_sort_tasks_for_manager_keeps_pinned_active_and_fresh_tasks_first():
+    tasks = [
+        {
+            "name": "manual-completed",
+            "status": "completed",
+            "created_at": "2026-05-28_02-25-46",
+            "task_order": 0,
+        },
+        {
+            "name": "manual-pending",
+            "status": "pending",
+            "created_at": "2026-05-28_02-25-47",
+            "task_order": 1,
+        },
+        {
+            "name": "running-manual",
+            "status": "running",
+            "created_at": "2026-05-28_02-25-48",
+            "start_times": ["2026-05-28_02-25-48"],
+            "task_order": 2,
+        },
+        {
+            "name": "fresh-new",
+            "status": "pending",
+            "created_at": "2026-05-31_22-50-00",
+        },
+        {
+            "name": "pinned-fresh",
+            "status": "pending",
+            "created_at": "2026-05-31_22-55-00",
+            "pinned": True,
+        },
+        {
+            "name": "pinned-manual",
+            "status": "completed",
+            "created_at": "2026-05-29_10-00-00",
+            "task_order": 0,
+            "pinned": True,
+        },
+    ]
+
+    assert [task["name"] for task in sort_tasks_for_manager(tasks)] == [
+        "pinned-fresh",
+        "pinned-manual",
+        "running-manual",
+        "fresh-new",
+        "manual-completed",
+        "manual-pending",
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════

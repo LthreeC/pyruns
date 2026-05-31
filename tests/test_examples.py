@@ -271,10 +271,35 @@ def test_advanced_argparse_example_runs_through_runtime(tmp_path):
     assert artifact["env_marker"] == "example-env-ok"
 
 
-def test_pyruns_load_nested_example_runs_through_runtime(tmp_path):
+@pytest.mark.parametrize(
+    ("config_name", "expected"),
+    [
+        (
+            "base.yaml",
+            {
+                "seed": 13,
+                "model": "mlp",
+                "width": 64,
+                "tokenizer": "whitespace",
+                "precision": "fp32",
+            },
+        ),
+        (
+            "batch_grid.yaml",
+            {
+                "seed": 22,
+                "model": "tiny-transformer",
+                "width": 128,
+                "tokenizer": "whitespace",
+                "precision": "bf16",
+            },
+        ),
+    ],
+)
+def test_pyruns_load_nested_example_runs_through_runtime(tmp_path, config_name, expected):
     example = _copy_example(tmp_path, "5_pyruns_load_nested")
     script = example / "train.py"
-    config = example / "configs" / "base.yaml"
+    config = example / "configs" / config_name
 
     workspace = bootstrap_workspace(str(script), str(config))
     runtime = PyrunsRuntime(workspace)
@@ -294,11 +319,75 @@ def test_pyruns_load_nested_example_runs_through_runtime(tmp_path):
     info = _task_info(task)
     record = info[RECORDS_KEY][0]
     tracks = info[TRACKS_KEY][0]
-    assert record["seed"] == 13
-    assert record["model"] == "mlp"
+    assert record["seed"] == expected["seed"]
+    assert record["model"] == expected["model"]
+    assert record["width"] == expected["width"]
+    assert record["tokenizer"] == expected["tokenizer"]
+    assert record["precision"] == expected["precision"]
+    assert record["compile_enabled"] is False
     assert record["env_marker"] == "nested-env-ok"
     assert len(tracks["loss"]) == 3
     assert len(tracks["acc"]) == 3
+    assert len(tracks["lr"]) == 3
+
+
+def test_pyruns_load_nested_accelerate_example_runs_through_runtime(tmp_path):
+    example = _copy_example(tmp_path, "5_pyruns_load_nested")
+    script = example / "accelerate_train.py"
+    config = example / "configs" / "accelerate.yaml"
+
+    workspace = bootstrap_workspace(str(script), str(config))
+    runtime = PyrunsRuntime(workspace)
+    created = runtime.create_tasks_from_template(
+        name_prefix="accelerate-nested",
+        mode="yaml",
+        yaml_text=config.read_text(encoding="utf-8"),
+        append_timestamp=False,
+    )
+    task_name = created["items"][0]["name"]
+    runtime.update_task_env(
+        task_name,
+        {
+            "ACCEL_OFF": "1",
+            "ACCEL_MP": "bf16",
+            "ACCEL_PORT": "29501",
+            "PYRUNS_EXAMPLE_ENV": "accelerate-env-ok",
+        },
+    )
+    runtime.start_task(task_name)
+
+    task = _wait_for_task(runtime, task_name)
+
+    assert task["status"] == "completed"
+    info = _task_info(task)
+    record = info[RECORDS_KEY][0]
+    tracks = info[TRACKS_KEY][0]
+    assert record["seed"] == 42
+    assert record["model_width"] == 128
+    assert record["batch_size_per_device"] == 8
+    assert record["gradient_accumulation"] == 1
+    assert record["samples"] == 128
+    assert record["mixed_precision_env"] == "bf16"
+    assert record["env_marker"] == "accelerate-env-ok"
+    assert record["backend"] in {"torch_accelerate", "python_fallback"}
+    assert len(tracks["loss"]) == 2
+    assert len(tracks["lr"]) == 2
+    artifact_path = Path(task["dir"]) / "artifacts" / "run1" / "summary.json"
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert artifact["backend"] == record["backend"]
+    assert artifact["final_loss"] == record["final_loss"]
+
+
+def test_pyruns_load_nested_accelerate_example_is_discoverable_by_launcher():
+    example = EXAMPLES_DIR / "5_pyruns_load_nested"
+
+    scripts = list_script_candidates(str(example))
+    script_labels = {item["label"] for item in scripts}
+    assert "accelerate_train.py" in script_labels
+
+    configs = list_config_candidates(str(example / "accelerate_train.py"))
+    config_labels = {item["label"] for item in configs}
+    assert "configs/accelerate.yaml" in config_labels
 
 
 def test_multi_script_example_is_discoverable_by_launcher(tmp_path):
@@ -496,6 +585,7 @@ def test_new_example_yaml_files_are_concrete_single_run_configs():
         EXAMPLES_DIR / "4_advanced_argparse" / "configs" / "grid.yaml",
         EXAMPLES_DIR / "5_pyruns_load_nested" / "configs" / "base.yaml",
         EXAMPLES_DIR / "5_pyruns_load_nested" / "configs" / "batch_grid.yaml",
+        EXAMPLES_DIR / "5_pyruns_load_nested" / "configs" / "accelerate.yaml",
         EXAMPLES_DIR / "7_multi_script_project" / "configs" / "train_cpu.yaml",
         EXAMPLES_DIR / "7_multi_script_project" / "configs" / "train_grid.yaml",
         EXAMPLES_DIR / "7_multi_script_project" / "configs" / "eval.yaml",

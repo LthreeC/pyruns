@@ -710,6 +710,26 @@ def test_shell_runtime_custom_mode_marks_known_shell_unavailable_when_it_cannot_
     assert runtime["available"] is False
 
 
+def test_shell_runtime_custom_mode_marks_unknown_shell_unavailable(tmp_path):
+    workspace = tmp_path / "_pyruns_" / "main"
+    workspace.mkdir(parents=True)
+    fake_shell = tmp_path / "not-a-shell.bin"
+    fake_shell.write_text("not a real shell", encoding="utf-8")
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "shell_mode: custom\n"
+        f"shell_executable: {json.dumps(str(fake_shell))}\n",
+        encoding="utf-8",
+    )
+
+    runtime = get_shell_runtime_for_workspace(str(workspace))
+
+    assert runtime["terminal_kind"] == "unknown"
+    assert runtime["display_name"] == "Custom shell"
+    assert runtime["executable"] == str(fake_shell)
+    assert runtime["available"] is False
+
+
 def test_shell_runtime_follow_mode_probes_detected_shell_availability(tmp_path):
     workspace = tmp_path / "_pyruns_" / "main"
     workspace.mkdir(parents=True)
@@ -816,7 +836,7 @@ def test_build_command_hydra_requires_shell_workspace(mock_detect):
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 def test_build_command_unknown_requires_shell_workspace(mock_detect):
     mock_detect.return_value = ("unknown", None)
-    with pytest.raises(RuntimeError, match="Unable to detect script config mode safely"):
+    with pytest.raises(RuntimeError, match="configuration style"):
         _build_command(None, "train.py", None, {})
 
 

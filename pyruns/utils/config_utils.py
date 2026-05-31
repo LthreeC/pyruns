@@ -177,16 +177,19 @@ def list_template_files(run_root: str) -> Dict[str, str]:
 
     Returns dict of ``{relative_path: display_name}``.
     Searches both ``tasks/<name>/config.yaml`` and ``config_default.yaml``.
-    Results are sorted by task_sort_key (same order as Manager page).
+    Task configs are sorted newest-first by metadata mtime; the default template is appended last.
     """
     if not os.path.isdir(run_root):
         return {}
 
     options: Dict[str, str] = {}
 
-    from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, TASKS_DIR, TASK_INFO_FILENAME
-    from pyruns.utils.info_io import load_task_info
-    from pyruns.utils.sort_utils import task_sort_key
+    from pyruns._config import (
+        CONFIG_DEFAULT_FILENAME,
+        CONFIG_FILENAME,
+        TASKS_DIR,
+        TASK_INFO_FILENAME,
+    )
 
     # config.yaml inside each task subfolder
     actual_tasks_dir = os.path.join(run_root, TASKS_DIR)

@@ -49,7 +49,7 @@ from pyruns.utils.info_io import get_log_options, load_script_info, resolve_log_
 from pyruns.utils.log_io import read_last_bytes, read_last_lines, safe_read_log
 from pyruns.utils.settings import ensure_settings_file, load_settings
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
-from pyruns.utils.sort_utils import filter_tasks, task_sort_key
+from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import validate_task_name
 from pyruns.utils.task_files import build_task_preview_and_search, normalize_workspace_kind
 
@@ -76,30 +76,6 @@ class TaskPage:
     offset: int
     limit: int
     has_more: bool
-
-
-def _task_order_key(task: Dict[str, Any]) -> tuple:
-    """Sort active and fresh tasks first while preserving explicit manual order."""
-    active_rank, time_rank, inactive_tie = task_sort_key(task)
-
-    order = task.get("task_order")
-    order_group = 0
-    order_rank = -time_rank
-    if order is not None:
-        try:
-            order_group = 1
-            order_rank = float(order)
-        except (TypeError, ValueError):
-            pass
-
-    return (
-        -active_rank,
-        order_group,
-        order_rank,
-        -inactive_tie,
-        -time_rank,
-        str(task.get("name", "")),
-    )
 
 
 class PyrunsRuntime:
@@ -309,15 +285,7 @@ class PyrunsRuntime:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh)
         tasks = filter_tasks(self.task_manager.list_tasks(), query, status)
-        pinned = sorted(
-            [task for task in tasks if task.get("pinned")],
-            key=_task_order_key,
-        )
-        others = sorted(
-            [task for task in tasks if not task.get("pinned")],
-            key=_task_order_key,
-        )
-        ordered = pinned + others
+        ordered = sort_tasks_for_manager(tasks)
 
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))

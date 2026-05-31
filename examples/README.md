@@ -48,7 +48,9 @@ pyr examples/4_advanced_argparse/main.py examples/4_advanced_argparse/configs/qu
 ## 5_pyruns_load_nested
 
 Nested YAML configs with metrics written by `pyruns.record()` and time series
-written by `pyruns.track()`.
+written by `pyruns.track()`. The folder also includes an optional
+`accelerate_train.py` example where training parameters come from nested YAML
+and multi-GPU launch controls stay in environment variables.
 
 ```bash
 pyr examples/5_pyruns_load_nested/train.py examples/5_pyruns_load_nested/configs/base.yaml

@@ -1,7 +1,7 @@
 """Shared task sorting and filtering helpers."""
 
 import re
-from typing import Dict
+from typing import Dict, List
 
 import yaml
 
@@ -38,6 +38,44 @@ def task_sort_key(task: Dict[str, object]) -> tuple:
     time_rank = _timestamp_weight(task)
     inactive_tie = _INACTIVE_TIE_PRIORITIES.get(status, 0)
     return (active_rank, time_rank, inactive_tie)
+
+
+def task_manager_sort_key(task: Dict[str, object]) -> tuple:
+    """Sort one task by the Manager page's logical order within its pin group."""
+    active_rank, time_rank, inactive_tie = task_sort_key(task)
+
+    order = task.get("task_order")
+    order_group = 0
+    order_rank = -time_rank
+    if order is not None:
+        try:
+            order_group = 1
+            order_rank = float(order)
+        except (TypeError, ValueError):
+            pass
+
+    return (
+        -active_rank,
+        order_group,
+        order_rank,
+        -inactive_tie,
+        -time_rank,
+        str(task.get("name", "")),
+    )
+
+
+def sort_tasks_for_manager(tasks: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Return pinned tasks first, then active/fresh tasks ahead of old manual order."""
+    valid = [task for task in tasks if task is not None]
+    pinned = sorted(
+        [task for task in valid if task.get("pinned")],
+        key=task_manager_sort_key,
+    )
+    others = sorted(
+        [task for task in valid if not task.get("pinned")],
+        key=task_manager_sort_key,
+    )
+    return pinned + others
 
 
 def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:

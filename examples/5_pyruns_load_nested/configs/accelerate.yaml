@@ -1,0 +1,54 @@
+experiment:
+  name: accelerate-nested
+  output:
+    dir: ./outputs/accelerate
+    save_model: false
+  logging:
+    track_every: 1
+    artifact_summary: true
+data:
+  synthetic:
+    samples: 128
+    features: 32
+    target_dim: 1
+  loader:
+    num_workers: 0
+    pin_memory: false
+model:
+  name: synthetic-regressor
+  mlp:
+    hidden:
+      width: 128
+      activation: gelu
+      initialization:
+        name: xavier_uniform
+        gain: 1.0
+    output:
+      bias: true
+training:
+  seed: 42
+  batch:
+    per_device: 8
+    gradient_accumulation: 1
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.0001
+      weight_decay: 0.01
+      betas:
+        - 0.9
+        - 0.999
+  schedule:
+    epochs: 2
+    warmup:
+      steps: 0
+      ratio: 0.0
+runtime:
+  accelerate:
+    launch:
+      env_controlled: true
+      default_mixed_precision: bf16
+      default_port: 29501
+    fallback:
+      backend: python
+      enabled_without_torch: true

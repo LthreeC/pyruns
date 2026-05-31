@@ -41,7 +41,7 @@ from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.config_utils import load_yaml, preview_config_line
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info
-from pyruns.utils.sort_utils import filter_tasks, task_sort_key
+from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.task_files import resolve_task_config_file
 
 logger = get_logger(__name__)
@@ -52,7 +52,7 @@ _VALID_STATUSES = {"pending", "queued", "running", "completed", "failed"}
 def _sorted_tasks(tm) -> list[dict[str, Any]]:
     """Return tasks sorted identically to the UI Manager page."""
     valid = [task for task in tm.tasks if task is not None]
-    return sorted(valid, key=task_sort_key, reverse=True)
+    return sort_tasks_for_manager(valid)
 
 
 def _consume_flag(args: list[str], *names: str) -> tuple[bool, list[str]]:

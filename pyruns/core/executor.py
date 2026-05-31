@@ -466,7 +466,7 @@ def _build_command(
             )
         elif config_source == "unknown":
             raise RuntimeError(
-                "Unable to detect script config mode safely. Use a shell workspace/task, "
+                "Unable to detect script configuration style safely. Use a shell workspace/task, "
                 "or integrate via argparse / pyruns.load()."
             )
 

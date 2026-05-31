@@ -134,7 +134,7 @@ def _probe_shell_executable(executable: str, kind: str) -> bool:
             return _probe_windows_posix_script_execution(executable)
         command = [executable, "-c", "exit 0"]
     else:
-        return True
+        return False
 
     try:
         result = subprocess.run(
