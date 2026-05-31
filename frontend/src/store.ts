@@ -484,12 +484,13 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
         return
       }
       const workspaceDefault = res.items.find(item => item.kind === 'workspace_default')
+      const shouldPromptForConfig = (res.config_source || '') === 'pyruns_load'
       set({
         configs: res.items,
         selectedConfig: workspaceDefault?.path || '',
         requiresConfigTemplate: Boolean(res.requires_config_template),
         configSource: res.config_source || '',
-        step: workspaceDefault ? 2 : 1,
+        step: workspaceDefault && !shouldPromptForConfig ? 2 : 1,
       })
     } finally {
       if (requestId === launcherRequestSeq) {

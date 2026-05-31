@@ -500,12 +500,16 @@ def test_react_launcher_fetch_does_not_clobber_newer_selection():
     assert "if (requestId !== launcherRequestSeq)" in store
 
 
-def test_react_launcher_reuses_workspace_default_without_extra_config_prompt():
+def test_react_launcher_prompts_for_yaml_when_load_script_has_workspace_default():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "const workspaceDefault = res.items.find(item => item.kind === 'workspace_default')" in store
     assert "selectedConfig: workspaceDefault?.path || ''" in store
-    assert "step: workspaceDefault ? 2 : 1" in store
+    assert "const shouldPromptForConfig = (res.config_source || '') === 'pyruns_load'" in store
+    assert "step: workspaceDefault && !shouldPromptForConfig ? 2 : 1" in store
+    assert "const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'" in launcher
+    assert "pyruns.load() reads the selected YAML for this workspace." in launcher
 
 
 def test_react_launcher_tracks_load_scripts_that_require_yaml_template():

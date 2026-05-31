@@ -36,7 +36,7 @@ function validationFromResult(result: PathValidationResult): PathValidationState
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const {
-    scripts, configs, selectedScript, selectedConfig, requiresConfigTemplate, step, loading,
+    scripts, configs, selectedScript, selectedConfig, requiresConfigTemplate, configSource, step, loading,
     fetchScripts, selectScript, selectConfig, openWorkspace, reset: resetLauncher,
   } = useLauncherStore()
   const workspace = useWorkspaceStore(state => state.workspace)
@@ -55,6 +55,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const scriptPathReady = manualScriptPath.trim().length > 0 && scriptValidation.status === 'valid'
   const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
   const nativePickerAvailable = workspace?.native_file_picker === true
+  const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'
   const scriptsRequestedRef = useRef(false)
 
   const fetchScriptsOnce = useCallback(() => {
@@ -152,7 +153,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
   const handleSkipConfig = useCallback(async () => {
     setError('')
-    if (requiresConfigTemplate) {
+    if (mustChooseConfig) {
       setError('Choose or enter a YAML config path first.')
       return
     }
@@ -164,7 +165,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     } catch (err: any) {
       setError(err.message)
     }
-  }, [requiresConfigTemplate, selectConfig, onClose, navigate])
+  }, [mustChooseConfig, selectConfig, onClose, navigate])
 
   const handleManualScript = useCallback(async () => {
     const scriptPath = manualScriptPath.trim()
@@ -198,7 +199,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const handleManualConfig = useCallback(() => {
     const configPath = manualConfigPath.trim()
     if (!configPath) {
-      if (requiresConfigTemplate) {
+      if (mustChooseConfig) {
         setError('Choose or enter a YAML config path first.')
         return
       }
@@ -207,7 +208,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     }
     setError('')
     handleSelectConfig(configPath)
-  }, [handleSkipConfig, handleSelectConfig, manualConfigPath, requiresConfigTemplate])
+  }, [handleSkipConfig, handleSelectConfig, manualConfigPath, mustChooseConfig])
 
   const handlePickScript = useCallback(async () => {
     setError('')
@@ -340,24 +341,26 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
             <div className="space-y-1">
               <div className="mb-3 space-y-1">
                 <div className="text-xs font-semibold text-zinc-300">
-                  {requiresConfigTemplate ? 'Choose a YAML config' : 'Select a config'}
+                  {mustChooseConfig ? 'Choose a YAML config' : 'Select a config'}
                   {' '}
                   for <span className="font-mono">{pathName(selectedScript)}</span>
                 </div>
                 <p className="text-2xs leading-relaxed text-zinc-500">
-                  {requiresConfigTemplate
-                    ? 'This script needs a YAML config before first launch. Choose one below or enter a path; pyruns will save it as config_default.yaml for later runs.'
+                  {mustChooseConfig
+                    ? configSource === 'pyruns_load'
+                      ? 'pyruns.load() reads the selected YAML for this workspace. Choose one below or enter a path; pyruns will save it as config_default.yaml for later runs.'
+                      : 'This script needs a YAML config before first launch. Choose one below or enter a path; pyruns will save it as config_default.yaml for later runs.'
                     : 'Choose a YAML file for this launch, or open without one when the script can generate its default config.'}
                 </p>
               </div>
               {configs.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-xs text-zinc-600 mb-3">
-                    {requiresConfigTemplate
+                    {mustChooseConfig
                       ? 'No YAML configs were found near this script. Enter a config path below.'
                       : 'No config files found'}
                   </p>
-                  {!requiresConfigTemplate && (
+                  {!mustChooseConfig && (
                     <button
                       onClick={handleSkipConfig}
                       className="text-xs text-accent transition-colors hover:text-accent-hover"
@@ -375,7 +378,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                       onClick={() => handleSelectConfig(config.path)}
                     />
                   ))}
-                  {!requiresConfigTemplate && (
+                  {!mustChooseConfig && (
                     <button
                       onClick={handleSkipConfig}
                       className="w-full px-3 py-2 text-left text-2xs text-zinc-600 transition-colors hover:text-zinc-400"
@@ -396,7 +399,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                       handleManualConfig()
                     }
                   }}
-                  placeholder={requiresConfigTemplate ? 'Path to config.yaml' : 'Optional path to config.yaml'}
+                  placeholder={mustChooseConfig ? 'Path to config.yaml' : 'Optional path to config.yaml'}
                   className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
                 />
                 <button
