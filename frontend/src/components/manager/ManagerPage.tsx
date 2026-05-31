@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ChevronDown, MousePointer2, Pin, Play, RotateCcw, Rows3, Square, Terminal, Trash2,
+  AlertTriangle, ChevronDown, GripVertical, MousePointer2, Pin, Play, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useMonitorStore, useTaskStore } from '@/store'
@@ -22,6 +29,113 @@ import { ALL_STATUSES, STATUS_LABELS } from '@/theme/tokens'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', ...ALL_STATUSES]
+type DragTarget = 'pinned' | 'tasks'
+type DragPlacement = 'before' | 'after'
+const DRAG_START_DISTANCE = 8
+
+interface TaskSearchMatch {
+  label: string
+  detail: string
+}
+
+interface DropIntent {
+  target: DragTarget
+  targetName: string
+  placement: DragPlacement
+  axis: 'horizontal' | 'vertical'
+}
+
+interface DragCandidate {
+  taskName: string
+  startX: number
+  startY: number
+}
+
+function isInteractiveDragTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    && Boolean(target.closest('button, a, input, textarea, select, [role="button"]'))
+}
+
+function getDropTargetFromElement(element: HTMLElement | null): DragTarget | null {
+  const target = element?.closest<HTMLElement>('[data-task-drop-target]')
+  const value = target?.dataset.taskDropTarget
+  return value === 'pinned' || value === 'tasks' ? value : null
+}
+
+function getCardDropPlacement(card: HTMLElement, clientX: number, clientY: number): Pick<DropIntent, 'placement' | 'axis'> {
+  const rect = card.getBoundingClientRect()
+  const grid = card.closest<HTMLElement>('[data-task-grid]')
+  const columnCount = Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)
+  const axis = columnCount <= 1 ? 'vertical' : 'horizontal'
+  const placement = axis === 'vertical'
+    ? (clientY < rect.top + rect.height / 2 ? 'before' : 'after')
+    : (clientX < rect.left + rect.width / 2 ? 'before' : 'after')
+  return { placement, axis }
+}
+
+function getPointerDropIntent(clientX: number, clientY: number): DropIntent | null {
+  const element = document.elementFromPoint(clientX, clientY)
+  if (!(element instanceof HTMLElement)) {
+    return null
+  }
+
+  const card = element.closest<HTMLElement>('[data-task-card]')
+  if (card) {
+    const target = getDropTargetFromElement(card)
+    if (target) {
+      return {
+        target,
+        targetName: card.dataset.taskCard || '',
+        ...getCardDropPlacement(card, clientX, clientY),
+      }
+    }
+  }
+
+  const target = getDropTargetFromElement(element)
+  return target ? { target, targetName: '', placement: 'after', axis: 'vertical' } : null
+}
+
+function sameDropIntent(left: DropIntent | null, right: DropIntent | null) {
+  return left?.target === right?.target
+    && left?.targetName === right?.targetName
+    && left?.placement === right?.placement
+    && left?.axis === right?.axis
+}
+
+function buildReorderedItems(tasks: Task[], taskName: string, intent: DropIntent) {
+  const dragged = tasks.find(task => task.name === taskName)
+  if (!dragged) {
+    return []
+  }
+
+  if (intent.targetName === taskName && intent.target === (dragged.pinned ? 'pinned' : 'tasks')) {
+    return tasks.map(task => ({ name: task.name, pinned: Boolean(task.pinned) }))
+  }
+
+  const namesByTarget: Record<DragTarget, string[]> = {
+    pinned: [],
+    tasks: [],
+  }
+
+  tasks.forEach(task => {
+    if (task.name === taskName) {
+      return
+    }
+    namesByTarget[task.pinned ? 'pinned' : 'tasks'].push(task.name)
+  })
+
+  const targetNames = namesByTarget[intent.target]
+  const targetIndex = intent.targetName ? targetNames.indexOf(intent.targetName) : -1
+  const insertIndex = targetIndex >= 0
+    ? targetIndex + (intent.placement === 'after' ? 1 : 0)
+    : targetNames.length
+  targetNames.splice(insertIndex, 0, taskName)
+
+  return [
+    ...namesByTarget.pinned.map(name => ({ name, pinned: true })),
+    ...namesByTarget.tasks.map(name => ({ name, pinned: false })),
+  ]
+}
 
 export default function ManagerPage() {
   const {
@@ -36,6 +150,17 @@ export default function ManagerPage() {
   const [deleteTask, setDeleteTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
+  const [draggedTaskName, setDraggedTaskName] = useState('')
+  const [dragOverTarget, setDragOverTarget] = useState<DragTarget | null>(null)
+  const [dropIntent, setDropIntent] = useState<DropIntent | null>(null)
+  const [taskActionMessage, setTaskActionMessage] = useState('')
+  const dragCandidateRef = useRef<DragCandidate | null>(null)
+  const draggedTaskNameRef = useRef('')
+  const dragOverTargetRef = useRef<DragTarget | null>(null)
+  const dropIntentRef = useRef<DropIntent | null>(null)
+  const pendingDragPointRef = useRef<{ clientX: number; clientY: number } | null>(null)
+  const dragFrameRef = useRef<number | null>(null)
+  const suppressCardClickRef = useRef('')
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const focusTaskName = searchParams.get('task')
@@ -73,12 +198,21 @@ export default function ManagerPage() {
   const allSelected = tasks.length > 0 && tasks.every(task => selectedIds.has(task.name))
   const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
   const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
+  const draggedTask = useMemo(
+    () => tasks.find(task => task.name === draggedTaskName) || null,
+    [draggedTaskName, tasks],
+  )
+  const showPinnedSection = pinnedTasks.length > 0 || Boolean(draggedTask && !draggedTask.pinned)
   const summary = useMemo(() => ({
     total,
     active: tasks.filter(task => task.status === 'running' || task.status === 'queued').length,
     completed: tasks.filter(task => task.status === 'completed').length,
     failed: tasks.filter(task => task.status === 'failed').length,
   }), [tasks, total])
+
+  draggedTaskNameRef.current = draggedTaskName
+  dragOverTargetRef.current = dragOverTarget
+  dropIntentRef.current = dropIntent
 
   const normalizeWorkerInput = useCallback((value: string) => {
     const trimmed = value.trim()
@@ -134,8 +268,177 @@ export default function ManagerPage() {
 
   const handlePin = useCallback(async (task: Task) => {
     await api.pinTask(task.name, !task.pinned)
+    setTaskActionMessage(task.pinned ? `Moved ${task.name} back to Tasks.` : `Pinned ${task.name}.`)
     await fetchTasks()
   }, [fetchTasks])
+
+  const handleTaskPointerDown = useCallback((task: Task, event: ReactPointerEvent<HTMLElement>) => {
+    if (selectMode || event.button !== 0 || isInteractiveDragTarget(event.target)) {
+      return
+    }
+
+    event.preventDefault()
+    dragCandidateRef.current = {
+      taskName: task.name,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+    setDropIntent(null)
+    dropIntentRef.current = null
+    setTaskActionMessage('')
+  }, [selectMode])
+
+  const handleTaskDrop = useCallback(async (intent: DropIntent, taskName = draggedTaskNameRef.current) => {
+    const task = tasks.find(item => item.name === taskName)
+    setDragOverTarget(null)
+    setDropIntent(null)
+    setDraggedTaskName('')
+    draggedTaskNameRef.current = ''
+    dropIntentRef.current = null
+
+    if (!task) {
+      return
+    }
+
+    const allTasks = await api.getTasks({ limit: 0, refresh: false })
+    const items = buildReorderedItems(allTasks.items, task.name, intent)
+    const movedItem = items.find(item => item.name === task.name)
+    if (!items.length || !movedItem) {
+      return
+    }
+
+    await api.reorderTasks(items)
+    if (movedItem.pinned !== task.pinned) {
+      setTaskActionMessage(movedItem.pinned ? `Pinned ${task.name}.` : `Moved ${task.name} back to Tasks.`)
+    } else {
+      setTaskActionMessage(`Moved ${task.name}.`)
+    }
+    await fetchTasks()
+  }, [fetchTasks, tasks])
+
+  useEffect(() => {
+    const applyDropIntent = (intent: DropIntent | null) => {
+      const previousIntent = dropIntentRef.current
+      dropIntentRef.current = intent
+      dragOverTargetRef.current = intent?.target ?? null
+      if (!sameDropIntent(previousIntent, intent)) {
+        setDropIntent(intent)
+        setDragOverTarget(intent?.target ?? null)
+      }
+    }
+
+    const flushDragFrame = () => {
+      dragFrameRef.current = null
+      const candidate = dragCandidateRef.current
+      const point = pendingDragPointRef.current
+      if (!candidate || !point) {
+        return
+      }
+
+      if (!draggedTaskNameRef.current) {
+        draggedTaskNameRef.current = candidate.taskName
+        setDraggedTaskName(candidate.taskName)
+      }
+
+      applyDropIntent(getPointerDropIntent(point.clientX, point.clientY))
+    }
+
+    const handleGlobalPointerMove = (event: PointerEvent) => {
+      const candidate = dragCandidateRef.current
+      if (!candidate) {
+        return
+      }
+
+      const distance = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY)
+      if (!draggedTaskNameRef.current && distance < DRAG_START_DISTANCE) {
+        return
+      }
+
+      event.preventDefault()
+      pendingDragPointRef.current = { clientX: event.clientX, clientY: event.clientY }
+      if (dragFrameRef.current == null) {
+        dragFrameRef.current = window.requestAnimationFrame(flushDragFrame)
+      }
+    }
+
+    const finishPointerDrag = (event: PointerEvent) => {
+      const candidate = dragCandidateRef.current
+      if (!candidate) {
+        return
+      }
+
+      const distance = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY)
+      const wasDragging = Boolean(draggedTaskNameRef.current) || distance >= DRAG_START_DISTANCE
+      const intent = getPointerDropIntent(event.clientX, event.clientY) || dropIntentRef.current
+
+      dragCandidateRef.current = null
+      pendingDragPointRef.current = null
+      if (dragFrameRef.current != null) {
+        window.cancelAnimationFrame(dragFrameRef.current)
+        dragFrameRef.current = null
+      }
+      dropIntentRef.current = null
+      dragOverTargetRef.current = null
+      setDropIntent(null)
+      setDragOverTarget(null)
+      setDraggedTaskName('')
+
+      if (!wasDragging) {
+        return
+      }
+
+      suppressCardClickRef.current = candidate.taskName
+      draggedTaskNameRef.current = candidate.taskName
+      if (intent) {
+        void handleTaskDrop(intent, candidate.taskName)
+      } else {
+        draggedTaskNameRef.current = ''
+      }
+    }
+
+    const cancelPointerDrag = () => {
+      dragCandidateRef.current = null
+      draggedTaskNameRef.current = ''
+      pendingDragPointRef.current = null
+      if (dragFrameRef.current != null) {
+        window.cancelAnimationFrame(dragFrameRef.current)
+        dragFrameRef.current = null
+      }
+      dropIntentRef.current = null
+      dragOverTargetRef.current = null
+      setDropIntent(null)
+      setDragOverTarget(null)
+      setDraggedTaskName('')
+    }
+
+    window.addEventListener('pointermove', handleGlobalPointerMove)
+    window.addEventListener('pointerup', finishPointerDrag)
+    window.addEventListener('pointercancel', cancelPointerDrag)
+    return () => {
+      window.removeEventListener('pointermove', handleGlobalPointerMove)
+      window.removeEventListener('pointerup', finishPointerDrag)
+      window.removeEventListener('pointercancel', cancelPointerDrag)
+      if (dragFrameRef.current != null) {
+        window.cancelAnimationFrame(dragFrameRef.current)
+        dragFrameRef.current = null
+      }
+    }
+  }, [handleTaskDrop])
+
+  useEffect(() => {
+    if (!draggedTaskName) {
+      return
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'grabbing'
+    document.body.style.userSelect = 'none'
+    return () => {
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [draggedTaskName])
 
   const exitSelectMode = () => {
     setSelectMode(false)
@@ -143,6 +446,11 @@ export default function ManagerPage() {
   }
 
   const handleCardClick = (task: Task) => {
+    if (suppressCardClickRef.current === task.name) {
+      suppressCardClickRef.current = ''
+      return
+    }
+
     if (selectMode) {
       toggleSelect(task.name)
       return
@@ -198,6 +506,12 @@ export default function ManagerPage() {
         </div>
 
         <div className="flex-1" />
+
+        {taskActionMessage && (
+          <span className="rounded-md bg-accent/8 px-2.5 py-1 text-xs font-medium text-accent" title={taskActionMessage}>
+            {taskActionMessage}
+          </span>
+        )}
 
         <div className="flex flex-wrap items-center gap-1.5">
           <InlineMetric label="Total" value={summary.total} />
@@ -285,40 +599,68 @@ export default function ManagerPage() {
           />
         ) : (
           <div className="space-y-3">
-            {pinnedTasks.length > 0 && (
+            {showPinnedSection && (
+              <div
+                data-task-drop-target="pinned"
+                className={clsx(
+                  'rounded-md transition-colors',
+                  dragOverTarget === 'pinned' && 'bg-accent/8 ring-1 ring-accent/30',
+                )}
+              >
               <CompactSection
                 title="Pinned"
-                subtitle={`${pinnedTasks.length} pinned task${pinnedTasks.length > 1 ? 's' : ''}`}
+                subtitle={dragOverTarget === 'pinned' ? 'Drop to pin or reorder' : `${pinnedTasks.length} pinned task${pinnedTasks.length > 1 ? 's' : ''}`}
                 icon={<Pin className="h-3.5 w-3.5 text-accent" />}
                 accent
                 bodyClassName="p-2"
               >
-                <TaskGrid
-                  tasks={pinnedTasks}
-                  columns={columns}
-                  selectedIds={selectedIds}
-                  selectMode={selectMode}
-                  onCardClick={handleCardClick}
-                  onTaskAction={handleTaskAction}
-                  onPin={handlePin}
-                  onDelete={setDeleteTask}
-                  onMonitor={task => {
-                    void useMonitorStore.getState().selectTask(task.name)
-                    navigate('/monitor')
-                  }}
-                />
+                {pinnedTasks.length === 0 ? (
+                  <div className="px-2 py-5 text-center text-xs font-medium text-accent">
+                    Drop here to pin
+                  </div>
+                ) : (
+                  <TaskGrid
+                    tasks={pinnedTasks}
+                    columns={columns}
+                    query={query}
+                    draggedTaskName={draggedTaskName}
+                    dropIntent={dropIntent}
+                    selectedIds={selectedIds}
+                    selectMode={selectMode}
+                    onCardClick={handleCardClick}
+                    onTaskAction={handleTaskAction}
+                    onPin={handlePin}
+                    onDelete={setDeleteTask}
+                    onMonitor={task => {
+                      void useMonitorStore.getState().selectTask(task.name)
+                      navigate('/monitor')
+                    }}
+                    onPointerDown={handleTaskPointerDown}
+                  />
+                )}
               </CompactSection>
+              </div>
             )}
 
+            <div
+              data-task-drop-target="tasks"
+              className={clsx(
+                'rounded-md transition-colors',
+                dragOverTarget === 'tasks' && 'bg-surface-overlay ring-1 ring-border',
+              )}
+            >
             <CompactSection
               title="Tasks"
-              subtitle={`${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
+              subtitle={dragOverTarget === 'tasks' ? 'Drop to reorder' : `${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
               icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
               bodyClassName="p-2"
             >
               <TaskGrid
                 tasks={otherTasks}
                 columns={columns}
+                query={query}
+                draggedTaskName={draggedTaskName}
+                dropIntent={dropIntent}
                 selectedIds={selectedIds}
                 selectMode={selectMode}
                 onCardClick={handleCardClick}
@@ -329,8 +671,10 @@ export default function ManagerPage() {
                   void useMonitorStore.getState().selectTask(task.name)
                   navigate('/monitor')
                 }}
+                onPointerDown={handleTaskPointerDown}
               />
             </CompactSection>
+            </div>
           </div>
         )}
       </div>
@@ -373,6 +717,9 @@ export default function ManagerPage() {
 function TaskGrid({
   tasks,
   columns,
+  query,
+  draggedTaskName,
+  dropIntent,
   selectedIds,
   selectMode,
   onCardClick,
@@ -380,9 +727,13 @@ function TaskGrid({
   onPin,
   onDelete,
   onMonitor,
+  onPointerDown,
 }: {
   tasks: Task[]
   columns: number
+  query: string
+  draggedTaskName: string
+  dropIntent: DropIntent | null
   selectedIds: Set<string>
   selectMode: boolean
   onCardClick: (task: Task) => void
@@ -390,17 +741,31 @@ function TaskGrid({
   onPin: (task: Task) => void | Promise<void>
   onDelete: (task: Task) => void
   onMonitor: (task: Task) => void
+  onPointerDown: (task: Task, event: ReactPointerEvent<HTMLElement>) => void
 }) {
   if (tasks.length === 0) {
     return <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">No tasks in this section</div>
   }
 
   return (
-    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+    <div
+      data-task-grid="true"
+      data-task-grid-columns={columns}
+      className="grid gap-2"
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+    >
       {tasks.map(task => (
         <TaskCard
           key={task.name}
           task={task}
+          query={query}
+          dragging={draggedTaskName === task.name}
+          dropPlacement={
+            dropIntent?.targetName === task.name && dropIntent.target === (task.pinned ? 'pinned' : 'tasks')
+              ? dropIntent.placement
+              : null
+          }
+          dropAxis={dropIntent?.targetName === task.name ? dropIntent.axis : null}
           selected={selectedIds.has(task.name)}
           selectMode={selectMode}
           onClick={() => onCardClick(task)}
@@ -408,6 +773,7 @@ function TaskGrid({
           onPin={() => void onPin(task)}
           onDelete={() => onDelete(task)}
           onMonitor={() => onMonitor(task)}
+          onPointerDown={event => onPointerDown(task, event)}
         />
       ))}
     </div>
@@ -416,6 +782,10 @@ function TaskGrid({
 
 function TaskCard({
   task,
+  query,
+  dragging,
+  dropPlacement,
+  dropAxis,
   selected,
   selectMode,
   onClick,
@@ -423,8 +793,13 @@ function TaskCard({
   onPin,
   onDelete,
   onMonitor,
+  onPointerDown,
 }: {
   task: Task
+  query: string
+  dragging: boolean
+  dropPlacement: DragPlacement | null
+  dropAxis: 'horizontal' | 'vertical' | null
   selected: boolean
   selectMode: boolean
   onClick: () => void
@@ -432,21 +807,43 @@ function TaskCard({
   onPin: () => void
   onDelete: () => void
   onMonitor: () => void
+  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
 }) {
   const actionBtn = getActionButton(task)
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
   const taskKindLabel = (task.config_mode || task.task_kind) === 'shell' ? 'shell' : 'config'
   const cardDescription = task._load_error || task.preview_text || 'No preview available.'
+  const searchMatches = getTaskSearchMatches(task, query)
+  const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
 
   return (
     <div
+      data-task-card={task.name}
+      data-task-card-pinned={task.pinned ? 'true' : 'false'}
+      onPointerDown={onPointerDown}
       className={clsx(
-        'group relative cursor-pointer rounded-md border bg-surface-raised px-3 py-2.5 transition-colors',
+        'group relative cursor-grab rounded-md border bg-surface-raised px-3 py-2.5 transition-[border-color,box-shadow,background-color,opacity,transform] duration-150 ease-out active:cursor-grabbing',
         selected ? 'border-accent bg-accent/8 ring-1 ring-accent/20' : 'border-border-subtle hover:border-border',
         task.pinned && !selected && 'border-accent/20',
+        !selected && !dragging && 'hover:-translate-y-0.5 hover:shadow-[0_8px_22px_rgba(15,23,42,0.07)]',
+        dragging && 'scale-[0.985] border-accent/35 bg-accent/5 opacity-70 shadow-[0_10px_30px_rgba(15,23,42,0.14)] ring-1 ring-accent/35',
+        dropPlacement && !dragging && 'border-accent/35 bg-accent/5 ring-1 ring-accent/25',
       )}
       onClick={onClick}
     >
+      {dropIndicator}
+      {!selectMode && (
+        <div
+          className={clsx(
+            'absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity]',
+            'group-hover:bg-surface-overlay group-hover:text-txt-secondary',
+            dragging && 'bg-accent/10 text-accent',
+          )}
+          title="Drag to reorder or move"
+        >
+          <GripVertical className="h-3.5 w-3.5" />
+        </div>
+      )}
       {selectMode ? (
         <div className="absolute right-2.5 top-2.5">
           <SelectionIndicator selected={selected} />
@@ -468,7 +865,7 @@ function TaskCard({
         </button>
       )}
 
-      <div className="flex items-center gap-2 pr-7">
+      <div className="flex items-center gap-2 pl-5 pr-7">
         <StatusBadge status={task.status as TaskStatus} />
         <span className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
           {taskKindLabel}
@@ -490,6 +887,20 @@ function TaskCard({
         <span title={`Run #${Math.max(task.run_index || 1, 1)}`}>Run #{Math.max(task.run_index || 1, 1)}</span>
         <span className="truncate" title={folderName}>{folderName}</span>
       </div>
+
+      {searchMatches.length > 0 && (
+        <div className="mt-2 flex min-w-0 items-center gap-1.5 text-2xs text-txt-secondary" title={searchMatches.map(match => `${match.label}: ${match.detail}`).join('\n')}>
+          <Search className="h-3 w-3 flex-none text-accent" />
+          <span className="flex-none text-txt-tertiary">Matched in</span>
+          <div className="flex min-w-0 flex-wrap gap-1">
+            {searchMatches.slice(0, 3).map(match => (
+              <span key={match.label} className="rounded-md bg-accent/8 px-1.5 py-0.5 font-medium text-accent">
+                {match.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {task._load_error && (
         <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs text-rose-400" title={task._load_error}>
@@ -539,6 +950,98 @@ function TaskCard({
       )}
     </div>
   )
+}
+
+function DropIndicator({ placement, axis }: { placement: DragPlacement; axis: 'horizontal' | 'vertical' }) {
+  const vertical = axis === 'vertical'
+
+  return (
+    <span
+      aria-hidden="true"
+      className={clsx(
+        'pointer-events-none absolute z-20 rounded-full bg-accent shadow-[0_0_0_3px_rgba(20,184,166,0.16)]',
+        vertical ? 'left-2 right-2 h-0.5' : 'top-2 bottom-2 w-0.5',
+        vertical
+          ? (placement === 'before' ? '-top-px' : '-bottom-px')
+          : (placement === 'before' ? '-left-px' : '-right-px'),
+      )}
+    >
+      <span
+        className={clsx(
+          'absolute h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_0_3px_rgba(20,184,166,0.16)]',
+          vertical
+            ? 'left-0 top-1/2 -translate-x-1/2 -translate-y-1/2'
+            : 'left-1/2 top-0 -translate-x-1/2 -translate-y-1/2',
+        )}
+      />
+    </span>
+  )
+}
+
+function normalizeSearchValue(value: unknown) {
+  return String(value ?? '').toLowerCase().replace(/\s*:\s*/g, ':')
+}
+
+function getSearchNeedles(query: string) {
+  return query
+    .split('\n')
+    .map(line => normalizeSearchValue(line.trim()))
+    .filter(Boolean)
+}
+
+function flattenTaskConfig(value: unknown, prefix = ''): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return []
+  }
+
+  const rows: string[] = []
+  for (const [key, childValue] of Object.entries(value as Record<string, unknown>)) {
+    if (key.startsWith('_meta')) {
+      continue
+    }
+    const fullKey = prefix ? `${prefix}.${key}` : key
+    if (childValue && typeof childValue === 'object' && !Array.isArray(childValue)) {
+      rows.push(...flattenTaskConfig(childValue, fullKey))
+    } else {
+      rows.push(`${fullKey}: ${String(childValue ?? '')}`)
+      const shortKey = fullKey.split('.').pop()
+      if (shortKey && shortKey !== fullKey) {
+        rows.push(`${shortKey}: ${String(childValue ?? '')}`)
+      }
+    }
+  }
+  return rows
+}
+
+function fieldHasNeedle(text: string, needles: string[]) {
+  const normalized = normalizeSearchValue(text)
+  return needles.some(needle => normalized.includes(needle))
+}
+
+function getTaskSearchMatches(task: Task, query: string): TaskSearchMatch[] {
+  const needles = getSearchNeedles(query)
+  if (needles.length === 0) {
+    return []
+  }
+
+  const envText = Object.entries(task.env || {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join('\n')
+  const configText = (task.config_mode || task.task_kind) === 'shell'
+    ? task.config_text || task.preview_text || ''
+    : flattenTaskConfig(task.config || {}).join('\n')
+
+  const fields: TaskSearchMatch[] = [
+    { label: 'Name', detail: task.name },
+    { label: 'Notes', detail: task.notes || '' },
+    { label: 'Env', detail: envText },
+    {
+      label: (task.config_mode || task.task_kind) === 'shell' ? 'Script' : 'Config',
+      detail: configText,
+    },
+  ]
+
+  return fields.filter(field => field.detail && fieldHasNeedle(field.detail, needles))
 }
 
 function getActionButton(task: Task) {

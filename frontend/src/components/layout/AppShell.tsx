@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Outlet } from 'react-router-dom'
 import clsx from 'clsx'
 import Sidebar from './Sidebar'
@@ -31,6 +31,8 @@ function readStoredSidebarWidth() {
 export default function AppShell() {
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [resizing, setResizing] = useState(false)
+  const pendingSidebarWidthRef = useRef(sidebarWidth)
+  const sidebarResizeFrameRef = useRef<number | null>(null)
 
   const startSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -47,9 +49,7 @@ export default function AppShell() {
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
-    const handlePointerMove = (event: PointerEvent) => {
-      const next = clampSidebarWidth(event.clientX)
-      setSidebarWidth(next)
+    const persistSidebarWidth = (next: number) => {
       try {
         window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(next))
       } catch {
@@ -57,7 +57,27 @@ export default function AppShell() {
       }
     }
 
-    const stopResize = () => setResizing(false)
+    const applyPendingSidebarWidth = () => {
+      sidebarResizeFrameRef.current = null
+      setSidebarWidth(pendingSidebarWidthRef.current)
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      pendingSidebarWidthRef.current = clampSidebarWidth(event.clientX)
+      if (sidebarResizeFrameRef.current == null) {
+        sidebarResizeFrameRef.current = window.requestAnimationFrame(applyPendingSidebarWidth)
+      }
+    }
+
+    const stopResize = () => {
+      if (sidebarResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(sidebarResizeFrameRef.current)
+        sidebarResizeFrameRef.current = null
+      }
+      setSidebarWidth(pendingSidebarWidthRef.current)
+      persistSidebarWidth(pendingSidebarWidthRef.current)
+      setResizing(false)
+    }
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResize, { once: true })
@@ -65,6 +85,10 @@ export default function AppShell() {
     return () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
+      if (sidebarResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(sidebarResizeFrameRef.current)
+        sidebarResizeFrameRef.current = null
+      }
       document.body.style.cursor = previousCursor
       document.body.style.userSelect = previousUserSelect
     }

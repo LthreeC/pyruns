@@ -7,6 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
+import { useNavigate } from 'react-router-dom'
 import CodeMirror from '@uiw/react-codemirror'
 import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
@@ -18,10 +19,12 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  CheckCircle2,
   FileCode,
   Hash,
   LayoutGrid,
   ListChecks,
+  Loader2,
   Pin,
   Sparkles,
   Terminal,
@@ -39,6 +42,14 @@ import * as api from '@/api'
 import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
 
 const DEFAULT_SHELL_TEMPLATE = ''
+type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
+
+interface CreatedTaskResult {
+  count: number
+  taskKind: string
+  firstTaskName: string
+}
+
 const YAML_EXTENSION = yamlLanguage()
 const LIGHT_EDITOR_THEME = EditorView.theme({
   '&': {
@@ -366,6 +377,7 @@ function collectPinnedRows(
 }
 
 export default function GeneratorPage() {
+  const navigate = useNavigate()
   const workspace = useWorkspaceStore(state => state.workspace)
   const theme = useThemeStore(state => state.theme)
   const {
@@ -395,8 +407,9 @@ export default function GeneratorPage() {
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewData, setPreviewData] = useState<GeneratorPreview | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
+  const [createdSummary, setCreatedSummary] = useState<CreatedTaskResult | null>(null)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
 
   const isShellWorkspace = workspace?.workspace_kind === 'shell'
   const shellRuntime = workspace?.shell_runtime
@@ -499,11 +512,13 @@ export default function GeneratorPage() {
   const batchHintText = previewData?.count
     ? `Batch syntax detected. ${previewData.count} tasks will be created after confirmation.`
     : 'Batch syntax detected. A preview opens before creating multiple tasks.'
+  const generationBusy = generating || generationStatus === 'previewing'
 
   const doCreate = useCallback(async () => {
     setGenerating(true)
+    setGenerationStatus('creating')
+    setCreatedSummary(null)
     setError('')
-    setSuccess('')
     try {
       const result = await api.createTasks({
         name_prefix: namePrefix || 'task',
@@ -531,13 +546,14 @@ export default function GeneratorPage() {
         }
       }
 
-      setSuccess(
-        selectedGeneratedTask
-          ? `Created ${result.count} ${result.task_kind === 'shell' ? 'shell task' : 'task'}${result.count > 1 ? 's' : ''}. Selected ${selectedGeneratedTask}.`
-          : `Created ${result.count} ${result.task_kind === 'shell' ? 'shell task' : 'task'}${result.count > 1 ? 's' : ''}`
-      )
-      window.setTimeout(() => setSuccess(''), 4000)
+      setCreatedSummary({
+        count: result.count,
+        taskKind: result.task_kind === 'shell' ? 'shell task' : 'task',
+        firstTaskName: result.items[0]?.name || selectedGeneratedTask,
+      })
+      setGenerationStatus('created')
     } catch (err: any) {
+      setGenerationStatus('error')
       setError(err.message)
     } finally {
       setGenerating(false)
@@ -546,9 +562,10 @@ export default function GeneratorPage() {
 
   const handleGenerate = useCallback(async () => {
     setError('')
-    setSuccess('')
 
     if (editorMode === 'form' && hasBatchSyntax && !previewOpen) {
+      setGenerationStatus('previewing')
+      setCreatedSummary(null)
       try {
         const preview = await api.previewTasks({
           mode: editorMode,
@@ -557,7 +574,9 @@ export default function GeneratorPage() {
         })
         setPreviewData(preview)
         setPreviewOpen(true)
+        setGenerationStatus('idle')
       } catch (err: any) {
+        setGenerationStatus('error')
         setError(err.message)
       }
       return
@@ -753,41 +772,46 @@ export default function GeneratorPage() {
             <ShellRuntimePanel runtime={shellRuntime} runRoot={workspace?.run_root} />
           )}
 
-          {(error || success) && (
+          {error && (
             <CompactSection title="Status" bodyClassName="space-y-1.5 p-2">
-              {error && (
-                <div className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400" title={error}>
-                  {error}
-                </div>
-              )}
-              {success && (
-                <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
-                  {success}
-                </div>
-              )}
+              <div className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400" title={error}>
+                {error}
+              </div>
             </CompactSection>
           )}
 
           <div className="sticky bottom-0 mt-auto border-t border-border-subtle bg-surface-raised pt-3">
             <ActionButton
-              icon={<Sparkles className="h-4 w-4" />}
+              icon={generationBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               variant="primary"
               size="md"
               className="w-full"
               onClick={handleGenerate}
-              disabled={generating}
+              disabled={generationBusy}
             >
-              {generating ? 'Creating...' : editorMode === 'shell' ? 'Create Shell Task' : hasBatchSyntax ? 'Preview Batch Tasks' : 'Generate Tasks'}
+              {generationStatus === 'previewing'
+                ? 'Previewing...'
+                : generationStatus === 'creating'
+                  ? 'Creating...'
+                  : editorMode === 'shell' ? 'Create Shell Task' : hasBatchSyntax ? 'Preview Batch Tasks' : 'Generate Tasks'}
             </ActionButton>
-            <div className="mt-2 text-center text-2xs text-txt-tertiary">
-              {editorMode === 'form' && hasBatchSyntax
-                ? batchHintText
-                : editorMode === 'yaml' && yamlContainsBatchSyntax
-                  ? 'YAML mode does not expand batch syntax. Switch back to Form mode.'
-                : editorMode === 'shell'
-                  ? 'Creates one shell task immediately.'
-                  : 'Creates one task immediately.'}
-            </div>
+            <GenerationFeedback
+              status={generationStatus}
+              createdSummary={createdSummary}
+              defaultText={
+                editorMode === 'form' && hasBatchSyntax
+                  ? batchHintText
+                  : editorMode === 'yaml' && yamlContainsBatchSyntax
+                    ? 'YAML mode does not expand batch syntax. Switch back to Form mode.'
+                  : editorMode === 'shell'
+                    ? 'Creates one shell task immediately.'
+                    : 'Creates one task immediately.'
+              }
+              onOpenManager={() => {
+                const taskName = createdSummary?.firstTaskName
+                navigate(taskName ? `/manager?task=${encodeURIComponent(taskName)}` : '/manager')
+              }}
+            />
           </div>
         </aside>
       </div>
@@ -803,6 +827,75 @@ export default function GeneratorPage() {
       >
         <BatchPreviewContent preview={previewData} triggers={batchTriggerDetails} />
       </ConfirmDialog>
+    </div>
+  )
+}
+
+function GenerationFeedback({
+  status,
+  createdSummary,
+  defaultText,
+  onOpenManager,
+}: {
+  status: GenerationStatus
+  createdSummary: CreatedTaskResult | null
+  defaultText: string
+  onOpenManager: () => void
+}) {
+  if (status === 'creating') {
+    return (
+      <div className="mt-2 flex items-center justify-center gap-1.5 rounded-md bg-accent/8 px-2.5 py-2 text-2xs font-medium text-accent">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Writing task folders...
+      </div>
+    )
+  }
+
+  if (status === 'previewing') {
+    return (
+      <div className="mt-2 flex items-center justify-center gap-1.5 rounded-md bg-accent/8 px-2.5 py-2 text-2xs font-medium text-accent">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Preparing batch preview...
+      </div>
+    )
+  }
+
+  if (status === 'created' && createdSummary) {
+    return <CreatedTaskSummary summary={createdSummary} onOpenManager={onOpenManager} />
+  }
+
+  return <div className="mt-2 text-center text-2xs text-txt-tertiary">{defaultText}</div>
+}
+
+function CreatedTaskSummary({
+  summary,
+  onOpenManager,
+}: {
+  summary: CreatedTaskResult
+  onOpenManager: () => void
+}) {
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-2 text-2xs text-emerald-700 dark:text-emerald-300">
+      <div className="flex items-start gap-1.5">
+        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 flex-none" />
+        <div className="min-w-0">
+          <div className="font-medium">
+            Created {summary.count} {summary.taskKind}{summary.count > 1 ? 's' : ''}
+          </div>
+          {summary.firstTaskName && (
+            <div className="mt-0.5 truncate font-mono text-[11px]" title={summary.firstTaskName}>
+              {summary.firstTaskName}
+            </div>
+          )}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onOpenManager}
+        className="inline-flex w-full items-center justify-center rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+      >
+        Open in Manager
+      </button>
     </div>
   )
 }

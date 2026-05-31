@@ -59,6 +59,19 @@ class TaskPinRequest(BaseModel):
     pinned: bool | None = None
 
 
+class TaskReorderItem(BaseModel):
+    """One task position in a manual card order request."""
+
+    name: str = Field(min_length=1)
+    pinned: bool | None = None
+
+
+class TaskReorderRequest(BaseModel):
+    """Manual task card order payload."""
+
+    items: list[TaskReorderItem] = Field(default_factory=list)
+
+
 class TaskNotesRequest(BaseModel):
     """Notes update payload."""
 
@@ -374,6 +387,19 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             "limit": page.limit,
             "has_more": page.has_more,
         }
+
+    @app.post("/api/tasks/reorder")
+    def reorder_tasks(payload: TaskReorderRequest) -> dict[str, Any]:
+        try:
+            items = [
+                item.model_dump() if hasattr(item, "model_dump") else item.dict()
+                for item in payload.items
+            ]
+            return get_runtime().reorder_tasks(items)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/tasks/{task_name}")
     def get_task(task_name: str, refresh: bool = True) -> dict[str, Any]:

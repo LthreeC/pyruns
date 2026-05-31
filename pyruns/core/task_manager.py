@@ -220,6 +220,7 @@ class TaskManager:
             "progress": info.get("progress", 0.0),
             "env": info.get("env", {}),
             "pinned": info.get("pinned", False),
+            "task_order": info.get("task_order"),
             "script": info.get("script"),
             "config_mode": task_kind or str(info.get("config_mode", info.get("task_kind", "")) or ""),
             "task_kind": task_kind or str(info.get("task_kind", "") or ""),
@@ -423,6 +424,63 @@ class TaskManager:
                 self._apply_info_to_task(current, updated)
         self.trigger_update()
         return True, new_value
+
+    def reorder_tasks(self, items: List[Dict[str, Any]]) -> tuple[bool, List[Dict[str, Any]] | str]:
+        """Persist manual task order and optional pinned states."""
+        normalized: list[tuple[str, Optional[bool], int]] = []
+        seen: set[str] = set()
+        for order, item in enumerate(items):
+            task_name = str((item or {}).get("name", "")).strip()
+            if not task_name:
+                continue
+            if task_name in seen:
+                return False, f"Duplicate task in reorder request: {task_name}"
+            seen.add(task_name)
+            pinned_value = (item or {}).get("pinned")
+            normalized.append(
+                (
+                    task_name,
+                    None if pinned_value is None else bool(pinned_value),
+                    order,
+                )
+            )
+
+        if not normalized:
+            return False, "No valid tasks were provided for reordering."
+
+        with self._lock:
+            updates: list[tuple[str, str, Optional[bool], int]] = []
+            for task_name, pinned_value, order in normalized:
+                target = self._resolve_identifier_locked(task_name)
+                if not target:
+                    return False, f"Task not found: {task_name}"
+                updates.append((task_name, target["dir"], pinned_value, order))
+
+        updated_info: dict[str, Dict[str, Any]] = {}
+        for task_name, task_dir, pinned_value, order in updates:
+            def _apply(
+                task_info: Dict[str, Any],
+                pinned_value: Optional[bool] = pinned_value,
+                order: int = order,
+            ) -> None:
+                task_info["task_order"] = order
+                if pinned_value is not None:
+                    task_info["pinned"] = pinned_value
+
+            updated_info[task_name] = update_task_info(task_dir, _apply)
+
+        with self._lock:
+            for task_name, info in updated_info.items():
+                current = self._resolve_identifier_locked(task_name)
+                if current:
+                    self._apply_info_to_task(current, info)
+            reordered = [
+                self.serialize_task(self._resolve_identifier_locked(task_name))
+                for task_name, _, _ in normalized
+            ]
+
+        self.trigger_update()
+        return True, [task for task in reordered if task is not None]
 
     def update_task_notes(self, task_name: str, notes: str) -> tuple[bool, str]:
         """Persist task notes and refresh derived search/preview fields."""
@@ -970,6 +1028,7 @@ class TaskManager:
             tuple(task.get("pids", [])),
             tuple(repr(item) for item in (task.get("records", []) or [])),
             task.get("pinned"),
+            task.get("task_order"),
             task.get("config_mode"),
             task.get("task_kind"),
             task.get("config_file"),
@@ -991,6 +1050,7 @@ class TaskManager:
                 "progress": info.get("progress", task.get("progress", 0.0)),
                 "env": info.get("env", task.get("env", {})),
                 "pinned": info.get("pinned", task.get("pinned", False)),
+                "task_order": info.get("task_order", task.get("task_order")),
                 "script": info.get("script", task.get("script")),
                 "config_mode": info.get("config_mode", info.get("task_kind", task.get("config_mode", "config"))),
                 "task_kind": info.get("task_kind", task.get("task_kind", "config")),

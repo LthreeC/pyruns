@@ -17,8 +17,8 @@
   --border-strong: #ced4da;
 
   --text-primary: #1d2430;
-  --text-secondary: #5f6876;
-  --text-tertiary: #8a95a3;
+  --text-secondary: #4b5563;
+  --text-tertiary: #6b7280;
 
   --card-bg: #ffffff;
   --card-border: #e9ecef;
@@ -42,7 +42,7 @@
 
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
-  --text-tertiary: #52525b;
+  --text-tertiary: #71717a;
 
   --card-bg: #141414;
   --card-border: #1f1f1f;
@@ -75,7 +75,7 @@
 
 body {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
   overflow: hidden;
   background: var(--surface-base);

@@ -16,6 +16,7 @@ FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "typ
 FRONTEND_CONFIRM_DIALOG = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ConfirmDialog.tsx"
 FRONTEND_COMPACT_SECTION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CompactSection.tsx"
 FRONTEND_THEME_CSS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "theme" / "index.css"
+FRONTEND_TAILWIND = Path(__file__).resolve().parents[1] / "frontend" / "tailwind.config.ts"
 
 
 def test_react_generator_pin_promotes_params_without_duplicates():
@@ -192,6 +193,10 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     assert "clampSidebarWidth" in shell
     assert "startSidebarResize" in shell
     assert "pointermove" in shell
+    assert "pendingSidebarWidthRef" in shell
+    assert "sidebarResizeFrameRef" in shell
+    assert "window.requestAnimationFrame(applyPendingSidebarWidth)" in shell
+    assert "window.cancelAnimationFrame(sidebarResizeFrameRef.current)" in shell
     assert "localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY" in shell
     assert "aria-label=\"Resize navigation sidebar\"" in shell
     assert "cursor-col-resize" in shell
@@ -208,10 +213,116 @@ def test_react_task_detail_panel_can_be_resized_from_left_edge():
     assert "clampPanelWidth" in source
     assert "startPanelResize" in source
     assert "pointermove" in source
+    assert "pendingPanelWidthRef" in source
+    assert "panelResizeFrameRef" in source
+    assert "window.requestAnimationFrame(applyPendingPanelWidth)" in source
+    assert "window.cancelAnimationFrame(panelResizeFrameRef.current)" in source
     assert "localStorage.setItem(TASK_DETAIL_WIDTH_STORAGE_KEY" in source
     assert "aria-label=\"Resize task detail panel\"" in source
     assert "cursor-col-resize" in source
     assert "style={{ width: panelWidth }}" in source
+    assert "suppressNextCloseRef" in source
+    assert "function handlePanelBackdropClick" in source
+    assert "onClick={handlePanelBackdropClick}" in source
+    assert "w-5 -translate-x-2.5" in source
+    assert "group-hover:bg-accent/45" in source
+    assert "window.innerWidth - 8" in source
+    assert "max-w-[calc(100vw-8px)]" in source
+    assert "const MAX_PANEL_WIDTH = 2400" in source
+    assert "useState(() => buildEnvPairs(task))" in source
+
+
+def test_react_task_detail_env_rows_keep_stable_keys_while_editing():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+
+    assert "type EnvPair" in source
+    assert "id: string" in source
+    assert "key={pair.id}" in source
+    assert 'key={`${key}-${index}`}' not in source
+
+
+def test_react_task_detail_env_controls_have_clear_feedback_states():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+
+    assert "type EnvSaveStatus" in source
+    assert "getEnvValidationMessage(envPairs)" in source
+    assert "const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)" in source
+    assert "envSaveStatus === 'saved' ? 'Saved' : 'Save'" in source
+    assert "envSaveStatus === 'error'" in source
+    assert "aria-label=\"Add environment variable\"" in source
+    assert "setPendingEnvFocusId(pair.id)" in source
+    assert "aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}" in source
+
+
+def test_react_task_detail_warns_before_discarding_unsaved_edits():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+
+    assert "function requestClose" in source
+    assert "notesDirty || envDirty" in source
+    assert "window.confirm('Discard unsaved changes?')" in source
+    assert "onClick={requestClose}" in source
+
+
+def test_react_generator_shows_creation_progress_and_result_actions():
+    source = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "type GenerationStatus" in source
+    assert "generationStatus === 'creating'" in source
+    assert "Writing task folders..." in source
+    assert "function CreatedTaskSummary" in source
+    assert "Open in Manager" in source
+    assert "Loader2" in source
+    assert "const [success" not in source
+    assert "(error || success)" not in source
+
+
+def test_react_manager_cards_support_drag_pin_and_search_match_labels():
+    source = (FRONTEND_COMPONENTS_DIR / "manager" / "ManagerPage.tsx").read_text(encoding="utf-8")
+
+    assert "type DragTarget = 'pinned' | 'tasks'" in source
+    assert "const DRAG_START_DISTANCE" in source
+    assert "dragCandidateRef" in source
+    assert "suppressCardClickRef" in source
+    assert "function isInteractiveDragTarget" in source
+    assert "onPointerDown" in source
+    assert "window.addEventListener('pointermove', handleGlobalPointerMove)" in source
+    assert "data-task-drop-target=\"pinned\"" in source
+    assert "data-task-drop-target=\"tasks\"" in source
+    assert "function getPointerDropIntent" in source
+    assert "type DragPlacement = 'before' | 'after'" in source
+    assert "api.reorderTasks" in source
+    assert "api.getTasks({ limit: 0, refresh: false })" in source
+    assert "buildReorderedItems" in source
+    assert "dragFrameRef" in source
+    assert "pendingDragPointRef" in source
+    assert "window.requestAnimationFrame(flushDragFrame)" in source
+    assert "sameDropIntent" in source
+    assert "data-task-grid-columns={columns}" in source
+    assert "Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)" in source
+    assert "window.getComputedStyle(grid)" not in source
+    assert "function DropIndicator" in source
+    assert "dropIndicator" in source
+    assert "shadow-[0_0_0_3px_rgba(20,184,166,0.16)]" in source
+    assert "scale-[0.985]" in source
+    assert "transition-[border-color,box-shadow,background-color,opacity,transform]" in source
+    assert "data-task-card={task.name}" in source
+    assert "data-task-card-pinned={task.pinned ? 'true' : 'false'}" in source
+    assert "draggable={!selectMode}" not in source
+    assert "getTaskSearchMatches(task, query)" in source
+    assert "Matched in" in source
+    assert "Drop here to pin" in source
+
+
+def test_react_theme_uses_more_readable_base_type_and_muted_text():
+    css = FRONTEND_THEME_CSS.read_text(encoding="utf-8")
+    tailwind = FRONTEND_TAILWIND.read_text(encoding="utf-8")
+
+    assert "--text-secondary: #4b5563;" in css
+    assert "--text-tertiary: #6b7280;" in css
+    assert "--text-tertiary: #71717a;" in css
+    assert "font-size: 14px;" in css
+    assert "'2xs': ['12px', '16px']" in tailwind
+    assert "xs: ['13px', '18px']" in tailwind
 
 
 def test_react_monitor_sidebar_can_be_resized_from_split_handle():
@@ -221,10 +332,35 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     assert "clampMonitorSidebarWidth" in source
     assert "startMonitorSidebarResize" in source
     assert "pointermove" in source
+    assert "pendingMonitorSidebarWidthRef" in source
+    assert "monitorResizeFrameRef" in source
+    assert "window.requestAnimationFrame(applyPendingMonitorSidebarWidth)" in source
+    assert "window.cancelAnimationFrame(monitorResizeFrameRef.current)" in source
     assert "localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
     assert "aria-label=\"Resize monitor sidebar\"" in source
     assert "cursor-col-resize" in source
     assert "style={{ width: `${monitorSidebarWidthPct}%` }}" in source
+
+
+def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "LOG_STREAM_FLUSH_MS" in source
+    assert "pendingLiveLogChunkRef" in source
+    assert "flushLiveLogChunkBuffer" in source
+    assert "window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)" in source
+    assert "appendLog(buffer.content)" in source
+    assert "pendingLiveLogChunkRef.current = { key, content: buffer.content + message.content }" in source
+
+
+def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "renderedLogRef" in source
+    assert "logContent.startsWith(previous.content)" in source
+    assert "const nextChunk = logContent.slice(previous.content.length)" in source
+    assert "term.write(nextChunk)" in source
+    assert "normalize_log_newlines" not in source
 
 
 def test_react_code_editor_focuses_from_blank_editor_area():

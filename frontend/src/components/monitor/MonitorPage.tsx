@@ -27,6 +27,8 @@ const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
 const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
+// Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
+const LOG_STREAM_FLUSH_MS = 50
 
 function clampMonitorSidebarWidth(value: number) {
   if (!Number.isFinite(value)) {
@@ -75,6 +77,8 @@ export default function MonitorPage() {
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
   const wsStreamActiveRef = useRef(false)
+  const pendingLiveLogChunkRef = useRef({ key: '', content: '' })
+  const liveLogFlushTimerRef = useRef<number | null>(null)
 
   const selectedTask = monitorTasks.find(task => task.name === selectedTaskName)
   const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
@@ -88,6 +92,8 @@ export default function MonitorPage() {
     : 14
   const [monitorSidebarWidthPct, setMonitorSidebarWidthPct] = useState(() => readStoredMonitorSidebarWidth(settingsSidebarWidthPct))
   const [resizingMonitorSidebar, setResizingMonitorSidebar] = useState(false)
+  const pendingMonitorSidebarWidthRef = useRef(monitorSidebarWidthPct)
+  const monitorResizeFrameRef = useRef<number | null>(null)
   const terminalVisible = Boolean(selectedTaskName)
   usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
 
@@ -120,21 +126,48 @@ export default function MonitorPage() {
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
-    const handlePointerMove = (event: PointerEvent) => {
-      const rect = monitorShellRef.current?.getBoundingClientRect()
-      const left = rect?.left ?? 0
-      const width = rect?.width || window.innerWidth || 1
-      const next = clampMonitorSidebarWidth(((event.clientX - left) / width) * 100)
-      setMonitorSidebarWidthPct(next)
+    const persistMonitorSidebarWidth = (next: number) => {
       try {
         window.localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY, String(next))
       } catch {
         // Runtime resizing should continue even when persistence is blocked.
       }
-      window.requestAnimationFrame(() => fitAddonRef.current?.fit())
     }
 
-    const stopResize = () => setResizingMonitorSidebar(false)
+    const fitMonitorTerminal = () => {
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        // The terminal may be hidden while the sidebar is still resizable.
+      }
+    }
+
+    const applyPendingMonitorSidebarWidth = () => {
+      monitorResizeFrameRef.current = null
+      setMonitorSidebarWidthPct(pendingMonitorSidebarWidthRef.current)
+      fitMonitorTerminal()
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = monitorShellRef.current?.getBoundingClientRect()
+      const left = rect?.left ?? 0
+      const width = rect?.width || window.innerWidth || 1
+      pendingMonitorSidebarWidthRef.current = clampMonitorSidebarWidth(((event.clientX - left) / width) * 100)
+      if (monitorResizeFrameRef.current == null) {
+        monitorResizeFrameRef.current = window.requestAnimationFrame(applyPendingMonitorSidebarWidth)
+      }
+    }
+
+    const stopResize = () => {
+      if (monitorResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(monitorResizeFrameRef.current)
+        monitorResizeFrameRef.current = null
+      }
+      setMonitorSidebarWidthPct(pendingMonitorSidebarWidthRef.current)
+      fitMonitorTerminal()
+      persistMonitorSidebarWidth(pendingMonitorSidebarWidthRef.current)
+      setResizingMonitorSidebar(false)
+    }
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResize, { once: true })
@@ -142,6 +175,10 @@ export default function MonitorPage() {
     return () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
+      if (monitorResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(monitorResizeFrameRef.current)
+        monitorResizeFrameRef.current = null
+      }
       document.body.style.cursor = previousCursor
       document.body.style.userSelect = previousUserSelect
     }
@@ -343,6 +380,37 @@ export default function MonitorPage() {
   selectedLogRef.current = selectedLog
   liveLogNameRef.current = liveLogName
 
+  const flushLiveLogChunkBuffer = useCallback(() => {
+    if (liveLogFlushTimerRef.current !== null) {
+      window.clearTimeout(liveLogFlushTimerRef.current)
+      liveLogFlushTimerRef.current = null
+    }
+
+    const buffer = pendingLiveLogChunkRef.current
+    if (!buffer.content) {
+      return
+    }
+
+    pendingLiveLogChunkRef.current = { key: '', content: '' }
+
+    const activeTaskName = selectedTaskNameRef.current
+    const activeLog = selectedLogRef.current || liveLogNameRef.current
+    const activeKey = activeTaskName ? `${activeTaskName}::${activeLog}` : ''
+    if (buffer.key === activeKey) {
+      appendLog(buffer.content)
+    }
+  }, [appendLog])
+
+  useEffect(() => {
+    return () => {
+      if (liveLogFlushTimerRef.current !== null) {
+        window.clearTimeout(liveLogFlushTimerRef.current)
+        liveLogFlushTimerRef.current = null
+      }
+      pendingLiveLogChunkRef.current = { key: '', content: '' }
+    }
+  }, [])
+
   useEffect(() => {
     const key = `${selectedTaskName ?? ''}::${liveLogName}`
     if (livePollingKeyRef.current === key) {
@@ -365,8 +433,17 @@ export default function MonitorPage() {
     }
 
     wsStreamActiveRef.current = true
-    appendLog(message.content)
-  }, [appendLog])
+    const key = `${activeTaskName}::${activeLog || liveLogNameRef.current}`
+    const buffer = pendingLiveLogChunkRef.current
+    if (buffer.key === key) {
+      pendingLiveLogChunkRef.current = { key, content: buffer.content + message.content }
+    } else {
+      pendingLiveLogChunkRef.current = { key, content: message.content }
+    }
+    if (liveLogFlushTimerRef.current === null) {
+      liveLogFlushTimerRef.current = window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)
+    }
+  }, [flushLiveLogChunkBuffer])
 
   useLogStream({ taskName: selectedTaskName, onChunk: handleChunk, enabled: isLive })
 

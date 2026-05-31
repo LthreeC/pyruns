@@ -117,6 +117,12 @@ export const pinTask = (name: string, pinned?: boolean) =>
     body: JSON.stringify({ pinned }),
   })
 
+export const reorderTasks = (items: { name: string; pinned: boolean }[]) =>
+  request<{ count: number; items: Task[] }>('/api/tasks/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ items }),
+  })
+
 export const updateNotes = (name: string, notes: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/notes`, {
     method: 'PATCH',

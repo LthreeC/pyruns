@@ -12,6 +12,7 @@ export interface Task {
   config_mode: TaskKind
   task_kind: TaskKind
   pinned: boolean
+  task_order?: number | null
   notes: string
   env: Record<string, string>
   created_at: string

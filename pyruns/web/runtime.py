@@ -78,6 +78,19 @@ class TaskPage:
     has_more: bool
 
 
+def _task_order_key(task: Dict[str, Any]) -> tuple:
+    """Sort by persisted manual order, then by normal activity rank."""
+    order = task.get("task_order")
+    if order is not None:
+        try:
+            return (0, float(order), str(task.get("name", "")))
+        except (TypeError, ValueError):
+            pass
+
+    active_rank, time_rank, inactive_tie = task_sort_key(task)
+    return (1, -active_rank, -time_rank, -inactive_tie, str(task.get("name", "")))
+
+
 class PyrunsRuntime:
     """Owns the current workspace and lazily-instantiated service singletons."""
 
@@ -287,13 +300,11 @@ class PyrunsRuntime:
         tasks = filter_tasks(self.task_manager.list_tasks(), query, status)
         pinned = sorted(
             [task for task in tasks if task.get("pinned")],
-            key=task_sort_key,
-            reverse=True,
+            key=_task_order_key,
         )
         others = sorted(
             [task for task in tasks if not task.get("pinned")],
-            key=task_sort_key,
-            reverse=True,
+            key=_task_order_key,
         )
         ordered = pinned + others
 
@@ -457,6 +468,20 @@ class PyrunsRuntime:
                 raise KeyError(task_name)
             raise ValueError(str(result))
         return self.require_task(task_name, refresh=True)
+
+    def reorder_tasks(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Persist manual card order for the Manager page."""
+        self.ensure_tasks_loaded(full_refresh=False)
+        ok, result = self.task_manager.reorder_tasks(items)
+        if not ok:
+            message = str(result)
+            if message.startswith("Task not found: "):
+                raise KeyError(message.split(": ", 1)[1])
+            raise ValueError(message)
+        return {
+            "count": len(result),
+            "items": result,
+        }
 
     def update_task_notes(self, task_name: str, notes: str) -> Dict[str, Any]:
         """Persist notes for one task."""

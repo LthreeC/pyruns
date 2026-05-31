@@ -6,7 +6,9 @@ import {
   type ComponentType,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
-import { X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check } from 'lucide-react'
+import {
+  X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check, Plus, Loader2, AlertCircle, CheckCircle2,
+} from 'lucide-react'
 import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
@@ -21,11 +23,14 @@ interface Props {
 }
 
 type Tab = 'info' | 'config' | 'notes' | 'env'
+type EnvPair = { id: string; key: string; value: string }
+type EnvSaveStatus = 'idle' | 'saved' | 'error'
 
 const TASK_DETAIL_WIDTH_STORAGE_KEY = 'pyruns.taskDetailPanelWidth'
 const DEFAULT_PANEL_WIDTH = 720
 const MIN_PANEL_WIDTH = 420
-const MAX_PANEL_WIDTH = 1120
+const MAX_PANEL_WIDTH = 2400
+let nextEnvPairId = 0
 
 function clampPanelWidth(value: number) {
   if (!Number.isFinite(value)) {
@@ -33,8 +38,9 @@ function clampPanelWidth(value: number) {
   }
   const viewportMax = typeof window === 'undefined'
     ? MAX_PANEL_WIDTH
-    : Math.max(MIN_PANEL_WIDTH, window.innerWidth - 56)
-  return Math.min(Math.min(MAX_PANEL_WIDTH, viewportMax), Math.max(MIN_PANEL_WIDTH, value))
+    : Math.max(320, window.innerWidth - 8)
+  const viewportMin = Math.min(MIN_PANEL_WIDTH, viewportMax)
+  return Math.min(Math.min(MAX_PANEL_WIDTH, viewportMax), Math.max(viewportMin, value))
 }
 
 function readStoredPanelWidth() {
@@ -54,26 +60,76 @@ function readStoredPanelWidth() {
   return clampPanelWidth(window.innerWidth * 0.44)
 }
 
-function buildEnvPairs(task: Task): [string, string][] {
-  return Object.entries(task.env || {}).map(([key, value]) => [key, String(value)])
+function createEnvPair(key = '', value = ''): EnvPair {
+  nextEnvPairId += 1
+  return { id: `env-${nextEnvPairId}`, key, value }
+}
+
+function buildEnvPairs(task: Task): EnvPair[] {
+  return Object.entries(task.env || {}).map(([key, value]) => createEnvPair(key, String(value)))
+}
+
+function getDuplicateEnvKeys(envPairs: EnvPair[]): Set<string> {
+  const seen = new Set<string>()
+  const duplicates = new Set<string>()
+
+  envPairs.forEach(({ key }) => {
+    const normalized = key.trim()
+    if (!normalized) {
+      return
+    }
+    if (seen.has(normalized)) {
+      duplicates.add(normalized)
+      return
+    }
+    seen.add(normalized)
+  })
+
+  return duplicates
+}
+
+function getEnvValidationMessage(envPairs: EnvPair[]): string {
+  const duplicateKeys = getDuplicateEnvKeys(envPairs)
+  if (duplicateKeys.size > 0) {
+    return `Duplicate key: ${[...duplicateKeys][0]}`
+  }
+
+  if (envPairs.some(({ key, value }) => !key.trim() && value.trim())) {
+    return 'Add a key before saving this value.'
+  }
+
+  return ''
 }
 
 export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('info')
   const [notes, setNotes] = useState(task.notes || '')
-  const [envPairs, setEnvPairs] = useState<[string, string][]>(buildEnvPairs(task))
+  const [envPairs, setEnvPairs] = useState(() => buildEnvPairs(task))
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(task.name)
   const [notesDirty, setNotesDirty] = useState(false)
   const [envDirty, setEnvDirty] = useState(false)
+  const [envSaveStatus, setEnvSaveStatus] = useState<EnvSaveStatus>('idle')
+  const [envSaveError, setEnvSaveError] = useState('')
+  const [pendingEnvFocusId, setPendingEnvFocusId] = useState<string | null>(null)
   const [panelWidth, setPanelWidth] = useState(readStoredPanelWidth)
   const [resizingPanel, setResizingPanel] = useState(false)
   const previousTaskNameRef = useRef(task.name)
+  const envKeyInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const suppressNextCloseRef = useRef(false)
+  const pendingPanelWidthRef = useRef(panelWidth)
+  const panelResizeFrameRef = useRef<number | null>(null)
 
   const startPanelResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
     event.stopPropagation()
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+    } catch {
+      // Synthetic pointer events may not have an active pointer to capture.
+    }
+    suppressNextCloseRef.current = true
     setResizingPanel(true)
   }, [])
 
@@ -92,6 +148,9 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setRenaming(false)
     setNotesDirty(false)
     setEnvDirty(false)
+    setEnvSaveStatus('idle')
+    setEnvSaveError('')
+    setPendingEnvFocusId(null)
   }, [task.name])
 
   useEffect(() => {
@@ -107,6 +166,21 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     }
     setEnvPairs(buildEnvPairs(task))
   }, [task.name, task.env, envDirty])
+
+  useEffect(() => {
+    if (!pendingEnvFocusId) {
+      return
+    }
+
+    const input = envKeyInputRefs.current[pendingEnvFocusId]
+    if (!input) {
+      return
+    }
+
+    input.focus()
+    input.select()
+    setPendingEnvFocusId(null)
+  }, [pendingEnvFocusId, envPairs])
 
   useEffect(() => {
     if (renaming) {
@@ -125,9 +199,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
-    const handlePointerMove = (event: PointerEvent) => {
-      const next = clampPanelWidth(window.innerWidth - event.clientX)
-      setPanelWidth(next)
+    const persistPanelWidth = (next: number) => {
       try {
         window.localStorage.setItem(TASK_DETAIL_WIDTH_STORAGE_KEY, String(next))
       } catch {
@@ -135,7 +207,29 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       }
     }
 
-    const stopResize = () => setResizingPanel(false)
+    const applyPendingPanelWidth = () => {
+      panelResizeFrameRef.current = null
+      setPanelWidth(pendingPanelWidthRef.current)
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      suppressNextCloseRef.current = true
+      pendingPanelWidthRef.current = clampPanelWidth(window.innerWidth - event.clientX)
+      if (panelResizeFrameRef.current == null) {
+        panelResizeFrameRef.current = window.requestAnimationFrame(applyPendingPanelWidth)
+      }
+    }
+
+    const stopResize = () => {
+      suppressNextCloseRef.current = true
+      if (panelResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(panelResizeFrameRef.current)
+        panelResizeFrameRef.current = null
+      }
+      setPanelWidth(pendingPanelWidthRef.current)
+      persistPanelWidth(pendingPanelWidthRef.current)
+      setResizingPanel(false)
+    }
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResize, { once: true })
@@ -143,10 +237,20 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     return () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
+      if (panelResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(panelResizeFrameRef.current)
+        panelResizeFrameRef.current = null
+      }
       document.body.style.cursor = previousCursor
       document.body.style.userSelect = previousUserSelect
     }
   }, [resizingPanel])
+
+  const markEnvDirty = useCallback(() => {
+    setEnvDirty(true)
+    setEnvSaveStatus('idle')
+    setEnvSaveError('')
+  }, [])
 
   const handleSaveNotes = useCallback(async () => {
     setSaving(true)
@@ -160,16 +264,58 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   }, [task.name, notes, onRefresh])
 
   const handleSaveEnv = useCallback(async () => {
+    const validationMessage = getEnvValidationMessage(envPairs)
+    if (validationMessage) {
+      setEnvSaveStatus('error')
+      setEnvSaveError(validationMessage)
+      return
+    }
+
     setSaving(true)
-    const env = Object.fromEntries(envPairs.filter(([key]) => key.trim()))
+    setEnvSaveStatus('idle')
+    setEnvSaveError('')
+    const env = Object.fromEntries(
+      envPairs
+        .filter(({ key }) => key.trim())
+        .map(({ key, value }) => [key.trim(), value])
+    )
     try {
       await api.updateEnv(task.name, env)
+      setEnvPairs(Object.entries(env).map(([key, value]) => createEnvPair(key, String(value))))
       setEnvDirty(false)
+      setEnvSaveStatus('saved')
       onRefresh()
+    } catch {
+      setEnvSaveStatus('error')
+      setEnvSaveError('Could not save environment variables.')
     } finally {
       setSaving(false)
     }
   }, [task.name, envPairs, onRefresh])
+
+  function requestClose() {
+    if ((notesDirty || envDirty) && typeof window !== 'undefined' && !window.confirm('Discard unsaved changes?')) {
+      return
+    }
+
+    onClose()
+  }
+
+  function handlePanelBackdropClick() {
+    if (suppressNextCloseRef.current) {
+      suppressNextCloseRef.current = false
+      return
+    }
+
+    requestClose()
+  }
+
+  const addEnvPair = useCallback(() => {
+    const pair = createEnvPair()
+    setEnvPairs(current => [...current, pair])
+    setPendingEnvFocusId(pair.id)
+    markEnvDirty()
+  }, [markEnvDirty])
 
   const handleRename = useCallback(async () => {
     if (!newName.trim() || newName === task.name) {
@@ -196,12 +342,19 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     { key: 'notes', label: 'Notes', icon: StickyNote },
     { key: 'env', label: 'Env', icon: Variable },
   ]
+  const duplicateEnvKeys = getDuplicateEnvKeys(envPairs)
+  const envValidationMessage = getEnvValidationMessage(envPairs)
+  const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)
+  const envSaveButtonLabel = saving ? 'Saving...' : envSaveStatus === 'saved' ? 'Saved' : 'Save'
+  const envFeedback = envValidationMessage || envSaveError
+  const envFeedbackIsError = envSaveStatus === 'error' || Boolean(envValidationMessage)
+  const envSaveTitle = envValidationMessage || (envDirty ? 'Save environment variables' : 'No environment changes to save')
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/30" />
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/30" onClick={handlePanelBackdropClick} />
       <div
-        className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-56px)] flex-col border-l border-border-subtle bg-surface-raised"
+        className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
         style={{ width: panelWidth }}
         onClick={event => event.stopPropagation()}
       >
@@ -211,10 +364,18 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           aria-orientation="vertical"
           onPointerDown={startPanelResize}
           className={clsx(
-            'absolute left-0 top-0 z-10 h-full w-2 -translate-x-1 cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
-            resizingPanel ? 'bg-accent/35' : 'bg-transparent hover:bg-accent/20',
+            'group absolute left-0 top-0 z-20 h-full w-5 -translate-x-2.5 cursor-col-resize touch-none focus:outline-none focus:ring-2 focus:ring-accent/35',
+            resizingPanel ? 'bg-accent/10' : 'bg-transparent',
           )}
-        />
+        >
+          <span
+            aria-hidden="true"
+            className={clsx(
+              'absolute left-1/2 top-0 h-full w-px -translate-x-1/2 transition-colors',
+              resizingPanel ? 'bg-accent/70' : 'bg-border-subtle group-hover:bg-accent/45',
+            )}
+          />
+        </button>
         <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
           <StatusBadge status={task.status as TaskStatus} />
 
@@ -272,7 +433,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
             title="Close"
           >
@@ -328,67 +489,123 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           )}
           {tab === 'env' && (
             <div className="flex flex-col gap-3">
-              {envPairs.map(([key, value], index) => (
-                <div key={`${key}-${index}`} className="flex items-center gap-2">
+              <div className="grid grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_32px] gap-2 px-0.5 text-2xs font-medium text-txt-tertiary">
+                <span>Key</span>
+                <span>Value</span>
+                <span className="sr-only">Actions</span>
+              </div>
+
+              {envPairs.length === 0 && (
+                <div className="rounded-md border border-dashed border-border-subtle px-3 py-5 text-center text-xs text-txt-tertiary">
+                  No environment variables
+                </div>
+              )}
+
+              {envPairs.map(pair => {
+                const normalizedKey = pair.key.trim()
+                const keyHasError = (!normalizedKey && pair.value.trim()) || duplicateEnvKeys.has(normalizedKey)
+
+                return (
+                <div key={pair.id} className="grid grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_32px] items-center gap-2">
                   <input
-                    value={key}
+                    ref={node => { envKeyInputRefs.current[pair.id] = node }}
+                    value={pair.key}
                     onChange={event => {
-                      const next = [...envPairs]
-                      next[index] = [event.target.value, value]
-                      setEnvPairs(next)
-                      setEnvDirty(true)
+                      setEnvPairs(current => current.map(envPair => (
+                        envPair.id === pair.id ? { ...envPair, key: event.target.value } : envPair
+                      )))
+                      markEnvDirty()
                     }}
                     placeholder="KEY"
-                    className="w-2/5 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
+                    aria-label="Environment variable key"
+                    className={clsx(
+                      'w-full rounded-md border bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors',
+                      keyHasError ? 'border-rose-400/70 focus:border-rose-400' : 'border-border-subtle focus:border-border',
+                    )}
                   />
                   <input
-                    value={value}
+                    value={pair.value}
                     onChange={event => {
-                      const next = [...envPairs]
-                      next[index] = [key, event.target.value]
-                      setEnvPairs(next)
-                      setEnvDirty(true)
+                      setEnvPairs(current => current.map(envPair => (
+                        envPair.id === pair.id ? { ...envPair, value: event.target.value } : envPair
+                      )))
+                      markEnvDirty()
                     }}
                     placeholder="value"
-                    className="flex-1 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
+                    aria-label="Environment variable value"
+                    className="w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
                   />
                   <button
                     type="button"
                     onClick={() => {
-                      setEnvPairs(envPairs.filter((_, pairIndex) => pairIndex !== index))
-                      setEnvDirty(true)
+                      setEnvPairs(current => current.filter(envPair => envPair.id !== pair.id))
+                      markEnvDirty()
                     }}
-                    className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-rose-400"
-                    title="Remove"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-400/35"
+                    title="Remove variable"
+                    aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-              ))}
+                )
+              })}
 
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setEnvPairs([...envPairs, ['', '']])
-                    setEnvDirty(true)
-                  }}
-                  className="text-xs text-txt-secondary transition-colors hover:text-txt-primary"
+                  onClick={addEnvPair}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/35"
+                  aria-label="Add environment variable"
                 >
-                  + Add variable
+                  <Plus className="h-3.5 w-3.5" />
+                  Add variable
                 </button>
                 <div className="flex-1" />
                 <button
                   type="button"
                   onClick={() => void handleSaveEnv()}
-                  disabled={saving}
-                  className="rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay disabled:opacity-50"
+                  disabled={envSaveDisabled}
+                  title={envSaveTitle}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed',
+                    envSaveStatus === 'saved' && !envDirty
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      : envSaveDisabled
+                        ? 'border-border-subtle text-txt-secondary opacity-60'
+                        : 'border-accent bg-accent text-white hover:bg-accent-hover',
+                  )}
                 >
-                  <span className="inline-flex items-center gap-1.5">
+                  {saving ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : envSaveStatus === 'saved' ? (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  ) : (
                     <Save className="h-3.5 w-3.5" />
-                    Save
-                  </span>
+                  )}
+                  {envSaveButtonLabel}
                 </button>
+              </div>
+
+              <div className="min-h-5 text-2xs">
+                {envFeedback ? (
+                  <span className={clsx(
+                    'inline-flex items-center gap-1.5',
+                    envFeedbackIsError ? 'text-rose-500' : 'text-txt-tertiary',
+                  )}>
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    {envFeedback}
+                  </span>
+                ) : envDirty ? (
+                  <span className="text-amber-600 dark:text-amber-400">Unsaved changes</span>
+                ) : envSaveStatus === 'saved' ? (
+                  <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Saved
+                  </span>
+                ) : (
+                  <span className="text-txt-tertiary">No changes</span>
+                )}
               </div>
             </div>
           )}

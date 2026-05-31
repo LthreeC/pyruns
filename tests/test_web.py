@@ -814,6 +814,37 @@ def test_pin_notes_env_and_rename_endpoints(tmp_path):
     assert client.get("/api/tasks/alpha-renamed").status_code == 200
 
 
+def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    _add_task(workspace, "beta")
+    _add_task(workspace, "gamma")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/api/tasks/reorder",
+        json={
+            "items": [
+                {"name": "gamma", "pinned": True},
+                {"name": "alpha", "pinned": False},
+                {"name": "beta", "pinned": False},
+            ]
+        },
+    )
+    listed = client.get("/api/tasks", params={"limit": 0, "refresh": True}).json()["items"]
+    gamma_info = json.loads(
+        (workspace / TASKS_DIR / "gamma" / "task_info.json").read_text(encoding="utf-8")
+    )
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["items"]] == ["gamma", "alpha", "beta"]
+    assert response.json()["items"][0]["pinned"] is True
+    assert [item["name"] for item in listed[:3]] == ["gamma", "alpha", "beta"]
+    assert gamma_info["pinned"] is True
+    assert gamma_info["task_order"] == 0
+
+
 def test_logs_websocket_streams_live_chunks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
