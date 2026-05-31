@@ -62,11 +62,9 @@ def decode_log_bytes(data: bytes) -> str:
 
 
 def normalize_log_newlines(text: str) -> str:
-    """Normalize log text for terminal rendering."""
+    """Leave terminal/log text unchanged; xterm handles end-of-line rendering."""
 
-    if not text:
-        return ""
-    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+    return text or ""
 
 
 def append_log(log_path: str, message: str) -> None:
@@ -130,6 +128,50 @@ def read_last_bytes(log_path: str, n_bytes: int = 10000) -> Tuple[str, int]:
             handle.seek(start)
             content = normalize_log_newlines(decode_log_bytes(handle.read()))
             return content, size
+    except Exception:
+        return "", 0
+
+
+def read_last_lines(log_path: str, max_lines: int = 10000) -> Tuple[str, int]:
+    """Read up to the last ``max_lines`` newline-delimited log lines."""
+
+    if not os.path.exists(log_path):
+        return "", 0
+
+    try:
+        size = os.path.getsize(log_path)
+        if size <= 0:
+            return "", 0
+
+        max_lines = max(0, int(max_lines))
+        if max_lines == 0:
+            return "", size
+
+        block_size = 64 * 1024
+        position = size
+        chunks: list[bytes] = []
+        line_break_count = 0
+        next_chunk_starts_with_lf = False
+
+        with open(log_path, "rb") as handle:
+            while position > 0 and line_break_count <= max_lines:
+                read_size = min(block_size, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                chunks.append(chunk)
+                chunk_breaks = chunk.count(b"\n") + chunk.count(b"\r") - chunk.count(b"\r\n")
+                if chunk.endswith(b"\r") and next_chunk_starts_with_lf:
+                    chunk_breaks -= 1
+                line_break_count += chunk_breaks
+                next_chunk_starts_with_lf = chunk.startswith(b"\n")
+
+        data = b"".join(reversed(chunks))
+        lines = data.splitlines(keepends=True)
+        if len(lines) > max_lines:
+            data = b"".join(lines[-max_lines:])
+
+        return normalize_log_newlines(decode_log_bytes(data)), size
     except Exception:
         return "", 0
 

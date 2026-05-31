@@ -183,8 +183,8 @@ manager_max_workers: 1
 manager_execution_mode: thread
 ui_page_size: 50
 
-monitor_chunk_size: 50000
-monitor_scrollback: 100000
+monitor_chunk_size: 50000      # bytes per incremental log response
+monitor_scrollback: 100000     # terminal history lines and initial line tail
 monitor_sidebar_width_pct: 14
 
 log_enabled: false

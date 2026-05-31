@@ -9,6 +9,7 @@ import type {
   WorkspaceInfo,
 } from './types'
 import * as api from './api'
+import { resolveMonitorScrollback } from './utils/monitorSettings'
 
 let taskRequestSeq = 0
 let monitorTaskRequestSeq = 0
@@ -142,6 +143,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     return ws
   },
 }))
+
+function currentMonitorScrollback() {
+  return resolveMonitorScrollback(useWorkspaceStore.getState().workspace?.settings)
+}
 
 interface TaskState {
   tasks: Task[]
@@ -365,7 +370,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       loading: true,
     })
     try {
-      const logs = await api.getTaskLogs(name, undefined, undefined, 50000)
+      const logs = await api.getTaskLogs(name, { tailLines: currentMonitorScrollback() })
       if (requestId !== monitorRequestSeq || get().selectedTaskName !== name) {
         return
       }
@@ -387,7 +392,10 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     const requestId = ++monitorRequestSeq
     set({ selectedLog: logName, logContent: '', logOffset: 0, loading: true })
     try {
-      const logs = await api.getTaskLogs(selectedTaskName, logName, undefined, 50000)
+      const logs = await api.getTaskLogs(selectedTaskName, {
+        logFileName: logName,
+        tailLines: currentMonitorScrollback(),
+      })
       if (
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== selectedTaskName

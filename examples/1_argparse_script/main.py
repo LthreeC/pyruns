@@ -33,7 +33,7 @@ def main():
     last_loss = 0
 
     for epoch in range(1, args.epochs + 1):
-        time.sleep(0.5)  # Simulate compute
+        time.sleep(0.0005)  # Simulate compute
         loss = 1.0 / (epoch * args.lr * 100)
         last_loss = loss
         # print(f"Epoch {epoch}/{args.epochs} - Loss: {loss:.4f}")

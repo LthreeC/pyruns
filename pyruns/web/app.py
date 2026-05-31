@@ -480,7 +480,9 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         task_name: str,
         log_file_name: str | None = None,
         offset: int | None = Query(default=None),
-        tail_bytes: int = 12000,
+        tail_bytes: int | None = Query(default=None),
+        tail_lines: int | None = Query(default=None),
+        chunk_size: int | None = Query(default=None),
     ) -> dict[str, Any]:
         try:
             return get_runtime().get_task_logs(
@@ -488,6 +490,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 log_file_name=log_file_name,
                 offset=offset,
                 tail_bytes=tail_bytes,
+                tail_lines=tail_lines,
+                chunk_size=chunk_size,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc

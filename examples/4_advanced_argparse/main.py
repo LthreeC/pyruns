@@ -4,6 +4,12 @@ import os
 import random
 import time
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 import pyruns
 
 
@@ -43,8 +49,8 @@ def main() -> None:
 
     width = max(1, sum(args.layers))
     loss = 1.0
-    for step in range(1, 4):
-        time.sleep(0.05)
+    for step in tqdm(range(1, 4), ascii=True, unit="step"):
+        time.sleep(0.005)
         loss = round(loss * (0.72 + random.random() * 0.04), 6)
         throughput = round(width / step, 3)
         print(f"step={step} loss={loss} throughput={throughput}")

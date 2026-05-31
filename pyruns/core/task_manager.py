@@ -517,34 +517,55 @@ class TaskManager:
 
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a queued or running task."""
+        target_name = ""
+        target_ref: Dict[str, Any] | None = None
+        previous_status = ""
+        was_running = False
+
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("queued", "running"):
                 return False
             previous_status = str(target["status"])
+            was_running = previous_status == "running"
+            target_name = target["name"]
+            target_ref = target
 
-            if target["status"] == "running":
-                pid = self._latest_pid_from_disk(target)
-                if pid:
-                    kill_process(int(pid))
-                self._running_ids.discard(target["name"])
+        if target_ref is None:
+            return False
+
+        if was_running:
+            pid = self._latest_pid_from_disk(target_ref)
+            if pid:
+                kill_process(int(pid))
+            try:
                 self._persist_pending_stop_summary(
-                    target,
+                    target_ref,
                     event="stopped",
                     reason="cancelled_by_user",
                     detail_lines=[f"previous_status={previous_status}"],
                 )
-            else:
+            except TimeoutError as exc:
+                logger.warning("Could not persist cancel summary for %s yet: %s", target_name, exc)
+        else:
+            try:
                 self._mark_failed_on_disk(
-                    target,
+                    target_ref,
                     event="stopped",
                     reason="cancelled_by_user",
                     detail_lines=[f"previous_status={previous_status}"],
                 )
+            except TimeoutError as exc:
+                logger.warning("Could not persist queued cancel state for %s yet: %s", target_name, exc)
 
-            target["status"] = "failed"
+        with self._lock:
+            current = self._resolve_identifier_locked(target_name)
+            if current:
+                current["status"] = "failed"
+                if was_running:
+                    self._running_ids.discard(target_name)
             self._recompute_processing_flag_locked()
-            logger.info("Cancelled task %s", target["name"])
+            logger.info("Cancelled task %s", target_name)
         self.trigger_update()
         return True
 

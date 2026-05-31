@@ -135,11 +135,19 @@ export const renameTask = (name: string, newName: string) =>
     body: JSON.stringify({ new_name: newName }),
   })
 
-export const getTaskLogs = (name: string, logFileName?: string, offset?: number, tailBytes = 12000) => {
+export const getTaskLogs = (name: string, options: {
+  logFileName?: string
+  offset?: number
+  tailBytes?: number
+  tailLines?: number
+  chunkSize?: number
+} = {}) => {
   const sp = new URLSearchParams()
-  if (logFileName) sp.set('log_file_name', logFileName)
-  if (offset != null) sp.set('offset', String(offset))
-  sp.set('tail_bytes', String(tailBytes))
+  if (options.logFileName) sp.set('log_file_name', options.logFileName)
+  if (options.offset != null) sp.set('offset', String(options.offset))
+  if (options.tailBytes != null) sp.set('tail_bytes', String(options.tailBytes))
+  if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
+  if (options.chunkSize != null) sp.set('chunk_size', String(options.chunkSize))
   return request<TaskLogs>(`/api/tasks/${encodeURIComponent(name)}/logs?${sp}`)
 }
 

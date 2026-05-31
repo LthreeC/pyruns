@@ -17,6 +17,11 @@ import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import type { LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
+import {
+  DEFAULT_MONITOR_SCROLLBACK,
+  resolveMonitorChunkSize,
+  resolveMonitorScrollback,
+} from '@/utils/monitorSettings'
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
@@ -75,6 +80,8 @@ export default function MonitorPage() {
   const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
   const hasActive = monitorTasks.some(task => task.status === 'running' || task.status === 'queued')
+  const monitorChunkSize = resolveMonitorChunkSize(workspace?.settings)
+  const monitorScrollback = resolveMonitorScrollback(workspace?.settings)
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
   const settingsSidebarWidthPct = Number.isFinite(sidebarWidthRaw)
     ? Math.min(35, Math.max(10, sidebarWidthRaw))
@@ -142,9 +149,10 @@ export default function MonitorPage() {
 
   useEffect(() => {
     const term = new XTerminal({
+      convertEol: true,
       cursorBlink: false,
       disableStdin: true,
-      scrollback: 100000,
+      scrollback: DEFAULT_MONITOR_SCROLLBACK,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
       allowProposedApi: true,
@@ -206,6 +214,12 @@ export default function MonitorPage() {
       fitAddonRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if (xtermRef.current) {
+      xtermRef.current.options.scrollback = monitorScrollback
+    }
+  }, [monitorScrollback])
 
   useEffect(() => {
     if (!terminalVisible) {
@@ -367,7 +381,11 @@ export default function MonitorPage() {
     const requestedLog = selectedLogRef.current || liveLog
     const currentOffset = useMonitorStore.getState().logOffset
     try {
-      const logs = await api.getTaskLogs(activeTaskName, requestedLog, currentOffset, 50000)
+      const logs = await api.getTaskLogs(activeTaskName, {
+        logFileName: requestedLog,
+        offset: currentOffset,
+        chunkSize: monitorChunkSize,
+      })
       if (selectedTaskNameRef.current !== activeTaskName) {
         return
       }
@@ -387,7 +405,7 @@ export default function MonitorPage() {
     } finally {
       livePollInFlightRef.current = false
     }
-  }, [])
+  }, [monitorChunkSize])
 
   usePolling(pollLiveLog, 1000, Boolean(isLive), false)
 

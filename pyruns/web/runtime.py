@@ -46,7 +46,7 @@ from pyruns.utils.config_utils import (
     validate_config_types_against_template,
 )
 from pyruns.utils.info_io import get_log_options, load_script_info, resolve_log_path
-from pyruns.utils.log_io import read_last_bytes, read_log_chunk
+from pyruns.utils.log_io import read_last_bytes, read_last_lines, safe_read_log
 from pyruns.utils.settings import ensure_settings_file, load_settings
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, task_sort_key
@@ -57,6 +57,14 @@ from pyruns.utils.task_files import build_task_preview_and_search, normalize_wor
 TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
+
+
+def _int_setting(settings: Dict[str, Any], key: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        value = int(settings.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
 
 
 @dataclass
@@ -488,7 +496,9 @@ class PyrunsRuntime:
         *,
         log_file_name: str | None = None,
         offset: int | None = None,
-        tail_bytes: int = 12000,
+        tail_bytes: int | None = None,
+        tail_lines: int | None = None,
+        chunk_size: int | None = None,
     ) -> Dict[str, Any]:
         """Load a historical log chunk for the monitor page."""
         task = self.get_task(task_name, refresh=False)
@@ -510,9 +520,26 @@ class PyrunsRuntime:
             }
 
         if offset is None:
-            content, new_offset = read_last_bytes(selected_path, n_bytes=max(1, tail_bytes))
+            if tail_lines is not None:
+                content, new_offset = read_last_lines(selected_path, max_lines=max(0, tail_lines))
+            else:
+                byte_limit = tail_bytes
+                if byte_limit is None:
+                    byte_limit = _int_setting(
+                        self.settings,
+                        "monitor_chunk_size",
+                        _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
+                    )
+                content, new_offset = read_last_bytes(selected_path, n_bytes=max(1, byte_limit))
         else:
-            content, new_offset = read_log_chunk(selected_path, max(0, offset))
+            byte_limit = chunk_size
+            if byte_limit is None:
+                byte_limit = _int_setting(
+                    self.settings,
+                    "monitor_chunk_size",
+                    _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
+                )
+            content, new_offset = safe_read_log(selected_path, max(0, offset), max_bytes=max(1, byte_limit))
 
         return {
             "task_name": task_name,

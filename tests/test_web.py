@@ -500,6 +500,43 @@ def test_logs_endpoint_returns_history_and_available_logs(tmp_path):
     assert "line 1" in payload["content"]
 
 
+def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
+    workspace = _make_workspace(
+        tmp_path,
+        "main",
+    )
+    _add_task(
+        workspace,
+        "alpha",
+        status="running",
+        log_text="".join(f"line {index}\n" for index in range(1, 6)),
+    )
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks/alpha/logs", params={"tail_lines": 2})
+
+    assert response.status_code == 200
+    content = response.json()["content"]
+    assert "line 4" in content
+    assert "line 5" in content
+    assert "line 3" not in content
+
+
+def test_logs_endpoint_caps_incremental_reads_by_chunk_size(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running", log_text="line 1\nline 2\n")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks/alpha/logs", params={"offset": 0, "chunk_size": 8})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"].replace("\r", "") == "line 1\n"
+    assert payload["offset"] == len(payload["content"].encode("utf-8"))
+
+
 def test_template_content_and_generator_create_endpoints(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

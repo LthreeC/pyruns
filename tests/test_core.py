@@ -1064,6 +1064,42 @@ def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
     assert info["_pending_stop_summary"]["detail_lines"] == ["previous_status=running"]
 
 
+def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    monkeypatch.setattr(manager, "_latest_pid_from_disk", lambda task: 12345)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
+
+    with patch("pyruns.core.task_manager.update_task_info", side_effect=TimeoutError("busy")):
+        assert manager.cancel_task("runner") is True
+
+    assert manager.get_task("runner")["status"] == "failed"
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")

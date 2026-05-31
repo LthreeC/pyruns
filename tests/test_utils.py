@@ -28,7 +28,8 @@ from pyruns.utils.config_utils import (
     preview_config_line, validate_config_types_against_template,
 )
 from pyruns.utils.log_io import (
-    append_log, decode_log_bytes, read_log, read_log_chunk, read_last_bytes, safe_read_log,
+    append_log, decode_log_bytes, normalize_log_newlines,
+    read_log, read_log_chunk, read_last_bytes, read_last_lines, safe_read_log,
 )
 from pyruns.utils.parse_utils import (
     detect_config_source_fast, extract_argparse_params,
@@ -276,6 +277,15 @@ def test_read_log_chunk(tmp_path):
     assert off3 == 3
 
 
+def test_normalize_log_newlines_leaves_terminal_stream_unchanged():
+    text = "progress 1/3\rprogress 2/3\nfinished\n"
+
+    normalized = normalize_log_newlines(text)
+
+    assert normalized == text
+    assert "progress 1/3\r\nprogress 2/3" not in normalized
+
+
 def test_read_last_bytes(tmp_path):
     log_file = str(tmp_path / "test.log")
     
@@ -294,6 +304,36 @@ def test_read_last_bytes(tmp_path):
     text2, offset2 = read_last_bytes(log_file, 2000)
     assert text2.replace("\r", "") == content
     assert offset2 == len(content)
+
+
+def test_read_last_lines(tmp_path):
+    log_file = str(tmp_path / "test.log")
+
+    assert read_last_lines(log_file, 100) == ("", 0)
+
+    content = "line 1\nline 2\nline 3\nline 4"
+    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+
+    text, offset = read_last_lines(log_file, 2)
+    assert text.replace("\r", "") == "line 3\nline 4"
+    assert offset == len(content)
+
+    text2, offset2 = read_last_lines(log_file, 20)
+    assert text2.replace("\r", "") == content
+    assert offset2 == len(content)
+
+    text3, offset3 = read_last_lines(log_file, 0)
+    assert text3 == ""
+    assert offset3 == len(content)
+
+    progress_content = "step 1\rstep 2\rstep 3"
+    with open(log_file, "w", encoding="utf-8", newline="") as f:
+        f.write(progress_content)
+
+    text4, offset4 = read_last_lines(log_file, 2)
+    assert text4 == "step 2\rstep 3"
+    assert offset4 == len(progress_content)
 
 
 def test_safe_read_log(tmp_path):
