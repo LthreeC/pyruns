@@ -28,6 +28,7 @@ interface CodeTextEditorProps {
   wrapStorageKey?: string
   defaultWrap?: boolean
   placeholder?: string
+  compactToolbar?: boolean
 }
 
 const YAML_EXTENSION = yamlLanguage()
@@ -204,6 +205,7 @@ export default function CodeTextEditor({
   wrapStorageKey,
   defaultWrap = true,
   placeholder,
+  compactToolbar = false,
 }: CodeTextEditorProps) {
   const [wrap, setWrap] = useState(() => getStoredWrap(wrapStorageKey, defaultWrap))
   const editorViewRef = useRef<EditorView | null>(null)
@@ -238,34 +240,52 @@ export default function CodeTextEditor({
   return (
     <div
       className={clsx(
-        'code-text-editor group flex flex-col rounded-md border border-border-subtle bg-surface-raised transition-colors focus-within:border-accent/70 focus-within:ring-2 focus-within:ring-accent/12',
+        'code-text-editor group relative flex flex-col rounded-md border border-border-subtle bg-surface-raised transition-colors focus-within:border-accent/50 focus-within:ring-1 focus-within:ring-accent/10',
         className,
       )}
     >
-      <div className="flex h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/35 px-2.5">
-        <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
-          {language === 'yaml' ? 'YAML' : 'Shell'}
-        </span>
-        <span className="font-mono text-[10px] text-txt-tertiary">
-          {lineCount} line{lineCount > 1 ? 's' : ''}
-        </span>
+      {!compactToolbar && (
+        <div className="flex h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/25 px-2.5">
+          <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
+            {language === 'yaml' ? 'YAML' : 'Shell'}
+          </span>
+          <span className="font-mono text-[10px] text-txt-tertiary">
+            {lineCount} line{lineCount > 1 ? 's' : ''}
+          </span>
+          <button
+            type="button"
+            onMouseDown={event => event.preventDefault()}
+            onClick={() => setWrap(current => !current)}
+            aria-pressed={wrap}
+            aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
+            title={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
+            className={clsx(
+              'ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
+              wrap
+                ? 'bg-accent/10 text-accent'
+                : 'text-txt-tertiary hover:bg-surface-raised hover:text-txt-primary',
+            )}
+          >
+            <WrapText className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {compactToolbar && (
         <button
           type="button"
           onMouseDown={event => event.preventDefault()}
           onClick={() => setWrap(current => !current)}
           aria-pressed={wrap}
+          aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
           title={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
           className={clsx(
-            'ml-auto inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10px] font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
-            wrap
-              ? 'border-accent/25 bg-accent/10 text-accent'
-              : 'border-border-subtle bg-surface-raised text-txt-tertiary hover:text-txt-primary',
+            'absolute right-1.5 top-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/95 text-txt-tertiary shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
+            wrap ? 'text-accent' : 'hover:bg-surface-overlay hover:text-txt-primary',
           )}
         >
-          <WrapText className="h-3 w-3" />
-          <span>{wrap ? 'Wrap' : 'No wrap'}</span>
+          <WrapText className="h-3.5 w-3.5" />
         </button>
-      </div>
+      )}
       <div className="min-h-0 flex-1 cursor-text" onMouseDown={focusEditorFromBlankArea}>
         <CodeMirror
           value={value}

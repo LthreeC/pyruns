@@ -103,8 +103,8 @@ body {
   min-height: max(32rem, calc(100vh - 15rem));
 }
 .runtime-env-editor {
-  height: min(20rem, calc(100vh - 24rem));
-  min-height: 14rem;
+  height: min(12rem, calc(100vh - 18rem));
+  min-height: 7rem;
 }
 .code-text-editor .cm-editor {
   height: 100%;
@@ -115,18 +115,20 @@ body {
   cursor: text;
   overflow: auto;
 }
+.code-text-editor .cm-editor.cm-lineWrapping .cm-scroller {
+  overflow-x: hidden;
+}
 .code-text-editor .cm-content {
   min-height: 100%;
-  min-width: 100%;
   box-sizing: border-box;
-  padding: 10px 0;
+  padding: 8px 0;
 }
 .code-text-editor .cm-line {
-  padding: 0 14px;
+  padding: 0 12px;
 }
 .code-text-editor .cm-placeholder {
   color: var(--text-tertiary);
-  opacity: 0.58;
+  opacity: 0.5;
 }
 .code-text-editor .cm-activeLine {
   background: rgba(59, 130, 246, 0.08) !important;

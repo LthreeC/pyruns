@@ -408,7 +408,7 @@ def test_react_code_editor_focuses_from_blank_editor_area():
     assert "onMouseDown={focusEditorFromBlankArea}" in editor
     assert "cursor-text" in editor
     assert ".code-text-editor .cm-content" in css
-    assert "min-width: 100%;" in css
+    assert "min-width: 100%;" not in css
 
 
 def test_react_code_editor_has_no_horizontal_scrollbar():
@@ -425,7 +425,33 @@ def test_react_code_editor_has_no_horizontal_scrollbar():
     assert 'wrapStorageKey="pyruns.generator.yaml.wrap"' in generator
     assert 'wrapStorageKey="pyruns.runtime.env.wrap"' in runtime_panel
     assert "overflow: auto;" in css
+    assert ".cm-editor.cm-lineWrapping .cm-scroller" in css
     assert "white-space: pre-wrap;" not in css
+
+
+def test_react_runtime_panel_stays_compact_and_low_chrome():
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
+
+    assert "w-[620px]" in runtime_panel
+    assert "grid-cols-[128px_minmax(0,1fr)]" not in runtime_panel
+    assert "border-r border-border-subtle" not in runtime_panel
+    assert "inline-flex rounded-md bg-surface-overlay p-0.5" in runtime_panel
+    assert "compactToolbar" in runtime_panel
+    assert "Save Python Runtime" not in runtime_panel
+    assert "Save Workspace Env" not in runtime_panel
+    assert "Workspace Env</h3>" not in runtime_panel
+    assert "terminal &lt; workspace &lt; task" not in runtime_panel
+    assert "Safe .bashrc-style lines" not in runtime_panel
+    assert "Saved to this workspace" not in runtime_panel
+    assert "Only change this when env discovery fails" not in runtime_panel
+    assert "grid grid-cols-3 gap-2" not in runtime_panel
+    assert "rounded-md border px-3 py-2.5" not in runtime_panel
+    assert "compactToolbar?: boolean" in editor
+    assert "{!compactToolbar &&" in editor
+    assert "absolute right-1.5 top-1.5" in editor
+    assert "<span>{wrap ? 'Wrap' : 'No wrap'}</span>" not in editor
+    assert "aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}" in editor
 
 
 def test_react_launcher_supports_manual_shell_folder_paths():

@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Check,
-  Code2,
-  FileText,
   Loader2,
   RefreshCw,
-  ServerCog,
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -183,60 +180,53 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     return null
   }
 
-  const navItems: Array<{
-    id: RuntimePage
-    label: string
-    icon: typeof ServerCog
-    meta: string
-    active: boolean
-  }> = [
-    {
-      id: 'python',
-      label: 'Python Runtime',
-      icon: ServerCog,
-      meta: currentLabel,
-      active: runtimeMode !== 'follow',
-    },
-    {
-      id: 'env',
-      label: 'Workspace Env',
-      icon: FileText,
-      meta: envCount ? `${envCount} vars` : 'Empty',
-      active: envCount > 0,
-    },
-  ]
-
   const modeItems: Array<{
     id: PythonRuntimeMode
     title: string
-    detail: string
   }> = [
     {
       id: 'follow',
       title: 'Follow',
-      detail: runtime?.process.conda_env || 'Use server process Python',
     },
     {
       id: 'conda',
       title: 'Conda',
-      detail: condaAvailable ? (condaEnv || runtime?.process.conda_env || 'Choose environment') : 'Command not found',
     },
     {
       id: 'python',
-      title: 'Python Path',
-      detail: pythonPath ? pythonPath.split(/[\\/]/).pop() || 'Custom Python' : 'Pin executable',
+      title: 'Path',
     },
   ]
 
   return (
     <div
-      className="fixed bottom-3 z-50 flex max-h-[calc(100vh-24px)] w-[760px] flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-xl"
+      className="fixed bottom-3 z-50 flex max-h-[calc(100vh-24px)] w-[620px] flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-xl"
       style={{ left, maxWidth: `calc(100vw - ${left + 12}px)` }}
     >
-      <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
-        <div className="min-w-0 flex-1">
+      <div className="flex h-10 items-center gap-2 border-b border-border-subtle px-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="text-sm font-semibold text-txt-primary">Runtime</div>
-          <div className="truncate text-xs text-txt-tertiary">{currentLabel}</div>
+          <div className="truncate rounded-md bg-surface-overlay px-2 py-0.5 text-2xs text-txt-secondary">
+            {currentLabel}
+          </div>
+        </div>
+        <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
+          {(['python', 'env'] as RuntimePage[]).map(page => (
+            <button
+              key={page}
+              type="button"
+              onClick={() => setActivePage(page)}
+              className={clsx(
+                'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
+                activePage === page
+                  ? 'bg-surface-raised text-accent shadow-sm'
+                  : 'text-txt-secondary hover:text-txt-primary'
+              )}
+            >
+              {page === 'python' ? 'Python' : 'Env'}
+              {page === 'env' && envCount > 0 && <span className="h-1.5 w-1.5 rounded-full bg-status-completed" />}
+            </button>
+          ))}
         </div>
         <button
           type="button"
@@ -257,212 +247,152 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         </button>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[190px_minmax(0,1fr)] overflow-hidden">
-        <div className="border-r border-border-subtle bg-surface-overlay/35 p-2.5">
-          {navItems.map(item => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActivePage(item.id)}
-                className={clsx(
-                  'mb-1.5 flex w-full items-start gap-2 rounded-md px-2.5 py-2.5 text-left transition-colors',
-                  item.id === activePage
-                    ? 'bg-accent/10 text-accent'
-                    : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
-                )}
-              >
-                <Icon className="mt-0.5 h-4 w-4 flex-none" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{item.label}</span>
-                  <span className="block truncate text-2xs text-txt-tertiary">{item.meta}</span>
-                </span>
-                <span className={clsx(
-                  'mt-1.5 h-1.5 w-1.5 flex-none rounded-full',
-                  item.active ? 'bg-status-completed' : 'bg-txt-tertiary'
-                )} />
-              </button>
-            )
-          })}
-        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {error && (
+          <div className="mb-3 rounded-md bg-status-failed/10 px-3 py-2 text-sm text-status-failed">
+            {error}
+          </div>
+        )}
 
-        <div className="min-h-0 overflow-y-auto p-4">
-          {error && (
-            <div className="mb-3 rounded-md border border-status-failed/25 bg-status-failed/10 px-3 py-2 text-sm text-status-failed">
-              {error}
-            </div>
-          )}
-
-          {activePage === 'python' && (
-            <section className="space-y-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Code2 className="h-4 w-4 text-accent" />
-                  <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-txt-tertiary">Python Runtime</h3>
-                </div>
-                <p className="mt-1 truncate text-sm text-txt-secondary" title={runtime?.process.python_executable}>
-                  Process Python: {runtime?.process.python_executable || 'unknown'}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
+        {activePage === 'python' && (
+          <section className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
                 {modeItems.map(item => (
                   <button
                     key={item.id}
                     type="button"
                     onClick={() => chooseRuntimeMode(item.id)}
                     className={clsx(
-                      'rounded-md border px-3 py-2.5 text-left transition-colors',
+                      'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
                       runtimeMode === item.id
-                        ? 'border-accent bg-accent/10 text-accent'
-                        : 'border-border-subtle bg-surface-raised text-txt-secondary hover:border-border hover:bg-surface-overlay hover:text-txt-primary'
+                        ? 'bg-surface-raised text-accent shadow-sm'
+                        : 'text-txt-secondary hover:text-txt-primary'
                     )}
                   >
-                    <span className="block text-sm font-medium">{item.title}</span>
-                    <span className="mt-0.5 block truncate text-2xs text-txt-tertiary">{item.detail}</span>
+                    {item.title}
                   </button>
                 ))}
               </div>
-
-              {runtimeMode === 'follow' && (
-                <div className="rounded-md border border-border-subtle bg-surface-overlay/35 px-3 py-3 text-sm text-txt-secondary">
-                  New tasks will use the Python environment that started the Pyruns server.
-                </div>
-              )}
-
-              {runtimeMode === 'conda' && (
-                <div className="space-y-3 rounded-md border border-border-subtle bg-surface-overlay/25 p-3">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-txt-secondary">Conda environment</label>
-                    <select
-                      value={condaEnv}
-                      disabled={saving}
-                      onChange={event => setCondaEnv(event.target.value)}
-                      className="h-10 w-full rounded-md border border-border-subtle bg-surface-raised px-3 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50"
-                    >
-                      <option value="">Choose environment</option>
-                      {runtime?.process.conda_env && !runtime.conda.envs.some(env => env.name === runtime.process.conda_env) && (
-                        <option value={runtime.process.conda_env}>
-                          {runtime.process.conda_env} (current)
-                        </option>
-                      )}
-                      {runtime?.conda.envs.map(env => (
-                        <option key={env.name} value={env.name}>
-                          {env.name}{env.active ? ' (active)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="rounded-md border border-border-subtle bg-surface-raised px-3 py-2.5">
-                    <div className="text-xs font-medium text-txt-secondary">Resolved Python</div>
-                    <div
-                      className="mt-1 truncate font-mono text-sm text-txt-primary"
-                      title={selectedConda?.python_executable || runtime?.process.python_executable}
-                    >
-                      {selectedConda?.python_executable || 'Choose a conda environment to preview Python path'}
-                    </div>
-                    {selectedConda?.path && (
-                      <div className="mt-1 truncate text-2xs text-txt-tertiary" title={selectedConda.path}>
-                        {selectedConda.path}
-                      </div>
-                    )}
-                  </div>
-                  {runtime?.conda.error && (
-                    <div className="rounded-md border border-status-failed/25 bg-status-failed/10 px-3 py-2 text-sm text-status-failed">
-                      {runtime.conda.error}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setShowCondaAdvanced(value => !value)}
-                    className="text-xs font-medium text-txt-tertiary transition-colors hover:text-txt-primary"
-                  >
-                    {showCondaAdvanced ? 'Hide advanced' : 'Advanced'}
-                  </button>
-                  {showCondaAdvanced && (
-                    <div className="space-y-1.5 rounded-md border border-border-subtle bg-surface-raised p-3">
-                      <label className="text-xs font-medium text-txt-secondary">Conda command</label>
-                      <input
-                        value={condaExecutable}
-                        onChange={event => setCondaExecutable(event.target.value)}
-                        className="h-10 w-full rounded-md border border-border-subtle bg-surface-raised px-3 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
-                        placeholder="conda"
-                      />
-                      <div className="text-2xs text-txt-tertiary">
-                        Only change this when env discovery fails or conda is not on PATH.
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {runtimeMode === 'python' && (
-                <div className="space-y-1.5 rounded-md border border-border-subtle bg-surface-overlay/25 p-3">
-                  <label className="text-xs font-medium text-txt-secondary">Python executable path</label>
-                  <input
-                    value={pythonPath}
-                    onChange={event => setPythonPath(event.target.value)}
-                    className="h-10 w-full rounded-md border border-border-subtle bg-surface-raised px-3 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
-                    placeholder={runtime?.process.python_executable || 'python path'}
-                  />
-                </div>
-              )}
-
               <button
                 type="button"
                 onClick={savePythonRuntime}
                 disabled={saving}
-                className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
               >
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                Save Python Runtime
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                Save
               </button>
-            </section>
-          )}
+            </div>
 
-          {activePage === 'env' && (
-            <section className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-accent" />
-                    <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-txt-tertiary">Workspace Env</h3>
-                  </div>
-                  <span className="rounded-md bg-surface-overlay px-2 py-1 text-2xs text-txt-tertiary">
-                    terminal &lt; workspace &lt; task
-                  </span>
+            {runtimeMode === 'follow' && (
+              <div className="space-y-1 border-l border-border-subtle pl-3">
+                <div className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Python</div>
+                <div className="truncate font-mono text-sm text-txt-primary" title={runtime?.process.python_executable}>
+                  {runtime?.process.python_executable || 'unknown'}
                 </div>
-                <p className="mt-1 text-xs leading-relaxed text-txt-secondary">
-                  Safe .bashrc-style lines: KEY=value, export KEY=value, quotes, escaped spaces, and comments.
-                </p>
               </div>
-              <CodeTextEditor
-                language="shell"
-                value={envText}
-                onChange={setEnvText}
-                theme={codeMirrorTheme}
-                className="runtime-env-editor"
-                wrapStorageKey="pyruns.runtime.env.wrap"
-                placeholder={'# CUDA_VISIBLE_DEVICES=0    export HF_HOME="/data/hf cache"'}
-              />
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-2xs text-txt-tertiary">
-                  Saved to this workspace and reused after refresh.
+            )}
+
+            {runtimeMode === 'conda' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Conda</label>
+                  <select
+                    value={condaEnv}
+                    disabled={saving}
+                    onChange={event => setCondaEnv(event.target.value)}
+                    className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-50"
+                  >
+                    <option value="">Choose environment</option>
+                    {runtime?.process.conda_env && !runtime.conda.envs.some(env => env.name === runtime.process.conda_env) && (
+                      <option value={runtime.process.conda_env}>
+                        {runtime.process.conda_env} (current)
+                      </option>
+                    )}
+                    {runtime?.conda.envs.map(env => (
+                      <option key={env.name} value={env.name}>
+                        {env.name}{env.active ? ' (active)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+                <div className="space-y-0.5 border-l border-border-subtle pl-3">
+                  <div className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Python</div>
+                  <div
+                    className="truncate font-mono text-sm text-txt-primary"
+                    title={selectedConda?.python_executable || runtime?.process.python_executable}
+                  >
+                    {selectedConda?.python_executable || 'Choose a conda environment to preview Python path'}
+                  </div>
+                  {selectedConda?.path && (
+                    <div className="truncate text-2xs text-txt-tertiary" title={selectedConda.path}>
+                      {selectedConda.path}
+                    </div>
+                  )}
+                </div>
+                {runtime?.conda.error && (
+                  <div className="rounded-md bg-status-failed/10 px-3 py-2 text-sm text-status-failed">
+                    {runtime.conda.error}
+                  </div>
+                )}
                 <button
                   type="button"
-                  onClick={() => saveRuntime({ global_env_text: envText })}
-                  disabled={saving}
-                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-accent px-4 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                  onClick={() => setShowCondaAdvanced(value => !value)}
+                  className="text-2xs font-medium text-txt-tertiary transition-colors hover:text-txt-primary"
                 >
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                  Save Env
+                  {showCondaAdvanced ? 'Hide conda command' : 'Conda command'}
                 </button>
+                {showCondaAdvanced && (
+                  <input
+                    value={condaExecutable}
+                    onChange={event => setCondaExecutable(event.target.value)}
+                    className="h-8 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-xs text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                    placeholder="conda"
+                  />
+                )}
               </div>
-            </section>
-          )}
-        </div>
+            )}
+
+            {runtimeMode === 'python' && (
+              <div>
+                <label className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Python path</label>
+                <input
+                  value={pythonPath}
+                  onChange={event => setPythonPath(event.target.value)}
+                  className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                  placeholder={runtime?.process.python_executable || 'python path'}
+                />
+              </div>
+            )}
+          </section>
+        )}
+
+        {activePage === 'env' && (
+          <section className="space-y-3">
+            <CodeTextEditor
+              language="shell"
+              value={envText}
+              onChange={setEnvText}
+              theme={codeMirrorTheme}
+              className="runtime-env-editor"
+              wrapStorageKey="pyruns.runtime.env.wrap"
+              compactToolbar
+              placeholder="KEY=value"
+            />
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => saveRuntime({ global_env_text: envText })}
+                disabled={saving}
+                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                Save
+              </button>
+            </div>
+          </section>
+        )}
       </div>
     </div>
   )
