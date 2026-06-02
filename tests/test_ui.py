@@ -505,7 +505,7 @@ def test_react_launcher_prompts_for_yaml_when_load_script_has_workspace_default(
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "const workspaceDefault = res.items.find(item => item.kind === 'workspace_default')" in store
-    assert "selectedConfig: workspaceDefault?.path || ''" in store
+    assert "selectedConfig: shouldPromptForConfig ? '' : workspaceDefault?.path || ''" in store
     assert "const shouldPromptForConfig = (res.config_source || '') === 'pyruns_load'" in store
     assert "step: workspaceDefault && !shouldPromptForConfig ? 2 : 1" in store
     assert "const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'" in launcher
@@ -530,10 +530,140 @@ def test_react_launcher_clears_stale_error_after_valid_script_or_config_selectio
     assert "const handleSelectScript = useCallback(async (scriptPath: string)" in launcher
     assert "setError('')" in launcher
     assert "await selectScript(scriptPath)" in launcher
-    assert "const handleSelectConfig = useCallback((configPath: string)" in launcher
+    assert "const handleSelectConfig = useCallback(async (configPath: string)" in launcher
     assert "selectConfig(configPath)" in launcher
     assert "onClick={() => void handleSelectScript(script.script_path)}" in launcher
-    assert "onClick={() => handleSelectConfig(config.path)}" in launcher
+    assert "onClick={() => void handleSelectConfig(config.path)}" in launcher
+
+
+def test_react_launcher_browses_yaml_and_skips_ready_step():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "pickLauncherConfigPath" in api
+    assert "/api/launcher/pick-config-path" in api
+    assert "'manual'" in types
+    assert "const openSelectedConfig = useCallback(async (configPath: string)" in launcher
+    assert "const handlePickConfig = useCallback(async ()" in launcher
+    assert "api.pickLauncherConfigPath(selectedScript)" in launcher
+    assert "Open Config Path" in launcher
+    assert "Browse Config" in launcher
+    assert "Use Config" not in launcher
+    assert "Path to YAML config" in launcher
+    assert "Ready to launch" not in launcher
+    assert "Open Workspace <ArrowRight" not in launcher
+
+
+def test_react_launcher_config_step_uses_path_picker_panel():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "function ConfigActionPanel" in launcher
+    assert "configPathReady" in launcher
+    assert "api.validateLauncherPath('config', debouncedConfigPath, selectedScript)" in launcher
+    assert "validation={configValidation}" in launcher
+    assert "PathValidationHint validation={validation}" in launcher
+    assert "Browse Config" in launcher
+    assert "Open Config Path" in launcher
+
+
+def test_react_generator_nested_form_uses_tree_depth_guides():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "depth={depth + 1}" in generator
+    assert "treeSection" in generator
+    assert "treeConnector" in generator
+    assert "border-l border-border-subtle/60" in generator
+    assert "'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1'" in generator
+    assert "treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }" in generator
+    assert "aria-expanded={open}" in generator
+    assert "title={`${prefix} (${Object.keys(data).length} fields)`}" in generator
+
+
+def test_react_generator_has_tree_layout_and_expand_controls():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "type FormLayoutMode = 'grid' | 'tree'" in generator
+    assert "formLayoutMode" in generator
+    assert "setFormLayoutMode" in generator
+    assert "Grid" in generator
+    assert "Tree" in generator
+    assert "Expand all" in generator
+    assert "Collapse all" in generator
+    assert "treeOpenSignal" in generator
+    assert "setOpen(openSignalValue)" in generator
+    assert "TREE_TOP_LEVEL_COLUMN_STYLE" in generator
+    assert "clamp(520px, 42vw, 680px)" in generator
+    assert "TREE_SECTION_GRID_STYLE" not in generator
+    assert "TREE_FIELD_GRID_STYLE" not in generator
+    assert "repeat(auto-fit, minmax(360px, 1fr))" not in generator
+    assert "repeat(auto-fit, minmax(300px, 1fr))" not in generator
+    assert "layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle" in generator
+    assert "layoutMode === 'tree' ? 'space-y-3' : 'grid gap-2'" in generator
+    assert "layoutMode === 'tree' ? 'mb-3 inline-block w-full align-top [break-inside:avoid]' : 'col-span-full'" in generator
+    assert "editorMode === 'form' && formLayoutMode === 'tree'" in generator
+    assert "layoutMode={formLayoutMode}" in generator
+    assert "min-w-[280px]" in generator
+    assert "ml-auto flex flex-wrap items-center gap-2" in generator
+
+
+def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "layoutMode?: FormLayoutMode" in generator
+    assert "const treeParamRow = layoutMode === 'tree'" in generator
+    assert "treeParamRow" in generator
+    assert "min-h-8 border-transparent bg-transparent px-2 py-1 hover:bg-surface-overlay/70" in generator
+    assert "treeParamRow ? 'flex-[0.7]' : 'flex-1'" in generator
+    assert "treeParamRow ? 'flex-[1.3] justify-start' : 'flex-none justify-end'" in generator
+    assert "treeParamRow ? 'ml-auto min-w-0 flex-[1.3]' : 'ml-auto min-w-0 flex-1'" in generator
+    assert "ml-auto min-w-[180px] max-w-[420px] flex-[1.2]" not in generator
+    assert "grid-cols-[24px_minmax(82px,0.55fr)_auto_minmax(112px,1fr)]" not in generator
+    assert "max-w-[34%]" not in generator
+
+
+def test_react_generator_shell_mode_loads_existing_shell_scripts():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+
+    assert "handlePickShellFile" in generator
+    assert "api.pickGeneratorShellFile()" in generator
+    assert "Load task or script" in generator
+    assert "Browse Shell" in generator
+    assert "Shell Workspace" not in generator
+    assert "templates.some(template => template.value === selectedTemplate)" in generator
+    assert "/api/generator/pick-shell-file" in api
+
+
+def test_react_generator_shows_imported_default_config_source():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "config_default_source_name" in types
+    assert "configDefaultSourceName" in generator
+    assert "Loaded from" in generator
+    assert "pathLeaf(selectedTemplate) === 'config_default.yaml'" in generator
+
+
+def test_react_generator_reloads_default_when_imported_yaml_changes():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "lastWorkspaceDefaultKeyRef" in generator
+    assert "workspaceDefaultKey" in generator
+    assert "workspaceDefaultChanged" in generator
+    assert "defaultTemplate = templates.find(template => pathLeaf(template.value) === 'config_default.yaml')" in generator
+    assert "workspace?.config_default_source" in generator
+    assert "workspace?.config_default_source_name" in generator
+    assert "void loadTemplate(defaultTemplateValue)" in generator
+
+
+def test_react_generator_keeps_workspace_default_selected_after_create():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "loadTemplate(generatedTemplateValue)" not in generator
+    assert "buildGeneratedTemplateValue" not in generator
+    assert "await fetchTemplates()" in generator
+    assert "firstTaskName: result.items[0]?.name || ''" in generator
 
 
 def test_react_batch_preview_uses_readable_summary_and_structured_rows():
@@ -635,4 +765,4 @@ def test_react_launcher_config_step_explains_required_yaml_selection():
     assert "This script needs a YAML config before first launch." in launcher
     assert "pyruns will save it as config_default.yaml" in launcher
     assert "Choose or enter a YAML config path first." in launcher
-    assert "Path to config.yaml" in launcher
+    assert "Path to YAML config" in launcher

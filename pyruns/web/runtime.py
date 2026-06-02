@@ -26,7 +26,9 @@ from pyruns.core.report import build_export_csv
 from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
+    choose_config_file,
     choose_directory,
+    choose_shell_file,
     choose_script_file,
     get_config_selection_metadata,
     list_config_candidates,
@@ -45,18 +47,30 @@ from pyruns.utils.config_utils import (
     preview_config_line,
     validate_config_types_against_template,
 )
-from pyruns.utils.info_io import get_log_options, load_script_info, resolve_log_path
+from pyruns.utils.info_io import get_log_options, load_script_info, load_task_info, resolve_log_path
 from pyruns.utils.log_io import read_last_bytes, read_last_lines, safe_read_log
 from pyruns.utils.settings import ensure_settings_file, load_settings
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import validate_task_name
-from pyruns.utils.task_files import build_task_preview_and_search, normalize_workspace_kind
+from pyruns.utils.task_files import build_task_preview_and_search, normalize_task_kind, normalize_workspace_kind
 
 
 TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
+SHELL_TEMPLATE_EXTENSIONS = {".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd"}
+SHELL_TEMPLATE_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    _cfg.DEFAULT_ROOT_NAME,
+}
+SHELL_TEMPLATE_MAX_DEPTH = 3
+SHELL_TEMPLATE_LIMIT = 80
 
 
 def _int_setting(settings: Dict[str, Any], key: str, default: int, *, minimum: int = 1) -> int:
@@ -176,6 +190,8 @@ class PyrunsRuntime:
             "tasks_dir": self.tasks_dir,
             "script_path": script_path,
             "script_name": str(script_info.get("script_name", "") or ""),
+            "config_default_source": str(script_info.get("config_default_source", "") or ""),
+            "config_default_source_name": str(script_info.get("config_default_source_name", "") or ""),
             "project_root": project_root,
             "workspace_kind": workspace_kind,
             "workspace_ready": workspace_ready,
@@ -188,9 +204,109 @@ class PyrunsRuntime:
         """Return loadable template options for the Generator page."""
         script_info = load_script_info(self.root_dir)
         if normalize_workspace_kind(script_info.get("workspace_kind")) == _cfg.WORKSPACE_KIND_SHELL:
-            return []
+            return self.list_shell_templates(script_info)
         options = list_template_files(self.root_dir)
-        return [{"value": value, "label": label} for value, label in options.items()]
+        source_name = str(script_info.get("config_default_source_name", "") or "")
+        result = []
+        for value, label in options.items():
+            display_label = label
+            if source_name and os.path.basename(value) == CONFIG_DEFAULT_FILENAME:
+                display_label = f"{label} (from {source_name})"
+            result.append({"value": value, "label": display_label})
+        return result
+
+    def list_shell_templates(self, script_info: Dict[str, Any] | None = None) -> List[Dict[str, str]]:
+        """Return shell payloads and nearby scripts that can seed shell-mode tasks."""
+
+        info = script_info if script_info is not None else load_script_info(self.root_dir)
+        items: List[Dict[str, str]] = []
+        seen_values: set[str] = set()
+
+        tasks_dir = os.path.join(self.root_dir, TASKS_DIR)
+        if os.path.isdir(tasks_dir):
+            task_entries: list[tuple[str, str, float]] = []
+            for dir_name in sorted(os.listdir(tasks_dir)):
+                if dir_name.startswith("."):
+                    continue
+                task_dir = os.path.join(tasks_dir, dir_name)
+                if not os.path.isdir(task_dir):
+                    continue
+                task_info = load_task_info(task_dir)
+                if normalize_task_kind(task_info.get("task_kind")) != _cfg.TASK_KIND_SHELL:
+                    continue
+
+                configured_file = str(task_info.get("config_file", "") or "")
+                candidates = [configured_file] if configured_file else []
+                candidates.extend(name for name in _cfg.SHELL_CONFIG_FILENAMES if name not in candidates)
+
+                payload_name = next(
+                    (
+                        name for name in candidates
+                        if name and os.path.exists(os.path.join(task_dir, name))
+                    ),
+                    "",
+                )
+                if not payload_name:
+                    continue
+
+                value = os.path.join(TASKS_DIR, dir_name, payload_name).replace("\\", "/")
+                try:
+                    mtime = os.path.getmtime(os.path.join(task_dir, _cfg.TASK_INFO_FILENAME))
+                except OSError:
+                    try:
+                        mtime = os.path.getmtime(os.path.join(task_dir, payload_name))
+                    except OSError:
+                        mtime = 0.0
+                task_entries.append((value, dir_name, mtime))
+
+            task_entries.sort(key=lambda item: item[2], reverse=True)
+            for value, label, _ in task_entries:
+                items.append({"value": value, "label": label})
+                seen_values.add(value)
+
+        project_root = str(info.get("project_root", "") or "")
+        if not project_root:
+            project_root = shell_project_root_for_workspace(self.root_dir)
+        project_root = self._normalize_path(project_root)
+        if not os.path.isdir(project_root):
+            return items
+
+        project_items: List[Dict[str, str]] = []
+        for dirpath, dirnames, filenames in os.walk(project_root):
+            normalized_dir = self._normalize_path(dirpath)
+            rel_dir = os.path.relpath(normalized_dir, project_root)
+            depth = 0 if rel_dir == "." else len(rel_dir.split(os.sep))
+            if depth >= SHELL_TEMPLATE_MAX_DEPTH:
+                dirnames[:] = []
+            else:
+                dirnames[:] = [
+                    name for name in dirnames
+                    if name not in SHELL_TEMPLATE_SKIP_DIRS and not name.startswith(".")
+                ]
+
+            for filename in sorted(filenames):
+                suffix = os.path.splitext(filename)[1].lower()
+                if suffix not in SHELL_TEMPLATE_EXTENSIONS:
+                    continue
+                path = self._normalize_path(os.path.join(normalized_dir, filename))
+                rel = os.path.relpath(path, project_root).replace("\\", "/")
+                if path in seen_values:
+                    continue
+                project_items.append({"value": path, "label": rel})
+                seen_values.add(path)
+                if len(project_items) >= SHELL_TEMPLATE_LIMIT:
+                    break
+            if len(project_items) >= SHELL_TEMPLATE_LIMIT:
+                break
+
+        items.extend(sorted(
+            project_items,
+            key=lambda item: (
+                item["label"].count("/"),
+                item["label"].lower(),
+            ),
+        ))
+        return items
 
     def resolve_template_path(self, template_value: str) -> str:
         """Resolve one template entry from workspace-relative or absolute value."""
@@ -217,21 +333,26 @@ class PyrunsRuntime:
             content = handle.read()
 
         label = next(
-            (item["label"] for item in self.list_templates() if item["value"] == template_value),
+            (item["label"] for item in self.list_templates() if item["value"] == path or item["value"] == template_value),
             os.path.basename(path),
         )
         script_info = load_script_info(self.root_dir)
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
-        mode_hint = "shell" if (workspace_kind == _cfg.WORKSPACE_KIND_SHELL or path.endswith(".sh")) else "yaml"
+        suffix = os.path.splitext(path)[1].lower()
+        mode_hint = "shell" if (
+            workspace_kind == _cfg.WORKSPACE_KIND_SHELL
+            or suffix in SHELL_TEMPLATE_EXTENSIONS
+        ) else "yaml"
         data: Any = None
         if mode_hint == "yaml":
             try:
                 data = yaml.safe_load(content)
             except yaml.YAMLError:
                 data = None
+        returned_value = path if os.path.isabs(str(template_value or "")) else template_value
 
         return {
-            "value": template_value,
+            "value": returned_value,
             "label": label,
             "path": path,
             "content": content,
@@ -461,6 +582,21 @@ class PyrunsRuntime:
             "count": len(result),
             "items": result,
         }
+
+    def pick_generator_shell_file(self) -> Dict[str, Any]:
+        """Open a native shell script picker and return the selected script content."""
+
+        if not native_picker_available():
+            raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
+
+        workspace = self.get_workspace_info()
+        initial_dir = str(workspace.get("working_root", "") or workspace.get("project_root", "") or os.getcwd())
+        shell_path = choose_shell_file(initial_dir)
+        if not shell_path:
+            raise ValueError("No shell script selected.")
+        if not os.path.isfile(shell_path):
+            raise FileNotFoundError(f"Shell script not found: {shell_path}")
+        return self.get_template_content(shell_path)
 
     def update_task_notes(self, task_name: str, notes: str) -> Dict[str, Any]:
         """Persist notes for one task."""
@@ -784,7 +920,7 @@ class PyrunsRuntime:
         self.reload(workspace)
         return self.get_workspace_info()
 
-    def validate_launcher_path(self, kind: str, path: str) -> Dict[str, Any]:
+    def validate_launcher_path(self, kind: str, path: str, script_path: str | None = None) -> Dict[str, Any]:
         """Validate a manually entered launcher path without changing workspace state."""
 
         path_text = str(path or "").strip()
@@ -821,13 +957,18 @@ class PyrunsRuntime:
             }
 
         if kind_text in {"config", "yaml", "yml"}:
-            suffix = os.path.splitext(normalized)[1].lower()
-            ok = os.path.isfile(normalized) and suffix in {".yaml", ".yml"}
+            config_path = normalized
+            if script_path and not os.path.isabs(path_text):
+                script_normalized = normalize_path(script_path)
+                if os.path.isfile(script_normalized) and script_normalized.lower().endswith(".py"):
+                    config_path = normalize_path(os.path.join(os.path.dirname(script_normalized), path_text))
+            suffix = os.path.splitext(config_path)[1].lower()
+            ok = os.path.isfile(config_path) and suffix in {".yaml", ".yml"}
             return {
                 "ok": ok,
                 "kind": "config",
-                "normalized_path": normalized,
-                "path_type": "file" if os.path.isfile(normalized) else "",
+                "normalized_path": config_path,
+                "path_type": "file" if os.path.isfile(config_path) else "",
                 "message": "YAML config found." if ok else f"YAML config does not exist or is not a .yaml/.yml file: {path_text}",
             }
 
@@ -851,6 +992,34 @@ class PyrunsRuntime:
         if not script_path:
             raise ValueError("No script selected.")
         return list_workspace_candidates(script_path)[0]
+
+    def pick_launcher_config_path(self, script_path: str) -> Dict[str, Any]:
+        """Open a native YAML picker and return the selected config without bootstrapping."""
+
+        if not native_picker_available():
+            raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
+
+        normalized_script = self.validate_launcher_path("python", script_path)
+        if not normalized_script["ok"]:
+            raise FileNotFoundError(str(normalized_script["message"]))
+
+        script_dir = os.path.dirname(str(normalized_script["normalized_path"]))
+        config_dir = os.path.join(script_dir, "configs")
+        initial_dir = config_dir if os.path.isdir(config_dir) else script_dir
+        config_path = choose_config_file(initial_dir)
+        if not config_path:
+            raise ValueError("No YAML config selected.")
+
+        validation = self.validate_launcher_path("config", config_path)
+        if not validation["ok"]:
+            raise FileNotFoundError(str(validation["message"]))
+
+        normalized_path = str(validation["normalized_path"])
+        return {
+            "path": normalized_path,
+            "label": os.path.basename(normalized_path),
+            "kind": "manual",
+        }
 
     def pick_and_open_launcher_workspace(self) -> Dict[str, Any]:
         """Open a native script picker and activate the chosen workspace."""

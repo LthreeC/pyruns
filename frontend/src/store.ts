@@ -487,7 +487,7 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
       const shouldPromptForConfig = (res.config_source || '') === 'pyruns_load'
       set({
         configs: res.items,
-        selectedConfig: workspaceDefault?.path || '',
+        selectedConfig: shouldPromptForConfig ? '' : workspaceDefault?.path || '',
         requiresConfigTemplate: Boolean(res.requires_config_template),
         configSource: res.config_source || '',
         step: workspaceDefault && !shouldPromptForConfig ? 2 : 1,
@@ -500,7 +500,7 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
   },
   selectConfig(path) {
     launcherRequestSeq += 1
-    set({ selectedConfig: path, step: 2 })
+    set({ selectedConfig: path, step: 1 })
   },
   async openWorkspace() {
     const requestId = ++launcherRequestSeq

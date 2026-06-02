@@ -38,7 +38,7 @@ from pyruns.utils.parse_utils import (
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import (
-    load_task_info, save_task_info, load_record_data,
+    load_task_info, save_task_info, update_task_info, load_record_data,
     get_log_options, resolve_log_path, validate_task_name,
 )
 
@@ -332,8 +332,20 @@ def test_read_last_lines(tmp_path):
         f.write(progress_content)
 
     text4, offset4 = read_last_lines(log_file, 2)
-    assert text4 == "step 2\rstep 3"
+    assert text4 == progress_content
     assert offset4 == len(progress_content)
+
+
+def test_read_last_lines_treats_carriage_return_progress_as_same_terminal_row(tmp_path):
+    log_file = str(tmp_path / "progress.log")
+    content = "epoch 1 done\nloading 1%\rloading 98%\rloading 100%\nepoch 2 done\n"
+    with open(log_file, "w", encoding="utf-8", newline="") as f:
+        f.write(content)
+
+    text, offset = read_last_lines(log_file, 3)
+
+    assert text == "epoch 1 done\nloading 1%\rloading 98%\rloading 100%\nepoch 2 done\n"
+    assert offset == len(content)
 
 
 def test_safe_read_log(tmp_path):
@@ -703,6 +715,29 @@ class TestLoadSaveTaskInfo:
         assert loaded["name"] == info["name"]
         assert loaded["description"] == info["description"]
 
+    def test_update_retries_transient_replace_permission_error(self, tmp_path):
+        task_dir = str(tmp_path)
+        save_task_info(task_dir, {"name": "retry-test", "status": "pending"})
+        real_replace = os.replace
+        calls = {"count": 0}
+
+        def flaky_replace(src, dst):
+            if os.path.basename(dst) == TASK_INFO_FILENAME and calls["count"] == 0:
+                calls["count"] += 1
+                raise PermissionError("temporarily locked")
+            return real_replace(src, dst)
+
+        def mark_completed(info):
+            info["status"] = "completed"
+
+        with patch("pyruns.utils.info_io.os.replace", side_effect=flaky_replace), patch("pyruns.utils.info_io.time.sleep") as sleep:
+            updated = update_task_info(task_dir, mark_completed)
+
+        assert calls["count"] == 1
+        sleep.assert_called()
+        assert updated["status"] == "completed"
+        assert load_task_info(task_dir)["status"] == "completed"
+
 
 class TestLoadRecordData:
     def test_with_records(self, tmp_path):
@@ -976,6 +1011,18 @@ class TestListTemplateFiles:
         result = list_template_files(run_root)
         # the key is now tasks/my-task/config.yaml using forward slashes
         assert "tasks/my-task/config.yaml" in result
+
+    def test_config_default_is_first_workspace_template(self, tmp_path):
+        run_root = str(tmp_path)
+        save_yaml(os.path.join(run_root, "config_default.yaml"), {"lr": 0.01})
+        task_dir = os.path.join(run_root, "tasks", "generated-task")
+        os.makedirs(task_dir, exist_ok=True)
+        save_yaml(os.path.join(task_dir, "config.yaml"), {"lr": 0.02})
+
+        result = list_template_files(run_root)
+
+        assert list(result.items())[0][1] == "config_default.yaml"
+        assert list(result.keys())[1] == "tasks/generated-task/config.yaml"
 
     def test_skips_dot_dirs(self, tmp_path):
         run_root = str(tmp_path)

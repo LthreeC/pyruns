@@ -43,6 +43,11 @@ import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
 
 const DEFAULT_SHELL_TEMPLATE = ''
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
+type FormLayoutMode = 'grid' | 'tree'
+const TREE_TOP_LEVEL_COLUMN_STYLE = {
+  columnWidth: 'clamp(520px, 42vw, 680px)',
+  columnGap: '1rem',
+}
 
 interface CreatedTaskResult {
   count: number
@@ -194,13 +199,6 @@ function getEditorExtensions(mode: 'yaml' | 'shell', theme: 'light' | 'dark'): E
 
 function hasBatchExpression(text: string) {
   return text.includes('|') || /-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?/.test(text)
-}
-
-function buildGeneratedTemplateValue(task: { name?: string; config_file?: string; task_kind?: string }) {
-  if ((task.task_kind || 'python') !== 'python' || !task.name) {
-    return ''
-  }
-  return `tasks/${task.name}/${task.config_file || 'config.yaml'}`
 }
 
 function getBatchTriggerKind(text: string) {
@@ -410,6 +408,11 @@ export default function GeneratorPage() {
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
   const [createdSummary, setCreatedSummary] = useState<CreatedTaskResult | null>(null)
   const [error, setError] = useState('')
+  const [formLayoutMode, setFormLayoutMode] = useState<FormLayoutMode>('tree')
+  const [treeOpenSignal, setTreeOpenSignal] = useState(0)
+  const [treeOpenValue, setTreeOpenValue] = useState(true)
+  const lastWorkspaceDefaultKeyRef = useRef('')
+  const lastShellRootRef = useRef('')
 
   const isShellWorkspace = workspace?.workspace_kind === 'shell'
   const shellRuntime = workspace?.shell_runtime
@@ -420,7 +423,12 @@ export default function GeneratorPage() {
 
   useEffect(() => {
     if (isShellWorkspace) {
-      clearTemplate()
+      const shellRoot = workspace?.run_root || ''
+      if (shellRoot && lastShellRootRef.current !== shellRoot) {
+        lastShellRootRef.current = shellRoot
+        clearTemplate()
+        void fetchTemplates()
+      }
       if (viewMode !== 'shell') {
         setViewMode('shell')
       }
@@ -430,17 +438,24 @@ export default function GeneratorPage() {
       return
     }
 
+    lastShellRootRef.current = ''
     if (viewMode === 'shell') {
       setViewMode('form')
     }
-  }, [clearTemplate, isShellWorkspace, setShellText, setViewMode, shellText, viewMode])
+  }, [clearTemplate, fetchTemplates, isShellWorkspace, setShellText, setViewMode, shellText, viewMode, workspace?.run_root])
 
   useEffect(() => {
     if (!workspace?.run_root || isShellWorkspace) {
       return
     }
     void fetchTemplates()
-  }, [fetchTemplates, isShellWorkspace, workspace?.run_root])
+  }, [
+    fetchTemplates,
+    isShellWorkspace,
+    workspace?.config_default_source,
+    workspace?.config_default_source_name,
+    workspace?.run_root,
+  ])
 
   useEffect(() => {
     if (isShellWorkspace) {
@@ -454,11 +469,37 @@ export default function GeneratorPage() {
       return
     }
 
+    const defaultTemplate = templates.find(template => pathLeaf(template.value) === 'config_default.yaml')
+    const defaultTemplateValue = defaultTemplate?.value || templates[0].value
+    const workspaceDefaultKey = [
+      workspace?.run_root || '',
+      workspace?.config_default_source || '',
+      workspace?.config_default_source_name || '',
+    ].join('|')
+    const workspaceDefaultChanged = workspaceDefaultKey !== lastWorkspaceDefaultKeyRef.current
+    if (workspaceDefaultChanged) {
+      lastWorkspaceDefaultKeyRef.current = workspaceDefaultKey
+    }
+
+    if (workspaceDefaultChanged && defaultTemplateValue && selectedTemplate !== defaultTemplateValue) {
+      void loadTemplate(defaultTemplateValue)
+      return
+    }
+
     const selectedStillExists = templates.some(template => template.value === selectedTemplate)
     if (!selectedStillExists) {
-      void loadTemplate(templates[0].value)
+      void loadTemplate(defaultTemplateValue)
     }
-  }, [clearTemplate, isShellWorkspace, loadTemplate, selectedTemplate, templates])
+  }, [
+    clearTemplate,
+    isShellWorkspace,
+    loadTemplate,
+    selectedTemplate,
+    templates,
+    workspace?.config_default_source,
+    workspace?.config_default_source_name,
+    workspace?.run_root,
+  ])
 
   const parsedConfig = useMemo(() => {
     if (editorMode !== 'form') {
@@ -513,6 +554,28 @@ export default function GeneratorPage() {
     ? `Batch syntax detected. ${previewData.count} tasks will be created after confirmation.`
     : 'Batch syntax detected. A preview opens before creating multiple tasks.'
   const generationBusy = generating || generationStatus === 'previewing'
+  const configDefaultSourceName = workspace?.config_default_source_name || ''
+  const configDefaultSourcePath = workspace?.config_default_source || ''
+  const showImportedConfigSource = Boolean(
+    configDefaultSourceName
+    && pathLeaf(selectedTemplate) === 'config_default.yaml'
+  )
+  const selectedTemplateListed = templates.some(template => template.value === selectedTemplate)
+  const shellTemplateSelectValue = selectedTemplateListed ? selectedTemplate : ''
+  const setAllTreeSections = useCallback((open: boolean) => {
+    setTreeOpenValue(open)
+    setTreeOpenSignal(signal => signal + 1)
+  }, [])
+  const handlePickShellFile = useCallback(async () => {
+    setError('')
+    try {
+      const content = await api.pickGeneratorShellFile()
+      await loadTemplate(content.value)
+      await fetchTemplates()
+    } catch (err: any) {
+      setError(err?.message || 'Failed to load shell script')
+    }
+  }, [fetchTemplates, loadTemplate])
 
   const doCreate = useCallback(async () => {
     setGenerating(true)
@@ -531,25 +594,16 @@ export default function GeneratorPage() {
       setPreviewOpen(false)
       setPreviewData(null)
 
-      let selectedGeneratedTask = ''
-      const generatedTemplateValue = !isShellWorkspace && result.items.length > 0
-        ? buildGeneratedTemplateValue(result.items[0])
-        : ''
-
-      if (generatedTemplateValue) {
-        try {
-          await fetchTemplates()
-          await loadTemplate(generatedTemplateValue)
-          selectedGeneratedTask = result.items[0].name
-        } catch {
-          selectedGeneratedTask = ''
-        }
+      try {
+        await fetchTemplates()
+      } catch {
+        // Creation succeeded; template refresh can be retried on the next render.
       }
 
       setCreatedSummary({
         count: result.count,
         taskKind: result.task_kind === 'shell' ? 'shell task' : 'python task',
-        firstTaskName: result.items[0]?.name || selectedGeneratedTask,
+        firstTaskName: result.items[0]?.name || '',
       })
       setGenerationStatus('created')
     } catch (err: any) {
@@ -558,7 +612,7 @@ export default function GeneratorPage() {
     } finally {
       setGenerating(false)
     }
-  }, [appendTimestamp, editorMode, fetchTemplates, isShellWorkspace, loadTemplate, namePrefix, selectedTemplate, shellText, yamlText])
+  }, [appendTimestamp, editorMode, fetchTemplates, namePrefix, selectedTemplate, shellText, yamlText])
 
   const handleGenerate = useCallback(async () => {
     setError('')
@@ -588,71 +642,163 @@ export default function GeneratorPage() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2">
-        {!isShellWorkspace ? (
-          <div className="relative">
-            <select
-              value={selectedTemplate}
-              onChange={event => void loadTemplate(event.target.value)}
-              title="Select template"
-              className="max-w-[320px] appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          {!isShellWorkspace ? (
+            <div className="relative min-w-[280px]">
+              <select
+                value={selectedTemplate}
+                onChange={event => void loadTemplate(event.target.value)}
+                title="Select template"
+                className="w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+              >
+                {templates.map(template => (
+                  <option key={template.value} value={template.value}>{template.label}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            </div>
+          ) : (
+            <>
+              <div className="relative min-w-[280px]">
+                <select
+                  value={shellTemplateSelectValue}
+                  onChange={event => {
+                    const value = event.target.value
+                    if (value) {
+                      void loadTemplate(value)
+                    } else {
+                      clearTemplate()
+                    }
+                  }}
+                  title="Load task or script"
+                  className="w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+                >
+                  <option value="">Load task or script</option>
+                  {templates.map(template => (
+                    <option key={template.value} value={template.value}>{template.label}</option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handlePickShellFile()}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
+              >
+                <FileCode className="h-3 w-3" />
+                <span>Browse Shell</span>
+              </button>
+            </>
+          )}
+
+          {!isShellWorkspace && templateContent?.read_only && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-2xs text-amber-400">
+              <AlertTriangle className="h-3 w-3" />
+              <span>Read-only</span>
+            </span>
+          )}
+
+          {showImportedConfigSource && (
+            <span
+              className="inline-flex min-w-0 max-w-[260px] items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"
+              title={configDefaultSourcePath || configDefaultSourceName}
             >
-              {templates.map(template => (
-                <option key={template.value} value={template.value}>{template.label}</option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              <FileCode className="h-3 w-3 flex-none text-accent" />
+              <span className="flex-none">Loaded from</span>
+              <span className="truncate font-mono text-txt-primary">{configDefaultSourceName}</span>
+            </span>
+          )}
+
+          {isShellWorkspace && templateContent?.mode_hint === 'shell' && (
+            <span
+              className="inline-flex min-w-0 max-w-[260px] items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"
+              title={templateContent.path}
+            >
+              <FileCode className="h-3 w-3 flex-none text-accent" />
+              <span className="flex-none">Loaded shell</span>
+              <span className="truncate font-mono text-txt-primary">{templateContent.label}</span>
+            </span>
+          )}
+        </div>
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1">
+            {(isShellWorkspace ? ['shell'] : ['form', 'yaml']).map(mode => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode as 'form' | 'yaml' | 'shell')}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
+                  editorMode === mode
+                    ? 'bg-surface-overlay text-txt-primary'
+                    : 'text-txt-secondary hover:text-txt-primary'
+                )}
+              >
+                {mode === 'form' && <LayoutGrid className="h-3 w-3" />}
+                {mode === 'yaml' && <FileCode className="h-3 w-3" />}
+                {mode === 'shell' && <Terminal className="h-3 w-3" />}
+                <span>{mode.charAt(0).toUpperCase() + mode.slice(1)}</span>
+              </button>
+            ))}
           </div>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 rounded-md border border-accent/20 bg-accent/8 px-3 py-1.5 text-xs font-medium text-accent">
-            <Terminal className="h-3.5 w-3.5" />
-            <span>Shell Workspace</span>
-          </span>
-        )}
 
-        {editorMode === 'form' && (
-          <div className="relative">
-            <select
-              value={columns}
-              onChange={event => setColumns(Number(event.target.value))}
-              title="Columns per row"
-              className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 pr-6 text-xs text-txt-primary outline-none transition-colors focus:border-border"
-            >
-              {[2, 3, 4, 5, 6, 7, 8].map(count => (
-                <option key={count} value={count}>{count} col{count > 1 ? 's' : ''}</option>
+          {editorMode === 'form' && (
+            <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
+              {(['grid', 'tree'] as FormLayoutMode[]).map(mode => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={formLayoutMode === mode}
+                  onClick={() => setFormLayoutMode(mode)}
+                  className={clsx(
+                    'inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors',
+                    formLayoutMode === mode
+                      ? 'bg-surface-raised text-txt-primary'
+                      : 'text-txt-secondary hover:text-txt-primary',
+                  )}
+                >
+                  {mode === 'grid' ? <LayoutGrid className="h-3 w-3" /> : <Workflow className="h-3 w-3" />}
+                  <span>{mode === 'grid' ? 'Grid' : 'Tree'}</span>
+                </button>
               ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-          </div>
-        )}
+            </div>
+          )}
 
-        {!isShellWorkspace && templateContent?.read_only && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-2xs text-amber-400">
-            <AlertTriangle className="h-3 w-3" />
-            <span>Read-only</span>
-          </span>
-        )}
+          {editorMode === 'form' && formLayoutMode === 'grid' && (
+            <div className="relative">
+              <select
+                value={columns}
+                onChange={event => setColumns(Number(event.target.value))}
+                title="Columns per row"
+                className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 pr-6 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+              >
+                {[2, 3, 4, 5, 6, 7, 8].map(count => (
+                  <option key={count} value={count}>{count} col{count > 1 ? 's' : ''}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            </div>
+          )}
 
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-1">
-          {(isShellWorkspace ? ['shell'] : ['form', 'yaml']).map(mode => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => setViewMode(mode as 'form' | 'yaml' | 'shell')}
-              className={clsx(
-                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
-                editorMode === mode
-                  ? 'bg-surface-overlay text-txt-primary'
-                  : 'text-txt-secondary hover:text-txt-primary'
-              )}
-            >
-              {mode === 'form' && <LayoutGrid className="h-3 w-3" />}
-              {mode === 'yaml' && <FileCode className="h-3 w-3" />}
-              {mode === 'shell' && <Terminal className="h-3 w-3" />}
-              <span>{mode.charAt(0).toUpperCase() + mode.slice(1)}</span>
-            </button>
-          ))}
+          {editorMode === 'form' && formLayoutMode === 'tree' && (
+            <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
+              <button
+                type="button"
+                onClick={() => setAllTreeSections(true)}
+                className="px-2.5 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
+              >
+                Expand all
+              </button>
+              <button
+                type="button"
+                onClick={() => setAllTreeSections(false)}
+                className="border-l border-border-subtle px-2.5 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
+              >
+                Collapse all
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -666,6 +812,9 @@ export default function GeneratorPage() {
             <FormEditor
               config={parsedConfig}
               columns={columns}
+              layoutMode={formLayoutMode}
+              openSignalValue={treeOpenValue}
+              openSignalVersion={treeOpenSignal}
               declaredTypeMap={declaredTypeMap}
               pinnedParams={pinnedParams}
               batchParams={batchParams}
@@ -1083,6 +1232,9 @@ function ShellRuntimeRow({
 function FormEditor({
   config,
   columns,
+  layoutMode,
+  openSignalValue,
+  openSignalVersion,
   declaredTypeMap,
   pinnedParams,
   batchParams,
@@ -1091,6 +1243,9 @@ function FormEditor({
 }: {
   config: Record<string, any> | null
   columns: number
+  layoutMode: FormLayoutMode
+  openSignalValue: boolean
+  openSignalVersion: number
   declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
   pinnedParams: string[]
   batchParams: string[]
@@ -1127,6 +1282,10 @@ function FormEditor({
     setData(next)
     onChange(next)
   }
+  const gridStyle = { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
+  const contentStyle = layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle
+  const contentClassName = layoutMode === 'tree' ? 'space-y-3' : 'grid gap-2'
+  const childSectionClassName = layoutMode === 'tree' ? 'mb-3 inline-block w-full align-top [break-inside:avoid]' : 'col-span-full'
 
   return (
     <div className="h-full overflow-y-auto p-3">
@@ -1134,6 +1293,7 @@ function FormEditor({
         <PinnedParameters
           rows={pinnedRows}
           columns={columns}
+          layoutMode={layoutMode}
           onTogglePin={onTogglePin}
           onChange={handlePinnedChange}
         />
@@ -1144,16 +1304,23 @@ function FormEditor({
           <span>All Parameters</span>
         </div>
       )}
-      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+      <div
+        className={contentClassName}
+        style={contentStyle}
+      >
         {allKeys.filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key)).map(key => {
           const value = data[key]
           if (isNestedGroup(value)) {
             return (
-              <div key={key} className="col-span-full">
+              <div key={key} className={childSectionClassName}>
                 <NestedSection
                   name={key}
                   data={value}
+                  depth={0}
                   columns={columns}
+                  layoutMode={layoutMode}
+                  openSignalValue={openSignalValue}
+                  openSignalVersion={openSignalVersion}
                   declaredTypeMap={declaredTypeMap}
                   pinnedParams={pinnedParams}
                   pinnedRowKeys={pinnedRowKeys}
@@ -1171,6 +1338,7 @@ function FormEditor({
               name={key}
               value={value}
               declaredType={declaredTypeMap[key]}
+              layoutMode={layoutMode}
               pinned={pinnedParams.includes(key)}
               batchActive={batchParams.includes(key)}
               onChange={next => handleChange(key, next)}
@@ -1186,14 +1354,20 @@ function FormEditor({
 function PinnedParameters({
   rows,
   columns,
+  layoutMode,
   onTogglePin,
   onChange,
 }: {
   rows: PinnedParamRow[]
   columns: number
+  layoutMode: FormLayoutMode
   onTogglePin: (key: string) => void
   onChange: (fullKey: string, value: any) => void
 }) {
+  const gridStyle = { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
+  const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
+  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-2'
+
   return (
     <CompactSection
       title="Pinned Parameters"
@@ -1203,13 +1377,17 @@ function PinnedParameters({
       className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
       bodyClassName="pt-0"
     >
-      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
+      <div
+        className={contentClassName}
+        style={contentStyle}
+      >
         {rows.map(row => (
           <ParamRow
             key={row.fullKey}
             name={row.fullKey}
             value={row.value}
             declaredType={row.declaredType}
+            layoutMode={layoutMode}
             pinned
             batchActive={row.batchActive}
             onChange={next => onChange(row.fullKey, next)}
@@ -1224,7 +1402,11 @@ function PinnedParameters({
 function NestedSection({
   name,
   data,
+  depth,
   columns,
+  layoutMode,
+  openSignalValue,
+  openSignalVersion,
   declaredTypeMap,
   pinnedParams,
   pinnedRowKeys,
@@ -1235,7 +1417,11 @@ function NestedSection({
 }: {
   name: string
   data: Record<string, any>
+  depth: number
   columns: number
+  layoutMode: FormLayoutMode
+  openSignalValue: boolean
+  openSignalVersion: number
   declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
   pinnedParams: string[]
   pinnedRowKeys: Set<string>
@@ -1245,36 +1431,84 @@ function NestedSection({
   onChange: (data: Record<string, any>) => void
 }) {
   const [open, setOpen] = useState(true)
+  const visibleEntries = Object.entries(data).filter(([key]) => !key.startsWith('_meta'))
+  const treeSection = layoutMode === 'tree'
+  const treeConnector = treeSection && depth > 0
+  const gridStyle = { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
+  const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
+  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-2'
+  const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'
+
+  useEffect(() => {
+    setOpen(openSignalValue)
+  }, [openSignalValue, openSignalVersion])
 
   const handleChange = (key: string, value: any) => {
     onChange({ ...data, [key]: value })
   }
 
   return (
-    <div className="overflow-hidden rounded-md border border-border-subtle bg-surface-raised">
+    <div
+      className={clsx(
+        'relative box-border transition-colors',
+        treeSection
+          ? 'overflow-visible rounded-md border border-transparent bg-transparent'
+          : 'overflow-hidden rounded-md border bg-surface-raised',
+        treeSection && depth === 0 && 'border-border-subtle/80 bg-surface-raised/55 px-2 py-1.5',
+        !treeSection && (depth === 0 ? 'border-border-subtle' : 'border-border-subtle/80 border-l-2 border-border-subtle/70'),
+      )}
+      style={treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }}
+    >
+      {treeConnector && (
+        <div className="pointer-events-none absolute bottom-0 left-0 top-4 border-l border-border-subtle/60" />
+      )}
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-1.5 border-b border-border-subtle px-2.5 py-1.5 text-left transition-colors hover:bg-surface-overlay"
+        aria-expanded={open}
+        className={clsx(
+          'relative flex min-h-8 w-full items-center gap-1.5 text-left transition-colors',
+          treeSection
+            ? 'rounded-md px-2 py-1.5 hover:bg-surface-overlay/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25'
+            : 'border-b border-border-subtle px-2.5 py-1.5 hover:bg-surface-overlay',
+          treeSection && depth === 0 && 'bg-surface-overlay/35',
+          !treeSection && (depth === 0 ? 'bg-surface-raised' : 'bg-surface-overlay/45'),
+        )}
+        title={`${prefix} (${Object.keys(data).length} fields)`}
       >
+        {treeConnector && (
+          <span className="absolute left-0 top-1/2 w-2 border-t border-border-subtle/60" />
+        )}
         {open ? <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary" /> : <ChevronRight className="h-3.5 w-3.5 text-txt-tertiary" />}
         <span className="truncate text-sm font-semibold text-txt-primary" title={name}>{name}</span>
+        {depth > 0 && (
+          <span className="min-w-0 truncate font-mono text-2xs text-txt-tertiary">
+            {prefix}
+          </span>
+        )}
         <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs font-medium text-txt-secondary">
-          {Object.keys(data).length}
+          {visibleEntries.length}
         </span>
       </button>
       {open && (
-        <div className="p-2">
-          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}>
-            {Object.entries(data).filter(([key]) => !key.startsWith('_meta')).map(([key, value]) => {
+        <div className={treeSection ? 'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1' : 'p-2'}>
+          <div
+            className={contentClassName}
+            style={contentStyle}
+          >
+            {visibleEntries.map(([key, value]) => {
               const fullKey = `${prefix}.${key}`
               if (isNestedGroup(value)) {
                 return (
-                  <div key={key} className="col-span-full">
+                  <div key={key} className={childSectionClassName}>
                     <NestedSection
                       name={key}
                       data={value}
+                      depth={depth + 1}
                       columns={columns}
+                      layoutMode={layoutMode}
+                      openSignalValue={openSignalValue}
+                      openSignalVersion={openSignalVersion}
                       declaredTypeMap={declaredTypeMap}
                       pinnedParams={pinnedParams}
                       pinnedRowKeys={pinnedRowKeys}
@@ -1295,6 +1529,7 @@ function NestedSection({
                   name={key}
                   value={value}
                   declaredType={declaredTypeMap[fullKey]}
+                  layoutMode={layoutMode}
                   pinned={pinnedParams.includes(fullKey)}
                   batchActive={batchParams.includes(fullKey)}
                   onChange={next => handleChange(key, next)}
@@ -1313,6 +1548,7 @@ function ParamRow({
   name,
   value,
   declaredType,
+  layoutMode,
   pinned,
   batchActive,
   onChange,
@@ -1321,12 +1557,14 @@ function ParamRow({
   name: string
   value: any
   declaredType?: keyof typeof PARAM_TYPE_STYLES
+  layoutMode?: FormLayoutMode
   pinned?: boolean
   batchActive?: boolean
   onChange: (value: any) => void
   onTogglePin: () => void
 }) {
   const originalType = declaredType || inferParamType(value)
+  const treeParamRow = layoutMode === 'tree'
 
   const [localValue, setLocalValue] = useState(stringifyEditable(value))
 
@@ -1373,9 +1611,13 @@ function ParamRow({
   return (
     <div
       className={clsx(
-        'flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors',
-        pinned ? 'border-accent/20 bg-accent/5' : 'border-border-subtle bg-surface-raised hover:border-border',
-        (hasBatch || batchActive) && 'border-amber-500/20 bg-amber-500/5',
+        treeParamRow
+          ? 'flex min-h-8 border-transparent bg-transparent px-2 py-1 hover:bg-surface-overlay/70 min-w-0 items-center gap-2 rounded-md border transition-colors focus-within:border-border-subtle focus-within:bg-surface-raised/80'
+          : 'flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors',
+        treeParamRow
+          ? pinned && 'border-accent/20 bg-accent/5'
+          : (pinned ? 'border-accent/20 bg-accent/5' : 'border-border-subtle bg-surface-raised hover:border-border'),
+        (hasBatch || batchActive) && (treeParamRow ? 'border-amber-500/20 bg-amber-500/5' : 'border-amber-500/20 bg-amber-500/5'),
       )}
     >
       <button
@@ -1394,19 +1636,26 @@ function ParamRow({
         <Pin className="h-3 w-3" />
       </button>
 
-      <span className="max-w-[34%] flex-none truncate text-xs font-semibold text-txt-primary" title={name}>
-        {name}
-      </span>
+      <div className={clsx('flex min-w-0 items-center gap-1.5', treeParamRow ? 'flex-[0.7]' : 'flex-1')}>
+        <span className="min-w-0 truncate text-xs font-semibold text-txt-primary" title={name}>
+          {name}
+        </span>
 
-      <span className={clsx(
-        'flex-none rounded-md px-1.5 py-0.5 text-[10px] font-mono',
-        PARAM_TYPE_STYLES[originalType]
-      )}>
-        {originalType}
-      </span>
+        <span className={clsx(
+          'flex-none rounded-md px-1.5 py-0.5 text-[10px] font-mono',
+          PARAM_TYPE_STYLES[originalType]
+        )}>
+          {originalType}
+        </span>
+      </div>
 
       {originalType === 'bool' && !hasBatch ? (
-        <div className="ml-auto flex items-center gap-1.5">
+        <div
+          className={clsx(
+            'ml-auto flex min-w-0 items-center gap-1.5',
+            treeParamRow ? 'flex-[1.3] justify-start' : 'flex-none justify-end',
+          )}
+        >
           <button
             type="button"
             onClick={() => onChange(!value)}
@@ -1423,7 +1672,7 @@ function ParamRow({
               )}
             />
           </button>
-          <span className="text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
+          <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
         </div>
       ) : (
         <input
@@ -1440,7 +1689,8 @@ function ParamRow({
           spellCheck={false}
           title={localValue}
           className={clsx(
-            'ml-auto min-w-0 flex-1 rounded-md border bg-transparent px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border',
+            'rounded-md border bg-transparent px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border',
+            treeParamRow ? 'ml-auto min-w-0 flex-[1.3]' : 'ml-auto min-w-0 flex-1',
             hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
           )}
         />

@@ -97,6 +97,12 @@ class LauncherOpenRequest(BaseModel):
     config_path: str | None = None
 
 
+class LauncherConfigPickRequest(BaseModel):
+    """Native config picker payload."""
+
+    script_path: str = Field(min_length=1)
+
+
 class ShellRootOpenRequest(BaseModel):
     """Manual shell workspace folder selection payload."""
 
@@ -301,6 +307,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/generator/pick-shell-file")
+    def pick_generator_shell_file() -> dict[str, Any]:
+        try:
+            return get_runtime().pick_generator_shell_file()
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/dashboard")
     def get_dashboard(refresh: bool = True, recent_limit: int = 6) -> dict[str, Any]:
         return get_runtime().get_dashboard(refresh=refresh, recent_limit=recent_limit)
@@ -324,8 +337,12 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/launcher/validate-path")
-    def validate_launcher_path(kind: str = Query(min_length=1), path: str = Query(min_length=1)) -> dict[str, Any]:
-        return get_runtime().validate_launcher_path(kind, path)
+    def validate_launcher_path(
+        kind: str = Query(min_length=1),
+        path: str = Query(min_length=1),
+        script: str | None = None,
+    ) -> dict[str, Any]:
+        return get_runtime().validate_launcher_path(kind, path, script)
 
     @app.post("/api/launcher/open")
     def open_launcher_workspace(payload: LauncherOpenRequest) -> dict[str, Any]:
@@ -348,6 +365,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     def pick_launcher_script_path() -> dict[str, Any]:
         try:
             return get_runtime().pick_launcher_script_path()
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/launcher/pick-config-path")
+    def pick_launcher_config_path(payload: LauncherConfigPickRequest) -> dict[str, Any]:
+        try:
+            return get_runtime().pick_launcher_config_path(payload.script_path)
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

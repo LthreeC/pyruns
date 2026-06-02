@@ -132,8 +132,27 @@ def read_last_bytes(log_path: str, n_bytes: int = 10000) -> Tuple[str, int]:
         return "", 0
 
 
+def _split_lf_lines_keepends(data: bytes) -> list[bytes]:
+    """Split bytes into LF-delimited records without treating CR as a line break."""
+
+    if not data:
+        return []
+
+    lines: list[bytes] = []
+    start = 0
+    while True:
+        index = data.find(b"\n", start)
+        if index < 0:
+            if start < len(data):
+                lines.append(data[start:])
+            break
+        lines.append(data[start:index + 1])
+        start = index + 1
+    return lines
+
+
 def read_last_lines(log_path: str, max_lines: int = 10000) -> Tuple[str, int]:
-    """Read up to the last ``max_lines`` newline-delimited log lines."""
+    """Read up to the last ``max_lines`` LF-delimited log lines."""
 
     if not os.path.exists(log_path):
         return "", 0
@@ -151,7 +170,6 @@ def read_last_lines(log_path: str, max_lines: int = 10000) -> Tuple[str, int]:
         position = size
         chunks: list[bytes] = []
         line_break_count = 0
-        next_chunk_starts_with_lf = False
 
         with open(log_path, "rb") as handle:
             while position > 0 and line_break_count <= max_lines:
@@ -160,14 +178,10 @@ def read_last_lines(log_path: str, max_lines: int = 10000) -> Tuple[str, int]:
                 handle.seek(position)
                 chunk = handle.read(read_size)
                 chunks.append(chunk)
-                chunk_breaks = chunk.count(b"\n") + chunk.count(b"\r") - chunk.count(b"\r\n")
-                if chunk.endswith(b"\r") and next_chunk_starts_with_lf:
-                    chunk_breaks -= 1
-                line_break_count += chunk_breaks
-                next_chunk_starts_with_lf = chunk.startswith(b"\n")
+                line_break_count += chunk.count(b"\n")
 
         data = b"".join(reversed(chunks))
-        lines = data.splitlines(keepends=True)
+        lines = _split_lf_lines_keepends(data)
         if len(lines) > max_lines:
             data = b"".join(lines[-max_lines:])
 

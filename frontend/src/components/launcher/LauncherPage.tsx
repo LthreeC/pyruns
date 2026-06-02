@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  FileCode, FolderOpen, ChevronRight, Rocket, ArrowRight, FileSearch, FolderPlus,
+  FileCode, ChevronRight, Rocket, FileSearch, FolderPlus,
   CheckCircle2, AlertTriangle, Loader2,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -36,8 +36,8 @@ function validationFromResult(result: PathValidationResult): PathValidationState
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const {
-    scripts, configs, selectedScript, selectedConfig, requiresConfigTemplate, configSource, step, loading,
-    fetchScripts, selectScript, selectConfig, openWorkspace, reset: resetLauncher,
+    scripts, configs, selectedScript, requiresConfigTemplate, configSource, step, loading,
+    fetchScripts, selectScript, selectConfig, reset: resetLauncher,
   } = useLauncherStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const setWorkspace = useWorkspaceStore(state => state.setWorkspace)
@@ -49,10 +49,13 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const [launchMode, setLaunchMode] = useState<'python' | 'shell'>('python')
   const [error, setError] = useState('')
   const [scriptValidation, setScriptValidation] = useState<PathValidationState>(emptyValidation)
+  const [configValidation, setConfigValidation] = useState<PathValidationState>(emptyValidation)
   const [shellValidation, setShellValidation] = useState<PathValidationState>(emptyValidation)
   const debouncedScriptPath = useDebouncedValue(manualScriptPath.trim(), 300)
+  const debouncedConfigPath = useDebouncedValue(manualConfigPath.trim(), 300)
   const debouncedShellRootPath = useDebouncedValue(manualShellRootPath.trim(), 300)
   const scriptPathReady = manualScriptPath.trim().length > 0 && scriptValidation.status === 'valid'
+  const configPathReady = manualConfigPath.trim().length > 0 && configValidation.status === 'valid'
   const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
   const nativePickerAvailable = workspace?.native_file_picker === true
   const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'
@@ -65,6 +68,20 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     scriptsRequestedRef.current = true
     void fetchScripts()
   }, [fetchScripts])
+
+  const openSelectedWorkspace = useCallback(async () => {
+    setError('')
+    try {
+      await useLauncherStore.getState().openWorkspace()
+      onClose()
+      navigate('/')
+    } catch (err: any) {
+      if (useLauncherStore.getState().step === 2) {
+        useLauncherStore.setState({ step: 1 })
+      }
+      setError(err.message)
+    }
+  }, [navigate, onClose])
 
   useEffect(() => {
     const modeParam = searchParams.get('mode')
@@ -85,7 +102,11 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
     if (scriptParam) {
       setManualScriptPath(scriptParam)
-      void selectScript(scriptParam)
+      void selectScript(scriptParam).then(() => {
+        if (useLauncherStore.getState().step === 2) {
+          void openSelectedWorkspace()
+        }
+      })
     }
   }, [])
 
@@ -110,6 +131,28 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       })
     return () => { cancelled = true }
   }, [debouncedScriptPath])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!debouncedConfigPath) {
+      setConfigValidation(emptyValidation)
+      return () => { cancelled = true }
+    }
+
+    setConfigValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '' })
+    api.validateLauncherPath('config', debouncedConfigPath, selectedScript)
+      .then(result => {
+        if (!cancelled) {
+          setConfigValidation(validationFromResult(result))
+        }
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setConfigValidation({ status: 'invalid', message: err.message, normalizedPath: '' })
+        }
+      })
+    return () => { cancelled = true }
+  }, [debouncedConfigPath, selectedScript])
 
   useEffect(() => {
     let cancelled = false
@@ -140,17 +183,6 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     }
   }, [fetchScriptsOnce])
 
-  const handleOpen = useCallback(async () => {
-    setError('')
-    try {
-      await openWorkspace()
-      onClose()
-      navigate('/')
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }, [openWorkspace, onClose, navigate])
-
   const handleSkipConfig = useCallback(async () => {
     setError('')
     if (mustChooseConfig) {
@@ -158,14 +190,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       return
     }
     selectConfig('')
-    try {
-      await useLauncherStore.getState().openWorkspace()
-      onClose()
-      navigate('/')
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }, [mustChooseConfig, selectConfig, onClose, navigate])
+    await openSelectedWorkspace()
+  }, [mustChooseConfig, openSelectedWorkspace, selectConfig])
 
   const handleManualScript = useCallback(async () => {
     const scriptPath = manualScriptPath.trim()
@@ -177,26 +203,37 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     setError('')
     try {
       await selectScript(scriptPath)
+      if (useLauncherStore.getState().step === 2) {
+        await openSelectedWorkspace()
+      }
     } catch (err: any) {
       setError(err.message)
     }
-  }, [manualScriptPath, selectScript])
+  }, [manualScriptPath, openSelectedWorkspace, selectScript])
 
   const handleSelectScript = useCallback(async (scriptPath: string) => {
     setError('')
     try {
       await selectScript(scriptPath)
+      if (useLauncherStore.getState().step === 2) {
+        await openSelectedWorkspace()
+      }
     } catch (err: any) {
       setError(err.message)
     }
-  }, [selectScript])
+  }, [openSelectedWorkspace, selectScript])
 
-  const handleSelectConfig = useCallback((configPath: string) => {
+  const openSelectedConfig = useCallback(async (configPath: string) => {
     setError('')
     selectConfig(configPath)
-  }, [selectConfig])
+    await openSelectedWorkspace()
+  }, [openSelectedWorkspace, selectConfig])
 
-  const handleManualConfig = useCallback(() => {
+  const handleSelectConfig = useCallback(async (configPath: string) => {
+    await openSelectedConfig(configPath)
+  }, [openSelectedConfig])
+
+  const handleManualConfig = useCallback(async () => {
     const configPath = manualConfigPath.trim()
     if (!configPath) {
       if (mustChooseConfig) {
@@ -207,8 +244,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       return
     }
     setError('')
-    handleSelectConfig(configPath)
-  }, [handleSkipConfig, handleSelectConfig, manualConfigPath, mustChooseConfig])
+    await openSelectedConfig(configPath)
+  }, [handleSkipConfig, manualConfigPath, mustChooseConfig, openSelectedConfig])
 
   const handlePickScript = useCallback(async () => {
     setError('')
@@ -216,10 +253,29 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       const selection = await api.pickLauncherScriptPath()
       setManualScriptPath(selection.script_path)
       await selectScript(selection.script_path)
+      if (useLauncherStore.getState().step === 2) {
+        await openSelectedWorkspace()
+      }
     } catch (err: any) {
       setError(err.message)
     }
-  }, [selectScript])
+  }, [openSelectedWorkspace, selectScript])
+
+  const handlePickConfig = useCallback(async () => {
+    if (!selectedScript) {
+      setError('Choose a Python script first.')
+      return
+    }
+
+    setError('')
+    try {
+      const selection = await api.pickLauncherConfigPath(selectedScript)
+      setManualConfigPath(selection.path)
+      await openSelectedConfig(selection.path)
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [openSelectedConfig, selectedScript])
 
   const handlePickShellRoot = useCallback(async () => {
     setError('')
@@ -353,8 +409,18 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     : 'Choose a YAML file for this launch, or open without one when the script can generate its default config.'}
                 </p>
               </div>
+              <ConfigActionPanel
+                pathValue={manualConfigPath}
+                pathReady={configPathReady}
+                validation={configValidation}
+                pickerAvailable={nativePickerAvailable}
+                mustChooseConfig={mustChooseConfig}
+                onPathChange={setManualConfigPath}
+                onManualOpen={handleManualConfig}
+                onBrowseOpen={handlePickConfig}
+              />
               {configs.length === 0 ? (
-                <div className="text-center py-8">
+                <div className="text-center py-6">
                   <p className="text-xs text-zinc-600 mb-3">
                     {mustChooseConfig
                       ? 'No YAML configs were found near this script. Enter a config path below.'
@@ -370,12 +436,18 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   )}
                 </div>
               ) : (
-                <>
+                <div className="pt-2">
+                  <div className="flex items-center justify-between border-b border-border-subtle px-1 py-2">
+                    <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                      Nearby YAML
+                    </span>
+                    <span className="text-2xs text-zinc-600">{configs.length} found</span>
+                  </div>
                   {configs.map(config => (
                     <ConfigItem
                       key={config.path}
                       config={config}
-                      onClick={() => handleSelectConfig(config.path)}
+                      onClick={() => void handleSelectConfig(config.path)}
                     />
                   ))}
                   {!mustChooseConfig && (
@@ -386,51 +458,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                       Open without config
                     </button>
                   )}
-                </>
+                </div>
               )}
-              <div className="mt-3 flex items-center gap-2">
-                <FileCode className="h-4 w-4 text-zinc-500" />
-                <input
-                  value={manualConfigPath}
-                  onChange={event => setManualConfigPath(event.target.value)}
-                  onKeyDown={event => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault()
-                      handleManualConfig()
-                    }
-                  }}
-                  placeholder={mustChooseConfig ? 'Path to config.yaml' : 'Optional path to config.yaml'}
-                  className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
-                />
-                <button
-                  onClick={handleManualConfig}
-                  className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
-                >
-                  Use Config
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!loading && step === 2 && (
-            <div className="flex flex-col items-center py-8 gap-4">
-              <div className="p-2 text-accent">
-                <FolderOpen className="w-6 h-6 text-accent" />
-              </div>
-              <div className="text-center">
-                <p className="text-sm text-zinc-200 font-medium">Ready to launch</p>
-                <p className="text-2xs text-zinc-500 mt-1 font-mono">{pathName(selectedScript)}</p>
-                {selectedConfig && (
-                  <p className="text-2xs text-zinc-600 mt-0.5 font-mono">{pathName(selectedConfig)}</p>
-                )}
-              </div>
-              <button
-                onClick={handleOpen}
-                disabled={loading}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
-              >
-                Open Workspace <ArrowRight className="w-4 h-4" />
-              </button>
             </div>
           )}
         </div>
@@ -564,6 +593,70 @@ function ModeActionPanel({
           className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {manualLabel}
+        </button>
+      </div>
+      <PathValidationHint validation={validation} />
+    </div>
+  )
+}
+
+function ConfigActionPanel({
+  pathValue,
+  pathReady,
+  validation,
+  pickerAvailable,
+  mustChooseConfig,
+  onPathChange,
+  onManualOpen,
+  onBrowseOpen,
+}: {
+  pathValue: string
+  pathReady: boolean
+  validation: PathValidationState
+  pickerAvailable: boolean
+  mustChooseConfig: boolean
+  onPathChange: (value: string) => void
+  onManualOpen: () => void | Promise<void>
+  onBrowseOpen: () => void | Promise<void>
+}) {
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        disabled={!pickerAvailable}
+        onClick={() => void onBrowseOpen()}
+        className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md bg-accent text-white px-3 py-2 text-xs font-medium transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <FileCode className="h-3.5 w-3.5" />
+        Browse Config
+      </button>
+      {!pickerAvailable && (
+        <div className="px-1 text-2xs text-zinc-500">
+          Native picker unavailable on this server; enter the YAML path manually.
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          value={pathValue}
+          onChange={event => onPathChange(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              if (pathReady) {
+                void onManualOpen()
+              }
+            }
+          }}
+          placeholder={mustChooseConfig ? 'Path to YAML config' : 'Optional path to YAML config'}
+          className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+        />
+        <button
+          type="button"
+          disabled={!pathReady}
+          onClick={() => void onManualOpen()}
+          className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Open Config Path
         </button>
       </div>
       <PathValidationHint validation={validation} />

@@ -291,6 +291,42 @@ def test_launcher_open_load_script_with_yaml_import_clears_first_launch_requirem
     assert after["items"][0]["kind"] == "workspace_default"
 
 
+def test_launcher_open_load_script_replaces_workspace_default_with_selected_yaml(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "load_train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+    old_config = tmp_path / "configs" / "old.yaml"
+    new_config = tmp_path / "configs" / "base.yaml"
+    old_config.parent.mkdir()
+    old_config.write_text("experiment:\n  name: stale\ntraining:\n  lr: 0.01\n", encoding="utf-8")
+    new_config.write_text("experiment:\n  name: nested-smoke\ntraining:\n  lr: 0.001\n", encoding="utf-8")
+
+    first = client.post(
+        "/api/launcher/open",
+        json={"script_path": str(script_path), "config_path": str(old_config)},
+    )
+    second = client.post(
+        "/api/launcher/open",
+        json={"script_path": str(script_path), "config_path": str(new_config)},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    payload = second.json()
+    workspace_root = Path(payload["run_root"])
+    assert (workspace_root / "config_default.yaml").read_text(encoding="utf-8") == new_config.read_text(
+        encoding="utf-8"
+    )
+    assert payload["config_default_source"] == str(new_config).replace("\\", "/")
+    assert payload["config_default_source_name"] == "base.yaml"
+    assert any(
+        item["label"] == "config_default.yaml (from base.yaml)"
+        for item in payload["templates"]
+    )
+
+
 def test_launcher_open_argparse_script_generates_default_config_without_yaml(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
@@ -355,6 +391,74 @@ def test_launcher_open_endpoint_activates_selected_workspace(tmp_path, monkeypat
     assert payload["script_name"] == "alt"
     assert payload["run_root"].endswith("_pyruns_/alt")
     assert client.get("/api/workspace").json()["script_name"] == "alt"
+
+
+def test_launcher_pick_config_path_returns_native_yaml_selection(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+    config_path = tmp_path / "configs" / "base.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("lr: 0.01\n", encoding="utf-8")
+
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=True),
+        patch("pyruns.web.runtime.choose_config_file", return_value=str(config_path)) as choose_config_mock,
+    ):
+        response = client.post(
+            "/api/launcher/pick-config-path",
+            json={"script_path": str(script_path)},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == str(config_path).replace("\\", "/")
+    assert payload["label"] == "base.yaml"
+    assert payload["kind"] == "manual"
+    choose_config_mock.assert_called_once()
+
+
+def test_launcher_pick_config_path_reports_unavailable_native_picker(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=False),
+        patch("pyruns.web.runtime.choose_config_file") as choose_config_mock,
+    ):
+        response = client.post(
+            "/api/launcher/pick-config-path",
+            json={"script_path": str(script_path)},
+        )
+
+    assert response.status_code == 400
+    assert "Enter the path manually" in response.json()["detail"]
+    choose_config_mock.assert_not_called()
+
+
+def test_launcher_pick_config_path_reports_cancelled_yaml_selection(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=True),
+        patch("pyruns.web.runtime.choose_config_file", return_value=None),
+    ):
+        response = client.post(
+            "/api/launcher/pick-config-path",
+            json={"script_path": str(script_path)},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "No YAML config selected."
 
 
 def test_launcher_open_endpoint_rejects_non_python_script_path(tmp_path):
@@ -523,6 +627,22 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
     assert "line 3" not in content
 
 
+def test_logs_endpoint_tails_terminal_rows_without_counting_progress_carriage_returns(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    log_text = "prepare\nprogress 1%\rprogress 50%\rprogress 100%\nfinish\n"
+    _add_task(workspace, "alpha", status="running", log_text=log_text)
+    (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").write_bytes(log_text.encode("utf-8"))
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks/alpha/logs", params={"tail_lines": 3})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"].replace("\r\n", "\n") == log_text
+    assert payload["offset"] == len(log_text)
+
+
 def test_logs_endpoint_caps_incremental_reads_by_chunk_size(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running", log_text="line 1\nline 2\n")
@@ -609,6 +729,8 @@ def test_generator_range_syntax_survives_yaml_parsing(tmp_path):
 
 def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
+    shell_file = tmp_path / "run_smoke.sh"
+    shell_file.write_text("echo smoke\n", encoding="utf-8")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
@@ -618,7 +740,15 @@ def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     shell_payload = shell_response.json()
     assert shell_payload["workspace_kind"] == WORKSPACE_KIND_SHELL
     assert shell_payload["script_name"] == "_shell_"
-    assert shell_payload["templates"] == []
+    assert shell_payload["templates"] == [
+        {"value": str(shell_file).replace("\\", "/"), "label": "run_smoke.sh"}
+    ]
+
+    template_response = client.get("/api/templates/content", params={"value": str(shell_file)})
+    assert template_response.status_code == 200
+    template_payload = template_response.json()
+    assert template_payload["mode_hint"] == "shell"
+    assert template_payload["content"] == "echo smoke\n"
 
     with patch(
         "pyruns.core.task_generator.get_shell_config_filename_for_workspace",
@@ -642,6 +772,53 @@ def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     assert task["task_kind"] == TASK_KIND_SHELL
     task_dir = Path(task["dir"])
     assert (task_dir / SHELL_CONFIG_FILENAME).read_text(encoding="utf-8") == "echo hello from shell\n"
+
+
+def test_shell_workspace_templates_include_existing_shell_task_payloads_first(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    shell_file = tmp_path / "run_smoke.sh"
+    shell_file.write_text("echo smoke\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    runtime.open_shell_workspace()
+    task = runtime.task_generator.create_shell_task("shell_seed", "echo from task\n")
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/templates")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items[0]["label"] == task["name"]
+    assert items[0]["value"] == f"tasks/{task['name']}/{task['config_file']}"
+    assert {"value": str(shell_file).replace("\\", "/"), "label": "run_smoke.sh"} in items
+
+    content_response = client.get("/api/templates/content", params={"value": items[0]["value"]})
+    assert content_response.status_code == 200
+    payload = content_response.json()
+    assert payload["mode_hint"] == "shell"
+    assert payload["content"] == "echo from task\n"
+
+
+def test_pick_generator_shell_file_returns_selected_script_content(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    shell_file = tmp_path / "scripts" / "launch.sh"
+    shell_file.parent.mkdir()
+    shell_file.write_text("bash train.sh\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    runtime.open_shell_workspace()
+    client = TestClient(create_app(runtime))
+
+    with (
+        patch("pyruns.web.runtime.native_picker_available", return_value=True),
+        patch("pyruns.web.runtime.choose_shell_file", return_value=str(shell_file)),
+    ):
+        response = client.post("/api/generator/pick-shell-file")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["value"] == str(shell_file).replace("\\", "/")
+    assert payload["label"] == "scripts/launch.sh"
+    assert payload["mode_hint"] == "shell"
+    assert payload["content"] == "bash train.sh\n"
 
 
 def test_pick_shell_root_endpoint_opens_directory_shell_workspace(tmp_path):
@@ -744,6 +921,26 @@ def test_launcher_validate_path_endpoint_checks_manual_paths(tmp_path):
     assert missing_response.status_code == 200
     assert missing_response.json()["ok"] is False
     assert "does not exist" in missing_response.json()["message"]
+
+
+def test_launcher_validate_config_path_resolves_relative_to_script_dir(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    script_path = tmp_path / "train.py"
+    script_path.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+    config_path = tmp_path / "configs" / "base.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("lr: 0.001\n", encoding="utf-8")
+
+    response = client.get(
+        "/api/launcher/validate-path",
+        params={"kind": "config", "path": "configs/base.yaml", "script": str(script_path)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["normalized_path"] == str(config_path).replace("\\", "/")
 
 
 def test_tasks_endpoint_supports_offset_pagination(tmp_path):

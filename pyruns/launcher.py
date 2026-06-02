@@ -216,6 +216,54 @@ def choose_script_file(initial_dir: str | None = None) -> str | None:
         return None
 
 
+def choose_config_file(initial_dir: str | None = None) -> str | None:
+    """Open a native file picker and return one YAML config path."""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askopenfilename(
+            initialdir=initial_dir or os.getcwd(),
+            title="Select YAML config",
+            filetypes=[
+                ("YAML files", "*.yaml *.yml"),
+                ("All files", "*.*"),
+            ],
+        )
+        root.destroy()
+        return normalize_path(path) if path else None
+    except Exception:
+        return None
+
+
+def choose_shell_file(initial_dir: str | None = None) -> str | None:
+    """Open a native file picker and return one shell script path."""
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askopenfilename(
+            initialdir=initial_dir or os.getcwd(),
+            title="Select shell script",
+            filetypes=[
+                ("Shell scripts", "*.sh *.bash *.zsh *.fish *.ps1 *.bat *.cmd"),
+                ("All files", "*.*"),
+            ],
+        )
+        root.destroy()
+        return normalize_path(path) if path else None
+    except Exception:
+        return None
+
+
 def choose_directory(initial_dir: str | None = None) -> str | None:
     """Open a native directory picker and return one folder path."""
 
@@ -341,7 +389,6 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
     existing = load_script_info(script_dir)
     if existing.get("last_used_template"):
         script_info["last_used_template"] = existing["last_used_template"]
-    _write_script_info(script_dir, script_info)
 
     config_default_path = normalize_path(os.path.join(script_dir, CONFIG_DEFAULT_FILENAME))
     mode, _ = detect_config_source_fast(filepath)
@@ -357,6 +404,8 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
 
     if resolved_custom_yaml:
         shutil.copy2(resolved_custom_yaml, config_default_path)
+        script_info["config_default_source"] = resolved_custom_yaml
+        script_info["config_default_source_name"] = os.path.basename(resolved_custom_yaml)
     elif mode == "argparse":
         params = extract_argparse_params(filepath)
         generate_config_file(script_dir, filepath, params)
@@ -366,10 +415,17 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
             "Choose a YAML config in the Launcher, or run `pyr <script.py> <config.yaml>` once. "
             f"Later `pyr <script.py>` will reuse `{CONFIG_DEFAULT_FILENAME}` automatically."
         )
+    elif existing.get("config_default_source"):
+        script_info["config_default_source"] = existing["config_default_source"]
+        script_info["config_default_source_name"] = existing.get(
+            "config_default_source_name",
+            os.path.basename(str(existing["config_default_source"])),
+        )
 
     if mode == "argparse":
         ensure_config_default(script_dir)
 
+    _write_script_info(script_dir, script_info)
     os.environ[ENV_KEY_ROOT] = script_dir
     return script_dir
 

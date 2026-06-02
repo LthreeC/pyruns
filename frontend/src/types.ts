@@ -43,6 +43,8 @@ export interface WorkspaceInfo {
   tasks_dir: string
   script_path: string
   script_name: string
+  config_default_source?: string
+  config_default_source_name?: string
   project_root?: string
   workspace_kind: WorkspaceKind
   workspace_ready: boolean
@@ -159,7 +161,7 @@ export interface ScriptCandidate {
 export interface ConfigCandidate {
   path: string
   label: string
-  kind: 'workspace_default' | 'script_dir' | 'script_config_dir'
+  kind: 'workspace_default' | 'script_dir' | 'script_config_dir' | 'manual'
 }
 
 export interface LauncherConfigsResponse {

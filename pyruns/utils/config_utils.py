@@ -177,7 +177,8 @@ def list_template_files(run_root: str) -> Dict[str, str]:
 
     Returns dict of ``{relative_path: display_name}``.
     Searches both ``tasks/<name>/config.yaml`` and ``config_default.yaml``.
-    Task configs are sorted newest-first by metadata mtime; the default template is appended last.
+    The default template is listed first because it is the workspace parameter source.
+    Task configs are then sorted newest-first by metadata mtime.
     """
     if not os.path.isdir(run_root):
         return {}
@@ -190,6 +191,11 @@ def list_template_files(run_root: str) -> Dict[str, str]:
         TASKS_DIR,
         TASK_INFO_FILENAME,
     )
+
+    # config_default.yaml is the canonical workspace template for the Generator.
+    default_path = os.path.abspath(os.path.join(run_root, CONFIG_DEFAULT_FILENAME)).replace("\\", "/")
+    if os.path.exists(default_path):
+        options[default_path] = "config_default.yaml"
 
     # config.yaml inside each task subfolder
     actual_tasks_dir = os.path.join(run_root, TASKS_DIR)
@@ -227,11 +233,6 @@ def list_template_files(run_root: str) -> Dict[str, str]:
                 options[rel_path] = display_name
         except OSError:
             pass
-
-    # Append config_default.yaml at the very bottom
-    default_path = os.path.abspath(os.path.join(run_root, CONFIG_DEFAULT_FILENAME)).replace("\\", "/")
-    if os.path.exists(default_path):
-        options[default_path] = "config_default.yaml"
 
     return options
 

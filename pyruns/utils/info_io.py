@@ -19,6 +19,8 @@ _TASK_FILE_LOCKS_GUARD = threading.Lock()
 _LOCK_FILENAME = f".{TASK_INFO_FILENAME}.lock"
 _LOCK_POLL_SEC = 0.05
 _LOCK_TIMEOUT_SEC = 5.0
+_REPLACE_RETRY_COUNT = 5
+_REPLACE_RETRY_DELAY_SEC = 0.02
 
 
 def _thread_lock_for(task_dir: str) -> threading.RLock:
@@ -29,6 +31,17 @@ def _thread_lock_for(task_dir: str) -> threading.RLock:
             lock = threading.RLock()
             _TASK_FILE_LOCKS[key] = lock
         return lock
+
+
+def _replace_with_retry(src: str, dst: str) -> None:
+    for attempt in range(_REPLACE_RETRY_COUNT):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt >= _REPLACE_RETRY_COUNT - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_SEC * (attempt + 1))
 
 
 @contextmanager
@@ -124,7 +137,7 @@ def save_script_info(run_root: str, info: Dict[str, Any]) -> None:
             json.dump(info, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, script_info_path)
+        _replace_with_retry(tmp_path, script_info_path)
     finally:
         if os.path.exists(tmp_path):
             try:
@@ -321,7 +334,7 @@ def _write_task_info_unlocked(info_path: str, task_dir: str, payload: Dict[str, 
             json.dump(payload, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, info_path)
+        _replace_with_retry(tmp_path, info_path)
     finally:
         if os.path.exists(tmp_path):
             try:

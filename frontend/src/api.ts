@@ -9,6 +9,7 @@ import type {
   WorkspaceInfo,
   SystemMetrics,
   ScriptCandidate,
+  ConfigCandidate,
   LauncherConfigsResponse,
   WorkspaceCandidate,
   GeneratorMode,
@@ -38,6 +39,8 @@ export const openShellWorkspace = () =>
 export const getTemplates = () => request<{ items: { value: string; label: string }[] }>('/api/templates')
 export const getTemplateContent = (value: string) =>
   request<TemplateContent>(`/api/templates/content?value=${encodeURIComponent(value)}`)
+export const pickGeneratorShellFile = () =>
+  request<TemplateContent>('/api/generator/pick-shell-file', { method: 'POST' })
 
 export const createTasks = (payload: {
   name_prefix: string
@@ -173,10 +176,11 @@ export const getLauncherWorkspaces = (script: string, config?: string) => {
   return request<{ items: WorkspaceCandidate[] }>(`/api/launcher/workspaces?${sp}`)
 }
 
-export const validateLauncherPath = (kind: 'python' | 'shell' | 'config', path: string) =>
-  request<PathValidationResult>(
-    `/api/launcher/validate-path?kind=${encodeURIComponent(kind)}&path=${encodeURIComponent(path)}`,
-  )
+export const validateLauncherPath = (kind: 'python' | 'shell' | 'config', path: string, script?: string) => {
+  const sp = new URLSearchParams({ kind, path })
+  if (script) sp.set('script', script)
+  return request<PathValidationResult>(`/api/launcher/validate-path?${sp}`)
+}
 
 export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =>
   request<WorkspaceInfo>('/api/launcher/open', {
@@ -186,6 +190,12 @@ export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =
 
 export const pickLauncherScriptPath = () =>
   request<WorkspaceCandidate>('/api/launcher/pick-script-path', { method: 'POST' })
+
+export const pickLauncherConfigPath = (scriptPath: string) =>
+  request<ConfigCandidate>('/api/launcher/pick-config-path', {
+    method: 'POST',
+    body: JSON.stringify({ script_path: scriptPath }),
+  })
 
 export const pickLauncherScript = () =>
   request<WorkspaceInfo>('/api/launcher/pick-script', { method: 'POST' })
