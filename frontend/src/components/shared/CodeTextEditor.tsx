@@ -209,7 +209,6 @@ export default function CodeTextEditor({
 }: CodeTextEditorProps) {
   const [wrap, setWrap] = useState(() => getStoredWrap(wrapStorageKey, defaultWrap))
   const editorViewRef = useRef<EditorView | null>(null)
-  const lineCount = useMemo(() => Math.max(1, value.split(/\r\n|\r|\n/).length), [value])
   const extensions = useMemo(
     () => buildEditorExtensions(language, theme, wrap, placeholder),
     [language, placeholder, theme, wrap],
@@ -248,9 +247,6 @@ export default function CodeTextEditor({
         <div className="flex h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/25 px-2.5">
           <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
             {language === 'yaml' ? 'YAML' : 'Shell'}
-          </span>
-          <span className="font-mono text-[10px] text-txt-tertiary">
-            {lineCount} line{lineCount > 1 ? 's' : ''}
           </span>
           <button
             type="button"

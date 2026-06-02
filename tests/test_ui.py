@@ -452,6 +452,8 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
     assert "absolute right-1.5 top-1.5" in editor
     assert "<span>{wrap ? 'Wrap' : 'No wrap'}</span>" not in editor
     assert "aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}" in editor
+    assert "lineCount" not in editor
+    assert "value.split" not in editor
 
 
 def test_react_launcher_supports_manual_shell_folder_paths():
