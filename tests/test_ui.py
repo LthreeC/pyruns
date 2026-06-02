@@ -103,7 +103,10 @@ def test_react_sidebar_active_workspace_state_is_visually_clear():
 
     assert "border-l-2 border-accent" in source
     assert "bg-accent/10 text-accent" in source
-    assert "Shell mode active" in source
+    assert "workspaceModeLabel" in source
+    assert "Workspace" in source
+    assert "bg-surface-overlay/55" in source
+    assert "Shell mode active" not in source
 
 
 def test_react_gpu_process_dialog_shows_process_owner():
@@ -575,7 +578,9 @@ def test_react_generator_nested_form_uses_tree_depth_guides():
     assert "treeConnector" in generator
     assert "border-l border-border-subtle/60" in generator
     assert "'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1'" in generator
-    assert "treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }" in generator
+    assert "!treeSection && depth > 0 && 'border-l-2 border-border-subtle pl-3'" in generator
+    assert "treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }" not in generator
+    assert "style={undefined}" not in generator
     assert "aria-expanded={open}" in generator
     assert "title={`${prefix} (${Object.keys(data).length} fields)`}" in generator
 
@@ -592,19 +597,46 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "Collapse all" in generator
     assert "treeOpenSignal" in generator
     assert "setOpen(openSignalValue)" in generator
-    assert "TREE_TOP_LEVEL_COLUMN_STYLE" in generator
-    assert "clamp(520px, 42vw, 680px)" in generator
+    assert "buildColumnGridStyle(columns)" in generator
+    assert "repeat(${columns}, minmax(0, 1fr))" in generator
+    assert "treeColumns" not in generator
+    assert "setTreeColumns" not in generator
+    assert "TREE_COLS_STORAGE_KEY" not in generator
+    assert "Sections per row" not in generator
+    assert "TREE_TOP_LEVEL_COLUMN_STYLE" not in generator
+    assert "columnWidth" not in generator
     assert "TREE_SECTION_GRID_STYLE" not in generator
     assert "TREE_FIELD_GRID_STYLE" not in generator
     assert "repeat(auto-fit, minmax(360px, 1fr))" not in generator
     assert "repeat(auto-fit, minmax(300px, 1fr))" not in generator
-    assert "layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle" in generator
-    assert "layoutMode === 'tree' ? 'space-y-3' : 'grid gap-2'" in generator
-    assert "layoutMode === 'tree' ? 'mb-3 inline-block w-full align-top [break-inside:avoid]' : 'col-span-full'" in generator
+    assert "const contentClassName = 'grid gap-x-3 gap-y-2.5'" in generator
+    assert "const childSectionClassName = 'col-span-full'" in generator
     assert "editorMode === 'form' && formLayoutMode === 'tree'" in generator
     assert "layoutMode={formLayoutMode}" in generator
     assert "min-w-[280px]" in generator
     assert "ml-auto flex flex-wrap items-center gap-2" in generator
+
+
+def test_react_generator_tree_mode_uses_outline_explorer():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "function TreeParameterExplorer" in generator
+    assert "function RootSectionOverview" in generator
+    assert "function SearchResultRows" in generator
+    assert "collectTreeSections(data)" in generator
+    assert "collectParamRows(data, declaredTypeMap, batchParams)" in generator
+    assert "Outline" in generator
+    assert "outlineCollapsed" in generator
+    assert "setOutlineCollapsed(true)" in generator
+    assert "setOutlineCollapsed(false)" in generator
+    assert "Search path or value" in generator
+    assert "Search results" in generator
+    assert "No matching parameters." in generator
+    assert "grid-cols-[minmax(220px,260px)_minmax(0,1fr)]" in generator
+    assert "grid-cols-[minmax(0,1fr)]" in generator
+    assert "columns={1}" in generator
+    assert "onSelectPath={setSelectedPath}" in generator
+    assert "layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle" not in generator
 
 
 def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
@@ -613,10 +645,21 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "layoutMode?: FormLayoutMode" in generator
     assert "const treeParamRow = layoutMode === 'tree'" in generator
     assert "treeParamRow" in generator
-    assert "min-h-8 border-transparent bg-transparent px-2 py-1 hover:bg-surface-overlay/70" in generator
-    assert "treeParamRow ? 'flex-[0.7]' : 'flex-1'" in generator
-    assert "treeParamRow ? 'flex-[1.3] justify-start' : 'flex-none justify-end'" in generator
-    assert "treeParamRow ? 'ml-auto min-w-0 flex-[1.3]' : 'ml-auto min-w-0 flex-1'" in generator
+    assert "grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]" in generator
+    assert "border-border-subtle bg-surface-raised" in generator
+    assert "treeParamRow ? 'min-w-0' : 'flex-1'" in generator
+    assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
+    assert "treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1'" in generator
+    assert "if (!treeParamRow)" in generator
+    assert "group min-w-0 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-overlay/55 focus-within:bg-surface-overlay/75 focus-within:ring-2 focus-within:ring-accent/20" in generator
+    assert "pinned ? 'bg-accent/5 ring-1 ring-accent/20' : 'bg-transparent'" in generator
+    assert "focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
+    assert "h-7 w-full rounded-md border bg-surface-overlay/45" in generator
+    assert "focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
+    assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
+    assert "focus:border-accent focus:bg-surface-overlay/45 focus:ring-2 focus:ring-accent/15" in generator
+    assert "focus-visible:ring-2 focus-visible:ring-accent/30" in generator
+    assert "border-border-subtle bg-surface-raised hover:border-border" not in generator
     assert "ml-auto min-w-[180px] max-w-[420px] flex-[1.2]" not in generator
     assert "grid-cols-[24px_minmax(82px,0.55fr)_auto_minmax(112px,1fr)]" not in generator
     assert "max-w-[34%]" not in generator
@@ -733,28 +776,29 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "setLaunchMode(initialLaunchMode)" in launcher
     assert "if (initialLaunchMode === 'python')" in launcher
-    assert "Open Shell Mode" in sidebar
-    assert "Exit Shell Mode" in sidebar
+    assert "Open Shell Mode" not in sidebar
+    assert "Exit Shell Mode" not in sidebar
+    assert "openShellWorkspace" not in sidebar
+    assert "exitShellWorkspace" not in sidebar
 
 
 def test_react_sidebar_routes_load_scripts_to_yaml_selection_without_red_error():
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
 
-    assert "openWorkspaceLauncher('python')" in sidebar
     assert "nextParams.set('launcher', '1')" in sidebar
     assert "nextParams.set('mode', mode)" in sidebar
     assert "pyruns.load()" not in sidebar
     assert "bg-rose-500/10" not in sidebar
 
 
-def test_react_sidebar_shows_real_picker_errors_but_ignores_cancel():
+def test_react_sidebar_uses_launcher_instead_of_inline_picker_errors():
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
 
-    assert "pickerError" in sidebar
-    assert "showPickerError" in sidebar
-    assert "No script selected." in sidebar
-    assert "No directory selected." in sidebar
-    assert "title={pickerError}" in sidebar
+    assert "pickerError" not in sidebar
+    assert "showPickerError" not in sidebar
+    assert "No script selected." not in sidebar
+    assert "No directory selected." not in sidebar
+    assert "title={pickerError}" not in sidebar
 
 
 def test_react_launcher_config_step_explains_required_yaml_selection():

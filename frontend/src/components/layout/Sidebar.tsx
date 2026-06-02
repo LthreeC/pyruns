@@ -1,8 +1,7 @@
-import { useState } from 'react'
-import { NavLink, useNavigate, useSearchParams } from 'react-router-dom'
+import { NavLink, useSearchParams } from 'react-router-dom'
 import {
   LayoutDashboard, Wand2, ListTodo, Terminal, Rocket,
-  Sun, Moon, ChevronsUpDown, Loader2, FileCode,
+  Sun, Moon, ChevronsUpDown, FileCode,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
@@ -15,29 +14,22 @@ const NAV_ITEMS = [
   { to: '/monitor', icon: Terminal, label: 'Monitor' },
 ]
 
-const PICKER_CANCEL_MESSAGES = new Set(['No script selected.', 'No directory selected.'])
-
-function getPickerErrorMessage(err: unknown) {
-  return err instanceof Error ? err.message : String(err || '')
-}
-
 interface SidebarProps {
   width?: number
 }
 
 export default function Sidebar({ width = 220 }: SidebarProps) {
   const workspace = useWorkspaceStore(s => s.workspace)
-  const openShellWorkspace = useWorkspaceStore(s => s.openShellWorkspace)
-  const exitShellWorkspace = useWorkspaceStore(s => s.exitShellWorkspace)
   const { theme, toggle } = useThemeStore()
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [openingShell, setOpeningShell] = useState(false)
-  const [pickerError, setPickerError] = useState('')
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
   const shellWorkspaceActive = workspace?.workspace_kind === 'shell'
-  const workspaceLabel = shellWorkspaceActive ? '_shell_' : (scriptFileName || 'Choose .py file')
   const visibleWorkspacePath = getWorkspaceWorkingPath(workspace)
+  const visibleWorkspaceLeaf = visibleWorkspacePath?.split(/[\\/]/).filter(Boolean).pop() || ''
+  const workspaceLabel = shellWorkspaceActive
+    ? (visibleWorkspaceLeaf || '_shell_')
+    : (scriptFileName || 'Choose .py file')
+  const workspaceModeLabel = shellWorkspaceActive ? 'Shell' : 'Python'
 
   const clearMonitorSelection = () => {
     useMonitorStore.setState({
@@ -49,43 +41,13 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
     })
   }
 
-  const showPickerError = (err: unknown) => {
-    const message = getPickerErrorMessage(err)
-    if (!message || PICKER_CANCEL_MESSAGES.has(message)) {
-      return
-    }
-    setPickerError(message)
-  }
-
   const openWorkspaceLauncher = (mode: 'python' | 'shell') => {
-    setPickerError('')
     const nextParams = new URLSearchParams(searchParams)
     nextParams.set('launcher', '1')
     nextParams.set('mode', mode)
     nextParams.delete('script')
     nextParams.delete('config')
     setSearchParams(nextParams)
-  }
-
-  const handleToggleShellWorkspace = async () => {
-    setPickerError('')
-    setOpeningShell(true)
-    try {
-      if (shellWorkspaceActive) {
-        const nextWorkspace = await exitShellWorkspace()
-        if (!nextWorkspace) {
-          openWorkspaceLauncher('python')
-          return
-        }
-      } else {
-        await openShellWorkspace()
-      }
-      navigate('/generator')
-    } catch (err) {
-      showPickerError(err)
-    } finally {
-      setOpeningShell(false)
-    }
   }
 
   return (
@@ -127,13 +89,17 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
         <button
           type="button"
           onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
-          className="w-full rounded-md px-2.5 py-2.5 text-left transition-colors hover:bg-surface-overlay"
+          className="w-full rounded-md border border-border-subtle bg-surface-overlay/55 px-2.5 py-2.5 text-left transition-colors hover:border-border hover:bg-surface-overlay"
         >
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
-            <FileCode className="h-3.5 w-3.5" />
-            <span>{shellWorkspaceActive ? 'Shell Folder' : 'Script File'}</span>
-            <div className="flex-1" />
-            <ChevronsUpDown className="h-3.5 w-3.5" />
+          <div className="flex items-center gap-2">
+            <FileCode className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
+            <span className="min-w-0 flex-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-txt-tertiary">
+              Workspace
+            </span>
+            <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+              {workspaceModeLabel}
+            </span>
+            <ChevronsUpDown className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
           </div>
           <div
             className="mt-2 truncate font-mono text-sm font-medium text-txt-primary"
@@ -148,43 +114,12 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
           >
             {visibleWorkspacePath || 'Choose a Python script or choose a shell workspace folder'}
           </div>
-          {shellWorkspaceActive && (
-            <div className="mt-2 rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
-              Shell mode active
-            </div>
-          )}
-        </button>
-
-        {pickerError && (
-          <div
-            role="alert"
-            title={pickerError}
-            className="mt-2 rounded-md bg-amber-500/10 px-2.5 py-2 text-2xs leading-relaxed text-amber-300"
-          >
-            {pickerError}
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={() => void handleToggleShellWorkspace()}
-          disabled={openingShell}
-          className={clsx(
-            'mt-1 flex w-full items-center justify-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium transition-colors disabled:opacity-60',
-            shellWorkspaceActive
-              ? 'bg-accent/10 text-accent'
-              : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
-          )}
-          title={shellWorkspaceActive ? 'Exit shell mode' : 'Open the shared shell workspace'}
-        >
-          {openingShell ? <Loader2 className="h-4 w-4 animate-spin" /> : <Terminal className="h-4 w-4" />}
-          <span>{shellWorkspaceActive ? 'Exit Shell Mode' : 'Open Shell Mode'}</span>
         </button>
 
         <button
           type="button"
           onClick={toggle}
-          className="mt-1 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+          className="mt-2 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
         >
           {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>

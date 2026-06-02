@@ -18,6 +18,7 @@ import { tags as t } from '@lezer/highlight'
 import {
   AlertTriangle,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CheckCircle2,
   FileCode,
@@ -26,6 +27,7 @@ import {
   ListChecks,
   Loader2,
   Pin,
+  Search,
   Sparkles,
   Terminal,
   Workflow,
@@ -44,10 +46,6 @@ import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
 const DEFAULT_SHELL_TEMPLATE = ''
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
 type FormLayoutMode = 'grid' | 'tree'
-const TREE_TOP_LEVEL_COLUMN_STYLE = {
-  columnWidth: 'clamp(520px, 42vw, 680px)',
-  columnGap: '1rem',
-}
 
 interface CreatedTaskResult {
   count: number
@@ -216,6 +214,10 @@ function formatBatchKind(kind: string) {
   return kind.charAt(0).toUpperCase() + kind.slice(1)
 }
 
+function buildColumnGridStyle(columns: number) {
+  return { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
+}
+
 function compactPreviewText(text: string) {
   return String(text || '').replace(/,\s+/g, '  ·  ')
 }
@@ -262,6 +264,14 @@ interface BatchTriggerDetail {
   key: string
   value: string
   kind: string
+}
+
+interface TreeSectionNode {
+  name: string
+  path: string
+  depth: number
+  childCount: number
+  leafCount: number
 }
 
 function isNestedGroup(value: any) {
@@ -364,6 +374,71 @@ function collectPinnedRows(
     const parts = fullKey.split('.')
     rows.push({
       name: parts[parts.length - 1] || fullKey,
+      fullKey,
+      value,
+      declaredType: declaredTypeMap[fullKey],
+      batchActive: batchSet.has(fullKey),
+    })
+  }
+
+  return rows
+}
+
+function countLeafParams(data: Record<string, any>): number {
+  let count = 0
+  for (const [key, value] of Object.entries(data)) {
+    if (key.startsWith('_meta')) {
+      continue
+    }
+    if (isNestedGroup(value)) {
+      count += countLeafParams(value)
+    } else {
+      count += 1
+    }
+  }
+  return count
+}
+
+function collectTreeSections(data: Record<string, any>, prefix = '', depth = 0): TreeSectionNode[] {
+  const sections: TreeSectionNode[] = []
+  for (const [key, value] of Object.entries(data)) {
+    if (key.startsWith('_meta') || !isNestedGroup(value)) {
+      continue
+    }
+    const path = prefix ? `${prefix}.${key}` : key
+    const childEntries = Object.entries(value).filter(([childKey]) => !childKey.startsWith('_meta'))
+    sections.push({
+      name: key,
+      path,
+      depth,
+      childCount: childEntries.length,
+      leafCount: countLeafParams(value),
+    })
+    sections.push(...collectTreeSections(value, path, depth + 1))
+  }
+  return sections
+}
+
+function collectParamRows(
+  data: Record<string, any>,
+  declaredTypeMap: Record<string, ParamType>,
+  batchParams: string[],
+  prefix = '',
+) {
+  const rows: PinnedParamRow[] = []
+  const batchSet = new Set(batchParams)
+
+  for (const [key, value] of Object.entries(data)) {
+    if (key.startsWith('_meta')) {
+      continue
+    }
+    const fullKey = prefix ? `${prefix}.${key}` : key
+    if (isNestedGroup(value)) {
+      rows.push(...collectParamRows(value, declaredTypeMap, batchParams, fullKey))
+      continue
+    }
+    rows.push({
+      name: key,
       fullKey,
       value,
       declaredType: declaredTypeMap[fullKey],
@@ -1282,10 +1357,29 @@ function FormEditor({
     setData(next)
     onChange(next)
   }
-  const gridStyle = { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
-  const contentStyle = layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle
-  const contentClassName = layoutMode === 'tree' ? 'space-y-3' : 'grid gap-2'
-  const childSectionClassName = layoutMode === 'tree' ? 'mb-3 inline-block w-full align-top [break-inside:avoid]' : 'col-span-full'
+
+  if (layoutMode === 'tree') {
+    return (
+      <TreeParameterExplorer
+        data={data}
+        openSignalValue={openSignalValue}
+        openSignalVersion={openSignalVersion}
+        declaredTypeMap={declaredTypeMap}
+        pinnedRows={pinnedRows}
+        pinnedParams={pinnedParams}
+        pinnedRowKeys={pinnedRowKeys}
+        batchParams={batchParams}
+        onTogglePin={onTogglePin}
+        onChangeRoot={handleChange}
+        onChangePath={handlePinnedChange}
+      />
+    )
+  }
+
+  const gridStyle = buildColumnGridStyle(columns)
+  const contentStyle = gridStyle
+  const contentClassName = 'grid gap-x-3 gap-y-2.5'
+  const childSectionClassName = 'col-span-full'
 
   return (
     <div className="h-full overflow-y-auto p-3">
@@ -1351,6 +1445,343 @@ function FormEditor({
   )
 }
 
+function TreeParameterExplorer({
+  data,
+  openSignalValue,
+  openSignalVersion,
+  declaredTypeMap,
+  pinnedRows,
+  pinnedParams,
+  pinnedRowKeys,
+  batchParams,
+  onTogglePin,
+  onChangeRoot,
+  onChangePath,
+}: {
+  data: Record<string, any>
+  openSignalValue: boolean
+  openSignalVersion: number
+  declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
+  pinnedRows: PinnedParamRow[]
+  pinnedParams: string[]
+  pinnedRowKeys: Set<string>
+  batchParams: string[]
+  onTogglePin: (key: string) => void
+  onChangeRoot: (key: string, value: any) => void
+  onChangePath: (fullKey: string, value: any) => void
+}) {
+  const [selectedPath, setSelectedPath] = useState('')
+  const [filterText, setFilterText] = useState('')
+  const [outlineCollapsed, setOutlineCollapsed] = useState(false)
+  const outlineSections = useMemo(() => {
+    const rootEntries = Object.keys(data).filter(key => !key.startsWith('_meta'))
+    return [
+      {
+        name: 'All parameters',
+        path: '',
+        depth: -1,
+        childCount: rootEntries.length,
+        leafCount: countLeafParams(data),
+      },
+      ...collectTreeSections(data),
+    ]
+  }, [data])
+  const outlinePathSet = useMemo(() => new Set(outlineSections.map(section => section.path)), [outlineSections])
+  const query = filterText.trim().toLowerCase()
+  const searchRows = useMemo(() => {
+    if (!query) {
+      return [] as PinnedParamRow[]
+    }
+    return collectParamRows(data, declaredTypeMap, batchParams).filter(row => {
+      const pathText = row.fullKey.toLowerCase()
+      const valueText = stringifyEditable(row.value).toLowerCase()
+      return pathText.includes(query) || valueText.includes(query)
+    })
+  }, [batchParams, data, declaredTypeMap, query])
+  const selectedSection = outlineSections.find(section => section.path === selectedPath) || outlineSections[0]
+  const selectedValue = selectedPath ? getValueAtPath(data, selectedPath) : data
+  const selectedData = isNestedGroup(selectedValue) ? selectedValue : data
+  const selectedCrumbs = selectedPath ? selectedPath.split('.') : ['config']
+
+  useEffect(() => {
+    if (!outlinePathSet.has(selectedPath)) {
+      setSelectedPath('')
+    }
+  }, [outlinePathSet, selectedPath])
+
+  return (
+    <div className={clsx(
+      'grid h-full min-h-0 p-3',
+      outlineCollapsed ? 'grid-cols-[minmax(0,1fr)]' : 'grid-cols-[minmax(220px,260px)_minmax(0,1fr)] gap-3',
+    )}>
+      {!outlineCollapsed && (
+      <aside className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised/85">
+        <div className="border-b border-border-subtle p-2">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">Outline</span>
+            <button
+              type="button"
+              onClick={() => setOutlineCollapsed(true)}
+              className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-2xs font-medium text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+            >
+              <ChevronLeft className="h-3 w-3" />
+              Hide
+            </button>
+          </div>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-txt-tertiary" />
+            <input
+              value={filterText}
+              onChange={event => setFilterText(event.target.value)}
+              placeholder="Search path or value"
+              className="w-full rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-7 pr-2 text-xs text-txt-primary outline-none transition-colors placeholder:text-txt-tertiary focus:border-border"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+          <div className="space-y-0.5">
+            {outlineSections.map(section => {
+              const active = !query && selectedPath === section.path
+              const indent = section.path ? 10 + section.depth * 14 : 8
+              return (
+                <button
+                  key={section.path || '__root__'}
+                  type="button"
+                  onClick={() => {
+                    setFilterText('')
+                    setSelectedPath(section.path)
+                  }}
+                  title={section.path || 'All parameters'}
+                  className={clsx(
+                    'flex w-full min-w-0 items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs transition-colors',
+                    active
+                      ? 'bg-accent/10 text-accent'
+                      : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
+                  )}
+                  style={{ paddingLeft: `${indent}px` }}
+                >
+                  {section.path ? (
+                    <ChevronRight className="h-3 w-3 flex-none text-txt-tertiary" />
+                  ) : (
+                    <Workflow className="h-3 w-3 flex-none" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate font-semibold">{section.name}</span>
+                  <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs text-txt-tertiary">
+                    {section.leafCount}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </aside>
+      )}
+
+      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised/50">
+        <div className="border-b border-border-subtle bg-surface-raised/80 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            {outlineCollapsed && (
+              <button
+                type="button"
+                onClick={() => setOutlineCollapsed(false)}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
+              >
+                <Workflow className="h-3.5 w-3.5" />
+                Outline
+              </button>
+            )}
+            <h3 className="min-w-0 truncate text-sm font-semibold text-txt-primary">
+              {query ? 'Search results' : selectedSection.name}
+            </h3>
+            <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs text-txt-secondary">
+              {query ? searchRows.length : selectedSection.leafCount}
+            </span>
+          </div>
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-2xs text-txt-tertiary">
+            {(query ? ['filter', filterText.trim()] : selectedCrumbs).filter(Boolean).map((crumb, index) => (
+              <span key={`${crumb}-${index}`} className="font-mono">
+                {index > 0 ? `/ ${crumb}` : crumb}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+          {pinnedRows.length > 0 && !query && (
+            <PinnedParameters
+              rows={pinnedRows}
+              columns={1}
+              layoutMode="tree"
+              onTogglePin={onTogglePin}
+              onChange={onChangePath}
+            />
+          )}
+
+          {query ? (
+            <SearchResultRows
+              rows={searchRows}
+              pinnedParams={pinnedParams}
+              onTogglePin={onTogglePin}
+              onChange={onChangePath}
+            />
+          ) : selectedPath ? (
+            <NestedSection
+              name={selectedSection.name}
+              data={selectedData}
+              depth={0}
+              columns={1}
+              layoutMode="tree"
+              openSignalValue={openSignalValue}
+              openSignalVersion={openSignalVersion}
+              declaredTypeMap={declaredTypeMap}
+              pinnedParams={pinnedParams}
+              pinnedRowKeys={pinnedRowKeys}
+              batchParams={batchParams}
+              prefix={selectedPath}
+              onTogglePin={onTogglePin}
+              onChange={next => onChangePath(selectedPath, next)}
+            />
+          ) : (
+            <RootSectionOverview
+              data={data}
+              sections={outlineSections.filter(section => section.path && section.depth === 0)}
+              declaredTypeMap={declaredTypeMap}
+              pinnedParams={pinnedParams}
+              pinnedRowKeys={pinnedRowKeys}
+              batchParams={batchParams}
+              onTogglePin={onTogglePin}
+              onChangeRoot={onChangeRoot}
+              onSelectPath={setSelectedPath}
+            />
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function RootSectionOverview({
+  data,
+  sections,
+  declaredTypeMap,
+  pinnedParams,
+  pinnedRowKeys,
+  batchParams,
+  onTogglePin,
+  onChangeRoot,
+  onSelectPath,
+}: {
+  data: Record<string, any>
+  sections: TreeSectionNode[]
+  declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
+  pinnedParams: string[]
+  pinnedRowKeys: Set<string>
+  batchParams: string[]
+  onTogglePin: (key: string) => void
+  onChangeRoot: (key: string, value: any) => void
+  onSelectPath: (path: string) => void
+}) {
+  const scalarEntries = Object.entries(data).filter(([key, value]) => (
+    !key.startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(key)
+  ))
+
+  return (
+    <div className="space-y-3">
+      {scalarEntries.length > 0 && (
+        <div className="grid gap-2" style={buildColumnGridStyle(1)}>
+          {scalarEntries.map(([key, value]) => (
+            <ParamRow
+              key={key}
+              name={key}
+              value={value}
+              declaredType={declaredTypeMap[key]}
+              layoutMode="tree"
+              pinned={pinnedParams.includes(key)}
+              batchActive={batchParams.includes(key)}
+              onChange={next => onChangeRoot(key, next)}
+              onTogglePin={() => onTogglePin(key)}
+            />
+          ))}
+        </div>
+      )}
+
+      {sections.length > 0 && (
+        <div>
+          <div className="mb-2 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
+            <Workflow className="h-3.5 w-3.5" />
+            <span>Sections</span>
+          </div>
+          <div className="space-y-2">
+            {sections.map(section => (
+              <button
+                key={section.path}
+                type="button"
+                onClick={() => onSelectPath(section.path)}
+                className="group block w-full min-w-0 rounded-md border border-border bg-surface-raised px-3 py-2 text-left shadow-sm transition-colors hover:border-accent/40 hover:bg-surface-overlay"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <ChevronRight className="h-3.5 w-3.5 flex-none text-txt-tertiary transition-transform group-hover:translate-x-0.5" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold text-txt-primary">
+                    {section.name}
+                  </span>
+                  <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs text-txt-secondary">
+                    {section.leafCount}
+                  </span>
+                </div>
+                <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary" title={section.path}>
+                  {section.path}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SearchResultRows({
+  rows,
+  pinnedParams,
+  onTogglePin,
+  onChange,
+}: {
+  rows: PinnedParamRow[]
+  pinnedParams: string[]
+  onTogglePin: (key: string) => void
+  onChange: (fullKey: string, value: any) => void
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border-subtle bg-surface-overlay/40 px-3 py-8 text-center text-sm text-txt-tertiary">
+        No matching parameters.
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      {rows.map(row => (
+        <div key={row.fullKey} className="rounded-md border border-border-subtle bg-surface-raised p-1.5">
+          <div className="mb-1 truncate px-1 font-mono text-2xs text-txt-tertiary" title={row.fullKey}>
+            {row.fullKey}
+          </div>
+          <ParamRow
+            name={row.name}
+            value={row.value}
+            declaredType={row.declaredType}
+            layoutMode="tree"
+            pinned={pinnedParams.includes(row.fullKey)}
+            batchActive={row.batchActive}
+            onChange={next => onChange(row.fullKey, next)}
+            onTogglePin={() => onTogglePin(row.fullKey)}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function PinnedParameters({
   rows,
   columns,
@@ -1364,9 +1795,9 @@ function PinnedParameters({
   onTogglePin: (key: string) => void
   onChange: (fullKey: string, value: any) => void
 }) {
-  const gridStyle = { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
-  const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
-  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-2'
+  const gridStyle = buildColumnGridStyle(columns)
+  const contentStyle = gridStyle
+  const contentClassName = 'grid gap-2'
 
   return (
     <CompactSection
@@ -1434,9 +1865,9 @@ function NestedSection({
   const visibleEntries = Object.entries(data).filter(([key]) => !key.startsWith('_meta'))
   const treeSection = layoutMode === 'tree'
   const treeConnector = treeSection && depth > 0
-  const gridStyle = { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
+  const gridStyle = buildColumnGridStyle(columns)
   const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
-  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-2'
+  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5'
   const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'
 
   useEffect(() => {
@@ -1452,12 +1883,13 @@ function NestedSection({
       className={clsx(
         'relative box-border transition-colors',
         treeSection
-          ? 'overflow-visible rounded-md border border-transparent bg-transparent'
-          : 'overflow-hidden rounded-md border bg-surface-raised',
-        treeSection && depth === 0 && 'border-border-subtle/80 bg-surface-raised/55 px-2 py-1.5',
-        !treeSection && (depth === 0 ? 'border-border-subtle' : 'border-border-subtle/80 border-l-2 border-border-subtle/70'),
+          ? 'overflow-hidden rounded-md border border-transparent bg-transparent'
+          : 'relative',
+        treeSection && depth === 0 && 'border-border bg-surface-raised shadow-sm',
+        treeSection && depth > 0 && 'rounded-none',
+        !treeSection && depth === 0 && 'overflow-hidden rounded-md border border-border-subtle bg-surface-raised/80',
+        !treeSection && depth > 0 && 'border-l-2 border-border-subtle pl-3',
       )}
-      style={treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }}
     >
       {treeConnector && (
         <div className="pointer-events-none absolute bottom-0 left-0 top-4 border-l border-border-subtle/60" />
@@ -1469,10 +1901,12 @@ function NestedSection({
         className={clsx(
           'relative flex min-h-8 w-full items-center gap-1.5 text-left transition-colors',
           treeSection
-            ? 'rounded-md px-2 py-1.5 hover:bg-surface-overlay/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25'
-            : 'border-b border-border-subtle px-2.5 py-1.5 hover:bg-surface-overlay',
-          treeSection && depth === 0 && 'bg-surface-overlay/35',
-          !treeSection && (depth === 0 ? 'bg-surface-raised' : 'bg-surface-overlay/45'),
+            ? 'px-2.5 py-1.5 hover:bg-surface-overlay/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25'
+            : 'px-2.5 py-1.5 hover:bg-surface-overlay',
+          treeSection && depth === 0 && 'border-b border-border-subtle bg-surface-overlay/50',
+          treeSection && depth > 0 && 'rounded-md',
+          !treeSection && depth === 0 && 'border-b border-border-subtle bg-surface-overlay/40',
+          !treeSection && depth > 0 && 'rounded-md bg-surface-overlay/25',
         )}
         title={`${prefix} (${Object.keys(data).length} fields)`}
       >
@@ -1491,7 +1925,7 @@ function NestedSection({
         </span>
       </button>
       {open && (
-        <div className={treeSection ? 'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1' : 'p-2'}>
+        <div className={treeSection ? 'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1' : (depth === 0 ? 'p-2.5' : 'pb-2 pl-3 pt-1.5')}>
           <div
             className={contentClassName}
             style={contentStyle}
@@ -1608,16 +2042,99 @@ function ParamRow({
     onChange(localValue)
   }
 
+  if (!treeParamRow) {
+    return (
+      <div
+        className={clsx(
+          'group min-w-0 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-overlay/55 focus-within:bg-surface-overlay/75 focus-within:ring-2 focus-within:ring-accent/20',
+          pinned ? 'bg-accent/5 ring-1 ring-accent/20' : 'bg-transparent',
+          (hasBatch || batchActive) && 'bg-amber-500/5 ring-1 ring-amber-500/20',
+        )}
+      >
+        <div className="mb-1.5 flex min-w-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation()
+              onTogglePin()
+            }}
+            title={pinned ? 'Unpin' : 'Pin'}
+            aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
+            className={clsx(
+              'flex h-5 w-5 flex-none items-center justify-center rounded-md transition-colors',
+              pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
+            )}
+          >
+            <Pin className="h-3 w-3" />
+          </button>
+
+          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-txt-primary" title={name}>
+            {name}
+          </span>
+
+          <span className={clsx(
+            'flex-none rounded-md px-1.5 py-0.5 text-[10px] font-mono',
+            PARAM_TYPE_STYLES[originalType]
+          )}>
+            {originalType}
+          </span>
+        </div>
+
+        {originalType === 'bool' && !hasBatch ? (
+          <div
+            className={clsx(
+              'flex h-7 min-w-0 items-center justify-between gap-2 rounded-md border bg-surface-overlay/45 px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+              batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+            )}
+          >
+            <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
+            <button
+              type="button"
+              onClick={() => onChange(!value)}
+              title={`Toggle ${name}`}
+            className={clsx(
+                'relative h-4.5 w-9 flex-none rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
+                value ? 'bg-accent' : 'bg-zinc-600'
+              )}
+            >
+              <span
+                className={clsx(
+                  'absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform',
+                  value ? 'left-[18px]' : 'left-0.5'
+                )}
+              />
+            </button>
+          </div>
+        ) : (
+          <input
+            type="text"
+            value={localValue}
+            onChange={event => setLocalValue(event.target.value)}
+            onBlur={commitValue}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                commitValue()
+              }
+            }}
+            spellCheck={false}
+            title={localValue}
+            className={clsx(
+              'h-7 w-full rounded-md border bg-surface-overlay/45 px-2 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
+              hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+            )}
+          />
+        )}
+      </div>
+    )
+  }
+
   return (
     <div
       className={clsx(
-        treeParamRow
-          ? 'flex min-h-8 border-transparent bg-transparent px-2 py-1 hover:bg-surface-overlay/70 min-w-0 items-center gap-2 rounded-md border transition-colors focus-within:border-border-subtle focus-within:bg-surface-raised/80'
-          : 'flex items-center gap-1.5 rounded-md border px-1.5 py-1 transition-colors',
-        treeParamRow
-          ? pinned && 'border-accent/20 bg-accent/5'
-          : (pinned ? 'border-accent/20 bg-accent/5' : 'border-border-subtle bg-surface-raised hover:border-border'),
-        (hasBatch || batchActive) && (treeParamRow ? 'border-amber-500/20 bg-amber-500/5' : 'border-amber-500/20 bg-amber-500/5'),
+        'grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)] min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border hover:bg-surface-overlay focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20',
+        pinned && 'border-accent/20 bg-accent/5',
+        (hasBatch || batchActive) && 'border-amber-500/20 bg-amber-500/5',
       )}
     >
       <button
@@ -1636,7 +2153,7 @@ function ParamRow({
         <Pin className="h-3 w-3" />
       </button>
 
-      <div className={clsx('flex min-w-0 items-center gap-1.5', treeParamRow ? 'flex-[0.7]' : 'flex-1')}>
+      <div className={clsx('flex min-w-0 items-center gap-1.5', treeParamRow ? 'min-w-0' : 'flex-1')}>
         <span className="min-w-0 truncate text-xs font-semibold text-txt-primary" title={name}>
           {name}
         </span>
@@ -1652,8 +2169,8 @@ function ParamRow({
       {originalType === 'bool' && !hasBatch ? (
         <div
           className={clsx(
-            'ml-auto flex min-w-0 items-center gap-1.5',
-            treeParamRow ? 'flex-[1.3] justify-start' : 'flex-none justify-end',
+            'flex min-w-0 items-center gap-1.5',
+            treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end',
           )}
         >
           <button
@@ -1661,7 +2178,7 @@ function ParamRow({
             onClick={() => onChange(!value)}
             title={`Toggle ${name}`}
             className={clsx(
-              'relative h-4.5 w-9 rounded-full transition-colors',
+              'relative h-4.5 w-9 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
               value ? 'bg-accent' : 'bg-zinc-600'
             )}
           >
@@ -1689,8 +2206,8 @@ function ParamRow({
           spellCheck={false}
           title={localValue}
           className={clsx(
-            'rounded-md border bg-transparent px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border',
-            treeParamRow ? 'ml-auto min-w-0 flex-[1.3]' : 'ml-auto min-w-0 flex-1',
+            'rounded-md border bg-transparent px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-accent focus:bg-surface-overlay/45 focus:ring-2 focus:ring-accent/15',
+            treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1',
             hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
           )}
         />
