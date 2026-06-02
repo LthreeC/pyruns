@@ -29,8 +29,13 @@ It tries to stay aligned with what you already have:
 pip install pyruns
 pyr train.py
 pyr train.py my_config.yaml
+pyr train.py -p 9000
+pyruns train.py -p 9000
+pyruns train.py -p 9000 --no-browser
 pyr
 ```
+
+In tmux, SSH, or headless sessions, Pyruns prints the local URL and skips browser auto-open by default. Use `--browser` or `PYRUNS_OPEN_BROWSER=1` when you explicitly want to force browser opening.
 
 The recommended first-glance entrypoints are:
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -203,6 +204,33 @@ def _schedule_browser_open(url: str, *, delay_seconds: float = 0.8) -> None:
             return
 
     threading.Thread(target=_open, daemon=True).start()
+
+
+def _env_truthy(name: str) -> bool:
+    value = os.getenv(name)
+    return value is not None and value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _env_falsey(name: str) -> bool:
+    value = os.getenv(name)
+    return value is not None and value.strip().lower() in {"0", "false", "no", "off"}
+
+
+def _can_open_browser_from_environment() -> bool:
+    """Return whether auto-opening a browser is suitable for this process."""
+
+    if _env_truthy("PYRUNS_NO_BROWSER"):
+        return False
+    if _env_truthy("PYRUNS_OPEN_BROWSER"):
+        return True
+    if _env_falsey("PYRUNS_OPEN_BROWSER"):
+        return False
+    if os.getenv("TMUX"):
+        return False
+    if sys.platform.startswith(("linux", "freebsd", "openbsd")):
+        if not (os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")):
+            return False
+    return True
 
 
 def find_available_port(start_port: int, *, host: str = "127.0.0.1", max_attempts: int = 100) -> int:
@@ -634,17 +662,22 @@ def main(
     reload: bool = False,
     open_browser: bool | None = None,
     start_path: str = "/",
+    port: int | None = None,
 ) -> None:
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
     host = "127.0.0.1"
-    configured_port = int(runtime.settings.get("ui_port", DEFAULT_UI_PORT))
+    configured_port = int(port if port is not None else runtime.settings.get("ui_port", DEFAULT_UI_PORT))
     port = find_available_port(configured_port, host=host)
     if port != configured_port:
         print(f"[pyruns] Port {configured_port} is busy; using {port} instead.")
-    should_open_browser = (not reload) if open_browser is None else open_browser
+    url = f"http://{host}:{port}{start_path}"
+    print(f"[pyruns] UI: {url}")
+    should_open_browser = (not reload and _can_open_browser_from_environment()) if open_browser is None else open_browser
     if should_open_browser:
-        _schedule_browser_open(f"http://{host}:{port}{start_path}")
+        _schedule_browser_open(url)
+    else:
+        print("[pyruns] Browser auto-open disabled; open the URL manually.")
     uvicorn.run(
         "pyruns.web.app:create_app" if reload else create_app(runtime),
         host=host,
@@ -656,5 +689,49 @@ def main(
     )
 
 
+def _parse_main_options(args: list[str]) -> tuple[int | None, bool | None]:
+    """Parse minimal UI launch options for ``python -m pyruns.web.app``."""
+
+    index = 0
+    selected_port: int | None = None
+    open_browser: bool | None = None
+    while index < len(args):
+        arg = args[index]
+        if arg == "-p" or arg == "--port":
+            if index + 1 >= len(args):
+                print(f"Missing value for {arg}.")
+                sys.exit(1)
+            selected_port = _parse_port_value(args[index + 1])
+            index += 2
+            continue
+        if arg.startswith("--port="):
+            selected_port = _parse_port_value(arg.split("=", 1)[1])
+            index += 1
+            continue
+        if arg == "--no-browser":
+            open_browser = False
+            index += 1
+            continue
+        if arg in {"--browser", "--open-browser"}:
+            open_browser = True
+            index += 1
+            continue
+        index += 1
+    return selected_port, open_browser
+
+
+def _parse_port_value(raw: str) -> int:
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"Invalid port: {raw}")
+        sys.exit(1)
+    if value < 1 or value > 65535:
+        print("Port must be between 1 and 65535.")
+        sys.exit(1)
+    return value
+
+
 if __name__ == "__main__":
-    main(reload=True)
+    main_port, main_open_browser = _parse_main_options(sys.argv[1:])
+    main(reload=True, port=main_port, open_browser=main_open_browser)

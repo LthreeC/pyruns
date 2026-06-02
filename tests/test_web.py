@@ -134,6 +134,72 @@ def test_main_uses_resolved_dynamic_port_for_server_and_browser(monkeypatch):
     assert captured["browser_url"] == "http://127.0.0.1:8101/generator?launcher=1"
 
 
+def test_main_explicit_port_overrides_workspace_setting(monkeypatch):
+    from pyruns.web import app as web_app
+
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    def fake_find_available_port(port, host="127.0.0.1"):
+        captured["requested_port"] = port
+        captured["host"] = host
+        return port
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(web_app, "find_available_port", fake_find_available_port)
+    monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
+    monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
+
+    web_app.main(open_browser=True, port=9022)
+
+    assert captured["requested_port"] == 9022
+    assert captured["port"] == 9022
+    assert captured["browser_url"] == "http://127.0.0.1:9022/"
+
+
+def test_main_does_not_auto_open_browser_in_tmux(monkeypatch):
+    from pyruns.web import app as web_app
+
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.delenv("PYRUNS_OPEN_BROWSER", raising=False)
+    monkeypatch.delenv("PYRUNS_NO_BROWSER", raising=False)
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(web_app, "find_available_port", lambda port, host="127.0.0.1": port)
+    monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
+    monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
+
+    web_app.main()
+
+    assert captured["port"] == 8099
+    assert "browser_url" not in captured
+
+
+def test_main_explicit_browser_overrides_tmux_default(monkeypatch):
+    from pyruns.web import app as web_app
+
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(web_app, "find_available_port", lambda port, host="127.0.0.1": port)
+    monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
+    monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
+
+    web_app.main(open_browser=True)
+
+    assert captured["browser_url"] == "http://127.0.0.1:8099/"
+
+
 def test_workspace_endpoint_returns_metadata(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

@@ -40,6 +40,8 @@ _HELP = textwrap.dedent(
         pyr <script.py>                Start web app for a script
         pyr <script.py> [config.yaml]  Start web app and import a custom YAML config
         pyr                            Start web app in shell mode for current directory
+        pyr -p <port>                  Start web app on a custom port
+        pyr --no-browser               Start web app without opening a browser
         pyr ui                         Start the launcher and choose a script workspace
         pyr dev <script.py>            Start web app in dev mode (hot-reload)
         pyr cli [script.py]            Enter interactive CLI mode
@@ -61,6 +63,10 @@ _HELP = textwrap.dedent(
 
     EXAMPLES
         pyr train.py
+        pyr train.py -p 9000
+        pyr train.py -p 9000 --no-browser
+        pyr -p 9000
+        pyr --no-browser
         pyr train.py settings.yaml
         pyr
         pyr ui
@@ -192,16 +198,69 @@ def _dispatch_cli(args: list[str]) -> None:
     handler(task_manager, args[1:])
 
 
-def _launch_ui(start_path: str = "/") -> None:
+def _parse_port_value(raw: str) -> int:
+    """Parse and validate a TCP port for UI startup."""
+
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"Invalid port: {raw}")
+        sys.exit(1)
+    if value < 1 or value > 65535:
+        print("Port must be between 1 and 65535.")
+        sys.exit(1)
+    return value
+
+
+def _consume_ui_options(args: list[str]) -> tuple[int | None, bool | None, list[str]]:
+    """Remove UI launch options from args and return the selected values."""
+
+    selected_port: int | None = None
+    open_browser: bool | None = None
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {"-p", "--port"}:
+            if index + 1 >= len(args):
+                print(f"Missing value for {arg}.")
+                sys.exit(1)
+            selected_port = _parse_port_value(args[index + 1])
+            index += 2
+            continue
+        if arg.startswith("--port="):
+            selected_port = _parse_port_value(arg.split("=", 1)[1])
+            index += 1
+            continue
+        if arg == "--no-browser":
+            open_browser = False
+            index += 1
+            continue
+        if arg in {"--browser", "--open-browser"}:
+            open_browser = True
+            index += 1
+            continue
+        remaining.append(arg)
+        index += 1
+    return selected_port, open_browser, remaining
+
+
+def _launch_ui(start_path: str = "/", *, port: int | None = None, open_browser: bool | None = None) -> None:
     """Launch the unified static UI and API server."""
 
     sys.argv = [sys.argv[0]]
     from pyruns.web.app import main
 
-    main(start_path=start_path)
+    main(start_path=start_path, port=port, open_browser=open_browser)
 
 
-def _handle_ui_launch(filepath: str, custom_yaml: str | None) -> None:
+def _handle_ui_launch(
+    filepath: str,
+    custom_yaml: str | None,
+    *,
+    port: int | None = None,
+    open_browser: bool | None = None,
+) -> None:
     """Launch the UI for a given script path."""
 
     normalized = normalize_path(filepath)
@@ -212,10 +271,10 @@ def _handle_ui_launch(filepath: str, custom_yaml: str | None) -> None:
 
     ensure_root_dir()
     _setup_env(normalized, custom_yaml)
-    _launch_ui("/")
+    _launch_ui("/", port=port, open_browser=open_browser)
 
 
-def _launch_shell_workspace_ui() -> None:
+def _launch_shell_workspace_ui(*, port: int | None = None, open_browser: bool | None = None) -> None:
     """Launch the web UI directly into the current directory's shell workspace."""
 
     root_dir = normalize_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
@@ -225,15 +284,20 @@ def _launch_shell_workspace_ui() -> None:
     print(f"[pyruns] Workspace: {shell_root}")
     print("[pyruns] Recommended main flow: `pyr <script.py>` or `pyr <script.py> <config.yaml>`")
     print("[pyruns] Tip: choose a script in Launcher, or cancel it and write commands in Shell Generator mode")
-    _launch_ui("/generator?launcher=1")
+    _launch_ui("/generator?launcher=1", port=port, open_browser=open_browser)
 
 
 def pyr() -> None:
     """Main ``pyr`` console entry point."""
 
-    argv = list(sys.argv[1:])
+    raw_argv = list(sys.argv[1:])
+    if raw_argv and raw_argv[0].lower() in _CLI_COMMANDS:
+        _dispatch_cli(raw_argv)
+        return
+
+    port, open_browser, argv = _consume_ui_options(raw_argv)
     if not argv:
-        _launch_shell_workspace_ui()
+        _launch_shell_workspace_ui(port=port, open_browser=open_browser)
         return
 
     arg = argv[0]
@@ -247,10 +311,13 @@ def pyr() -> None:
         if len(argv) < 2:
             print("Usage: pyr dev <script.py> [custom_config.yaml]")
             sys.exit(1)
-        _launch_dev(argv[1], argv[2] if len(argv) > 2 else None)
+        _launch_dev(argv[1], argv[2] if len(argv) > 2 else None, port=port, open_browser=open_browser)
         return
 
     if arg.lower() in _CLI_COMMANDS:
+        if port is not None or open_browser is not None:
+            print("UI launch options only apply to UI launch commands.")
+            sys.exit(1)
         _dispatch_cli(argv)
         return
 
@@ -258,14 +325,14 @@ def pyr() -> None:
         ensure_root_dir()
         print("[pyruns] Opening launcher")
         print("[pyruns] Tip: choose a Python script to enter script workspace mode")
-        _launch_ui(launcher_query())
+        _launch_ui(launcher_query(), port=port, open_browser=open_browser)
         return
 
     if arg == "ui":
-        _handle_ui_launch(argv[1], argv[2] if len(argv) > 2 else None)
+        _handle_ui_launch(argv[1], argv[2] if len(argv) > 2 else None, port=port, open_browser=open_browser)
         return
 
-    _handle_ui_launch(arg, argv[1] if len(argv) > 1 else None)
+    _handle_ui_launch(arg, argv[1] if len(argv) > 1 else None, port=port, open_browser=open_browser)
 
 
 def _setup_env(filepath: str, custom_yaml: str | None = None) -> str:
@@ -274,7 +341,13 @@ def _setup_env(filepath: str, custom_yaml: str | None = None) -> str:
     return bootstrap_from_cli(filepath, custom_yaml)
 
 
-def _launch_dev(script_arg: str, custom_yaml: str | None = None) -> None:
+def _launch_dev(
+    script_arg: str,
+    custom_yaml: str | None = None,
+    *,
+    port: int | None = None,
+    open_browser: bool | None = None,
+) -> None:
     """Launch the unified web app in dev mode with hot-reload."""
 
     filepath = normalize_path(script_arg)
@@ -285,7 +358,14 @@ def _launch_dev(script_arg: str, custom_yaml: str | None = None) -> None:
     _setup_env(filepath, custom_yaml)
     print("[pyruns dev] Hot-reload enabled - editing .py files will auto-restart")
     print(f"[pyruns dev] Script: {filepath}")
-    subprocess.run([sys.executable, "-m", "pyruns.web.app"], check=False)
+    command = [sys.executable, "-m", "pyruns.web.app"]
+    if port is not None:
+        command.extend(["--port", str(port)])
+    if open_browser is False:
+        command.append("--no-browser")
+    elif open_browser is True:
+        command.append("--browser")
+    subprocess.run(command, check=False)
 
 
 if __name__ == "__main__":

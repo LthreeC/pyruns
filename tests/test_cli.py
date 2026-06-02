@@ -499,10 +499,34 @@ class TestEntryPoint:
                 pyr()
 
         mock_bootstrap.assert_called_once_with(str(tmp_path / "_pyruns_").replace("\\", "/"))
-        mock_launch.assert_called_once_with("/generator?launcher=1")
+        mock_launch.assert_called_once_with("/generator?launcher=1", port=None, open_browser=None)
         captured = capsys.readouterr()
         assert "Starting shell workspace" in captured.out
         assert "Generator" in captured.out
+
+    def test_pyr_port_without_args_opens_shell_workspace_on_requested_port(self, tmp_path, monkeypatch):
+        from pyruns.cli import pyr
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["pyr", "-p", "9012"])
+
+        with patch("pyruns.cli.bootstrap_shell_workspace", return_value=str(tmp_path / "_pyruns_" / "_shell_")):
+            with patch("pyruns.cli._launch_ui") as mock_launch:
+                pyr()
+
+        mock_launch.assert_called_once_with("/generator?launcher=1", port=9012, open_browser=None)
+
+    def test_pyr_no_browser_without_args_opens_shell_workspace_without_browser(self, tmp_path, monkeypatch):
+        from pyruns.cli import pyr
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["pyr", "--no-browser"])
+
+        with patch("pyruns.cli.bootstrap_shell_workspace", return_value=str(tmp_path / "_pyruns_" / "_shell_")):
+            with patch("pyruns.cli._launch_ui") as mock_launch:
+                pyr()
+
+        mock_launch.assert_called_once_with("/generator?launcher=1", port=None, open_browser=False)
 
     def test_help_mentions_shell_start(self, monkeypatch, capsys):
         from pyruns.cli import pyr
@@ -514,6 +538,9 @@ class TestEntryPoint:
 
         captured = capsys.readouterr()
         assert "Start web app in shell mode for current directory" in captured.out
+        assert "pyr -p <port>" in captured.out
+        assert "pyr train.py -p 9000" in captured.out
+        assert "pyr --no-browser" in captured.out
         assert "pyr ui" in captured.out
 
     def test_direct_info_command_dispatches_to_cli(self, monkeypatch):
@@ -525,6 +552,57 @@ class TestEntryPoint:
             pyr()
 
         mock_dispatch.assert_called_once_with(["info"])
+
+    def test_direct_cli_command_keeps_port_like_args(self, monkeypatch):
+        from pyruns.cli import pyr
+
+        monkeypatch.setattr("sys.argv", ["pyr", "info", "-p", "abc"])
+
+        with patch("pyruns.cli._dispatch_cli") as mock_dispatch:
+            pyr()
+
+        mock_dispatch.assert_called_once_with(["info", "-p", "abc"])
+
+    def test_pyr_script_launch_accepts_port_after_script(self, tmp_path, monkeypatch):
+        from pyruns.cli import pyr
+
+        script_path = tmp_path / "train.py"
+        script_path.write_text("print('train')\n", encoding="utf-8")
+        monkeypatch.setattr("sys.argv", ["pyr", str(script_path), "-p", "9020"])
+
+        with patch("pyruns.cli.ensure_root_dir"):
+            with patch("pyruns.cli._setup_env") as mock_setup:
+                with patch("pyruns.cli._launch_ui") as mock_launch:
+                    pyr()
+
+        mock_setup.assert_called_once_with(str(script_path).replace("\\", "/"), None)
+        mock_launch.assert_called_once_with("/", port=9020, open_browser=None)
+
+    def test_pyr_script_launch_accepts_port_before_script(self, tmp_path, monkeypatch):
+        from pyruns.cli import pyr
+
+        script_path = tmp_path / "train.py"
+        script_path.write_text("print('train')\n", encoding="utf-8")
+        monkeypatch.setattr("sys.argv", ["pyr", "--port=9021", str(script_path)])
+
+        with patch("pyruns.cli.ensure_root_dir"):
+            with patch("pyruns.cli._setup_env") as mock_setup:
+                with patch("pyruns.cli._launch_ui") as mock_launch:
+                    pyr()
+
+        mock_setup.assert_called_once_with(str(script_path).replace("\\", "/"), None)
+        mock_launch.assert_called_once_with("/", port=9021, open_browser=None)
+
+    def test_pyr_rejects_invalid_port(self, monkeypatch, capsys):
+        from pyruns.cli import pyr
+
+        monkeypatch.setattr("sys.argv", ["pyr", "-p", "abc"])
+
+        with pytest.raises(SystemExit):
+            pyr()
+
+        captured = capsys.readouterr()
+        assert "Invalid port: abc" in captured.out
 
 
 class TestScriptLaunchRules:
