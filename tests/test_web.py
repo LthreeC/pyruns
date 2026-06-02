@@ -23,6 +23,8 @@ from pyruns.utils.info_io import save_task_info, update_task_info
 from pyruns.web.app import create_app
 from pyruns.web.runtime import PyrunsRuntime, parse_global_env_text
 
+WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
+
 
 def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
     """Windows process-spawn imports use __mp_main__ and must not start uvicorn."""
@@ -1366,6 +1368,15 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
     assert payload["content"] == "hello from stream"
+
+
+def test_logs_websocket_stream_uses_bounded_queue():
+    source = WEB_APP.read_text(encoding="utf-8")
+
+    assert "LOG_STREAM_QUEUE_LIMIT" in source
+    assert "asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)" in source
+    assert "except asyncio.QueueFull" in source
+    assert "queue.get_nowait()" in source
 
 
 def test_metrics_endpoint_returns_sampler_payload(tmp_path):

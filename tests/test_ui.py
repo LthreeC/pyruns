@@ -379,6 +379,17 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "pendingLiveLogChunkRef.current = { key, content: buffer.content + message.content }" in source
 
 
+def test_react_monitor_caps_live_log_state_for_long_tasks():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "MONITOR_LOG_STATE_MAX_CHARS" in store
+    assert "MONITOR_LOG_STATE_TRIM_THRESHOLD" in store
+    assert "export function appendMonitorLogContent" in store
+    assert "appendMonitorLogContent(s.logContent, text)" in store
+    assert "appendMonitorLogContent(state.logContent, logs.content)" in monitor
+
+
 def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 

@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { ChevronDown, Download, FileDown, Pin, Play, Rows3, Square } from 'lucide-react'
 import clsx from 'clsx'
-import { useMonitorStore, useTaskStore, useWorkspaceStore } from '@/store'
+import { appendMonitorLogContent, useMonitorStore, useTaskStore, useWorkspaceStore } from '@/store'
 import { useLogStream } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
@@ -472,7 +472,7 @@ export default function MonitorPage() {
       }
 
       useMonitorStore.setState(state => ({
-        logContent: logs.content ? state.logContent + logs.content : state.logContent,
+        logContent: logs.content ? appendMonitorLogContent(state.logContent, logs.content) : state.logContent,
         logOffset: logs.offset,
         availableLogs: logs.available_logs,
         selectedLog: state.selectedLog || logs.selected_log,

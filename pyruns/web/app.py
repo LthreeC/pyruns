@@ -27,6 +27,12 @@ from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
+LOG_STREAM_QUEUE_LIMIT = 256
+LOG_STREAM_DROPPED_NOTICE = (
+    "[pyruns] Live log stream skipped older buffered output; "
+    "open the log file for full history.\n"
+)
+
 
 class RunRootRequest(BaseModel):
     """Workspace switch request payload."""
@@ -606,19 +612,35 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         await websocket.accept()
         loop = asyncio.get_running_loop()
         log_emitter.bind_loop(loop)
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)
         disconnected = asyncio.Event()
+        dropped_notice_sent = False
 
         def on_chunk(chunk_text: str) -> None:
+            nonlocal dropped_notice_sent
             if disconnected.is_set():
                 return
-            queue.put_nowait(
-                {
-                    "type": "chunk",
-                    "task_name": task_name,
-                    "content": chunk_text,
-                }
-            )
+            message = {
+                "type": "chunk",
+                "task_name": task_name,
+                "content": chunk_text,
+            }
+            try:
+                queue.put_nowait(message)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+
+            if not dropped_notice_sent:
+                message = {**message, "content": LOG_STREAM_DROPPED_NOTICE + chunk_text}
+                dropped_notice_sent = True
+            try:
+                queue.put_nowait(message)
+            except asyncio.QueueFull:
+                logger.debug("Dropping live log chunk for %s because websocket queue is full", task_name)
 
         async def watch_client_messages() -> None:
             try:

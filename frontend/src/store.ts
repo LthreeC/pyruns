@@ -19,6 +19,8 @@ const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
+const MONITOR_LOG_STATE_MAX_CHARS = 5_000_000
+const MONITOR_LOG_STATE_TRIM_THRESHOLD = MONITOR_LOG_STATE_MAX_CHARS * 2
 
 interface ThemeState {
   theme: 'dark' | 'light'
@@ -63,6 +65,23 @@ function readStoredStringArray(key: string) {
   } catch {
     return []
   }
+}
+
+export function trimMonitorLogContent(content: string) {
+  if (content.length <= MONITOR_LOG_STATE_TRIM_THRESHOLD) {
+    return content
+  }
+  return content.slice(-MONITOR_LOG_STATE_MAX_CHARS)
+}
+
+export function appendMonitorLogContent(content: string, text: string) {
+  if (!text) {
+    return content
+  }
+  if (text.length >= MONITOR_LOG_STATE_TRIM_THRESHOLD) {
+    return text.slice(-MONITOR_LOG_STATE_MAX_CHARS)
+  }
+  return trimMonitorLogContent(content + text)
 }
 
 export function applyThemeClass(theme: 'dark' | 'light') {
@@ -416,7 +435,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     }
   },
   appendLog(text: string) {
-    set(s => ({ logContent: s.logContent + text }))
+    set(s => ({ logContent: appendMonitorLogContent(s.logContent, text) }))
   },
   clearLog() { set({ logContent: '', logOffset: 0 }) },
   toggleExport(name) {
