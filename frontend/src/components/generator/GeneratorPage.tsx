@@ -4,17 +4,9 @@ import {
   useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
 import { useNavigate } from 'react-router-dom'
-import CodeMirror from '@uiw/react-codemirror'
-import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
-import type { Extension } from '@codemirror/state'
-import { EditorView } from '@codemirror/view'
-import { oneDark } from '@codemirror/theme-one-dark'
-import { tags as t } from '@lezer/highlight'
 import {
   AlertTriangle,
   ChevronDown,
@@ -39,6 +31,7 @@ import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
+import CodeTextEditor from '@/components/shared/CodeTextEditor'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
 import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
@@ -51,148 +44,6 @@ interface CreatedTaskResult {
   count: number
   taskKind: string
   firstTaskName: string
-}
-
-const YAML_EXTENSION = yamlLanguage()
-const LIGHT_EDITOR_THEME = EditorView.theme({
-  '&': {
-    color: '#1f2937',
-    backgroundColor: 'transparent',
-  },
-  '.cm-content': {
-    caretColor: '#2563eb',
-  },
-  '.cm-cursor, .cm-dropCursor': {
-    borderLeftColor: '#2563eb',
-  },
-  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
-    backgroundColor: 'rgba(37, 99, 235, 0.18)',
-  },
-  '.cm-activeLine': {
-    backgroundColor: 'rgba(15, 23, 42, 0.04)',
-  },
-  '.cm-gutters': {
-    color: '#94a3b8',
-    backgroundColor: 'rgba(248, 250, 252, 0.92)',
-    borderRight: '1px solid rgba(203, 213, 225, 0.7)',
-  },
-  '.cm-activeLineGutter': {
-    backgroundColor: 'rgba(226, 232, 240, 0.65)',
-    color: '#64748b',
-  },
-})
-const DARK_EDITOR_THEME = [
-  oneDark,
-  EditorView.theme({
-    '&': {
-      backgroundColor: 'transparent',
-    },
-    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
-      backgroundColor: 'rgba(38, 79, 120, 0.55)',
-    },
-    '.cm-activeLine': {
-      backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    },
-    '.cm-gutters': {
-      backgroundColor: 'rgba(15, 23, 42, 0.78)',
-      borderRight: '1px solid rgba(51, 65, 85, 0.95)',
-    },
-    '.cm-activeLineGutter': {
-      backgroundColor: 'rgba(30, 41, 59, 0.82)',
-    },
-  }),
-]
-const SHELL_LANGUAGE = StreamLanguage.define({
-  startState: () => ({ inString: null as '"' | "'" | null }),
-  token(stream, state) {
-    if (stream.sol()) {
-      state.inString = null
-    }
-    if (stream.eatSpace()) {
-      return null
-    }
-    if (stream.peek() === '#') {
-      stream.skipToEnd()
-      return 'comment'
-    }
-    if (state.inString) {
-      let escaped = false
-      while (!stream.eol()) {
-        const next = stream.next()
-        if (escaped) {
-          escaped = false
-          continue
-        }
-        if (next === '\\') {
-          escaped = true
-          continue
-        }
-        if (next === state.inString) {
-          state.inString = null
-          break
-        }
-      }
-      return 'string'
-    }
-    const quote = stream.peek()
-    if (quote === '"' || quote === "'") {
-      state.inString = quote
-      stream.next()
-      return 'string'
-    }
-    if (stream.match(/^\$\{[^}]+\}/) || stream.match(/^\$[A-Za-z_][\w]*/)) {
-      return 'variableName'
-    }
-    if (stream.match(/^--?[A-Za-z][\w-]*/)) {
-      return 'attributeName'
-    }
-    if (stream.match(/^(?:&&|\|\||<<|>>|[|&;<>])/)) {
-      return 'operator'
-    }
-    if (stream.match(/^(?:\d+\.\d+|\d+)/)) {
-      return 'number'
-    }
-    if (stream.match(/^(?:if|then|elif|else|fi|for|while|until|do|done|case|esac|function|in)\b/)) {
-      return 'keyword'
-    }
-    if (stream.match(/^(?:echo|cd|export|set|unset|pwd|test|source|cat|python|conda|pip|git|ls|cp|mv|rm|mkdir|touch|exit)\b/)) {
-      return 'builtin'
-    }
-    if (stream.match(/^[A-Za-z_][\w-]*(?==)/)) {
-      return 'definition'
-    }
-    stream.next()
-    return null
-  },
-})
-const LIGHT_EDITOR_HIGHLIGHT = syntaxHighlighting(HighlightStyle.define([
-  { tag: [t.keyword, t.controlKeyword], color: '#0000ff' },
-  { tag: [t.name, t.variableName], color: '#001080' },
-  { tag: [t.propertyName, t.attributeName, t.definition(t.variableName)], color: '#795e26' },
-  { tag: [t.number, t.integer, t.float], color: '#098658' },
-  { tag: [t.bool, t.null], color: '#0000ff' },
-  { tag: [t.string, t.special(t.string)], color: '#a31515' },
-  { tag: [t.comment, t.lineComment], color: '#008000', fontStyle: 'italic' },
-  { tag: [t.operator, t.separator], color: '#111827' },
-  { tag: [t.brace, t.squareBracket, t.paren], color: '#111827' },
-]), { fallback: false })
-const DARK_EDITOR_HIGHLIGHT = syntaxHighlighting(HighlightStyle.define([
-  { tag: [t.keyword, t.controlKeyword], color: '#569cd6' },
-  { tag: [t.name, t.variableName], color: '#9cdcfe' },
-  { tag: [t.propertyName, t.attributeName, t.definition(t.variableName)], color: '#dcdcaa' },
-  { tag: [t.number, t.integer, t.float], color: '#b5cea8' },
-  { tag: [t.bool, t.null], color: '#569cd6' },
-  { tag: [t.string, t.special(t.string)], color: '#ce9178' },
-  { tag: [t.comment, t.lineComment], color: '#6a9955', fontStyle: 'italic' },
-  { tag: [t.operator, t.separator], color: '#d4d4d4' },
-  { tag: [t.brace, t.squareBracket, t.paren], color: '#d4d4d4' },
-]), { fallback: false })
-
-function getEditorExtensions(mode: 'yaml' | 'shell', theme: 'light' | 'dark'): Extension[] {
-  const baseTheme = theme === 'dark' ? DARK_EDITOR_THEME : [LIGHT_EDITOR_THEME]
-  const highlighting = theme === 'dark' ? DARK_EDITOR_HIGHLIGHT : LIGHT_EDITOR_HIGHLIGHT
-  const language = mode === 'yaml' ? YAML_EXTENSION : SHELL_LANGUAGE
-  return [...baseTheme, language, highlighting, EditorView.lineWrapping]
 }
 
 function hasBatchExpression(text: string) {
@@ -493,8 +344,6 @@ export default function GeneratorPage() {
   const shellRuntime = workspace?.shell_runtime
   const editorMode = isShellWorkspace ? 'shell' : viewMode === 'shell' ? 'form' : viewMode
   const codeMirrorTheme = theme === 'dark' ? 'dark' : 'light'
-  const yamlEditorExtensions = useMemo(() => getEditorExtensions('yaml', codeMirrorTheme), [codeMirrorTheme])
-  const shellEditorExtensions = useMemo(() => getEditorExtensions('shell', codeMirrorTheme), [codeMirrorTheme])
 
   useEffect(() => {
     if (isShellWorkspace) {
@@ -897,19 +746,27 @@ export default function GeneratorPage() {
               onChange={data => setYamlText(yamlStringify(data))}
             />
           ) : editorMode === 'yaml' ? (
-            <YamlEditor
-              value={yamlText}
-              onChange={setYamlText}
-              theme={codeMirrorTheme}
-              extensions={yamlEditorExtensions}
-            />
+            <div className="h-full p-3">
+              <CodeTextEditor
+                language="yaml"
+                value={yamlText}
+                onChange={setYamlText}
+                theme={codeMirrorTheme}
+                className="generator-code-editor"
+                wrapStorageKey="pyruns.generator.yaml.wrap"
+              />
+            </div>
           ) : (
-            <ShellEditor
-              value={shellText}
-              onChange={setShellText}
-              theme={codeMirrorTheme}
-              extensions={shellEditorExtensions}
-            />
+            <div className="h-full p-3">
+              <CodeTextEditor
+                language="shell"
+                value={shellText}
+                onChange={setShellText}
+                theme={codeMirrorTheme}
+                className="generator-code-editor"
+                wrapStorageKey="pyruns.generator.shell.wrap"
+              />
+            </div>
           )}
         </div>
 
@@ -2212,83 +2069,6 @@ function ParamRow({
           )}
         />
       )}
-    </div>
-  )
-}
-
-function YamlEditor({
-  value,
-  onChange,
-  theme,
-  extensions,
-}: {
-  value: string
-  onChange: (value: string) => void
-  theme: 'light' | 'dark'
-  extensions: any[]
-}) {
-  return (
-    <CodeEditorFrame value={value} onChange={onChange} theme={theme} extensions={extensions} />
-  )
-}
-
-function ShellEditor({
-  value,
-  onChange,
-  theme,
-  extensions,
-}: {
-  value: string
-  onChange: (value: string) => void
-  theme: 'light' | 'dark'
-  extensions: any[]
-}) {
-  return (
-    <CodeEditorFrame value={value} onChange={onChange} theme={theme} extensions={extensions} />
-  )
-}
-
-function CodeEditorFrame({
-  value,
-  onChange,
-  theme,
-  extensions,
-}: {
-  value: string
-  onChange: (value: string) => void
-  theme: 'light' | 'dark'
-  extensions: any[]
-}) {
-  const editorViewRef = useRef<EditorView | null>(null)
-
-  const focusEditorFromBlankArea = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    const target = event.target as HTMLElement | null
-    if (!target || target.closest('.cm-content') || target.closest('.cm-gutters')) {
-      return
-    }
-
-    const view = editorViewRef.current
-    if (!view) {
-      return
-    }
-
-    event.preventDefault()
-    view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })
-    view.focus()
-  }, [])
-
-  return (
-    <div className="h-full p-3">
-      <div className="generator-code-editor cursor-text" onMouseDown={focusEditorFromBlankArea}>
-        <CodeMirror
-          value={value}
-          height="100%"
-          theme={theme}
-          extensions={extensions}
-          onCreateEditor={view => { editorViewRef.current = view }}
-          onChange={nextValue => onChange(nextValue)}
-        />
-      </div>
     </div>
   )
 }

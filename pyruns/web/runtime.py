@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import shlex
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
@@ -49,7 +54,7 @@ from pyruns.utils.config_utils import (
 )
 from pyruns.utils.info_io import get_log_options, load_script_info, load_task_info, resolve_log_path
 from pyruns.utils.log_io import read_last_bytes, read_last_lines, safe_read_log
-from pyruns.utils.settings import ensure_settings_file, load_settings
+from pyruns.utils.settings import ensure_settings_file, load_settings, save_setting_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import validate_task_name
@@ -71,6 +76,67 @@ SHELL_TEMPLATE_SKIP_DIRS = {
 }
 SHELL_TEMPLATE_MAX_DEPTH = 3
 SHELL_TEMPLATE_LIMIT = 80
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _strip_unquoted_comment(value: str) -> str:
+    """Strip shell-style comments that begin after whitespace outside quotes."""
+
+    in_single = False
+    in_double = False
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and not in_single:
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "#" and not in_single and not in_double and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value
+
+
+def parse_global_env_text(text: str) -> Dict[str, str]:
+    """Parse workspace env text using a safe shell-assignment subset."""
+
+    result: Dict[str, str] = {}
+    for line_no, raw_line in enumerate(str(text or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
+            raise ValueError(f"Line {line_no}: expected KEY=value")
+
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not _ENV_KEY_RE.match(key):
+            raise ValueError(f"Line {line_no}: invalid env name '{key}'")
+
+        value_text = _strip_unquoted_comment(raw_value.strip())
+        if not value_text:
+            result[key] = ""
+            continue
+
+        lexer = shlex.shlex(value_text, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        try:
+            parts = list(lexer)
+        except ValueError as exc:
+            raise ValueError(f"Line {line_no}: {exc}") from exc
+        if len(parts) > 1:
+            raise ValueError(f"Line {line_no}: quote values that contain spaces")
+        result[key] = parts[0] if parts else ""
+    return result
 
 
 def _int_setting(settings: Dict[str, Any], key: str, default: int, *, minimum: int = 1) -> int:
@@ -199,6 +265,160 @@ class PyrunsRuntime:
             "shell_runtime": get_shell_runtime_for_workspace(self.root_dir),
             "templates": self.list_templates(),
         }
+
+    @staticmethod
+    def _clean_setting_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _resolve_executable(candidate: str) -> str:
+        raw = os.path.expanduser(os.path.expandvars(str(candidate or "").strip()))
+        if not raw:
+            return ""
+        if os.path.isabs(raw) or os.path.dirname(raw):
+            return os.path.abspath(raw) if os.path.exists(raw) else ""
+        resolved = shutil.which(raw)
+        return os.path.abspath(resolved) if resolved else ""
+
+    @staticmethod
+    def _env_name_from_path(path: str, root_prefix: str = "") -> str:
+        normalized = os.path.normpath(str(path or ""))
+        if root_prefix and os.path.normcase(os.path.abspath(normalized)) == os.path.normcase(os.path.abspath(root_prefix)):
+            return "base"
+        leaf = os.path.basename(normalized)
+        return leaf or normalized
+
+    def _conda_executable_for_runtime(self) -> str:
+        configured = self._clean_setting_text(self.settings.get("conda_executable"))
+        if configured and configured != "conda":
+            return configured
+        return self._clean_setting_text(os.getenv("CONDA_EXE")) or configured or "conda"
+
+    def list_conda_envs(self) -> Dict[str, Any]:
+        """Return conda environments discoverable from the current server process."""
+
+        conda_executable = self._conda_executable_for_runtime()
+        resolved_conda = self._resolve_executable(conda_executable)
+        if not resolved_conda:
+            return {
+                "available": False,
+                "executable": conda_executable,
+                "envs": [],
+                "error": f"conda executable not found: {conda_executable}",
+            }
+
+        root_prefix = ""
+        try:
+            info_result = subprocess.run(
+                [resolved_conda, "info", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if info_result.returncode == 0:
+                info_data = yaml.safe_load(info_result.stdout) or {}
+                if isinstance(info_data, dict):
+                    root_prefix = str(info_data.get("root_prefix", "") or "")
+        except Exception:
+            root_prefix = ""
+
+        try:
+            result = subprocess.run(
+                [resolved_conda, "env", "list", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except Exception as exc:
+            return {
+                "available": False,
+                "executable": resolved_conda,
+                "envs": [],
+                "error": str(exc),
+            }
+
+        if result.returncode != 0:
+            return {
+                "available": False,
+                "executable": resolved_conda,
+                "envs": [],
+                "error": result.stderr.strip() or result.stdout.strip() or "conda env list failed",
+            }
+
+        data = yaml.safe_load(result.stdout) or {}
+        raw_envs = data.get("envs", []) if isinstance(data, dict) else []
+        envs = []
+        seen_names: set[str] = set()
+        for raw_path in raw_envs if isinstance(raw_envs, list) else []:
+            path = self._normalize_path(str(raw_path))
+            name = self._env_name_from_path(path, root_prefix)
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            envs.append({
+                "name": name,
+                "path": path,
+                "python_executable": self._normalize_path(os.path.join(path, "python.exe" if os.name == "nt" else "bin/python")),
+                "active": name == os.getenv("CONDA_DEFAULT_ENV") or path == os.getenv("CONDA_PREFIX"),
+            })
+
+        return {
+            "available": True,
+            "executable": resolved_conda,
+            "envs": envs,
+            "error": "",
+        }
+
+    def get_runtime_info(self) -> Dict[str, Any]:
+        """Return runtime settings and environment providers for the current workspace."""
+
+        settings = dict(self.settings)
+        conda = self.list_conda_envs()
+        global_env = settings.get("global_env", {})
+        if not isinstance(global_env, dict):
+            global_env = {}
+        runtime = {
+            "python_executable": self._clean_setting_text(settings.get("python_executable")),
+            "conda_env": self._clean_setting_text(settings.get("conda_env")),
+            "conda_executable": self._clean_setting_text(settings.get("conda_executable")) or "conda",
+            "global_env": {str(k): str(v) for k, v in global_env.items()},
+            "process": {
+                "python_executable": os.path.abspath(sys.executable),
+                "conda_env": os.getenv("CONDA_DEFAULT_ENV", ""),
+                "conda_prefix": os.getenv("CONDA_PREFIX", ""),
+            },
+            "providers": [
+                {"id": "conda", "label": "Conda", "available": bool(conda.get("available"))},
+            ],
+            "conda": conda,
+        }
+        return runtime
+
+    def update_runtime_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist runtime settings and return the refreshed runtime info."""
+
+        allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text"}
+        for key, value in payload.items():
+            if key not in allowed:
+                continue
+            if key == "global_env_text":
+                save_setting_for_root(self.root_dir, "global_env", parse_global_env_text(str(value or "")))
+            elif key == "global_env":
+                if not isinstance(value, dict):
+                    raise ValueError("global_env must be an object")
+                clean_env = {
+                    str(env_key).strip(): str(env_value)
+                    for env_key, env_value in value.items()
+                    if str(env_key).strip() and env_value is not None
+                }
+                save_setting_for_root(self.root_dir, key, clean_env)
+            else:
+                save_setting_for_root(self.root_dir, key, self._clean_setting_text(value))
+
+        self.settings = load_settings(self.root_dir)
+        return self.get_runtime_info()
 
     def list_templates(self) -> List[Dict[str, str]]:
         """Return loadable template options for the Generator page."""

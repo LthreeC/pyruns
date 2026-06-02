@@ -17,6 +17,10 @@ from unittest.mock import patch, MagicMock
 
 from pyruns._config import (
     ENV_KEY_CONFIG,
+    ENV_KEY_CLI_TERMINAL_RUNTIME,
+    ENV_KEY_CONDA_ENV,
+    ENV_KEY_CONDA_EXE,
+    ENV_KEY_PYTHON_EXECUTABLE,
     CONFIG_FILENAME,
     POWERSHELL_CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
@@ -29,7 +33,7 @@ from pyruns._config import (
     TASK_KIND_SHELL,
 )
 from pyruns.core.config_manager import ConfigNode, ConfigManager
-from pyruns.core.executor import _prepare_env, _build_command, run_task_worker
+from pyruns.core.executor import _prepare_env, _build_command, _resolve_python_runtime, run_task_worker
 from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator, create_task_object
@@ -361,6 +365,141 @@ def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrid
     assert env[ENV_KEY_CONFIG] == os.path.join("/fake/task", CONFIG_FILENAME)
 
 
+def test_resolve_python_runtime_from_task_env_python_executable(tmp_path):
+    fake_python = tmp_path / "env" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.write_text("", encoding="utf-8")
+
+    runtime = _resolve_python_runtime(extra_env={ENV_KEY_PYTHON_EXECUTABLE: str(fake_python)})
+
+    assert runtime["mode"] == "python"
+    assert runtime["source"] == "task_env"
+    assert runtime["python_executable"] == str(fake_python.resolve())
+
+
+def test_resolve_python_runtime_from_workspace_conda_settings(tmp_path):
+    fake_conda = tmp_path / "conda"
+    fake_conda.write_text("", encoding="utf-8")
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
+    task_dir = workspace / "tasks" / "task1"
+    task_dir.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        f"conda_env: eval-env\nconda_executable: {json.dumps(str(fake_conda))}\n",
+        encoding="utf-8",
+    )
+
+    runtime = _resolve_python_runtime(str(task_dir))
+
+    assert runtime["mode"] == "conda"
+    assert runtime["source"] == "workspace_settings"
+    assert runtime["conda_env"] == "eval-env"
+    assert runtime["conda_executable"] == str(fake_conda.resolve())
+
+
+def test_prepare_env_uses_runtime_python_executable_on_path(tmp_path):
+    fake_python = tmp_path / "env" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.write_text("", encoding="utf-8")
+
+    env = _prepare_env(
+        task_dir="/fake/dir",
+        task_kind=TASK_KIND_SHELL,
+        python_runtime={"mode": "python", "python_executable": str(fake_python)},
+    )
+
+    path_entries = env["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(fake_python.parent)
+    assert env[ENV_KEY_PYTHON_EXECUTABLE] == str(fake_python)
+
+
+def test_prepare_env_marks_conda_runtime():
+    env = _prepare_env(
+        task_dir="/fake/dir",
+        task_kind=TASK_KIND_SHELL,
+        python_runtime={
+            "mode": "conda",
+            "conda_env": "eval-env",
+            "conda_executable": "/opt/conda/bin/conda",
+        },
+    )
+
+    assert env[ENV_KEY_CONDA_ENV] == "eval-env"
+    assert env[ENV_KEY_CONDA_EXE] == "/opt/conda/bin/conda"
+
+
+def test_prepare_env_applies_workspace_global_env_before_task_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "terminal")
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
+    task_dir = workspace / "tasks" / "task1"
+    task_dir.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "global_env:\n"
+        "  TOKENIZERS_PARALLELISM: workspace\n"
+        "  CUDA_VISIBLE_DEVICES: '0'\n",
+        encoding="utf-8",
+    )
+
+    env = _prepare_env(
+        extra_env={"CUDA_VISIBLE_DEVICES": "1"},
+        task_dir=str(task_dir),
+        task_kind=TASK_KIND_CONFIG,
+    )
+
+    assert env["TOKENIZERS_PARALLELISM"] == "workspace"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_cli_terminal_runtime_skips_workspace_runtime_settings(tmp_path, monkeypatch):
+    fake_conda = tmp_path / "conda"
+    fake_conda.write_text("", encoding="utf-8")
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
+    task_dir = workspace / "tasks" / "task1"
+    task_dir.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        f"conda_env: eval-env\nconda_executable: {json.dumps(str(fake_conda))}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    runtime = _resolve_python_runtime(str(task_dir))
+
+    assert runtime["mode"] == "follow"
+    assert runtime["source"] == "pyruns_process"
+
+
+def test_cli_terminal_runtime_keeps_task_runtime_override(tmp_path, monkeypatch):
+    fake_python = tmp_path / "env" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.write_text("", encoding="utf-8")
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    runtime = _resolve_python_runtime(extra_env={ENV_KEY_PYTHON_EXECUTABLE: str(fake_python)})
+
+    assert runtime["mode"] == "python"
+    assert runtime["source"] == "task_env"
+
+
+def test_cli_terminal_runtime_skips_workspace_global_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "terminal")
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
+    task_dir = workspace / "tasks" / "task1"
+    task_dir.mkdir(parents=True)
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "global_env:\n"
+        "  CUDA_VISIBLE_DEVICES: workspace\n",
+        encoding="utf-8",
+    )
+
+    env = _prepare_env(task_dir=str(task_dir), task_kind=TASK_KIND_CONFIG)
+
+    assert env["CUDA_VISIBLE_DEVICES"] == "terminal"
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.parse_utils.extract_argparse_params")
 def test_build_command_argparse(mock_extract, mock_detect):
@@ -529,6 +668,53 @@ def test_build_command_python_task_uses_script_directory_workdir(mock_detect, tm
     assert cleanup_paths == []
 
 
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+def test_build_command_python_task_uses_runtime_python_executable(mock_detect, tmp_path):
+    mock_detect.return_value = ("pyruns_load", None)
+    fake_python = tmp_path / "env" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True)
+    fake_python.write_text("", encoding="utf-8")
+
+    cmd, wd, cleanup_paths = _build_command(
+        None,
+        "train.py",
+        None,
+        {},
+        python_runtime={"mode": "python", "python_executable": str(fake_python)},
+    )
+
+    assert cmd == [str(fake_python), "train.py"]
+    assert cleanup_paths == []
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+def test_build_command_python_task_uses_conda_runtime(mock_detect):
+    mock_detect.return_value = ("pyruns_load", None)
+
+    cmd, _, cleanup_paths = _build_command(
+        None,
+        "train.py",
+        None,
+        {},
+        python_runtime={
+            "mode": "conda",
+            "conda_env": "eval-env",
+            "conda_executable": "/opt/conda/bin/conda",
+        },
+    )
+
+    assert cmd == [
+        "/opt/conda/bin/conda",
+        "run",
+        "-n",
+        "eval-env",
+        "--no-capture-output",
+        "python",
+        "train.py",
+    ]
+    assert cleanup_paths == []
+
+
 @patch("pyruns.core.executor._resolve_shell_executable")
 def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
     monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: False)
@@ -549,6 +735,43 @@ def test_build_command_shell_task_posix(mock_shell, tmp_path, monkeypatch):
     )
 
     assert cmd == ["/bin/bash", str(script_path)]
+    assert wd == str(task_dir)
+    assert cleanup_paths == []
+
+
+@patch("pyruns.core.executor._resolve_shell_executable")
+def test_build_command_shell_task_wraps_conda_runtime(mock_shell, tmp_path, monkeypatch):
+    monkeypatch.setattr("pyruns.core.executor._is_windows", lambda: False)
+    mock_shell.return_value = "/bin/bash"
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script_path = task_dir / SHELL_CONFIG_FILENAME
+    script_path.write_text("python train.py\n", encoding="utf-8")
+
+    cmd, wd, cleanup_paths = _build_command(
+        None,
+        None,
+        None,
+        {},
+        task_kind=TASK_KIND_SHELL,
+        task_dir=str(task_dir),
+        config_file=SHELL_CONFIG_FILENAME,
+        python_runtime={
+            "mode": "conda",
+            "conda_env": "eval-env",
+            "conda_executable": "/opt/conda/bin/conda",
+        },
+    )
+
+    assert cmd == [
+        "/opt/conda/bin/conda",
+        "run",
+        "-n",
+        "eval-env",
+        "--no-capture-output",
+        "/bin/bash",
+        str(script_path),
+    ]
     assert wd == str(task_dir)
     assert cleanup_paths == []
 

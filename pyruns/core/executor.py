@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import sys
@@ -15,7 +16,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from pyruns._config import (
     CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
+    ENV_KEY_CLI_TERMINAL_RUNTIME,
+    ENV_KEY_CONDA_ENV,
+    ENV_KEY_CONDA_EXE,
     ENV_KEY_CONFIG,
+    ENV_KEY_PYTHON_EXECUTABLE,
     ENV_KEY_RUN_INDEX,
     ERROR_LOG_FILENAME,
     RECORDS_KEY,
@@ -36,6 +41,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.log_io import normalize_log_newlines
 from pyruns.utils.shell_runtime import get_shell_runtime_for_task
+from pyruns.utils.settings import load_settings
 from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
 
 logger = get_logger(__name__)
@@ -132,12 +138,178 @@ def _prepend_current_python_to_path(env: Dict[str, str]) -> None:
     _prepend_path_entries(env, candidates)
 
 
+def _python_runtime_settings_root(task_dir: str | None = None) -> str | None:
+    if not task_dir:
+        return None
+    return os.path.dirname(os.path.dirname(os.path.abspath(task_dir)))
+
+
+def _clean_runtime_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _cli_terminal_runtime_enabled() -> bool:
+    return str(os.getenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_executable_path(candidate: str) -> str:
+    raw = os.path.expanduser(os.path.expandvars(_clean_runtime_value(candidate)))
+    if not raw:
+        return ""
+    if os.path.isabs(raw) or os.path.dirname(raw):
+        return os.path.abspath(raw) if os.path.exists(raw) else ""
+    resolved = shutil.which(raw)
+    return os.path.abspath(resolved) if resolved else ""
+
+
+def _runtime_from_values(
+    *,
+    python_executable: Any = None,
+    conda_env: Any = None,
+    conda_executable: Any = None,
+    source: str,
+) -> Dict[str, str] | None:
+    python_raw = _clean_runtime_value(python_executable)
+    conda_raw = _clean_runtime_value(conda_env)
+    conda_exe_raw = _clean_runtime_value(conda_executable) or "conda"
+
+    if python_raw:
+        resolved_python = _resolve_executable_path(python_raw)
+        if not resolved_python:
+            raise RuntimeError(f"python_executable is set but not found: {python_raw}")
+        return {
+            "mode": "python",
+            "source": source,
+            "python_executable": resolved_python,
+        }
+
+    if conda_raw:
+        resolved_conda = _resolve_executable_path(conda_exe_raw)
+        if not resolved_conda:
+            raise RuntimeError(f"conda_env is set but conda_executable was not found: {conda_exe_raw}")
+        return {
+            "mode": "conda",
+            "source": source,
+            "conda_env": conda_raw,
+            "conda_executable": resolved_conda,
+        }
+
+    return None
+
+
+def _resolve_python_runtime(
+    task_dir: str | None = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Resolve the Python runtime used by Python tasks and shell task PATH."""
+
+    extra_env = extra_env or {}
+    task_runtime = _runtime_from_values(
+        python_executable=extra_env.get(ENV_KEY_PYTHON_EXECUTABLE),
+        conda_env=extra_env.get(ENV_KEY_CONDA_ENV),
+        conda_executable=extra_env.get(ENV_KEY_CONDA_EXE),
+        source="task_env",
+    )
+    if task_runtime:
+        return task_runtime
+
+    if not _cli_terminal_runtime_enabled():
+        settings_root = _python_runtime_settings_root(task_dir)
+        settings = load_settings(settings_root) if settings_root else load_settings()
+        settings_runtime = _runtime_from_values(
+            python_executable=settings.get("python_executable"),
+            conda_env=settings.get("conda_env"),
+            conda_executable=settings.get("conda_executable"),
+            source="workspace_settings",
+        )
+        if settings_runtime:
+            return settings_runtime
+
+    process_runtime = _runtime_from_values(
+        python_executable=os.getenv(ENV_KEY_PYTHON_EXECUTABLE),
+        conda_env=os.getenv(ENV_KEY_CONDA_ENV),
+        conda_executable=os.getenv(ENV_KEY_CONDA_EXE) or os.getenv("CONDA_EXE"),
+        source="process_env",
+    )
+    if process_runtime:
+        return process_runtime
+
+    return {
+        "mode": "follow",
+        "source": "pyruns_process",
+        "python_executable": sys.executable,
+    }
+
+
+def _load_workspace_global_env(task_dir: str | None = None) -> Dict[str, str]:
+    if _cli_terminal_runtime_enabled():
+        return {}
+    settings_root = _python_runtime_settings_root(task_dir)
+    settings = load_settings(settings_root) if settings_root else load_settings()
+    raw_env = settings.get("global_env", {})
+    if not isinstance(raw_env, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw_env.items() if k and v is not None}
+
+
+def _python_command_prefix(python_runtime: Dict[str, str] | None = None) -> List[str]:
+    runtime = python_runtime or {"mode": "follow", "python_executable": sys.executable}
+    mode = runtime.get("mode")
+    if mode == "python":
+        return [runtime["python_executable"]]
+    if mode == "conda":
+        return [
+            runtime["conda_executable"],
+            "run",
+            "-n",
+            runtime["conda_env"],
+            "--no-capture-output",
+            "python",
+        ]
+    return [sys.executable]
+
+
+def _apply_python_runtime_to_shell_command(
+    command: List[str],
+    python_runtime: Dict[str, str] | None = None,
+) -> List[str]:
+    runtime = python_runtime or {"mode": "follow"}
+    if runtime.get("mode") != "conda":
+        return command
+    return [
+        runtime["conda_executable"],
+        "run",
+        "-n",
+        runtime["conda_env"],
+        "--no-capture-output",
+        *command,
+    ]
+
+
+def _prepend_runtime_python_to_path(env: Dict[str, str], python_runtime: Dict[str, str] | None = None) -> None:
+    runtime = python_runtime or {"mode": "follow", "python_executable": sys.executable}
+    mode = runtime.get("mode")
+    if mode == "conda":
+        env[ENV_KEY_CONDA_ENV] = runtime["conda_env"]
+        env[ENV_KEY_CONDA_EXE] = runtime["conda_executable"]
+        return
+
+    executable = runtime.get("python_executable") or sys.executable
+    executable_dir = os.path.dirname(executable)
+    candidates = [executable_dir]
+    if _is_windows():
+        candidates.append(os.path.join(executable_dir, "Scripts"))
+    _prepend_path_entries(env, candidates)
+    env[ENV_KEY_PYTHON_EXECUTABLE] = executable
+
+
 def _prepare_env(
     extra_env: Optional[Dict[str, str]] = None,
     *,
     task_dir: Optional[str] = None,
     task_kind: str = TASK_KIND_CONFIG,
     config_file: str = CONFIG_FILENAME,
+    python_runtime: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     """Build the subprocess environment."""
 
@@ -149,9 +321,10 @@ def _prepare_env(
         env[ENV_KEY_CONFIG] = os.path.join(task_dir, config_file or CONFIG_FILENAME)
     else:
         env.pop(ENV_KEY_CONFIG, None)
+    env.update(_load_workspace_global_env(task_dir))
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
-    _prepend_current_python_to_path(env)
+    _prepend_runtime_python_to_path(env, python_runtime)
     package_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
     _prepend_pythonpath(env, package_parent)
     return env
@@ -341,6 +514,7 @@ def _build_command(
     task_kind: str = TASK_KIND_CONFIG,
     task_dir: str | None = None,
     config_file: str = CONFIG_FILENAME,
+    python_runtime: Optional[Dict[str, str]] = None,
 ) -> Tuple[Any, Optional[str], List[str]]:
     """Build the subprocess command list from task metadata + payload."""
 
@@ -348,13 +522,14 @@ def _build_command(
     if normalized_kind == TASK_KIND_SHELL:
         if not task_dir:
             raise RuntimeError("Shell task execution requires a task directory")
-        return _build_shell_command(task_dir, config_file or SHELL_CONFIG_FILENAME)
+        command, workdir, cleanup_paths = _build_shell_command(task_dir, config_file or SHELL_CONFIG_FILENAME)
+        return _apply_python_runtime_to_shell_command(command, python_runtime), workdir, cleanup_paths
 
     command = meta_cmd or config.get("command")
     workdir = meta_workdir
 
     if not command and script_path:
-        cmd_list: List[str] = [sys.executable, script_path]
+        cmd_list: List[str] = [*_python_command_prefix(python_runtime), script_path]
 
         from pyruns.utils.parse_utils import detect_config_source_fast, extract_argparse_params
 
@@ -570,6 +745,7 @@ def run_task_worker(
     end_str = ""
 
     try:
+        python_runtime = _resolve_python_runtime(task_dir, env_vars)
         command, workdir, cleanup_paths = _build_command(
             meta_cmd,
             script_path,
@@ -580,8 +756,9 @@ def run_task_worker(
             config_file=config_file or (
                 SHELL_CONFIG_FILENAME if task_kind == TASK_KIND_SHELL else CONFIG_FILENAME
             ),
+            python_runtime=python_runtime,
         )
-        logger.debug("Built command: %s  workdir=%s", command, workdir)
+        logger.debug("Built command: %s  workdir=%s  python_runtime=%s", command, workdir, python_runtime)
 
         if not command:
             raise NotImplementedError("No command to run (simulation mode not implemented)")
@@ -591,6 +768,7 @@ def run_task_worker(
             task_dir=task_dir,
             task_kind=task_kind,
             config_file=config_file or CONFIG_FILENAME,
+            python_runtime=python_runtime,
         )
         env[ENV_KEY_RUN_INDEX] = str(run_index)
 

@@ -197,7 +197,16 @@ log_level: INFO
 
 shell_mode: follow
 shell_executable: ""
+
+python_executable: ""
+conda_env: ""
+conda_executable: conda
+global_env: {}
 ```
+
+`global_env` 的覆盖顺序为：终端环境 < `global_env` < 任务 Env。UI 里的 Workspace Env 文本支持 `KEY=value`、`export KEY=value`、单双引号和注释；不会执行命令替换、变量展开或任意 shell 代码。
+
+直接用 CLI 运行任务时，例如 `pyr run 1`，会继承当前终端环境；Web UI 的 Runtime / Workspace Env 设置只影响 UI 发起的任务运行。
 
 ## 7. 重点配置项
 

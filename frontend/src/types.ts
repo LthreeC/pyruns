@@ -61,6 +61,38 @@ export interface ShellRuntimeInfo {
   executable: string
 }
 
+export interface RuntimeProviderInfo {
+  id: 'conda' | string
+  label: string
+  available: boolean
+}
+
+export interface CondaEnvInfo {
+  name: string
+  path: string
+  python_executable: string
+  active?: boolean
+}
+
+export interface RuntimeInfo {
+  python_executable: string
+  conda_env: string
+  conda_executable: string
+  global_env: Record<string, string>
+  process: {
+    python_executable: string
+    conda_env: string
+    conda_prefix: string
+  }
+  providers: RuntimeProviderInfo[]
+  conda: {
+    available: boolean
+    executable: string
+    envs: CondaEnvInfo[]
+    error?: string
+  }
+}
+
 export interface TemplateOption {
   value: string
   label: string

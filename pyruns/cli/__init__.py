@@ -15,6 +15,7 @@ from pyruns import __version__ as _VERSION
 from pyruns.cli.commands import COMMANDS
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
+    ENV_KEY_CLI_TERMINAL_RUNTIME,
     ENV_KEY_ROOT,
     SCRIPT_INFO_FILENAME,
     SHELL_WORKSPACE_NAME,
@@ -77,6 +78,10 @@ _HELP = textwrap.dedent(
         pyr run 1
         pyr run 1 2 3 --workers 3 --detach
         pyr export --format json
+
+    NOTES
+        CLI task runs inherit the current terminal environment.
+        Web UI Runtime and Workspace Env settings apply to UI-launched runs.
     """.strip()
 )
 
@@ -167,6 +172,8 @@ def _init_task_manager(workspace: str):
 
 def _dispatch_cli(args: list[str]) -> None:
     """Handle direct CLI commands and interactive CLI mode."""
+
+    os.environ[ENV_KEY_CLI_TERMINAL_RUNTIME] = "1"
 
     script_path = None
     if len(args) > 1 and args[1].endswith(".py") and os.path.exists(args[1]):

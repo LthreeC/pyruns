@@ -54,6 +54,11 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     # Shell
     "shell_mode": DEFAULT_SHELL_MODE,
     "shell_executable": "",
+    # Runtime
+    "python_executable": "",
+    "conda_env": "",
+    "conda_executable": "conda",
+    "global_env": {},
     # Persisted UI state
     "pinned_params": [],
 }
@@ -93,6 +98,12 @@ log_level: {SETTINGS_DEFAULTS.get("log_level")}                    # DEBUG | INF
 # Shell
 shell_mode: {SETTINGS_DEFAULTS.get("shell_mode")}                  # follow | custom
 shell_executable: {SETTINGS_DEFAULTS.get("shell_executable")}
+
+# Runtime
+python_executable: {SETTINGS_DEFAULTS.get("python_executable")}             # absolute Python path; empty = pyruns server Python
+conda_env: {SETTINGS_DEFAULTS.get("conda_env")}                     # conda env name; applies to Python and shell tasks
+conda_executable: {SETTINGS_DEFAULTS.get("conda_executable")}           # conda executable used by conda_env
+global_env: {{}}                       # workspace env overrides; task env overrides this
 
 """
 
@@ -173,6 +184,10 @@ def _yaml_scalar_to_text(value: Any) -> str:
         if not value:
             return "[]"
         return "\n" + yaml.dump(value, default_flow_style=False, allow_unicode=True).rstrip("\n")
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        return "\n" + yaml.dump(value, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip("\n")
     return str(value)
 
 
@@ -187,15 +202,15 @@ def save_setting_for_root(root_dir: str, key: str, value: Any) -> None:
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read()
 
-            # Match the key line and any continuation lines (YAML list items)
+            # Match the key line and simple continuation lines (YAML list/dict items).
             pattern = re.compile(
-                rf"^{re.escape(key)}\s*:.*(?:\n[ \t]*-[ \t]+.*)*",
+                rf"^{re.escape(key)}\s*:.*(?:\n[ \t]+(?:-[ \t]+.*|[^:\n]+:.*))*",
                 re.MULTILINE,
             )
 
-            if isinstance(value, list) and value:
+            if isinstance(value, (dict, list)) and value:
                 # For non-empty lists, use full YAML reload-and-dump to avoid
-                # regex substitution issues with multi-line list values.
+                # regex substitution issues with multi-line structured values.
                 try:
                     data = yaml.safe_load(text) or {}
                     if isinstance(data, dict):

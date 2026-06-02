@@ -1,11 +1,13 @@
 import { NavLink, useSearchParams } from 'react-router-dom'
+import { useState } from 'react'
 import {
   LayoutDashboard, Wand2, ListTodo, Terminal, Rocket,
-  Sun, Moon, ChevronsUpDown, FileCode,
+  Sun, Moon, ChevronsUpDown, FileCode, SlidersHorizontal,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
+import RuntimePanel from './RuntimePanel'
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
@@ -22,6 +24,7 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
   const workspace = useWorkspaceStore(s => s.workspace)
   const { theme, toggle } = useThemeStore()
   const [searchParams, setSearchParams] = useSearchParams()
+  const [runtimeOpen, setRuntimeOpen] = useState(false)
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
   const shellWorkspaceActive = workspace?.workspace_kind === 'shell'
   const visibleWorkspacePath = getWorkspaceWorkingPath(workspace)
@@ -30,6 +33,13 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
     ? (visibleWorkspaceLeaf || '_shell_')
     : (scriptFileName || 'Choose .py file')
   const workspaceModeLabel = shellWorkspaceActive ? 'Shell' : 'Python'
+  const runtimeLabel = workspace?.settings?.python_executable
+    ? 'Python path'
+    : workspace?.settings?.conda_env
+      ? String(workspace.settings.conda_env)
+      : workspace?.settings?.global_env && Object.keys(workspace.settings.global_env).length
+        ? 'Workspace Env'
+        : 'Follow'
 
   const clearMonitorSelection = () => {
     useMonitorStore.setState({
@@ -86,33 +96,48 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
       </nav>
 
       <div className="border-t border-border-subtle p-2.5">
+        <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-txt-tertiary">
+          Workspace
+        </div>
         <button
           type="button"
           onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
-          className="w-full rounded-md border border-border-subtle bg-surface-overlay/55 px-2.5 py-2.5 text-left transition-colors hover:border-border hover:bg-surface-overlay"
+          className="w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25"
         >
           <div className="flex items-center gap-2">
-            <FileCode className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
-            <span className="min-w-0 flex-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-txt-tertiary">
-              Workspace
+            <FileCode className="h-4 w-4 flex-none text-txt-tertiary" />
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-sm font-medium text-txt-primary"
+              title={workspaceLabel}
+            >
+              {workspaceLabel}
             </span>
-            <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+            <span className="flex-none rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
               {workspaceModeLabel}
             </span>
             <ChevronsUpDown className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
           </div>
           <div
-            className="mt-2 truncate font-mono text-sm font-medium text-txt-primary"
-            title={workspaceLabel}
-          >
-            {workspaceLabel}
-          </div>
-
-          <div
-            className="mt-1 truncate text-2xs text-txt-tertiary"
+            className="ml-6 mt-0.5 truncate text-2xs text-txt-tertiary"
             title={visibleWorkspacePath || 'Choose a Python script or choose a shell workspace folder'}
           >
             {visibleWorkspacePath || 'Choose a Python script or choose a shell workspace folder'}
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setRuntimeOpen(true)}
+          className="mt-1 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25"
+        >
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="h-4 w-4 flex-none text-txt-tertiary" />
+            <span className="min-w-0 flex-1 text-sm font-medium text-txt-secondary">
+              Runtime
+            </span>
+            <span className="max-w-[112px] truncate rounded-md bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-txt-secondary">
+              {runtimeLabel}
+            </span>
           </div>
         </button>
 
@@ -125,6 +150,7 @@ export default function Sidebar({ width = 220 }: SidebarProps) {
           <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
         </button>
       </div>
+      <RuntimePanel open={runtimeOpen} left={width + 8} onClose={() => setRuntimeOpen(false)} />
     </aside>
   )
 }

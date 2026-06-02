@@ -21,7 +21,7 @@ from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import save_task_info, update_task_info
 from pyruns.web.app import create_app
-from pyruns.web.runtime import PyrunsRuntime
+from pyruns.web.runtime import PyrunsRuntime, parse_global_env_text
 
 
 def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
@@ -239,6 +239,195 @@ def test_workspace_endpoint_reports_native_picker_capability(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["native_file_picker"] is False
+
+
+def test_runtime_endpoint_lists_conda_envs(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    class Result:
+        def __init__(self, stdout: str):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(command, **kwargs):
+        if command[1:3] == ["info", "--json"]:
+            return Result(json.dumps({"root_prefix": "/opt/conda"}))
+        if command[1:4] == ["env", "list", "--json"]:
+            return Result(json.dumps({"envs": ["/opt/conda", "/opt/conda/envs/eval"]}))
+        raise AssertionError(command)
+
+    monkeypatch.setattr("pyruns.web.runtime.shutil.which", lambda value: "/opt/conda/bin/conda" if value == "conda" else "")
+    monkeypatch.setattr("pyruns.web.runtime.subprocess.run", fake_run)
+
+    response = client.get("/api/runtime")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conda"]["available"] is True
+    assert [item["name"] for item in payload["conda"]["envs"]] == ["base", "eval"]
+
+
+def test_runtime_endpoint_uses_conda_exe_from_process_env(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    fake_conda = tmp_path / "conda"
+    fake_conda.write_text("", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    class Result:
+        def __init__(self, stdout: str):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(command, **kwargs):
+        assert command[0] == str(fake_conda.resolve())
+        if command[1:3] == ["info", "--json"]:
+            return Result(json.dumps({"root_prefix": "/opt/conda"}))
+        if command[1:4] == ["env", "list", "--json"]:
+            return Result(json.dumps({"envs": ["/opt/conda/envs/py310"]}))
+        raise AssertionError(command)
+
+    monkeypatch.setenv("CONDA_EXE", str(fake_conda))
+    monkeypatch.setattr("pyruns.web.runtime.subprocess.run", fake_run)
+
+    response = client.get("/api/runtime")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conda"]["available"] is True
+    assert payload["conda"]["executable"] == str(fake_conda.resolve())
+    assert [item["name"] for item in payload["conda"]["envs"]] == ["py310"]
+
+
+def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "conda_env": "eval",
+            "conda_executable": "conda",
+            "python_executable": "",
+            "global_env": {"CUDA_VISIBLE_DEVICES": "0", "TOKENIZERS_PARALLELISM": "false"},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["conda_env"] == "eval"
+    assert payload["global_env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
+    assert "conda_env: eval" in settings_text
+    assert "CUDA_VISIBLE_DEVICES" in settings_text
+
+
+def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "global_env_text": "\n".join([
+                "# workspace env",
+                "CUDA_VISIBLE_DEVICES=0",
+                "export TOKENIZERS_PARALLELISM=false",
+                "HF_HOME='/data/hf cache'",
+                'RUN_NAME="smoke run"',
+                "EMPTY_VALUE=",
+                "LITERAL_HASH=a#b",
+                "COMMENTED=value # ignored",
+            ]),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["global_env"] == {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "TOKENIZERS_PARALLELISM": "false",
+        "HF_HOME": "/data/hf cache",
+        "RUN_NAME": "smoke run",
+        "EMPTY_VALUE": "",
+        "LITERAL_HASH": "a#b",
+        "COMMENTED": "value",
+    }
+
+
+def test_runtime_update_rejects_invalid_global_env_text(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={"global_env_text": "BAD LINE WITHOUT EQUALS"},
+    )
+
+    assert response.status_code == 400
+    assert "expected KEY=value" in response.json()["detail"]
+
+
+def test_parse_global_env_text_handles_shell_assignment_edges():
+    env = parse_global_env_text(
+        "\n".join([
+            'QUOTED_HASH="a # b"',
+            "SINGLE_HASH='x # y'",
+            "HAS_EQUALS=a=b=c",
+            r"ESCAPED_SPACE=a\ b",
+            "INLINE_COMMENT=value # dropped",
+        ])
+    )
+
+    assert env == {
+        "QUOTED_HASH": "a # b",
+        "SINGLE_HASH": "x # y",
+        "HAS_EQUALS": "a=b=c",
+        "ESCAPED_SPACE": "a b",
+        "INLINE_COMMENT": "value",
+    }
+
+
+def test_parse_global_env_text_rejects_unsafe_or_ambiguous_lines():
+    invalid_texts = [
+        "1BAD=value",
+        "HAS SPACE=value",
+        "UNQUOTED_SPACE=a b",
+        'UNCLOSED="value',
+    ]
+
+    for text in invalid_texts:
+        try:
+            parse_global_env_text(text)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Expected ValueError for {text!r}")
 
 
 def test_root_serves_react_frontend_shell(tmp_path):

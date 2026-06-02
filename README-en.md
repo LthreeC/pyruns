@@ -404,11 +404,42 @@ Important keys include:
 - `monitor_sidebar_width_pct`
 - `shell_mode`
 - `shell_executable`
+- `python_executable`
+- `conda_env`
+- `conda_executable`
+- `global_env`
 
 The important shell mental model is:
 
 - keep `shell_mode: follow` by default
 - switch to `custom` only when you explicitly want to lock execution to a fixed shell
+
+Runtime switching applies to both Python tasks and shell tasks:
+
+```yaml
+conda_env: eval-env
+conda_executable: conda
+```
+
+or use an explicit Python executable:
+
+```yaml
+python_executable: /shared/ywl/miniconda3/envs/eval-env/bin/python
+```
+
+`global_env` stores workspace-level environment variables. The merge order is: terminal environment < `global_env` < task Env. Task-level Env values `PYRUNS_CONDA_ENV`, `PYRUNS_CONDA_EXE`, and `PYRUNS_PYTHON_EXECUTABLE` override the workspace default runtime.
+
+The Workspace Env editor supports a safe `.bashrc`-like assignment subset:
+
+```bash
+CUDA_VISIBLE_DEVICES=0
+export TOKENIZERS_PARALLELISM=false
+HF_HOME="/data/hf cache"
+```
+
+Single quotes, double quotes, and line-leading comments are supported. Command substitution, variable expansion, and arbitrary shell code are intentionally not executed.
+
+Direct CLI task runs, such as `pyr run 1`, inherit the current terminal environment. Web UI Runtime / Workspace Env settings apply only to runs launched from the web UI.
 
 ## Documentation
 

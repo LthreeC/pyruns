@@ -15,6 +15,7 @@ FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.t
 FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "types.ts"
 FRONTEND_CONFIRM_DIALOG = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ConfirmDialog.tsx"
 FRONTEND_COMPACT_SECTION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CompactSection.tsx"
+FRONTEND_CODE_EDITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CodeTextEditor.tsx"
 FRONTEND_THEME_CSS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "theme" / "index.css"
 FRONTEND_TAILWIND = Path(__file__).resolve().parents[1] / "frontend" / "tailwind.config.ts"
 
@@ -105,7 +106,9 @@ def test_react_sidebar_active_workspace_state_is_visually_clear():
     assert "bg-accent/10 text-accent" in source
     assert "workspaceModeLabel" in source
     assert "Workspace" in source
-    assert "bg-surface-overlay/55" in source
+    assert "runtimeLabel" in source
+    assert "SlidersHorizontal" in source
+    assert "rounded-md px-2 py-2" in source
     assert "Shell mode active" not in source
 
 
@@ -388,27 +391,41 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
 
 def test_react_code_editor_focuses_from_blank_editor_area():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
     css = FRONTEND_THEME_CSS.read_text(encoding="utf-8")
 
-    assert "function CodeEditorFrame" in generator
-    assert "editorViewRef" in generator
-    assert "focusEditorFromBlankArea" in generator
-    assert "target.closest('.cm-content')" in generator
-    assert "onCreateEditor={view => { editorViewRef.current = view }}" in generator
-    assert "view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })" in generator
-    assert "onMouseDown={focusEditorFromBlankArea}" in generator
-    assert "cursor-text" in generator
-    assert ".generator-code-editor .cm-content" in css
-    assert "width: 100%;" in css
+    assert "CodeTextEditor" in generator
+    assert "CodeTextEditor" in runtime_panel
+    assert "function CodeTextEditor" in editor
+    assert "editorViewRef" in editor
+    assert "focusEditorFromBlankArea" in editor
+    assert "target.closest('.cm-content')" in editor
+    assert "target.closest('.cm-gutters')" in editor
+    assert "target.closest('button')" in editor
+    assert "onCreateEditor={view => { editorViewRef.current = view }}" in editor
+    assert "view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true })" in editor
+    assert "onMouseDown={focusEditorFromBlankArea}" in editor
+    assert "cursor-text" in editor
+    assert ".code-text-editor .cm-content" in css
+    assert "min-width: 100%;" in css
 
 
 def test_react_code_editor_has_no_horizontal_scrollbar():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
     css = FRONTEND_THEME_CSS.read_text(encoding="utf-8")
 
-    assert "EditorView.lineWrapping" in generator
-    assert "overflow-x: hidden;" in css
-    assert "white-space: pre-wrap;" in css
+    assert "EditorView.lineWrapping" in editor
+    assert "aria-pressed={wrap}" in editor
+    assert "WrapText" in editor
+    assert "wrapStorageKey" in editor
+    assert 'wrapStorageKey="pyruns.generator.shell.wrap"' in generator
+    assert 'wrapStorageKey="pyruns.generator.yaml.wrap"' in generator
+    assert 'wrapStorageKey="pyruns.runtime.env.wrap"' in runtime_panel
+    assert "overflow: auto;" in css
+    assert "white-space: pre-wrap;" not in css
 
 
 def test_react_launcher_supports_manual_shell_folder_paths():

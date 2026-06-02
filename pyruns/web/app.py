@@ -85,6 +85,16 @@ class TaskEnvRequest(BaseModel):
     env: dict[str, Any] = Field(default_factory=dict)
 
 
+class RuntimeUpdateRequest(BaseModel):
+    """Workspace runtime settings update payload."""
+
+    python_executable: str | None = None
+    conda_env: str | None = None
+    conda_executable: str | None = None
+    global_env: dict[str, Any] | None = None
+    global_env_text: str | None = None
+
+
 class TaskRenameRequest(BaseModel):
     """Rename payload."""
 
@@ -295,6 +305,18 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     def open_shell_workspace() -> dict[str, Any]:
         try:
             return get_runtime().open_shell_workspace()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/runtime")
+    def get_runtime_info() -> dict[str, Any]:
+        return get_runtime().get_runtime_info()
+
+    @app.patch("/api/runtime")
+    def update_runtime_info(payload: RuntimeUpdateRequest) -> dict[str, Any]:
+        try:
+            data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
+            return get_runtime().update_runtime_settings(data)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -398,11 +398,42 @@ Monitor 是运行中任务的观测面。
 - `monitor_sidebar_width_pct`
 - `shell_mode`
 - `shell_executable`
+- `python_executable`
+- `conda_env`
+- `conda_executable`
+- `global_env`
 
 其中 shell 相关最重要的理解方式是：
 
 - 默认保持 `shell_mode: follow`
 - 只有明确需要固定某个 shell 时，才切到 `custom`
+
+运行环境切换会同时作用于 Python 任务和 Shell 任务：
+
+```yaml
+conda_env: eval-env
+conda_executable: conda
+```
+
+也可以直接指定 Python：
+
+```yaml
+python_executable: /shared/ywl/miniconda3/envs/eval-env/bin/python
+```
+
+`global_env` 是工作区级别环境变量，覆盖顺序为：终端环境 < `global_env` < 任务 Env。任务级 Env 里的 `PYRUNS_CONDA_ENV`、`PYRUNS_CONDA_EXE`、`PYRUNS_PYTHON_EXECUTABLE` 会覆盖工作区默认运行环境。
+
+UI 里的 Workspace Env 支持接近 `.bashrc` 的安全赋值子集：
+
+```bash
+CUDA_VISIBLE_DEVICES=0
+export TOKENIZERS_PARALLELISM=false
+HF_HOME="/data/hf cache"
+```
+
+支持单双引号和行首注释；不执行命令替换、变量展开或任意 shell 代码。
+
+直接用 CLI 运行任务时，例如 `pyr run 1`，会继承当前终端环境；Web UI 的 Runtime / Workspace Env 设置只影响 UI 发起的任务运行。
 
 ## 文档导航
 

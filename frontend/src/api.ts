@@ -14,6 +14,7 @@ import type {
   WorkspaceCandidate,
   GeneratorMode,
   PathValidationResult,
+  RuntimeInfo,
 } from './types'
 
 const BASE = ''
@@ -35,6 +36,14 @@ export const setRunRoot = (path: string) =>
   request<WorkspaceInfo>('/api/workspace/run-root', { method: 'POST', body: JSON.stringify({ path }) })
 export const openShellWorkspace = () =>
   request<WorkspaceInfo>('/api/workspace/shell', { method: 'POST' })
+export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')
+export const updateRuntimeInfo = (payload: Partial<{
+  python_executable: string
+  conda_env: string
+  conda_executable: string
+  global_env: Record<string, string>
+  global_env_text: string
+}>) => request<RuntimeInfo>('/api/runtime', { method: 'PATCH', body: JSON.stringify(payload) })
 
 export const getTemplates = () => request<{ items: { value: string; label: string }[] }>('/api/templates')
 export const getTemplateContent = (value: string) =>
