@@ -266,10 +266,16 @@ class PyrunsRuntime:
     def get_workspace_info(self) -> Dict[str, Any]:
         """Return current workspace metadata for the frontend."""
         script_info = load_script_info(self.root_dir)
-        workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
-        workspace_ready = bool(script_info.get("script_name") or workspace_kind)
         script_path = str(script_info.get("script_path", "") or "")
         project_root = str(script_info.get("project_root", "") or "")
+        raw_workspace_kind = str(script_info.get("workspace_kind", "") or "").strip().lower()
+        workspace_kind = normalize_workspace_kind(raw_workspace_kind)
+        workspace_ready = bool(
+            script_path
+            or script_info.get("script_name")
+            or raw_workspace_kind == _cfg.WORKSPACE_KIND_SHELL
+            or (raw_workspace_kind == _cfg.WORKSPACE_KIND_SCRIPT and project_root)
+        )
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL and not project_root:
             project_root = shell_project_root_for_workspace(self.root_dir)
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:

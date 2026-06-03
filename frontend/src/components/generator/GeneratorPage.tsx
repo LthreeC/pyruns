@@ -69,6 +69,13 @@ function buildColumnGridStyle(columns: number) {
   return { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
 }
 
+function readCompactGeneratorLayout() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.matchMedia('(max-width: 700px)').matches
+}
+
 function compactPreviewText(text: string) {
   return String(text || '').replace(/,\s+/g, '  ·  ')
 }
@@ -337,6 +344,7 @@ export default function GeneratorPage() {
   const [formLayoutMode, setFormLayoutMode] = useState<FormLayoutMode>('tree')
   const [treeOpenSignal, setTreeOpenSignal] = useState(0)
   const [treeOpenValue, setTreeOpenValue] = useState(true)
+  const [compactGeneratorLayout, setCompactGeneratorLayout] = useState(readCompactGeneratorLayout)
   const lastWorkspaceDefaultKeyRef = useRef('')
   const lastShellRootRef = useRef('')
 
@@ -344,6 +352,18 @@ export default function GeneratorPage() {
   const shellRuntime = workspace?.shell_runtime
   const editorMode = isShellWorkspace ? 'shell' : viewMode === 'shell' ? 'form' : viewMode
   const codeMirrorTheme = theme === 'dark' ? 'dark' : 'light'
+  const generatorBodyClassName = clsx(
+    'flex min-h-0 flex-1',
+    compactGeneratorLayout ? 'flex-col overflow-y-auto' : 'overflow-hidden',
+  )
+  const generatorEditorClassName = clsx(
+    'min-w-0 flex flex-col overflow-hidden',
+    compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1',
+  )
+  const generatorSettingsClassName = clsx(
+    'flex flex-col gap-2.5 overflow-y-auto bg-surface-raised p-2.5',
+    compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'w-[286px] border-l border-border-subtle',
+  )
 
   useEffect(() => {
     if (isShellWorkspace) {
@@ -367,6 +387,18 @@ export default function GeneratorPage() {
       setViewMode('form')
     }
   }, [clearTemplate, fetchTemplates, isShellWorkspace, setShellText, setViewMode, shellText, viewMode, workspace?.run_root])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const query = window.matchMedia('(max-width: 700px)')
+    const handleChange = () => setCompactGeneratorLayout(query.matches)
+    handleChange()
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
+  }, [])
 
   useEffect(() => {
     if (!workspace?.run_root || isShellWorkspace) {
@@ -726,8 +758,8 @@ export default function GeneratorPage() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="min-w-0 flex flex-1 flex-col overflow-hidden" style={{ flexBasis: '78%' }}>
+      <div className={generatorBodyClassName}>
+        <div className={generatorEditorClassName} style={compactGeneratorLayout ? undefined : { flexBasis: '78%' }}>
           {!isShellWorkspace && loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="animate-pulse text-xs text-txt-tertiary">Loading template...</div>
@@ -771,8 +803,8 @@ export default function GeneratorPage() {
         </div>
 
         <aside
-          className="flex w-[286px] flex-col gap-2.5 overflow-y-auto border-l border-border-subtle bg-surface-raised p-2.5"
-          style={{ minWidth: 268, maxWidth: 296 }}
+          className={generatorSettingsClassName}
+          style={compactGeneratorLayout ? undefined : { minWidth: 268, maxWidth: 296 }}
         >
           <CompactSection title="Naming" bodyClassName="space-y-2.5 p-2">
             <div>

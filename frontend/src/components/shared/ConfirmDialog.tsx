@@ -36,7 +36,12 @@ export default function ConfirmDialog({
       <div className="p-6">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
-          <button type="button" onClick={onCancel} className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary">
+          <button
+            type="button"
+            onClick={onCancel}
+            aria-label="Close dialog"
+            className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>

@@ -402,6 +402,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   type="button"
                   onClick={() => void handleRename()}
                   title="Save name"
+                  aria-label="Save task name"
                   className="rounded-md p-1.5 text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
                 >
                   <Check className="h-3.5 w-3.5" />
@@ -413,6 +414,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                     setNewName(task.name)
                   }}
                   title="Cancel"
+                  aria-label="Cancel task rename"
                   className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -425,6 +427,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   type="button"
                   onClick={() => setRenaming(true)}
                   title="Rename task"
+                  aria-label="Rename task"
                   className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
                 >
                   <Pencil className="h-3 w-3" />
@@ -438,6 +441,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
             onClick={requestClose}
             className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
             title="Close"
+            aria-label="Close task details"
           >
             <X className="h-4 w-4" />
           </button>

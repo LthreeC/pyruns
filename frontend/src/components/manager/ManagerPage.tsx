@@ -33,6 +33,13 @@ type DragTarget = 'pinned' | 'tasks'
 type DragPlacement = 'before' | 'after'
 const DRAG_START_DISTANCE = 8
 
+function readCompactTaskGrid() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.matchMedia('(max-width: 700px)').matches
+}
+
 interface TaskSearchMatch {
   label: string
   detail: string
@@ -164,13 +171,27 @@ export default function ManagerPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const focusTaskName = searchParams.get('task')
+  const [compactTaskGrid, setCompactTaskGrid] = useState(readCompactTaskGrid)
 
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
+  const effectiveTaskColumns = compactTaskGrid ? 1 : columns
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
 
   useEffect(() => {
     void fetchTasks()
   }, [query, statusFilter, offset, fetchTasks])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const query = window.matchMedia('(max-width: 700px)')
+    const handleChange = () => setCompactTaskGrid(query.matches)
+    handleChange()
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
+  }, [])
 
   useEffect(() => {
     if (!focusTaskName) {
@@ -626,7 +647,7 @@ export default function ManagerPage() {
                   ) : (
                     <TaskGrid
                       tasks={pinnedTasks}
-                      columns={columns}
+                      columns={effectiveTaskColumns}
                       query={query}
                       draggedTaskName={draggedTaskName}
                       dropIntent={dropIntent}
@@ -662,7 +683,7 @@ export default function ManagerPage() {
             >
               <TaskGrid
                 tasks={otherTasks}
-                columns={columns}
+                columns={effectiveTaskColumns}
                 query={query}
                 draggedTaskName={draggedTaskName}
                 dropIntent={dropIntent}
@@ -861,6 +882,7 @@ function TaskCard({
             onPin()
           }}
           title={task.pinned ? 'Unpin' : 'Pin'}
+          aria-label={task.pinned ? `Unpin ${task.name}` : `Pin ${task.name}`}
           className={clsx(
             'absolute right-2.5 top-2.5 rounded-md p-1 transition-colors hover:bg-surface-overlay',
             task.pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
@@ -924,6 +946,7 @@ function TaskCard({
                 onAction(actionBtn.action)
               }}
               title={actionBtn.label}
+              aria-label={`${actionBtn.label} ${task.name}`}
               className={clsx('rounded-md p-1.5 transition-colors', actionBtn.className)}
             >
               <actionBtn.icon className="h-3.5 w-3.5" />
@@ -936,6 +959,7 @@ function TaskCard({
               onMonitor()
             }}
             title="View logs"
+            aria-label={`View logs for ${task.name}`}
             className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
           >
             <Terminal className="h-3.5 w-3.5" />
@@ -947,6 +971,7 @@ function TaskCard({
               onDelete()
             }}
             title="Delete task"
+            aria-label={`Delete ${task.name}`}
             className="rounded-md p-1.5 text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
           >
             <Trash2 className="h-3.5 w-3.5" />

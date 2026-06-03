@@ -52,9 +52,12 @@ export default function DashboardPage() {
   usePolling(refreshDashboard, refreshIntervalSec * 1000, true, true)
 
   const summary = data?.summary
-  const isShellWorkspace = workspace?.workspace_kind === 'shell'
-  const workspaceKindLabel = isShellWorkspace ? 'Shell Workspace' : 'Script Workspace'
-  const workspaceName = workspace?.script_name || (isShellWorkspace ? '_shell_' : 'No workspace selected')
+  const workspaceReady = workspace?.workspace_ready === true
+  const isShellWorkspace = workspaceReady && workspace?.workspace_kind === 'shell'
+  const workspaceKindLabel = !workspaceReady ? 'Workspace Needed' : isShellWorkspace ? 'Shell Workspace' : 'Script Workspace'
+  const workspaceName = workspaceReady
+    ? (workspace?.script_name || (isShellWorkspace ? '_shell_' : 'Workspace'))
+    : 'Choose a workspace to start'
   const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)
   const workspaceStoragePath = getWorkspaceStoragePath(workspace)
   const workspacePathSegments = splitPathSegments(workspaceWorkingPath)
@@ -76,7 +79,7 @@ export default function DashboardPage() {
                   {workspaceKindLabel}
                 </span>
                 <span className="truncate font-mono text-2xs text-txt-tertiary" title={workspaceWorkingPath || ''}>
-                  {workspaceWorkingPath || 'Open a workspace to start'}
+                  {workspaceWorkingPath || 'Choose a workspace to start'}
                 </span>
               </div>
               <h1 className="text-xl font-semibold text-txt-primary">Dashboard</h1>
@@ -84,10 +87,10 @@ export default function DashboardPage() {
             </div>
             <button
               type="button"
-              onClick={() => navigate('/generator')}
+              onClick={() => navigate(workspaceReady ? '/generator' : '/?launcher=1&mode=python')}
               className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent/90"
             >
-              <Wand2 className="h-4 w-4" /> Start New Task
+              <Wand2 className="h-4 w-4" /> {workspaceReady ? 'Start New Task' : 'Choose Workspace'}
             </button>
           </header>
 
@@ -147,10 +150,10 @@ export default function DashboardPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => navigate('/generator')}
+                  onClick={() => navigate(workspaceReady ? '/generator' : '/?launcher=1&mode=python')}
                   className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-accent/10 px-3 py-2 text-xs font-medium text-accent transition-colors hover:bg-accent/20"
                 >
-                  <Wand2 className="h-3.5 w-3.5" /> Generate Tasks
+                  <Wand2 className="h-3.5 w-3.5" /> {workspaceReady ? 'Generate Tasks' : 'Choose Workspace'}
                 </button>
               </section>
 

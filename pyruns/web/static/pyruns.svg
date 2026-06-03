@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pyruns">
+  <rect width="64" height="64" rx="14" fill="#111827"/>
+  <path d="M17 42V18h15.5c8.1 0 13.5 4.6 13.5 11.7S40.6 41.4 32.5 41.4H25v.6c0 3.9-3.1 7-7 7h-1v-7Zm8-7.6h7.2c3.5 0 5.7-1.8 5.7-4.7S35.7 25 32.2 25H25v9.4Z" fill="#F8FAFC"/>
+  <path d="M18 48c8.4 0 15.8-3.2 21.6-9.1l4.8 4.8C37.2 51 28.2 55 18 55v-7Z" fill="#5E6AD2"/>
+  <path d="M43.5 22.6 52 14l-2 12.2-12.1 2 5.6-5.6Z" fill="#10B981"/>
+</svg>

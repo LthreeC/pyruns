@@ -2,11 +2,13 @@ from pathlib import Path
 
 
 FRONTEND_GENERATOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "generator" / "GeneratorPage.tsx"
+FRONTEND_APP = Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx"
 FRONTEND_COMPONENTS_DIR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components"
 FRONTEND_POLLING = Path(__file__).resolve().parents[1] / "frontend" / "src" / "hooks" / "usePolling.ts"
 FRONTEND_STORE = Path(__file__).resolve().parents[1] / "frontend" / "src" / "store.ts"
 FRONTEND_DASHBOARD = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "dashboard" / "DashboardPage.tsx"
 FRONTEND_MONITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx"
+FRONTEND_MANAGER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "manager" / "ManagerPage.tsx"
 FRONTEND_LAUNCHER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "launcher" / "LauncherPage.tsx"
 FRONTEND_APP_SHELL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "AppShell.tsx"
 FRONTEND_SIDEBAR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "Sidebar.tsx"
@@ -16,9 +18,11 @@ FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "typ
 FRONTEND_CONFIRM_DIALOG = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ConfirmDialog.tsx"
 FRONTEND_COMPACT_SECTION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CompactSection.tsx"
 FRONTEND_CODE_EDITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CodeTextEditor.tsx"
+FRONTEND_PAGINATION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "Pagination.tsx"
 FRONTEND_SEARCH_INPUT = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "SearchInput.tsx"
 FRONTEND_THEME_CSS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "theme" / "index.css"
 FRONTEND_TAILWIND = Path(__file__).resolve().parents[1] / "frontend" / "tailwind.config.ts"
+FRONTEND_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "index.html"
 
 
 def test_react_generator_pin_promotes_params_without_duplicates():
@@ -70,6 +74,29 @@ def test_react_dashboard_polling_waits_for_network_work():
     assert "api.getMetrics().then(setMetrics)" in source
 
 
+def test_react_app_lazy_loads_route_pages_for_smaller_initial_bundle():
+    source = FRONTEND_APP.read_text(encoding="utf-8")
+
+    assert "lazy," in source
+    assert "Suspense," in source
+    assert "const DashboardPage = lazy(() => import('@/components/dashboard/DashboardPage'))" in source
+    assert "const GeneratorPage = lazy(() => import('@/components/generator/GeneratorPage'))" in source
+    assert "const ManagerPage = lazy(() => import('@/components/manager/ManagerPage'))" in source
+    assert "const MonitorPage = lazy(() => import('@/components/monitor/MonitorPage'))" in source
+    assert "const LauncherPage = lazy(() => import('@/components/launcher/LauncherPage'))" in source
+    assert "<Suspense fallback={<RouteLoadingFallback />}>" in source
+    assert "function RouteLoadingFallback()" in source
+
+
+def test_frontend_index_serves_branded_favicon_without_404():
+    index = FRONTEND_INDEX.read_text(encoding="utf-8")
+    icon = FRONTEND_INDEX.parent / "public" / "pyruns.svg"
+
+    assert '<link rel="icon" type="image/svg+xml" href="/pyruns.svg" />' in index
+    assert icon.exists()
+    assert "<svg" in icon.read_text(encoding="utf-8")
+
+
 def test_react_dashboard_uses_full_width_clear_workspace_layout():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
@@ -94,10 +121,22 @@ def test_react_dashboard_displays_working_root_and_labels_storage_root():
     assert "const workspaceStoragePath = getWorkspaceStoragePath(workspace)" in source
     assert "splitPathSegments(workspaceWorkingPath)" in source
     assert "title={workspaceWorkingPath || ''}" in source
-    assert "{workspaceWorkingPath || 'Open a workspace to start'}" in source
+    assert "{workspaceWorkingPath || 'Choose a workspace to start'}" in source
     assert 'InfoRow label="Working" value={workspaceWorkingPath || \'--\'} mono' in source
     assert 'InfoRow label="Storage" value={workspaceStoragePath || \'--\'} mono' in source
     assert "splitPathSegments(workspace?.run_root)" not in source
+
+
+def test_react_workspace_chrome_distinguishes_uninitialized_roots():
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+
+    assert "workspace?.workspace_ready === true" in dashboard
+    assert "Workspace Needed" in dashboard
+    assert "Choose a workspace to start" in dashboard
+    assert "workspace?.workspace_ready === true" in sidebar
+    assert "Choose workspace" in sidebar
+    assert "Workspace needed" in sidebar
 
 
 def test_react_sidebar_active_workspace_state_is_visually_clear():
@@ -127,6 +166,17 @@ def test_react_monitor_sidebar_width_is_clamped():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "Math.min(35, Math.max(10, sidebarWidthRaw))" in source
+
+
+def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "function readCompactMonitorLayout()" in source
+    assert "const COMPACT_MONITOR_SIDEBAR_WIDTH = 44" in source
+    assert "window.matchMedia('(max-width: 700px)')" in source
+    assert "const effectiveMonitorSidebarWidthPct = compactMonitorLayout ? COMPACT_MONITOR_SIDEBAR_WIDTH : monitorSidebarWidthPct" in source
+    assert "style={{ width: `${effectiveMonitorSidebarWidthPct}%` }}" in source
+    assert "{!compactMonitorLayout && (" in source
 
 
 def test_react_monitor_uses_unfiltered_full_task_list():
@@ -215,10 +265,65 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     assert "localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY" in shell
     assert "aria-label=\"Resize navigation sidebar\"" in shell
     assert "cursor-col-resize" in shell
-    assert "<Sidebar width={sidebarWidth}" in shell
+    assert "<Sidebar width={effectiveSidebarWidth}" in shell
     assert "width?: number" in sidebar
     assert "style={{ width }}" in sidebar
     assert "w-sidebar" not in sidebar
+
+
+def test_react_app_shell_uses_compact_sidebar_on_narrow_viewports():
+    shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
+    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+
+    assert "const COMPACT_SIDEBAR_WIDTH = 64" in shell
+    assert "window.matchMedia('(max-width: 700px)')" in shell
+    assert "const effectiveSidebarWidth = compactSidebar ? COMPACT_SIDEBAR_WIDTH : sidebarWidth" in shell
+    assert "<Sidebar width={effectiveSidebarWidth} compact={compactSidebar}" in shell
+    assert "compact?: boolean" in sidebar
+    assert "aria-label={label}" in sidebar
+    assert "title={label}" in sidebar
+    assert "compact && 'justify-center px-0'" in sidebar
+    assert "{!compact && <span>{label}</span>}" in sidebar
+
+
+def test_react_manager_uses_single_column_cards_on_narrow_viewports():
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+
+    assert "function readCompactTaskGrid()" in manager
+    assert "window.matchMedia('(max-width: 700px)')" in manager
+    assert "const effectiveTaskColumns = compactTaskGrid ? 1 : columns" in manager
+    assert "columns={effectiveTaskColumns}" in manager
+
+
+def test_react_generator_stacks_editor_and_settings_on_narrow_viewports():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "function readCompactGeneratorLayout()" in generator
+    assert "window.matchMedia('(max-width: 700px)')" in generator
+    assert "const generatorBodyClassName = clsx(" in generator
+    assert "compactGeneratorLayout ? 'flex-col overflow-y-auto' : 'overflow-hidden'" in generator
+    assert "compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1'" in generator
+    assert "compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'w-[286px] border-l border-border-subtle'" in generator
+    assert "style={compactGeneratorLayout ? undefined : { minWidth: 268, maxWidth: 296 }}" in generator
+
+
+def test_react_icon_only_buttons_have_accessible_names():
+    task_detail = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+    confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+    pagination = FRONTEND_PAGINATION.read_text(encoding="utf-8")
+
+    assert 'aria-label="Save task name"' in task_detail
+    assert 'aria-label="Cancel task rename"' in task_detail
+    assert 'aria-label="Rename task"' in task_detail
+    assert 'aria-label="Close task details"' in task_detail
+    assert 'aria-label="Close dialog"' in confirm_dialog
+    assert "aria-label={task.pinned ? `Unpin ${task.name}` : `Pin ${task.name}`}" in manager
+    assert "aria-label={`${actionBtn.label} ${task.name}`}" in manager
+    assert "aria-label={`View logs for ${task.name}`}" in manager
+    assert "aria-label={`Delete ${task.name}`}" in manager
+    assert 'aria-label="Previous page"' in pagination
+    assert 'aria-label="Next page"' in pagination
 
 
 def test_react_task_detail_panel_can_be_resized_from_left_edge():
@@ -387,7 +492,7 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     assert "localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
     assert "aria-label=\"Resize monitor sidebar\"" in source
     assert "cursor-col-resize" in source
-    assert "style={{ width: `${monitorSidebarWidthPct}%` }}" in source
+    assert "style={{ width: `${effectiveMonitorSidebarWidthPct}%` }}" in source
 
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
@@ -873,7 +978,7 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "api.pickLauncherShellRoot()" not in sidebar
     assert "pickLauncherScriptPath" not in sidebar
     assert "openLauncherForConfig" not in sidebar
-    assert "searchParams.delete('mode')" in app
+    assert "nextParams.delete('mode')" in app
     assert "const modeParam = searchParams.get('mode')" in launcher
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "setLaunchMode(initialLaunchMode)" in launcher

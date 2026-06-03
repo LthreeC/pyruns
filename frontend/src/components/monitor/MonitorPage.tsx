@@ -27,6 +27,7 @@ const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
 const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
+const COMPACT_MONITOR_SIDEBAR_WIDTH = 44
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
 
@@ -52,6 +53,13 @@ function readStoredMonitorSidebarWidth(fallback: number) {
   }
 
   return clampMonitorSidebarWidth(fallback)
+}
+
+function readCompactMonitorLayout() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.matchMedia('(max-width: 700px)').matches
 }
 
 export default function MonitorPage() {
@@ -97,20 +105,37 @@ export default function MonitorPage() {
     ? Math.min(35, Math.max(10, sidebarWidthRaw))
     : 14
   const [monitorSidebarWidthPct, setMonitorSidebarWidthPct] = useState(() => readStoredMonitorSidebarWidth(settingsSidebarWidthPct))
+  const [compactMonitorLayout, setCompactMonitorLayout] = useState(readCompactMonitorLayout)
   const [resizingMonitorSidebar, setResizingMonitorSidebar] = useState(false)
   const pendingMonitorSidebarWidthRef = useRef(monitorSidebarWidthPct)
   const monitorResizeFrameRef = useRef<number | null>(null)
   const terminalVisible = Boolean(selectedTaskName)
+  const effectiveMonitorSidebarWidthPct = compactMonitorLayout ? COMPACT_MONITOR_SIDEBAR_WIDTH : monitorSidebarWidthPct
   usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
 
   const startMonitorSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
+    if (compactMonitorLayout) {
+      return
+    }
     setResizingMonitorSidebar(true)
-  }, [])
+  }, [compactMonitorLayout])
 
   useEffect(() => {
     void fetchMonitorTasks()
   }, [fetchMonitorTasks])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const query = window.matchMedia('(max-width: 700px)')
+    const handleChange = () => setCompactMonitorLayout(query.matches)
+    handleChange()
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
+  }, [])
 
   useEffect(() => {
     try {
@@ -571,7 +596,7 @@ export default function MonitorPage() {
     <div ref={monitorShellRef} className="flex h-full overflow-hidden">
       <aside
         className="flex flex-col overflow-hidden border-r border-border-subtle bg-surface-raised"
-        style={{ width: `${monitorSidebarWidthPct}%` }}
+        style={{ width: `${effectiveMonitorSidebarWidthPct}%` }}
       >
         <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
@@ -679,16 +704,18 @@ export default function MonitorPage() {
           )}
         </div>
       </aside>
-      <button
-        type="button"
-        aria-label="Resize monitor sidebar"
-        aria-orientation="vertical"
-        onPointerDown={startMonitorSidebarResize}
-        className={clsx(
-          'h-full w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
-          resizingMonitorSidebar ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
-        )}
-      />
+      {!compactMonitorLayout && (
+        <button
+          type="button"
+          aria-label="Resize monitor sidebar"
+          aria-orientation="vertical"
+          onPointerDown={startMonitorSidebarResize}
+          className={clsx(
+            'h-full w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+            resizingMonitorSidebar ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
+          )}
+        />
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col" style={{ background: '#0A0A0B' }}>
         <div className="flex items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-3 py-2">

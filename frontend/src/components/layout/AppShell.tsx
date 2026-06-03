@@ -5,6 +5,7 @@ import Sidebar from './Sidebar'
 
 const SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.sidebarWidth'
 const DEFAULT_SIDEBAR_WIDTH = 220
+const COMPACT_SIDEBAR_WIDTH = 64
 const MIN_SIDEBAR_WIDTH = 180
 const MAX_SIDEBAR_WIDTH = 360
 
@@ -28,15 +29,39 @@ function readStoredSidebarWidth() {
   }
 }
 
+function readCompactSidebar() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.matchMedia('(max-width: 700px)').matches
+}
+
 export default function AppShell() {
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
+  const [compactSidebar, setCompactSidebar] = useState(readCompactSidebar)
   const [resizing, setResizing] = useState(false)
   const pendingSidebarWidthRef = useRef(sidebarWidth)
   const sidebarResizeFrameRef = useRef<number | null>(null)
+  const effectiveSidebarWidth = compactSidebar ? COMPACT_SIDEBAR_WIDTH : sidebarWidth
 
   const startSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
+    if (compactSidebar) {
+      return
+    }
     setResizing(true)
+  }, [compactSidebar])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const query = window.matchMedia('(max-width: 700px)')
+    const handleChange = () => setCompactSidebar(query.matches)
+    handleChange()
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
   }, [])
 
   useEffect(() => {
@@ -98,17 +123,19 @@ export default function AppShell() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-surface-base">
-      <Sidebar width={sidebarWidth} />
-      <button
-        type="button"
-        aria-label="Resize navigation sidebar"
-        aria-orientation="vertical"
-        onPointerDown={startSidebarResize}
-        className={clsx(
-          'h-screen w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
-          resizing ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
-        )}
-      />
+      <Sidebar width={effectiveSidebarWidth} compact={compactSidebar} />
+      {!compactSidebar && (
+        <button
+          type="button"
+          aria-label="Resize navigation sidebar"
+          aria-orientation="vertical"
+          onPointerDown={startSidebarResize}
+          className={clsx(
+            'h-screen w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+            resizing ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
+          )}
+        />
+      )}
       <main className="flex-1 min-w-0 overflow-hidden">
         <Outlet />
       </main>

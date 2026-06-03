@@ -34,6 +34,14 @@ def test_ci_installs_declared_web_test_dependencies():
     assert 'pip install -e ".[test,lint]"' in workflow
 
 
+def test_python_version_metadata_matches_modern_type_syntax():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'requires-python = ">=3.10"' in pyproject
+    assert "Programming Language :: Python :: 3.8" not in pyproject
+    assert "Programming Language :: Python :: 3.9" not in pyproject
+
+
 def test_flake8_ignores_local_editor_history():
     config = (ROOT / ".flake8").read_text(encoding="utf-8")
 

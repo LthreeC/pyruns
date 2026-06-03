@@ -233,6 +233,23 @@ def test_workspace_endpoint_returns_metadata(tmp_path):
     assert payload["workspace_ready"] is True
 
 
+def test_workspace_endpoint_reports_uninitialized_default_root_as_not_ready(tmp_path):
+    workspace = tmp_path / "_pyruns_"
+    (workspace / TASKS_DIR).mkdir(parents=True)
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace_kind"] == WORKSPACE_KIND_SCRIPT
+    assert payload["workspace_ready"] is False
+    assert payload["script_name"] == ""
+    assert payload["script_path"] == ""
+    assert payload["working_root"] == ""
+
+
 def test_workspace_endpoint_reports_native_picker_capability(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

@@ -1,12 +1,21 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { Routes, Route, useSearchParams } from 'react-router-dom'
 import AppShell from '@/components/layout/AppShell'
-import DashboardPage from '@/components/dashboard/DashboardPage'
-import GeneratorPage from '@/components/generator/GeneratorPage'
-import ManagerPage from '@/components/manager/ManagerPage'
-import MonitorPage from '@/components/monitor/MonitorPage'
-import LauncherPage from '@/components/launcher/LauncherPage'
 import { applyThemeClass, useWorkspaceStore, useThemeStore } from '@/store'
+
+const DashboardPage = lazy(() => import('@/components/dashboard/DashboardPage'))
+const GeneratorPage = lazy(() => import('@/components/generator/GeneratorPage'))
+const ManagerPage = lazy(() => import('@/components/manager/ManagerPage'))
+const MonitorPage = lazy(() => import('@/components/monitor/MonitorPage'))
+const LauncherPage = lazy(() => import('@/components/launcher/LauncherPage'))
+
+function RouteLoadingFallback() {
+  return (
+    <div className="flex h-full min-h-[16rem] items-center justify-center bg-surface-base text-sm text-txt-tertiary">
+      Loading workspace...
+    </div>
+  )
+}
 
 export default function App() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -30,24 +39,27 @@ export default function App() {
 
   const closeLauncher = () => {
     setShowLauncher(false)
-    searchParams.delete('launcher')
-    searchParams.delete('mode')
-    searchParams.delete('script')
-    searchParams.delete('config')
-    setSearchParams(searchParams, { replace: true })
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete('launcher')
+    nextParams.delete('mode')
+    nextParams.delete('script')
+    nextParams.delete('config')
+    setSearchParams(nextParams, { replace: true })
   }
 
   return (
     <>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="generator" element={<GeneratorPage />} />
-          <Route path="manager" element={<ManagerPage />} />
-          <Route path="monitor" element={<MonitorPage />} />
-        </Route>
-      </Routes>
-      {showLauncher && <LauncherPage onClose={closeLauncher} />}
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="generator" element={<GeneratorPage />} />
+            <Route path="manager" element={<ManagerPage />} />
+            <Route path="monitor" element={<MonitorPage />} />
+          </Route>
+        </Routes>
+        {showLauncher && <LauncherPage onClose={closeLauncher} />}
+      </Suspense>
     </>
   )
 }
