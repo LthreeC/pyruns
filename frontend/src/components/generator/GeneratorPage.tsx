@@ -66,7 +66,7 @@ function formatBatchKind(kind: string) {
 }
 
 function buildColumnGridStyle(columns: number) {
-  return { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }
+  return { gridTemplateColumns: `repeat(${columns}, minmax(20rem, 1fr))` }
 }
 
 function readCompactGeneratorLayout() {
@@ -1265,9 +1265,10 @@ function FormEditor({
     )
   }
 
+  const visibleKeys = allKeys.filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))
   const gridStyle = buildColumnGridStyle(columns)
   const contentStyle = gridStyle
-  const contentClassName = 'grid gap-x-3 gap-y-2.5'
+  const contentClassName = 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'
   const childSectionClassName = 'col-span-full'
 
   return (
@@ -1291,7 +1292,7 @@ function FormEditor({
         className={contentClassName}
         style={contentStyle}
       >
-        {allKeys.filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key)).map(key => {
+        {visibleKeys.map(key => {
           const value = data[key]
           if (isNestedGroup(value)) {
             return (
@@ -1727,7 +1728,7 @@ function PinnedParameters({
 }) {
   const gridStyle = buildColumnGridStyle(columns)
   const contentStyle = gridStyle
-  const contentClassName = 'grid gap-2'
+  const contentClassName = 'grid gap-2 overflow-x-auto pb-1'
 
   return (
     <CompactSection
@@ -1795,10 +1796,10 @@ function NestedSection({
   const visibleEntries = Object.entries(data).filter(([key]) => !key.startsWith('_meta'))
   const treeSection = layoutMode === 'tree'
   const treeConnector = treeSection && depth > 0
-  const effectiveColumns = Math.max(1, columns - depth)
+  const effectiveColumns = Math.max(1, columns)
   const gridStyle = buildColumnGridStyle(effectiveColumns)
   const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
-  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5'
+  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'
   const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'
 
   useEffect(() => {
@@ -1977,57 +1978,55 @@ function ParamRow({
     return (
       <div
         className={clsx(
-          'group flex flex-col justify-between gap-1.5 rounded-md border border-border-subtle bg-surface-raised/40 p-2 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+          'group grid min-h-10 grid-cols-[minmax(9rem,0.75fr)_auto_minmax(12rem,1.25fr)] items-center gap-2 rounded-md border border-border-subtle bg-surface-raised/40 px-2.5 py-1.5 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
           pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : '',
           (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.03] ring-1 ring-amber-500/20',
         )}
       >
-        <div className="flex items-center justify-between gap-2 min-w-0">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <button
-              type="button"
-              onClick={event => {
-                event.stopPropagation()
-                onTogglePin()
-              }}
-              title={pinned ? 'Unpin' : 'Pin'}
-              aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
-              className={clsx(
-                'flex h-5 w-5 flex-none items-center justify-center rounded transition-colors',
-                pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
-              )}
-            >
-              <Pin className="h-3 w-3" />
-            </button>
-
-            <span className="truncate text-xs font-semibold text-txt-primary" title={name}>
-              {name}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1 flex-none">
-            {pinned && (
-              <span className="rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
-                Pin
-              </span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={event => {
+              event.stopPropagation()
+              onTogglePin()
+            }}
+            title={pinned ? 'Unpin' : 'Pin'}
+            aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
+            className={clsx(
+              'flex h-5 w-5 flex-none items-center justify-center rounded transition-colors',
+              pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
             )}
+          >
+            <Pin className="h-3 w-3" />
+          </button>
 
-            {(hasBatch || batchActive) && (
-              <span className="rounded-md bg-amber-500/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-amber-500">
-                Batch
-              </span>
-            )}
-
-            <span className={clsx(
-              'rounded-md px-1.5 py-0.5 text-[10px] font-mono',
-              PARAM_TYPE_STYLES[originalType]
-            )}>
-              {originalType}
-            </span>
-          </div>
+          <span className="truncate text-xs font-semibold text-txt-primary" title={name}>
+            {name}
+          </span>
         </div>
 
-        <div className="w-full">
+        <div className="flex flex-none items-center justify-end gap-1">
+          {pinned && (
+            <span className="rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
+              Pin
+            </span>
+          )}
+
+          {(hasBatch || batchActive) && (
+            <span className="rounded-md bg-amber-500/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-amber-500">
+              Batch
+            </span>
+          )}
+
+          <span className={clsx(
+            'rounded-md px-1.5 py-0.5 text-[10px] font-mono',
+            PARAM_TYPE_STYLES[originalType]
+          )}>
+            {originalType}
+          </span>
+        </div>
+
+        <div className="min-w-0 w-full">
           {originalType === 'bool' && !hasBatch ? (
             <div
               className={clsx(

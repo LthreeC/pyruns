@@ -843,9 +843,9 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "Collapse all" in generator
     assert "treeOpenSignal" in generator
     assert "setOpen(openSignalValue)" in generator
-    assert "const effectiveColumns = Math.max(1, columns - depth)" in generator
+    assert "const effectiveColumns = Math.max(1, columns)" in generator
     assert "buildColumnGridStyle(effectiveColumns)" in generator
-    assert "repeat(${columns}, minmax(0, 1fr))" in generator
+    assert "repeat(${columns}, minmax(20rem, 1fr))" in generator
     assert "treeColumns" not in generator
     assert "setTreeColumns" not in generator
     assert "TREE_COLS_STORAGE_KEY" not in generator
@@ -856,12 +856,38 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "TREE_FIELD_GRID_STYLE" not in generator
     assert "repeat(auto-fit, minmax(360px, 1fr))" not in generator
     assert "repeat(auto-fit, minmax(300px, 1fr))" not in generator
-    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5'" in generator
+    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'" in generator
     assert "const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'" in generator
     assert "editorMode === 'form' && (formLayoutMode === 'tree' || formLayoutMode === 'grid')" in generator
     assert "layoutMode={formLayoutMode}" in generator
     assert "min-w-[280px]" in generator
     assert "ml-auto flex flex-wrap items-center gap-2" in generator
+
+
+def test_react_generator_grid_mode_keeps_sibling_fields_on_one_row():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "function buildColumnGridStyle(columns: number)" in generator
+    assert "repeat(${columns}, minmax(20rem, 1fr))" in generator
+    assert "const effectiveColumns = Math.max(1, columns)" in generator
+    assert "const contentClassName = 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'" in generator
+    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'" in generator
+    assert "columns - depth" not in generator
+    assert "Math.max(1, columns, itemCount)" not in generator
+
+
+def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "grid min-h-10 grid-cols-[minmax(9rem,0.75fr)_auto_minmax(12rem,1.25fr)]" in generator
+    assert "flex flex-none items-center justify-end gap-1" in generator
+    assert '<div className="min-w-0 w-full">' in generator
+    assert "group flex flex-col justify-between gap-1.5" not in generator
+    grid_row_start = generator.index("if (!treeParamRow)")
+    name_position = generator.index("title={name}", grid_row_start)
+    type_position = generator.index("PARAM_TYPE_STYLES[originalType]", grid_row_start)
+    input_position = generator.index('<div className="min-w-0 w-full">', grid_row_start)
+    assert name_position < type_position < input_position
 
 
 def test_react_generator_does_not_backfill_ui_tests_with_comments():
@@ -904,7 +930,7 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
     assert "treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1'" in generator
     assert "if (!treeParamRow)" in generator
-    assert "group flex flex-col justify-between gap-1.5 rounded-md border border-border-subtle bg-surface-raised/40 p-2 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
+    assert "group grid min-h-10 grid-cols-[minmax(9rem,0.75fr)_auto_minmax(12rem,1.25fr)] items-center gap-2 rounded-md border border-border-subtle bg-surface-raised/40 px-2.5 py-1.5 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "h-7 w-full rounded-md border bg-surface-overlay/45" in generator
