@@ -122,7 +122,7 @@ export default function AppShell() {
   }, [resizing])
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-surface-base">
+    <div className="flex h-screen w-screen max-w-full overflow-hidden bg-surface-base">
       <Sidebar width={effectiveSidebarWidth} compact={compactSidebar} />
       {!compactSidebar && (
         <button
@@ -136,7 +136,7 @@ export default function AppShell() {
           )}
         />
       )}
-      <main className="flex-1 min-w-0 overflow-hidden">
+      <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
         <Outlet />
       </main>
     </div>

@@ -1343,6 +1343,64 @@ def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch
     assert manager.get_task("runner")["status"] == "failed"
 
 
+def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    running_dir = tasks_dir / "runner"
+    queued_dir = tasks_dir / "queued"
+    running_dir.mkdir()
+    queued_dir.mkdir()
+
+    save_task_info(
+        str(running_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [111, 222],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(running_dir / CONFIG_FILENAME), {"lr": 0.01})
+    save_task_info(
+        str(queued_dir),
+        {
+            "name": "queued",
+            "status": "queued",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 0,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [333],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(queued_dir / CONFIG_FILENAME), {"lr": 0.02})
+
+    killed: list[int] = []
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager._cleanup_on_shutdown()
+
+    assert killed == [222]
+    running_info = json.loads((running_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    queued_info = json.loads((queued_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert running_info["status"] == "failed"
+    assert queued_info["status"] == "failed"
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")

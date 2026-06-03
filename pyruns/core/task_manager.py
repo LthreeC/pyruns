@@ -901,6 +901,14 @@ class TaskManager:
             for task in self.tasks:
                 if not task or task["status"] not in ("running", "queued"):
                     continue
+                if task["status"] == "running":
+                    pid = self._latest_pid_from_disk(task)
+                    if pid:
+                        try:
+                            logger.info(f"Shutdown cleanup: terminating running process {pid} for task {task.get('name')}")
+                            kill_process(pid)
+                        except Exception as e:
+                            logger.warning(f"Failed to kill pid {pid} on shutdown cleanup: {e}")
                 task["status"] = "failed"
                 self._mark_failed_on_disk(
                     task,

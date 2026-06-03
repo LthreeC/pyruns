@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
-import { Routes, Route, useSearchParams } from 'react-router-dom'
+import { Routes, Route, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import AppShell from '@/components/layout/AppShell'
 import { applyThemeClass, useWorkspaceStore, useThemeStore } from '@/store'
 
@@ -18,6 +18,8 @@ function RouteLoadingFallback() {
 }
 
 export default function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [showLauncher, setShowLauncher] = useState(false)
   const fetchWorkspace = useWorkspaceStore(s => s.fetch)
@@ -32,13 +34,17 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (searchParams.get('launcher') === '1') {
+    if (searchParams.get('launcher') === '1' || location.pathname === '/launcher') {
       setShowLauncher(true)
     }
-  }, [searchParams])
+  }, [location.pathname, searchParams])
 
   const closeLauncher = () => {
     setShowLauncher(false)
+    if (location.pathname === '/launcher') {
+      navigate('/', { replace: true })
+      return
+    }
     const nextParams = new URLSearchParams(searchParams)
     nextParams.delete('launcher')
     nextParams.delete('mode')
@@ -53,6 +59,7 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<DashboardPage />} />
+            <Route path="launcher" element={<DashboardPage />} />
             <Route path="generator" element={<GeneratorPage />} />
             <Route path="manager" element={<ManagerPage />} />
             <Route path="monitor" element={<MonitorPage />} />

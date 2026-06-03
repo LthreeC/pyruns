@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
 
@@ -218,6 +219,7 @@ class PyrunsRuntime:
         self._task_generator: TaskGenerator | None = None
         self._metrics_sampler: SystemMonitor | None = None
         self._tasks_loaded = False
+        self._last_full_refresh_time = 0.0
         self.reload(root_dir)
 
     @staticmethod
@@ -252,6 +254,7 @@ class PyrunsRuntime:
             self._task_generator = None
             self._metrics_sampler = None
             self._tasks_loaded = False
+            self._last_full_refresh_time = 0.0
 
     def change_run_root(self, new_root: str) -> Dict[str, Any]:
         """Switch the active workspace after validation."""
@@ -637,6 +640,11 @@ class PyrunsRuntime:
                 self._metrics_sampler = self._metrics_factory()
             return self._metrics_sampler
 
+    def invalidate_cache(self) -> None:
+        """Reset the full refresh rate-limiting timer to force a sync on next read."""
+        with self._lock:
+            self._last_full_refresh_time = 0.0
+
     def ensure_tasks_loaded(self, *, full_refresh: bool = False) -> None:
         """Load task metadata on demand for faster startup."""
         manager = self.task_manager
@@ -645,9 +653,17 @@ class PyrunsRuntime:
                 manager.scan_disk()
             manager.refresh_from_disk(force_all=True)
             self._tasks_loaded = True
+            with self._lock:
+                self._last_full_refresh_time = time.time()
             return
         if full_refresh:
-            manager.refresh_from_disk(check_all=True)
+            now = time.time()
+            with self._lock:
+                elapsed = now - self._last_full_refresh_time
+            if elapsed >= 4.0:
+                manager.refresh_from_disk(check_all=True)
+                with self._lock:
+                    self._last_full_refresh_time = now
 
     def list_tasks(
         self,
@@ -725,12 +741,14 @@ class PyrunsRuntime:
         task = self.require_task(task_name)
         if task.get("_load_error"):
             raise ValueError(str(task["_load_error"]))
+        self.invalidate_cache()
         self.task_manager.start_task_now(task_name, execution_mode)
         return self.get_task(task_name) or task
 
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
         """Cancel one task and return the updated snapshot."""
         task = self.require_task(task_name)
+        self.invalidate_cache()
         ok = self.task_manager.cancel_task(task_name)
         if not ok:
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
@@ -759,6 +777,7 @@ class PyrunsRuntime:
         if not normalized_names:
             raise ValueError("No valid tasks were provided for batch run.")
 
+        self.invalidate_cache()
         self.task_manager.start_batch_tasks(
             normalized_names,
             execution_mode=execution_mode,
@@ -788,6 +807,7 @@ class PyrunsRuntime:
         if not normalized_names:
             raise ValueError("No valid tasks were provided for batch delete.")
 
+        self.invalidate_cache()
         self.task_manager.delete_tasks(normalized_names)
         return {
             "count": len(normalized_names),
@@ -820,6 +840,7 @@ class PyrunsRuntime:
     def set_task_pin(self, task_name: str, pinned: bool | None = None) -> Dict[str, Any]:
         """Toggle or set one task's pinned state."""
         self.require_task(task_name, refresh=False)
+        self.invalidate_cache()
         ok, result = self.task_manager.set_task_pinned(task_name, pinned)
         if not ok:
             if str(result) == "Task not found":
@@ -830,6 +851,7 @@ class PyrunsRuntime:
     def reorder_tasks(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Persist manual card order for the Manager page."""
         self.ensure_tasks_loaded(full_refresh=False)
+        self.invalidate_cache()
         ok, result = self.task_manager.reorder_tasks(items)
         if not ok:
             message = str(result)
@@ -859,6 +881,7 @@ class PyrunsRuntime:
     def update_task_notes(self, task_name: str, notes: str) -> Dict[str, Any]:
         """Persist notes for one task."""
         self.require_task(task_name, refresh=False)
+        self.invalidate_cache()
         ok, result = self.task_manager.update_task_notes(task_name, notes)
         if not ok:
             if str(result) == "Task not found":
@@ -869,6 +892,7 @@ class PyrunsRuntime:
     def update_task_env(self, task_name: str, env: Dict[str, Any]) -> Dict[str, Any]:
         """Persist env vars for one task."""
         self.require_task(task_name, refresh=False)
+        self.invalidate_cache()
         ok, result = self.task_manager.update_task_env(task_name, env)
         if not ok:
             if str(result) == "Task not found":
@@ -879,6 +903,7 @@ class PyrunsRuntime:
     def rename_task(self, task_name: str, new_name: str) -> Dict[str, Any]:
         """Rename one task."""
         self.require_task(task_name, refresh=False)
+        self.invalidate_cache()
         ok, result = self.task_manager.rename_task(task_name, new_name)
         if not ok:
             message = str(result)
@@ -1000,6 +1025,7 @@ class PyrunsRuntime:
             if not content.strip():
                 raise ValueError("Shell mode requires non-empty script content.")
             task = self.task_generator.create_shell_task(normalized_prefix, content)
+            self.invalidate_cache()
             self.task_manager.add_task(task)
             page = self.list_tasks(limit=12, refresh=False, summary=True)
             return {
@@ -1052,6 +1078,7 @@ class PyrunsRuntime:
             normalized_prefix,
             task_kind=TASK_KIND_CONFIG,
         )
+        self.invalidate_cache()
         self.task_manager.add_tasks(tasks)
         page = self.list_tasks(limit=12, refresh=False, summary=True)
         return {

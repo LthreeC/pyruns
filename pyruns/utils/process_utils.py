@@ -19,8 +19,8 @@ except ImportError:
 def is_pid_running(pid: Any) -> bool:
     """Check whether *pid* is still alive (cross-platform).
 
-    Uses psutil when available for more reliable detection (handles PID
-    reuse on Windows).  Falls back to OS-level checks otherwise.
+    Uses psutil when available for broad cross-platform detection.
+    Falls back to OS-level checks otherwise.
     """
     if not pid:
         return False
@@ -29,13 +29,26 @@ def is_pid_running(pid: Any) -> bool:
     except (TypeError, ValueError):
         return False
 
+    if _psutil is not None:
+        try:
+            return _psutil.pid_exists(pid)
+        except Exception:
+            pass
+
     if os.name == "nt":
         try:
             import ctypes
             kernel32 = ctypes.windll.kernel32
             SYNCHRONIZE = 0x00100000
-            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if handle:
+                exit_code = ctypes.c_ulong()
+                STILL_ACTIVE = 259
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    is_active = (exit_code.value == STILL_ACTIVE)
+                    kernel32.CloseHandle(handle)
+                    return is_active
                 kernel32.CloseHandle(handle)
                 return True
             return False

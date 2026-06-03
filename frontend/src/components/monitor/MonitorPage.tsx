@@ -27,7 +27,7 @@ const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
 const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
-const COMPACT_MONITOR_SIDEBAR_WIDTH = 44
+const COMPACT_MONITOR_SIDEBAR_HEIGHT = 260
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
 
@@ -110,7 +110,10 @@ export default function MonitorPage() {
   const pendingMonitorSidebarWidthRef = useRef(monitorSidebarWidthPct)
   const monitorResizeFrameRef = useRef<number | null>(null)
   const terminalVisible = Boolean(selectedTaskName)
-  const effectiveMonitorSidebarWidthPct = compactMonitorLayout ? COMPACT_MONITOR_SIDEBAR_WIDTH : monitorSidebarWidthPct
+  const monitorShellClassName = clsx(
+    'flex h-full min-w-0 overflow-hidden',
+    compactMonitorLayout ? 'flex-col' : 'flex-row',
+  )
   usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
 
   const startMonitorSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -593,10 +596,13 @@ export default function MonitorPage() {
   }, [exportIds])
 
   return (
-    <div ref={monitorShellRef} className="flex h-full overflow-hidden">
+    <div ref={monitorShellRef} className={monitorShellClassName}>
       <aside
-        className="flex flex-col overflow-hidden border-r border-border-subtle bg-surface-raised"
-        style={{ width: `${effectiveMonitorSidebarWidthPct}%` }}
+        className={clsx(
+          'flex flex-none flex-col overflow-hidden bg-surface-raised',
+          compactMonitorLayout ? 'border-b border-border-subtle' : 'border-r border-border-subtle',
+        )}
+        style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}
       >
         <div className="border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
@@ -717,8 +723,8 @@ export default function MonitorPage() {
         />
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col" style={{ background: '#0A0A0B' }}>
-        <div className="flex items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-3 py-2">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col" style={{ background: '#0A0A0B' }}>
+        <div className="flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-3 py-2">
           {selectedTask ? (
             <>
               <StatusBadge status={selectedTask.status as TaskStatus} />

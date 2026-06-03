@@ -737,7 +737,7 @@ export default function GeneratorPage() {
             </div>
           )}
 
-          {editorMode === 'form' && formLayoutMode === 'tree' && (
+          {editorMode === 'form' && (formLayoutMode === 'tree' || formLayoutMode === 'grid') && (
             <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
               <button
                 type="button"
@@ -1531,17 +1531,58 @@ function TreeParameterExplorer({
               onChange={next => onChangePath(selectedPath, next)}
             />
           ) : (
-            <RootSectionOverview
-              data={data}
-              sections={outlineSections.filter(section => section.path && section.depth === 0)}
-              declaredTypeMap={declaredTypeMap}
-              pinnedParams={pinnedParams}
-              pinnedRowKeys={pinnedRowKeys}
-              batchParams={batchParams}
-              onTogglePin={onTogglePin}
-              onChangeRoot={onChangeRoot}
-              onSelectPath={setSelectedPath}
-            />
+            <div className="space-y-4">
+              {Object.entries(data).filter(([key, value]) => (
+                !key.startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(key)
+              )).length > 0 && (
+                <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface-raised/40 p-3 shadow-sm">
+                  <div className="flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
+                    <Workflow className="h-3.5 w-3.5" />
+                    <span>Global Parameters</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {Object.entries(data).filter(([key, value]) => (
+                      !key.startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(key)
+                    )).map(([key, value]) => (
+                      <ParamRow
+                        key={key}
+                        name={key}
+                        value={value}
+                        declaredType={declaredTypeMap[key]}
+                        layoutMode="tree"
+                        pinned={pinnedParams.includes(key)}
+                        batchActive={batchParams.includes(key)}
+                        onChange={next => onChangeRoot(key, next)}
+                        onTogglePin={() => onTogglePin(key)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {outlineSections.filter(section => section.path && section.depth === 0).map(section => {
+                const sectionData = getValueAtPath(data, section.path)
+                return (
+                  <NestedSection
+                    key={section.path}
+                    name={section.name}
+                    data={sectionData}
+                    depth={0}
+                    columns={1}
+                    layoutMode="tree"
+                    openSignalValue={openSignalValue}
+                    openSignalVersion={openSignalVersion}
+                    declaredTypeMap={declaredTypeMap}
+                    pinnedParams={pinnedParams}
+                    pinnedRowKeys={pinnedRowKeys}
+                    batchParams={batchParams}
+                    prefix={section.path}
+                    onTogglePin={onTogglePin}
+                    onChange={next => onChangePath(section.path, next)}
+                  />
+                )
+              })}
+            </div>
           )}
         </div>
       </section>
@@ -1754,7 +1795,8 @@ function NestedSection({
   const visibleEntries = Object.entries(data).filter(([key]) => !key.startsWith('_meta'))
   const treeSection = layoutMode === 'tree'
   const treeConnector = treeSection && depth > 0
-  const gridStyle = buildColumnGridStyle(columns)
+  const effectiveColumns = Math.max(1, columns - depth)
+  const gridStyle = buildColumnGridStyle(effectiveColumns)
   const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
   const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5'
   const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'
@@ -1776,34 +1818,34 @@ function NestedSection({
           : 'relative',
         treeSection && depth === 0 && 'border-border bg-surface-raised shadow-sm',
         treeSection && depth > 0 && 'rounded-none',
-        !treeSection && depth === 0 && 'overflow-hidden rounded-md border border-border-subtle bg-surface-raised/80',
+        !treeSection && depth === 0 && 'overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-sm',
         !treeSection && depth > 0 && 'border-l-2 border-border-subtle pl-3',
       )}
     >
       {treeConnector && (
-        <div className="pointer-events-none absolute bottom-0 left-0 top-4 border-l border-border-subtle/60" />
+        <div className="pointer-events-none absolute bottom-0 left-0 top-4 border-l border-dashed border-border-strong/60" />
       )}
       <button
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         className={clsx(
-          'relative flex min-h-8 w-full items-center gap-1.5 text-left transition-colors',
+          'relative flex min-h-8 w-full items-center gap-1.5 text-left transition-colors group',
           treeSection
             ? 'px-2.5 py-1.5 hover:bg-surface-overlay/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25'
             : 'px-2.5 py-1.5 hover:bg-surface-overlay',
-          treeSection && depth === 0 && 'border-b border-border-subtle bg-surface-overlay/50',
+          treeSection && depth === 0 && open && 'border-b border-border bg-surface-overlay/50',
           treeSection && depth > 0 && 'rounded-md',
-          !treeSection && depth === 0 && 'border-b border-border-subtle bg-surface-overlay/40',
+          !treeSection && depth === 0 && open && 'border-b border-border-subtle bg-surface-overlay/55',
           !treeSection && depth > 0 && 'rounded-md bg-surface-overlay/25',
         )}
         title={`${prefix} (${Object.keys(data).length} fields)`}
       >
         {treeConnector && (
-          <span className="absolute left-0 top-1/2 w-2 border-t border-border-subtle/60" />
+          <span className="absolute left-0 top-1/2 w-2 border-t border-dashed border-border-strong/60" />
         )}
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary" /> : <ChevronRight className="h-3.5 w-3.5 text-txt-tertiary" />}
-        <span className="truncate text-sm font-semibold text-txt-primary" title={name}>{name}</span>
+        {open ? <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary group-hover:text-accent transition-colors" /> : <ChevronRight className="h-3.5 w-3.5 text-txt-tertiary group-hover:text-accent transition-colors" />}
+        <span className="truncate text-sm font-semibold text-txt-primary group-hover:text-accent transition-colors" title={name}>{name}</span>
         {depth > 0 && (
           <span className="min-w-0 truncate font-mono text-2xs text-txt-tertiary">
             {prefix}
@@ -1814,7 +1856,7 @@ function NestedSection({
         </span>
       </button>
       {open && (
-        <div className={treeSection ? 'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1' : (depth === 0 ? 'p-2.5' : 'pb-2 pl-3 pt-1.5')}>
+        <div className={treeSection ? 'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1' : (depth === 0 ? 'p-2.5' : 'pb-2 pl-3 pt-1.5')}>
           <div
             className={contentClassName}
             style={contentStyle}
@@ -1935,85 +1977,103 @@ function ParamRow({
     return (
       <div
         className={clsx(
-          'group min-w-0 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-overlay/55 focus-within:bg-surface-overlay/75 focus-within:ring-2 focus-within:ring-accent/20',
-          pinned ? 'bg-accent/5 ring-1 ring-accent/20' : 'bg-transparent',
-          (hasBatch || batchActive) && 'bg-amber-500/5 ring-1 ring-amber-500/20',
+          'group flex flex-col justify-between gap-1.5 rounded-md border border-border-subtle bg-surface-raised/40 p-2 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+          pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : '',
+          (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.03] ring-1 ring-amber-500/20',
         )}
       >
-        <div className="mb-1.5 flex min-w-0 items-center gap-1.5">
-          <button
-            type="button"
-            onClick={event => {
-              event.stopPropagation()
-              onTogglePin()
-            }}
-            title={pinned ? 'Unpin' : 'Pin'}
-            aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
-            className={clsx(
-              'flex h-5 w-5 flex-none items-center justify-center rounded-md transition-colors',
-              pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
-            )}
-          >
-            <Pin className="h-3 w-3" />
-          </button>
-
-          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-txt-primary" title={name}>
-            {name}
-          </span>
-
-          <span className={clsx(
-            'flex-none rounded-md px-1.5 py-0.5 text-[10px] font-mono',
-            PARAM_TYPE_STYLES[originalType]
-          )}>
-            {originalType}
-          </span>
-        </div>
-
-        {originalType === 'bool' && !hasBatch ? (
-          <div
-            className={clsx(
-              'flex h-7 min-w-0 items-center justify-between gap-2 rounded-md border bg-surface-overlay/45 px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
-              batchActive ? 'border-amber-500/20' : 'border-border-subtle',
-            )}
-          >
-            <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
             <button
               type="button"
-              onClick={() => onChange(!value)}
-              title={`Toggle ${name}`}
-            className={clsx(
-                'relative h-4.5 w-9 flex-none rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
-                value ? 'bg-accent' : 'bg-zinc-600'
+              onClick={event => {
+                event.stopPropagation()
+                onTogglePin()
+              }}
+              title={pinned ? 'Unpin' : 'Pin'}
+              aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
+              className={clsx(
+                'flex h-5 w-5 flex-none items-center justify-center rounded transition-colors',
+                pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
               )}
             >
-              <span
-                className={clsx(
-                  'absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform',
-                  value ? 'left-[18px]' : 'left-0.5'
-                )}
-              />
+              <Pin className="h-3 w-3" />
             </button>
+
+            <span className="truncate text-xs font-semibold text-txt-primary" title={name}>
+              {name}
+            </span>
           </div>
-        ) : (
-          <input
-            type="text"
-            value={localValue}
-            onChange={event => setLocalValue(event.target.value)}
-            onBlur={commitValue}
-            onKeyDown={event => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                commitValue()
-              }
-            }}
-            spellCheck={false}
-            title={localValue}
-            className={clsx(
-              'h-7 w-full rounded-md border bg-surface-overlay/45 px-2 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
-              hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+
+          <div className="flex items-center gap-1 flex-none">
+            {pinned && (
+              <span className="rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
+                Pin
+              </span>
             )}
-          />
-        )}
+
+            {(hasBatch || batchActive) && (
+              <span className="rounded-md bg-amber-500/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-amber-500">
+                Batch
+              </span>
+            )}
+
+            <span className={clsx(
+              'rounded-md px-1.5 py-0.5 text-[10px] font-mono',
+              PARAM_TYPE_STYLES[originalType]
+            )}>
+              {originalType}
+            </span>
+          </div>
+        </div>
+
+        <div className="w-full">
+          {originalType === 'bool' && !hasBatch ? (
+            <div
+              className={clsx(
+                'flex h-7 w-full items-center justify-between gap-2 rounded-md border bg-surface-overlay/45 px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+                batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+              )}
+            >
+              <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
+              <button
+                type="button"
+                onClick={() => onChange(!value)}
+                title={`Toggle ${name}`}
+                className={clsx(
+                  'relative h-4.5 w-9 flex-none rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
+                  value ? 'bg-accent' : 'bg-zinc-600'
+                )}
+              >
+                <span
+                  className={clsx(
+                    'absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform',
+                    value ? 'left-[18px]' : 'left-0.5'
+                  )}
+                />
+              </button>
+            </div>
+          ) : (
+            <input
+              type="text"
+              value={localValue}
+              onChange={event => setLocalValue(event.target.value)}
+              onBlur={commitValue}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  commitValue()
+                }
+              }}
+              spellCheck={false}
+              title={localValue}
+              className={clsx(
+                'h-7 w-full rounded-md border bg-surface-overlay/45 px-2 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
+                hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+              )}
+            />
+          )}
+        </div>
       </div>
     )
   }
@@ -2022,8 +2082,8 @@ function ParamRow({
     <div
       className={clsx(
         'grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)] min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border hover:bg-surface-overlay focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20',
-        pinned && 'border-accent/20 bg-accent/5',
-        (hasBatch || batchActive) && 'border-amber-500/20 bg-amber-500/5',
+        pinned && 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.04]',
+        (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.04]',
       )}
     >
       <button
@@ -2046,6 +2106,18 @@ function ParamRow({
         <span className="min-w-0 truncate text-xs font-semibold text-txt-primary" title={name}>
           {name}
         </span>
+
+        {pinned && (
+          <span className="flex-none rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
+            Pinned
+          </span>
+        )}
+
+        {(hasBatch || batchActive) && (
+          <span className="flex-none rounded-md bg-amber-500/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-amber-500">
+            Batch
+          </span>
+        )}
 
         <span className={clsx(
           'flex-none rounded-md px-1.5 py-0.5 text-[10px] font-mono',

@@ -411,6 +411,7 @@ def test_is_pid_running_self():
 
 @patch("pyruns.utils.process_utils.os.name", "posix")
 @patch("pyruns.utils.process_utils.os.kill")
+@patch("pyruns.utils.process_utils._psutil", None)
 def test_is_pid_running_mock_posix(mock_kill):
     # Test True
     mock_kill.return_value = None
@@ -425,19 +426,28 @@ def test_is_pid_running_mock_posix(mock_kill):
 @pytest.mark.skipif(os.name != "nt", reason="ctypes.windll only available on Windows")
 @patch("pyruns.utils.process_utils.os.name", "nt")
 @patch("ctypes.windll.kernel32.OpenProcess")
+@patch("pyruns.utils.process_utils._psutil", None)
 def test_is_pid_running_mock_nt_false(mock_open):
     # If OpenProcess returns 0, it should return False
     mock_open.return_value = 0 # Handle is 0/None -> not running
     assert is_pid_running(99999) is False
-    mock_open.assert_called_with(0x00100000, False, 99999)
+    mock_open.assert_called_with(0x00100000 | 0x1000, False, 99999)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="ctypes.windll only available on Windows")
 @patch("pyruns.utils.process_utils.os.name", "nt")
 @patch("ctypes.windll.kernel32.CloseHandle")
+@patch("ctypes.windll.kernel32.GetExitCodeProcess")
 @patch("ctypes.windll.kernel32.OpenProcess")
-def test_is_pid_running_mock_nt_true(mock_open, mock_close):
+@patch("pyruns.utils.process_utils._psutil", None)
+def test_is_pid_running_mock_nt_true(mock_open, mock_get_exit, mock_close):
     mock_open.return_value = 1234 # Got a handle
+
+    def mock_get_exit_code(handle, lpExitCode):
+        lpExitCode._obj.value = 259 # STILL_ACTIVE
+        return 1
+    mock_get_exit.side_effect = mock_get_exit_code
+
     assert is_pid_running(99999) is True
     mock_close.assert_called_with(1234)
 

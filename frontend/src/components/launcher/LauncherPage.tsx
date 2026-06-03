@@ -308,10 +308,10 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   }, [manualShellRootPath, navigate, onClose, setWorkspace])
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60">
-      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 sm:p-4">
+      <div className="flex max-h-[80vh] w-full max-w-[calc(100vw-1.5rem)] sm:max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md">
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 py-4 border-b border-border-subtle">
+        <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 sm:px-6 sm:py-4">
           <Rocket className="w-5 h-5 text-accent" />
           <div>
             <h2 className="text-sm font-semibold text-zinc-100">Launch Workspace</h2>
@@ -320,7 +320,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-3 sm:p-4">
           {error && (
             <div className="mb-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
               {error}
@@ -571,7 +571,7 @@ function ModeActionPanel({
           Native picker unavailable on this server; enter the path manually.
         </div>
       )}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input
           value={pathValue}
           onChange={event => onPathChange(event.target.value)}
@@ -584,13 +584,13 @@ function ModeActionPanel({
             }
           }}
           placeholder={placeholder}
-          className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
         />
         <button
           type="button"
           disabled={!pathReady}
           onClick={() => void onManualOpen()}
-          className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
         >
           {manualLabel}
         </button>
@@ -635,7 +635,7 @@ function ConfigActionPanel({
           Native picker unavailable on this server; enter the YAML path manually.
         </div>
       )}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input
           value={pathValue}
           onChange={event => onPathChange(event.target.value)}
@@ -648,13 +648,13 @@ function ConfigActionPanel({
             }
           }}
           placeholder={mustChooseConfig ? 'Path to YAML config' : 'Optional path to YAML config'}
-          className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
         />
         <button
           type="button"
           disabled={!pathReady}
           onClick={() => void onManualOpen()}
-          className="rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
         >
           Open Config Path
         </button>

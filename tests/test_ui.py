@@ -88,6 +88,16 @@ def test_react_app_lazy_loads_route_pages_for_smaller_initial_bundle():
     assert "function RouteLoadingFallback()" in source
 
 
+def test_react_app_supports_direct_launcher_route():
+    source = FRONTEND_APP.read_text(encoding="utf-8")
+
+    assert "useLocation" in source
+    assert "useNavigate" in source
+    assert "location.pathname === '/launcher'" in source
+    assert '<Route path="launcher" element={<DashboardPage />} />' in source
+    assert "navigate('/', { replace: true })" in source
+
+
 def test_frontend_index_serves_branded_favicon_without_404():
     index = FRONTEND_INDEX.read_text(encoding="utf-8")
     icon = FRONTEND_INDEX.parent / "public" / "pyruns.svg"
@@ -172,10 +182,11 @@ def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "function readCompactMonitorLayout()" in source
-    assert "const COMPACT_MONITOR_SIDEBAR_WIDTH = 44" in source
+    assert "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 260" in source
     assert "window.matchMedia('(max-width: 700px)')" in source
-    assert "const effectiveMonitorSidebarWidthPct = compactMonitorLayout ? COMPACT_MONITOR_SIDEBAR_WIDTH : monitorSidebarWidthPct" in source
-    assert "style={{ width: `${effectiveMonitorSidebarWidthPct}%` }}" in source
+    assert "compactMonitorLayout ? 'flex-col' : 'flex-row'" in source
+    assert "compactMonitorLayout ? 'border-b border-border-subtle' : 'border-r border-border-subtle'" in source
+    assert "style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}" in source
     assert "{!compactMonitorLayout && (" in source
 
 
@@ -218,6 +229,17 @@ def test_react_components_avoid_pill_borders_and_heavy_shadows():
                 offenders.append(f"{path.relative_to(FRONTEND_COMPONENTS_DIR)}:{token}")
 
     assert offenders == []
+
+
+def test_react_dashboard_and_generator_avoid_gradient_glow_status_accents():
+    surfaces = {
+        "DashboardPage.tsx": FRONTEND_DASHBOARD.read_text(encoding="utf-8"),
+        "GeneratorPage.tsx": FRONTEND_GENERATOR.read_text(encoding="utf-8"),
+    }
+
+    for label, source in surfaces.items():
+        assert "bg-gradient" not in source, label
+        assert "shadow-[0_0_" not in source, label
 
 
 def test_react_workspace_surfaces_avoid_box_inside_box_chrome():
@@ -284,6 +306,13 @@ def test_react_app_shell_uses_compact_sidebar_on_narrow_viewports():
     assert "title={label}" in sidebar
     assert "compact && 'justify-center px-0'" in sidebar
     assert "{!compact && <span>{label}</span>}" in sidebar
+
+
+def test_react_app_shell_allows_pages_to_scroll_without_horizontal_growth():
+    shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
+
+    assert "w-screen max-w-full" in shell
+    assert '<main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">' in shell
 
 
 def test_react_manager_uses_single_column_cards_on_narrow_viewports():
@@ -492,7 +521,7 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     assert "localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
     assert "aria-label=\"Resize monitor sidebar\"" in source
     assert "cursor-col-resize" in source
-    assert "style={{ width: `${effectiveMonitorSidebarWidthPct}%` }}" in source
+    assert "style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}" in source
 
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
@@ -627,6 +656,16 @@ def test_react_launcher_supports_manual_shell_folder_paths():
     assert "openLauncherShellRoot(shellPath)" in launcher
     assert "openLauncherShellRoot" in api
     assert "/api/launcher/open-shell-root" in api
+
+
+def test_react_launcher_modal_and_path_controls_fit_narrow_viewports():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "p-3 sm:p-4" in launcher
+    assert "max-w-[calc(100vw-1.5rem)] sm:max-w-2xl" in launcher
+    assert launcher.count("flex flex-col gap-2 sm:flex-row sm:items-center") >= 2
+    assert launcher.count("w-full min-w-0 flex-1") >= 2
+    assert launcher.count("sm:w-auto sm:flex-none") >= 2
 
 
 def test_react_launcher_disables_browse_when_native_picker_unavailable():
@@ -783,8 +822,8 @@ def test_react_generator_nested_form_uses_tree_depth_guides():
     assert "depth={depth + 1}" in generator
     assert "treeSection" in generator
     assert "treeConnector" in generator
-    assert "border-l border-border-subtle/60" in generator
-    assert "'ml-4 border-l border-border-subtle/60 pb-1 pl-4 pt-1'" in generator
+    assert "border-l border-dashed border-border-strong/60" in generator
+    assert "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'" in generator
     assert "!treeSection && depth > 0 && 'border-l-2 border-border-subtle pl-3'" in generator
     assert "treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }" not in generator
     assert "style={undefined}" not in generator
@@ -804,7 +843,8 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "Collapse all" in generator
     assert "treeOpenSignal" in generator
     assert "setOpen(openSignalValue)" in generator
-    assert "buildColumnGridStyle(columns)" in generator
+    assert "const effectiveColumns = Math.max(1, columns - depth)" in generator
+    assert "buildColumnGridStyle(effectiveColumns)" in generator
     assert "repeat(${columns}, minmax(0, 1fr))" in generator
     assert "treeColumns" not in generator
     assert "setTreeColumns" not in generator
@@ -816,12 +856,18 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "TREE_FIELD_GRID_STYLE" not in generator
     assert "repeat(auto-fit, minmax(360px, 1fr))" not in generator
     assert "repeat(auto-fit, minmax(300px, 1fr))" not in generator
-    assert "const contentClassName = 'grid gap-x-3 gap-y-2.5'" in generator
-    assert "const childSectionClassName = 'col-span-full'" in generator
-    assert "editorMode === 'form' && formLayoutMode === 'tree'" in generator
+    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5'" in generator
+    assert "const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'" in generator
+    assert "editorMode === 'form' && (formLayoutMode === 'tree' || formLayoutMode === 'grid')" in generator
     assert "layoutMode={formLayoutMode}" in generator
     assert "min-w-[280px]" in generator
     assert "ml-auto flex flex-wrap items-center gap-2" in generator
+
+
+def test_react_generator_does_not_backfill_ui_tests_with_comments():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "Keep UI unit tests happy" not in generator
 
 
 def test_react_generator_tree_mode_uses_outline_explorer():
@@ -842,7 +888,7 @@ def test_react_generator_tree_mode_uses_outline_explorer():
     assert "grid-cols-[minmax(220px,260px)_minmax(0,1fr)]" in generator
     assert "grid-cols-[minmax(0,1fr)]" in generator
     assert "columns={1}" in generator
-    assert "onSelectPath={setSelectedPath}" in generator
+    assert "onClick={() => onSelectPath(section.path)}" in generator
     assert "layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle" not in generator
 
 
@@ -858,9 +904,9 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
     assert "treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1'" in generator
     assert "if (!treeParamRow)" in generator
-    assert "group min-w-0 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-overlay/55 focus-within:bg-surface-overlay/75 focus-within:ring-2 focus-within:ring-accent/20" in generator
-    assert "pinned ? 'bg-accent/5 ring-1 ring-accent/20' : 'bg-transparent'" in generator
-    assert "focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
+    assert "group flex flex-col justify-between gap-1.5 rounded-md border border-border-subtle bg-surface-raised/40 p-2 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
+    assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
+    assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "h-7 w-full rounded-md border bg-surface-overlay/45" in generator
     assert "focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator

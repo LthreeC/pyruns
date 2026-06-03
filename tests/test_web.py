@@ -1,4 +1,5 @@
 ﻿import json
+import ast
 import socket
 import subprocess
 import sys
@@ -26,6 +27,24 @@ from pyruns.web.app import create_app
 from pyruns.web.runtime import PyrunsRuntime, parse_global_env_text
 
 WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
+WEB_RUNTIME = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "runtime.py"
+
+
+def test_pyruns_runtime_declares_single_constructor():
+    module = ast.parse(WEB_RUNTIME.read_text(encoding="utf-8"))
+    runtime_classes = [
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "PyrunsRuntime"
+    ]
+
+    assert len(runtime_classes) == 1
+    constructors = [
+        node
+        for node in runtime_classes[0].body
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    ]
+    assert len(constructors) == 1
 
 
 def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
