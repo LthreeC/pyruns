@@ -1575,6 +1575,21 @@ class TestTaskGeneratorCreateTask:
             info = json.load(f)
         assert info["name"] == t2["name"]
 
+    def test_deduplication_keeps_unique_dirs_when_timestamp_suffix_collides(self, tmp_path, monkeypatch):
+        gen = TaskGenerator(root_dir=str(tmp_path))
+        monkeypatch.setattr("pyruns.core.task_generator.time.time", lambda: 1234.567)
+
+        tasks = [
+            gen.create_task("same-name", {"x": 1}),
+            gen.create_task("same-name", {"x": 2}),
+            gen.create_task("same-name", {"x": 3}),
+        ]
+
+        assert len({task["dir"] for task in tasks}) == 3
+        assert len({task["name"] for task in tasks}) == 3
+        for task in tasks:
+            assert os.path.isdir(task["dir"])
+
     def test_empty_prefix_uses_timestamp(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         task = gen.create_task("", {"x": 1})

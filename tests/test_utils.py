@@ -12,6 +12,7 @@ import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 
+import pyruns.utils.batch_utils as batch_utils
 import pyruns.utils.settings as settings
 from pyruns._config import (
     DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
@@ -39,7 +40,7 @@ from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import (
     load_task_info, save_task_info, update_task_info, load_record_data,
-    get_log_options, resolve_log_path, validate_task_name,
+    get_log_options, resolve_log_path, validate_task_name, task_info_lock,
 )
 
 
@@ -750,6 +751,16 @@ class TestLoadSaveTaskInfo:
         assert updated["status"] == "completed"
         assert load_task_info(task_dir)["status"] == "completed"
 
+    def test_task_info_lock_recovers_stale_process_lock_file(self, tmp_path):
+        task_dir = str(tmp_path)
+        lock_path = tmp_path / f".{TASK_INFO_FILENAME}.lock"
+        lock_path.write_text("0 0", encoding="utf-8")
+
+        with task_info_lock(task_dir, timeout_sec=0.01):
+            assert lock_path.exists()
+
+        assert not lock_path.exists()
+
 
 class TestLoadRecordData:
     def test_with_records(self, tmp_path):
@@ -1127,7 +1138,7 @@ class TestParsePipeValue:
         assert result is not None
         parts, mode = result
         assert mode == "product"
-        assert parts == [str(v) for v in range(30, 40)]
+        assert list(parts) == list(range(30, 40))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1216,6 +1227,19 @@ class TestGenerateBatchConfigs:
         assert [item["epochs"] for item in configs] == list(range(30, 40))
         assert all(item["optimizer"] == "adam" for item in configs)
 
+    def test_generation_rejects_oversized_batches_before_iterating_ranges(self, monkeypatch):
+        class HugeRange:
+            def __len__(self):
+                return 1_000_000
+
+            def __iter__(self):
+                raise AssertionError("oversized range should not be expanded")
+
+        monkeypatch.setattr(batch_utils, "range", lambda *_args: HugeRange(), raising=False)
+
+        with pytest.raises(ValueError, match="Batch expansion would create 1000000 tasks"):
+            generate_batch_configs({"epochs": "0:1000000:1"}, max_configs=999)
+
 
 # ═══════════════════════════════════════════════════════════════
 #  count_batch_configs
@@ -1247,6 +1271,18 @@ class TestCountBatchConfigs:
 
     def test_range_colon_count(self):
         assert count_batch_configs({"epochs": "30:40:1"}) == 10
+
+    def test_large_range_count_does_not_expand_values(self, monkeypatch):
+        class HugeRange:
+            def __len__(self):
+                return 1_000_000
+
+            def __iter__(self):
+                raise AssertionError("counting should not iterate range values")
+
+        monkeypatch.setattr(batch_utils, "range", lambda *_args: HugeRange(), raising=False)
+
+        assert count_batch_configs({"epochs": "0:1000000:1"}) == 1_000_000
 
 
 # ═══════════════════════════════════════════════════════════════

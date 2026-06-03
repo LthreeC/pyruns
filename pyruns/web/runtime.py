@@ -45,7 +45,7 @@ from pyruns.launcher import (
     shell_workspace_root_for_run_root,
 )
 from pyruns.utils import get_now_str
-from pyruns.utils.batch_utils import generate_batch_configs
+from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import (
     list_template_files,
     load_yaml_strict,
@@ -1032,7 +1032,7 @@ class PyrunsRuntime:
             except ValueError as exc:
                 raise ValueError(str(exc)) from exc
         else:
-            if generate_batch_configs(base_config) != [base_config]:
+            if count_batch_configs(base_config) != 1:
                 raise ValueError("YAML mode does not support batch syntax. Switch back to Form mode.")
             configs = [base_config]
 
@@ -1119,7 +1119,7 @@ class PyrunsRuntime:
             except ValueError as exc:
                 raise ValueError(str(exc)) from exc
         else:
-            if generate_batch_configs(base_config) != [base_config]:
+            if count_batch_configs(base_config) != 1:
                 raise ValueError("YAML mode does not support batch syntax. Switch back to Form mode.")
             configs = [base_config]
 

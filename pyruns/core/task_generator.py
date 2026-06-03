@@ -124,18 +124,29 @@ class TaskGenerator:
         if not base_name:
             base_name = f"task_{timestamp}"
 
-        folder_name = f"{base_name}_{group_index}" if group_index else base_name
-        name_error = validate_task_name(folder_name)
+        base_folder_name = f"{base_name}_{group_index}" if group_index else base_name
+        name_error = validate_task_name(base_folder_name)
         if name_error:
             raise ValueError(name_error)
-        if os.path.exists(os.path.join(self.root_dir, folder_name)):
-            folder_name = f"{folder_name}_{int(time.time() * 1000)}"
+
+        attempt = 0
+        while True:
+            if attempt == 0:
+                folder_name = base_folder_name
+            elif attempt == 1:
+                folder_name = f"{base_folder_name}_{int(time.time() * 1000)}"
+            else:
+                folder_name = f"{base_folder_name}_{int(time.time() * 1000)}_{attempt - 1}"
+
             name_error = validate_task_name(folder_name)
             if name_error:
                 raise ValueError(name_error)
-
-        task_dir = os.path.join(self.root_dir, folder_name)
-        os.makedirs(task_dir, exist_ok=True)
+            task_dir = os.path.join(self.root_dir, folder_name)
+            try:
+                os.makedirs(task_dir, exist_ok=False)
+                break
+            except FileExistsError:
+                attempt += 1
 
         display_name = folder_name
         normalized_kind = _resolve_requested_task_kind(task_kind)

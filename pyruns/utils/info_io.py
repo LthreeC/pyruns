@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict, Optional
 
 from pyruns._config import RUN_LOGS_DIR, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME
+from pyruns.utils.process_utils import is_pid_running
 
 _TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
@@ -21,6 +22,7 @@ _LOCK_POLL_SEC = 0.05
 _LOCK_TIMEOUT_SEC = 5.0
 _REPLACE_RETRY_COUNT = 5
 _REPLACE_RETRY_DELAY_SEC = 0.02
+_STALE_LOCK_MIN_AGE_SEC = 1.0
 
 
 def _thread_lock_for(task_dir: str) -> threading.RLock:
@@ -44,6 +46,42 @@ def _replace_with_retry(src: str, dst: str) -> None:
             time.sleep(_REPLACE_RETRY_DELAY_SEC * (attempt + 1))
 
 
+def _read_lock_owner_pid(lock_path: str) -> Optional[int]:
+    try:
+        with open(lock_path, "r", encoding="utf-8") as handle:
+            raw_pid = handle.read().strip().split()[0]
+    except (OSError, IndexError):
+        return None
+    try:
+        return int(raw_pid)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lock_file_is_stale(lock_path: str, *, min_age_sec: float = _STALE_LOCK_MIN_AGE_SEC) -> bool:
+    try:
+        age = time.time() - os.path.getmtime(lock_path)
+    except OSError:
+        return False
+
+    pid = _read_lock_owner_pid(lock_path)
+    if pid is not None:
+        return not is_pid_running(pid)
+    return age >= max(0.0, min_age_sec)
+
+
+def _remove_stale_lock_file(lock_path: str) -> bool:
+    if not _lock_file_is_stale(lock_path):
+        return False
+    try:
+        os.remove(lock_path)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 @contextmanager
 def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC):
     """Acquire a task-local thread/process lock for task_info.json updates."""
@@ -63,6 +101,8 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC):
                 os.write(fd, f"{os.getpid()} {threading.get_ident()}".encode("utf-8", errors="ignore"))
                 break
             except FileExistsError:
+                if _remove_stale_lock_file(lock_path):
+                    continue
                 if time.monotonic() - start >= timeout_sec:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                 time.sleep(_LOCK_POLL_SEC)

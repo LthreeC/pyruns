@@ -100,6 +100,21 @@ def test_task_manager_scan_uses_folder_name_as_task_name(workspace, task_manager
     assert task["name"] == "stable-name-task"
 
 
+def test_cmd_generate_reports_oversized_batch_without_prompting(workspace, task_manager, capsys):
+    from pyruns.cli.commands import cmd_generate
+
+    with patch("pyruns.cli.commands._get_git_editor", return_value="editor"), \
+            patch("pyruns.cli.commands.subprocess.run"), \
+            patch("pyruns.cli.commands.load_yaml", return_value={"epochs": "0:1000000:1"}), \
+            patch("builtins.input") as mock_input:
+        cmd_generate(task_manager)
+
+    output = capsys.readouterr().out
+    assert "Batch expansion would create" in output
+    mock_input.assert_not_called()
+    assert list((workspace / TASKS_DIR).iterdir()) == []
+
+
 def test_task_manager_rename_task_moves_folder(workspace, task_manager):
     _add_task(workspace, "before-rename")
     task_manager.scan_disk()

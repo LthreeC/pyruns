@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from pyruns._config import (
@@ -1031,6 +1032,23 @@ def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
     payload = response.json()
     assert payload["count"] == 2
     assert payload["items"][0]["preview"]
+
+
+def test_yaml_mode_rejects_batch_syntax_without_expanding(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+
+    def fail_if_expanded(_config):
+        raise AssertionError("YAML mode should reject batch syntax without expansion")
+
+    monkeypatch.setattr("pyruns.web.runtime.generate_batch_configs", fail_if_expanded)
+
+    with pytest.raises(ValueError, match="YAML mode does not support batch syntax"):
+        runtime.preview_tasks_from_template(
+            mode="yaml",
+            yaml_text="epochs: 0:1000000:1\nmodel: tiny\n",
+            template_value="config_default.yaml",
+        )
 
 
 def test_generator_range_syntax_survives_yaml_parsing(tmp_path):

@@ -384,7 +384,11 @@ def cmd_generate(tm, args: list[str] | None = None) -> None:
         print("  Empty config; no tasks generated.")
         return
 
-    configs = generate_batch_configs(config)
+    try:
+        configs = generate_batch_configs(config)
+    except ValueError as exc:
+        print(f"  {exc}")
+        return
     total = len(configs)
     for index, cfg in enumerate(configs, 1):
         preview = preview_config_line(cfg, max_items=5)

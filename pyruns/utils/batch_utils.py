@@ -6,10 +6,10 @@ Syntax (in YAML string values):
     param: (val1 | val2 | val3)      →  zip (paired, all same length)
 """
 import itertools
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pyruns.utils.config_utils import flatten_dict, unflatten_dict, parse_value
-from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE
+from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE, DEFAULT_BATCH_CONFIG_LIMIT
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -34,7 +34,7 @@ def _split_by_pipe(text: str) -> List[str]:
     # Restore the separator in each part and strip whitespace
     return [p.replace(temp_char, BATCH_SEPARATOR).strip() for p in parts if p.strip()]
 
-def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
+def _parse_pipe_value(value) -> Optional[Tuple[Sequence[Any], str]]:
 
     """Detect pipe syntax and determine expansion mode per-value.
 
@@ -69,8 +69,8 @@ def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
                 start = int_parts[0]
                 stop = int_parts[1]
                 step = int_parts[2] if len(int_parts) == 3 else 1
-                generated = [str(x) for x in range(start, stop, step)]
-                if generated:
+                generated = range(start, stop, step)
+                if len(generated) > 0:
                     return (generated, "product")
         except ValueError:
             pass
@@ -91,9 +91,9 @@ def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
                 if step == 0:
                     pass
                 else:
-                    generated = [str(x) for x in range(start, stop, step)]
-                    if generated:
-                        logger.debug("Parsed range: %s -> %d items (start=%s)", s, len(generated), generated[0])
+                    generated = range(start, stop, step)
+                    if len(generated) > 0:
+                        logger.debug("Parsed range: %s -> %d items (start=%s)", s, len(generated), start)
                         return (generated, "product")
             except ValueError:
                 pass
@@ -110,7 +110,11 @@ def _parse_pipe_value(value) -> Optional[Tuple[List[str], str]]:
 #  Batch Config Generation
 # ═══════════════════════════════════════════════════════════════
 
-def generate_batch_configs(base_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def generate_batch_configs(
+    base_config: Dict[str, Any],
+    *,
+    max_configs: int | None = DEFAULT_BATCH_CONFIG_LIMIT,
+) -> List[Dict[str, Any]]:
     """Generate multiple configs with mixed product + zip params.
 
     Syntax (in YAML string values):
@@ -130,6 +134,13 @@ def generate_batch_configs(base_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     Non-pipe values are kept fixed in every config.
     A "_meta_desc" key is added to each config with a human-readable description.
     """
+    total_count = count_batch_configs(base_config)
+    if max_configs is not None and total_count > int(max_configs):
+        raise ValueError(
+            f"Batch expansion would create {total_count} tasks; limit is {int(max_configs)}. "
+            "Narrow the range or split it into smaller batches."
+        )
+
     flat = flatten_dict(base_config)
 
     product_params: Dict[str, List] = {}  # key → [typed values]
@@ -164,7 +175,7 @@ def generate_batch_configs(base_config: Dict[str, Any]) -> List[Dict[str, Any]]:
     # Build product combos
     if product_params:
         p_keys = list(product_params.keys())
-        p_combos = list(itertools.product(*[product_params[k] for k in p_keys]))
+        p_combos = itertools.product(*[product_params[k] for k in p_keys])
     else:
         p_keys = []
         p_combos = [()]
