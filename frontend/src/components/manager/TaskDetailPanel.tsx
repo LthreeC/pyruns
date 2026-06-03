@@ -233,10 +233,12 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResize, { once: true })
+    window.addEventListener('pointercancel', stopResize, { once: true })
 
     return () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
       if (panelResizeFrameRef.current != null) {
         window.cancelAnimationFrame(panelResizeFrameRef.current)
         panelResizeFrameRef.current = null

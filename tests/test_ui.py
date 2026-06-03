@@ -16,6 +16,7 @@ FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "typ
 FRONTEND_CONFIRM_DIALOG = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ConfirmDialog.tsx"
 FRONTEND_COMPACT_SECTION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CompactSection.tsx"
 FRONTEND_CODE_EDITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CodeTextEditor.tsx"
+FRONTEND_SEARCH_INPUT = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "SearchInput.tsx"
 FRONTEND_THEME_CSS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "theme" / "index.css"
 FRONTEND_TAILWIND = Path(__file__).resolve().parents[1] / "frontend" / "tailwind.config.ts"
 
@@ -136,7 +137,7 @@ def test_react_monitor_uses_unfiltered_full_task_list():
     assert "fetchMonitorTasks: () => Promise<void>" in store
     assert "api.getTasks({ limit: 0, refresh: true, summary: true })" in store
     assert "const { monitorTasks, fetchMonitorTasks } = useTaskStore()" in monitor
-    assert "const selectedTask = monitorTasks.find" in monitor
+    assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
     assert "usePolling(fetchMonitorTasks" in monitor
     assert 'title="Pinned Tasks"' in monitor
     assert "count={pinnedTasks.length}" in monitor
@@ -205,6 +206,8 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     assert "clampSidebarWidth" in shell
     assert "startSidebarResize" in shell
     assert "pointermove" in shell
+    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in shell
+    assert "window.removeEventListener('pointercancel', stopResize)" in shell
     assert "pendingSidebarWidthRef" in shell
     assert "sidebarResizeFrameRef" in shell
     assert "window.requestAnimationFrame(applyPendingSidebarWidth)" in shell
@@ -225,6 +228,8 @@ def test_react_task_detail_panel_can_be_resized_from_left_edge():
     assert "clampPanelWidth" in source
     assert "startPanelResize" in source
     assert "pointermove" in source
+    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in source
+    assert "window.removeEventListener('pointercancel', stopResize)" in source
     assert "pendingPanelWidthRef" in source
     assert "panelResizeFrameRef" in source
     assert "window.requestAnimationFrame(applyPendingPanelWidth)" in source
@@ -373,6 +378,8 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     assert "clampMonitorSidebarWidth" in source
     assert "startMonitorSidebarResize" in source
     assert "pointermove" in source
+    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in source
+    assert "window.removeEventListener('pointercancel', stopResize)" in source
     assert "pendingMonitorSidebarWidthRef" in source
     assert "monitorResizeFrameRef" in source
     assert "window.requestAnimationFrame(applyPendingMonitorSidebarWidth)" in source
@@ -405,6 +412,19 @@ def test_react_monitor_caps_live_log_state_for_long_tasks():
     assert "appendMonitorLogContent(state.logContent, logs.content)" in monitor
 
 
+def test_react_monitor_memoizes_task_list_derivations_during_log_streaming():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "useMemo" in source
+    assert "const selectedTask = useMemo(" in source
+    assert "monitorTasks.find(task => task.name === selectedTaskName)" in source
+    assert "const hasActive = useMemo(" in source
+    assert "const filteredTasks = useMemo(" in source
+    assert "const pinnedTasks = useMemo(" in source
+    assert "const otherTasks = useMemo(" in source
+    assert "const allExportSelected = useMemo(" in source
+
+
 def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
@@ -413,6 +433,17 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     assert "const nextChunk = logContent.slice(previous.content.length)" in source
     assert "term.write(nextChunk)" in source
     assert "normalize_log_newlines" not in source
+
+
+def test_react_search_input_clear_button_is_accessible():
+    source = FRONTEND_SEARCH_INPUT.read_text(encoding="utf-8")
+
+    assert "ariaLabel = 'Search'" in source
+    assert "aria-label={ariaLabel}" in source
+    assert 'aria-label="Clear search"' in source
+    assert 'title="Clear search"' in source
+    assert "inline-flex h-7 w-7 items-center justify-center" in source
+    assert "focus:ring-2 focus:ring-accent/25" in source
 
 
 def test_react_code_editor_focuses_from_blank_editor_area():

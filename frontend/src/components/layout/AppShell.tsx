@@ -81,10 +81,12 @@ export default function AppShell() {
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResize, { once: true })
+    window.addEventListener('pointercancel', stopResize, { once: true })
 
     return () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
       if (sidebarResizeFrameRef.current != null) {
         window.cancelAnimationFrame(sidebarResizeFrameRef.current)
         sidebarResizeFrameRef.current = null

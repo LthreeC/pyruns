@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -80,10 +80,16 @@ export default function MonitorPage() {
   const pendingLiveLogChunkRef = useRef({ key: '', content: '' })
   const liveLogFlushTimerRef = useRef<number | null>(null)
 
-  const selectedTask = monitorTasks.find(task => task.name === selectedTaskName)
+  const selectedTask = useMemo(
+    () => monitorTasks.find(task => task.name === selectedTaskName),
+    [monitorTasks, selectedTaskName],
+  )
   const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
-  const hasActive = monitorTasks.some(task => task.status === 'running' || task.status === 'queued')
+  const hasActive = useMemo(
+    () => monitorTasks.some(task => task.status === 'running' || task.status === 'queued'),
+    [monitorTasks],
+  )
   const monitorChunkSize = resolveMonitorChunkSize(workspace?.settings)
   const monitorScrollback = resolveMonitorScrollback(workspace?.settings)
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
@@ -171,10 +177,12 @@ export default function MonitorPage() {
 
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResize, { once: true })
+    window.addEventListener('pointercancel', stopResize, { once: true })
 
     return () => {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
       if (monitorResizeFrameRef.current != null) {
         window.cancelAnimationFrame(monitorResizeFrameRef.current)
         monitorResizeFrameRef.current = null
@@ -494,12 +502,24 @@ export default function MonitorPage() {
 
   usePolling(pollLiveLog, 1000, Boolean(isLive), false)
 
-  const filteredTasks = sidebarQuery
-    ? monitorTasks.filter(task => matchesTaskQuery(task, sidebarQuery))
-    : monitorTasks
-  const pinnedTasks = filteredTasks.filter(task => task.pinned)
-  const otherTasks = filteredTasks.filter(task => !task.pinned)
-  const allExportSelected = filteredTasks.length > 0 && filteredTasks.every(task => exportIds.has(task.name))
+  const filteredTasks = useMemo(
+    () => sidebarQuery
+      ? monitorTasks.filter(task => matchesTaskQuery(task, sidebarQuery))
+      : monitorTasks,
+    [monitorTasks, sidebarQuery],
+  )
+  const pinnedTasks = useMemo(
+    () => filteredTasks.filter(task => task.pinned),
+    [filteredTasks],
+  )
+  const otherTasks = useMemo(
+    () => filteredTasks.filter(task => !task.pinned),
+    [filteredTasks],
+  )
+  const allExportSelected = useMemo(
+    () => filteredTasks.length > 0 && filteredTasks.every(task => exportIds.has(task.name)),
+    [exportIds, filteredTasks],
+  )
 
   const handleSidebarClick = (task: Task) => {
     if (exportMode) {

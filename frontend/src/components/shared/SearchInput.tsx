@@ -6,10 +6,17 @@ interface Props {
   value: string
   onChange: (value: string) => void
   placeholder?: string
+  ariaLabel?: string
   debounceMs?: number
 }
 
-export default function SearchInput({ value, onChange, placeholder = 'Search...', debounceMs = 300 }: Props) {
+export default function SearchInput({
+  value,
+  onChange,
+  placeholder = 'Search...',
+  ariaLabel = 'Search',
+  debounceMs = 300,
+}: Props) {
   const [local, setLocal] = useState(value)
   const debounced = useDebouncedValue(local, debounceMs)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -33,15 +40,18 @@ export default function SearchInput({ value, onChange, placeholder = 'Search...'
         value={local}
         onChange={e => setLocal(e.target.value)}
         placeholder={placeholder}
+        aria-label={ariaLabel}
         className="min-h-[34px] w-full resize-none overflow-y-auto rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-8 text-xs leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised"
       />
       {local && (
         <button
           type="button"
           onClick={() => { setLocal(''); onChange('') }}
-          className="absolute right-1.5 top-1.5 rounded-md p-1 text-txt-tertiary hover:bg-surface-hover hover:text-txt-primary"
+          aria-label="Clear search"
+          title="Clear search"
+          className="absolute right-1 top-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
         >
-          <X className="w-3 h-3" />
+          <X className="h-3.5 w-3.5" />
         </button>
       )}
     </div>
