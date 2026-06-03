@@ -348,6 +348,18 @@ def test_read_last_lines_treats_carriage_return_progress_as_same_terminal_row(tm
     assert offset == len(content)
 
 
+def test_read_last_lines_respects_max_bytes(tmp_path):
+    log_file = str(tmp_path / "large-lines.log")
+    content = ("A" * 40 + "\n") + ("B" * 40 + "\n")
+    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+
+    text, offset = read_last_lines(log_file, max_lines=100, max_bytes=16)
+
+    assert text.replace("\r", "") == "B" * 15 + "\n"
+    assert offset == len(content)
+
+
 def test_safe_read_log(tmp_path):
     log_file = str(tmp_path / "test.log")
     assert safe_read_log(log_file, 0) == ("", 0)

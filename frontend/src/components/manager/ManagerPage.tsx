@@ -300,7 +300,7 @@ export default function ManagerPage() {
       return
     }
 
-    const allTasks = await api.getTasks({ limit: 0, refresh: false })
+    const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
     const items = buildReorderedItems(allTasks.items, task.name, intent)
     const movedItem = items.find(item => item.name === task.name)
     if (!items.length || !movedItem) {
@@ -445,7 +445,7 @@ export default function ManagerPage() {
     clearSelection()
   }
 
-  const handleCardClick = (task: Task) => {
+  const handleCardClick = useCallback((task: Task) => {
     if (suppressCardClickRef.current === task.name) {
       suppressCardClickRef.current = ''
       return
@@ -456,7 +456,10 @@ export default function ManagerPage() {
       return
     }
     setDetailTask(task)
-  }
+    void api.getTask(task.name).then(fullTask => {
+      setDetailTask(current => current?.name === task.name ? fullTask : current)
+    }).catch(() => {})
+  }, [selectMode, toggleSelect])
 
   const closeDetailPanel = useCallback(() => {
     setDetailTask(null)
@@ -1030,8 +1033,8 @@ function getTaskSearchMatches(task: Task, query: string): TaskSearchMatch[] {
     .map(([key, value]) => `${key}: ${value}`)
     .join('\n')
   const configText = task.task_kind === 'shell'
-    ? task.config_text || task.preview_text || ''
-    : flattenTaskConfig(task.config || {}).join('\n')
+    ? task.config_text || task.preview_text || task.search_text || ''
+    : flattenTaskConfig(task.config || {}).join('\n') || task.search_text || task.preview_text || ''
 
   const fields: TaskSearchMatch[] = [
     { label: 'Name', detail: task.name },

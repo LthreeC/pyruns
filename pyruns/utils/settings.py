@@ -24,6 +24,7 @@ from pyruns._config import (
     DEFAULT_MANAGER_MAX_WORKERS,
     DEFAULT_MANAGER_EXECUTION_MODE,
     DEFAULT_MONITOR_CHUNK_SIZE,
+    DEFAULT_MONITOR_INITIAL_TAIL_BYTES,
     DEFAULT_MONITOR_SCROLLBACK,
     DEFAULT_MONITOR_SIDEBAR_WIDTH_PCT,
     DEFAULT_SHELL_MODE,
@@ -46,6 +47,7 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "ui_page_size": DEFAULT_UI_PAGE_SIZE,
     # Monitor
     "monitor_chunk_size": DEFAULT_MONITOR_CHUNK_SIZE,
+    "monitor_initial_tail_bytes": DEFAULT_MONITOR_INITIAL_TAIL_BYTES,
     "monitor_scrollback": DEFAULT_MONITOR_SCROLLBACK,
     "monitor_sidebar_width_pct": DEFAULT_MONITOR_SIDEBAR_WIDTH_PCT,
     # Logging
@@ -88,6 +90,7 @@ ui_page_size: {SETTINGS_DEFAULTS.get("ui_page_size")}                   # cards 
 
 # Monitor
 monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
+monitor_initial_tail_bytes: {SETTINGS_DEFAULTS.get("monitor_initial_tail_bytes")}   # initial monitor tail byte cap
 monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # xterm scrollback rows
 monitor_sidebar_width_pct: {SETTINGS_DEFAULTS.get("monitor_sidebar_width_pct")}     # monitor sidebar width (% of page)
 

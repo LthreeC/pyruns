@@ -76,6 +76,7 @@ export const getTasks = (params: {
   offset?: number
   limit?: number
   refresh?: boolean
+  summary?: boolean
 } = {}) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
@@ -83,6 +84,7 @@ export const getTasks = (params: {
   if (params.offset != null) sp.set('offset', String(params.offset))
   if (params.limit != null) sp.set('limit', String(params.limit))
   if (params.refresh != null) sp.set('refresh', String(params.refresh))
+  if (params.summary != null) sp.set('summary', String(params.summary))
   return request<TaskPage>(`/api/tasks?${sp}`)
 }
 

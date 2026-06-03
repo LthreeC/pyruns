@@ -452,6 +452,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         offset: int = 0,
         limit: int = 50,
         refresh: bool = True,
+        summary: bool = False,
     ) -> dict[str, Any]:
         page = get_runtime().list_tasks(
             query=query,
@@ -459,6 +460,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             offset=offset,
             limit=limit,
             refresh=refresh,
+            summary=summary,
         )
         return {
             "items": page.items,
@@ -652,7 +654,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 disconnected.set()
 
         watcher = asyncio.create_task(watch_client_messages())
-        log_emitter.subscribe(task_name, on_chunk)
+        log_emitter.subscribe(task_name, on_chunk, loop=loop)
         try:
             while not disconnected.is_set():
                 try:

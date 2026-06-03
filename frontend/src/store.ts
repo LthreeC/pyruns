@@ -218,7 +218,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const { query, statusFilter, offset, limit } = get()
     set({ loading: true })
     try {
-      const page = await api.getTasks({ query, status: statusFilter, offset, limit })
+      const page = await api.getTasks({ query, status: statusFilter, offset, limit, summary: true })
       if (requestId !== taskRequestSeq) {
         return
       }
@@ -231,7 +231,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
   async fetchMonitorTasks() {
     const requestId = ++monitorTaskRequestSeq
-    const page = await api.getTasks({ limit: 0, refresh: true })
+    const page = await api.getTasks({ limit: 0, refresh: true, summary: true })
     if (requestId !== monitorTaskRequestSeq) {
       return
     }

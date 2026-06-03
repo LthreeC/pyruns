@@ -134,7 +134,7 @@ def test_react_monitor_uses_unfiltered_full_task_list():
 
     assert "monitorTasks: Task[]" in store
     assert "fetchMonitorTasks: () => Promise<void>" in store
-    assert "api.getTasks({ limit: 0, refresh: true })" in store
+    assert "api.getTasks({ limit: 0, refresh: true, summary: true })" in store
     assert "const { monitorTasks, fetchMonitorTasks } = useTaskStore()" in monitor
     assert "const selectedTask = monitorTasks.find" in monitor
     assert "usePolling(fetchMonitorTasks" in monitor
@@ -303,7 +303,7 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "function getPointerDropIntent" in source
     assert "type DragPlacement = 'before' | 'after'" in source
     assert "api.reorderTasks" in source
-    assert "api.getTasks({ limit: 0, refresh: false })" in source
+    assert "api.getTasks({ limit: 0, refresh: false, summary: true })" in source
     assert "buildReorderedItems" in source
     assert "dragFrameRef" in source
     assert "pendingDragPointRef" in source
@@ -313,21 +313,36 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)" in source
     assert "window.getComputedStyle(grid)" not in source
     assert "function DropIndicator" in source
-    assert "dropIndicator" in source
-    assert "shadow-[0_0_0_3px_rgba(20,184,166,0.16)]" in source
-    assert "scale-[0.985]" in source
-    assert "transition-[border-color,box-shadow,background-color,opacity,transform]" in source
-    assert "data-task-card={task.name}" in source
-    assert "data-task-card-pinned={task.pinned ? 'true' : 'false'}" in source
-    assert "draggable={!selectMode}" not in source
-    assert "getTaskSearchMatches(task, query)" in source
-    assert "Matched in" in source
-    assert "Drop here to pin" in source
-    assert 'title="Pinned Tasks"' in source
-    assert "count={pinnedTasks.length}" in source
-    assert 'className="rounded-md border border-accent/20 bg-accent/5 p-2"' in source
-    assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in source
-    assert "task.config_mode" not in source
+
+
+def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    manager = (FRONTEND_COMPONENTS_DIR / "manager" / "ManagerPage.tsx").read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+
+    assert "summary?: boolean" in api
+    assert "sp.set('summary', String(params.summary))" in api
+    assert "api.getTasks({ query, status: statusFilter, offset, limit, summary: true })" in store
+    assert "api.getTasks({ limit: 0, refresh: true, summary: true })" in store
+    assert "api.getTask(task.name).then(fullTask" in manager
+    assert "api.getTask(task.name).then(fullTask" in monitor
+    assert "task.search_text || task.preview_text || ''" in manager
+    assert "dropIndicator" in manager
+    assert "shadow-[0_0_0_3px_rgba(20,184,166,0.16)]" in manager
+    assert "scale-[0.985]" in manager
+    assert "transition-[border-color,box-shadow,background-color,opacity,transform]" in manager
+    assert "data-task-card={task.name}" in manager
+    assert "data-task-card-pinned={task.pinned ? 'true' : 'false'}" in manager
+    assert "draggable={!selectMode}" not in manager
+    assert "getTaskSearchMatches(task, query)" in manager
+    assert "Matched in" in manager
+    assert "Drop here to pin" in manager
+    assert 'title="Pinned Tasks"' in manager
+    assert "count={pinnedTasks.length}" in manager
+    assert 'className="rounded-md border border-accent/20 bg-accent/5 p-2"' in manager
+    assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in manager
+    assert "task.config_mode" not in manager
 
 
 def test_react_task_detail_uses_python_shell_task_mode_labels():

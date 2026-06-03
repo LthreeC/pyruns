@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from pyruns._config import (
     CONFIG_FILENAME,
+    DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS,
     SHELL_CONFIG_FILENAME,
     TASKS_DIR,
     TASK_KIND_CONFIG,
@@ -474,6 +475,54 @@ def test_dashboard_endpoint_returns_summary_and_recent_tasks(tmp_path):
     assert payload["recent_tasks"][0]["name"] in {"alpha", "beta"}
 
 
+def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    long_value = "x" * (DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS + 128)
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update(
+            {
+                "records": [{"loss": index} for index in range(20)],
+                "tracks": [{"loss": list(range(20))}],
+            }
+        ),
+    )
+    (task_dir / CONFIG_FILENAME).write_text(
+        f"payload: {long_value}\ntail_key: tail-value\n",
+        encoding="utf-8",
+    )
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    full = client.get("/api/tasks", params={"limit": 1, "refresh": True})
+    summary = client.get("/api/tasks", params={"limit": 1, "refresh": True, "summary": True})
+    matched = client.get(
+        "/api/tasks",
+        params={"limit": 1, "refresh": True, "summary": True, "query": "tail_key: tail-value"},
+    )
+
+    assert full.status_code == 200
+    assert summary.status_code == 200
+    assert matched.status_code == 200
+    full_item = full.json()["items"][0]
+    summary_item = summary.json()["items"][0]
+    assert full_item["config"]
+    assert full_item["records"]
+    assert full_item["tracks"]
+    assert summary_item["config"] == {}
+    assert summary_item["config_text"] == ""
+    assert summary_item["records"] == []
+    assert summary_item["tracks"] == []
+    assert summary_item["preview_text"]
+    assert len(summary_item["search_text"]) <= DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS
+    assert summary_item["search_text"].startswith("alpha")
+    assert "tail_key:tail-value" in summary_item["search_text"]
+    assert matched.json()["total"] == 1
+    assert matched.json()["items"][0]["name"] == "alpha"
+
+
 def test_launcher_endpoints_discover_scripts_configs_and_workspaces(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     secondary = tmp_path / "secondary.py"
@@ -884,6 +933,26 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
     assert "line 3" not in content
 
 
+def test_logs_endpoint_caps_tail_lines_by_initial_byte_limit(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    (workspace.parent / "_pyruns_settings.yaml").write_text(
+        "monitor_initial_tail_bytes: 16\n",
+        encoding="utf-8",
+    )
+    log_text = ("A" * 40 + "\n") + ("B" * 40 + "\n")
+    _add_task(workspace, "alpha", status="running", log_text=log_text)
+    (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").write_bytes(log_text.encode("utf-8"))
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks/alpha/logs", params={"tail_lines": 100})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"].replace("\r", "") == "B" * 15 + "\n"
+    assert payload["offset"] == len(log_text)
+
+
 def test_logs_endpoint_tails_terminal_rows_without_counting_progress_carriage_returns(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     log_text = "prepare\nprogress 1%\rprogress 50%\rprogress 100%\nfinish\n"
@@ -939,6 +1008,9 @@ def test_template_content_and_generator_create_endpoints(tmp_path):
     payload = create_response.json()
     assert payload["count"] == 2
     assert {item["name"] for item in payload["items"]} == {"demo_[1-of-2]", "demo_[2-of-2]"}
+    assert payload["recent_tasks"]
+    assert payload["recent_tasks"][0]["config"] == {}
+    assert payload["recent_tasks"][0]["records"] == []
 
 
 def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):

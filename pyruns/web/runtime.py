@@ -147,6 +147,35 @@ def _int_setting(settings: Dict[str, Any], key: str, default: int, *, minimum: i
     return max(minimum, value)
 
 
+def _clip_text_middle(text: str, max_chars: int) -> str:
+    """Keep a bounded search hint while preserving both ends of the text."""
+
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    marker = "\n...[truncated]...\n"
+    if max_chars <= len(marker):
+        return text[:max_chars]
+    head_len = max_chars // 2
+    tail_len = max_chars - head_len - len(marker)
+    return f"{text[:head_len]}{marker}{text[-tail_len:]}"
+
+
+def _cap_summary_task_payloads(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    max_chars = max(0, int(_cfg.DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS))
+    capped: List[Dict[str, Any]] = []
+    for task in tasks:
+        search_text = str(task.get("search_text", "") or "")
+        if len(search_text) <= max_chars:
+            capped.append(task)
+            continue
+        item = dict(task)
+        item["search_text"] = _clip_text_middle(search_text, max_chars)
+        capped.append(item)
+    return capped
+
+
 @dataclass
 class TaskPage:
     """Paginated task list result for the API layer."""
@@ -622,15 +651,18 @@ class PyrunsRuntime:
         offset: int = 0,
         limit: int = 50,
         refresh: bool = True,
+        summary: bool = False,
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh)
-        tasks = filter_tasks(self.task_manager.list_tasks(), query, status)
+        tasks = filter_tasks(self.task_manager.list_tasks(summary=summary), query, status)
         ordered = sort_tasks_for_manager(tasks)
 
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))
         items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
+        if summary:
+            items = _cap_summary_task_payloads(items)
         total = len(ordered)
         has_more = (safe_offset + len(items)) < total
         return TaskPage(items=items, total=total, offset=safe_offset, limit=safe_limit, has_more=has_more)
@@ -638,8 +670,8 @@ class PyrunsRuntime:
     def get_dashboard(self, *, refresh: bool = True, recent_limit: int = 6) -> Dict[str, Any]:
         """Return lightweight dashboard data for the Home page."""
 
-        page = self.list_tasks(limit=max(1, recent_limit), refresh=refresh)
-        all_tasks = self.task_manager.list_tasks() if self._tasks_loaded else []
+        page = self.list_tasks(limit=max(1, recent_limit), refresh=refresh, summary=True)
+        all_tasks = self.task_manager.list_tasks(summary=True) if self._tasks_loaded else []
         summary = {
             "total": len(all_tasks),
             "running": 0,
@@ -881,7 +913,18 @@ class PyrunsRuntime:
 
         if offset is None:
             if tail_lines is not None:
-                content, new_offset = read_last_lines(selected_path, max_lines=max(0, tail_lines))
+                byte_limit = tail_bytes
+                if byte_limit is None:
+                    byte_limit = _int_setting(
+                        self.settings,
+                        "monitor_initial_tail_bytes",
+                        _cfg.DEFAULT_MONITOR_INITIAL_TAIL_BYTES,
+                    )
+                content, new_offset = read_last_lines(
+                    selected_path,
+                    max_lines=max(0, tail_lines),
+                    max_bytes=max(1, byte_limit),
+                )
             else:
                 byte_limit = tail_bytes
                 if byte_limit is None:
@@ -952,7 +995,7 @@ class PyrunsRuntime:
                 raise ValueError("Shell mode requires non-empty script content.")
             task = self.task_generator.create_shell_task(normalized_prefix, content)
             self.task_manager.add_task(task)
-            page = self.list_tasks(limit=12, refresh=False)
+            page = self.list_tasks(limit=12, refresh=False, summary=True)
             return {
                 "count": 1,
                 "items": [task],
@@ -1004,7 +1047,7 @@ class PyrunsRuntime:
             task_kind=TASK_KIND_CONFIG,
         )
         self.task_manager.add_tasks(tasks)
-        page = self.list_tasks(limit=12, refresh=False)
+        page = self.list_tasks(limit=12, refresh=False, summary=True)
         return {
             "count": len(tasks),
             "items": [item for item in tasks],

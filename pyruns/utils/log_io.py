@@ -151,7 +151,7 @@ def _split_lf_lines_keepends(data: bytes) -> list[bytes]:
     return lines
 
 
-def read_last_lines(log_path: str, max_lines: int = 10000) -> Tuple[str, int]:
+def read_last_lines(log_path: str, max_lines: int = 10000, max_bytes: int | None = None) -> Tuple[str, int]:
     """Read up to the last ``max_lines`` LF-delimited log lines."""
 
     if not os.path.exists(log_path):
@@ -165,19 +165,26 @@ def read_last_lines(log_path: str, max_lines: int = 10000) -> Tuple[str, int]:
         max_lines = max(0, int(max_lines))
         if max_lines == 0:
             return "", size
+        byte_limit = None if max_bytes is None else max(1, int(max_bytes))
 
         block_size = 64 * 1024
         position = size
         chunks: list[bytes] = []
         line_break_count = 0
+        bytes_read = 0
 
         with open(log_path, "rb") as handle:
-            while position > 0 and line_break_count <= max_lines:
+            while position > 0 and line_break_count <= max_lines and (
+                byte_limit is None or bytes_read < byte_limit
+            ):
                 read_size = min(block_size, position)
+                if byte_limit is not None:
+                    read_size = min(read_size, byte_limit - bytes_read)
                 position -= read_size
                 handle.seek(position)
                 chunk = handle.read(read_size)
                 chunks.append(chunk)
+                bytes_read += len(chunk)
                 line_break_count += chunk.count(b"\n")
 
         data = b"".join(reversed(chunks))

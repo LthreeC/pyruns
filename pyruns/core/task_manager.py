@@ -101,21 +101,48 @@ class TaskManager:
                 logger.error("Observer callback error: %s", exc)
 
     @staticmethod
-    def serialize_task(task: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    def serialize_task(task: Dict[str, Any] | None, *, summary: bool = False) -> Dict[str, Any] | None:
         """Return a detached task copy suitable for APIs and read-only consumers."""
         if task is None:
             return None
+        if summary:
+            return {
+                "dir": str(task.get("dir", "")).replace("\\", "/"),
+                "name": task.get("name", ""),
+                "status": task.get("status", "pending"),
+                "created_at": task.get("created_at"),
+                "config": {},
+                "config_text": "",
+                "config_file": task.get("config_file", ""),
+                "log": "",
+                "progress": task.get("progress", 0.0),
+                "env": dict(task.get("env", {}) or {}),
+                "pinned": task.get("pinned", False),
+                "task_order": task.get("task_order"),
+                "script": task.get("script"),
+                "task_kind": task.get("task_kind"),
+                "start_times": list(task.get("start_times", []) or []),
+                "finish_times": list(task.get("finish_times", []) or []),
+                "pids": list(task.get("pids", []) or []),
+                "records": [],
+                "tracks": [],
+                "notes": task.get("notes", ""),
+                "run_index": task.get("run_index", 0),
+                "preview_text": task.get("preview_text", ""),
+                "search_text": task.get("search_text", ""),
+                "_load_error": task.get("_load_error"),
+            }
         data = copy.deepcopy(task)
         data["dir"] = str(data.get("dir", "")).replace("\\", "/")
         return data
 
-    def list_tasks(self) -> List[Dict[str, Any]]:
+    def list_tasks(self, *, summary: bool = False) -> List[Dict[str, Any]]:
         """Return detached copies of the current task list."""
         with self._lock:
             tasks = list(self.tasks)
         return [
             serialized
-            for serialized in (self.serialize_task(task) for task in tasks)
+            for serialized in (self.serialize_task(task, summary=summary) for task in tasks)
             if serialized is not None
         ]
 

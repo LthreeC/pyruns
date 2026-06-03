@@ -372,7 +372,15 @@ export default function MonitorPage() {
     }
 
     if (refreshed !== detailTask) {
-      setDetailTask(refreshed)
+      setDetailTask(current => current?.name === refreshed.name
+        ? {
+            ...refreshed,
+            config: current.config,
+            config_text: current.config_text,
+            records: current.records,
+            tracks: current.tracks,
+          }
+        : current)
     }
   }, [detailTask, monitorTasks])
 
@@ -519,6 +527,13 @@ export default function MonitorPage() {
       await selectTask(currentTaskName)
     }
   }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask])
+
+  const openDetailTask = useCallback((task: Task) => {
+    setDetailTask(task)
+    void api.getTask(task.name).then(fullTask => {
+      setDetailTask(current => current?.name === task.name ? fullTask : current)
+    }).catch(() => {})
+  }, [])
 
   const handleExport = useCallback(async () => {
     const names = [...exportIds]
@@ -696,7 +711,7 @@ export default function MonitorPage() {
                 </ActionButton>
               )}
 
-              <ActionButton variant="accentTint" onClick={() => setDetailTask(selectedTask)}>
+              <ActionButton variant="accentTint" onClick={() => openDetailTask(selectedTask)}>
                 View Details
               </ActionButton>
 

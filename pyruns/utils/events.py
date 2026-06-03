@@ -10,11 +10,18 @@ correct thread.
 import asyncio
 import threading
 from collections import defaultdict
-from typing import Callable, Dict, List
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List
 
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class _LogSubscriber:
+    callback: Callable
+    loop: Any = None
 
 
 class LogEmitter:
@@ -27,7 +34,7 @@ class LogEmitter:
     def __init__(self):
         self._lock = threading.Lock()
         # { task_name: [callback, ...] }
-        self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
+        self._subscribers: Dict[str, List[_LogSubscriber]] = defaultdict(list)
         self._loop = None
 
     def bind_loop(self, loop=None) -> None:
@@ -40,18 +47,19 @@ class LogEmitter:
         with self._lock:
             self._loop = loop
 
-    def subscribe(self, task_name: str, callback: Callable) -> None:
+    def subscribe(self, task_name: str, callback: Callable, loop=None) -> None:
         """Register *callback* to receive log chunks for *task_name*."""
+        subscriber = _LogSubscriber(callback=callback, loop=loop)
         with self._lock:
-            if callback not in self._subscribers[task_name]:
-                self._subscribers[task_name].append(callback)
+            if not any(item.callback is callback for item in self._subscribers[task_name]):
+                self._subscribers[task_name].append(subscriber)
 
     def unsubscribe(self, task_name: str, callback: Callable) -> None:
         """Remove a previously registered callback."""
         with self._lock:
             subs = self._subscribers.get(task_name)
-            if subs and callback in subs:
-                subs.remove(callback)
+            if subs:
+                subs[:] = [item for item in subs if item.callback is not callback]
                 if not subs:
                     del self._subscribers[task_name]
 
@@ -68,13 +76,13 @@ class LogEmitter:
         """
         with self._lock:
             subs = list(self._subscribers.get(task_name, []))
+            default_loop = self._loop
         if not subs:
             return
 
-        with self._lock:
-            loop = self._loop
-
-        for cb in subs:
+        for subscriber in subs:
+            cb = subscriber.callback
+            loop = subscriber.loop or default_loop
             try:
                 if loop and loop.is_running():
                     loop.call_soon_threadsafe(cb, chunk_text)
