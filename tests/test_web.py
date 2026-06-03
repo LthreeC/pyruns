@@ -47,6 +47,18 @@ def test_pyruns_runtime_declares_single_constructor():
     assert len(constructors) == 1
 
 
+def test_web_package_lazy_exports_public_api():
+    import pyruns.web as web
+    from pyruns.web.app import create_app, main
+    from pyruns.web.runtime import PyrunsRuntime
+
+    assert web.PyrunsRuntime is PyrunsRuntime
+    assert web.create_app is create_app
+    assert web.main is main
+    with pytest.raises(AttributeError):
+        web.not_a_public_export
+
+
 def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
     """Windows process-spawn imports use __mp_main__ and must not start uvicorn."""
 
@@ -122,6 +134,192 @@ def _build_runtime(workspace: Path) -> PyrunsRuntime:
             return TaskManager(tasks_dir=tasks_dir, lazy_scan=False)
 
     return PyrunsRuntime(root_dir=str(workspace), task_manager_factory=make_task_manager)
+
+
+class _RouteRuntime:
+    def __init__(self, results=None):
+        self.results = results or {}
+        self.settings = {"ui_port": 8099}
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            result = self.results.get(name, {"ok": True})
+            if isinstance(result, BaseException):
+                raise result
+            if callable(result):
+                return result(*args, **kwargs)
+            return result
+
+        return call
+
+
+def test_root_uses_fallback_html_when_static_bundle_is_missing(tmp_path, monkeypatch):
+    from pyruns.web import app as web_app
+
+    monkeypatch.setattr(web_app, "_frontend_candidates", lambda: [tmp_path / "missing"])
+    client = TestClient(web_app.create_app(_RouteRuntime()))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Pyruns API server is running" in response.text
+
+
+def test_schedule_browser_open_ignores_browser_errors(monkeypatch):
+    from pyruns.web import app as web_app
+
+    class ImmediateThread:
+        def __init__(self, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(web_app.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(web_app.time, "sleep", lambda delay: None)
+    monkeypatch.setattr(web_app.webbrowser, "open", lambda url: (_ for _ in ()).throw(RuntimeError("browser failed")))
+
+    web_app._schedule_browser_open("http://127.0.0.1:8099", delay_seconds=0)
+
+
+def test_browser_environment_detection_honors_overrides_and_headless_linux(monkeypatch):
+    from pyruns.web import app as web_app
+
+    monkeypatch.setenv("PYRUNS_NO_BROWSER", "1")
+    assert web_app._can_open_browser_from_environment() is False
+
+    monkeypatch.delenv("PYRUNS_NO_BROWSER", raising=False)
+    monkeypatch.setenv("PYRUNS_OPEN_BROWSER", "yes")
+    assert web_app._can_open_browser_from_environment() is True
+
+    monkeypatch.setenv("PYRUNS_OPEN_BROWSER", "off")
+    assert web_app._can_open_browser_from_environment() is False
+
+    monkeypatch.delenv("PYRUNS_OPEN_BROWSER", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(web_app.sys, "platform", "linux")
+    assert web_app._can_open_browser_from_environment() is False
+
+
+def test_find_available_port_handles_invalid_or_exhausted_ranges():
+    from pyruns.web import app as web_app
+
+    class BusySocket:
+        calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def bind(self, address):
+            self.calls.append(address)
+            raise OSError("busy")
+
+    with patch.object(web_app.socket, "socket", lambda *args, **kwargs: BusySocket()):
+        with pytest.raises(RuntimeError):
+            web_app.find_available_port("bad", host="127.0.0.1", max_attempts=0)
+        assert BusySocket.calls == [("127.0.0.1", web_app.DEFAULT_UI_PORT)]
+
+        BusySocket.calls.clear()
+        with pytest.raises(RuntimeError):
+            web_app.find_available_port(70000, host="127.0.0.1", max_attempts=0)
+        assert BusySocket.calls == [("127.0.0.1", web_app.DEFAULT_UI_PORT)]
+
+
+def test_parse_main_options_handles_browser_flags_and_invalid_ports(capsys):
+    from pyruns.web import app as web_app
+
+    app_web_options = web_app._parse_main_options(["--port", "8123", "--no-browser"])
+    assert app_web_options == (8123, False)
+    assert web_app._parse_main_options(["--port=8124", "--open-browser"]) == (8124, True)
+
+    with pytest.raises(SystemExit):
+        web_app._parse_main_options(["--port"])
+    assert "Missing value for --port" in capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        web_app._parse_port_value("not-a-port")
+    assert "Invalid port" in capsys.readouterr().out
+
+    with pytest.raises(SystemExit):
+        web_app._parse_port_value("70000")
+    assert "Port must be between" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "json_body", "params", "runtime_results", "expected_status", "detail_part"),
+    [
+        ("post", "/api/workspace/run-root", {"path": "missing"}, None, {"change_run_root": ValueError("bad root")}, 400, "bad root"),
+        ("post", "/api/workspace/shell", None, None, {"open_shell_workspace": ValueError("shell not ready")}, 400, "shell not ready"),
+        ("patch", "/api/runtime", {"python_executable": "bad"}, None, {"update_runtime_settings": ValueError("bad python")}, 400, "bad python"),
+        ("get", "/api/templates/content", None, {"value": "missing.yaml"}, {"get_template_content": FileNotFoundError("missing template")}, 404, "missing template"),
+        ("post", "/api/generator/create", {"name_prefix": "x", "mode": "yaml", "yaml_text": ":"}, None, {"create_tasks_from_template": ValueError("bad yaml")}, 400, "bad yaml"),
+        ("post", "/api/generator/preview", {"mode": "yaml", "yaml_text": ":"}, None, {"preview_tasks_from_template": ValueError("bad preview")}, 400, "bad preview"),
+        ("post", "/api/generator/pick-shell-file", None, None, {"pick_generator_shell_file": FileNotFoundError("picker unavailable")}, 400, "picker unavailable"),
+        ("get", "/api/launcher/configs", None, {"script": "missing.py"}, {"get_launcher_config_info": FileNotFoundError("script missing")}, 400, "script missing"),
+        ("get", "/api/launcher/workspaces", None, {"script": "missing.py"}, {"list_launcher_workspaces": FileNotFoundError("script missing")}, 400, "script missing"),
+        ("post", "/api/launcher/open", {"script_path": "missing.py"}, None, {"open_launcher_workspace": FileNotFoundError("script missing")}, 400, "script missing"),
+        ("post", "/api/launcher/pick-script", None, None, {"pick_and_open_launcher_workspace": ValueError("cancelled")}, 400, "cancelled"),
+        ("post", "/api/launcher/pick-script-path", None, None, {"pick_launcher_script_path": FileNotFoundError("picker unavailable")}, 400, "picker unavailable"),
+        ("post", "/api/launcher/pick-config-path", {"script_path": "train.py"}, None, {"pick_launcher_config_path": ValueError("no config")}, 400, "no config"),
+        ("post", "/api/launcher/pick-shell-root", None, None, {"pick_and_open_shell_workspace": ValueError("no shell root")}, 400, "no shell root"),
+        ("post", "/api/launcher/open-shell-root", {"path": "missing"}, None, {"open_shell_workspace_at": ValueError("missing dir")}, 400, "missing dir"),
+        ("post", "/api/tasks/reorder", {"items": [{"name": "ghost"}]}, None, {"reorder_tasks": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/reorder", {"items": []}, None, {"reorder_tasks": ValueError("empty order")}, 400, "empty order"),
+        ("post", "/api/tasks/batch/run", {"task_names": ["ghost"]}, None, {"start_tasks_batch": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/batch/run", {"task_names": []}, None, {"start_tasks_batch": ValueError("empty batch")}, 400, "empty batch"),
+        ("post", "/api/tasks/batch/delete", {"task_names": ["ghost"]}, None, {"delete_tasks_batch": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/batch/delete", {"task_names": []}, None, {"delete_tasks_batch": ValueError("empty delete")}, 400, "empty delete"),
+        ("post", "/api/tasks/export/csv", {"task_names": ["ghost"]}, None, {"export_tasks_csv": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/export/csv", {"task_names": []}, None, {"export_tasks_csv": ValueError("empty export")}, 400, "empty export"),
+        ("post", "/api/tasks/ghost/run", None, None, {"start_task": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/alpha/run", {"execution_mode": "bad"}, None, {"start_task": ValueError("bad mode")}, 400, "bad mode"),
+        ("post", "/api/tasks/ghost/cancel", None, None, {"cancel_task": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/alpha/cancel", None, None, {"cancel_task": ValueError("not running")}, 400, "not running"),
+        ("post", "/api/tasks/ghost/pin", {"pinned": True}, None, {"set_task_pin": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/alpha/pin", {"pinned": None}, None, {"set_task_pin": ValueError("pin required")}, 400, "pin required"),
+        ("patch", "/api/tasks/ghost/notes", {"notes": "x"}, None, {"update_task_notes": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("patch", "/api/tasks/alpha/notes", {"notes": "x"}, None, {"update_task_notes": ValueError("bad notes")}, 400, "bad notes"),
+        ("patch", "/api/tasks/ghost/env", {"env": {}}, None, {"update_task_env": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("patch", "/api/tasks/alpha/env", {"env": {"BAD KEY": "x"}}, None, {"update_task_env": ValueError("bad env")}, 400, "bad env"),
+        ("post", "/api/tasks/ghost/rename", {"new_name": "beta"}, None, {"rename_task": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("post", "/api/tasks/alpha/rename", {"new_name": "bad/name"}, None, {"rename_task": ValueError("bad name")}, 400, "bad name"),
+        ("get", "/api/tasks/ghost/logs", None, None, {"get_task_logs": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+    ],
+)
+def test_api_routes_translate_runtime_errors_to_http_responses(
+    method,
+    path,
+    json_body,
+    params,
+    runtime_results,
+    expected_status,
+    detail_part,
+):
+    client = TestClient(create_app(_RouteRuntime(runtime_results)))
+    request = getattr(client, method)
+    kwargs = {"params": params or {}}
+    if json_body is not None:
+        kwargs["json"] = json_body
+
+    response = request(path, **kwargs)
+
+    assert response.status_code == expected_status
+    assert detail_part in response.json()["detail"]
+
+
+def test_get_task_endpoint_returns_not_found_when_runtime_returns_none():
+    client = TestClient(create_app(_RouteRuntime({"get_task": None})))
+
+    response = client.get("/api/tasks/ghost")
+
+    assert response.status_code == 404
+    assert "Task 'ghost' not found" in response.json()["detail"]
 
 
 def test_find_available_port_increments_when_start_port_is_busy():
@@ -1515,3 +1713,247 @@ def test_metrics_endpoint_returns_sampler_payload(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["cpu_percent"] == 10.0
+
+
+def test_runtime_helper_edges_and_conda_error_paths(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_mod
+
+    assert runtime_mod._int_setting({"x": "bad"}, "x", 5) == 5
+    assert runtime_mod._int_setting({"x": 0}, "x", 5, minimum=2) == 2
+    assert runtime_mod._clip_text_middle("abcdef", 0) == ""
+    assert runtime_mod._clip_text_middle("abcdef", 6) == "abcdef"
+    assert runtime_mod._clip_text_middle("abcdef", 3) == "abc"
+    assert "[truncated]" in runtime_mod._clip_text_middle("a" * 80, 40)
+
+    monkeypatch.setattr(runtime_mod._cfg, "DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS", 10)
+    capped = runtime_mod._cap_summary_task_payloads([
+        {"name": "short", "search_text": "abc"},
+        {"name": "long", "search_text": "x" * 30},
+    ])
+    assert capped[0]["search_text"] == "abc"
+    assert len(capped[1]["search_text"]) == 10
+
+    executable = tmp_path / "python.exe"
+    executable.write_text("", encoding="utf-8")
+    assert runtime_mod.PyrunsRuntime._resolve_executable("") == ""
+    assert runtime_mod.PyrunsRuntime._resolve_executable(str(tmp_path / "missing.exe")) == ""
+    assert runtime_mod.PyrunsRuntime._resolve_executable(str(executable)) == str(executable.resolve())
+    monkeypatch.setattr(runtime_mod.shutil, "which", lambda value: str(executable) if value == "py" else None)
+    assert runtime_mod.PyrunsRuntime._resolve_executable("py") == str(executable.resolve())
+    assert runtime_mod.PyrunsRuntime._env_name_from_path("/opt/conda", "/opt/conda") == "base"
+
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    runtime.settings["conda_executable"] = "missing-conda"
+    assert runtime.list_conda_envs()["available"] is False
+
+    runtime.settings["conda_executable"] = "conda"
+    monkeypatch.setattr(runtime, "_resolve_executable", lambda value: "/bin/conda")
+
+    def raise_on_env_list(command, **kwargs):
+        if command[1:3] == ["info", "--json"]:
+            raise RuntimeError("info failed")
+        raise OSError("env list failed")
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", raise_on_env_list)
+    payload = runtime.list_conda_envs()
+    assert payload["available"] is False
+    assert "env list failed" in payload["error"]
+
+    class Result:
+        def __init__(self, returncode, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    monkeypatch.setattr(
+        runtime_mod.subprocess,
+        "run",
+        lambda command, **kwargs: Result(1, stdout="stdout failure") if command[1:4] == ["env", "list", "--json"] else Result(0, stdout="{}"),
+    )
+    payload = runtime.list_conda_envs()
+    assert payload["available"] is False
+    assert payload["error"] == "stdout failure"
+
+
+def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded()
+
+    monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha"), "_load_error": "load failed"})
+    with pytest.raises(ValueError, match="load failed"):
+        runtime.start_task("alpha")
+    with pytest.raises(ValueError, match="load failed"):
+        runtime.start_tasks_batch(["alpha"])
+
+    monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha")})
+    monkeypatch.setattr(runtime.task_manager, "cancel_task", lambda name: False)
+    with pytest.raises(ValueError, match="cannot be cancelled"):
+        runtime.cancel_task("alpha")
+
+    with pytest.raises(ValueError, match="No valid tasks"):
+        runtime.start_tasks_batch(["", " "])
+    with pytest.raises(ValueError, match="No valid tasks"):
+        runtime.delete_tasks_batch(["", " "])
+    with pytest.raises(ValueError, match="No valid tasks"):
+        runtime.export_tasks_csv(["", " "])
+
+    monkeypatch.setattr(runtime.task_manager, "set_task_pinned", lambda name, pinned: (False, "Task not found"))
+    with pytest.raises(KeyError):
+        runtime.set_task_pin("alpha", True)
+    monkeypatch.setattr(runtime.task_manager, "set_task_pinned", lambda name, pinned: (False, "bad pin"))
+    with pytest.raises(ValueError, match="bad pin"):
+        runtime.set_task_pin("alpha", True)
+
+    monkeypatch.setattr(runtime.task_manager, "update_task_notes", lambda name, notes: (False, "Task not found"))
+    with pytest.raises(KeyError):
+        runtime.update_task_notes("alpha", "note")
+    monkeypatch.setattr(runtime.task_manager, "update_task_notes", lambda name, notes: (False, "bad notes"))
+    with pytest.raises(ValueError, match="bad notes"):
+        runtime.update_task_notes("alpha", "note")
+
+    monkeypatch.setattr(runtime.task_manager, "update_task_env", lambda name, env: (False, "Task not found"))
+    with pytest.raises(KeyError):
+        runtime.update_task_env("alpha", {})
+    monkeypatch.setattr(runtime.task_manager, "update_task_env", lambda name, env: (False, "bad env"))
+    with pytest.raises(ValueError, match="bad env"):
+        runtime.update_task_env("alpha", {})
+
+    monkeypatch.setattr(runtime.task_manager, "rename_task", lambda name, new_name: (False, "Task not found"))
+    with pytest.raises(KeyError):
+        runtime.rename_task("alpha", "beta")
+    monkeypatch.setattr(runtime.task_manager, "rename_task", lambda name, new_name: (False, "bad rename"))
+    with pytest.raises(ValueError, match="bad rename"):
+        runtime.rename_task("alpha", "beta")
+
+    monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items: (False, "Task not found: ghost"))
+    with pytest.raises(KeyError):
+        runtime.reorder_tasks([{"name": "ghost"}])
+    monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items: (False, "bad order"))
+    with pytest.raises(ValueError, match="bad order"):
+        runtime.reorder_tasks([])
+
+
+def test_runtime_shell_templates_include_task_payloads_and_filter_project_scripts(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    project_root = tmp_path / "shell-project"
+    project_root.mkdir()
+    (project_root / ".git").mkdir()
+    (project_root / ".git" / "ignored.sh").write_text("ignored\n", encoding="utf-8")
+    (project_root / "run.sh").write_text("echo run\n", encoding="utf-8")
+    (project_root / "notes.txt").write_text("ignore\n", encoding="utf-8")
+    nested = project_root / "scripts" / "deep"
+    nested.mkdir(parents=True)
+    (nested / "train.sh").write_text("echo train\n", encoding="utf-8")
+
+    script_info = {
+        "workspace_kind": WORKSPACE_KIND_SHELL,
+        "project_root": str(project_root),
+    }
+    (workspace / "script_info.json").write_text(json.dumps(script_info), encoding="utf-8")
+    shell_task_dir = workspace / TASKS_DIR / "from-task"
+    shell_task_dir.mkdir(parents=True)
+    (shell_task_dir / "run.sh").write_text("echo task\n", encoding="utf-8")
+    save_task_info(
+        str(shell_task_dir),
+        {
+            "name": "from-task",
+            "task_kind": TASK_KIND_SHELL,
+            "config_file": "run.sh",
+            "status": "completed",
+        },
+    )
+    hidden_task = workspace / TASKS_DIR / ".hidden"
+    hidden_task.mkdir()
+    (workspace / TASKS_DIR / "not-a-dir").write_text("skip", encoding="utf-8")
+
+    runtime = _build_runtime(workspace)
+    original_getmtime = os_path_getmtime = __import__("os").path.getmtime
+
+    def fake_getmtime(path):
+        if str(path).endswith("task_info.json"):
+            raise OSError("missing mtime")
+        return original_getmtime(path)
+
+    monkeypatch.setattr("pyruns.web.runtime.os.path.getmtime", fake_getmtime)
+
+    items = runtime.list_shell_templates(script_info)
+    labels = [item["label"] for item in items]
+
+    assert labels[0] == "from-task"
+    assert "run.sh" in labels
+    assert "scripts/deep/train.sh" in labels
+    assert ".git/ignored.sh" not in labels
+    assert "notes.txt" not in labels
+
+
+def test_runtime_generator_shell_and_picker_error_branches(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    runtime.open_shell_workspace()
+
+    with pytest.raises(ValueError, match="only supports shell mode"):
+        runtime.preview_tasks_from_template(mode="form", yaml_text="a: 1")
+    with pytest.raises(ValueError, match="requires non-empty"):
+        runtime.preview_tasks_from_template(mode="shell", shell_text="")
+    with pytest.raises(ValueError, match="only supports shell mode"):
+        runtime.create_tasks_from_template(name_prefix="x", mode="yaml", yaml_text="a: 1", append_timestamp=False)
+    with pytest.raises(ValueError, match="requires non-empty"):
+        runtime.create_tasks_from_template(name_prefix="x", mode="shell", shell_text="", append_timestamp=False)
+
+    monkeypatch.setattr("pyruns.web.runtime.native_picker_available", lambda: False)
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_generator_shell_file()
+
+    monkeypatch.setattr("pyruns.web.runtime.native_picker_available", lambda: True)
+    monkeypatch.setattr("pyruns.web.runtime.choose_shell_file", lambda initial_dir: "")
+    with pytest.raises(ValueError, match="No shell script selected"):
+        runtime.pick_generator_shell_file()
+
+    monkeypatch.setattr("pyruns.web.runtime.choose_shell_file", lambda initial_dir: str(tmp_path / "missing.sh"))
+    with pytest.raises(FileNotFoundError, match="Shell script not found"):
+        runtime.pick_generator_shell_file()
+
+
+def test_runtime_launcher_picker_error_branches(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+
+    monkeypatch.setattr("pyruns.web.runtime.native_picker_available", lambda: False)
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_launcher_script_path()
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_launcher_config_path(str(tmp_path / "train.py"))
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_and_open_launcher_workspace()
+    with pytest.raises(ValueError, match="Native folder picker"):
+        runtime.pick_and_open_shell_workspace()
+
+    monkeypatch.setattr("pyruns.web.runtime.native_picker_available", lambda: True)
+    monkeypatch.setattr("pyruns.web.runtime.choose_script_file", lambda initial_dir: "")
+    with pytest.raises(ValueError, match="No script selected"):
+        runtime.pick_launcher_script_path()
+    with pytest.raises(ValueError, match="No script selected"):
+        runtime.pick_and_open_launcher_workspace()
+
+    not_script = tmp_path / "not-script.txt"
+    not_script.write_text("", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        runtime.pick_launcher_config_path(str(not_script))
+
+    script_path = tmp_path / "train.py"
+    script_path.write_text("print('train')\n", encoding="utf-8")
+    monkeypatch.setattr("pyruns.web.runtime.choose_config_file", lambda initial_dir: "")
+    with pytest.raises(ValueError, match="No YAML config selected"):
+        runtime.pick_launcher_config_path(str(script_path))
+
+    bad_config = tmp_path / "bad.txt"
+    bad_config.write_text("", encoding="utf-8")
+    monkeypatch.setattr("pyruns.web.runtime.choose_config_file", lambda initial_dir: str(bad_config))
+    with pytest.raises(FileNotFoundError):
+        runtime.pick_launcher_config_path(str(script_path))
+
+    with pytest.raises(ValueError, match="Shell folder does not exist"):
+        runtime.open_shell_workspace_at(str(tmp_path / "missing-dir"))

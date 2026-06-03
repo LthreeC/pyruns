@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
@@ -21,16 +22,22 @@ from pyruns._config import (
     ENV_KEY_CONDA_ENV,
     ENV_KEY_CONDA_EXE,
     ENV_KEY_PYTHON_EXECUTABLE,
+    CONFIG_DEFAULT_FILENAME,
     CONFIG_FILENAME,
+    ERROR_LOG_FILENAME,
     POWERSHELL_CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
+    RUN_LOGS_DIR,
     SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
+    TASKS_DIR,
     TASK_INFO_FILENAME,
+    TRASH_DIR,
     RECORDS_KEY,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
+    WORKSPACE_KIND_SHELL,
 )
 from pyruns.core.config_manager import ConfigNode, ConfigManager
 from pyruns.core.executor import _prepare_env, _build_command, _resolve_python_runtime, run_task_worker
@@ -377,7 +384,8 @@ def test_resolve_python_runtime_from_task_env_python_executable(tmp_path):
     assert runtime["python_executable"] == str(fake_python.resolve())
 
 
-def test_resolve_python_runtime_from_workspace_conda_settings(tmp_path):
+def test_resolve_python_runtime_from_workspace_conda_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
     fake_conda = tmp_path / "conda"
     fake_conda.write_text("", encoding="utf-8")
     workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
@@ -429,6 +437,7 @@ def test_prepare_env_marks_conda_runtime():
 
 
 def test_prepare_env_applies_workspace_global_env_before_task_env(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
     monkeypatch.setenv("TOKENIZERS_PARALLELISM", "terminal")
     workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
     task_dir = workspace / "tasks" / "task1"
@@ -1063,6 +1072,115 @@ def test_build_command_unknown_requires_shell_workspace(mock_detect):
         _build_command(None, "train.py", None, {})
 
 
+def test_executor_runtime_path_and_shell_resolution_edges(tmp_path, monkeypatch):
+    import pyruns.core.executor as executor
+
+    missing = tmp_path / "missing"
+    env = {}
+    executor._prepend_pythonpath(env, str(missing))
+    assert "PYTHONPATH" not in env
+
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    env = {"PYTHONPATH": str(package_root)}
+    executor._prepend_pythonpath(env, str(package_root))
+    assert env["PYTHONPATH"] == str(package_root)
+
+    extra_root = tmp_path / "extra"
+    extra_root.mkdir()
+    executor._prepend_pythonpath(env, str(extra_root))
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(extra_root)
+
+    assert executor._path_env_key({"path": "lower"}) == "path"
+    assert executor._path_env_key({"CustomPath": "mixed"}) == "PATH"
+
+    env = {"Path": str(package_root), "PATH": "duplicate"}
+    executor._prepend_path_entries(env, [str(missing)])
+    assert env == {"Path": str(package_root), "PATH": "duplicate"}
+
+    front = tmp_path / "front"
+    front.mkdir()
+    executor._prepend_path_entries(env, [str(front), str(front), str(package_root)])
+    path_entries = env["PATH"].split(os.pathsep)
+    assert path_entries[:2] == [str(front), str(package_root)]
+    assert "Path" not in env
+
+    python_exe = tmp_path / "python.exe"
+    conda_exe = tmp_path / "conda.exe"
+    python_exe.write_text("", encoding="utf-8")
+    conda_exe.write_text("", encoding="utf-8")
+
+    assert executor._resolve_executable_path(str(python_exe)) == str(python_exe.resolve())
+    monkeypatch.setattr(executor.shutil, "which", lambda value: str(conda_exe) if value == "conda" else None)
+    assert executor._resolve_executable_path("conda") == str(conda_exe.resolve())
+
+    with pytest.raises(RuntimeError, match="python_executable"):
+        executor._runtime_from_values(python_executable=str(missing), source="task")
+    with pytest.raises(RuntimeError, match="conda_executable"):
+        executor._runtime_from_values(conda_env="env", conda_executable=str(missing), source="task")
+    assert executor._runtime_from_values(python_executable=str(python_exe), source="task")["mode"] == "python"
+    assert executor._runtime_from_values(conda_env="env", conda_executable="conda", source="task")["mode"] == "conda"
+
+    shell_exe = tmp_path / "bash.exe"
+    shell_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        executor,
+        "get_shell_runtime_for_task",
+        lambda task_dir=None: {"mode": "custom", "executable": str(shell_exe), "available": True},
+    )
+    assert executor._resolve_shell_executable(str(tmp_path)) == str(shell_exe)
+
+    monkeypatch.setattr(
+        executor,
+        "get_shell_runtime_for_task",
+        lambda task_dir=None: {"mode": "custom", "executable": str(shell_exe), "available": False},
+    )
+    with pytest.raises(RuntimeError, match="shell_mode=custom"):
+        executor._resolve_shell_executable(str(tmp_path))
+
+    monkeypatch.setattr(
+        executor,
+        "get_shell_runtime_for_task",
+        lambda task_dir=None: {"mode": "follow", "executable": "", "available": False},
+    )
+    with pytest.raises(RuntimeError, match="Unable to resolve"):
+        executor._resolve_shell_executable(str(tmp_path))
+
+
+def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
+    import pyruns.core.executor as executor
+
+    project_root = tmp_path / "project"
+    task_dir = project_root / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME / TASKS_DIR / "alpha"
+    task_dir.mkdir(parents=True)
+    script_info = task_dir.parents[1] / SCRIPT_INFO_FILENAME
+    script_info.write_text("{bad json", encoding="utf-8")
+
+    assert executor._resolve_shell_workdir(str(task_dir)) == str(project_root.resolve()).replace("\\", "/")
+
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    script_info.write_text(json.dumps({"project_root": str(external_root)}), encoding="utf-8")
+    assert executor._resolve_shell_workdir(str(task_dir)) == str(external_root.resolve()).replace("\\", "/")
+
+    loose_task_dir = tmp_path / "loose" / TASKS_DIR / "task"
+    loose_task_dir.mkdir(parents=True)
+    assert executor._resolve_shell_workdir(str(loose_task_dir)) == str(loose_task_dir)
+
+    script_path = task_dir / "run.sh"
+    script_path.write_text("#!/usr/bin/env bash\necho hello\n", encoding="utf-8")
+    assert executor._read_shell_script_body(str(script_path)) == "echo hello\n"
+
+    command, workdir, cleanup_paths = executor._materialize_windows_shell_wrapper(
+        str(task_dir),
+        str(script_path),
+        "bash.exe",
+    )
+    assert command == ["bash.exe", str(script_path)]
+    assert workdir == str(task_dir)
+    assert cleanup_paths == []
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
@@ -1172,6 +1290,56 @@ def test_run_task_worker_failure(mock_popen, mock_emit, mock_detect, tmp_path):
         content = f.read()
         assert "Run #1 failed" in content
         assert "reason=exit_code 1" in content
+
+
+def test_run_task_worker_internal_spawn_error_persists_failure_and_keeps_cleanup_error_secondary(tmp_path, monkeypatch):
+    import pyruns.core.executor as executor
+    from pyruns.utils.info_io import load_task_info
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "BrokenTask",
+            "status": "queued",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {})
+    cleanup_path = tmp_path / "wrapper.cmd"
+    cleanup_path.write_text("@echo off\n", encoding="utf-8")
+    bad_workdir = tmp_path / "missing-workdir"
+
+    monkeypatch.setattr(
+        executor,
+        "_build_command",
+        lambda *args, **kwargs: (["missing-command"], str(bad_workdir), [str(cleanup_path)]),
+    )
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
+    monkeypatch.setattr(executor.os, "remove", lambda path: (_ for _ in ()).throw(OSError("cleanup locked")))
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="BrokenTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    assert "spawn failed" in result["error"]
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "failed"
+    assert info["progress"] == 0.0
+    assert info["finish_times"][0]
+    error_log = task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME
+    assert "Internal error during run #1" in error_log.read_text(encoding="utf-8")
+    assert cleanup_path.exists()
 
 
 def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_path, monkeypatch):
@@ -1399,6 +1567,462 @@ def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_pa
     queued_info = json.loads((queued_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert running_info["status"] == "failed"
     assert queued_info["status"] == "failed"
+
+
+def test_task_manager_shutdown_cleanup_ignores_malformed_in_memory_tasks(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager.tasks = [{}, {"name": "missing-status"}, None]
+
+    manager._cleanup_on_shutdown()
+
+    assert manager.tasks == [{}, {"name": "missing-status"}, None]
+
+
+def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
+    missing_tasks_dir = tmp_path / "missing"
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(missing_tasks_dir), lazy_scan=False)
+
+    assert manager.list_tasks() == []
+    assert TaskManager.serialize_task(None) is None
+
+    calls = []
+
+    def good_callback():
+        calls.append("good")
+
+    def bad_callback():
+        calls.append("bad")
+        raise RuntimeError("observer failed")
+
+    manager.on_change(good_callback)
+    manager.on_change(good_callback)
+    manager.on_change(bad_callback)
+    manager.trigger_update()
+    manager.off_change(bad_callback)
+    manager.trigger_update()
+
+    assert calls == ["good", "bad", "good"]
+    summary = TaskManager.serialize_task(
+        {
+            "dir": r"C:\tmp\task",
+            "name": "alpha",
+            "status": "running",
+            "env": {"A": "1"},
+            "records": [{"loss": 0.1}],
+            "tracks": [{"step": 1}],
+        },
+        summary=True,
+    )
+    assert summary["dir"] == "C:/tmp/task"
+    assert summary["records"] == []
+    assert summary["env"] == {"A": "1"}
+
+
+def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    missing_info_dir = tasks_dir / "missing-info"
+    missing_info_dir.mkdir()
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager._load_task_dir("missing-info") is None
+
+    empty_dir = tasks_dir / "empty-info"
+    empty_dir.mkdir()
+    (empty_dir / TASK_INFO_FILENAME).write_text("{}", encoding="utf-8")
+    with patch("pyruns.core.task_manager.load_task_info", return_value={}):
+        assert manager._load_task_dir("empty-info") is None
+
+    with patch("pyruns.core.task_manager.load_task_info", side_effect=RuntimeError("bad info")):
+        assert manager._load_task_dir("empty-info") is None
+
+    statless_dir = tasks_dir / "statless"
+    statless_dir.mkdir()
+    save_task_info(
+        str(statless_dir),
+        {
+            "name": "statless",
+            "status": "pending",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 2,
+        },
+    )
+    save_yaml(str(statless_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    original_exists = os.path.exists
+    original_stat = os.stat
+    info_path = str(statless_dir / TASK_INFO_FILENAME)
+
+    def fake_exists(path):
+        if str(path) == info_path:
+            return True
+        return original_exists(path)
+
+    def fake_stat(path, *args, **kwargs):
+        if str(path).endswith(TASK_INFO_FILENAME):
+            raise OSError("no stat")
+        return original_stat(path, *args, **kwargs)
+
+    with (
+        patch("pyruns.core.task_manager.os.path.exists", side_effect=fake_exists),
+        patch("pyruns.core.task_manager.os.stat", side_effect=fake_stat),
+    ):
+        loaded = manager._load_task_dir("statless")
+    assert loaded["_mtime_ns"] == 0
+    assert loaded["run_index"] == 2
+
+    with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("scandir failed")):
+        manager.scan_disk()
+    assert manager.list_tasks() == []
+
+
+def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    alpha = generator.create_task("alpha", {"value": 1})
+    beta = generator.create_task("beta", {"value": 2})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager.set_task_pinned("missing") == (False, "Task not found")
+    ok, pinned = manager.set_task_pinned("alpha")
+    assert ok is True and pinned is True
+
+    assert manager.reorder_tasks([])[1] == "No valid tasks were provided for reordering."
+    assert manager.reorder_tasks([{"name": "alpha"}, {"name": "alpha"}])[1].startswith("Duplicate task")
+    assert manager.reorder_tasks([{"name": "missing"}])[1] == "Task not found: missing"
+    ok, reordered = manager.reorder_tasks([{"name": "beta", "pinned": True}, {"name": "alpha", "pinned": False}])
+    assert ok is True
+    assert [item["name"] for item in reordered] == ["beta", "alpha"]
+    assert manager.get_task("beta")["pinned"] is True
+
+    assert manager.update_task_notes("missing", "x") == (False, "Task not found")
+    assert manager.update_task_notes("alpha", "note") == (True, "note")
+    assert manager.update_task_env("missing", {}) == (False, "Task not found")
+    assert manager.update_task_env("alpha", {"A": 1, "": "skip"}) == (True, {"A": "1"})
+
+    assert manager.rename_task("alpha", "") == (False, "Task name cannot be empty")
+    assert manager.rename_task("missing", "new") == (False, "Task not found")
+    with manager._lock:
+        manager._tasks_by_name["alpha"]["status"] = "queued"
+    assert manager.rename_task("alpha", "alpha-new") == (False, "Running or queued tasks cannot be renamed")
+    with manager._lock:
+        manager._tasks_by_name["alpha"]["status"] = "pending"
+    assert manager.rename_task("alpha", "alpha") == (True, "alpha")
+    assert "invalid" in manager.rename_task("alpha", "bad/name")[1]
+    assert "already exists" in manager.rename_task("alpha", "beta")[1]
+
+    with patch("pyruns.core.task_manager.os.rename", lambda old, new: (_ for _ in ()).throw(OSError("rename failed"))):
+        assert manager.rename_task("alpha", "gamma") == (False, "rename failed")
+
+    with patch("pyruns.core.task_manager.update_task_info", side_effect=RuntimeError("write failed")):
+        ok, message = manager.rename_task("alpha", "gamma")
+    assert ok is False
+    assert "write failed" in message
+    assert Path(alpha["dir"]).exists()
+    assert Path(beta["dir"]).exists()
+
+
+def test_task_manager_delete_active_task_retries_then_removes_folder(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    trash_conflict = tasks_dir / TRASH_DIR / "runner"
+    trash_conflict.mkdir(parents=True)
+
+    killed = []
+    removed = []
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
+    monkeypatch.setattr("pyruns.core.task_manager.get_now_str", lambda: "2026-03-20_00-00-02")
+    monkeypatch.setattr("pyruns.core.task_manager.shutil.move", lambda src, dst: (_ for _ in ()).throw(OSError("move failed")))
+    monkeypatch.setattr("pyruns.core.task_manager.shutil.rmtree", lambda path: removed.append(path))
+    monkeypatch.setattr("pyruns.core.task_manager.time.sleep", lambda delay: None)
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager.delete_tasks(["missing"])
+    assert manager.get_task("runner") is not None
+
+    manager.delete_tasks(["runner", "runner"])
+
+    assert killed == [12345]
+    assert removed == [str(task_dir).replace("\\", "/")]
+    assert manager.get_task("runner") is None
+
+
+def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    task = generator.create_task("alpha", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with manager._lock:
+        target = manager._tasks_by_name["alpha"]
+        target["status"] = "queued"
+        target["run_index"] = 3
+        manager._recompute_processing_flag_locked()
+
+    picked, run_index = manager._pick_queued_task()
+    assert picked["name"] == "alpha"
+    assert run_index == 3
+    assert manager.get_task("alpha")["status"] == "running"
+
+    class FailingExecutor:
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("submit failed")
+
+    manager._executor = FailingExecutor()
+    monkeypatch.setattr(manager, "_ensure_executor", lambda: None)
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: task.update(marked_failed=kwargs))
+    manager._submit_task(picked, 3, independent=False)
+    assert picked["status"] == "failed"
+    assert picked["marked_failed"]["reason"] == "submission_error"
+
+    with manager._lock:
+        picked["status"] = "running"
+        manager._running_ids.add("alpha")
+
+    failed_marks = []
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: failed_marks.append(kwargs))
+    future = Future()
+    future.set_exception(RuntimeError("worker failed"))
+    manager._on_task_done(future, "alpha")
+
+    assert failed_marks[0]["reason"] == "worker_exception"
+    assert manager.get_task("alpha")["status"] == "failed"
+
+
+def test_launcher_path_helpers_and_native_picker_fallbacks(tmp_path, monkeypatch):
+    import pyruns.launcher as launcher
+
+    script_path = tmp_path / "_shell_.py"
+    script_path.write_text("print('shell named script')\n", encoding="utf-8")
+    not_script = tmp_path / "not_script.txt"
+    not_script.write_text("", encoding="utf-8")
+
+    assert launcher.normalize_path(str(script_path)).endswith("_shell_.py")
+    assert launcher.validate_python_script_path(str(script_path)).endswith("_shell_.py")
+    with pytest.raises(FileNotFoundError):
+        launcher.validate_python_script_path(str(not_script))
+    assert launcher.workspace_name_for_script_base(SHELL_WORKSPACE_NAME) == f"py{SHELL_WORKSPACE_NAME}"
+    assert launcher.workspace_root_for_script(str(script_path)).endswith(f"{DEFAULT_ROOT_NAME}/py{SHELL_WORKSPACE_NAME}")
+    assert launcher.shell_workspace_root_for_run_root(str(tmp_path / DEFAULT_ROOT_NAME)).endswith(f"{DEFAULT_ROOT_NAME}/{SHELL_WORKSPACE_NAME}")
+    assert launcher.shell_workspace_root_for_run_root(str(tmp_path / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME)).endswith(SHELL_WORKSPACE_NAME)
+    assert launcher.shell_project_root_for_workspace(str(tmp_path / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME)) == str(tmp_path).replace("\\", "/")
+
+    monkeypatch.setattr(launcher.os, "name", "posix")
+    monkeypatch.setattr(launcher.sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert launcher.native_picker_available() is False
+    monkeypatch.setenv("DISPLAY", ":1")
+    assert launcher.native_picker_available() is True
+
+    original_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tkinter" or name.startswith("tkinter"):
+            raise ImportError("tk unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    assert launcher.choose_script_file(str(tmp_path)) is None
+    assert launcher.choose_config_file(str(tmp_path)) is None
+    assert launcher.choose_shell_file(str(tmp_path)) is None
+    assert launcher.choose_directory(str(tmp_path)) is None
+
+
+def test_launcher_native_picker_success_paths_normalize_selection(tmp_path, monkeypatch):
+    import types
+    import pyruns.launcher as launcher
+
+    script = tmp_path / "train.py"
+    config = tmp_path / "config.yaml"
+    shell = tmp_path / "run.sh"
+    directory = tmp_path / "workspace"
+    for path in (script, config, shell):
+        path.write_text("", encoding="utf-8")
+    directory.mkdir()
+
+    selected_files = iter([str(script), str(config), str(shell)])
+    roots = []
+
+    class FakeRoot:
+        def __init__(self):
+            self.withdrawn = False
+            self.destroyed = False
+            self.attributes_calls = []
+
+        def withdraw(self):
+            self.withdrawn = True
+
+        def attributes(self, *args):
+            self.attributes_calls.append(args)
+
+        def destroy(self):
+            self.destroyed = True
+
+    def make_root():
+        root = FakeRoot()
+        roots.append(root)
+        return root
+
+    filedialog = types.SimpleNamespace(
+        askopenfilename=lambda **kwargs: next(selected_files),
+        askdirectory=lambda **kwargs: str(directory),
+    )
+    tkinter = types.SimpleNamespace(Tk=make_root, filedialog=filedialog)
+    monkeypatch.setitem(sys.modules, "tkinter", tkinter)
+    monkeypatch.setitem(sys.modules, "tkinter.filedialog", filedialog)
+
+    assert launcher.choose_script_file(str(tmp_path)) == str(script).replace("\\", "/")
+    assert launcher.choose_config_file(str(tmp_path)) == str(config).replace("\\", "/")
+    assert launcher.choose_shell_file(str(tmp_path)) == str(shell).replace("\\", "/")
+    assert launcher.choose_directory(str(tmp_path)) == str(directory).replace("\\", "/")
+    assert len(roots) == 4
+    assert all(root.withdrawn and root.destroyed for root in roots)
+    assert all(root.attributes_calls == [("-topmost", True)] for root in roots)
+
+
+def test_launcher_discovers_workspace_and_file_candidates(tmp_path):
+    import pyruns.launcher as launcher
+
+    project = tmp_path / "project"
+    project.mkdir()
+    script = project / "train.py"
+    script.write_text("print('train')\n", encoding="utf-8")
+    file_only = project / "eval.py"
+    file_only.write_text("print('eval')\n", encoding="utf-8")
+    workspace_root = project / DEFAULT_ROOT_NAME
+    workspace = workspace_root / "train"
+    workspace.mkdir(parents=True)
+    (workspace / SCRIPT_INFO_FILENAME).write_text(
+        json.dumps(
+            {
+                "workspace_kind": "script",
+                "script_name": "train",
+                "script_path": str(script),
+            }
+        ),
+        encoding="utf-8",
+    )
+    shell_workspace = workspace_root / SHELL_WORKSPACE_NAME
+    shell_workspace.mkdir()
+    (shell_workspace / SCRIPT_INFO_FILENAME).write_text(json.dumps({"workspace_kind": WORKSPACE_KIND_SHELL}), encoding="utf-8")
+    bad_workspace = workspace_root / "bad"
+    bad_workspace.mkdir()
+    (bad_workspace / SCRIPT_INFO_FILENAME).write_text("{bad json", encoding="utf-8")
+
+    assert launcher.resolve_workspace_for_script(str(script)) == str(workspace).replace("\\", "/")
+    candidates = launcher.list_script_candidates(str(project))
+    by_name = {item["script_name"]: item for item in candidates}
+
+    assert by_name["train"]["source"] == "workspace+file"
+    assert by_name["eval"]["source"] == "file"
+    assert SHELL_WORKSPACE_NAME not in by_name
+
+    summary = launcher.read_workspace_summary(str(workspace))
+    assert summary["script_name"] == "train"
+    assert summary["workspace_kind"] == "script"
+
+
+def test_launcher_config_candidates_bootstrap_errors_and_query(tmp_path, monkeypatch, capsys):
+    import pyruns.launcher as launcher
+
+    script = tmp_path / "train.py"
+    script.write_text("import pyruns\ncfg = pyruns.load()\n", encoding="utf-8")
+    config = tmp_path / "configs" / "base.yaml"
+    config.parent.mkdir()
+    config.write_text("lr: 0.1\n", encoding="utf-8")
+    root_default = Path(launcher.workspace_root_for_script(str(script))) / CONFIG_DEFAULT_FILENAME
+    root_default.parent.mkdir(parents=True)
+    root_default.write_text("lr: 0.2\n", encoding="utf-8")
+
+    candidates = launcher.list_config_candidates(str(script))
+    labels = [item["label"] for item in candidates]
+    assert labels[0] == "Workspace default"
+    assert "configs/base.yaml" in labels
+
+    monkeypatch.setattr("pyruns.launcher.detect_config_source_fast", lambda path: ("pyruns_load", None))
+    metadata = launcher.get_config_selection_metadata(str(script))
+    assert metadata["requires_config_template"] is False
+
+    root_default.unlink()
+    metadata = launcher.get_config_selection_metadata(str(script))
+    assert metadata["requires_config_template"] is True
+    assert launcher.list_workspace_candidates(str(script), str(config))[0]["config_name"] == "base.yaml"
+
+    with pytest.raises(FileNotFoundError, match="Custom config"):
+        launcher.bootstrap_workspace(str(script), str(tmp_path / "missing.yaml"))
+
+    with pytest.raises(FileNotFoundError, match="needs a YAML template"):
+        launcher.bootstrap_workspace(str(script))
+
+    existing_workspace = Path(launcher.workspace_root_for_script(str(script)))
+    existing_workspace.mkdir(parents=True, exist_ok=True)
+    (existing_workspace / SCRIPT_INFO_FILENAME).write_text(
+        json.dumps(
+            {
+                "created_at": "2026-01-01 00:00:00",
+                "last_used_template": "old",
+            }
+        ),
+        encoding="utf-8",
+    )
+    root_default.write_text("lr: 0.2\n", encoding="utf-8")
+    workspace = launcher.bootstrap_workspace(str(script))
+    info = json.loads((Path(workspace) / SCRIPT_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert info["last_used_template"] == "old"
+
+    shell_root = launcher.bootstrap_shell_workspace(workspace)
+    shell_info = json.loads((Path(shell_root) / SCRIPT_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert shell_info["workspace_kind"] == WORKSPACE_KIND_SHELL
+    assert Path(shell_root).name == SHELL_WORKSPACE_NAME
+
+    query = launcher.launcher_query(str(script), str(config))
+    assert query.startswith("/?launcher=1")
+    assert "script=" in query and "config=" in query
+
+    monkeypatch.setattr("pyruns.launcher.bootstrap_workspace", lambda script_path, custom_yaml=None: (_ for _ in ()).throw(FileNotFoundError("missing script")))
+    with pytest.raises(SystemExit):
+        launcher.bootstrap_from_cli(str(script))
+    assert "missing script" in capsys.readouterr().out
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

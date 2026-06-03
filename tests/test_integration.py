@@ -445,3 +445,180 @@ class TestAddMonitor:
         for idx in range(4):
             assert info[RECORDS_KEY][0][f"metric_{idx}"] == idx
         assert sorted(info[TRACKS_KEY][0]["loss"]) == [0, 1, 2, 3]
+
+    def test_default_config_path_uses_current_script(self, tmp_path, monkeypatch):
+        import pyruns
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        monkeypatch.setattr("sys.argv", [str(script)])
+
+        path = pyruns._get_default_config_path()
+
+        assert path.endswith(os.path.join("_pyruns_", "train", "config_default.yaml"))
+
+    def test_default_config_path_rejects_invalid_script(self, monkeypatch):
+        import pyruns
+
+        monkeypatch.setattr("sys.argv", ["missing.py"])
+
+        with pytest.raises(FileNotFoundError):
+            pyruns._get_default_config_path()
+
+    def test_read_prefers_pyruns_config_env(self, tmp_path, monkeypatch):
+        import pyruns
+
+        config_path = tmp_path / "task" / "config.yaml"
+        config_path.parent.mkdir()
+        config_path.write_text("lr: 0.1\n", encoding="utf-8")
+        calls = []
+
+        class DummyConfigManager:
+            _root = object()
+
+            def read(self, path):
+                calls.append(("read", path))
+                return {"path": path}
+
+            def load(self):
+                return {"loaded": True}
+
+        monkeypatch.setenv(ENV_KEY_CONFIG, str(config_path))
+        monkeypatch.setattr(pyruns, "_global_config_manager_", DummyConfigManager())
+
+        assert pyruns.read() == {"path": str(config_path)}
+        assert calls == [("read", str(config_path))]
+
+    def test_read_and_load_report_missing_default_config(self, tmp_path, monkeypatch, capsys):
+        import pyruns
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        calls = []
+
+        class DummyConfigManager:
+            _root = None
+
+            def read(self, path):
+                calls.append(("read", path))
+                return {}
+
+            def load(self):
+                calls.append(("load",))
+                return {}
+
+        monkeypatch.delenv(ENV_KEY_CONFIG, raising=False)
+        monkeypatch.setattr("sys.argv", [str(script)])
+        monkeypatch.setattr(pyruns, "_global_config_manager_", DummyConfigManager())
+
+        assert pyruns.read() == {}
+        assert pyruns.load() == {}
+        output = capsys.readouterr().out
+        assert "Config not found" in output
+        assert "pyr train.py your_config.yaml" in output
+        assert calls[-1] == ("load",)
+
+    def test_load_reads_existing_default_config_when_manager_is_empty(self, tmp_path, monkeypatch):
+        import pyruns
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        default_dir = tmp_path / "_pyruns_" / "train"
+        default_dir.mkdir(parents=True)
+        default_path = default_dir / "config_default.yaml"
+        default_path.write_text("lr: 0.1\n", encoding="utf-8")
+        calls = []
+
+        class DummyConfigManager:
+            _root = None
+
+            def read(self, path):
+                calls.append(("read", path))
+
+            def load(self):
+                calls.append(("load",))
+                return {"lr": 0.1}
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(ENV_KEY_CONFIG, raising=False)
+        monkeypatch.setattr("sys.argv", [str(script)])
+        monkeypatch.setattr(pyruns, "ROOT_DIR", str(tmp_path / "_pyruns_"))
+        monkeypatch.setattr(pyruns, "_global_config_manager_", DummyConfigManager())
+
+        assert pyruns.load() == {"lr": 0.1}
+        assert calls[0] == ("read", os.path.join(str(tmp_path / "_pyruns_"), "train", "config_default.yaml"))
+
+    def test_ensure_config_default_creates_and_reuses_file(self, tmp_path):
+        import pyruns
+
+        path = pyruns.ensure_config_default(str(tmp_path))
+        assert os.path.exists(path)
+        assert open(path, encoding="utf-8").read() == "# task config here"
+
+        open(path, "w", encoding="utf-8").write("existing: true\n")
+        assert pyruns.ensure_config_default(str(tmp_path)) == path
+        assert open(path, encoding="utf-8").read() == "existing: true\n"
+
+    def test_run_index_env_parser_ignores_invalid_values(self, monkeypatch):
+        import pyruns
+
+        for raw in ["", "abc", "0", "-1"]:
+            monkeypatch.setenv("PYRUNS_RUN_INDEX", raw)
+            assert pyruns._get_env_run_index() is None
+
+    def test_get_task_dir_and_run_index_return_none_outside_pyruns(self, monkeypatch):
+        import pyruns
+
+        monkeypatch.delenv(ENV_KEY_CONFIG, raising=False)
+        monkeypatch.delenv("PYRUNS_RUN_INDEX", raising=False)
+
+        assert pyruns.get_task_dir() is None
+        assert pyruns.get_run_index() is None
+
+    def test_track_ignores_empty_updates_and_outside_pyruns(self, tmp_path, monkeypatch):
+        import pyruns
+
+        monkeypatch.delenv(ENV_KEY_CONFIG, raising=False)
+        pyruns.track("loss", None)
+        pyruns.track()
+
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        before = open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8").read()
+        pyruns.track("loss", None)
+        pyruns.track()
+        after = open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8").read()
+        assert before == after
+
+    def test_record_and_track_retry_after_transient_io_errors(self, tmp_path, monkeypatch):
+        import pyruns
+
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        record_calls = {"count": 0}
+        track_calls = {"count": 0}
+        real_update = pyruns.update_task_info
+
+        def flaky_record_update(*args, **kwargs):
+            record_calls["count"] += 1
+            if record_calls["count"] == 1:
+                raise OSError("busy")
+            return real_update(*args, **kwargs)
+
+        monkeypatch.setattr(pyruns, "update_task_info", flaky_record_update)
+        pyruns.record(loss=0.2)
+        assert record_calls["count"] == 2
+
+        def flaky_track_update(*args, **kwargs):
+            track_calls["count"] += 1
+            if track_calls["count"] == 1:
+                raise OSError("busy")
+            return real_update(*args, **kwargs)
+
+        monkeypatch.setattr(pyruns, "update_task_info", flaky_track_update)
+        pyruns.track(loss=0.3)
+        assert track_calls["count"] == 2

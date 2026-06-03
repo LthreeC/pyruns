@@ -2,6 +2,8 @@
 Tests for pyruns.cli — display, commands, interactive, and workspace resolution.
 """
 import json
+import os
+import sys
 
 import pytest
 from unittest.mock import patch
@@ -203,6 +205,47 @@ def test_task_manager_scan_keeps_task_with_invalid_config(workspace, task_manage
 
 
 class TestDisplay:
+    def test_display_helpers_and_task_detail_optional_fields(self, capsys, monkeypatch):
+        from pyruns.cli import display
+
+        assert "Completed(3)" in display._status_str("completed", runs=3)
+        assert "? Mystery" in display._status_str("mystery")
+        assert display._truncate("abcdef", 0) == ""
+        assert display._truncate("abcdef", 2) == ".."
+        assert display._truncate("abcdef", 5) == "ab..."
+
+        def raise_terminal_size_error():
+            raise OSError("no terminal")
+
+        monkeypatch.setattr(display.shutil, "get_terminal_size", raise_terminal_size_error)
+        assert display._get_terminal_width() == 80
+
+        monkeypatch.setattr(display, "_get_terminal_width", lambda: 48)
+        display.print_task_detail({
+            "name": "detail-task",
+            "status": "failed",
+            "created_at": "2026-03-04_22-00-00",
+            "dir": "C:/workspace/tasks/detail-task",
+            "start_times": ["2026-03-04_22-01-00", "2026-03-04_22-02-00"],
+            "finish_times": ["2026-03-04_22-03-00"],
+            "pinned": True,
+            "env": {"B": "2", "A": "1"},
+            "notes": " keep this checkpoint ",
+            "_load_error": "config.yaml is invalid",
+            "config": {"lr": 0.01, "model": "vit"},
+        })
+
+        output = capsys.readouterr().out
+        assert "detail-task" in output
+        assert "Runs:       2" in output
+        assert "Last start: 2026-03-04_22-02-00" in output
+        assert "Last end:   2026-03-04_22-03-00" in output
+        assert "Pinned:     yes" in output
+        assert "A=1" in output and "B=2" in output
+        assert "Notes:" in output and "keep this checkpoint" in output
+        assert "Load error:" in output and "config.yaml is invalid" in output
+        assert "Config:" in output and "lr=0.01" in output
+
     def test_print_task_table_empty(self, capsys):
         from pyruns.cli.display import print_task_table
         print_task_table([])
@@ -341,6 +384,329 @@ class TestCmdJobs:
         captured = capsys.readouterr()
         assert "runner" in captured.out
         assert "[1]" in captured.out
+
+
+class TestCmdForegroundAndLog:
+    def test_fg_prints_existing_log_and_stops_when_task_is_finished(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_fg
+
+        _add_task(workspace, "finished-log", "completed", start_times=["2026-06-03_12-00-00"])
+        log_path = workspace / TASKS_DIR / "finished-log" / "run_logs" / "run1.log"
+        log_path.write_text("line 1\r\nline 2\n", encoding="utf-8")
+        task_manager.scan_disk()
+
+        cmd_fg(task_manager, ["finished-log"])
+
+        captured = capsys.readouterr()
+        assert "== finished-log ==" in captured.out
+        assert "line 1" in captured.out
+        assert "line 2" in captured.out
+        assert "Task completed" in captured.out
+
+    def test_log_delegates_to_interactive_log_viewer(self, workspace, task_manager):
+        from pyruns.cli.commands import cmd_log
+
+        _add_task(workspace, "log-target", "completed")
+        task_manager.scan_disk()
+
+        with patch("pyruns.cli.interactive_ls._view_log") as mock_view_log:
+            cmd_log(task_manager, ["log-target"])
+
+        mock_view_log.assert_called_once()
+        assert mock_view_log.call_args.args[0]["name"] == "log-target"
+
+
+class TestCmdOpenStatInfo:
+    def test_open_task_info_uses_configured_editor_without_wait_flag(self, workspace, task_manager):
+        from pyruns.cli.commands import cmd_open
+
+        _add_task(workspace, "open-task", "completed")
+        task_manager.scan_disk()
+
+        with (
+            patch("pyruns.cli.commands._get_git_editor", return_value="code --wait"),
+            patch("pyruns.cli.commands.subprocess.Popen") as mock_popen,
+        ):
+            cmd_open(task_manager, ["open-task", "task"])
+
+        command = mock_popen.call_args.args[0]
+        assert command[0] == "code"
+        assert command[-1].endswith("task_info.json")
+
+    def test_open_reports_missing_config_file(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_open
+
+        _add_task(workspace, "missing-config", "completed")
+        (workspace / TASKS_DIR / "missing-config" / CONFIG_FILENAME).unlink()
+        task_manager.scan_disk()
+
+        cmd_open(task_manager, ["missing-config", "config"])
+
+        captured = capsys.readouterr()
+        assert "File not found" in captured.out
+
+    def test_info_prints_workspace_and_status_counts(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_info
+
+        _add_task(workspace, "done", "completed")
+        _add_task(workspace, "todo", "pending")
+        task_manager.scan_disk()
+
+        cmd_info(task_manager)
+
+        captured = capsys.readouterr()
+        assert "Workspace Info" in captured.out
+        assert "Script:" in captured.out
+        assert "Tasks:" in captured.out
+        assert "pending=1" in captured.out
+        assert "completed=1" in captured.out
+
+    def test_stat_once_prints_cpu_ram_and_gpu_metrics(self, capsys):
+        from pyruns.cli import commands
+
+        class DummyMemory:
+            used = 512 * 1024 ** 2
+            total = 1024 * 1024 ** 2
+
+        class DummyMonitor:
+            def sample(self):
+                return {
+                    "cpu_percent": 25,
+                    "mem_percent": 50,
+                    "gpus": [{"index": 0, "util": 40, "mem_used": 100, "mem_total": 200}],
+                }
+
+        with (
+            patch.object(commands, "SystemMonitor", return_value=DummyMonitor()),
+            patch.object(commands.psutil, "virtual_memory", return_value=DummyMemory()),
+        ):
+            commands.cmd_stat(None)
+
+        captured = capsys.readouterr()
+        assert "System Metrics" in captured.out
+        assert "CPU:" in captured.out
+        assert "RAM:" in captured.out
+        assert "GPU 0:" in captured.out
+
+    def test_stat_interactive_flag_delegates_to_live_view(self):
+        from pyruns.cli import commands
+
+        with patch.object(commands, "_stat_interactive") as mock_interactive:
+            commands.cmd_stat(None, ["--interactive"])
+
+        mock_interactive.assert_called_once_with()
+
+
+class TestCliCommandHelpers:
+    def test_consume_option_accepts_equals_and_separate_values(self):
+        from pyruns.cli.commands import _consume_option
+
+        value, remaining = _consume_option(["--limit=5", "query"], "--limit", "-n")
+        assert value == "5"
+        assert remaining == ["query"]
+
+        value, remaining = _consume_option(["-n", "2", "left"], "--limit", "-n")
+        assert value == "2"
+        assert remaining == ["left"]
+
+    def test_consume_option_reports_missing_value(self, capsys):
+        from pyruns.cli.commands import _consume_option
+
+        value, remaining = _consume_option(["task", "--output"], "--output", "-o")
+
+        assert value is None
+        assert remaining == ["task"]
+        assert "Missing value" in capsys.readouterr().out
+
+    def test_consume_multi_option_accepts_comma_values_and_missing_value(self, capsys):
+        from pyruns.cli.commands import _consume_multi_option
+
+        values, remaining = _consume_multi_option(
+            ["--status=completed,failed", "-s", "running,queued", "task"],
+            "--status",
+            "-s",
+        )
+        assert values == ["completed", "failed", "running", "queued"]
+        assert remaining == ["task"]
+
+        values, remaining = _consume_multi_option(["task", "-s"], "--status", "-s")
+        assert values == []
+        assert remaining == ["task"]
+        assert "Missing value" in capsys.readouterr().out
+
+    def test_parse_helpers_fall_back_for_invalid_values(self, capsys):
+        from pyruns.cli.commands import _normalize_mode, _normalize_status_filters, _parse_limit, _parse_workers
+
+        assert _parse_limit("abc") is None
+        assert _parse_limit("0") is None
+        assert _parse_limit("3") == 3
+        assert _parse_workers("bad") == 1
+        assert _parse_workers("-1") == 1
+        assert _parse_workers("4") == 4
+        assert _normalize_mode("process") == "process"
+        assert _normalize_mode("weird") == "thread"
+        assert _normalize_status_filters(["completed", "unknown", "FAILED"]) == ["completed", "failed"]
+
+        output = capsys.readouterr().out
+        assert "Invalid limit" in output
+        assert "Workers must be greater than 0" in output
+        assert "Unknown mode" in output
+        assert "Unknown status filter" in output
+
+    def test_get_git_editor_uses_env_git_and_vscode_fallbacks(self, monkeypatch):
+        from pyruns.cli import commands
+
+        monkeypatch.setenv("GIT_EDITOR", "nano")
+        assert commands._get_git_editor() == "nano"
+
+        monkeypatch.delenv("GIT_EDITOR")
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        with patch.object(commands.subprocess, "check_output", return_value="vim -f\n"):
+            assert commands._get_git_editor() == "vim -f"
+
+        with patch.object(commands.subprocess, "check_output", side_effect=RuntimeError):
+            monkeypatch.setenv("VISUAL", "emacs")
+            assert commands._get_git_editor() == "emacs"
+            monkeypatch.delenv("VISUAL")
+            monkeypatch.setenv("EDITOR", "micro")
+            assert commands._get_git_editor() == "micro"
+            monkeypatch.delenv("EDITOR")
+            monkeypatch.setenv("TERM_PROGRAM", "vscode")
+            monkeypatch.setenv("VSCODE_IPC_HOOK_CLI", "cursor-ipc")
+            assert commands._get_git_editor() == "cursor --wait"
+
+    def test_resolve_targets_reports_out_of_range_and_ambiguous_names(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import _resolve_targets
+
+        _add_task(workspace, "alpha-one", "pending")
+        _add_task(workspace, "alpha-two", "pending")
+        task_manager.scan_disk()
+
+        assert _resolve_targets(task_manager, ["99"]) == []
+        assert _resolve_targets(task_manager, ["alpha"]) == []
+        output = capsys.readouterr().out
+        assert "Task index out of range" in output
+        assert "Ambiguous name" in output
+
+    def test_resolve_export_tasks_defaults_to_all_and_applies_status(self, workspace, task_manager):
+        from pyruns.cli.commands import _resolve_export_tasks
+
+        _add_task(workspace, "done", "completed")
+        _add_task(workspace, "todo", "pending")
+        task_manager.scan_disk()
+
+        tasks = _resolve_export_tasks(task_manager, [], ["completed"], include_all=False)
+
+        assert [task["name"] for task in tasks] == ["done"]
+
+    def test_progress_bar_clamps_and_switches_warning_colors(self):
+        from pyruns.cli.commands import _bar
+
+        assert "100.0%" in _bar(120)
+        assert "  0.0%" in _bar(-5)
+        assert "\033[33m" in _bar(70)
+        assert "\033[31m" in _bar(90)
+
+    def test_stat_interactive_renders_once_then_exits_on_keyboard_interrupt(self, capsys):
+        from pyruns.cli import commands
+
+        class DummyMemory:
+            used = 256 * 1024 ** 2
+            total = 1024 * 1024 ** 2
+
+        class DummyMonitor:
+            def sample(self):
+                return {
+                    "cpu_percent": 85,
+                    "mem_percent": 25,
+                    "gpus": [{"index": 1, "util": 90, "mem_used": 300, "mem_total": 600}],
+                }
+
+        with (
+            patch.object(commands, "SystemMonitor", return_value=DummyMonitor()),
+            patch.object(commands.psutil, "virtual_memory", return_value=DummyMemory()),
+            patch.object(commands.time, "sleep", side_effect=KeyboardInterrupt),
+        ):
+            commands._stat_interactive()
+
+        output = capsys.readouterr().out
+        assert "System Metrics" in output
+        assert "GPU 1:" in output
+        assert "Exited stat view" in output
+
+    def test_generate_creates_tasks_from_edited_config(self, workspace, task_manager, tmp_path, capsys):
+        from pyruns.cli import commands
+
+        template = tmp_path / "template.yaml"
+        template.write_text("lr: 0.1\n", encoding="utf-8")
+
+        class DummyGenerator:
+            def __init__(self, root_dir):
+                self.root_dir = root_dir
+
+            def create_tasks(self, configs, name_prefix, task_kind=None):
+                assert configs == [{"lr": 0.1}, {"lr": 0.2}]
+                assert name_prefix == "batch"
+                return [
+                    {"name": "batch-1", "dir": str(tmp_path / "batch-1")},
+                    {"name": "batch-2", "dir": str(tmp_path / "batch-2")},
+                ]
+
+        with (
+            patch.object(commands, "_get_git_editor", return_value="editor"),
+            patch.object(commands.subprocess, "run"),
+            patch.object(commands, "load_yaml", return_value={"lr": "0.1 | 0.2"}),
+            patch.object(commands, "generate_batch_configs", return_value=[{"lr": 0.1}, {"lr": 0.2}]),
+            patch.object(commands, "TaskGenerator", DummyGenerator),
+            patch("builtins.input", side_effect=["y", "batch"]),
+        ):
+            commands.cmd_generate(task_manager, [str(template)])
+
+        output = capsys.readouterr().out
+        assert "Created 2 task(s)" in output
+        assert "batch-1" in output
+
+    def test_generate_handles_editor_failure_empty_config_and_cancel(self, workspace, task_manager, tmp_path, capsys):
+        from pyruns.cli import commands
+
+        template = tmp_path / "template.yaml"
+        template.write_text("lr: 0.1\n", encoding="utf-8")
+
+        with (
+            patch.object(commands, "_get_git_editor", return_value="missing-editor"),
+            patch.object(commands.subprocess, "run", side_effect=RuntimeError),
+        ):
+            commands.cmd_generate(task_manager, [str(template)])
+        assert "Failed to launch editor" in capsys.readouterr().out
+
+        with (
+            patch.object(commands, "_get_git_editor", return_value="editor"),
+            patch.object(commands.subprocess, "run"),
+            patch.object(commands, "load_yaml", return_value={}),
+        ):
+            commands.cmd_generate(task_manager, [str(template)])
+        assert "Empty config" in capsys.readouterr().out
+
+        with (
+            patch.object(commands, "_get_git_editor", return_value="editor"),
+            patch.object(commands.subprocess, "run"),
+            patch.object(commands, "load_yaml", return_value={"lr": "0.1 | 0.2"}),
+            patch.object(commands, "generate_batch_configs", return_value=[{"lr": 0.1}, {"lr": 0.2}]),
+            patch("builtins.input", return_value="n"),
+        ):
+            commands.cmd_generate(task_manager, [str(template)])
+        assert "Cancelled" in capsys.readouterr().out
+
+    def test_generate_reports_missing_template(self, task_manager, tmp_path, capsys):
+        from pyruns.cli.commands import cmd_generate
+
+        class DummyTaskManager:
+            tasks_dir = str(tmp_path / "workspace" / TASKS_DIR)
+
+        cmd_generate(DummyTaskManager(), [str(tmp_path / "missing.yaml")])
+
+        assert "Template not found" in capsys.readouterr().out
 
 
 class TestCmdRun:
@@ -620,6 +986,281 @@ class TestEntryPoint:
         assert "Invalid port: abc" in captured.out
 
 
+class TestCliEntryHelpers:
+    def test_print_version_exits_with_version(self, capsys):
+        from pyruns import __version__
+        from pyruns.cli import _print_version
+
+        with pytest.raises(SystemExit) as exc:
+            _print_version()
+
+        assert exc.value.code == 0
+        assert f"pyruns {__version__}" in capsys.readouterr().out
+
+    def test_consume_ui_options_accepts_browser_and_port_forms(self):
+        from pyruns.cli import _consume_ui_options
+
+        port, open_browser, remaining = _consume_ui_options(
+            ["--browser", "--port=9020", "train.py", "--no-browser", "-p", "9021"]
+        )
+
+        assert port == 9021
+        assert open_browser is False
+        assert remaining == ["train.py"]
+
+    def test_consume_ui_options_rejects_missing_port(self, capsys):
+        from pyruns.cli import _consume_ui_options
+
+        with pytest.raises(SystemExit):
+            _consume_ui_options(["--port"])
+
+        assert "Missing value for --port" in capsys.readouterr().out
+
+    def test_parse_port_value_rejects_out_of_range(self, capsys):
+        from pyruns.cli import _parse_port_value
+
+        with pytest.raises(SystemExit):
+            _parse_port_value("70000")
+
+        assert "Port must be between" in capsys.readouterr().out
+
+    def test_resolve_workspace_can_match_script_info_path_and_ignores_bad_entries(self, tmp_path, monkeypatch):
+        from pyruns.cli import _resolve_workspace
+
+        monkeypatch.chdir(tmp_path)
+        script = tmp_path / "nested" / "train.py"
+        script.parent.mkdir()
+        script.write_text("print('train')\n", encoding="utf-8")
+
+        pyruns_root = tmp_path / "_pyruns_"
+        (pyruns_root / "_shell_").mkdir(parents=True)
+        (pyruns_root / "broken").mkdir()
+        (pyruns_root / "broken" / "script_info.json").write_text("{bad json", encoding="utf-8")
+        target = pyruns_root / "custom-workspace"
+        target.mkdir()
+        (target / "script_info.json").write_text(
+            json.dumps({"script_name": "other", "script_path": str(script)}),
+            encoding="utf-8",
+        )
+
+        assert _resolve_workspace(str(script)) == str(target)
+
+    def test_resolve_workspace_without_script_picks_latest_existing_script(self, tmp_path, monkeypatch):
+        from pyruns.cli import _resolve_workspace
+
+        monkeypatch.chdir(tmp_path)
+        older = tmp_path / "older.py"
+        newer = tmp_path / "newer.py"
+        older.write_text("print('old')\n", encoding="utf-8")
+        newer.write_text("print('new')\n", encoding="utf-8")
+        os.utime(older, (1000, 1000))
+        os.utime(newer, (2000, 2000))
+
+        pyruns_root = tmp_path / "_pyruns_"
+        old_ws = pyruns_root / "older"
+        new_ws = pyruns_root / "newer"
+        old_ws.mkdir(parents=True)
+        new_ws.mkdir()
+        (old_ws / "script_info.json").write_text(json.dumps({"script_path": str(older)}), encoding="utf-8")
+        (new_ws / "script_info.json").write_text(json.dumps({"script_path": str(newer)}), encoding="utf-8")
+
+        assert _resolve_workspace() == str(new_ws)
+
+    def test_init_task_manager_sets_root_and_creates_tasks_dir(self, tmp_path, monkeypatch):
+        import pyruns.cli as cli
+
+        workspace = tmp_path / "_pyruns_" / "main"
+        workspace.mkdir(parents=True)
+        monkeypatch.delenv(cli.ENV_KEY_ROOT, raising=False)
+
+        class DummyTaskManager:
+            def __init__(self, tasks_dir, lazy_scan=False):
+                self.tasks_dir = tasks_dir
+                self.lazy_scan = lazy_scan
+
+        monkeypatch.setattr("pyruns.core.task_manager.TaskManager", DummyTaskManager)
+        monkeypatch.setattr("pyruns.utils.settings.ensure_settings_file", lambda workspace: None)
+        monkeypatch.setattr("pyruns.utils.settings.load_settings", lambda workspace: {})
+
+        manager = cli._init_task_manager(str(workspace))
+
+        assert manager.tasks_dir == str(workspace / TASKS_DIR)
+        assert manager.lazy_scan is False
+        assert os.environ[cli.ENV_KEY_ROOT] == str(workspace)
+        assert (workspace / TASKS_DIR).exists()
+
+    def test_dispatch_cli_reports_missing_workspace(self, monkeypatch, capsys):
+        import pyruns.cli as cli
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        monkeypatch.setattr(cli, "_resolve_workspace", lambda: None)
+
+        with pytest.raises(SystemExit) as exc:
+            cli._dispatch_cli(["info"])
+
+        assert exc.value.code == 1
+        assert "No pyruns workspace found" in capsys.readouterr().out
+
+    def test_dispatch_cli_runs_interactive_and_named_command(self, monkeypatch):
+        import pyruns.cli as cli
+        from pyruns.cli import commands
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        calls = []
+        dummy_manager = object()
+        monkeypatch.setattr(cli, "_resolve_workspace", lambda: "workspace")
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace: dummy_manager)
+        monkeypatch.setattr("pyruns.cli.interactive.run_interactive", lambda tm: calls.append(("interactive", tm)))
+
+        cli._dispatch_cli(["cli"])
+        assert calls == [("interactive", dummy_manager)]
+
+        monkeypatch.setitem(commands.COMMANDS, "sentinel", lambda tm, args: calls.append(("sentinel", tm, args)))
+        cli._dispatch_cli(["sentinel", "a", "b"])
+        assert calls[-1] == ("sentinel", dummy_manager, ["a", "b"])
+
+    def test_dispatch_cli_reuses_script_argument_workspace(self, tmp_path, monkeypatch):
+        import pyruns.cli as cli
+        from pyruns.cli import commands
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        calls = []
+        dummy_manager = object()
+        monkeypatch.setattr(cli, "_setup_env", lambda path: calls.append(("setup", path)) or "workspace")
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace: dummy_manager)
+        monkeypatch.setitem(commands.COMMANDS, "info", lambda tm, args: calls.append(("info", tm, args)))
+
+        cli._dispatch_cli(["info", str(script), "--verbose"])
+
+        assert calls == [("setup", str(script)), ("info", dummy_manager, ["--verbose"])]
+
+    def test_dispatch_cli_rejects_unknown_command(self, monkeypatch, capsys):
+        import pyruns.cli as cli
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        monkeypatch.setattr(cli, "_resolve_workspace", lambda: "workspace")
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace: object())
+
+        with pytest.raises(SystemExit) as exc:
+            cli._dispatch_cli(["not-real"])
+
+        assert exc.value.code == 1
+        assert "Unknown command" in capsys.readouterr().out
+
+    def test_launch_ui_delegates_to_web_main_and_resets_argv(self, monkeypatch):
+        import pyruns.cli as cli
+        import pyruns.web.app as web_app
+
+        captured = {}
+        monkeypatch.setattr("sys.argv", ["pyr", "leftover"])
+        monkeypatch.setattr(web_app, "main", lambda **kwargs: captured.update(kwargs))
+
+        cli._launch_ui("/manager", port=9010, open_browser=True)
+
+        assert captured == {"start_path": "/manager", "port": 9010, "open_browser": True}
+        assert sys.argv == ["pyr"]
+
+    def test_handle_ui_launch_rejects_missing_path_and_launches_existing_script(self, tmp_path, monkeypatch, capsys):
+        import pyruns.cli as cli
+
+        with pytest.raises(SystemExit):
+            cli._handle_ui_launch(str(tmp_path / "missing.py"), None)
+        assert "is not a file or known command" in capsys.readouterr().out
+
+        script = tmp_path / "train.py"
+        config = tmp_path / "config.yaml"
+        script.write_text("print('train')\n", encoding="utf-8")
+        config.write_text("lr: 0.1\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(cli, "ensure_root_dir", lambda *args: calls.append(("ensure", args)))
+        monkeypatch.setattr(cli, "_setup_env", lambda path, yaml: calls.append(("setup", path, yaml)))
+        monkeypatch.setattr(cli, "_launch_ui", lambda path, **kwargs: calls.append(("launch", path, kwargs)))
+
+        cli._handle_ui_launch(str(script), str(config), port=9009, open_browser=False)
+
+        assert calls[0][0] == "ensure"
+        assert calls[1] == ("setup", str(script).replace("\\", "/"), str(config))
+        assert calls[2] == ("launch", "/", {"port": 9009, "open_browser": False})
+
+    def test_launch_shell_workspace_ui_bootstraps_current_directory(self, tmp_path, monkeypatch, capsys):
+        import pyruns.cli as cli
+
+        calls = []
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli, "ensure_root_dir", lambda root: calls.append(("ensure", root)))
+        monkeypatch.setattr(cli, "bootstrap_shell_workspace", lambda root: calls.append(("bootstrap", root)) or str(tmp_path / "_pyruns_" / "_shell_"))
+        monkeypatch.setattr(cli, "_launch_ui", lambda path, **kwargs: calls.append(("launch", path, kwargs)))
+
+        cli._launch_shell_workspace_ui(port=9022, open_browser=False)
+
+        assert calls[-1] == ("launch", "/generator?launcher=1", {"port": 9022, "open_browser": False})
+        assert "Starting shell workspace" in capsys.readouterr().out
+
+    def test_pyr_dev_requires_script_and_delegates_launch(self, tmp_path, monkeypatch, capsys):
+        import pyruns.cli as cli
+        from pyruns.cli import pyr
+
+        monkeypatch.setattr("sys.argv", ["pyr", "dev"])
+        with pytest.raises(SystemExit):
+            pyr()
+        assert "Usage: pyr dev" in capsys.readouterr().out
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr("sys.argv", ["pyr", "--port", "9040", "--browser", "dev", str(script), "cfg.yaml"])
+        monkeypatch.setattr(cli, "_launch_dev", lambda script_arg, custom_yaml=None, **kwargs: calls.append((script_arg, custom_yaml, kwargs)))
+
+        pyr()
+
+        assert calls == [(str(script), "cfg.yaml", {"port": 9040, "open_browser": True})]
+
+    def test_pyr_ui_paths_and_cli_option_rejection(self, tmp_path, monkeypatch, capsys):
+        import pyruns.cli as cli
+        from pyruns.cli import pyr
+
+        calls = []
+        monkeypatch.setattr(cli, "ensure_root_dir", lambda *args: calls.append(("ensure", args)))
+        monkeypatch.setattr(cli, "launcher_query", lambda: "/launcher")
+        monkeypatch.setattr(cli, "_launch_ui", lambda path, **kwargs: calls.append(("launch", path, kwargs)))
+        monkeypatch.setattr("sys.argv", ["pyr", "ui"])
+        pyr()
+        assert calls[-1] == ("launch", "/launcher", {"port": None, "open_browser": None})
+        assert "Opening launcher" in capsys.readouterr().out
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        monkeypatch.setattr(cli, "_handle_ui_launch", lambda path, yaml=None, **kwargs: calls.append(("handle", path, yaml, kwargs)))
+        monkeypatch.setattr("sys.argv", ["pyr", "ui", str(script), "cfg.yaml"])
+        pyr()
+        assert calls[-1] == ("handle", str(script), "cfg.yaml", {"port": None, "open_browser": None})
+
+        monkeypatch.setattr("sys.argv", ["pyr", "--no-browser", "ls"])
+        with pytest.raises(SystemExit):
+            pyr()
+        assert "UI launch options only apply" in capsys.readouterr().out
+
+    def test_launch_dev_rejects_missing_script_and_runs_web_app(self, tmp_path, monkeypatch, capsys):
+        import pyruns.cli as cli
+
+        with pytest.raises(SystemExit):
+            cli._launch_dev(str(tmp_path / "missing.py"))
+        assert "not found" in capsys.readouterr().out
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(cli, "_setup_env", lambda path, yaml=None: calls.append(("setup", path, yaml)))
+        monkeypatch.setattr(cli.subprocess, "run", lambda command, check=False: calls.append(("run", command, check)))
+
+        cli._launch_dev(str(script), "config.yaml", port=9033, open_browser=False)
+
+        assert calls[0] == ("setup", str(script).replace("\\", "/"), "config.yaml")
+        assert calls[1][1][-3:] == ["--port", "9033", "--no-browser"]
+
+
 class TestScriptLaunchRules:
     def test_pyruns_load_requires_yaml_on_first_launch(self, tmp_path):
         script_path = tmp_path / "train.py"
@@ -755,3 +1396,413 @@ class TestInteractive:
                 run_interactive(task_manager)
         except KeyboardInterrupt:
             pytest.fail("KeyboardInterrupt was not caught by run_interactive")
+
+
+class TestInteractiveLs:
+    def test_interactive_ls_renders_tasks_and_can_run_current_task(self, workspace, task_manager, capsys):
+        from pyruns.cli import interactive_ls
+
+        _add_task(workspace, "task-a", "pending")
+        _add_task(workspace, "task-b", "completed")
+        task_manager.scan_disk()
+
+        with (
+            patch.object(interactive_ls, "_enter_alt"),
+            patch.object(interactive_ls, "_leave_alt"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls, "getch", side_effect=["a", "r", "q"]),
+            patch.object(task_manager, "start_task_now") as mock_start,
+        ):
+            interactive_ls.run_interactive_ls(task_manager)
+
+        captured = capsys.readouterr()
+        assert "Pyruns Interactive View" in captured.out
+        assert "task-a" in captured.out
+        assert "task-b" in captured.out
+        assert "selected" in captured.out
+        mock_start.assert_called_once()
+        assert mock_start.call_args.args[0] in {"task-a", "task-b"}
+
+    def test_interactive_ls_filter_prompt_updates_query(self, workspace, task_manager, capsys):
+        from pyruns.cli import interactive_ls
+
+        _add_task(workspace, "visible-match", "pending")
+        _add_task(workspace, "hidden-other", "pending")
+        task_manager.scan_disk()
+
+        with (
+            patch.object(interactive_ls, "_enter_alt"),
+            patch.object(interactive_ls, "_leave_alt"),
+            patch.object(interactive_ls, "_flush_input"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls, "getch", side_effect=["f", "q"]),
+            patch("builtins.input", return_value="visible"),
+        ):
+            interactive_ls.run_interactive_ls(task_manager)
+
+        captured = capsys.readouterr()
+        assert "(filter: 'visible')" in captured.out
+        assert "visible-match" in captured.out
+
+    def test_interactive_ls_handles_empty_list_and_filter_interrupt(self, workspace, task_manager, capsys):
+        from pyruns.cli import interactive_ls
+
+        with (
+            patch.object(interactive_ls, "_enter_alt"),
+            patch.object(interactive_ls, "_leave_alt"),
+            patch.object(interactive_ls, "_flush_input"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=80),
+            patch.object(interactive_ls, "getch", side_effect=["f", "q"]),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
+        ):
+            interactive_ls.run_interactive_ls(task_manager)
+
+        captured = capsys.readouterr()
+        assert "No tasks found" in captured.out
+        assert "Exited interactive mode" in captured.out
+
+    def test_interactive_ls_selection_navigation_delete_and_batch_branches(self, workspace, task_manager):
+        from pyruns.cli import interactive_ls
+
+        _add_task(workspace, "alpha", "pending")
+        _add_task(workspace, "beta", "pending")
+        task_manager.scan_disk()
+
+        with (
+            patch.object(interactive_ls, "_enter_alt"),
+            patch.object(interactive_ls, "_leave_alt"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls, "getch", side_effect=["down", "up", "c", "c", "a", "a", "d", "q"]),
+            patch.object(interactive_ls, "_delete_tasks") as mock_delete,
+        ):
+            interactive_ls.run_interactive_ls(task_manager)
+
+        mock_delete.assert_called_once()
+        assert len(mock_delete.call_args.args[1]) == 1
+
+        batch_seen = {}
+
+        def capture_batch(tm, tasks, selected):
+            batch_seen["selected"] = set(selected)
+
+        with (
+            patch.object(interactive_ls, "_enter_alt"),
+            patch.object(interactive_ls, "_leave_alt"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls, "getch", side_effect=["c", "b", "q"]),
+            patch.object(interactive_ls, "_batch_run", side_effect=capture_batch) as mock_batch,
+        ):
+            interactive_ls.run_interactive_ls(task_manager)
+
+        mock_batch.assert_called_once()
+        assert batch_seen["selected"]
+
+    def test_interactive_ls_open_log_env_export_branches(self, workspace, task_manager):
+        from pyruns.cli import interactive_ls
+
+        _add_task(workspace, "alpha", "pending")
+        task_manager.scan_disk()
+
+        with (
+            patch.object(interactive_ls, "_enter_alt"),
+            patch.object(interactive_ls, "_leave_alt"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls, "getch", side_effect=["o", "l", "e", "x", "q"]),
+            patch("pyruns.cli.commands.cmd_open") as mock_open,
+            patch.object(interactive_ls, "_view_log") as mock_view_log,
+            patch.object(interactive_ls, "_edit_env") as mock_edit_env,
+            patch.object(interactive_ls, "_do_export") as mock_export,
+            patch("builtins.input", return_value=""),
+        ):
+            interactive_ls.run_interactive_ls(task_manager)
+
+        mock_open.assert_called_once()
+        mock_view_log.assert_called_once()
+        mock_edit_env.assert_called_once()
+        mock_export.assert_called_once()
+
+    def test_batch_run_submits_only_runnable_selected_tasks(self):
+        from pyruns.cli.interactive_ls import _batch_run
+
+        class DummyTaskManager:
+            calls = []
+
+            def start_batch_tasks(self, names, execution_mode=None, max_workers=None):
+                self.calls.append((names, execution_mode, max_workers))
+
+        tm = DummyTaskManager()
+        tasks = [
+            {"name": "ready", "status": "pending"},
+            {"name": "busy", "status": "running"},
+        ]
+
+        with patch("builtins.input", side_effect=["3", "process", ""]):
+            _batch_run(tm, tasks, {"ready", "busy"})
+
+        assert tm.calls == [(["ready"], "process", 3)]
+
+    def test_batch_run_reports_when_no_selected_task_is_runnable(self, capsys):
+        from pyruns.cli.interactive_ls import _batch_run
+
+        class DummyTaskManager:
+            def start_batch_tasks(self, names, execution_mode=None, max_workers=None):
+                raise AssertionError("No task should be submitted")
+
+        with patch("builtins.input", return_value=""):
+            _batch_run(DummyTaskManager(), [{"name": "busy", "status": "queued"}], {"busy"})
+
+        captured = capsys.readouterr()
+        assert "No runnable tasks selected" in captured.out
+
+    def test_batch_run_and_delete_handle_keyboard_interrupt(self, capsys):
+        from pyruns.cli.interactive_ls import _batch_run, _delete_tasks
+
+        class DummyTaskManager:
+            def start_batch_tasks(self, names, execution_mode=None, max_workers=None):
+                raise AssertionError("Interrupted batch should not submit")
+
+            def delete_tasks(self, names):
+                raise AssertionError("Interrupted delete should not submit")
+
+        with patch("builtins.input", side_effect=[KeyboardInterrupt, ""]):
+            _batch_run(DummyTaskManager(), [{"name": "ready", "status": "pending"}], {"ready"})
+
+        with patch("builtins.input", side_effect=[KeyboardInterrupt, ""]):
+            _delete_tasks(DummyTaskManager(), [{"name": "ready"}])
+
+        captured = capsys.readouterr()
+        assert captured.out.count("Cancelled") == 2
+
+    def test_delete_tasks_confirms_before_deleting(self):
+        from pyruns.cli.interactive_ls import _delete_tasks
+
+        class DummyTaskManager:
+            deleted = []
+
+            def delete_tasks(self, names):
+                self.deleted.append(names)
+
+        tm = DummyTaskManager()
+        with patch("builtins.input", side_effect=["yes", ""]):
+            _delete_tasks(tm, [{"name": "obsolete"}])
+
+        assert tm.deleted == [["obsolete"]]
+
+    def test_delete_tasks_can_cancel(self, capsys):
+        from pyruns.cli.interactive_ls import _delete_tasks
+
+        class DummyTaskManager:
+            def delete_tasks(self, names):
+                raise AssertionError("Cancelled delete should not call delete_tasks")
+
+        with patch("builtins.input", side_effect=["n", ""]):
+            _delete_tasks(DummyTaskManager(), [{"name": "keep"}])
+
+        captured = capsys.readouterr()
+        assert "Cancelled" in captured.out
+
+    def test_edit_env_merges_existing_task_env(self, workspace):
+        from pyruns.cli.interactive_ls import _edit_env
+
+        task_dir = workspace / TASKS_DIR / "env-edit"
+        task_dir.mkdir(parents=True)
+        save_task_info(str(task_dir), {"name": "env-edit", "status": "pending", "env": {"OLD": "1"}})
+
+        class DummyTaskManager:
+            updated = []
+
+            def update_task_env(self, name, env):
+                self.updated.append((name, env))
+
+        tm = DummyTaskManager()
+        with patch("builtins.input", return_value="NEW=2"):
+            _edit_env(tm, {"name": "env-edit", "dir": str(task_dir)})
+
+        assert tm.updated == [("env-edit", {"OLD": "1", "NEW": "2"})]
+
+    def test_edit_env_can_delete_cancel_and_ignore_keyboard_interrupt(self, workspace, capsys):
+        from pyruns.cli.interactive_ls import _edit_env
+
+        task_dir = workspace / TASKS_DIR / "env-delete"
+        task_dir.mkdir(parents=True)
+        save_task_info(str(task_dir), {"name": "env-delete", "status": "pending", "env": {"OLD": "1"}})
+
+        class DummyTaskManager:
+            def __init__(self):
+                self.updated = []
+
+            def update_task_env(self, name, env):
+                self.updated.append((name, env))
+
+        tm = DummyTaskManager()
+        with patch("builtins.input", return_value="OLD"):
+            _edit_env(tm, {"name": "env-delete", "dir": str(task_dir)})
+        assert tm.updated == [("env-delete", {})]
+
+        empty_dir = workspace / TASKS_DIR / "env-empty"
+        empty_dir.mkdir(parents=True)
+        save_task_info(str(empty_dir), {"name": "env-empty", "status": "pending"})
+        with patch("builtins.input", return_value=""):
+            _edit_env(tm, {"name": "env-empty", "dir": str(empty_dir)})
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            _edit_env(tm, {"name": "env-empty", "dir": str(empty_dir)})
+
+        captured = capsys.readouterr()
+        assert "(No custom variables)" in captured.out
+
+    def test_do_export_writes_json_file(self, tmp_path, monkeypatch):
+        from pyruns.cli import interactive_ls
+
+        monkeypatch.chdir(tmp_path)
+        task_dir = tmp_path / "tasks" / "export-me"
+        task_dir.mkdir(parents=True)
+        save_task_info(
+            str(task_dir),
+            {
+                "name": "export-me",
+                "status": "completed",
+                "records": [{"loss": 0.1}],
+                "tracks": [],
+            },
+        )
+        tasks = [
+            {
+                "name": "export-me",
+                "dir": str(task_dir),
+                "status": "completed",
+                "start_times": ["2026-06-03_12-00-00"],
+                "finish_times": ["2026-06-03_12-01-00"],
+            }
+        ]
+
+        with (
+            patch.object(interactive_ls, "export_timestamp", return_value="2026-06-03_12-00-00"),
+            patch("builtins.input", return_value="json"),
+        ):
+            interactive_ls._do_export(tasks)
+
+        output = tmp_path / "pyruns_export_2026-06-03_12-00-00.json"
+        assert output.exists()
+        assert "export-me" in output.read_text(encoding="utf-8")
+
+    def test_do_export_reports_no_data_for_empty_export(self, capsys):
+        from pyruns.cli import interactive_ls
+
+        with patch("builtins.input", return_value="csv"):
+            interactive_ls._do_export([])
+
+        captured = capsys.readouterr()
+        assert "No data to export" in captured.out
+
+    def test_view_log_reports_missing_log_files(self, tmp_path, capsys):
+        from pyruns.cli.interactive_ls import _view_log
+
+        task_dir = tmp_path / "task-no-logs"
+        task_dir.mkdir()
+
+        with patch("builtins.input", return_value=""):
+            _view_log({"name": "task-no-logs", "dir": str(task_dir)})
+
+        captured = capsys.readouterr()
+        assert "No log files" in captured.out
+
+    def test_view_log_renders_log_files_and_handles_navigation(self, tmp_path, capsys):
+        from pyruns.cli import interactive_ls
+
+        task_dir = tmp_path / "task-with-logs"
+        log_dir = task_dir / "run_logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run1.log").write_text("first run\n", encoding="utf-8")
+        (log_dir / "run2.log").write_text("second run\n", encoding="utf-8")
+
+        class TerminalSize:
+            lines = 12
+
+        if interactive_ls.os.name == "nt":
+            readiness = patch.object(interactive_ls.msvcrt, "kbhit", return_value=True)
+        else:
+            readiness = patch.object(
+                interactive_ls.select,
+                "select",
+                return_value=([interactive_ls.sys.stdin], [], []),
+            )
+
+        with (
+            readiness,
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls.shutil, "get_terminal_size", return_value=TerminalSize()),
+            patch.object(interactive_ls, "getch", side_effect=["n", "p", "q"]),
+        ):
+            interactive_ls._view_log({"name": "task-with-logs", "dir": str(task_dir)})
+
+        captured = capsys.readouterr()
+        assert "== task-with-logs ==" in captured.out
+        assert "first run" in captured.out
+        assert "second run" in captured.out
+
+    def test_view_log_streams_live_chunks_and_handles_read_errors(self, tmp_path, capsys):
+        from pyruns.cli import interactive_ls
+
+        task_dir = tmp_path / "task-live-log"
+        log_dir = task_dir / "run_logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run1.log").write_text("", encoding="utf-8")
+
+        class TerminalSize:
+            lines = 12
+
+        def subscribe(task_name, callback):
+            callback("live one\nlive two\n")
+
+        class LiveQueue:
+            def __init__(self):
+                self.items = []
+                self.empty_checks = 0
+
+            def put(self, item):
+                self.items.append(item)
+
+            def empty(self):
+                self.empty_checks += 1
+                return self.empty_checks == 1
+
+            def get_nowait(self):
+                if self.items:
+                    return self.items.pop(0)
+                raise interactive_ls.queue.Empty
+
+        def readiness_patch():
+            if interactive_ls.os.name == "nt":
+                return patch.object(interactive_ls.msvcrt, "kbhit", return_value=True)
+            return patch.object(
+                interactive_ls.select,
+                "select",
+                return_value=([interactive_ls.sys.stdin], [], []),
+            )
+
+        with (
+            readiness_patch(),
+            patch.object(interactive_ls.queue, "Queue", LiveQueue),
+            patch.object(interactive_ls.log_emitter, "subscribe", side_effect=subscribe),
+            patch.object(interactive_ls.log_emitter, "unsubscribe"),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls.shutil, "get_terminal_size", return_value=TerminalSize()),
+            patch.object(interactive_ls, "getch", side_effect=["q"]),
+        ):
+            interactive_ls._view_log({"name": "task-live-log", "dir": str(task_dir)})
+
+        captured = capsys.readouterr()
+        assert "live one" in captured.out
+        assert "live two" in captured.out
+
+        with (
+            readiness_patch(),
+            patch.object(interactive_ls, "_get_terminal_width", return_value=100),
+            patch.object(interactive_ls.shutil, "get_terminal_size", return_value=TerminalSize()),
+            patch.object(interactive_ls, "getch", side_effect=["q"]),
+            patch("builtins.open", side_effect=OSError("cannot read")),
+        ):
+            interactive_ls._view_log({"name": "task-live-log", "dir": str(task_dir)})
+
+        captured = capsys.readouterr()
+        assert "Error: cannot read" in captured.out

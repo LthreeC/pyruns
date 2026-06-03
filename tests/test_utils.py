@@ -2,21 +2,28 @@
 Tests for pyruns.utils — parse_utils, log_io, process_utils, sort_utils,
 settings, info_io, config_utils, batch_utils, and validation.
 """
+import builtins
+import importlib
 import json
+import logging
 import os
+import re
 import signal
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 
 import pyruns.utils.batch_utils as batch_utils
+import pyruns.utils.log_io as log_io
+import pyruns.utils.process_utils as process_utils
 import pyruns.utils.settings as settings
 from pyruns._config import (
     DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
-    SETTINGS_FILENAME, TASK_INFO_FILENAME, RUN_LOGS_DIR, RECORDS_KEY,
+    SETTINGS_FILENAME, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME, RUN_LOGS_DIR, RECORDS_KEY,
     BATCH_ESCAPE,
 )
 from pyruns.utils.batch_utils import (
@@ -398,6 +405,78 @@ def test_decode_log_bytes_falls_back_to_gbk_for_windows_logs(monkeypatch):
 # ═══════════════════════════════════════════════════════════════
 
 
+def test_decode_log_bytes_handles_invalid_encodings_and_best_replacement(monkeypatch):
+    assert log_io._decode_with_encoding(b"\xff", "not-a-real-encoding") is None
+
+    def fake_decode(data, encoding, *, errors="strict"):
+        if errors == "strict":
+            return None
+        if encoding == "utf-8":
+            return "\ufffd" * len(data)
+        if encoding == "noisy":
+            return "\ufffd\ufffdok"
+        if encoding == "cleaner":
+            return "\ufffdok"
+        return None
+
+    monkeypatch.setattr(log_io, "_log_decode_candidates", lambda: ["noisy", "cleaner"])
+    monkeypatch.setattr(log_io, "_decode_with_encoding", fake_decode)
+
+    assert decode_log_bytes(b"\xff" * 8) == "\ufffdok"
+
+
+def test_decode_log_bytes_uses_utf8_replace_when_no_fallback_candidate(monkeypatch):
+    monkeypatch.setattr(log_io, "_log_decode_candidates", lambda: ["not-a-real-encoding"])
+
+    data = b"\xff" * 8
+
+    assert decode_log_bytes(data) == data.decode("utf-8", errors="replace")
+
+
+def test_log_io_error_and_empty_read_edges(tmp_path, monkeypatch):
+    assert log_io._split_lf_lines_keepends(b"") == []
+
+    empty_log = tmp_path / "empty.log"
+    empty_log.write_bytes(b"")
+    assert read_last_lines(str(empty_log), max_lines=5) == ("", 0)
+
+    log_file = tmp_path / "edge.log"
+    log_file.write_text("abc", encoding="utf-8")
+    assert safe_read_log(str(log_file), 3) == ("", 3)
+    assert safe_read_log(str(log_file), 99) == ("", 3)
+
+    monkeypatch.setattr(log_io.os.path, "exists", lambda _path: True)
+
+    def raise_stat_error(_path):
+        raise OSError("stat failed")
+
+    monkeypatch.setattr(log_io.os.path, "getsize", raise_stat_error)
+    assert read_log_chunk("missing.log", 7) == ("", 7)
+    assert read_last_bytes("missing.log", 10) == ("", 0)
+    assert read_last_lines("missing.log", max_lines=5) == ("", 0)
+
+
+def test_safe_read_log_keeps_offset_when_read_returns_no_bytes(monkeypatch):
+    class EmptyReader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def seek(self, _offset):
+            return None
+
+        def read(self, _max_bytes):
+            return b""
+
+    monkeypatch.setattr(log_io.os.path, "exists", lambda _path: True)
+    monkeypatch.setattr(log_io.os.path, "getsize", lambda _path: 10)
+    monkeypatch.setattr(builtins, "open", lambda *_args, **_kwargs: EmptyReader())
+
+    assert safe_read_log("edge.log", 4, max_bytes=8) == ("", 4)
+
+
 def test_is_pid_running_invalid():
     assert not is_pid_running(None)
     assert not is_pid_running("not_a_pid")
@@ -407,6 +486,36 @@ def test_is_pid_running_self():
     # The current process should definitely be running
     my_pid = os.getpid()
     assert is_pid_running(my_pid)
+
+
+def test_process_utils_import_falls_back_without_psutil(monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("no psutil")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    reloaded = importlib.reload(process_utils)
+    assert reloaded._psutil is None
+
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    importlib.reload(process_utils)
+
+
+def test_is_pid_running_uses_os_fallback_when_psutil_errors(monkeypatch):
+    class RaisingPsutil:
+        def pid_exists(self, _pid):
+            raise RuntimeError("psutil unavailable")
+
+    calls = []
+    monkeypatch.setattr(process_utils, "_psutil", RaisingPsutil())
+    monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    assert process_utils.is_pid_running("123") is True
+    assert calls == [(123, 0)]
 
 
 @patch("pyruns.utils.process_utils.os.name", "posix")
@@ -452,6 +561,47 @@ def test_is_pid_running_mock_nt_true(mock_open, mock_get_exit, mock_close):
     mock_close.assert_called_with(1234)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="ctypes.windll only available on Windows")
+def test_is_pid_running_nt_treats_handle_as_running_when_exit_code_unavailable(monkeypatch):
+    import ctypes
+
+    class Kernel32:
+        def __init__(self):
+            self.closed = []
+
+        def OpenProcess(self, _access, _inherit, _pid):
+            return 1234
+
+        def GetExitCodeProcess(self, _handle, _lp_exit_code):
+            return 0
+
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+
+    kernel32 = Kernel32()
+    monkeypatch.setattr(process_utils, "_psutil", None)
+    monkeypatch.setattr(process_utils.os, "name", "nt", raising=False)
+    monkeypatch.setattr(ctypes, "windll", type("Windll", (), {"kernel32": kernel32})(), raising=False)
+
+    assert process_utils.is_pid_running(99999) is True
+    assert kernel32.closed == [1234]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="ctypes.windll only available on Windows")
+def test_is_pid_running_nt_ctypes_error_returns_false(monkeypatch):
+    import ctypes
+
+    class Kernel32:
+        def OpenProcess(self, _access, _inherit, _pid):
+            raise OSError("open failed")
+
+    monkeypatch.setattr(process_utils, "_psutil", None)
+    monkeypatch.setattr(process_utils.os, "name", "nt", raising=False)
+    monkeypatch.setattr(ctypes, "windll", type("Windll", (), {"kernel32": Kernel32()})(), raising=False)
+
+    assert process_utils.is_pid_running(99999) is False
+
+
 @patch("pyruns.utils.process_utils.os.name", "posix")
 @patch("os.kill")
 def test_kill_process_posix(mock_kill):
@@ -480,6 +630,12 @@ def test_kill_process_exception_caught():
 # ═══════════════════════════════════════════════════════════════
 #  sort_utils
 # ═══════════════════════════════════════════════════════════════
+
+
+def test_get_now_str_us_includes_six_digit_microseconds():
+    from pyruns.utils.time_utils import get_now_str_us
+
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\d{6}", get_now_str_us())
 
 
 def test_task_sort_key():
@@ -1429,3 +1585,431 @@ class TestPipeEscaping:
         assert len(parts) == 2
         assert parts[0].strip() == "a | b"
         assert parts[1].strip() == "c"
+
+
+def test_log_decode_candidates_include_preferred_and_windows_fallbacks(monkeypatch):
+    from pyruns.utils import log_io
+
+    monkeypatch.setattr(log_io.locale, "getpreferredencoding", lambda _do_setlocale=False: "cp1252")
+    monkeypatch.setattr(log_io.os, "name", "nt", raising=False)
+
+    candidates = log_io._log_decode_candidates()
+
+    assert candidates[:2] == ["utf-8-sig", "utf-8"]
+    assert "cp1252" in candidates
+    assert "gbk" in candidates
+    assert "cp936" in candidates
+
+
+def test_decode_log_bytes_prefers_replacement_when_only_small_utf8_damage(monkeypatch):
+    from pyruns.utils import log_io
+
+    monkeypatch.setattr(log_io, "_log_decode_candidates", lambda: ["ascii"])
+
+    assert decode_log_bytes(b"ok\xff") == "ok\ufffd"
+
+
+def test_decode_log_bytes_chooses_best_replacement_fallback(monkeypatch):
+    from pyruns.utils import log_io
+
+    data = "训练".encode("utf-16le")
+    monkeypatch.setattr(log_io, "_log_decode_candidates", lambda: ["ascii", "utf-16le"])
+
+    assert decode_log_bytes(data) == "训练"
+
+
+def test_append_and_read_log_ignore_io_errors(tmp_path, monkeypatch):
+    log_path = tmp_path / "run.log"
+
+    append_log(str(log_path), "hello\n")
+    append_log(str(log_path), "world\n")
+    assert read_log(str(log_path)).replace("\r", "") == "hello\nworld\n"
+
+    def fail_open(*_args, **_kwargs):
+        raise OSError("blocked")
+
+    monkeypatch.setattr("builtins.open", fail_open)
+    append_log(str(log_path), "ignored")
+    assert read_log(str(log_path)) == ""
+
+
+def test_read_log_chunk_handles_missing_offsets_and_empty_reads(tmp_path):
+    log_path = tmp_path / "run.log"
+
+    assert read_log_chunk(str(log_path), 10) == ("", 0)
+    log_path.write_bytes(b"alpha\nbeta\n")
+
+    assert read_log_chunk(str(log_path), 999) == ("alpha\nbeta\n", len("alpha\nbeta\n"))
+    text, offset = read_log_chunk(str(log_path), len("alpha\n"))
+    assert text == "beta\n"
+    assert offset == len("alpha\nbeta\n")
+    assert read_log_chunk(str(log_path), offset) == ("", offset)
+
+
+def test_read_last_bytes_empty_and_tail(tmp_path):
+    log_path = tmp_path / "run.log"
+
+    log_path.write_text("", encoding="utf-8")
+    assert read_last_bytes(str(log_path), 5) == ("", 0)
+    log_path.write_text("abcdefghij", encoding="utf-8")
+    assert read_last_bytes(str(log_path), 4) == ("ghij", 10)
+
+
+def test_safe_read_log_handles_missing_complete_and_partial_lines(tmp_path):
+    log_path = tmp_path / "run.log"
+
+    assert safe_read_log(str(log_path), 5) == ("", 5)
+    log_path.write_bytes(b"line1\nline2\npartial")
+
+    text, offset = safe_read_log(str(log_path), 0, max_bytes=12)
+    assert text == "line1\nline2\n"
+    assert offset == 12
+
+    text, offset = safe_read_log(str(log_path), 12, max_bytes=100)
+    assert text == "partial"
+    assert offset == len("line1\nline2\npartial")
+
+
+def test_logger_configuration_can_disable_or_attach_file_handler(tmp_path, monkeypatch):
+    from pyruns.utils import log_utils
+
+    root_logger = logging.getLogger(log_utils.get_library_root())
+    original_handlers = list(root_logger.handlers)
+    original_level = root_logger.level
+    original_propagate = root_logger.propagate
+    original_library_logger = log_utils._LIBRARY_ROOT_LOGGER
+
+    try:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+
+        monkeypatch.setattr(log_utils, "_LIBRARY_ROOT_LOGGER", None)
+        monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: False if key == "log_enabled" else default)
+
+        log_utils.configure_project_root_logger()
+        disabled = log_utils._LIBRARY_ROOT_LOGGER
+        assert disabled.level > 50
+
+        monkeypatch.setattr(log_utils, "_LIBRARY_ROOT_LOGGER", None)
+        monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: "DEBUG" if key == "log_level" else default)
+        logger = log_utils.get_logger("__main__")
+        assert logger.name.endswith(".__main__")
+        assert log_utils._LIBRARY_ROOT_LOGGER.handlers
+
+        log_file = tmp_path / "pyruns.log"
+        log_utils.attach_file_handler(str(log_file))
+        log_utils._LIBRARY_ROOT_LOGGER.debug("written")
+        assert log_file.exists()
+    finally:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+            handler.close()
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
+        root_logger.setLevel(original_level)
+        root_logger.propagate = original_propagate
+        log_utils._LIBRARY_ROOT_LOGGER = original_library_logger
+
+
+def test_info_io_lock_helpers_handle_invalid_stale_and_failed_cleanup(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    lock_path = task_dir / info_io._LOCK_FILENAME
+
+    assert info_io._read_lock_owner_pid(str(lock_path)) is None
+    lock_path.write_text("not-a-pid extra", encoding="utf-8")
+    assert info_io._read_lock_owner_pid(str(lock_path)) is None
+
+    lock_path.write_text("999999 extra", encoding="utf-8")
+    monkeypatch.setattr(info_io, "is_pid_running", lambda pid: False)
+    assert info_io._lock_file_is_stale(str(lock_path), min_age_sec=999999) is True
+    assert info_io._remove_stale_lock_file(str(lock_path)) is True
+
+    lock_path.write_text("999999", encoding="utf-8")
+    monkeypatch.setattr(info_io.os, "remove", lambda path: (_ for _ in ()).throw(OSError("locked")))
+    assert info_io._remove_stale_lock_file(str(lock_path)) is False
+
+    monkeypatch.setattr(info_io.os, "remove", lambda path: (_ for _ in ()).throw(FileNotFoundError(path)))
+    assert info_io._remove_stale_lock_file(str(lock_path)) is True
+
+
+def test_task_info_lock_times_out_when_live_lock_persists(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    lock_path = task_dir / info_io._LOCK_FILENAME
+    lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    monkeypatch.setattr(info_io, "_remove_stale_lock_file", lambda path: False)
+    monkeypatch.setattr(info_io.time, "sleep", lambda delay: None)
+
+    with pytest.raises(TimeoutError, match="file lock"):
+        with task_info_lock(str(task_dir), timeout_sec=0):
+            pass
+
+
+def test_info_io_load_and_update_error_modes(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    info_path = task_dir / TASK_INFO_FILENAME
+
+    info_path.write_text("{not json", encoding="utf-8")
+    assert load_task_info(str(task_dir)) == {}
+    with pytest.raises(json.JSONDecodeError):
+        load_task_info(str(task_dir), raise_error=True)
+
+    with pytest.raises(json.JSONDecodeError):
+        update_task_info(str(task_dir), lambda info: info.update(name="x"), raise_error=True)
+
+    missing_dir = tmp_path / "missing"
+    with pytest.raises(FileNotFoundError):
+        update_task_info(str(missing_dir), lambda info: None, raise_error=True)
+
+
+def test_script_info_roundtrip_and_invalid_json(tmp_path):
+    import pyruns.utils.info_io as info_io
+
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    script_info = run_root / SCRIPT_INFO_FILENAME
+    script_info.write_text("{bad json", encoding="utf-8")
+    assert info_io.load_script_info(str(run_root)) == {}
+
+    info_io.save_script_info(str(run_root), {"script_name": "train", "params": {"lr": 0.1}})
+    assert info_io.load_script_info(str(run_root))["params"]["lr"] == 0.1
+
+
+def test_atomic_info_writers_remove_temp_files_after_replace_failure(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+
+    monkeypatch.setattr(info_io, "_replace_with_retry", lambda src, dst: (_ for _ in ()).throw(RuntimeError("replace failed")))
+    with pytest.raises(RuntimeError):
+        info_io.save_script_info(str(task_dir), {"script_name": "train"})
+    assert not list(task_dir.glob(f".{SCRIPT_INFO_FILENAME}.*.tmp"))
+
+    with pytest.raises(RuntimeError):
+        with task_info_lock(str(task_dir)):
+            info_io._write_task_info_unlocked(str(task_dir / TASK_INFO_FILENAME), str(task_dir), {"name": "alpha"})
+    assert not list(task_dir.glob(f".{TASK_INFO_FILENAME}.*.tmp"))
+
+
+def test_settings_load_get_and_scalar_text_edges(tmp_path, monkeypatch):
+    root = tmp_path / "_pyruns_" / "script"
+    root.mkdir(parents=True)
+    settings_path = Path(settings._settings_path(str(root)))
+    settings_path.write_text("ui_port: [unterminated", encoding="utf-8")
+
+    loaded = settings.load_settings(str(root))
+    assert loaded["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
+    assert settings.reload_settings(str(root))["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
+
+    monkeypatch.setattr(settings, "_cached", {})
+    monkeypatch.setattr(settings, "load_settings", lambda root_dir=settings.ROOT_DIR: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert settings.get("ui_port") == settings.SETTINGS_DEFAULTS["ui_port"]
+    assert settings.get("unknown", "fallback") == "fallback"
+
+    assert settings._yaml_scalar_to_text(True) == "true"
+    assert settings._yaml_scalar_to_text(False) == "false"
+    assert settings._yaml_scalar_to_text(None) == "null"
+    assert settings._yaml_scalar_to_text([]) == "[]"
+    assert settings._yaml_scalar_to_text({}) == "{}"
+    assert "\n- a" in settings._yaml_scalar_to_text(["a"])
+    assert "\na: 1" in settings._yaml_scalar_to_text({"a": 1})
+
+
+def test_save_setting_for_root_preserves_or_appends_structured_values(tmp_path, monkeypatch):
+    root = tmp_path / "_pyruns_" / "script"
+    root.mkdir(parents=True)
+    path = Path(settings._settings_path(str(root)))
+
+    path.write_text("global_env:\n  OLD: '1'\n", encoding="utf-8")
+    settings.save_setting_for_root(str(root), "global_env", {"NEW": "2"})
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["global_env"] == {"NEW": "2"}
+
+    path.write_text("[]\n", encoding="utf-8")
+    settings.save_setting_for_root(str(root), "pinned_params", ["lr"])
+    assert "pinned_params:" in path.read_text(encoding="utf-8")
+
+    path.write_text("pinned_params: []\n", encoding="utf-8")
+    monkeypatch.setattr(settings.yaml, "safe_load", lambda text: (_ for _ in ()).throw(yaml.YAMLError("bad yaml")))
+    settings.save_setting_for_root(str(root), "pinned_params", ["batch_size"])
+    assert "- batch_size" in path.read_text(encoding="utf-8")
+
+
+def test_save_setting_for_root_creates_file_and_swallows_write_errors(tmp_path, monkeypatch):
+    root = tmp_path / "new-root"
+    settings.save_setting_for_root(str(root), "ui_port", 8123)
+    assert "ui_port: 8123" in (root / SETTINGS_FILENAME).read_text(encoding="utf-8")
+
+    broken_root = tmp_path / "broken-root"
+    monkeypatch.setattr(settings.os, "makedirs", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("readonly")))
+    settings.save_setting_for_root(str(broken_root), "ui_port", 9999)
+    assert not (broken_root / SETTINGS_FILENAME).exists()
+
+
+def test_log_emitter_dispatches_loop_direct_and_error_callbacks():
+    from pyruns.utils.events import LogEmitter
+
+    emitter = LogEmitter()
+    received = []
+
+    class RunningLoop:
+        def __init__(self):
+            self.calls = 0
+
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, callback, *args):
+            self.calls += 1
+            callback(*args)
+
+    loop = RunningLoop()
+    def record(chunk):
+        received.append(chunk)
+
+    emitter.subscribe("task", record, loop=loop)
+    emitter.subscribe("task", lambda chunk: (_ for _ in ()).throw(RuntimeError("callback failed")))
+    emitter.subscribe("other", lambda chunk: received.append("other"))
+    emitter.bind_loop()
+
+    emitter.emit("missing", "ignored")
+    emitter.emit("task", "chunk")
+    emitter.unsubscribe("task", record)
+    emitter.emit("task", "after")
+
+    assert loop.calls == 1
+    assert received == ["chunk"]
+
+
+def test_simple_event_bus_handles_sync_async_and_failing_callbacks():
+    from pyruns.utils.events import SimpleEventBus
+
+    bus = SimpleEventBus()
+    received = []
+
+    async def async_listener(value):
+        received.append(("async", value))
+
+    def sync_listener(value):
+        received.append(("sync", value))
+
+    def failing_listener(value):
+        raise RuntimeError("listener failed")
+
+    bus.on("go", sync_listener)
+    bus.on("go", sync_listener)
+    bus.on("go", async_listener)
+    bus.on("go", failing_listener)
+    bus.emit("go", "value")
+    bus.off("go", sync_listener)
+    bus.emit("go", "again")
+
+    assert received == [("sync", "value")]
+
+
+def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatch):
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    shell_runtime._probe_shell_executable.cache_clear()
+    executable = tmp_path / "pwsh.exe"
+    executable.write_text("", encoding="utf-8")
+
+    assert shell_runtime.normalize_shell_mode("custom") == shell_runtime.SHELL_MODE_CUSTOM
+    assert shell_runtime.normalize_shell_mode("anything") == shell_runtime.SHELL_MODE_FOLLOW
+    assert shell_runtime.classify_shell_executable("pwsh.exe") == ("powershell", "PowerShell")
+    assert shell_runtime.classify_shell_executable("unknown-shell") == ("unknown", "unknown-shell")
+    assert shell_runtime._resolve_candidate_path("") == ""
+    assert shell_runtime._resolve_candidate_path(str(tmp_path / "missing.exe")) == ""
+
+    monkeypatch.setattr(shell_runtime.shutil, "which", lambda value: str(executable) if value == "pwsh" else None)
+    assert shell_runtime._resolve_candidate_path("pwsh") == str(executable)
+
+    assert shell_runtime._probe_shell_executable("", "cmd") is False
+    assert shell_runtime._probe_shell_executable(str(tmp_path / "missing.exe"), "cmd") is False
+    assert shell_runtime._probe_shell_executable(str(executable), "unknown") is False
+
+    class Result:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    monkeypatch.setattr(shell_runtime.subprocess, "run", lambda *args, **kwargs: Result(0))
+    shell_runtime._probe_shell_executable.cache_clear()
+    assert shell_runtime._probe_shell_executable(str(executable), "powershell") is True
+
+    monkeypatch.setattr(shell_runtime.subprocess, "run", lambda *args, **kwargs: Result(1))
+    shell_runtime._probe_shell_executable.cache_clear()
+    assert shell_runtime._probe_shell_executable(str(executable), "cmd") is False
+
+    monkeypatch.setattr(shell_runtime.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("spawn failed")))
+    shell_runtime._probe_shell_executable.cache_clear()
+    assert shell_runtime._probe_shell_executable(str(executable), "cmd") is False
+
+    monkeypatch.setattr(shell_runtime.os, "name", "nt")
+    monkeypatch.setattr(shell_runtime, "_probe_windows_posix_script_execution", lambda candidate: True)
+    shell_runtime._probe_shell_executable.cache_clear()
+    assert shell_runtime._probe_shell_executable(str(executable), "bash") is True
+
+
+def test_shell_runtime_workspace_and_follow_fallback_branches(tmp_path, monkeypatch):
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    executable = tmp_path / "bash.exe"
+    executable.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(shell_runtime, "load_settings", lambda root=None: {
+        "shell_mode": "custom",
+        "shell_executable": str(executable),
+    })
+    monkeypatch.setattr(shell_runtime, "_probe_shell_executable", lambda candidate, kind: True)
+    runtime = shell_runtime.get_shell_runtime_for_workspace(str(tmp_path))
+    assert runtime["mode"] == "custom"
+    assert runtime["terminal_kind"] == "bash"
+    assert runtime["available"] is True
+
+    monkeypatch.setattr(shell_runtime, "load_settings", lambda root=None: {
+        "shell_mode": "follow",
+        "shell_executable": "",
+    })
+    monkeypatch.setattr(shell_runtime, "get_follow_shell_runtime", lambda: {
+        "source": "follow_terminal",
+        "terminal_kind": "unknown",
+        "display_name": "Unknown",
+        "executable": str(executable),
+        "available": False,
+    })
+    runtime = shell_runtime.get_shell_runtime_for_workspace(str(tmp_path))
+    assert runtime["mode"] == "follow"
+    assert runtime["terminal_kind"] == "bash"
+    assert runtime["display_name"] == "Bash"
+    assert shell_runtime.get_shell_config_filename_for_workspace(str(tmp_path)).endswith(".sh")
+    assert shell_runtime.get_shell_config_filename_for_task(str(tmp_path / "tasks" / "alpha")).endswith(".sh")
+
+
+def test_shell_runtime_process_tree_and_fallback_edges(tmp_path, monkeypatch):
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    monkeypatch.setattr(shell_runtime, "psutil", None)
+    assert shell_runtime._find_shell_in_process_tree() is None
+
+    class RaisingPsutil:
+        @staticmethod
+        def Process(pid):
+            raise RuntimeError("process unavailable")
+
+    monkeypatch.setattr(shell_runtime, "psutil", RaisingPsutil)
+    assert shell_runtime._find_shell_in_process_tree() is None
+
+    fallback = tmp_path / "sh"
+    fallback.write_text("", encoding="utf-8")
+    monkeypatch.setattr(shell_runtime.os, "name", "posix")
+    monkeypatch.delenv("SHELL", raising=False)
+    monkeypatch.setattr(shell_runtime, "_resolve_candidate_path", lambda value: str(fallback) if value == "sh" else "")
+    runtime = shell_runtime._fallback_follow_shell()
+    assert runtime["terminal_kind"] == "sh"
+    assert runtime["available"] is True

@@ -899,9 +899,10 @@ class TaskManager:
 
         try:
             for task in self.tasks:
-                if not task or task["status"] not in ("running", "queued"):
+                status = task.get("status") if task else None
+                if status not in ("running", "queued"):
                     continue
-                if task["status"] == "running":
+                if status == "running":
                     pid = self._latest_pid_from_disk(task)
                     if pid:
                         try:
