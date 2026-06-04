@@ -355,6 +355,89 @@ def test_prepare_env_import_guard_is_lazy_for_scripts_without_pyruns(tmp_path, m
     assert "sitecustomize" not in result.stderr.lower()
 
 
+def test_prepare_env_preserves_current_pyruns_distribution_metadata_when_isolated(tmp_path, monkeypatch):
+    """The isolated package root should keep the launcher pyruns distribution version."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text(
+        "from importlib.metadata import version\n__version__ = version('pyruns')\n",
+        encoding="utf-8",
+    )
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    dist_info = launcher_site_packages / "pyruns-9.8.7.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: pyruns\nVersion: 9.8.7\n",
+        encoding="utf-8",
+    )
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_pyruns = task_site_packages / "pyruns"
+    task_pyruns.mkdir(parents=True)
+    (task_pyruns / "__init__.py").write_text("__version__ = 'old-pyruns'\n", encoding="utf-8")
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "-c", "import pyruns; print(pyruns.__version__)"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "9.8.7"
+
+
+def test_prepare_env_import_guard_applies_to_shell_task_python_children(tmp_path, monkeypatch):
+    """Shell tasks that launch Python should inherit the same pyruns import protection."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_shared = task_site_packages / "sharedpkg"
+    task_shared.mkdir(parents=True)
+    (task_shared / "__init__.py").write_text("ORIGIN = 'task-env'\n", encoding="utf-8")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyruns.py").write_text("__version__ = 'project-shadow'\n", encoding="utf-8")
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_SHELL)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, pyruns, sharedpkg; print(json.dumps({'pyruns': pyruns.__version__, 'shared': sharedpkg.ORIGIN}))",
+        ],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"pyruns": "new-pyruns", "shared": "task-env"}
+
+
 def test_config_node_init():
     data = {
         "lr": 0.01,
