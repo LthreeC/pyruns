@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pyruns._config import (
     CONFIG_FILENAME,
     DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS,
+    ENV_KEY_CLI_TERMINAL_RUNTIME,
     SHELL_CONFIG_FILENAME,
     TASKS_DIR,
     TASK_KIND_CONFIG,
@@ -19,6 +20,7 @@ from pyruns._config import (
     WORKSPACE_KIND_SCRIPT,
     WORKSPACE_KIND_SHELL,
 )
+from pyruns.core.executor import _build_command, _resolve_python_runtime
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
@@ -543,20 +545,23 @@ def test_runtime_endpoint_uses_conda_exe_from_process_env(tmp_path, monkeypatch)
 
 def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
+    fake_conda = tmp_path / "conda.exe"
+    fake_conda.write_text("", encoding="utf-8")
     runtime = _build_runtime(workspace)
     monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
         "available": False,
-        "executable": "conda",
+        "executable": str(fake_conda.resolve()),
         "envs": [],
         "error": "",
     })
+    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
         "/api/runtime",
         json={
             "conda_env": "eval",
-            "conda_executable": "conda",
+            "conda_executable": str(fake_conda),
             "python_executable": "",
             "global_env": {"CUDA_VISIBLE_DEVICES": "0", "TOKENIZERS_PARALLELISM": "false"},
         },
@@ -569,6 +574,36 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
     settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
     assert "conda_env: eval" in settings_text
     assert "CUDA_VISIBLE_DEVICES" in settings_text
+
+    task_dir = workspace / TASKS_DIR / "eval_task"
+    task_dir.mkdir(parents=True)
+    python_runtime = _resolve_python_runtime(str(task_dir))
+    assert python_runtime == {
+        "mode": "conda",
+        "source": "workspace_settings",
+        "conda_env": "eval",
+        "conda_executable": str(fake_conda.resolve()),
+    }
+
+    script_path = tmp_path / "main.py"
+    with patch("pyruns.utils.parse_utils.detect_config_source_fast", return_value=("pyruns_load", None)):
+        command, _, _ = _build_command(
+            None,
+            str(script_path),
+            None,
+            {},
+            task_dir=str(task_dir),
+            python_runtime=python_runtime,
+        )
+
+    assert command[:6] == [
+        str(fake_conda.resolve()),
+        "run",
+        "-n",
+        "eval",
+        "--no-capture-output",
+        "python",
+    ]
 
 
 def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):

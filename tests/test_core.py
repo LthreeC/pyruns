@@ -16,6 +16,7 @@ import psutil
 import yaml
 from unittest.mock import patch, MagicMock
 
+import pyruns.core.executor as executor
 from pyruns._config import (
     ENV_KEY_CONFIG,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
@@ -74,6 +75,60 @@ def test_prepare_env_allows_child_to_import_current_pyruns_from_script_workdir(t
 
     assert result.returncode == 0, result.stderr
     assert Path(result.stdout.strip()).is_file()
+
+
+def test_prepare_env_isolates_current_pyruns_from_launcher_site_packages(tmp_path, monkeypatch):
+    """Task envs should get current pyruns without inheriting every launcher dependency."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    launcher_shared = launcher_site_packages / "sharedpkg"
+    launcher_shared.mkdir()
+    (launcher_shared / "__init__.py").write_text("ORIGIN = 'launcher-env'\n", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_pyruns = task_site_packages / "pyruns"
+    task_pyruns.mkdir(parents=True)
+    (task_pyruns / "__init__.py").write_text("__version__ = 'old-pyruns'\n", encoding="utf-8")
+
+    task_shared = task_site_packages / "sharedpkg"
+    task_shared.mkdir()
+    (task_shared / "__init__.py").write_text("ORIGIN = 'task-env'\n", encoding="utf-8")
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import pyruns, sharedpkg\n"
+                "print(pyruns.__version__)\n"
+                "print(sharedpkg.ORIGIN)\n"
+                "print(pyruns.__file__)\n"
+            ),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.strip().splitlines()
+    assert lines[0] == "new-pyruns"
+    assert lines[1] == "task-env"
+    assert str(launcher_site_packages) not in env["PYTHONPATH"].split(os.pathsep)
+    assert str(launcher_site_packages) not in lines[2]
 
 
 def test_config_node_init():

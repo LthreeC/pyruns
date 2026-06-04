@@ -228,12 +228,12 @@ def save_setting_for_root(root_dir: str, key: str, value: Any) -> None:
                 except Exception:
                     # Fallback to regex approach
                     if pattern.search(text):
-                        new_text = pattern.sub(f"{key}: {val_text}", text)
+                        new_text = pattern.sub(lambda _: f"{key}: {val_text}", text)
                     else:
                         new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
             else:
                 if pattern.search(text):
-                    new_text = pattern.sub(f"{key}: {val_text}", text)
+                    new_text = pattern.sub(lambda _: f"{key}: {val_text}", text)
                 else:
                     new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import os
 import shutil
@@ -45,6 +46,7 @@ from pyruns.utils.settings import load_settings
 from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
 
 logger = get_logger(__name__)
+_ISOLATED_IMPORT_ROOT_LOCK = threading.Lock()
 
 
 def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
@@ -75,6 +77,67 @@ def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
         return
 
     env["PYTHONPATH"] = path if not existing else f"{path}{os.pathsep}{existing}"
+
+
+def _is_site_package_parent(path: str) -> bool:
+    leaf = os.path.basename(os.path.normpath(path)).lower()
+    return leaf in {"site-packages", "dist-packages"}
+
+
+def _copy_ignore(_: str, names: List[str]) -> set[str]:
+    return {
+        name
+        for name in names
+        if name == "__pycache__" or name == ".pytest_cache" or name.endswith(".pyc")
+    }
+
+
+def _copy_dist_info(package_parent: str, import_root: str) -> None:
+    try:
+        entries = os.listdir(package_parent)
+    except OSError:
+        return
+    for name in entries:
+        lower_name = name.lower()
+        if not lower_name.startswith("pyruns-") or not lower_name.endswith(".dist-info"):
+            continue
+        source = os.path.join(package_parent, name)
+        target = os.path.join(import_root, name)
+        if not os.path.isdir(source) or os.path.exists(target):
+            continue
+        try:
+            shutil.copytree(source, target, ignore=_copy_ignore)
+        except OSError:
+            logger.debug("Skipping pyruns dist-info copy for %s", source, exc_info=True)
+
+
+def _isolated_pyruns_import_root(package_dir: str) -> str:
+    """Expose only the current pyruns package when launched from site-packages."""
+
+    package_dir = os.path.abspath(package_dir)
+    package_parent = os.path.dirname(package_dir)
+    digest = hashlib.sha1(f"{package_dir}:{os.getpid()}".encode("utf-8")).hexdigest()[:16]
+    import_root = os.path.join(tempfile.gettempdir(), f"pyruns-import-{digest}")
+    target_package = os.path.join(import_root, "pyruns")
+
+    with _ISOLATED_IMPORT_ROOT_LOCK:
+        if os.path.isdir(target_package):
+            return import_root
+        try:
+            os.makedirs(import_root, exist_ok=True)
+            shutil.copytree(package_dir, target_package, ignore=_copy_ignore)
+            _copy_dist_info(package_parent, import_root)
+        except Exception as exc:
+            raise RuntimeError("Unable to isolate the current pyruns package for child tasks.") from exc
+    return import_root
+
+
+def _current_pyruns_import_root() -> str:
+    package_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    package_parent = os.path.dirname(package_dir)
+    if _is_site_package_parent(package_parent):
+        return _isolated_pyruns_import_root(package_dir)
+    return package_parent
 
 
 def _is_windows() -> bool:
@@ -325,8 +388,7 @@ def _prepare_env(
     if extra_env:
         env.update({str(k): str(v) for k, v in extra_env.items() if k})
     _prepend_runtime_python_to_path(env, python_runtime)
-    package_parent = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-    _prepend_pythonpath(env, package_parent)
+    _prepend_pythonpath(env, _current_pyruns_import_root())
     return env
 
 

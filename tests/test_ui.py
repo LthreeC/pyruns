@@ -687,6 +687,27 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
     assert "value.split" not in editor
 
 
+def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+
+    assert "export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')" in api
+    assert "export const updateRuntimeInfo" in api
+    assert "applyRuntimeState(await api.getRuntimeInfo())" in runtime_panel
+    assert "applyRuntimeState(await api.updateRuntimeInfo(payload))" in runtime_panel
+    assert "await refreshWorkspace()" in runtime_panel
+    assert "setCondaEnv(next.conda_env)" in runtime_panel
+    assert "setCondaExecutable(next.conda_executable || 'conda')" in runtime_panel
+    assert "setRuntimeMode(modeFromRuntime(next))" in runtime_panel
+    assert "runtime?.conda.envs.map(env =>" in runtime_panel
+    assert "runtime?.process.conda_env && !runtime.conda.envs.some(env => env.name === runtime.process.conda_env)" in runtime_panel
+    assert "setCondaEnv(runtime?.conda_env || runtime?.process.conda_env || activeConda || runtime?.conda.envs[0]?.name || '')" in runtime_panel
+    assert "conda_env: condaEnv" in runtime_panel
+    assert "conda_executable: condaExecutable" in runtime_panel
+    assert "python_executable: ''" in runtime_panel
+    assert "selectedConda?.python_executable || 'Choose a conda environment to preview Python path'" in runtime_panel
+
+
 def test_react_launcher_supports_manual_shell_folder_paths():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
