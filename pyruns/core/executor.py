@@ -109,17 +109,32 @@ def _copy_dist_info(package_parent: str, import_root: str) -> None:
 
 
 def _pyruns_package_fingerprint(package_dir: str) -> str:
-    """Build a cheap fingerprint for stale-copy avoidance without scanning all assets."""
+    """Fingerprint Python-loadable package files while ignoring bulky static assets."""
 
-    parts = [os.path.abspath(package_dir)]
-    for relative_path in ("__init__.py", os.path.join("core", "executor.py")):
-        path = os.path.join(package_dir, relative_path)
-        try:
-            stat_result = os.stat(path)
-            parts.append(f"{relative_path}:{stat_result.st_mtime_ns}:{stat_result.st_size}")
-        except OSError:
-            parts.append(f"{relative_path}:missing")
-    return "|".join(parts)
+    package_dir = os.path.abspath(package_dir)
+    hasher = hashlib.sha1(package_dir.encode("utf-8"))
+    suffixes = (".py", ".pyw", ".pyi", ".pyd", ".so", ".dll", ".dylib")
+    ignored_dirs = {"__pycache__", ".pytest_cache", "static"}
+    try:
+        walker = os.walk(package_dir)
+        for dirpath, dirnames, filenames in walker:
+            dirnames[:] = sorted(name for name in dirnames if name not in ignored_dirs)
+            for filename in sorted(filenames):
+                if not filename.endswith(suffixes):
+                    continue
+                path = os.path.join(dirpath, filename)
+                relative_path = os.path.relpath(path, package_dir).replace(os.sep, "/")
+                try:
+                    stat_result = os.stat(path)
+                except OSError:
+                    hasher.update(f"{relative_path}:missing".encode("utf-8"))
+                    continue
+                hasher.update(
+                    f"{relative_path}:{stat_result.st_mtime_ns}:{stat_result.st_size}".encode("utf-8")
+                )
+    except OSError:
+        hasher.update(b":walk-error")
+    return hasher.hexdigest()
 
 
 def _isolated_pyruns_import_root(package_dir: str) -> str:

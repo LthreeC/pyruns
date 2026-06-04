@@ -644,6 +644,50 @@ def test_prepare_env_refreshes_isolated_pyruns_root_when_package_files_change(tm
     assert second.stdout.strip() == "second-pyruns"
 
 
+def test_prepare_env_refreshes_isolated_pyruns_root_when_nested_module_changes(tmp_path, monkeypatch):
+    """The isolated copy should refresh when any Python module in pyruns changes."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    nested_module = launcher_pyruns / "core" / "config_manager.py"
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    nested_module.write_text("MARKER = 'first-module'\n", encoding="utf-8")
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env1 = _prepare_env(task_dir=str(tmp_path / "task1"), task_kind=TASK_KIND_CONFIG)
+    first = subprocess.run(
+        [sys.executable, "-c", "from pyruns.core import config_manager; print(config_manager.MARKER)"],
+        cwd=tmp_path,
+        env=env1,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.strip() == "first-module"
+
+    nested_module.write_text("MARKER = 'second-module'\n", encoding="utf-8")
+
+    env2 = _prepare_env(task_dir=str(tmp_path / "task2"), task_kind=TASK_KIND_CONFIG)
+    second = subprocess.run(
+        [sys.executable, "-c", "from pyruns.core import config_manager; print(config_manager.MARKER)"],
+        cwd=tmp_path,
+        env=env2,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == "second-module"
+
+
 def test_prepare_env_reuses_isolated_pyruns_root_for_same_package_fingerprint(tmp_path, monkeypatch):
     """Repeated task launches should not recopy pyruns when package files are unchanged."""
 
