@@ -438,6 +438,127 @@ def test_prepare_env_import_guard_applies_to_shell_task_python_children(tmp_path
     assert json.loads(result.stdout) == {"pyruns": "new-pyruns", "shared": "task-env"}
 
 
+def test_prepare_env_import_guard_handles_package_shadow_submodules_and_reload(tmp_path, monkeypatch):
+    """Project-local pyruns packages should not win for submodule imports or reloads."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("MARKER = 'launcher-core'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_pyruns = task_site_packages / "pyruns"
+    (task_pyruns / "core").mkdir(parents=True)
+    (task_pyruns / "__init__.py").write_text("__version__ = 'old-pyruns'\n", encoding="utf-8")
+    (task_pyruns / "core" / "__init__.py").write_text("MARKER = 'task-core'\n", encoding="utf-8")
+
+    project = tmp_path / "project"
+    project_shadow = project / "pyruns"
+    (project_shadow / "core").mkdir(parents=True)
+    (project_shadow / "__init__.py").write_text("__version__ = 'project-package-shadow'\n", encoding="utf-8")
+    (project_shadow / "core" / "__init__.py").write_text("MARKER = 'project-core'\n", encoding="utf-8")
+    (project / "run.py").write_text(
+        "\n".join([
+            "import importlib",
+            "import json",
+            "import sys",
+            "import pyruns",
+            "import pyruns.core as core",
+            "",
+            "first = {'version': pyruns.__version__, 'core': core.MARKER, 'file': pyruns.__file__}",
+            "reloaded = importlib.reload(pyruns)",
+            "second = {'version': reloaded.__version__, 'file': reloaded.__file__}",
+            "for name in list(sys.modules):",
+            "    if name == 'pyruns' or name.startswith('pyruns.'):",
+            "        sys.modules.pop(name, None)",
+            "import pyruns as imported_again",
+            "import pyruns.core as core_again",
+            "third = {'version': imported_again.__version__, 'core': core_again.MARKER, 'file': imported_again.__file__}",
+            "print(json.dumps({'first': first, 'second': second, 'third': third}, sort_keys=True))",
+        ]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "run.py"],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["first"]["version"] == "new-pyruns"
+    assert payload["first"]["core"] == "launcher-core"
+    assert payload["second"]["version"] == "new-pyruns"
+    assert payload["third"]["version"] == "new-pyruns"
+    assert payload["third"]["core"] == "launcher-core"
+    assert "project" not in payload["first"]["file"]
+    assert "project" not in payload["third"]["file"]
+
+
+def test_prepare_env_import_guard_is_active_for_user_sitecustomize_imports(tmp_path, monkeypatch):
+    """User sitecustomize can import pyruns early without hitting task or project shadows."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_pyruns = task_site_packages / "pyruns"
+    task_pyruns.mkdir(parents=True)
+    (task_pyruns / "__init__.py").write_text("__version__ = 'old-pyruns'\n", encoding="utf-8")
+
+    user_pythonpath = tmp_path / "user-pythonpath"
+    user_pythonpath.mkdir()
+    (user_pythonpath / "sitecustomize.py").write_text(
+        "import builtins\nimport pyruns\nbuiltins.USER_SITECUSTOMIZE_PYRUNS = pyruns.__version__\n",
+        encoding="utf-8",
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyruns.py").write_text("__version__ = 'project-shadow'\n", encoding="utf-8")
+    (project / "run.py").write_text(
+        "\n".join([
+            "import builtins",
+            "import json",
+            "import pyruns",
+            "print(json.dumps({'script': pyruns.__version__, 'sitecustomize': builtins.USER_SITECUSTOMIZE_PYRUNS}))",
+        ]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(user_pythonpath), str(task_site_packages)]))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "run.py"],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"script": "new-pyruns", "sitecustomize": "new-pyruns"}
+
+
 def test_config_node_init():
     data = {
         "lr": 0.01,
