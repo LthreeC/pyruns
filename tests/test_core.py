@@ -229,6 +229,132 @@ def test_prepare_env_keeps_current_pyruns_across_nested_imports(tmp_path, monkey
     assert str(launcher_site_packages) not in env["PYTHONPATH"].split(os.pathsep)
 
 
+def test_prepare_env_preloads_current_pyruns_when_project_shadows_package(tmp_path, monkeypatch):
+    """A project-local pyruns.py should not override the pyruns version that launched the server."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_pyruns = task_site_packages / "pyruns"
+    task_pyruns.mkdir(parents=True)
+    (task_pyruns / "__init__.py").write_text("__version__ = 'old-pyruns'\n", encoding="utf-8")
+
+    task_shared = task_site_packages / "sharedpkg"
+    task_shared.mkdir()
+    (task_shared / "__init__.py").write_text("ORIGIN = 'task-env'\n", encoding="utf-8")
+
+    user_pythonpath = tmp_path / "user-pythonpath"
+    user_pythonpath.mkdir()
+    (user_pythonpath / "sitecustomize.py").write_text(
+        "import builtins\nbuiltins.USER_SITECUSTOMIZE_RAN = True\n",
+        encoding="utf-8",
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyruns.py").write_text("__version__ = 'project-shadow'\n", encoding="utf-8")
+    (project / "localdep.py").write_text("ORIGIN = 'project-local'\n", encoding="utf-8")
+    (project / "run.py").write_text(
+        "\n".join([
+            "import builtins",
+            "import json",
+            "import localdep",
+            "import pyruns",
+            "import sharedpkg",
+            "import subprocess",
+            "import sys",
+            "",
+            "child = subprocess.run([",
+            "    sys.executable,",
+            "    '-c',",
+            "    \"import builtins, json, pyruns, sharedpkg; print(json.dumps({'pyruns_file': pyruns.__file__, 'pyruns_version': pyruns.__version__, 'shared': sharedpkg.ORIGIN, 'sitecustomize': bool(getattr(builtins, 'USER_SITECUSTOMIZE_RAN', False))}, sort_keys=True))\",",
+            "], capture_output=True, text=True, check=True)",
+            "print(json.dumps({",
+            "    'child': json.loads(child.stdout),",
+            "    'localdep': localdep.ORIGIN,",
+            "    'pyruns_file': pyruns.__file__,",
+            "    'pyruns_version': pyruns.__version__,",
+            "    'shared': sharedpkg.ORIGIN,",
+            "    'sitecustomize': bool(getattr(builtins, 'USER_SITECUSTOMIZE_RAN', False)),",
+            "}, sort_keys=True))",
+        ]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(user_pythonpath), str(task_site_packages)]))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "run.py"],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pyruns_version"] == "new-pyruns"
+    assert payload["shared"] == "task-env"
+    assert payload["localdep"] == "project-local"
+    assert payload["sitecustomize"] is True
+    assert str(project / "pyruns.py") not in payload["pyruns_file"]
+    assert payload["child"]["pyruns_version"] == "new-pyruns"
+    assert payload["child"]["shared"] == "task-env"
+    assert payload["child"]["sitecustomize"] is True
+    assert str(project / "pyruns.py") not in payload["child"]["pyruns_file"]
+
+
+def test_prepare_env_import_guard_is_lazy_for_scripts_without_pyruns(tmp_path, monkeypatch):
+    """Scripts that do not import pyruns should not be forced to import pyruns at startup."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("import missing_pyruns_dependency\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_shared = task_site_packages / "sharedpkg"
+    task_shared.mkdir(parents=True)
+    (task_shared / "__init__.py").write_text("ORIGIN = 'task-env'\n", encoding="utf-8")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run.py").write_text(
+        "import sharedpkg\nprint(sharedpkg.ORIGIN)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "run.py"],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "task-env"
+    assert "missing_pyruns_dependency" not in result.stderr
+    assert "sitecustomize" not in result.stderr.lower()
+
+
 def test_config_node_init():
     data = {
         "lr": 0.01,
