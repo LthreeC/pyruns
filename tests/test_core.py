@@ -131,6 +131,104 @@ def test_prepare_env_isolates_current_pyruns_from_launcher_site_packages(tmp_pat
     assert str(launcher_site_packages) not in lines[2]
 
 
+def test_prepare_env_keeps_current_pyruns_across_nested_imports(tmp_path, monkeypatch):
+    """Nested user modules should repeatedly import the launcher pyruns, not the task env copy."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    launcher_shared = launcher_site_packages / "sharedpkg"
+    launcher_shared.mkdir()
+    (launcher_shared / "__init__.py").write_text("ORIGIN = 'launcher-env'\n", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_pyruns = task_site_packages / "pyruns"
+    task_pyruns.mkdir(parents=True)
+    (task_pyruns / "__init__.py").write_text("__version__ = 'old-pyruns'\n", encoding="utf-8")
+
+    task_shared = task_site_packages / "sharedpkg"
+    task_shared.mkdir()
+    (task_shared / "__init__.py").write_text("ORIGIN = 'task-env'\n", encoding="utf-8")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "module1.py").write_text(
+        "\n".join([
+            "import pyruns",
+            "import sharedpkg",
+            "",
+            "def marker():",
+            "    return {'module': 'module1', 'pyruns': pyruns.__version__, 'shared': sharedpkg.ORIGIN, 'file': pyruns.__file__}",
+        ]),
+        encoding="utf-8",
+    )
+    (project / "module2.py").write_text(
+        "\n".join([
+            "import pyruns",
+            "import sharedpkg",
+            "",
+            "def marker():",
+            "    return {'module': 'module2', 'pyruns': pyruns.__version__, 'shared': sharedpkg.ORIGIN, 'file': pyruns.__file__}",
+        ]),
+        encoding="utf-8",
+    )
+    (project / "train.py").write_text(
+        "\n".join([
+            "import pyruns",
+            "import sharedpkg",
+            "import module1",
+            "import module2",
+            "",
+            "def run():",
+            "    return [",
+            "        {'module': 'train', 'pyruns': pyruns.__version__, 'shared': sharedpkg.ORIGIN, 'file': pyruns.__file__},",
+            "        module1.marker(),",
+            "        module2.marker(),",
+            "    ]",
+        ]),
+        encoding="utf-8",
+    )
+    (project / "run.py").write_text(
+        "\n".join([
+            "import json",
+            "import pyruns",
+            "import sharedpkg",
+            "import train",
+            "",
+            "result = [{'module': 'run', 'pyruns': pyruns.__version__, 'shared': sharedpkg.ORIGIN, 'file': pyruns.__file__}]",
+            "result.extend(train.run())",
+            "print(json.dumps(result, sort_keys=True))",
+        ]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [sys.executable, "run.py"],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert [item["module"] for item in payload] == ["run", "train", "module1", "module2"]
+    assert {item["pyruns"] for item in payload} == {"new-pyruns"}
+    assert {item["shared"] for item in payload} == {"task-env"}
+    assert all(str(launcher_site_packages) not in item["file"] for item in payload)
+    assert str(launcher_site_packages) not in env["PYTHONPATH"].split(os.pathsep)
+
+
 def test_config_node_init():
     data = {
         "lr": 0.01,
