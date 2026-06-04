@@ -23,6 +23,7 @@ FRONTEND_SEARCH_INPUT = Path(__file__).resolve().parents[1] / "frontend" / "src"
 FRONTEND_THEME_CSS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "theme" / "index.css"
 FRONTEND_TAILWIND = Path(__file__).resolve().parents[1] / "frontend" / "tailwind.config.ts"
 FRONTEND_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "index.html"
+STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static" / "index.html"
 
 
 def test_react_generator_pin_promotes_params_without_duplicates():
@@ -86,6 +87,45 @@ def test_react_app_lazy_loads_route_pages_for_smaller_initial_bundle():
     assert "const LauncherPage = lazy(() => import('@/components/launcher/LauncherPage'))" in source
     assert "<Suspense fallback={<RouteLoadingFallback />}>" in source
     assert "function RouteLoadingFallback()" in source
+
+
+def test_react_runtime_panel_is_lazy_loaded_to_keep_editor_out_of_initial_bundle():
+    source = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+
+    assert "const RuntimePanel = lazy(() => import('./RuntimePanel'))" in source
+    assert "import RuntimePanel from './RuntimePanel'" not in source
+    assert "<Suspense fallback={null}>" in source
+    assert "{runtimeOpen && (" in source
+
+
+def test_frontend_index_avoids_external_font_dependencies():
+    indexes = [
+        FRONTEND_INDEX.read_text(encoding="utf-8"),
+        STATIC_INDEX.read_text(encoding="utf-8"),
+    ]
+
+    for index in indexes:
+        assert "fonts.googleapis.com" not in index
+        assert "fonts.gstatic.com" not in index
+
+
+def test_frontend_html_uses_only_local_runtime_assets():
+    indexes = [
+        FRONTEND_INDEX.read_text(encoding="utf-8"),
+        STATIC_INDEX.read_text(encoding="utf-8"),
+    ]
+
+    for index in indexes:
+        assert 'href="http' not in index
+        assert "href='http" not in index
+        assert 'src="http' not in index
+        assert "src='http" not in index
+
+
+def test_built_index_does_not_preload_codemirror_for_initial_shell():
+    index = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert "vendor-codemirror" not in index
 
 
 def test_react_app_supports_direct_launcher_route():

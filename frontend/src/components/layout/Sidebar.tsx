@@ -1,5 +1,5 @@
 import { NavLink, useSearchParams } from 'react-router-dom'
-import { useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import {
   LayoutDashboard, Wand2, ListTodo, Terminal, Rocket,
   Sun, Moon, ChevronsUpDown, FileCode, SlidersHorizontal,
@@ -7,7 +7,8 @@ import {
 import clsx from 'clsx'
 import { useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
-import RuntimePanel from './RuntimePanel'
+
+const RuntimePanel = lazy(() => import('./RuntimePanel'))
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
@@ -183,7 +184,11 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           {!compact && <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>}
         </button>
       </div>
-      <RuntimePanel open={runtimeOpen} left={width + 8} onClose={() => setRuntimeOpen(false)} />
+      {runtimeOpen && (
+        <Suspense fallback={null}>
+          <RuntimePanel open={runtimeOpen} left={width + 8} onClose={() => setRuntimeOpen(false)} />
+        </Suspense>
+      )}
     </aside>
   )
 }
