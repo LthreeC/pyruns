@@ -559,6 +559,121 @@ def test_prepare_env_import_guard_is_active_for_user_sitecustomize_imports(tmp_p
     assert json.loads(result.stdout) == {"script": "new-pyruns", "sitecustomize": "new-pyruns"}
 
 
+def test_prepare_env_does_not_expose_source_root_sibling_packages(tmp_path, monkeypatch):
+    """Only pyruns should be exposed from the launcher source tree, not sibling packages."""
+
+    launcher_source_root = tmp_path / "launcher-source"
+    launcher_pyruns = launcher_source_root / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    launcher_shared = launcher_source_root / "sharedpkg"
+    launcher_shared.mkdir()
+    (launcher_shared / "__init__.py").write_text("ORIGIN = 'launcher-source'\n", encoding="utf-8")
+
+    task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
+    task_shared = task_site_packages / "sharedpkg"
+    task_shared.mkdir(parents=True)
+    (task_shared / "__init__.py").write_text("ORIGIN = 'task-env'\n", encoding="utf-8")
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setenv("PYTHONPATH", str(task_site_packages))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env = _prepare_env(task_dir=str(tmp_path / "task"), task_kind=TASK_KIND_CONFIG)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, pyruns, sharedpkg; print(json.dumps({'pyruns': pyruns.__version__, 'shared': sharedpkg.ORIGIN}))",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"pyruns": "new-pyruns", "shared": "task-env"}
+    assert str(launcher_source_root) not in env["PYTHONPATH"].split(os.pathsep)
+
+
+def test_prepare_env_refreshes_isolated_pyruns_root_when_package_files_change(tmp_path, monkeypatch):
+    """The isolated pyruns root should not reuse a stale copy after package files change."""
+
+    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
+    launcher_pyruns = launcher_site_packages / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    init_file = launcher_pyruns / "__init__.py"
+    init_file.write_text("__version__ = 'first-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env1 = _prepare_env(task_dir=str(tmp_path / "task1"), task_kind=TASK_KIND_CONFIG)
+    first = subprocess.run(
+        [sys.executable, "-c", "import pyruns; print(pyruns.__version__)"],
+        cwd=tmp_path,
+        env=env1,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.strip() == "first-pyruns"
+
+    init_file.write_text("__version__ = 'second-pyruns'\n", encoding="utf-8")
+
+    env2 = _prepare_env(task_dir=str(tmp_path / "task2"), task_kind=TASK_KIND_CONFIG)
+    second = subprocess.run(
+        [sys.executable, "-c", "import pyruns; print(pyruns.__version__)"],
+        cwd=tmp_path,
+        env=env2,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert second.stdout.strip() == "second-pyruns"
+
+
+def test_prepare_env_reuses_isolated_pyruns_root_for_same_package_fingerprint(tmp_path, monkeypatch):
+    """Repeated task launches should not recopy pyruns when package files are unchanged."""
+
+    launcher_source_root = tmp_path / "launcher-source"
+    launcher_pyruns = launcher_source_root / "pyruns"
+    (launcher_pyruns / "core").mkdir(parents=True)
+    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
+    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+
+    original_copytree = executor.shutil.copytree
+    copy_sources: list[str] = []
+
+    def counting_copytree(src, dst, *args, **kwargs):
+        copy_sources.append(os.path.normcase(os.path.abspath(str(src))))
+        return original_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
+    monkeypatch.setattr(executor.shutil, "copytree", counting_copytree)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+
+    env1 = _prepare_env(task_dir=str(tmp_path / "task1"), task_kind=TASK_KIND_CONFIG)
+    env2 = _prepare_env(task_dir=str(tmp_path / "task2"), task_kind=TASK_KIND_CONFIG)
+
+    normalized_package = os.path.normcase(os.path.abspath(str(launcher_pyruns)))
+    assert copy_sources.count(normalized_package) == 1
+    assert env1["PYTHONPATH"].split(os.pathsep)[:2] == env2["PYTHONPATH"].split(os.pathsep)[:2]
+
+
 def test_config_node_init():
     data = {
         "lr": 0.01,

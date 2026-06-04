@@ -47,6 +47,8 @@ from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_fil
 
 logger = get_logger(__name__)
 _ISOLATED_IMPORT_ROOT_LOCK = threading.Lock()
+_ISOLATED_IMPORT_ROOT_CACHE: Dict[str, str] = {}
+_SITE_GUARD_ROOT_CACHE: Dict[str, str] = {}
 
 
 def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
@@ -79,11 +81,6 @@ def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
     env["PYTHONPATH"] = path if not existing else f"{path}{os.pathsep}{existing}"
 
 
-def _is_site_package_parent(path: str) -> bool:
-    leaf = os.path.basename(os.path.normpath(path)).lower()
-    return leaf in {"site-packages", "dist-packages"}
-
-
 def _copy_ignore(_: str, names: List[str]) -> set[str]:
     return {
         name
@@ -111,17 +108,36 @@ def _copy_dist_info(package_parent: str, import_root: str) -> None:
             logger.debug("Skipping pyruns dist-info copy for %s", source, exc_info=True)
 
 
+def _pyruns_package_fingerprint(package_dir: str) -> str:
+    """Build a cheap fingerprint for stale-copy avoidance without scanning all assets."""
+
+    parts = [os.path.abspath(package_dir)]
+    for relative_path in ("__init__.py", os.path.join("core", "executor.py")):
+        path = os.path.join(package_dir, relative_path)
+        try:
+            stat_result = os.stat(path)
+            parts.append(f"{relative_path}:{stat_result.st_mtime_ns}:{stat_result.st_size}")
+        except OSError:
+            parts.append(f"{relative_path}:missing")
+    return "|".join(parts)
+
+
 def _isolated_pyruns_import_root(package_dir: str) -> str:
-    """Expose only the current pyruns package when launched from site-packages."""
+    """Expose only the current pyruns package, not its parent import root."""
 
     package_dir = os.path.abspath(package_dir)
     package_parent = os.path.dirname(package_dir)
-    digest = hashlib.sha1(f"{package_dir}:{os.getpid()}".encode("utf-8")).hexdigest()[:16]
+    fingerprint = _pyruns_package_fingerprint(package_dir)
+    digest = hashlib.sha1(f"{fingerprint}:{os.getpid()}".encode("utf-8")).hexdigest()[:16]
     import_root = os.path.join(tempfile.gettempdir(), f"pyruns-import-{digest}")
     target_package = os.path.join(import_root, "pyruns")
 
     with _ISOLATED_IMPORT_ROOT_LOCK:
+        cached_root = _ISOLATED_IMPORT_ROOT_CACHE.get(fingerprint)
+        if cached_root and os.path.isdir(os.path.join(cached_root, "pyruns")):
+            return cached_root
         if os.path.isdir(target_package):
+            _ISOLATED_IMPORT_ROOT_CACHE[fingerprint] = import_root
             return import_root
         try:
             os.makedirs(import_root, exist_ok=True)
@@ -129,6 +145,7 @@ def _isolated_pyruns_import_root(package_dir: str) -> str:
             _copy_dist_info(package_parent, import_root)
         except Exception as exc:
             raise RuntimeError("Unable to isolate the current pyruns package for child tasks.") from exc
+        _ISOLATED_IMPORT_ROOT_CACHE[fingerprint] = import_root
     return import_root
 
 
@@ -204,6 +221,9 @@ def _pyruns_sitecustomize_guard_root(import_root: str) -> str:
     content = _sitecustomize_guard_content(import_root)
 
     with _ISOLATED_IMPORT_ROOT_LOCK:
+        cached_root = _SITE_GUARD_ROOT_CACHE.get(import_root)
+        if cached_root and os.path.exists(os.path.join(cached_root, "sitecustomize.py")):
+            return cached_root
         os.makedirs(guard_root, exist_ok=True)
         try:
             existing = ""
@@ -215,15 +235,13 @@ def _pyruns_sitecustomize_guard_root(import_root: str) -> str:
                     handle.write(content)
         except OSError as exc:
             raise RuntimeError("Unable to prepare pyruns import guard for child tasks.") from exc
+        _SITE_GUARD_ROOT_CACHE[import_root] = guard_root
     return guard_root
 
 
 def _current_pyruns_import_root() -> str:
     package_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-    package_parent = os.path.dirname(package_dir)
-    if _is_site_package_parent(package_parent):
-        return _isolated_pyruns_import_root(package_dir)
-    return package_parent
+    return _isolated_pyruns_import_root(package_dir)
 
 
 def _is_windows() -> bool:
