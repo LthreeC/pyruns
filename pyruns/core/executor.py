@@ -526,10 +526,6 @@ def _get_log_path(task_dir: str, run_index: int) -> str:
     return os.path.join(log_dir, f"run{run_index}.log")
 
 
-def _short_sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()[:_SOURCE_STATE_DIGEST_LEN]
-
-
 def _file_sha256(path: str | None) -> str:
     if not path:
         return "none"
@@ -546,10 +542,13 @@ def _file_sha256(path: str | None) -> str:
 
 
 def _git_bytes(cwd: str, args: List[str], *, timeout: float = _SOURCE_STATE_GIT_TIMEOUT_SEC) -> bytes | None:
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=timeout,
@@ -563,39 +562,22 @@ def _git_bytes(cwd: str, args: List[str], *, timeout: float = _SOURCE_STATE_GIT_
 def _build_git_source_state(cwd: str) -> str:
     git_root_raw = _git_bytes(cwd, ["rev-parse", "--show-toplevel"])
     if not git_root_raw:
-        return "git none"
+        return "git none | unknown"
     git_root = git_root_raw.decode("utf-8", errors="replace").strip()
     head = (_git_bytes(git_root, ["rev-parse", "--short=12", "HEAD"]) or b"").decode(
         "utf-8",
         errors="replace",
     ).strip() or "unknown"
 
-    diff_bytes = _git_bytes(git_root, ["diff", "--no-ext-diff", "--raw", "-z", "HEAD"])
-    if diff_bytes is None:
-        tracked_state = "timeout"
-    elif diff_bytes:
-        tracked_state = _short_sha256(diff_bytes)
+    status_bytes = _git_bytes(git_root, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
+    if status_bytes is None:
+        source_status = "unknown"
+    elif status_bytes:
+        source_status = "dirty"
     else:
-        tracked_state = "clean"
+        source_status = "clean"
 
-    untracked_bytes = _git_bytes(git_root, ["ls-files", "--others", "--exclude-standard", "-z"])
-    if untracked_bytes is None:
-        untracked_state = "timeout"
-    elif untracked_bytes:
-        count = len([item for item in untracked_bytes.split(b"\0") if item])
-        untracked_state = f"{count}:{_short_sha256(untracked_bytes)}"
-    else:
-        untracked_state = "0"
-
-    parts = [f"git {head}"]
-    if tracked_state == "clean" and untracked_state == "0":
-        parts.append("clean")
-    else:
-        if tracked_state != "clean":
-            parts.append(f"changes {tracked_state}")
-        if untracked_state != "0":
-            parts.append(f"untracked {untracked_state}")
-    return " | ".join(parts)
+    return f"git {head} | {source_status}"
 
 
 def _append_run_slot_value(info: Dict[str, Any], key: str, slot: int, value: Any) -> None:
@@ -641,7 +623,7 @@ def _build_run_source_state(
     if not git_cwd and workdir and os.path.isdir(workdir):
         git_cwd = workdir
 
-    git_state = _build_git_source_state(git_cwd) if git_cwd else "git none"
+    git_state = _build_git_source_state(git_cwd) if git_cwd else "git none | unknown"
     return " ".join(
         [
             git_state,

@@ -1837,7 +1837,7 @@ def test_build_run_source_state_records_file_hashes_without_config_hash(tmp_path
     monkeypatch.setattr(
         executor,
         "_build_git_source_state",
-        lambda cwd: "git none",
+        lambda cwd: "git none | unknown",
     )
 
     state = executor._build_run_source_state(
@@ -1846,9 +1846,65 @@ def test_build_run_source_state_records_file_hashes_without_config_hash(tmp_path
         workdir=str(tmp_path),
     )
 
-    assert "git none" in state
+    assert "git none | unknown" in state
     assert "| script " in state
     assert "config" not in state
+
+
+def test_build_git_source_state_reports_clean_dirty_and_unknown(monkeypatch):
+    from pyruns.core import executor
+
+    status_output = b""
+
+    def fake_git_bytes(cwd, args, **kwargs):
+        if args == ["rev-parse", "--show-toplevel"]:
+            return b"/repo\n"
+        if args == ["rev-parse", "--short=12", "HEAD"]:
+            return b"abc123def456\n"
+        if args == ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]:
+            return status_output
+        raise AssertionError(f"unexpected git command: {args}")
+
+    monkeypatch.setattr(executor, "_git_bytes", fake_git_bytes)
+
+    assert executor._build_git_source_state("/repo") == "git abc123def456 | clean"
+
+    status_output = b" M train.py\0?? scratch.py\0"
+    assert executor._build_git_source_state("/repo") == "git abc123def456 | dirty"
+
+    status_output = None
+    assert executor._build_git_source_state("/repo") == "git abc123def456 | unknown"
+
+
+def test_build_git_source_state_reports_unknown_without_git_root(monkeypatch):
+    from pyruns.core import executor
+
+    monkeypatch.setattr(executor, "_git_bytes", lambda cwd, args, **kwargs: None)
+
+    assert executor._build_git_source_state("/not-a-repo") == "git none | unknown"
+
+
+def test_git_bytes_disables_optional_git_locks(monkeypatch):
+    from pyruns.core import executor
+
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = b"ok"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs.get("env")
+        return Result()
+
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+
+    assert executor._git_bytes("/repo", ["status", "--porcelain=v1"]) == b"ok"
+    assert captured["command"] == ["git", "status", "--porcelain=v1"]
+    assert captured["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+    assert os.environ["GIT_OPTIONAL_LOCKS"] == "1"
 
 
 
