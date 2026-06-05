@@ -1834,7 +1834,11 @@ def test_build_run_source_state_records_file_hashes_without_config_hash(tmp_path
     script.write_text("print('train')\n", encoding="utf-8")
     config = task_dir / CONFIG_FILENAME
     config.write_text("lr: 0.01\n", encoding="utf-8")
-    monkeypatch.setattr(executor, "_build_git_source_state", lambda cwd: "git=none")
+    monkeypatch.setattr(
+        executor,
+        "_build_git_source_state",
+        lambda cwd: "git none",
+    )
 
     state = executor._build_run_source_state(
         task_dir=str(task_dir),
@@ -1842,9 +1846,9 @@ def test_build_run_source_state_records_file_hashes_without_config_hash(tmp_path
         workdir=str(tmp_path),
     )
 
-    assert "git=none" in state
-    assert "script=sha256:" in state
-    assert "config=sha256:" not in state
+    assert "git none" in state
+    assert "| script " in state
+    assert "config" not in state
 
 
 
@@ -1874,7 +1878,8 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     mock_proc.stdout.read1 = MagicMock(side_effect=[b"hello output\n", b''])
     mock_popen.return_value = mock_proc
     
-    with patch("pyruns.core.executor._build_run_source_state", return_value="git=abc123 dirty=0 diff=clean untracked=0"):
+    source_state = "git abc123 | clean | script abc"
+    with patch("pyruns.core.executor._build_run_source_state", return_value=source_state):
         res = run_task_worker(
             task_dir=task_dir,
             name="TestTask",
@@ -1901,7 +1906,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     assert len(info["finish_times"]) == 1
     assert info["pids"] == [9999]
     assert len(info.get("records", [])) == 1
-    assert info["source_states"] == ["git=abc123 dirty=0 diff=clean untracked=0"]
+    assert info["source_states"] == [source_state]
 
     # Check log file was written by _tee_output
     log_path = os.path.join(task_dir, "run_logs", "run1.log")
@@ -1910,11 +1915,11 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     for _ in range(100):
         with open(log_path, "rb") as f:
             log_content = f.read()
-        if b"Source git=abc123 dirty=0 diff=clean untracked=0" in log_content:
+        if source_state.encode("utf-8") in log_content:
             break
         time.sleep(0.01)
     assert b"hello output" in log_content
-    assert b"Source git=abc123 dirty=0 diff=clean untracked=0" in log_content
+    assert source_state.encode("utf-8") in log_content
 
     # Check emit was called
     assert mock_emit.called
@@ -1950,7 +1955,7 @@ def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emi
     def build_source_state(**kwargs):
         order.append("source")
         source_started.set()
-        return "git=late dirty=0 diff=clean untracked=0"
+        return "git late | clean | script late"
 
     def record_popen(*args, **kwargs):
         order.append("popen")
@@ -2348,14 +2353,14 @@ def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
             "name": "alpha",
             "status": "running",
             "env": {"A": "1"},
-            "source_states": ["git=abc dirty=0 diff=clean untracked=0"],
+            "source_states": ["git abc | clean | script abc"],
             "records": [{"loss": 0.1}],
             "tracks": [{"step": 1}],
         },
         summary=True,
     )
     assert summary["dir"] == "C:/tmp/task"
-    assert summary["source_states"] == ["git=abc dirty=0 diff=clean untracked=0"]
+    assert summary["source_states"] == ["git abc | clean | script abc"]
     assert summary["records"] == []
     assert summary["env"] == {"A": "1"}
 
