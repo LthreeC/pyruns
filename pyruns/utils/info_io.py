@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import socket
 import tempfile
 import threading
 import time
@@ -22,7 +23,8 @@ _LOCK_POLL_SEC = 0.05
 _LOCK_TIMEOUT_SEC = 5.0
 _REPLACE_RETRY_COUNT = 5
 _REPLACE_RETRY_DELAY_SEC = 0.02
-_STALE_LOCK_MIN_AGE_SEC = 1.0
+_STALE_LOCK_MIN_AGE_SEC = 30.0
+_LOCK_OWNER_HOST = socket.gethostname().lower()
 
 
 def _thread_lock_for(task_dir: str) -> threading.RLock:
@@ -58,14 +60,30 @@ def _read_lock_owner_pid(lock_path: str) -> Optional[int]:
         return None
 
 
+def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str]:
+    try:
+        with open(lock_path, "r", encoding="utf-8") as handle:
+            parts = handle.read().strip().split()
+    except OSError:
+        return None, ""
+    pid = None
+    if parts:
+        try:
+            pid = int(parts[0])
+        except (TypeError, ValueError):
+            pid = None
+    host = parts[2].lower() if len(parts) >= 3 else ""
+    return pid, host
+
+
 def _lock_file_is_stale(lock_path: str, *, min_age_sec: float = _STALE_LOCK_MIN_AGE_SEC) -> bool:
     try:
         age = time.time() - os.path.getmtime(lock_path)
     except OSError:
         return False
 
-    pid = _read_lock_owner_pid(lock_path)
-    if pid is not None:
+    pid, host = _read_lock_owner(lock_path)
+    if pid is not None and (not host or host == _LOCK_OWNER_HOST):
         return not is_pid_running(pid)
     return age >= max(0.0, min_age_sec)
 
@@ -93,12 +111,13 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC):
         raise TimeoutError(f"Timed out acquiring task lock for {task_dir}")
 
     fd: Optional[int] = None
+    owner = f"{os.getpid()} {threading.get_ident()} {_LOCK_OWNER_HOST} {time.time():.6f}"
     start = time.monotonic()
     try:
         while True:
             try:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                os.write(fd, f"{os.getpid()} {threading.get_ident()}".encode("utf-8", errors="ignore"))
+                os.write(fd, owner.encode("utf-8", errors="ignore"))
                 break
             except FileExistsError:
                 if _remove_stale_lock_file(lock_path):
@@ -115,7 +134,13 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC):
                 pass
         try:
             if os.path.exists(lock_path):
-                os.remove(lock_path)
+                try:
+                    with open(lock_path, "r", encoding="utf-8") as handle:
+                        current_owner = handle.read().strip()
+                except OSError:
+                    current_owner = ""
+                if current_owner == owner:
+                    os.remove(lock_path)
         except OSError:
             pass
         thread_lock.release()

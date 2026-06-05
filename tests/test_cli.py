@@ -736,6 +736,20 @@ class TestCmdRun:
                 cmd_run(task_manager, ["target-task"])
             mock_start.assert_called_once_with("target-task")
 
+    def test_run_exact_name_lazy_loads_without_full_scan(self, workspace):
+        from pyruns.cli.commands import cmd_run
+        from pyruns.core.task_manager import TaskManager
+
+        _add_task(workspace, "target-task", "pending")
+        with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+            manager = TaskManager(tasks_dir=str(workspace / TASKS_DIR), lazy_scan=None)
+
+        with patch.object(manager, "scan_disk", side_effect=AssertionError("unexpected scan")):
+            with patch.object(manager, "start_task_now") as mock_start:
+                cmd_run(manager, ["target-task", "--detach"])
+
+        mock_start.assert_called_once_with("target-task")
+
     def test_run_single_detach_skips_fg(self, workspace, task_manager):
         from pyruns.cli.commands import cmd_run
 
@@ -758,6 +772,32 @@ class TestCmdRun:
         with patch.object(task_manager, "start_batch_tasks") as mock_batch:
             cmd_run(task_manager, ["batch-a", "batch-b", "--workers", "3", "--mode", "process", "--detach"])
             mock_batch.assert_called_once_with(["batch-a", "batch-b"], execution_mode="process", max_workers=3)
+
+    def test_run_config_creates_tasks_and_delegates_to_run(self, workspace, task_manager, tmp_path):
+        from pyruns.cli import commands
+
+        script_dir = tmp_path / "project"
+        config_dir = script_dir / "configs"
+        config_dir.mkdir(parents=True)
+        script_path = script_dir / "train.py"
+        script_path.write_text("print('train')\n", encoding="utf-8")
+        config_path = config_dir / "quick.yaml"
+        config_path.write_text("lr: 0.1 | 0.2\n", encoding="utf-8")
+
+        with patch.object(commands, "cmd_run") as mock_run:
+            commands.cmd_run_config(
+                task_manager,
+                "configs/quick.yaml",
+                ["--workers", "2", "--detach"],
+                script_path=str(script_path),
+            )
+
+        run_args = mock_run.call_args.args[1]
+        created_names = run_args[:2]
+        assert run_args[2:] == ["--workers", "2", "--detach"]
+        assert created_names == ["quick_[1-of-2]", "quick_[2-of-2]"]
+        for name in created_names:
+            assert (workspace / TASKS_DIR / name / CONFIG_FILENAME).exists()
 
 
 class TestCmdDelete:
@@ -1109,7 +1149,7 @@ class TestCliEntryHelpers:
         calls = []
         dummy_manager = object()
         monkeypatch.setattr(cli, "_resolve_workspace", lambda: "workspace")
-        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace: dummy_manager)
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace, **kwargs: dummy_manager)
         monkeypatch.setattr("pyruns.cli.interactive.run_interactive", lambda tm: calls.append(("interactive", tm)))
 
         cli._dispatch_cli(["cli"])
@@ -1129,19 +1169,88 @@ class TestCliEntryHelpers:
         calls = []
         dummy_manager = object()
         monkeypatch.setattr(cli, "_setup_env", lambda path: calls.append(("setup", path)) or "workspace")
-        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace: dummy_manager)
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace, **kwargs: dummy_manager)
         monkeypatch.setitem(commands.COMMANDS, "info", lambda tm, args: calls.append(("info", tm, args)))
 
         cli._dispatch_cli(["info", str(script), "--verbose"])
 
         assert calls == [("setup", str(script)), ("info", dummy_manager, ["--verbose"])]
 
+    def test_dispatch_cli_run_script_task_uses_existing_run_command(self, tmp_path, monkeypatch):
+        import pyruns.cli as cli
+        from pyruns.cli import commands
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        calls = []
+        dummy_manager = object()
+        monkeypatch.setattr(cli, "_setup_env", lambda path: calls.append(("setup", path)) or "workspace")
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace, **kwargs: dummy_manager)
+        monkeypatch.setitem(commands.COMMANDS, "run", lambda tm, args: calls.append(("run", tm, args)))
+
+        cli._dispatch_cli(["run", str(script), "task-a", "--detach"])
+
+        assert calls == [
+            ("setup", str(script)),
+            ("run", dummy_manager, ["task-a", "--detach"]),
+        ]
+
+    def test_dispatch_cli_run_script_yaml_like_task_name_stays_task(self, tmp_path, monkeypatch):
+        import pyruns.cli as cli
+        from pyruns.cli import commands
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        calls = []
+        dummy_manager = object()
+        monkeypatch.setattr(cli, "_setup_env", lambda path: calls.append(("setup", path)) or "workspace")
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace, **kwargs: dummy_manager)
+        monkeypatch.setitem(commands.COMMANDS, "run", lambda tm, args: calls.append(("run", tm, args)))
+
+        cli._dispatch_cli(["run", str(script), "task-a.yaml"])
+
+        assert calls == [
+            ("setup", str(script)),
+            ("run", dummy_manager, ["task-a.yaml"]),
+        ]
+
+    def test_dispatch_cli_run_script_yaml_creates_and_runs_config(self, tmp_path, monkeypatch):
+        import pyruns.cli as cli
+
+        monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+        script = tmp_path / "train.py"
+        config = tmp_path / "quick.yaml"
+        script.write_text("print('train')\n", encoding="utf-8")
+        config.write_text("lr: 0.1\n", encoding="utf-8")
+        calls = []
+        dummy_manager = object()
+
+        def setup_env(path, yaml=None):
+            calls.append(("setup", path, yaml))
+            return "workspace"
+
+        def run_config(tm, path, args, *, script_path=None):
+            calls.append(("run_config", tm, path, args, script_path))
+
+        monkeypatch.setattr(cli, "_setup_env", setup_env)
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace, **kwargs: dummy_manager)
+        monkeypatch.setattr("pyruns.cli.commands.cmd_run_config", run_config)
+
+        cli._dispatch_cli(["run", str(script), str(config), "--workers", "2"])
+
+        assert calls == [
+            ("setup", str(script), str(config)),
+            ("run_config", dummy_manager, str(config), ["--workers", "2"], str(script)),
+        ]
+
     def test_dispatch_cli_rejects_unknown_command(self, monkeypatch, capsys):
         import pyruns.cli as cli
 
         monkeypatch.delenv(cli.ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
         monkeypatch.setattr(cli, "_resolve_workspace", lambda: "workspace")
-        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace: object())
+        monkeypatch.setattr(cli, "_init_task_manager", lambda workspace, **kwargs: object())
 
         with pytest.raises(SystemExit) as exc:
             cli._dispatch_cli(["not-real"])

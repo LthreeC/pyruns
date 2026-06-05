@@ -28,10 +28,12 @@ from pyruns.launcher import (
     normalize_path,
 )
 from pyruns.utils import get_logger
+from pyruns.utils.parse_utils import resolve_config_path
 
 logger = get_logger(__name__)
 
 _CLI_COMMANDS = frozenset({"cli", *COMMANDS.keys()})
+_YAML_EXTENSIONS = (".yaml", ".yml")
 
 _HELP = textwrap.dedent(
     f"""
@@ -46,6 +48,8 @@ _HELP = textwrap.dedent(
         pyr ui                         Start the launcher and choose a script workspace
         pyr dev <script.py>            Start web app in dev mode (hot-reload)
         pyr cli [script.py]            Enter interactive CLI mode
+        pyr run <script.py> <config>   Create and run YAML task(s) without UI
+        pyr run <script.py> <task>     Run an existing task without UI
         pyr <command> [args]           Run a CLI command directly
 
     CLI COMMANDS
@@ -72,6 +76,8 @@ _HELP = textwrap.dedent(
         pyr
         pyr ui
         pyr cli train.py
+        pyr run train.py configs/quick.yaml
+        pyr run train.py baseline_task
         pyr ls
         pyr ls --status completed --limit 20
         pyr show 1
@@ -153,7 +159,7 @@ def _resolve_workspace(script_path: str | None = None) -> str | None:
     return best_candidate
 
 
-def _init_task_manager(workspace: str):
+def _init_task_manager(workspace: str, *, lazy_scan: bool | None = False):
     """Create a TaskManager pointed at the workspace's tasks directory."""
 
     from pyruns._config import TASKS_DIR
@@ -165,9 +171,20 @@ def _init_task_manager(workspace: str):
     os.environ[ENV_KEY_ROOT] = workspace
     ensure_settings_file(workspace)
     load_settings(workspace)
-    task_manager = TaskManager(tasks_dir=tasks_dir, lazy_scan=False)
+    task_manager = TaskManager(tasks_dir=tasks_dir, lazy_scan=lazy_scan)
     logger.debug("task manager ready: %s", vars(task_manager))
     return task_manager
+
+
+def _is_yaml_arg(arg: str) -> bool:
+    return str(arg or "").lower().endswith(_YAML_EXTENSIONS)
+
+
+def _resolve_script_yaml_arg(arg: str, script_path: str | None) -> str | None:
+    if not _is_yaml_arg(arg):
+        return None
+    script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path else os.getcwd()
+    return resolve_config_path(arg, script_dir)
 
 
 def _dispatch_cli(args: list[str]) -> None:
@@ -176,18 +193,43 @@ def _dispatch_cli(args: list[str]) -> None:
     os.environ[ENV_KEY_CLI_TERMINAL_RUNTIME] = "1"
 
     script_path = None
+    script_cli_args: list[str] = []
     if len(args) > 1 and args[1].endswith(".py") and os.path.exists(args[1]):
         script_path = args[1]
+        script_cli_args = args[2:]
         args = [args[0], *args[2:]]
 
-    workspace = _setup_env(script_path) if script_path else _resolve_workspace()
+    command_name = args[0].lower() if args else ""
+    run_config_path = (
+        _resolve_script_yaml_arg(script_cli_args[0], script_path)
+        if command_name == "run" and script_path and script_cli_args
+        else None
+    )
+    custom_yaml = (
+        script_cli_args[0]
+        if run_config_path
+        else None
+    )
+    if script_path and custom_yaml:
+        workspace = _setup_env(script_path, custom_yaml)
+    elif script_path:
+        workspace = _setup_env(script_path)
+    else:
+        workspace = _resolve_workspace()
     logger.debug("workspace=%s", workspace)
     if not workspace:
         print("No pyruns workspace found in current directory.")
         print("Hint: run `pyr` to open a shell workspace, or `pyr <script.py>` to open a script workspace first.")
         sys.exit(1)
 
-    task_manager = _init_task_manager(workspace)
+    defer_initial_scan = bool(args and args[0].lower() == "run")
+    task_manager = _init_task_manager(workspace, lazy_scan=None if defer_initial_scan else False)
+    if script_path and args and args[0].lower() == "run" and len(args) > 1 and run_config_path:
+        from pyruns.cli.commands import cmd_run_config
+
+        cmd_run_config(task_manager, args[1], args[2:], script_path=script_path)
+        return
+
     if not args or args[0] == "cli":
         from pyruns.cli.interactive import run_interactive
 

@@ -38,9 +38,15 @@ from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.utils import get_logger
 from pyruns.utils.batch_utils import generate_batch_configs
-from pyruns.utils.config_utils import load_yaml, preview_config_line
+from pyruns.utils.config_utils import (
+    load_yaml,
+    load_yaml_strict,
+    preview_config_line,
+    safe_filename,
+)
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info
+from pyruns.utils.parse_utils import resolve_config_path
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.task_files import resolve_task_config_file
 
@@ -181,7 +187,10 @@ def _apply_status_filter(tasks: list[dict[str, Any]], statuses: list[str]) -> li
 
 
 def _refresh_tasks(tm) -> list[dict[str, Any]]:
-    tm.refresh_from_disk(check_all=True)
+    if not getattr(tm, "_disk_scan_complete", True) and hasattr(tm, "scan_disk"):
+        tm.scan_disk()
+    else:
+        tm.refresh_from_disk(check_all=True)
     return _sorted_tasks(tm)
 
 
@@ -220,7 +229,14 @@ def _get_git_editor() -> str:
 
 def _resolve_targets(tm, args: list[str]) -> list[dict[str, Any]]:
     """Resolve user-provided names or 1-based indices to task dicts."""
-    sorted_tasks = _refresh_tasks(tm)
+    sorted_tasks: list[dict[str, Any]] | None = None
+
+    def _get_sorted_tasks() -> list[dict[str, Any]]:
+        nonlocal sorted_tasks
+        if sorted_tasks is None:
+            sorted_tasks = _refresh_tasks(tm)
+        return sorted_tasks
+
     targets: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
@@ -232,15 +248,21 @@ def _resolve_targets(tm, args: list[str]) -> list[dict[str, Any]]:
             index = None
 
         if index is not None:
-            if 1 <= index <= len(sorted_tasks):
-                task = sorted_tasks[index - 1]
+            current_tasks = _get_sorted_tasks()
+            if 1 <= index <= len(current_tasks):
+                task = current_tasks[index - 1]
             else:
                 print(f"  Task index out of range: {arg}")
                 continue
         else:
-            task = next((item for item in sorted_tasks if item.get("name") == arg), None)
+            load_exact = getattr(tm, "load_task_by_name", None)
+            if callable(load_exact):
+                task = load_exact(arg)
+            current_tasks = _get_sorted_tasks() if task is None else []
             if task is None:
-                matches = [item for item in sorted_tasks if arg.lower() in (item.get("name") or "").lower()]
+                task = next((item for item in current_tasks if item.get("name") == arg), None)
+            if task is None:
+                matches = [item for item in current_tasks if arg.lower() in (item.get("name") or "").lower()]
                 if len(matches) == 1:
                     task = matches[0]
                 elif len(matches) > 1:
@@ -460,6 +482,56 @@ def cmd_run(tm, args: list[str] | None = None) -> None:
         print(f"    - {name}")
     tm.start_batch_tasks(task_names, execution_mode=mode, max_workers=workers)
     print(f"\n  Submitted {len(task_names)} task(s) in {mode} mode (workers={workers})\n")
+
+
+def _resolve_run_config_path(config_path: str, script_path: str | None = None) -> str | None:
+    script_dir = os.path.dirname(os.path.abspath(script_path)) if script_path else os.getcwd()
+    resolved = resolve_config_path(config_path, script_dir)
+    return os.path.abspath(resolved) if resolved else None
+
+
+def cmd_run_config(
+    tm,
+    config_path: str,
+    args: list[str] | None = None,
+    *,
+    script_path: str | None = None,
+) -> None:
+    """Create task(s) from a YAML config and run them immediately."""
+
+    raw_args = list(args or [])
+    resolved_path = _resolve_run_config_path(config_path, script_path)
+    if not resolved_path:
+        print(f"  Config not found: {config_path}")
+        return
+
+    try:
+        config = load_yaml_strict(resolved_path)
+        configs = generate_batch_configs(config)
+    except Exception as exc:
+        print(f"  Failed to prepare config '{config_path}': {exc}")
+        return
+
+    name_prefix = safe_filename(os.path.splitext(os.path.basename(resolved_path))[0])
+    generator = TaskGenerator(root_dir=tm.tasks_dir)
+    try:
+        new_tasks = generator.create_tasks(configs, name_prefix, task_kind=TASK_KIND_CONFIG)
+    except ValueError as exc:
+        print(f"  {exc}")
+        return
+
+    if hasattr(tm, "add_tasks"):
+        tm.add_tasks(new_tasks)
+    else:
+        for task in new_tasks:
+            tm.add_task(task)
+
+    task_names = _format_task_names(new_tasks)
+    print(f"  Created {len(task_names)} task(s) from {os.path.basename(resolved_path)}")
+    for name in task_names:
+        print(f"    - {name}")
+
+    cmd_run(tm, [*task_names, *raw_args])
 
 
 def cmd_delete(tm, args: list[str] | None = None) -> None:

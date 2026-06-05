@@ -741,6 +741,32 @@ def test_sort_tasks_for_manager_keeps_pinned_active_and_fresh_tasks_first():
 # ═══════════════════════════════════════════════════════════════
 
 
+def test_sort_tasks_for_manager_uses_natural_name_tiebreaker():
+    tasks = [
+        {
+            "name": "task_2026-05-28_02-25-46_[10-of-18]",
+            "status": "pending",
+            "created_at": "2026-05-28_02-25-46",
+        },
+        {
+            "name": "task_2026-05-28_02-25-46_[2-of-18]",
+            "status": "pending",
+            "created_at": "2026-05-28_02-25-46",
+        },
+        {
+            "name": "task_2026-05-28_02-25-46_[1-of-18]",
+            "status": "pending",
+            "created_at": "2026-05-28_02-25-46",
+        },
+    ]
+
+    assert [task["name"] for task in sort_tasks_for_manager(tasks)] == [
+        "task_2026-05-28_02-25-46_[1-of-18]",
+        "task_2026-05-28_02-25-46_[2-of-18]",
+        "task_2026-05-28_02-25-46_[10-of-18]",
+    ]
+
+
 @pytest.fixture(autouse=True)
 def clean_cache():
     # Before each test
@@ -1212,6 +1238,40 @@ class TestListTemplateFiles:
 
         assert list(result.items())[0][1] == "config_default.yaml"
         assert list(result.keys())[1] == "tasks/generated-task/config.yaml"
+
+    def test_task_templates_follow_manager_order_after_default(self, tmp_path):
+        run_root = str(tmp_path)
+        save_yaml(os.path.join(run_root, "config_default.yaml"), {"lr": 0.01})
+        tasks_dir = os.path.join(run_root, "tasks")
+
+        def add_task(name, **info):
+            task_dir = os.path.join(tasks_dir, name)
+            os.makedirs(task_dir, exist_ok=True)
+            save_yaml(os.path.join(task_dir, "config.yaml"), {"name": name})
+            save_task_info(
+                task_dir,
+                {
+                    "name": name,
+                    "status": "pending",
+                    "created_at": "2026-05-28_02-25-46",
+                    **info,
+                },
+            )
+
+        add_task("task_2026-05-28_02-25-46_[10-of-18]")
+        add_task("task_2026-05-28_02-25-46_[2-of-18]")
+        add_task("task_2026-05-28_02-25-46_[1-of-18]")
+        add_task("running-old", status="running", start_times=["2026-05-28_02-25-00"])
+
+        result = list_template_files(run_root)
+
+        assert list(result.values())[:5] == [
+            "config_default.yaml",
+            "running-old",
+            "task_2026-05-28_02-25-46_[1-of-18]",
+            "task_2026-05-28_02-25-46_[2-of-18]",
+            "task_2026-05-28_02-25-46_[10-of-18]",
+        ]
 
     def test_skips_dot_dirs(self, tmp_path):
         run_root = str(tmp_path)

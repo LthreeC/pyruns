@@ -8,6 +8,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -1823,6 +1825,29 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
     assert cleanup_paths == []
 
 
+def test_build_run_source_state_records_file_hashes_without_config_hash(tmp_path, monkeypatch):
+    from pyruns.core import executor
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script = tmp_path / "train.py"
+    script.write_text("print('train')\n", encoding="utf-8")
+    config = task_dir / CONFIG_FILENAME
+    config.write_text("lr: 0.01\n", encoding="utf-8")
+    monkeypatch.setattr(executor, "_build_git_source_state", lambda cwd: "git=none")
+
+    state = executor._build_run_source_state(
+        task_dir=str(task_dir),
+        script_path=str(script),
+        workdir=str(tmp_path),
+    )
+
+    assert "git=none" in state
+    assert "script=sha256:" in state
+    assert "config=sha256:" not in state
+
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
@@ -1849,20 +1874,26 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     mock_proc.stdout.read1 = MagicMock(side_effect=[b"hello output\n", b''])
     mock_popen.return_value = mock_proc
     
-    res = run_task_worker(
-        task_dir=task_dir,
-        name="TestTask",
-        created_at="now",
-        config={},
-        run_index=1
-    )
+    with patch("pyruns.core.executor._build_run_source_state", return_value="git=abc123 dirty=0 diff=clean untracked=0"):
+        res = run_task_worker(
+            task_dir=task_dir,
+            name="TestTask",
+            created_at="now",
+            config={},
+            run_index=1
+        )
     
     assert res["status"] == "completed"
     assert res["progress"] == 1.0
     
     # Check task_info updated
-    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
-        info = json.load(f)
+    info = {}
+    for _ in range(100):
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
+            info = json.load(f)
+        if info.get("source_states"):
+            break
+        time.sleep(0.01)
         
     assert info["status"] == "completed"
     assert info["progress"] == 1.0
@@ -1870,15 +1901,75 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     assert len(info["finish_times"]) == 1
     assert info["pids"] == [9999]
     assert len(info.get("records", [])) == 1
+    assert info["source_states"] == ["git=abc123 dirty=0 diff=clean untracked=0"]
 
     # Check log file was written by _tee_output
     log_path = os.path.join(task_dir, "run_logs", "run1.log")
     assert os.path.exists(log_path)
-    with open(log_path, "rb") as f:
-        assert b"hello output" in f.read()
+    log_content = b""
+    for _ in range(100):
+        with open(log_path, "rb") as f:
+            log_content = f.read()
+        if b"Source git=abc123 dirty=0 diff=clean untracked=0" in log_content:
+            break
+        time.sleep(0.01)
+    assert b"hello output" in log_content
+    assert b"Source git=abc123 dirty=0 diff=clean untracked=0" in log_content
 
     # Check emit was called
     assert mock_emit.called
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emit, mock_detect, tmp_path):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
+        json.dump(
+            {
+                "name": "FastStartTask",
+                "script": "script.py",
+                "status": "queued",
+                "start_times": [],
+                "finish_times": [],
+            },
+            f,
+        )
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.wait.return_value = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"done\n", b""])
+    mock_popen.return_value = mock_proc
+    order = []
+    source_started = threading.Event()
+
+    def build_source_state(**kwargs):
+        order.append("source")
+        source_started.set()
+        return "git=late dirty=0 diff=clean untracked=0"
+
+    def record_popen(*args, **kwargs):
+        order.append("popen")
+        return mock_proc
+
+    mock_popen.side_effect = record_popen
+    with patch("pyruns.core.executor._build_run_source_state", side_effect=build_source_state):
+        res = run_task_worker(
+            task_dir=task_dir,
+            name="FastStartTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert res["status"] == "completed"
+    assert source_started.wait(1)
+    assert order[0] == "popen"
+    assert "source" in order
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -2423,6 +2514,82 @@ def test_task_manager_delete_active_task_retries_then_removes_folder(tmp_path, m
     assert killed == [12345]
     assert removed == [str(task_dir).replace("\\", "/")]
     assert manager.get_task("runner") is None
+
+
+def test_task_manager_keeps_live_foreign_runner_running(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "remote"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "remote",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_until": time.time() + 60,
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: False)
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager.get_task("remote")["status"] == "running"
+
+
+def test_task_manager_does_not_submit_when_foreign_runner_owns_lease(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    task = generator.create_task("alpha", {"value": 1})
+    save_task_info(
+        task["dir"],
+        {
+            "name": "alpha",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 2,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [4321],
+            "runner_id": "other-host:4321:abcdef",
+            "runner_host": "other-host",
+            "lease_until": time.time() + 60,
+        },
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    submitted = []
+
+    class CapturingExecutor:
+        def submit(self, *args, **kwargs):
+            submitted.append((args, kwargs))
+
+    manager._executor = CapturingExecutor()
+    monkeypatch.setattr(manager, "_ensure_executor", lambda: None)
+    with manager._lock:
+        target = manager._tasks_by_name["alpha"]
+        target["status"] = "queued"
+        manager._running_ids.add("alpha")
+
+    manager._submit_task(target, 3, independent=False)
+
+    assert submitted == []
+    assert manager.get_task("alpha")["status"] == "running"
 
 
 def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeypatch):

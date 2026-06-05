@@ -1,6 +1,7 @@
 import ast
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -43,6 +44,8 @@ yaml.SafeLoader.add_implicit_resolver(
 )
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
+from pyruns.utils.info_io import load_task_info
+from pyruns.utils.sort_utils import sort_tasks_for_manager
 
 
 class _PrettyDumper(yaml.SafeDumper):
@@ -178,7 +181,7 @@ def list_template_files(run_root: str) -> Dict[str, str]:
     Returns dict of ``{relative_path: display_name}``.
     Searches both ``tasks/<name>/config.yaml`` and ``config_default.yaml``.
     The default template is listed first because it is the workspace parameter source.
-    Task configs are then sorted newest-first by metadata mtime.
+    Task configs then follow the same logical order as Manager and Monitor.
     """
     if not os.path.isdir(run_root):
         return {}
@@ -202,7 +205,7 @@ def list_template_files(run_root: str) -> Dict[str, str]:
     
     if os.path.isdir(actual_tasks_dir):
         try:
-            task_entries = []
+            task_entries: List[Dict[str, Any]] = []
             for dir_name in sorted(os.listdir(actual_tasks_dir)):
                 if dir_name.startswith("."):
                     continue
@@ -212,25 +215,36 @@ def list_template_files(run_root: str) -> Dict[str, str]:
 
                 cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
                 if os.path.exists(cfg_path):
-                    display_name = dir_name
-                    # Use file mtime for sorting instead of loading full task_info.json
-                    # This avoids expensive JSON parsing for every task directory
+                    info = load_task_info(task_dir)
                     try:
-                        mtime = os.path.getmtime(os.path.join(task_dir, TASK_INFO_FILENAME))
+                        fallback_mtime = os.path.getmtime(os.path.join(task_dir, TASK_INFO_FILENAME))
                     except OSError:
                         try:
-                            mtime = os.path.getmtime(cfg_path)
+                            fallback_mtime = os.path.getmtime(cfg_path)
                         except OSError:
-                            mtime = 0.0
-                    sort_val = mtime
+                            fallback_mtime = 0.0
 
                     rel_path = os.path.join(TASKS_DIR, dir_name, CONFIG_FILENAME).replace("\\", "/")
-                    task_entries.append((rel_path, display_name, sort_val))
+                    task_entries.append(
+                        {
+                            "name": dir_name,
+                            "status": info.get("status", "pending"),
+                            "created_at": info.get("created_at")
+                            or (
+                                time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(fallback_mtime))
+                                if fallback_mtime
+                                else ""
+                            ),
+                            "start_times": info.get("start_times", []),
+                            "finish_times": info.get("finish_times", []),
+                            "pinned": info.get("pinned", False),
+                            "task_order": info.get("task_order"),
+                            "_template_path": rel_path,
+                        }
+                    )
 
-            # Sort by mtime descending (newest first)
-            task_entries.sort(key=lambda x: x[2], reverse=True)
-            for rel_path, display_name, _ in task_entries:
-                options[rel_path] = display_name
+            for task in sort_tasks_for_manager(task_entries):
+                options[str(task["_template_path"])] = str(task["name"])
         except OSError:
             pass
 

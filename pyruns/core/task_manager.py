@@ -5,13 +5,16 @@ from __future__ import annotations
 import atexit
 import copy
 import os
+import socket
 import shutil
 import threading
 import time
+import uuid
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pyruns._config import (
+    DEFAULT_RUNNER_LEASE_SECONDS,
     ERROR_LOG_FILENAME,
     RUN_LOGS_DIR,
     TASK_KIND_CONFIG,
@@ -40,10 +43,14 @@ from pyruns.utils.task_files import (
 logger = get_logger(__name__)
 
 
+class TaskClaimConflict(RuntimeError):
+    """Raised when another runner already owns a live task lease."""
+
+
 class TaskManager:
     """Central task registry, scheduler, and UI notification source."""
 
-    def __init__(self, tasks_dir: str | None = None, lazy_scan: bool = True):
+    def __init__(self, tasks_dir: str | None = None, lazy_scan: bool | None = True):
         if tasks_dir is None:
             from pyruns._config import ROOT_DIR
 
@@ -61,14 +68,20 @@ class TaskManager:
         self._independent_executor = None
         self._executor_mode = None
         self._executor_workers = 0
+        self.runner_host = socket.gethostname().lower()
+        self.runner_id = f"{self.runner_host}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        self.lease_seconds = DEFAULT_RUNNER_LEASE_SECONDS
 
         self.execution_mode = "thread"
         self.max_workers = 1
         self.is_processing = False
         self._running_ids: set[str] = set()
+        self._disk_scan_complete = False
 
         logger.info("TaskManager initialised  root=%s", tasks_dir)
-        if lazy_scan:
+        if lazy_scan is None:
+            pass
+        elif lazy_scan:
             self.scan_disk_async()
         else:
             self.scan_disk()
@@ -169,6 +182,7 @@ class TaskManager:
                 self.tasks = []
                 self._rebuild_indexes_locked()
                 self.is_processing = False
+                self._disk_scan_complete = True
             return
 
         # Use os.scandir for fewer syscalls (isdir + mtime in one stat)
@@ -203,7 +217,27 @@ class TaskManager:
             self.tasks = new_tasks
             self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
+            self._disk_scan_complete = True
         logger.debug("scan_disk completed: %d tasks found", len(new_tasks))
+
+    @staticmethod
+    def _lease_until_value(info: Dict[str, Any]) -> float:
+        try:
+            return float(info.get("lease_until", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _lease_active(cls, info: Dict[str, Any], *, now: float | None = None) -> bool:
+        return cls._lease_until_value(info) > (time.time() if now is None else now)
+
+    def _is_foreign_live_runner(self, info: Dict[str, Any]) -> bool:
+        runner_id = str(info.get("runner_id", "") or "")
+        return bool(runner_id and runner_id != self.runner_id and self._lease_active(info))
+
+    def _is_local_or_legacy_runner(self, info: Dict[str, Any]) -> bool:
+        runner_host = str(info.get("runner_host", "") or "").lower()
+        return not runner_host or runner_host == self.runner_host
 
     def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
         """Load one task folder into the normalized task dict shape."""
@@ -225,7 +259,9 @@ class TaskManager:
         task_name = dir_name
         if info.get("status") == "running" and task_name not in self._running_ids:
             pid = self._latest_pid(info)
-            if not (pid and is_pid_running(pid)):
+            foreign_runner_live = self._is_foreign_live_runner(info)
+            local_pid_live = self._is_local_or_legacy_runner(info) and pid and is_pid_running(pid)
+            if not foreign_runner_live and not local_pid_live:
                 self._mark_failed_on_disk(
                     {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
                 )
@@ -258,6 +294,10 @@ class TaskManager:
             "records": info.get("records", []),
             "tracks": info.get("tracks", []),
             "notes": info.get("notes", ""),
+            "runner_id": info.get("runner_id"),
+            "runner_host": info.get("runner_host"),
+            "lease_until": info.get("lease_until"),
+            "lease_heartbeat": info.get("lease_heartbeat"),
             "_load_error": load_error,
             "_mtime": (mtime_ns / 1_000_000_000) if mtime_ns else 0.0,
             "_mtime_ns": mtime_ns,
@@ -316,6 +356,29 @@ class TaskManager:
                 logger.debug("refresh_from_disk skipped %s: %s", task.get("name"), exc)
 
         return has_changed
+
+    def load_task_by_name(self, name: str) -> Dict[str, Any] | None:
+        """Load one exact task folder without scanning the whole workspace."""
+        task_name = str(name or "").strip()
+        if validate_task_name(task_name) is not None:
+            return None
+
+        task = self._load_task_dir(task_name)
+        if task is None:
+            return None
+
+        with self._lock:
+            existing = self._tasks_by_name.get(task_name)
+            if existing:
+                existing.clear()
+                existing.update(task)
+                loaded = existing
+            else:
+                self.tasks.insert(0, task)
+                loaded = task
+            self._rebuild_indexes_locked()
+            self._recompute_processing_flag_locked()
+        return loaded
 
     def add_task(self, task_obj: Dict[str, Any]) -> None:
         with self._lock:
@@ -621,8 +684,9 @@ class TaskManager:
             return False
 
         if was_running:
-            pid = self._latest_pid_from_disk(target_ref)
-            if pid:
+            disk_info = load_task_info(target_ref["dir"])
+            pid = self._latest_pid(disk_info) if disk_info else None
+            if pid and self._is_local_or_legacy_runner(disk_info or {}):
                 kill_process(int(pid))
             try:
                 self._persist_pending_stop_summary(
@@ -666,8 +730,9 @@ class TaskManager:
                 if target["status"] in ("running", "queued"):
                     previous_status = str(target["status"])
                     if target["status"] == "running":
-                        pid = self._latest_pid_from_disk(target)
-                        if pid:
+                        disk_info = load_task_info(target["dir"])
+                        pid = self._latest_pid(disk_info) if disk_info else None
+                        if pid and self._is_local_or_legacy_runner(disk_info or {}):
                             kill_process(int(pid))
                         self._running_ids.discard(target["name"])
                     target["status"] = "failed"
@@ -797,7 +862,17 @@ class TaskManager:
     ) -> None:
         """Persist a running state and submit one task to the chosen executor."""
 
-        self._sync_status_to_disk(target["name"], "running", run_index=run_index)
+        if self._claim_task_for_run(target, run_index) is None:
+            with self._lock:
+                self._running_ids.discard(target["name"])
+                current = self._resolve_identifier_locked(target["name"])
+                if current:
+                    info = load_task_info(current["dir"])
+                    if info:
+                        self._apply_info_to_task(current, info)
+                self._recompute_processing_flag_locked()
+            self.trigger_update()
+            return
 
         try:
             if independent:
@@ -820,6 +895,9 @@ class TaskManager:
                 target["config"],
                 target.get("env", {}),
                 run_index,
+                self.runner_id,
+                self.runner_host,
+                self.lease_seconds,
             )
             future.add_done_callback(lambda fut, tid=target["name"]: self._on_task_done(fut, tid))
             logger.debug(
@@ -903,8 +981,11 @@ class TaskManager:
                 if status not in ("running", "queued"):
                     continue
                 if status == "running":
-                    pid = self._latest_pid_from_disk(task)
-                    if pid:
+                    disk_info = load_task_info(task["dir"])
+                    if disk_info and self._is_foreign_live_runner(disk_info):
+                        continue
+                    pid = self._latest_pid(disk_info) if disk_info else None
+                    if pid and self._is_local_or_legacy_runner(disk_info or {}):
                         try:
                             logger.info(f"Shutdown cleanup: terminating running process {pid} for task {task.get('name')}")
                             kill_process(pid)
@@ -940,6 +1021,45 @@ class TaskManager:
         task_info = load_task_info(task["dir"])
         return self._latest_pid(task_info) if task_info else None
 
+    def _set_runner_lease_fields(self, info: Dict[str, Any]) -> None:
+        now = time.time()
+        info["runner_id"] = self.runner_id
+        info["runner_host"] = self.runner_host
+        info["lease_heartbeat"] = now
+        info["lease_until"] = now + max(1, int(self.lease_seconds))
+
+    @staticmethod
+    def _clear_runner_lease_fields(info: Dict[str, Any]) -> None:
+        for key in ("runner_id", "runner_host", "lease_heartbeat", "lease_until"):
+            info.pop(key, None)
+
+    def _claim_task_for_run(self, task: Dict[str, Any], run_index: int) -> Dict[str, Any] | None:
+        """Atomically claim one task before submitting it to a local worker."""
+        task_dir = task["dir"]
+
+        def _apply(info: Dict[str, Any]) -> None:
+            status = str(info.get("status", "pending") or "pending")
+            if status == "running" and self._is_foreign_live_runner(info):
+                raise TaskClaimConflict("task already owned by another live runner")
+            info["status"] = "running"
+            info["run_index"] = run_index
+            self._set_runner_lease_fields(info)
+
+        try:
+            updated = update_task_info(task_dir, _apply)
+        except TaskClaimConflict:
+            logger.info("Skip submitting %s: another runner owns a live lease", task.get("name"))
+            return None
+
+        with self._lock:
+            current = self._resolve_identifier_locked(task.get("name"))
+            if current:
+                self._apply_info_to_task(current, updated)
+                current["status"] = "running"
+                self._running_ids.add(current["name"])
+                self._recompute_processing_flag_locked()
+        return updated
+
     def _sync_status_to_disk(self, identifier: str, status: str, run_index: int = 1) -> None:
         """Persist transient queue/running status changes."""
         with self._lock:
@@ -949,10 +1069,19 @@ class TaskManager:
             task_dir = task["dir"]
 
         def _apply(task_info: Dict[str, Any]) -> None:
+            if status == "queued" and task_info.get("status") == "running" and self._is_foreign_live_runner(task_info):
+                raise TaskClaimConflict("task already owned by another live runner")
             task_info["status"] = status
             task_info["run_index"] = run_index
+            if status != "running":
+                self._clear_runner_lease_fields(task_info)
+            else:
+                self._set_runner_lease_fields(task_info)
 
-        update_task_info(task_dir, _apply)
+        try:
+            update_task_info(task_dir, _apply)
+        except TaskClaimConflict:
+            logger.info("Skip syncing %s as %s: another runner owns a live lease", identifier, status)
 
     def _append_error_summary(
         self,
@@ -1007,6 +1136,7 @@ class TaskManager:
                 "reason": reason,
                 "detail_lines": list(detail_lines or []),
             }
+            self._clear_runner_lease_fields(task_info)
 
         updated = update_task_info(task_dir, _apply)
         if "status" in task:
@@ -1036,6 +1166,7 @@ class TaskManager:
                     task_info["finish_times"][slot] = finish_now
             task_info["status"] = "failed"
             task_info["progress"] = 0.0
+            self._clear_runner_lease_fields(task_info)
 
         updated = update_task_info(task_dir, _apply)
         if reason or detail_lines:
@@ -1069,6 +1200,9 @@ class TaskManager:
             task.get("task_kind"),
             task.get("config_file"),
             task.get("notes", ""),
+            task.get("runner_id"),
+            task.get("runner_host"),
+            task.get("lease_until"),
         )
 
     def _apply_info_to_task(
@@ -1105,6 +1239,10 @@ class TaskManager:
                 "tracks": info.get("tracks", []),
                 "notes": info.get("notes", ""),
                 "run_index": int(info.get("run_index", info.get("_run_index", task.get("run_index", 0))) or 0),
+                "runner_id": info.get("runner_id"),
+                "runner_host": info.get("runner_host"),
+                "lease_until": info.get("lease_until"),
+                "lease_heartbeat": info.get("lease_heartbeat"),
             }
         )
         loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)

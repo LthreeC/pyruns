@@ -108,6 +108,145 @@ function pathLeaf(path?: string) {
   return parts[parts.length - 1] || ''
 }
 
+interface TemplateOption {
+  value: string
+  label: string
+}
+
+interface TemplatePickerProps {
+  value: string
+  options: TemplateOption[]
+  placeholder: string
+  searchPlaceholder: string
+  allowEmpty?: boolean
+  onChange: (value: string) => void
+}
+
+function TemplatePicker({
+  value,
+  options,
+  placeholder,
+  searchPlaceholder,
+  allowEmpty = false,
+  onChange,
+}: TemplatePickerProps) {
+  const [open, setOpen] = useState(false)
+  const [templateFilter, setTemplateFilter] = useState('')
+  const pickerRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const selectedOption = options.find(option => option.value === value)
+  const buttonLabel = selectedOption?.label || placeholder
+  const normalizedFilter = templateFilter.trim().toLowerCase()
+  const filteredOptions = useMemo(() => {
+    if (!normalizedFilter) return options
+    return options.filter(option => `${option.label} ${option.value}`.toLowerCase().includes(normalizedFilter))
+  }, [normalizedFilter, options])
+  const emptyOptionVisible = allowEmpty && (!normalizedFilter || placeholder.toLowerCase().includes(normalizedFilter))
+  const disabled = options.length === 0 && !allowEmpty
+
+  useEffect(() => {
+    if (!open) return
+
+    setTemplateFilter('')
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0)
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null
+      if (target && !pickerRef.current?.contains(target)) {
+        setOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.removeEventListener('mousedown', handlePointerDown)
+    }
+  }, [open])
+
+  const selectValue = useCallback((nextValue: string) => {
+    onChange(nextValue)
+    setOpen(false)
+    setTemplateFilter('')
+  }, [onChange])
+
+  return (
+    <div
+      ref={pickerRef}
+      className="relative min-w-[280px]"
+      onKeyDown={event => {
+        if (event.key === 'Escape') {
+          setOpen(false)
+        }
+      }}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={buttonLabel}
+        onClick={() => setOpen(current => !current)}
+        className="flex h-8 w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 text-left text-xs text-txt-primary outline-none transition-colors hover:border-border focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span className="min-w-0 flex-1 truncate">{buttonLabel}</span>
+        <ChevronDown className={clsx('h-3 w-3 flex-none text-txt-tertiary transition-transform', open && 'rotate-180')} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-50 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md">
+          <div className="relative border-b border-border-subtle p-2">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            <input
+              ref={inputRef}
+              value={templateFilter}
+              onChange={event => setTemplateFilter(event.target.value)}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              className="h-7 w-full rounded-md border border-border-subtle bg-surface-overlay px-2 pl-7 text-xs text-txt-primary outline-none transition-colors placeholder:text-txt-tertiary focus:border-accent focus:ring-2 focus:ring-accent/15"
+            />
+          </div>
+          <div role="listbox" className="max-h-[min(18rem,50vh)] overflow-y-auto py-1">
+            {emptyOptionVisible && (
+              <button
+                type="button"
+                role="option"
+                aria-selected={!value}
+                onClick={() => selectValue('')}
+                className={clsx(
+                  'block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-overlay',
+                  !value ? 'bg-accent/10 text-accent' : 'text-txt-secondary',
+                )}
+              >
+                {placeholder}
+              </button>
+            )}
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={option.value === value}
+                  title={option.value}
+                  onClick={() => selectValue(option.value)}
+                  className={clsx(
+                    'block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-overlay',
+                    option.value === value ? 'bg-accent/10 text-accent' : 'text-txt-primary',
+                  )}
+                >
+                  <span className="block truncate">{option.label}</span>
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-xs text-txt-tertiary">No matching templates</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 type ParamType = keyof typeof PARAM_TYPE_STYLES
 
 interface PinnedParamRow {
@@ -600,42 +739,29 @@ export default function GeneratorPage() {
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {!isShellWorkspace ? (
-            <div className="relative min-w-[280px]">
-              <select
-                value={selectedTemplate}
-                onChange={event => void loadTemplate(event.target.value)}
-                title="Select template"
-                className="w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
-              >
-                {templates.map(template => (
-                  <option key={template.value} value={template.value}>{template.label}</option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-            </div>
+            <TemplatePicker
+              value={selectedTemplate}
+              options={templates}
+              placeholder="Select template"
+              searchPlaceholder="Search templates"
+              onChange={value => void loadTemplate(value)}
+            />
           ) : (
             <>
-              <div className="relative min-w-[280px]">
-                <select
-                  value={shellTemplateSelectValue}
-                  onChange={event => {
-                    const value = event.target.value
-                    if (value) {
-                      void loadTemplate(value)
-                    } else {
-                      clearTemplate()
-                    }
-                  }}
-                  title="Load task or script"
-                  className="w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
-                >
-                  <option value="">Load task or script</option>
-                  {templates.map(template => (
-                    <option key={template.value} value={template.value}>{template.label}</option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-              </div>
+              <TemplatePicker
+                value={shellTemplateSelectValue}
+                options={templates}
+                placeholder="Load task or script"
+                searchPlaceholder="Search tasks or scripts"
+                allowEmpty
+                onChange={value => {
+                  if (value) {
+                    void loadTemplate(value)
+                  } else {
+                    clearTemplate()
+                  }
+                }}
+              />
               <button
                 type="button"
                 onClick={() => void handlePickShellFile()}

@@ -12,10 +12,13 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from pyruns._config import (
     CONFIG_FILENAME,
+    DEFAULT_RUNNER_HEARTBEAT_SECONDS,
+    DEFAULT_RUNNER_LEASE_SECONDS,
     DEFAULT_ROOT_NAME,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
     ENV_KEY_CONDA_ENV,
@@ -49,6 +52,8 @@ logger = get_logger(__name__)
 _ISOLATED_IMPORT_ROOT_LOCK = threading.Lock()
 _ISOLATED_IMPORT_ROOT_CACHE: Dict[str, str] = {}
 _SITE_GUARD_ROOT_CACHE: Dict[str, str] = {}
+_SOURCE_STATE_GIT_TIMEOUT_SEC = 1.0
+_SOURCE_STATE_DIGEST_LEN = 12
 
 
 def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
@@ -521,6 +526,154 @@ def _get_log_path(task_dir: str, run_index: int) -> str:
     return os.path.join(log_dir, f"run{run_index}.log")
 
 
+def _short_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:_SOURCE_STATE_DIGEST_LEN]
+
+
+def _file_sha256(path: str | None) -> str:
+    if not path:
+        return "none"
+    try:
+        hasher = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()[:_SOURCE_STATE_DIGEST_LEN]
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "error"
+
+
+def _git_bytes(cwd: str, args: List[str], *, timeout: float = _SOURCE_STATE_GIT_TIMEOUT_SEC) -> bytes | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _build_git_source_state(cwd: str) -> str:
+    git_root_raw = _git_bytes(cwd, ["rev-parse", "--show-toplevel"])
+    if not git_root_raw:
+        return "git=none"
+    git_root = git_root_raw.decode("utf-8", errors="replace").strip()
+    head = (_git_bytes(git_root, ["rev-parse", "--short=12", "HEAD"]) or b"").decode(
+        "utf-8",
+        errors="replace",
+    ).strip() or "unknown"
+
+    diff_bytes = _git_bytes(git_root, ["diff", "--no-ext-diff", "--raw", "-z", "HEAD"])
+    if diff_bytes is None:
+        diff_state = "timeout"
+        dirty = "unknown"
+    elif diff_bytes:
+        diff_state = f"sha256:{_short_sha256(diff_bytes)}"
+        dirty = "1"
+    else:
+        diff_state = "clean"
+        dirty = "0"
+
+    untracked_bytes = _git_bytes(git_root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    if untracked_bytes is None:
+        untracked_state = "timeout"
+    elif untracked_bytes:
+        count = len([item for item in untracked_bytes.split(b"\0") if item])
+        untracked_state = f"{count}:sha256:{_short_sha256(untracked_bytes)}"
+    else:
+        untracked_state = "0"
+
+    return f"git={head} dirty={dirty} diff={diff_state} untracked={untracked_state}"
+
+
+def _append_run_slot_value(info: Dict[str, Any], key: str, slot: int, value: Any) -> None:
+    values = list(info.get(key, []) or [])
+    while len(values) <= slot:
+        values.append("")
+    values[slot] = value
+    info[key] = values
+
+
+def _set_runner_lease(
+    info: Dict[str, Any],
+    *,
+    runner_id: str,
+    runner_host: str,
+    lease_seconds: int,
+) -> None:
+    if not runner_id:
+        return
+    info["runner_id"] = runner_id
+    if runner_host:
+        info["runner_host"] = runner_host
+    now = time.time()
+    info["lease_heartbeat"] = now
+    info["lease_until"] = now + max(1, int(lease_seconds or DEFAULT_RUNNER_LEASE_SECONDS))
+
+
+def _clear_runner_lease(info: Dict[str, Any], runner_id: str) -> None:
+    if runner_id and info.get("runner_id") not in {None, "", runner_id}:
+        return
+    for key in ("runner_id", "runner_host", "lease_heartbeat", "lease_until"):
+        info.pop(key, None)
+
+
+def _build_run_source_state(
+    *,
+    task_dir: str,
+    script_path: str | None,
+    workdir: str | None,
+) -> str:
+    script_abs = os.path.abspath(script_path) if script_path and os.path.exists(script_path) else None
+    git_cwd = script_abs and os.path.dirname(script_abs)
+    if not git_cwd and workdir and os.path.isdir(workdir):
+        git_cwd = workdir
+
+    git_state = _build_git_source_state(git_cwd) if git_cwd else "git=none"
+    return " ".join(
+        [
+            git_state,
+            f"script=sha256:{_file_sha256(script_abs)}",
+        ]
+    )
+
+
+def _persist_run_source_state(
+    *,
+    task_dir: str,
+    task_name: str,
+    log_path: str,
+    run_index: int,
+    source_state: str,
+) -> None:
+    if not source_state:
+        return
+
+    line = f"[PYRUNS] Source {source_state}\n"
+    try:
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(line)
+        log_emitter.emit(task_name, line.replace("\n", "\r\n"))
+    except Exception as exc:
+        logger.debug("Failed to append source state log for %s: %s", task_name, exc)
+
+    def _apply(info: Dict[str, Any]) -> None:
+        slot = ensure_run_slot(info, run_index)
+        _append_run_slot_value(info, "source_states", slot, source_state)
+
+    try:
+        update_task_info(task_dir, _apply)
+    except Exception as exc:
+        logger.debug("Failed to persist source state for %s: %s", task_name, exc)
+
+
 def _resolve_shell_executable(task_dir: str | None = None) -> str:
     """Resolve the shell executable used for shell tasks."""
     runtime = get_shell_runtime_for_task(task_dir)
@@ -882,6 +1035,9 @@ def run_task_worker(
     config: Dict[str, Any],
     env_vars: Optional[Dict[str, str]] = None,
     run_index: int = 1,
+    runner_id: str = "",
+    runner_host: str = "",
+    lease_seconds: int = DEFAULT_RUNNER_LEASE_SECONDS,
 ) -> Dict[str, Any]:
     """Worker function executed in a separate thread/process."""
 
@@ -926,6 +1082,52 @@ def run_task_worker(
     progress = 0.0
     start_str = ""
     end_str = ""
+    heartbeat_stop = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+
+    def _refresh_runner_lease() -> None:
+        if not runner_id:
+            return
+
+        def _apply(info: Dict[str, Any]) -> None:
+            if info.get("runner_id") not in {None, "", runner_id}:
+                return
+            if info.get("status") == "running":
+                _set_runner_lease(
+                    info,
+                    runner_id=runner_id,
+                    runner_host=runner_host,
+                    lease_seconds=lease_seconds,
+                )
+
+        try:
+            update_task_info(task_dir, _apply)
+        except Exception as exc:
+            logger.debug("Failed to refresh runner lease for %s: %s", name, exc)
+
+    def _heartbeat_loop() -> None:
+        interval = max(1, min(DEFAULT_RUNNER_HEARTBEAT_SECONDS, max(1, int(lease_seconds) // 3)))
+        while not heartbeat_stop.wait(interval):
+            _refresh_runner_lease()
+
+    def _collect_source_state_async() -> None:
+        try:
+            collected = _build_run_source_state(
+                task_dir=task_dir,
+                script_path=script_path,
+                workdir=workdir,
+            )
+        except Exception as exc:
+            logger.debug("Failed to build source state for %s: %s", name, exc)
+            return
+
+        _persist_run_source_state(
+            task_dir=task_dir,
+            task_name=name,
+            log_path=log_path,
+            run_index=run_index,
+            source_state=collected,
+        )
 
     try:
         python_runtime = _resolve_python_runtime(task_dir, env_vars)
@@ -988,8 +1190,20 @@ def run_task_worker(
             info["progress"] = 0.0
             info["start_times"][slot] = start_str
             info["pids"][slot] = proc.pid
+            _set_runner_lease(
+                info,
+                runner_id=runner_id,
+                runner_host=runner_host,
+                lease_seconds=lease_seconds,
+            )
 
         update_task_info(task_dir, _mark_started)
+
+        threading.Thread(target=_collect_source_state_async).start()
+
+        if runner_id:
+            heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+            heartbeat_thread.start()
 
         def _tee_output() -> None:
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1032,6 +1246,7 @@ def run_task_worker(
                 info[RECORDS_KEY] = []
             if TRACKS_KEY not in info:
                 info[TRACKS_KEY] = []
+            _clear_runner_lease(info, runner_id)
 
         update_task_info(task_dir, _mark_finished)
 
@@ -1083,6 +1298,7 @@ def run_task_worker(
                 info["finish_times"][slot] = end_str
             if proc is not None:
                 info["pids"][slot] = proc.pid
+            _clear_runner_lease(info, runner_id)
 
         update_task_info(task_dir, _mark_error)
 
@@ -1108,6 +1324,9 @@ def run_task_worker(
         logger.error("%s", block)
         return {"status": "failed", "progress": 0.0, "error": str(exc)}
     finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1)
         for cleanup_path in cleanup_paths:
             try:
                 if cleanup_path and os.path.exists(cleanup_path):

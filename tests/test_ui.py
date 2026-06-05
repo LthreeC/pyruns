@@ -1018,6 +1018,19 @@ def test_react_generator_shell_mode_loads_existing_shell_scripts():
     assert "/api/generator/pick-shell-file" in api
 
 
+def test_react_generator_template_picker_supports_search():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "function TemplatePicker" in generator
+    assert "templateFilter" in generator
+    assert "filteredOptions" in generator
+    assert "Search templates" in generator
+    assert "Search tasks or scripts" in generator
+    assert "No matching templates" in generator
+    assert 'role="listbox"' in generator
+    assert 'aria-expanded={open}' in generator
+
+
 def test_react_generator_shows_imported_default_config_source():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")

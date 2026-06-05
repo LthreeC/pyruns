@@ -12,6 +12,7 @@ _INACTIVE_TIE_PRIORITIES = {
     "pending": 1,
 }
 _NON_DIGIT_PATTERN = re.compile(r"\D+")
+_NATURAL_CHUNK_PATTERN = re.compile(r"(\d+)")
 _COLON_SPACES_PATTERN = re.compile(r"\s*:\s*")
 
 
@@ -40,6 +41,15 @@ def task_sort_key(task: Dict[str, object]) -> tuple:
     return (active_rank, time_rank, inactive_tie)
 
 
+def _natural_name_key(value: object) -> tuple:
+    chunks = _NATURAL_CHUNK_PATTERN.split(str(value or ""))
+    return tuple(
+        (1, int(chunk)) if chunk.isdigit() else (0, chunk.lower())
+        for chunk in chunks
+        if chunk
+    )
+
+
 def task_manager_sort_key(task: Dict[str, object]) -> tuple:
     """Sort one task by the Manager page's logical order within its pin group."""
     active_rank, time_rank, inactive_tie = task_sort_key(task)
@@ -60,7 +70,7 @@ def task_manager_sort_key(task: Dict[str, object]) -> tuple:
         order_rank,
         -inactive_tie,
         -time_rank,
-        str(task.get("name", "")),
+        _natural_name_key(task.get("name", "")),
     )
 
 
