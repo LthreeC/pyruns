@@ -2348,12 +2348,14 @@ def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
             "name": "alpha",
             "status": "running",
             "env": {"A": "1"},
+            "source_states": ["git=abc dirty=0 diff=clean untracked=0"],
             "records": [{"loss": 0.1}],
             "tracks": [{"step": 1}],
         },
         summary=True,
     )
     assert summary["dir"] == "C:/tmp/task"
+    assert summary["source_states"] == ["git=abc dirty=0 diff=clean untracked=0"]
     assert summary["records"] == []
     assert summary["env"] == {"A": "1"}
 

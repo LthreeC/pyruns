@@ -67,6 +67,16 @@ def test_react_task_fetch_ignores_stale_responses():
     assert "if (requestId !== taskRequestSeq) {" in source
 
 
+def test_react_task_detail_displays_source_state_in_run_history():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+    types_source = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "source_states?: string[]" in types_source
+    assert "task.source_states?.length ?? 0" in source
+    assert "source: task.source_states?.[index] || ''" in source
+    assert ">Source</span>" in source
+
+
 def test_react_dashboard_polling_waits_for_network_work():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 

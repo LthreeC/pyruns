@@ -19,6 +19,7 @@ export interface Task {
   start_times: string[]
   finish_times: string[]
   pids: number[]
+  source_states?: string[]
   progress: number
   run_index: number
   preview_text: string

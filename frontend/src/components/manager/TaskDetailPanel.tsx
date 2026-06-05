@@ -656,6 +656,7 @@ function buildRunEntries(task: Task) {
     task.start_times?.length ?? 0,
     task.finish_times?.length ?? 0,
     task.pids?.length ?? 0,
+    task.source_states?.length ?? 0,
     task.records?.length ?? 0,
     task.run_index || 0
   )
@@ -665,6 +666,7 @@ function buildRunEntries(task: Task) {
     start: task.start_times?.[index] || '',
     finish: task.finish_times?.[index] || '',
     pid: task.pids?.[index],
+    source: task.source_states?.[index] || '',
     record: task.records?.[index],
   }))
 }
@@ -718,6 +720,12 @@ function InfoTab({ task }: { task: Task }) {
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">PID</span>
                     <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.pid)}</span>
+                  </div>
+                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Source</span>
+                    <pre className="overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/60 p-2 font-mono text-xs leading-relaxed text-txt-primary">
+                      {formatScalarValue(run.source)}
+                    </pre>
                   </div>
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Record</span>
