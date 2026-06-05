@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { ChevronDown, Download, FileDown, Pin, Play, Rows3, Square } from 'lucide-react'
 import clsx from 'clsx'
-import { appendMonitorLogContent, useMonitorStore, useTaskStore, useWorkspaceStore } from '@/store'
+import { appendMonitorLogContent, useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { useLogStream } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
@@ -16,6 +16,7 @@ import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import type { LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
+import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 import {
   DEFAULT_MONITOR_SCROLLBACK,
@@ -107,6 +108,7 @@ export default function MonitorPage() {
   const [monitorSidebarWidthPct, setMonitorSidebarWidthPct] = useState(() => readStoredMonitorSidebarWidth(settingsSidebarWidthPct))
   const [compactMonitorLayout, setCompactMonitorLayout] = useState(readCompactMonitorLayout)
   const [resizingMonitorSidebar, setResizingMonitorSidebar] = useState(false)
+  const notify = useToastStore(state => state.notify)
   const pendingMonitorSidebarWidthRef = useRef(monitorSidebarWidthPct)
   const monitorResizeFrameRef = useRef<number | null>(null)
   const terminalVisible = Boolean(selectedTaskName)
@@ -269,7 +271,15 @@ export default function MonitorPage() {
 
       event.preventDefault()
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        void navigator.clipboard.writeText(selection).catch(() => {})
+        void navigator.clipboard.writeText(selection)
+          .then(() => notify({
+            tone: 'success',
+            title: 'Log copied',
+            detail: `${selection.length} character${selection.length === 1 ? '' : 's'} copied.`,
+          }))
+          .catch(err => notify({ tone: 'error', title: 'Could not copy log', detail: errorMessage(err) }))
+      } else {
+        notify({ tone: 'error', title: 'Clipboard unavailable', detail: 'Use the browser or terminal copy shortcut instead.' })
       }
       return false
     })
@@ -286,7 +296,7 @@ export default function MonitorPage() {
       xtermRef.current = null
       fitAddonRef.current = null
     }
-  }, [])
+  }, [notify])
 
   useEffect(() => {
     if (xtermRef.current) {
@@ -555,6 +565,7 @@ export default function MonitorPage() {
       return
     }
     void selectTask(task.name)
+      .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
   }
 
   const handleTaskAction = useCallback(async (action: 'run' | 'cancel') => {
@@ -562,38 +573,69 @@ export default function MonitorPage() {
 
     const currentTaskName = selectedTaskName
 
-    if (action === 'run') {
-      await api.runTask(currentTaskName)
-    } else {
-      await api.cancelTask(currentTaskName)
-    }
+    try {
+      if (action === 'run') {
+        await api.runTask(currentTaskName)
+      } else {
+        await api.cancelTask(currentTaskName)
+      }
 
-    await fetchMonitorTasks()
+      await fetchMonitorTasks()
 
-    const refreshedTasks = useTaskStore.getState().monitorTasks
-    if (refreshedTasks.some(task => task.name === currentTaskName)) {
-      await selectTask(currentTaskName)
+      const refreshedTasks = useTaskStore.getState().monitorTasks
+      if (refreshedTasks.some(task => task.name === currentTaskName)) {
+        await selectTask(currentTaskName)
+      }
+      notify({
+        tone: 'success',
+        title: action === 'run' ? 'Task started' : 'Cancel requested',
+        detail: currentTaskName,
+      })
+    } catch (err) {
+      notify({
+        tone: 'error',
+        title: action === 'run' ? 'Could not start task' : 'Could not cancel task',
+        detail: errorMessage(err),
+      })
     }
-  }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask])
+  }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask, notify])
 
   const openDetailTask = useCallback((task: Task) => {
     setDetailTask(task)
     void api.getTask(task.name).then(fullTask => {
       setDetailTask(current => current?.name === task.name ? fullTask : current)
-    }).catch(() => {})
-  }, [])
+    }).catch(err => {
+      notify({ tone: 'error', title: 'Could not load task details', detail: errorMessage(err) })
+    })
+  }, [notify])
 
   const handleExport = useCallback(async () => {
     const names = [...exportIds]
     if (!names.length) return
-    const blob = await api.exportTasksCsv(names)
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`
-    anchor.click()
-    URL.revokeObjectURL(url)
-  }, [exportIds])
+    try {
+      const blob = await api.exportTasksCsv(names)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setExportMode(false)
+      clearExport()
+      notify({
+        tone: 'success',
+        title: 'CSV exported',
+        detail: `${names.length} task${names.length === 1 ? '' : 's'} exported.`,
+      })
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not export CSV', detail: errorMessage(err) })
+    }
+  }, [clearExport, exportIds, notify])
+
+  const handleSelectLogFile = useCallback((logName: string) => {
+    void selectLogFile(logName)
+      .catch(err => notify({ tone: 'error', title: 'Could not load log file', detail: errorMessage(err) }))
+  }, [notify, selectLogFile])
 
   return (
     <div ref={monitorShellRef} className={monitorShellClassName}>
@@ -772,7 +814,7 @@ export default function MonitorPage() {
                 <div className="relative">
                   <select
                     value={selectedLog}
-                    onChange={event => void selectLogFile(event.target.value)}
+                    onChange={event => handleSelectLogFile(event.target.value)}
                     title="Select log file"
                     className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2 py-1.5 pr-6 text-2xs text-txt-primary outline-none transition-colors focus:border-border"
                   >

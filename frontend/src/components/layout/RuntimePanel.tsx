@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   Loader2,
@@ -8,8 +8,9 @@ import {
 import clsx from 'clsx'
 import * as api from '@/api'
 import type { RuntimeInfo } from '@/types'
-import { useThemeStore, useWorkspaceStore } from '@/store'
+import { useThemeStore, useToastStore, useWorkspaceStore } from '@/store'
 import CodeTextEditor from '@/components/shared/CodeTextEditor'
+import { errorMessage } from '@/utils/errors'
 
 interface RuntimePanelProps {
   open: boolean
@@ -69,6 +70,8 @@ function modeFromRuntime(runtime: RuntimeInfo | null): PythonRuntimeMode {
 export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps) {
   const refreshWorkspace = useWorkspaceStore(s => s.fetch)
   const theme = useThemeStore(s => s.theme)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const notify = useToastStore(state => state.notify)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [envText, setEnvText] = useState('')
   const [pythonPath, setPythonPath] = useState('')
@@ -110,13 +113,17 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setRuntimeMode(modeFromRuntime(next))
   }
 
-  const loadRuntime = async () => {
+  const loadRuntime = async (showFeedback = false) => {
     setLoading(true)
     setError('')
     try {
       applyRuntimeState(await api.getRuntimeInfo())
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = errorMessage(err, 'Could not refresh runtime.')
+      setError(message)
+      if (showFeedback) {
+        notify({ tone: 'error', title: 'Could not refresh runtime', detail: message })
+      }
     } finally {
       setLoading(false)
     }
@@ -128,14 +135,50 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     }
   }, [open])
 
-  const saveRuntime = async (payload: Parameters<typeof api.updateRuntimeInfo>[0]) => {
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      const panel = panelRef.current
+      const target = event.target
+      if (panel && target instanceof Node && panel.contains(target)) {
+        return
+      }
+      onClose()
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    const clickListenerTimer = window.setTimeout(() => {
+      document.addEventListener('click', handleDocumentClick)
+    }, 0)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(clickListenerTimer)
+      document.removeEventListener('click', handleDocumentClick)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open, onClose])
+
+  const saveRuntime = async (
+    payload: Parameters<typeof api.updateRuntimeInfo>[0],
+    successTitle = 'Runtime saved',
+  ) => {
     setSaving(true)
     setError('')
     try {
       applyRuntimeState(await api.updateRuntimeInfo(payload))
       await refreshWorkspace()
+      notify({ tone: 'success', title: successTitle })
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = errorMessage(err, 'Could not save runtime settings.')
+      setError(message)
+      notify({ tone: 'error', title: 'Could not save runtime', detail: message })
     } finally {
       setSaving(false)
     }
@@ -144,27 +187,29 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const savePythonRuntime = () => {
     if (runtimeMode === 'conda') {
       if (!condaEnv) {
-        setError('Choose a conda environment before saving.')
+        const message = 'Choose a conda environment before saving.'
+        setError(message)
+        notify({ tone: 'error', title: 'Conda environment required', detail: message })
         return
       }
       void saveRuntime({
         conda_env: condaEnv,
         conda_executable: condaExecutable,
         python_executable: '',
-      })
+      }, 'Python runtime saved')
       return
     }
     if (runtimeMode === 'python') {
       void saveRuntime({
         python_executable: pythonPath,
         conda_env: '',
-      })
+      }, 'Python runtime saved')
       return
     }
     void saveRuntime({
       conda_env: '',
       python_executable: '',
-    })
+    }, 'Python runtime saved')
   }
 
   const chooseRuntimeMode = (mode: PythonRuntimeMode) => {
@@ -200,8 +245,12 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
   return (
     <div
+      ref={panelRef}
+      role="dialog"
+      aria-label="Runtime settings"
       className="fixed bottom-3 z-50 flex max-h-[calc(100vh-24px)] w-[620px] flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-xl"
       style={{ left, maxWidth: `calc(100vw - ${left + 12}px)` }}
+      onClick={event => event.stopPropagation()}
     >
       <div className="flex h-10 items-center gap-2 border-b border-border-subtle px-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -230,7 +279,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         </div>
         <button
           type="button"
-          onClick={loadRuntime}
+          onClick={() => void loadRuntime(true)}
           disabled={loading || saving}
           className="rounded-md p-2 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50"
           aria-label="Reload runtime"
@@ -383,7 +432,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
             <div className="flex items-center justify-end">
               <button
                 type="button"
-                onClick={() => saveRuntime({ global_env_text: envText })}
+                onClick={() => saveRuntime({ global_env_text: envText }, 'Workspace env saved')}
                 disabled={saving}
                 className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
               >

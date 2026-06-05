@@ -16,6 +16,7 @@ FRONTEND_TASK_DETAIL = Path(__file__).resolve().parents[1] / "frontend" / "src" 
 FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.ts"
 FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "types.ts"
 FRONTEND_CONFIRM_DIALOG = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ConfirmDialog.tsx"
+FRONTEND_TOAST_HOST = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ToastHost.tsx"
 FRONTEND_COMPACT_SECTION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CompactSection.tsx"
 FRONTEND_CODE_EDITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CodeTextEditor.tsx"
 FRONTEND_PAGINATION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "Pagination.tsx"
@@ -82,7 +83,11 @@ def test_react_dashboard_polling_waits_for_network_work():
 
     assert "const refreshDashboard = useCallback(async () => {" in source
     assert "await Promise.all([" in source
-    assert "api.getMetrics().then(setMetrics)" in source
+    assert "api.getMetrics()" in source
+    assert "setMetricsError('')" in source
+    assert "errorMessage(err, 'System metrics unavailable.')" in source
+    assert "Metrics refresh failed. Showing last values." in source
+    assert "System metrics unavailable." in source
 
 
 def test_react_app_lazy_loads_route_pages_for_smaller_initial_bundle():
@@ -157,6 +162,7 @@ def test_react_launcher_keeps_separate_recent_paths():
     assert "'pyruns.launcher.history.yaml'" in source
     assert "function readLaunchHistory" in source
     assert "function writeLaunchHistory" in source
+    assert "const nextHistory = writeLaunchHistory(kind, path)" in source
     assert "function RecentPathList" in source
     assert "recentPaths={launchHistory.python}" in source
     assert "recentPaths={launchHistory.shell}" in source
@@ -167,6 +173,68 @@ def test_react_launcher_keeps_separate_recent_paths():
     assert "kind=\"yaml\"" in source
     assert "Recent YAML" in source
     assert "max-h-60 space-y-1 overflow-y-auto" in source
+
+
+def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "event.target === event.currentTarget" in launcher
+    assert "window.addEventListener('keydown', handleKeyDown)" in launcher
+    assert 'aria-modal="true"' in launcher
+    assert "panelRef" in runtime_panel
+    assert "const clickListenerTimer = window.setTimeout" in runtime_panel
+    assert "document.addEventListener('click', handleDocumentClick)" in runtime_panel
+    assert "window.clearTimeout(clickListenerTimer)" in runtime_panel
+    assert "document.addEventListener('keydown', handleKeyDown)" in runtime_panel
+    assert "onClick={event => event.stopPropagation()}" in runtime_panel
+    assert 'aria-label="Runtime settings"' in runtime_panel
+    assert "onCancel={event =>" in confirm_dialog
+    assert "event.preventDefault()" in confirm_dialog
+    assert "event.target === event.currentTarget" in confirm_dialog
+    assert "onConfirm: () => void | Promise<void>" in confirm_dialog
+    assert "const [pending, setPending]" in confirm_dialog
+    assert "disabled={pending}" in confirm_dialog
+    assert "aria-busy={pending || undefined}" in confirm_dialog
+    assert "Loader2" in confirm_dialog
+    assert "window.addEventListener('keydown', handleKeyDown)" in dashboard
+
+
+def test_react_toasts_cover_command_feedback_without_blocking_ui():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    app = FRONTEND_APP.read_text(encoding="utf-8")
+    toast_host = FRONTEND_TOAST_HOST.read_text(encoding="utf-8")
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    task_detail = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+
+    assert "export const useToastStore" in store
+    assert "toasts: [" in store
+    assert "].slice(0, 4)" in store
+    assert "ToastHost" in app
+    assert "pointer-events-none fixed right-3 top-3" in toast_host
+    assert "pointer-events-auto flex w-[min(380px,calc(100vw-2rem))]" in toast_host
+    assert "role={toast.tone === 'error' ? 'alert' : 'status'}" in toast_host
+    assert "TOAST_TIMEOUT_MS" in toast_host
+    assert "Tasks queued" in manager
+    assert "Could not start tasks" in manager
+    assert "Tasks moved to trash" in manager
+    assert "Could not move task" in manager
+    assert "Could not load task details" in manager
+    assert "Could not load task logs" in manager
+    assert "Could not load task logs" in dashboard
+    assert "Log copied" in monitor
+    assert "CSV exported" in monitor
+    assert "Could not load log file" in monitor
+    assert "Could not load task details" in monitor
+    assert "Workspace env saved" in runtime_panel
+    assert "Could not save runtime" in runtime_panel
+    assert "Notes saved" in task_detail
+    assert "Could not rename task" in task_detail
 
 
 def test_frontend_index_serves_branded_favicon_without_404():
@@ -480,8 +548,12 @@ def test_react_task_detail_warns_before_discarding_unsaved_edits():
     source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
 
     assert "function requestClose" in source
-    assert "notesDirty || envDirty" in source
-    assert "window.confirm('Discard unsaved changes?')" in source
+    assert "const [discardConfirmOpen, setDiscardConfirmOpen]" in source
+    assert "const renameDirty" in source
+    assert "const hasUnsavedChanges = notesDirty || envDirty || renameDirty" in source
+    assert "setDiscardConfirmOpen(true)" in source
+    assert 'title="Discard changes?"' in source
+    assert "window.confirm('Discard unsaved changes?')" not in source
     assert "onClick={requestClose}" in source
 
 

@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { Routes, Route, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import AppShell from '@/components/layout/AppShell'
+import ToastHost from '@/components/shared/ToastHost'
 import { applyThemeClass, useWorkspaceStore, useThemeStore } from '@/store'
 
 const DashboardPage = lazy(() => import('@/components/dashboard/DashboardPage'))
@@ -67,6 +68,7 @@ export default function App() {
         </Routes>
         {showLauncher && <LauncherPage onClose={closeLauncher} />}
       </Suspense>
+      <ToastHost />
     </>
   )
 }

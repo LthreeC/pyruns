@@ -12,8 +12,11 @@ import {
 import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
+import ConfirmDialog from '@/components/shared/ConfirmDialog'
+import { useToastStore } from '@/store'
 import type { Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
+import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 
 interface Props {
@@ -115,11 +118,13 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [pendingEnvFocusId, setPendingEnvFocusId] = useState<string | null>(null)
   const [panelWidth, setPanelWidth] = useState(readStoredPanelWidth)
   const [resizingPanel, setResizingPanel] = useState(false)
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false)
   const previousTaskNameRef = useRef(task.name)
   const envKeyInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const suppressNextCloseRef = useRef(false)
   const pendingPanelWidthRef = useRef(panelWidth)
   const panelResizeFrameRef = useRef<number | null>(null)
+  const notify = useToastStore(state => state.notify)
 
   const startPanelResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -151,6 +156,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setEnvSaveStatus('idle')
     setEnvSaveError('')
     setPendingEnvFocusId(null)
+    setDiscardConfirmOpen(false)
   }, [task.name])
 
   useEffect(() => {
@@ -260,10 +266,13 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       await api.updateNotes(task.name, notes)
       setNotesDirty(false)
       onRefresh()
+      notify({ tone: 'success', title: 'Notes saved', detail: task.name })
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not save notes', detail: errorMessage(err) })
     } finally {
       setSaving(false)
     }
-  }, [task.name, notes, onRefresh])
+  }, [task.name, notes, onRefresh, notify])
 
   const handleSaveEnv = useCallback(async () => {
     const validationMessage = getEnvValidationMessage(envPairs)
@@ -296,7 +305,8 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   }, [task.name, envPairs, onRefresh])
 
   function requestClose() {
-    if ((notesDirty || envDirty) && typeof window !== 'undefined' && !window.confirm('Discard unsaved changes?')) {
+    if (hasUnsavedChanges) {
+      setDiscardConfirmOpen(true)
       return
     }
 
@@ -330,13 +340,15 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       await api.renameTask(task.name, newName.trim())
       onRefresh()
       onClose()
-    } catch {
+      notify({ tone: 'success', title: 'Task renamed', detail: newName.trim() })
+    } catch (err) {
       setNewName(task.name)
+      notify({ tone: 'error', title: 'Could not rename task', detail: errorMessage(err) })
     } finally {
       setSaving(false)
       setRenaming(false)
     }
-  }, [task.name, newName, onRefresh, onClose])
+  }, [task.name, newName, onRefresh, onClose, notify])
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
@@ -351,15 +363,18 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const envFeedback = envValidationMessage || envSaveError
   const envFeedbackIsError = envSaveStatus === 'error' || Boolean(envValidationMessage)
   const envSaveTitle = envValidationMessage || (envDirty ? 'Save environment variables' : 'No environment changes to save')
+  const renameDirty = renaming && newName.trim() !== '' && newName.trim() !== task.name
+  const hasUnsavedChanges = notesDirty || envDirty || renameDirty
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/30" onClick={handlePanelBackdropClick} />
-      <div
-        className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
-        style={{ width: panelWidth }}
-        onClick={event => event.stopPropagation()}
-      >
+    <>
+      <div className="fixed inset-0 z-50 flex justify-end">
+        <div className="absolute inset-0 bg-black/30" onClick={handlePanelBackdropClick} />
+        <div
+          className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
+          style={{ width: panelWidth }}
+          onClick={event => event.stopPropagation()}
+        >
         <button
           type="button"
           aria-label="Resize task detail panel"
@@ -616,8 +631,21 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
             </div>
           )}
         </div>
+        </div>
       </div>
-    </div>
+      <ConfirmDialog
+        open={discardConfirmOpen}
+        title="Discard changes?"
+        description="Unsaved task details will be lost."
+        confirmLabel="Discard"
+        confirmVariant="danger"
+        onConfirm={() => {
+          setDiscardConfirmOpen(false)
+          onClose()
+        }}
+        onCancel={() => setDiscardConfirmOpen(false)}
+      />
+    </>
   )
 }
 

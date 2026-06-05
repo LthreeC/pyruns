@@ -1,5 +1,5 @@
-import { useEffect, useRef, type ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Loader2, X } from 'lucide-react'
 
 interface Props {
   open: boolean
@@ -8,7 +8,7 @@ interface Props {
   confirmLabel?: string
   confirmVariant?: 'danger' | 'primary'
   size?: 'md' | 'lg'
-  onConfirm: () => void
+  onConfirm: () => void | Promise<void>
   onCancel: () => void
   children?: ReactNode
 }
@@ -18,29 +18,64 @@ export default function ConfirmDialog({
   confirmVariant = 'primary', onConfirm, onCancel, children,
 }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
+  const [pending, setPending] = useState(false)
   const widthClass = size === 'lg' ? 'max-w-2xl' : 'max-w-md'
 
   useEffect(() => {
-    if (open) ref.current?.showModal()
-    else ref.current?.close()
+    if (open) {
+      ref.current?.showModal()
+    } else {
+      setPending(false)
+      ref.current?.close()
+    }
   }, [open])
 
   if (!open) return null
+
+  const handleCancel = () => {
+    if (pending) {
+      return
+    }
+    onCancel()
+  }
+
+  const handleConfirm = () => {
+    if (pending) {
+      return
+    }
+
+    const result = onConfirm()
+    if (result && typeof result.finally === 'function') {
+      setPending(true)
+      void result.finally(() => setPending(false))
+    }
+  }
 
   return (
     <dialog
       ref={ref}
       className={`fixed inset-0 z-50 m-auto w-full ${widthClass} rounded-md border border-border-subtle bg-surface-raised p-0 shadow-md backdrop:bg-black/50`}
-      onClose={onCancel}
+      onCancel={event => {
+        event.preventDefault()
+        handleCancel()
+      }}
+      onClose={handleCancel}
+      onClick={event => {
+        if (event.target === event.currentTarget) {
+          handleCancel()
+        }
+      }}
+      aria-busy={pending || undefined}
     >
-      <div className="p-6">
+      <div className="p-6" onClick={event => event.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
           <button
             type="button"
-            onClick={onCancel}
+            onClick={handleCancel}
+            disabled={pending}
             aria-label="Close dialog"
-            className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary"
+            className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-50"
           >
             <X className="w-4 h-4" />
           </button>
@@ -50,20 +85,23 @@ export default function ConfirmDialog({
         <div className="flex justify-end gap-2 mt-5">
           <button
             type="button"
-            onClick={onCancel}
-            className="rounded-md px-3.5 py-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+            onClick={handleCancel}
+            disabled={pending}
+            className="rounded-md px-3.5 py-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
           <button
             type="button"
-            onClick={onConfirm}
-            className={`rounded-md px-3.5 py-2 text-xs font-medium transition-colors ${
+            onClick={handleConfirm}
+            disabled={pending}
+            className={`inline-flex min-w-20 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               confirmVariant === 'danger'
                 ? 'border border-rose-500/20 text-rose-400 hover:bg-rose-500/10'
                 : 'border border-border-subtle text-txt-primary hover:bg-surface-overlay'
             }`}
           >
+            {pending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {confirmLabel}
           </button>
         </div>

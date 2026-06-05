@@ -11,7 +11,7 @@ import {
   AlertTriangle, ChevronDown, GripVertical, MousePointer2, Pin, Play, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useMonitorStore, useTaskStore } from '@/store'
+import { useMonitorStore, useTaskStore, useToastStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import StatusBadge from '@/components/shared/StatusBadge'
 import SearchInput from '@/components/shared/SearchInput'
@@ -26,6 +26,7 @@ import TaskDetailPanel from './TaskDetailPanel'
 import type { Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { ALL_STATUSES, STATUS_LABELS } from '@/theme/tokens'
+import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', ...ALL_STATUSES]
@@ -172,6 +173,7 @@ export default function ManagerPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const focusTaskName = searchParams.get('task')
   const [compactTaskGrid, setCompactTaskGrid] = useState(readCompactTaskGrid)
+  const notify = useToastStore(state => state.notify)
 
   const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
   const effectiveTaskColumns = compactTaskGrid ? 1 : columns
@@ -252,46 +254,92 @@ export default function ManagerPage() {
     if (!names.length) return
     const maxWorkers = normalizeWorkerInput(maxWorkersInput)
     setMaxWorkersInput(String(maxWorkers))
-    await api.batchRunTasks(names, executionMode, maxWorkers)
-    clearSelection()
-    setSelectMode(false)
-    await fetchTasks()
-  }, [selectedIds, executionMode, maxWorkersInput, normalizeWorkerInput, clearSelection, fetchTasks])
+    try {
+      await api.batchRunTasks(names, executionMode, maxWorkers)
+      clearSelection()
+      setSelectMode(false)
+      await fetchTasks()
+      notify({
+        tone: 'success',
+        title: 'Tasks queued',
+        detail: `${names.length} task${names.length === 1 ? '' : 's'} scheduled with ${maxWorkers} worker${maxWorkers === 1 ? '' : 's'}.`,
+      })
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not start tasks', detail: errorMessage(err) })
+    }
+  }, [selectedIds, executionMode, maxWorkersInput, normalizeWorkerInput, clearSelection, fetchTasks, notify])
 
   const handleDeleteSelected = useCallback(async () => {
     const names = [...selectedIds]
     if (!names.length) return
-    await api.batchDeleteTasks(names)
-    clearSelection()
-    setDeleteConfirm(false)
-    setSelectMode(false)
-    await fetchTasks()
-  }, [selectedIds, clearSelection, fetchTasks])
+    try {
+      await api.batchDeleteTasks(names)
+      clearSelection()
+      setDeleteConfirm(false)
+      setSelectMode(false)
+      await fetchTasks()
+      notify({
+        tone: 'success',
+        title: 'Tasks moved to trash',
+        detail: `${names.length} task${names.length === 1 ? '' : 's'} deleted.`,
+      })
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not delete tasks', detail: errorMessage(err) })
+    }
+  }, [selectedIds, clearSelection, fetchTasks, notify])
 
   const handleDeleteTask = useCallback(async () => {
     if (!deleteTask) return
-    await api.batchDeleteTasks([deleteTask.name])
-    if (detailTask?.name === deleteTask.name) {
-      setDetailTask(null)
+    try {
+      await api.batchDeleteTasks([deleteTask.name])
+      if (detailTask?.name === deleteTask.name) {
+        setDetailTask(null)
+      }
+      setDeleteTask(null)
+      await fetchTasks()
+      notify({ tone: 'success', title: 'Task moved to trash', detail: deleteTask.name })
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not delete task', detail: errorMessage(err) })
     }
-    setDeleteTask(null)
-    await fetchTasks()
-  }, [deleteTask, detailTask, fetchTasks])
+  }, [deleteTask, detailTask, fetchTasks, notify])
 
   const handleTaskAction = useCallback(async (task: Task, action: 'run' | 'cancel' | 'rerun') => {
-    if (action === 'run' || action === 'rerun') {
-      await api.runTask(task.name, executionMode)
-    } else {
-      await api.cancelTask(task.name)
+    try {
+      if (action === 'run' || action === 'rerun') {
+        await api.runTask(task.name, executionMode)
+      } else {
+        await api.cancelTask(task.name)
+      }
+      await fetchTasks()
+      notify({
+        tone: 'success',
+        title: action === 'cancel' ? 'Cancel requested' : 'Task started',
+        detail: task.name,
+      })
+    } catch (err) {
+      notify({
+        tone: 'error',
+        title: action === 'cancel' ? 'Could not cancel task' : 'Could not start task',
+        detail: errorMessage(err),
+      })
     }
-    await fetchTasks()
-  }, [executionMode, fetchTasks])
+  }, [executionMode, fetchTasks, notify])
+
+  const openTaskLogs = useCallback((task: Task) => {
+    void useMonitorStore.getState().selectTask(task.name)
+      .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
+    navigate('/monitor')
+  }, [navigate, notify])
 
   const handlePin = useCallback(async (task: Task) => {
-    await api.pinTask(task.name, !task.pinned)
-    setTaskActionMessage(task.pinned ? `Moved ${task.name} back to Tasks.` : `Pinned ${task.name}.`)
-    await fetchTasks()
-  }, [fetchTasks])
+    try {
+      await api.pinTask(task.name, !task.pinned)
+      setTaskActionMessage(task.pinned ? `Moved ${task.name} back to Tasks.` : `Pinned ${task.name}.`)
+      await fetchTasks()
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not update pin', detail: errorMessage(err) })
+    }
+  }, [fetchTasks, notify])
 
   const handleTaskPointerDown = useCallback((task: Task, event: ReactPointerEvent<HTMLElement>) => {
     if (selectMode || event.button !== 0 || isInteractiveDragTarget(event.target)) {
@@ -321,21 +369,25 @@ export default function ManagerPage() {
       return
     }
 
-    const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
-    const items = buildReorderedItems(allTasks.items, task.name, intent)
-    const movedItem = items.find(item => item.name === task.name)
-    if (!items.length || !movedItem) {
-      return
-    }
+    try {
+      const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
+      const items = buildReorderedItems(allTasks.items, task.name, intent)
+      const movedItem = items.find(item => item.name === task.name)
+      if (!items.length || !movedItem) {
+        return
+      }
 
-    await api.reorderTasks(items)
-    if (movedItem.pinned !== task.pinned) {
-      setTaskActionMessage(movedItem.pinned ? `Pinned ${task.name}.` : `Moved ${task.name} back to Tasks.`)
-    } else {
-      setTaskActionMessage(`Moved ${task.name}.`)
+      await api.reorderTasks(items)
+      if (movedItem.pinned !== task.pinned) {
+        setTaskActionMessage(movedItem.pinned ? `Pinned ${task.name}.` : `Moved ${task.name} back to Tasks.`)
+      } else {
+        setTaskActionMessage(`Moved ${task.name}.`)
+      }
+      await fetchTasks()
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
     }
-    await fetchTasks()
-  }, [fetchTasks, tasks])
+  }, [fetchTasks, notify, tasks])
 
   useEffect(() => {
     const applyDropIntent = (intent: DropIntent | null) => {
@@ -479,8 +531,10 @@ export default function ManagerPage() {
     setDetailTask(task)
     void api.getTask(task.name).then(fullTask => {
       setDetailTask(current => current?.name === task.name ? fullTask : current)
-    }).catch(() => {})
-  }, [selectMode, toggleSelect])
+    }).catch(err => {
+      notify({ tone: 'error', title: 'Could not load task details', detail: errorMessage(err) })
+    })
+  }, [selectMode, toggleSelect, notify])
 
   const closeDetailPanel = useCallback(() => {
     setDetailTask(null)
@@ -657,10 +711,7 @@ export default function ManagerPage() {
                       onTaskAction={handleTaskAction}
                       onPin={handlePin}
                       onDelete={setDeleteTask}
-                      onMonitor={task => {
-                        void useMonitorStore.getState().selectTask(task.name)
-                        navigate('/monitor')
-                      }}
+                      onMonitor={openTaskLogs}
                       onPointerDown={handleTaskPointerDown}
                     />
                   )}
@@ -693,10 +744,7 @@ export default function ManagerPage() {
                 onTaskAction={handleTaskAction}
                 onPin={handlePin}
                 onDelete={setDeleteTask}
-                onMonitor={task => {
-                  void useMonitorStore.getState().selectTask(task.name)
-                  navigate('/monitor')
-                }}
+                onMonitor={openTaskLogs}
                 onPointerDown={handleTaskPointerDown}
               />
             </CompactSection>

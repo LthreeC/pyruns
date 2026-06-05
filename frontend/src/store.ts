@@ -15,6 +15,7 @@ let taskRequestSeq = 0
 let monitorTaskRequestSeq = 0
 let monitorRequestSeq = 0
 let launcherRequestSeq = 0
+let toastIdSeq = 0
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
@@ -160,6 +161,43 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const ws = await api.setRunRoot(nextWorkspace.run_root)
     set({ workspace: ws, lastScriptWorkspace: ws })
     return ws
+  },
+}))
+
+export type ToastTone = 'success' | 'error' | 'info'
+
+export interface ToastItem {
+  id: number
+  tone: ToastTone
+  title: string
+  detail?: string
+}
+
+interface ToastState {
+  toasts: ToastItem[]
+  notify: (toast: Omit<ToastItem, 'id'>) => number
+  dismiss: (id: number) => void
+  clear: () => void
+}
+
+export const useToastStore = create<ToastState>((set) => ({
+  toasts: [],
+  notify(toast) {
+    toastIdSeq += 1
+    const id = toastIdSeq
+    set(state => ({
+      toasts: [
+        { id, ...toast },
+        ...state.toasts.filter(item => item.title !== toast.title || item.detail !== toast.detail),
+      ].slice(0, 4),
+    }))
+    return id
+  },
+  dismiss(id) {
+    set(state => ({ toasts: state.toasts.filter(toast => toast.id !== id) }))
+  },
+  clear() {
+    set({ toasts: [] })
   },
 }))
 

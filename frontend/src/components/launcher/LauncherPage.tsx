@@ -113,9 +113,10 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'
 
   const rememberLaunchPath = useCallback((kind: LaunchHistoryKind, path: string) => {
+    const nextHistory = writeLaunchHistory(kind, path)
     setLaunchHistory(current => ({
       ...current,
-      [kind]: writeLaunchHistory(kind, path),
+      [kind]: nextHistory,
     }))
   }, [])
 
@@ -359,9 +360,32 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     await openShellPath(manualShellRootPath)
   }, [manualShellRootPath, openShellPath])
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 sm:p-4">
-      <div className="flex max-h-[80vh] w-full max-w-[calc(100vw-1.5rem)] sm:max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 sm:p-4"
+      onClick={event => {
+        if (event.target === event.currentTarget) {
+          onClose()
+        }
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="flex max-h-[80vh] w-full max-w-[calc(100vw-1.5rem)] sm:max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md"
+        onClick={event => event.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 sm:px-6 sm:py-4">
           <Rocket className="w-5 h-5 text-accent" />

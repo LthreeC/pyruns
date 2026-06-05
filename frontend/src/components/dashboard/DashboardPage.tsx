@@ -1,7 +1,8 @@
-import { useCallback, useState, type ElementType, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ElementType, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity,
+  AlertTriangle,
   ArrowRight,
   ChevronRight,
   CheckCircle2,
@@ -13,10 +14,11 @@ import {
   XCircle,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useDashboardStore, useMonitorStore, useWorkspaceStore } from '@/store'
+import { useDashboardStore, useMonitorStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import StatusBadge from '@/components/shared/StatusBadge'
 import { getWorkspaceStoragePath, getWorkspaceWorkingPath } from '@/utils/workspace'
+import { errorMessage } from '@/utils/errors'
 import type { GPUMetric, Task, SystemMetrics } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
@@ -31,8 +33,10 @@ const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string
 export default function DashboardPage() {
   const { data, loading, fetch } = useDashboardStore()
   const workspace = useWorkspaceStore(s => s.workspace)
+  const notify = useToastStore(state => state.notify)
   const navigate = useNavigate()
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
+  const [metricsError, setMetricsError] = useState('')
   const [activeGpuKey, setActiveGpuKey] = useState<string | null>(null)
   const refreshIntervalRaw = Number(workspace?.settings?.header_refresh_interval ?? 3)
   const refreshIntervalSec = Number.isFinite(refreshIntervalRaw) ? Math.max(1, refreshIntervalRaw) : 3
@@ -40,14 +44,22 @@ export default function DashboardPage() {
   const refreshDashboard = useCallback(async () => {
     await Promise.all([
       fetch(),
-      api.getMetrics().then(setMetrics).catch(() => {}),
+      api.getMetrics()
+        .then(nextMetrics => {
+          setMetrics(nextMetrics)
+          setMetricsError('')
+        })
+        .catch(err => {
+          setMetricsError(errorMessage(err, 'System metrics unavailable.'))
+        }),
     ])
   }, [fetch])
 
   const openTaskInMonitor = useCallback((task: Task) => {
     void useMonitorStore.getState().selectTask(task.name)
+      .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
     navigate('/monitor')
-  }, [navigate])
+  }, [navigate, notify])
 
   usePolling(refreshDashboard, refreshIntervalSec * 1000, true, true)
 
@@ -172,6 +184,12 @@ export default function DashboardPage() {
 
                 {metrics ? (
                   <>
+                    {metricsError && (
+                      <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-2xs text-amber-400">
+                        <AlertTriangle className="h-3.5 w-3.5 flex-none" />
+                        <span className="min-w-0 break-words">Metrics refresh failed. Showing last values.</span>
+                      </div>
+                    )}
                     <div className="mt-3 space-y-2.5">
                       <MetricBar label="CPU" value={metrics.cpu_percent} icon={Cpu} />
                       <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} />
@@ -184,8 +202,14 @@ export default function DashboardPage() {
                     </div>
                   </>
                 ) : (
-                  <div className="mt-3 rounded-md bg-surface-overlay/50 px-3 py-4 text-2xs text-txt-tertiary">
-                    Loading system metrics...
+                  <div
+                    className={clsx(
+                      'mt-3 flex items-center gap-2 rounded-md px-3 py-4 text-2xs',
+                      metricsError ? 'bg-amber-500/10 text-amber-400' : 'bg-surface-overlay/50 text-txt-tertiary',
+                    )}
+                  >
+                    {metricsError && <AlertTriangle className="h-3.5 w-3.5 flex-none" />}
+                    <span className="min-w-0 break-words">{metricsError || 'Loading system metrics...'}</span>
                   </div>
                 )}
               </section>
@@ -219,7 +243,7 @@ export default function DashboardPage() {
                 </div>
               ) : (
                 <div className="rounded-md bg-surface-overlay/50 px-3 py-8 text-center text-2xs text-txt-tertiary">
-                  No NVIDIA GPU metrics detected.
+                  {metricsError && !metrics ? 'System metrics unavailable.' : 'No NVIDIA GPU metrics detected.'}
                 </div>
               )}
             </div>
@@ -319,6 +343,21 @@ function UsageTrack({ label, value, tone }: { label: string; value: number; tone
 }
 
 function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: () => void }) {
+  useEffect(() => {
+    if (!gpu) {
+      return
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [gpu, onClose])
+
   if (!gpu) {
     return null
   }
