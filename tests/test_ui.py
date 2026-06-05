@@ -148,6 +148,27 @@ def test_react_app_supports_direct_launcher_route():
     assert "navigate('/', { replace: true })" in source
 
 
+def test_react_launcher_keeps_separate_recent_paths():
+    source = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "LAUNCH_HISTORY_LIMIT = 50" in source
+    assert "'pyruns.launcher.history.python'" in source
+    assert "'pyruns.launcher.history.shell'" in source
+    assert "'pyruns.launcher.history.yaml'" in source
+    assert "function readLaunchHistory" in source
+    assert "function writeLaunchHistory" in source
+    assert "function RecentPathList" in source
+    assert "recentPaths={launchHistory.python}" in source
+    assert "recentPaths={launchHistory.shell}" in source
+    assert "recentPaths={launchHistory.yaml}" in source
+    assert "onRecentPathOpen={openPythonPath}" in source
+    assert "onRecentPathOpen={openShellPath}" in source
+    assert "onRecentPathOpen={handleSelectConfig}" in source
+    assert "kind=\"yaml\"" in source
+    assert "Recent YAML" in source
+    assert "max-h-60 space-y-1 overflow-y-auto" in source
+
+
 def test_frontend_index_serves_branded_favicon_without_404():
     index = FRONTEND_INDEX.read_text(encoding="utf-8")
     icon = FRONTEND_INDEX.parent / "public" / "pyruns.svg"
@@ -761,7 +782,7 @@ def test_react_launcher_browse_script_enters_config_selection_before_opening():
     assert "/api/launcher/pick-script-path" in api
     assert "const selection = await api.pickLauncherScriptPath()" in launcher
     assert "setManualScriptPath(selection.script_path)" in launcher
-    assert "await selectScript(selection.script_path)" in launcher
+    assert "await openPythonPath(selection.script_path)" in launcher
     assert "Browse Script" in launcher
     assert "Browse & Open Script" not in launcher
 
@@ -794,21 +815,22 @@ def test_react_launcher_manual_path_buttons_are_clear_and_disabled_when_empty():
     assert "Use Path" not in launcher
 
 
-def test_react_launcher_keeps_path_controls_available_while_script_scan_runs():
+def test_react_launcher_omits_detected_script_scan_panel():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
-    assert "Scanning current directory..." in launcher
+    assert "Detected Scripts" not in launcher
+    assert "No Python scripts found in the current directory." not in launcher
+    assert "Scanning current directory..." not in launcher
+    assert "fetchScriptsOnce" not in launcher
     assert "ModeActionPanel" in launcher
-    assert "loading && (" not in launcher
 
 
-def test_react_launcher_skips_script_scan_for_initial_shell_mode():
+def test_react_launcher_route_mode_does_not_trigger_script_scan():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
-    assert "if (initialLaunchMode === 'python')" in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
-    assert "if (mode === 'python')" in launcher
+    assert "fetchScriptsOnce" not in launcher
     assert "<LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange}" in launcher
 
 
@@ -847,12 +869,11 @@ def test_react_launcher_tracks_load_scripts_that_require_yaml_template():
 def test_react_launcher_clears_stale_error_after_valid_script_or_config_selection():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
-    assert "const handleSelectScript = useCallback(async (scriptPath: string)" in launcher
+    assert "const openPythonPath = useCallback(async (path: string)" in launcher
     assert "setError('')" in launcher
     assert "await selectScript(scriptPath)" in launcher
     assert "const handleSelectConfig = useCallback(async (configPath: string)" in launcher
     assert "selectConfig(configPath)" in launcher
-    assert "onClick={() => void handleSelectScript(script.script_path)}" in launcher
     assert "onClick={() => void handleSelectConfig(config.path)}" in launcher
 
 
@@ -1138,7 +1159,7 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "const modeParam = searchParams.get('mode')" in launcher
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "setLaunchMode(initialLaunchMode)" in launcher
-    assert "if (initialLaunchMode === 'python')" in launcher
+    assert "fetchScriptsOnce" not in launcher
     assert "Open Shell Mode" not in sidebar
     assert "Exit Shell Mode" not in sidebar
     assert "openShellWorkspace" not in sidebar

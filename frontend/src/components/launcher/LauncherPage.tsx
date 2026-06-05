@@ -1,17 +1,64 @@
-import { useEffect, useCallback, useRef, useState } from 'react'
+import { useEffect, useCallback, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   FileCode, ChevronRight, Rocket, FileSearch, FolderPlus,
-  CheckCircle2, AlertTriangle, Loader2,
+  CheckCircle2, AlertTriangle, Loader2, History,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useLauncherStore, useWorkspaceStore } from '@/store'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
-import type { ScriptCandidate, ConfigCandidate, PathValidationResult } from '@/types'
+import type { ConfigCandidate, PathValidationResult } from '@/types'
 import * as api from '@/api'
 
 function pathName(path: string) {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
+}
+
+const LAUNCH_HISTORY_LIMIT = 50
+const LAUNCH_HISTORY_STORAGE_KEYS = {
+  python: 'pyruns.launcher.history.python',
+  shell: 'pyruns.launcher.history.shell',
+  yaml: 'pyruns.launcher.history.yaml',
+} as const
+
+type LaunchHistoryKind = keyof typeof LAUNCH_HISTORY_STORAGE_KEYS
+
+function readLaunchHistory(kind: LaunchHistoryKind): string[] {
+  if (typeof window === 'undefined') {
+    return []
+  }
+  try {
+    const raw = window.localStorage.getItem(LAUNCH_HISTORY_STORAGE_KEYS[kind])
+    const parsed = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    const unique = new Set<string>()
+    parsed.forEach(item => {
+      const path = typeof item === 'string' ? item.trim() : ''
+      if (path) {
+        unique.add(path)
+      }
+    })
+    return [...unique].slice(0, LAUNCH_HISTORY_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+function writeLaunchHistory(kind: LaunchHistoryKind, path: string): string[] {
+  const normalized = path.trim()
+  if (!normalized) {
+    return readLaunchHistory(kind)
+  }
+  const next = [
+    normalized,
+    ...readLaunchHistory(kind).filter(item => item !== normalized),
+  ].slice(0, LAUNCH_HISTORY_LIMIT)
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(LAUNCH_HISTORY_STORAGE_KEYS[kind], JSON.stringify(next))
+  }
+  return next
 }
 
 type PathValidationState = {
@@ -36,8 +83,8 @@ function validationFromResult(result: PathValidationResult): PathValidationState
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const {
-    scripts, configs, selectedScript, requiresConfigTemplate, configSource, step, loading,
-    fetchScripts, selectScript, selectConfig, reset: resetLauncher,
+    configs, selectedScript, requiresConfigTemplate, configSource, step, loading,
+    selectScript, selectConfig, reset: resetLauncher,
   } = useLauncherStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const setWorkspace = useWorkspaceStore(state => state.setWorkspace)
@@ -51,6 +98,11 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const [scriptValidation, setScriptValidation] = useState<PathValidationState>(emptyValidation)
   const [configValidation, setConfigValidation] = useState<PathValidationState>(emptyValidation)
   const [shellValidation, setShellValidation] = useState<PathValidationState>(emptyValidation)
+  const [launchHistory, setLaunchHistory] = useState<Record<LaunchHistoryKind, string[]>>(() => ({
+    python: readLaunchHistory('python'),
+    shell: readLaunchHistory('shell'),
+    yaml: readLaunchHistory('yaml'),
+  }))
   const debouncedScriptPath = useDebouncedValue(manualScriptPath.trim(), 300)
   const debouncedConfigPath = useDebouncedValue(manualConfigPath.trim(), 300)
   const debouncedShellRootPath = useDebouncedValue(manualShellRootPath.trim(), 300)
@@ -59,29 +111,71 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
   const nativePickerAvailable = workspace?.native_file_picker === true
   const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'
-  const scriptsRequestedRef = useRef(false)
 
-  const fetchScriptsOnce = useCallback(() => {
-    if (scriptsRequestedRef.current) {
-      return
-    }
-    scriptsRequestedRef.current = true
-    void fetchScripts()
-  }, [fetchScripts])
+  const rememberLaunchPath = useCallback((kind: LaunchHistoryKind, path: string) => {
+    setLaunchHistory(current => ({
+      ...current,
+      [kind]: writeLaunchHistory(kind, path),
+    }))
+  }, [])
 
-  const openSelectedWorkspace = useCallback(async () => {
+  const openSelectedWorkspace = useCallback(async (historyPath = '', yamlHistoryPath = '') => {
     setError('')
     try {
       await useLauncherStore.getState().openWorkspace()
+      const openedWorkspace = useWorkspaceStore.getState().workspace
+      rememberLaunchPath('python', openedWorkspace?.script_path || historyPath)
+      rememberLaunchPath('yaml', yamlHistoryPath)
       onClose()
       navigate('/')
+      return true
     } catch (err: any) {
       if (useLauncherStore.getState().step === 2) {
         useLauncherStore.setState({ step: 1 })
       }
       setError(err.message)
+      return false
     }
-  }, [navigate, onClose])
+  }, [navigate, onClose, rememberLaunchPath])
+
+  const openPythonPath = useCallback(async (path: string) => {
+    const scriptPath = path.trim()
+    if (!scriptPath) {
+      setError('Enter a Python script path.')
+      return
+    }
+
+    setManualScriptPath(scriptPath)
+    setError('')
+    try {
+      await selectScript(scriptPath)
+      if (useLauncherStore.getState().step === 2) {
+        await openSelectedWorkspace(scriptPath)
+      }
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [openSelectedWorkspace, selectScript])
+
+  const openShellPath = useCallback(async (path: string) => {
+    const shellPath = path.trim()
+    if (!shellPath) {
+      setError('Enter a folder path.')
+      return
+    }
+
+    setManualShellRootPath(shellPath)
+    setError('')
+    try {
+      const workspace = await api.openLauncherShellRoot(shellPath)
+      setWorkspace(workspace)
+      rememberLaunchPath('shell', workspace.working_root || shellPath)
+      onClose()
+      navigate('/generator')
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }, [navigate, onClose, rememberLaunchPath, setWorkspace])
 
   useEffect(() => {
     const modeParam = searchParams.get('mode')
@@ -96,15 +190,11 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       setManualShellRootPath('')
       setError('')
     }
-    if (initialLaunchMode === 'python') {
-      fetchScriptsOnce()
-    }
-
     if (scriptParam) {
       setManualScriptPath(scriptParam)
       void selectScript(scriptParam).then(() => {
         if (useLauncherStore.getState().step === 2) {
-          void openSelectedWorkspace()
+          void openSelectedWorkspace(scriptParam)
         }
       })
     }
@@ -178,10 +268,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
   const handleLaunchModeChange = useCallback((mode: 'python' | 'shell') => {
     setLaunchMode(mode)
-    if (mode === 'python') {
-      fetchScriptsOnce()
-    }
-  }, [fetchScriptsOnce])
+  }, [])
 
   const handleSkipConfig = useCallback(async () => {
     setError('')
@@ -190,8 +277,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       return
     }
     selectConfig('')
-    await openSelectedWorkspace()
-  }, [mustChooseConfig, openSelectedWorkspace, selectConfig])
+    await openSelectedWorkspace(selectedScript)
+  }, [mustChooseConfig, openSelectedWorkspace, selectConfig, selectedScript])
 
   const handleManualScript = useCallback(async () => {
     const scriptPath = manualScriptPath.trim()
@@ -201,33 +288,14 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     }
 
     setError('')
-    try {
-      await selectScript(scriptPath)
-      if (useLauncherStore.getState().step === 2) {
-        await openSelectedWorkspace()
-      }
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }, [manualScriptPath, openSelectedWorkspace, selectScript])
-
-  const handleSelectScript = useCallback(async (scriptPath: string) => {
-    setError('')
-    try {
-      await selectScript(scriptPath)
-      if (useLauncherStore.getState().step === 2) {
-        await openSelectedWorkspace()
-      }
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }, [openSelectedWorkspace, selectScript])
+    await openPythonPath(scriptPath)
+  }, [manualScriptPath, openPythonPath])
 
   const openSelectedConfig = useCallback(async (configPath: string) => {
     setError('')
     selectConfig(configPath)
-    await openSelectedWorkspace()
-  }, [openSelectedWorkspace, selectConfig])
+    await openSelectedWorkspace(selectedScript, configPath)
+  }, [openSelectedWorkspace, selectConfig, selectedScript])
 
   const handleSelectConfig = useCallback(async (configPath: string) => {
     await openSelectedConfig(configPath)
@@ -252,14 +320,11 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     try {
       const selection = await api.pickLauncherScriptPath()
       setManualScriptPath(selection.script_path)
-      await selectScript(selection.script_path)
-      if (useLauncherStore.getState().step === 2) {
-        await openSelectedWorkspace()
-      }
+      await openPythonPath(selection.script_path)
     } catch (err: any) {
       setError(err.message)
     }
-  }, [openSelectedWorkspace, selectScript])
+  }, [openPythonPath])
 
   const handlePickConfig = useCallback(async () => {
     if (!selectedScript) {
@@ -282,30 +347,17 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     try {
       const workspace = await api.pickLauncherShellRoot()
       setWorkspace(workspace)
+      rememberLaunchPath('shell', workspace.working_root || workspace.project_root || '')
       onClose()
       navigate('/generator')
     } catch (err: any) {
       setError(err.message)
     }
-  }, [navigate, onClose, setWorkspace])
+  }, [navigate, onClose, rememberLaunchPath, setWorkspace])
 
   const handleManualShellRoot = useCallback(async () => {
-    const shellPath = manualShellRootPath.trim()
-    if (!shellPath) {
-      setError('Enter a folder path.')
-      return
-    }
-
-    setError('')
-    try {
-      const workspace = await api.openLauncherShellRoot(shellPath)
-      setWorkspace(workspace)
-      onClose()
-      navigate('/generator')
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }, [manualShellRootPath, navigate, onClose, setWorkspace])
+    await openShellPath(manualShellRootPath)
+  }, [manualShellRootPath, openShellPath])
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 sm:p-4">
@@ -342,35 +394,9 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     onPathChange={setManualScriptPath}
                     onManualOpen={handleManualScript}
                     onBrowseOpen={handlePickScript}
+                    recentPaths={launchHistory.python}
+                    onRecentPathOpen={openPythonPath}
                   />
-
-                  <div>
-                    <div className="flex items-center justify-between border-b border-border-subtle px-1 py-2">
-                      <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
-                        Detected Scripts
-                      </span>
-                      {loading ? (
-                        <span className="text-2xs text-zinc-500">Scanning current directory...</span>
-                      ) : (
-                        <span className="text-2xs text-zinc-600">{scripts.length} found</span>
-                      )}
-                    </div>
-                    <div className="max-h-56 overflow-y-auto py-1">
-                      {scripts.length === 0 ? (
-                        <div className="px-3 py-8 text-center text-xs text-zinc-600">
-                          No Python scripts found in the current directory.
-                        </div>
-                      ) : (
-                        scripts.map(script => (
-                          <ScriptItem
-                            key={script.script_path || script.workspace_path}
-                            script={script}
-                            onClick={() => void handleSelectScript(script.script_path)}
-                          />
-                        ))
-                      )}
-                    </div>
-                  </div>
                 </>
               ) : (
                 <ModeActionPanel
@@ -382,6 +408,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   onPathChange={setManualShellRootPath}
                   onManualOpen={handleManualShellRoot}
                   onBrowseOpen={handlePickShellRoot}
+                  recentPaths={launchHistory.shell}
+                  onRecentPathOpen={openShellPath}
                 />
               )}
             </div>
@@ -418,6 +446,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                 onPathChange={setManualConfigPath}
                 onManualOpen={handleManualConfig}
                 onBrowseOpen={handlePickConfig}
+                recentPaths={launchHistory.yaml}
+                onRecentPathOpen={handleSelectConfig}
               />
               {configs.length === 0 ? (
                 <div className="text-center py-6">
@@ -534,6 +564,8 @@ function ModeActionPanel({
   onPathChange,
   onManualOpen,
   onBrowseOpen,
+  recentPaths = [],
+  onRecentPathOpen,
 }: {
   launchMode: 'python' | 'shell'
   pathValue: string
@@ -543,6 +575,8 @@ function ModeActionPanel({
   onPathChange: (value: string) => void
   onManualOpen: () => void | Promise<void>
   onBrowseOpen: () => void | Promise<void>
+  recentPaths?: string[]
+  onRecentPathOpen?: (path: string) => void | Promise<void>
 }) {
   const isPython = launchMode === 'python'
   const Icon = isPython ? FileSearch : FolderPlus
@@ -596,6 +630,59 @@ function ModeActionPanel({
         </button>
       </div>
       <PathValidationHint validation={validation} />
+      <RecentPathList
+        kind={launchMode}
+        paths={recentPaths}
+        onOpen={onRecentPathOpen}
+      />
+    </div>
+  )
+}
+
+function RecentPathList({
+  kind,
+  paths,
+  onOpen,
+}: {
+  kind: LaunchHistoryKind
+  paths: string[]
+  onOpen?: (path: string) => void | Promise<void>
+}) {
+  if (!paths.length || !onOpen) {
+    return null
+  }
+
+  const Icon = kind === 'python' ? FileSearch : kind === 'shell' ? FolderPlus : FileCode
+  const label = kind === 'yaml' ? 'Recent YAML' : 'Recent Paths'
+
+  return (
+    <div className="space-y-1 pt-1">
+      <div className="flex items-center justify-between px-1">
+        <span className="inline-flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
+          <History className="h-3 w-3" />
+          {label}
+        </span>
+        <span className="text-2xs text-zinc-600">{paths.length}</span>
+      </div>
+      <div className="max-h-60 space-y-1 overflow-y-auto pr-1">
+        {paths.map(path => (
+          <button
+            key={path}
+            type="button"
+            onClick={() => void onOpen(path)}
+            className="group flex min-h-10 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25"
+          >
+            <Icon className="h-3.5 w-3.5 flex-none text-zinc-500 transition-colors group-hover:text-accent" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs text-zinc-300">{pathName(path)}</span>
+              <span className="block truncate font-mono text-2xs text-zinc-600" title={path}>
+                {path}
+              </span>
+            </span>
+            <ChevronRight className="h-3.5 w-3.5 flex-none text-zinc-600 transition-colors group-hover:text-zinc-400" />
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -609,6 +696,8 @@ function ConfigActionPanel({
   onPathChange,
   onManualOpen,
   onBrowseOpen,
+  recentPaths = [],
+  onRecentPathOpen,
 }: {
   pathValue: string
   pathReady: boolean
@@ -618,6 +707,8 @@ function ConfigActionPanel({
   onPathChange: (value: string) => void
   onManualOpen: () => void | Promise<void>
   onBrowseOpen: () => void | Promise<void>
+  recentPaths?: string[]
+  onRecentPathOpen?: (path: string) => void | Promise<void>
 }) {
   return (
     <div className="space-y-2">
@@ -660,6 +751,11 @@ function ConfigActionPanel({
         </button>
       </div>
       <PathValidationHint validation={validation} />
+      <RecentPathList
+        kind="yaml"
+        paths={recentPaths}
+        onOpen={onRecentPathOpen}
+      />
     </div>
   )
 }
@@ -685,25 +781,6 @@ function PathValidationHint({ validation }: { validation: PathValidationState })
       <Icon className={clsx('h-3 w-3 flex-none', checking && 'animate-spin')} />
       <span className="truncate">{text}</span>
     </div>
-  )
-}
-
-function ScriptItem({ script, onClick }: { script: ScriptCandidate; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md hover:bg-surface-overlay transition-colors text-left group"
-    >
-      <FileCode className="w-4 h-4 text-zinc-500 group-hover:text-accent transition-colors flex-none" />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-zinc-200 truncate">{script.label}</div>
-        <div className="text-2xs text-zinc-600 font-mono truncate">{script.script_path}</div>
-      </div>
-      {script.source === 'workspace' || script.source === 'workspace+file' ? (
-        <span className="text-2xs text-accent/60 flex-none">workspace</span>
-      ) : null}
-      <ChevronRight className="w-3.5 h-3.5 text-zinc-600 group-hover:text-zinc-400 flex-none" />
-    </button>
   )
 }
 
