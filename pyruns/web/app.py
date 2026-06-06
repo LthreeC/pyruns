@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from pyruns import __version__
 from pyruns._config import DEFAULT_UI_PORT
 from pyruns.utils.events import log_emitter
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
@@ -274,7 +275,7 @@ def find_available_port(start_port: int, *, host: str = "127.0.0.1", max_attempt
 def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
-    app = FastAPI(title="Pyruns API", version="0.2.3")
+    app = FastAPI(title="Pyruns API", version=__version__)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -724,15 +725,20 @@ def main(
         _schedule_browser_open(url)
     else:
         print("[pyruns] Browser auto-open disabled; open the URL manually.")
-    uvicorn.run(
-        "pyruns.web.app:create_app" if reload else create_app(runtime),
-        host=host,
-        port=port,
-        reload=reload,
-        factory=reload,
-        access_log=False,
-        log_level="warning",
-    )
+    try:
+        uvicorn.run(
+            "pyruns.web.app:create_app" if reload else create_app(runtime),
+            host=host,
+            port=port,
+            reload=reload,
+            factory=reload,
+            access_log=False,
+            log_level="warning",
+        )
+    finally:
+        shutdown = getattr(runtime, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
 
 def _parse_main_options(args: list[str]) -> tuple[int | None, bool | None]:

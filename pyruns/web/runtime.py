@@ -246,7 +246,9 @@ class PyrunsRuntime:
         os.makedirs(tasks_dir, exist_ok=True)
         ensure_settings_file(resolved_root)
 
+        old_task_manager: TaskManager | None = None
         with self._lock:
+            old_task_manager = self._task_manager
             self.root_dir = resolved_root
             self.tasks_dir = tasks_dir
             self.settings = load_settings(resolved_root)
@@ -255,6 +257,21 @@ class PyrunsRuntime:
             self._metrics_sampler = None
             self._tasks_loaded = False
             self._last_full_refresh_time = 0.0
+
+        if old_task_manager is not None:
+            old_task_manager.shutdown()
+
+    def shutdown(self) -> None:
+        """Release background services owned by this runtime."""
+        with self._lock:
+            task_manager = self._task_manager
+            self._task_manager = None
+            self._task_generator = None
+            self._metrics_sampler = None
+            self._tasks_loaded = False
+
+        if task_manager is not None:
+            task_manager.shutdown()
 
     def change_run_root(self, new_root: str) -> Dict[str, Any]:
         """Switch the active workspace after validation."""
@@ -661,7 +678,7 @@ class PyrunsRuntime:
             with self._lock:
                 elapsed = now - self._last_full_refresh_time
             if elapsed >= 4.0:
-                manager.refresh_from_disk(check_all=True)
+                manager.refresh_from_disk(check_all=True, discover=True)
                 with self._lock:
                     self._last_full_refresh_time = now
 
@@ -727,7 +744,11 @@ class PyrunsRuntime:
         self.ensure_tasks_loaded(full_refresh=False)
         if refresh:
             self.task_manager.refresh_from_disk(task_ids=[task_name], check_all=True)
-        return self.task_manager.get_task(task_name)
+        task = self.task_manager.get_task(task_name)
+        if task is None and refresh:
+            self.task_manager.load_task_by_name(task_name)
+            task = self.task_manager.get_task(task_name)
+        return task
 
     def require_task(self, task_name: str, *, refresh: bool = True) -> Dict[str, Any]:
         """Return one task or raise ``KeyError``."""
@@ -929,9 +950,24 @@ class PyrunsRuntime:
             raise KeyError(task_name)
 
         task_dir = str(task["dir"])
-        selected_path = resolve_log_path(task_dir, log_file_name)
-        available_logs = list(get_log_options(task_dir).keys())
-        selected_name = os.path.basename(selected_path) if selected_path else ""
+        log_options = get_log_options(task_dir)
+        available_logs = list(log_options.keys())
+        selected_name = str(log_file_name or "").strip()
+        selected_path = log_options.get(selected_name) if selected_name else None
+
+        if not selected_name and str(task.get("status", "")).lower() in {"running", "queued"}:
+            try:
+                run_index = max(1, int(task.get("run_index", 1) or 1))
+            except (TypeError, ValueError):
+                run_index = 1
+            selected_name = f"run{run_index}.log"
+            selected_path = log_options.get(selected_name)
+            if selected_name not in available_logs:
+                available_logs.insert(0, selected_name)
+
+        if not selected_name:
+            selected_path = resolve_log_path(task_dir)
+            selected_name = os.path.basename(selected_path) if selected_path else ""
 
         if not selected_path:
             return {

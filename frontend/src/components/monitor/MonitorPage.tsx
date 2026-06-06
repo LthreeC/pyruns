@@ -64,7 +64,7 @@ function readCompactMonitorLayout() {
 }
 
 export default function MonitorPage() {
-  const { monitorTasks, fetchMonitorTasks } = useTaskStore()
+  const { monitorTasks, fetchMonitorTasks, upsertMonitorTask } = useTaskStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
     selectedTaskName, logContent, availableLogs, selectedLog, loading, exportIds,
@@ -574,10 +574,15 @@ export default function MonitorPage() {
     const currentTaskName = selectedTaskName
 
     try {
+      let task: Task | null = null
       if (action === 'run') {
-        await api.runTask(currentTaskName)
+        task = (await api.runTask(currentTaskName)).task
       } else {
-        await api.cancelTask(currentTaskName)
+        task = (await api.cancelTask(currentTaskName)).task
+      }
+
+      if (task) {
+        upsertMonitorTask(task)
       }
 
       await fetchMonitorTasks()
@@ -598,7 +603,7 @@ export default function MonitorPage() {
         detail: errorMessage(err),
       })
     }
-  }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask, notify])
+  }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask, upsertMonitorTask, notify])
 
   const openDetailTask = useCallback((task: Task) => {
     setDetailTask(task)

@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -19,6 +20,7 @@ import yaml
 from unittest.mock import patch, MagicMock
 
 import pyruns.core.executor as executor
+import pyruns.core.task_manager as task_manager_module
 from pyruns._config import (
     ENV_KEY_CONFIG,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
@@ -2036,6 +2038,38 @@ def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emi
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_posix_starts_child_in_new_session(mock_popen, mock_emit, mock_detect, tmp_path):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
+        json.dump({"name": "SessionTask", "script": "script.py", "status": "queued"}, f)
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.wait.return_value = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"", b""])
+    mock_popen.return_value = mock_proc
+
+    with (
+        patch("pyruns.core.executor._is_windows", return_value=False),
+        patch("pyruns.core.executor._build_run_source_state", return_value=""),
+    ):
+        res = run_task_worker(
+            task_dir=task_dir,
+            name="SessionTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert res["status"] == "completed"
+    assert mock_popen.call_args.kwargs["start_new_session"] is True
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_failure(mock_popen, mock_emit, mock_detect, tmp_path):
     mock_detect.return_value = ("pyruns_load", None)
     task_dir = str(tmp_path)
@@ -2084,6 +2118,43 @@ def test_run_task_worker_failure(mock_popen, mock_emit, mock_detect, tmp_path):
         content = f.read()
         assert "Run #1 failed" in content
         assert "reason=exit_code 1" in content
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_separates_finish_banner_after_output_without_newline(
+    mock_popen,
+    mock_emit,
+    mock_detect,
+    tmp_path,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
+        json.dump({"name": "NoNewlineTask", "script": "script.py", "status": "queued"}, f)
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 7777
+    mock_proc.wait.return_value = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"last output without newline", b""])
+    mock_popen.return_value = mock_proc
+
+    with patch("pyruns.core.executor._build_run_source_state", return_value=""):
+        result = run_task_worker(
+            task_dir=task_dir,
+            name="NoNewlineTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert result["status"] == "completed"
+    log_path = os.path.join(task_dir, RUN_LOGS_DIR, "run1.log")
+    content = Path(log_path).read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+    assert "last output without newline\n[PYRUNS] ==================== FINISH" in content
+    assert "last output without newline[PYRUNS]" not in content
 
 
 def test_run_task_worker_internal_spawn_error_persists_failure_and_keeps_cleanup_error_secondary(tmp_path, monkeypatch):
@@ -2305,6 +2376,46 @@ def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch
     assert manager.get_task("runner")["status"] == "failed"
 
 
+def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
+    timeout_values = []
+
+    def record_timeout(task_dir, updater, **kwargs):
+        timeout_values.append(kwargs.get("timeout_sec"))
+        raise TimeoutError("busy")
+
+    with patch("pyruns.core.task_manager.update_task_info", side_effect=record_timeout):
+        assert manager.cancel_task("runner") is True
+
+    assert timeout_values == [task_manager_module._STOP_TASK_INFO_LOCK_TIMEOUT_SEC]
+
+
 def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -2481,6 +2592,61 @@ def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
     with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("scandir failed")):
         manager.scan_disk()
     assert manager.list_tasks() == []
+
+
+def test_task_manager_refresh_discovers_external_added_and_removed_tasks(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    alpha = generator.create_task("alpha", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    generator.create_task("beta", {"value": 2})
+    shutil.rmtree(alpha["dir"])
+
+    assert manager.refresh_from_disk(check_all=True, discover=True) is True
+
+    tasks = {task["name"]: task for task in manager.list_tasks()}
+    assert set(tasks) == {"beta"}
+    assert tasks["beta"]["config"]["value"] == 2
+
+
+def test_task_manager_refresh_keeps_discovered_tasks_in_disk_order(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    newest = generator.create_task("newest", {"value": 3})
+    base = time.time()
+    os.utime(newest["dir"], (base + 30, base + 30))
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    older = generator.create_task("older", {"value": 1})
+    middle = generator.create_task("middle", {"value": 2})
+    os.utime(older["dir"], (base + 10, base + 10))
+    os.utime(middle["dir"], (base + 20, base + 20))
+
+    assert manager.refresh_from_disk(check_all=True, discover=True) is True
+
+    assert [task["name"] for task in manager.list_tasks()] == ["newest", "middle", "older"]
+
+
+def test_task_manager_refresh_keeps_tasks_when_directory_scan_fails(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    generator.create_task("alpha", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("stale nfs handle")):
+        assert manager.refresh_from_disk(check_all=True, discover=True) is False
+
+    assert [task["name"] for task in manager.list_tasks()] == ["alpha"]
 
 
 def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypatch):

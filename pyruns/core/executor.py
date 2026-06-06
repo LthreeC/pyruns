@@ -67,6 +67,23 @@ def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
     )
 
 
+def _append_run_log_text(log_path: str, text: str, *, clean_boundary: bool = False) -> str:
+    payload = text
+    if clean_boundary and text:
+        try:
+            if os.path.getsize(log_path) > 0:
+                with open(log_path, "rb") as handle:
+                    handle.seek(-1, os.SEEK_END)
+                    if handle.read(1) != b"\n":
+                        payload = "\n" + text
+        except OSError:
+            pass
+
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(payload)
+    return payload
+
+
 def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
     """Ensure child scripts can import the same pyruns package as the parent."""
 
@@ -266,6 +283,14 @@ def _current_pyruns_import_root() -> str:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _popen_process_group_kwargs() -> Dict[str, Any]:
+    """Return subprocess options that let Pyruns stop a full POSIX task tree."""
+
+    if _is_windows():
+        return {}
+    return {"start_new_session": True}
 
 
 def _path_env_key(env: Dict[str, str]) -> str:
@@ -645,9 +670,8 @@ def _persist_run_source_state(
 
     line = f"[PYRUNS] Source {source_state}\n"
     try:
-        with open(log_path, "a", encoding="utf-8") as handle:
-            handle.write(line)
-        log_emitter.emit(task_name, line.replace("\n", "\r\n"))
+        payload = _append_run_log_text(log_path, line, clean_boundary=True)
+        log_emitter.emit(task_name, payload.replace("\n", "\r\n"))
     except Exception as exc:
         logger.debug("Failed to append source state log for %s: %s", task_name, exc)
 
@@ -1154,7 +1178,7 @@ def run_task_worker(
             workdir = fallback
 
         if isinstance(command, str):
-                command = shlex.split(command, posix=not _is_windows())
+            command = shlex.split(command, posix=not _is_windows())
 
         proc = subprocess.Popen(
             command,
@@ -1163,6 +1187,7 @@ def run_task_worker(
             stderr=subprocess.STDOUT,
             cwd=workdir,
             env=env,
+            **_popen_process_group_kwargs(),
         )
 
         start_str = get_now_str()
@@ -1186,7 +1211,7 @@ def run_task_worker(
 
         update_task_info(task_dir, _mark_started)
 
-        threading.Thread(target=_collect_source_state_async).start()
+        threading.Thread(target=_collect_source_state_async, daemon=True).start()
 
         if runner_id:
             heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
@@ -1216,9 +1241,8 @@ def run_task_worker(
         end_str = get_now_str()
 
         finish_log = _lifecycle_banner("finish", name, end_str)
-        with open(log_path, "a", encoding="utf-8") as handle:
-            handle.write(finish_log)
-        log_emitter.emit(name, finish_log.replace("\n", "\r\n"))
+        finish_payload = _append_run_log_text(log_path, finish_log, clean_boundary=True)
+        log_emitter.emit(name, finish_payload.replace("\n", "\r\n"))
 
         def _mark_finished(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)

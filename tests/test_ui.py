@@ -196,8 +196,11 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     assert "event.target === event.currentTarget" in confirm_dialog
     assert "onConfirm: () => void | Promise<void>" in confirm_dialog
     assert "const [pending, setPending]" in confirm_dialog
+    assert "dialog && !dialog.open" in confirm_dialog
+    assert "if (dialog?.open)" in confirm_dialog
     assert "disabled={pending}" in confirm_dialog
     assert "aria-busy={pending || undefined}" in confirm_dialog
+    assert ".catch(() => undefined)" in confirm_dialog
     assert "Loader2" in confirm_dialog
     assert "window.addEventListener('keydown', handleKeyDown)" in dashboard
 
@@ -335,13 +338,26 @@ def test_react_monitor_uses_unfiltered_full_task_list():
 
     assert "monitorTasks: Task[]" in store
     assert "fetchMonitorTasks: () => Promise<void>" in store
+    assert "upsertMonitorTask: (task: Task) => void" in store
     assert "api.getTasks({ limit: 0, refresh: true, summary: true })" in store
-    assert "const { monitorTasks, fetchMonitorTasks } = useTaskStore()" in monitor
+    assert "const { monitorTasks, fetchMonitorTasks, upsertMonitorTask } = useTaskStore()" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
     assert "usePolling(fetchMonitorTasks" in monitor
     assert 'title="Pinned Tasks"' in monitor
     assert "count={pinnedTasks.length}" in monitor
     assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
+
+
+def test_react_monitor_merges_run_action_response_before_next_poll():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "upsertMonitorTask(task)" in monitor
+    assert "task = (await api.runTask(currentTaskName)).task" in monitor
+    assert "task = (await api.cancelTask(currentTaskName)).task" in monitor
+    assert "monitorTasks: exists" in store
+    assert "? state.monitorTasks.map(item => item.name === task.name ? task : item)" in store
+    assert ": [task, ...state.monitorTasks]" in store
 
 
 def test_react_components_avoid_large_forced_corner_radius():
@@ -535,6 +551,13 @@ def test_react_task_detail_env_controls_have_clear_feedback_states():
     source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
 
     assert "type EnvSaveStatus" in source
+    assert "function buildEnvPairsFromEnv" in source
+    assert "function envSignature" in source
+    assert "staleEnvPropSignatureRef" in source
+    assert "staleEnvPropSignatureRef.current === envSignature(task.env || {})" in source
+    assert "const response = await api.updateEnv(task.name, env)" in source
+    assert "const savedEnv = response.task?.env || env" in source
+    assert "setEnvPairs(buildEnvPairsFromEnv(savedEnv))" in source
     assert "getEnvValidationMessage(envPairs)" in source
     assert "const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)" in source
     assert "envSaveStatus === 'saved' ? 'Saved' : 'Save'" in source
@@ -555,6 +578,16 @@ def test_react_task_detail_warns_before_discarding_unsaved_edits():
     assert 'title="Discard changes?"' in source
     assert "window.confirm('Discard unsaved changes?')" not in source
     assert "onClick={requestClose}" in source
+
+
+def test_react_manager_keeps_open_task_detail_synced_after_list_refresh():
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+
+    assert "const refreshed = tasks.find(task => task.name === detailTask.name)" in manager
+    assert "...refreshed," in manager
+    assert "config: current.config" in manager
+    assert "config_text: current.config_text" in manager
+    assert "}, [detailTask, tasks])" in manager
 
 
 def test_react_generator_shows_creation_progress_and_result_actions():
@@ -684,7 +717,10 @@ def test_react_monitor_caps_live_log_state_for_long_tasks():
 
     assert "MONITOR_LOG_STATE_MAX_CHARS" in store
     assert "MONITOR_LOG_STATE_TRIM_THRESHOLD" in store
+    assert "function isPyrunsLifecycleChunk" in store
+    assert "function comparableLogText" in store
     assert "export function appendMonitorLogContent" in store
+    assert "comparableLogText(contentTail).endsWith(comparableLogText(text))" in store
     assert "appendMonitorLogContent(s.logContent, text)" in store
     assert "appendMonitorLogContent(state.logContent, logs.content)" in monitor
 
@@ -1142,6 +1178,9 @@ def test_react_generator_shows_imported_default_config_source():
     assert "configDefaultSourceName" in generator
     assert "Loaded from" in generator
     assert "pathLeaf(selectedTemplate) === 'config_default.yaml'" in generator
+    assert "max-w-[260px]" not in generator
+    assert "max-w-full select-text items-start" in generator
+    assert "whitespace-normal break-all font-mono" in generator
 
 
 def test_react_generator_reloads_default_when_imported_yaml_changes():

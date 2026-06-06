@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from pyruns import __version__
 from pyruns._config import (
     CONFIG_FILENAME,
     DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS,
@@ -59,6 +60,12 @@ def test_web_package_lazy_exports_public_api():
     assert web.main is main
     with pytest.raises(AttributeError):
         web.not_a_public_export
+
+
+def test_web_app_version_matches_package_version():
+    app = create_app(_RouteRuntime())
+
+    assert app.version == __version__
 
 
 def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
@@ -1116,6 +1123,53 @@ def test_run_root_switch_endpoint_reloads_workspace(tmp_path):
     assert tasks["items"][0]["name"] == "task-b"
 
 
+def test_runtime_reload_shuts_down_previous_task_manager(tmp_path):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    managers = []
+
+    class DummyTaskManager:
+        def __init__(self, tasks_dir: str):
+            self.tasks_dir = tasks_dir
+            self.shutdown_count = 0
+
+        def shutdown(self) -> None:
+            self.shutdown_count += 1
+
+    def make_task_manager(tasks_dir: str):
+        manager = DummyTaskManager(tasks_dir)
+        managers.append(manager)
+        return manager
+
+    runtime = PyrunsRuntime(root_dir=str(workspace_a), task_manager_factory=make_task_manager)
+    first_manager = runtime.task_manager
+
+    runtime.reload(str(workspace_b))
+
+    assert first_manager.shutdown_count == 1
+    assert managers == [first_manager]
+
+
+def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
+    from pyruns.web import app as web_app
+
+    events = []
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+        def shutdown(self) -> None:
+            events.append("shutdown")
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
+    monkeypatch.setattr(web_app, "find_available_port", lambda port, host="127.0.0.1": port)
+    monkeypatch.setattr(web_app.uvicorn, "run", lambda *args, **kwargs: events.append("run"))
+
+    web_app.main(open_browser=False, port=8123)
+
+    assert events == ["run", "shutdown"]
+
+
 def test_tasks_and_task_detail_endpoints_return_data(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="completed", log_text="epoch 1\n")
@@ -1178,6 +1232,62 @@ def test_logs_endpoint_returns_history_and_available_logs(tmp_path):
     assert payload["selected_log"] == "run1.log"
     assert "run1.log" in payload["available_logs"]
     assert "line 1" in payload["content"]
+
+
+def test_tasks_endpoint_discovers_external_task_dirs_on_refresh(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    assert client.get("/api/tasks", params={"limit": 0}).json()["total"] == 1
+
+    _add_task(workspace, "beta")
+    runtime.invalidate_cache()
+    response = client.get("/api/tasks", params={"limit": 0, "refresh": True, "summary": True})
+
+    assert response.status_code == 200
+    names = {task["name"] for task in response.json()["items"]}
+    assert names == {"alpha", "beta"}
+
+
+def test_task_endpoint_lazy_loads_external_task_by_name(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    assert client.get("/api/tasks", params={"limit": 0}).json()["total"] == 0
+
+    _add_task(workspace, "external")
+    response = client.get("/api/tasks/external")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "external"
+
+
+def test_logs_endpoint_prefers_active_run_log_even_before_file_exists(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running", log_text="old run\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+
+    def set_second_run(info):
+        info["run_index"] = 2
+        info["start_times"] = ["2026-03-17_12-00-00", "2026-03-17_12-10-00"]
+        info["finish_times"] = ["2026-03-17_12-05-00", ""]
+        info["pids"] = [111, __import__("os").getpid()]
+
+    update_task_info(str(task_dir), set_second_run)
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks/alpha/logs")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_log"] == "run2.log"
+    assert payload["content"] == ""
+    assert "run2.log" in payload["available_logs"]
+    assert "run1.log" in payload["available_logs"]
 
 
 def test_logs_endpoint_can_tail_history_by_lines(tmp_path):

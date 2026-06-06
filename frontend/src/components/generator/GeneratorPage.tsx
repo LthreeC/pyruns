@@ -782,23 +782,23 @@ export default function GeneratorPage() {
 
           {showImportedConfigSource && (
             <span
-              className="inline-flex min-w-0 max-w-[260px] items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"
+              className="inline-flex min-w-0 max-w-full select-text items-start gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"
               title={configDefaultSourcePath || configDefaultSourceName}
             >
-              <FileCode className="h-3 w-3 flex-none text-accent" />
+              <FileCode className="mt-0.5 h-3 w-3 flex-none text-accent" />
               <span className="flex-none">Loaded from</span>
-              <span className="truncate font-mono text-txt-primary">{configDefaultSourceName}</span>
+              <span className="min-w-0 whitespace-normal break-all font-mono text-txt-primary">{configDefaultSourceName}</span>
             </span>
           )}
 
           {isShellWorkspace && templateContent?.mode_hint === 'shell' && (
             <span
-              className="inline-flex min-w-0 max-w-[260px] items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"
+              className="inline-flex min-w-0 max-w-full select-text items-start gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"
               title={templateContent.path}
             >
-              <FileCode className="h-3 w-3 flex-none text-accent" />
+              <FileCode className="mt-0.5 h-3 w-3 flex-none text-accent" />
               <span className="flex-none">Loaded shell</span>
-              <span className="truncate font-mono text-txt-primary">{templateContent.label}</span>
+              <span className="min-w-0 whitespace-normal break-all font-mono text-txt-primary">{templateContent.label}</span>
             </span>
           )}
         </div>

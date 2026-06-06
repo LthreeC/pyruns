@@ -237,6 +237,29 @@ export default function ManagerPage() {
   dragOverTargetRef.current = dragOverTarget
   dropIntentRef.current = dropIntent
 
+  useEffect(() => {
+    if (!detailTask) {
+      return
+    }
+
+    const refreshed = tasks.find(task => task.name === detailTask.name)
+    if (!refreshed) {
+      return
+    }
+
+    if (refreshed !== detailTask) {
+      setDetailTask(current => current?.name === refreshed.name
+        ? {
+            ...refreshed,
+            config: current.config,
+            config_text: current.config_text,
+            records: current.records,
+            tracks: current.tracks,
+          }
+        : current)
+    }
+  }, [detailTask, tasks])
+
   const normalizeWorkerInput = useCallback((value: string) => {
     const trimmed = value.trim()
     if (!trimmed) {

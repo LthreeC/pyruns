@@ -227,10 +227,11 @@ def update_task_info(
     updater: Callable[[Dict[str, Any]], None],
     *,
     raise_error: bool = False,
+    timeout_sec: float = _LOCK_TIMEOUT_SEC,
 ) -> Dict[str, Any]:
     """Read-modify-write task_info.json using the shared atomic save path."""
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
-    with task_info_lock(task_dir):
+    with task_info_lock(task_dir, timeout_sec=timeout_sec):
         if os.path.exists(info_path):
             try:
                 with open(info_path, "r", encoding="utf-8") as f:

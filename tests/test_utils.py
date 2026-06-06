@@ -602,11 +602,41 @@ def test_is_pid_running_nt_ctypes_error_returns_false(monkeypatch):
     assert process_utils.is_pid_running(99999) is False
 
 
-@patch("pyruns.utils.process_utils.os.name", "posix")
-@patch("os.kill")
-def test_kill_process_posix(mock_kill):
+def test_kill_process_posix(monkeypatch):
+    calls = []
+    monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+    monkeypatch.setattr(
+        process_utils.os,
+        "killpg",
+        lambda pid, sig: calls.append(("pg", pid, sig)),
+        raising=False,
+    )
+    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: False)
+    monkeypatch.setattr(process_utils, "_posix_process_group_exists", lambda killpg, pgid: False)
+
     kill_process(99999)
-    mock_kill.assert_called_with(99999, signal.SIGTERM)
+
+    assert calls == [("pg", 99999, signal.SIGTERM)]
+
+
+def test_kill_process_posix_escalates_process_group(monkeypatch):
+    calls = []
+    monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+    monkeypatch.setattr(process_utils, "_POSIX_KILL_GRACE_SEC", 0)
+    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: True)
+    monkeypatch.setattr(
+        process_utils.os,
+        "killpg",
+        lambda pid, sig: calls.append(("pg", pid, sig)),
+        raising=False,
+    )
+
+    kill_process(99999)
+
+    assert calls == [
+        ("pg", 99999, signal.SIGTERM),
+        ("pg", 99999, getattr(signal, "SIGKILL", signal.SIGTERM)),
+    ]
 
 
 @patch("pyruns.utils.process_utils.os.name", "nt")

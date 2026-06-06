@@ -75,9 +75,24 @@ export function trimMonitorLogContent(content: string) {
   return content.slice(-MONITOR_LOG_STATE_MAX_CHARS)
 }
 
+function comparableLogText(text: string) {
+  return text.replace(/\r\n/g, '\n')
+}
+
+function isPyrunsLifecycleChunk(text: string) {
+  return text.includes('[PYRUNS]')
+    && (text.includes(' START ') || text.includes(' FINISH ') || text.includes('[PYRUNS] Source '))
+}
+
 export function appendMonitorLogContent(content: string, text: string) {
   if (!text) {
     return content
+  }
+  if (isPyrunsLifecycleChunk(text)) {
+    const contentTail = content.slice(Math.max(0, content.length - text.length - 32))
+    if (comparableLogText(contentTail).endsWith(comparableLogText(text))) {
+      return content
+    }
   }
   if (text.length >= MONITOR_LOG_STATE_TRIM_THRESHOLD) {
     return text.slice(-MONITOR_LOG_STATE_MAX_CHARS)
@@ -223,6 +238,7 @@ interface TaskState {
   setColumns: (n: number) => void
   fetchTasks: () => Promise<void>
   fetchMonitorTasks: () => Promise<void>
+  upsertMonitorTask: (task: Task) => void
   toggleSelect: (name: string) => void
   selectAll: () => void
   clearSelection: () => void
@@ -274,6 +290,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return
     }
     set({ monitorTasks: page.items })
+  },
+  upsertMonitorTask(task) {
+    if (!task?.name) {
+      return
+    }
+    set(state => {
+      const exists = state.monitorTasks.some(item => item.name === task.name)
+      return {
+        monitorTasks: exists
+          ? state.monitorTasks.map(item => item.name === task.name ? task : item)
+          : [task, ...state.monitorTasks],
+      }
+    })
   },
   toggleSelect(name) {
     const ids = new Set(get().selectedIds)

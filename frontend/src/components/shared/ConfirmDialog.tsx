@@ -22,11 +22,14 @@ export default function ConfirmDialog({
   const widthClass = size === 'lg' ? 'max-w-2xl' : 'max-w-md'
 
   useEffect(() => {
-    if (open) {
-      ref.current?.showModal()
-    } else {
+    const dialog = ref.current
+    if (open && dialog && !dialog.open) {
+      dialog.showModal()
+    } else if (!open) {
       setPending(false)
-      ref.current?.close()
+      if (dialog?.open) {
+        dialog.close()
+      }
     }
   }, [open])
 
@@ -47,7 +50,9 @@ export default function ConfirmDialog({
     const result = onConfirm()
     if (result && typeof result.finally === 'function') {
       setPending(true)
-      void result.finally(() => setPending(false))
+      void result
+        .catch(() => undefined)
+        .finally(() => setPending(false))
     }
   }
 

@@ -41,6 +41,7 @@ from pyruns.utils.task_files import (
 )
 
 logger = get_logger(__name__)
+_STOP_TASK_INFO_LOCK_TIMEOUT_SEC = 1.0
 
 
 class TaskClaimConflict(RuntimeError):
@@ -62,6 +63,9 @@ class TaskManager:
         self._lock = threading.Lock()
         self._observer_lock = threading.Lock()
         self._executor_lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self._shutdown_cleanup_done = False
 
         self._observers: List[Callable[[], None]] = []
         self._executor = None
@@ -86,9 +90,10 @@ class TaskManager:
         else:
             self.scan_disk()
 
-        threading.Thread(target=self._scheduler_loop, daemon=True).start()
+        self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+        self._scheduler_thread.start()
 
-        atexit.register(self._cleanup_on_shutdown)
+        atexit.register(self.shutdown)
 
     def on_change(self, callback: Callable[[], None]) -> None:
         """Register a callback used by reactive UI pages."""
@@ -186,21 +191,12 @@ class TaskManager:
                 self._disk_scan_complete = True
             return
 
-        # Use os.scandir for fewer syscalls (isdir + mtime in one stat)
-        try:
-            entries = []
-            with os.scandir(self.tasks_dir) as it:
-                for entry in it:
-                    if entry.is_dir() and entry.name != TRASH_DIR:
-                        try:
-                            mtime = entry.stat().st_mtime
-                        except OSError:
-                            mtime = 0.0
-                        entries.append((entry.name, mtime))
-            entries.sort(key=lambda x: x[1], reverse=True)
-            subdirs = [name for name, _ in entries]
-        except OSError:
-            subdirs = []
+        scan_ok, subdirs = self._scan_task_dir_names()
+        if not scan_ok:
+            logger.debug("scan_disk skipped; could not list task directories under %s", self.tasks_dir)
+            with self._lock:
+                self._disk_scan_complete = True
+            return
 
         # Parallel I/O: load task dirs concurrently for large workspaces
         if len(subdirs) > 8:
@@ -220,6 +216,102 @@ class TaskManager:
             self._recompute_processing_flag_locked()
             self._disk_scan_complete = True
         logger.debug("scan_disk completed: %d tasks found", len(new_tasks))
+
+    def _list_task_dir_names(self) -> list[str]:
+        """Return task folder names ordered by directory mtime, newest first."""
+        _ok, names = self._scan_task_dir_names()
+        return names
+
+    def _scan_task_dir_names(self) -> tuple[bool, list[str]]:
+        """Try to list task folder names ordered by directory mtime."""
+        if not self.tasks_dir:
+            return True, []
+
+        try:
+            entries = []
+            with os.scandir(self.tasks_dir) as it:
+                for entry in it:
+                    if entry.is_dir() and entry.name != TRASH_DIR:
+                        try:
+                            mtime_ns = entry.stat().st_mtime_ns
+                        except OSError:
+                            mtime_ns = 0
+                        entries.append((entry.name, mtime_ns))
+            entries.sort(key=lambda x: x[1], reverse=True)
+            return True, [name for name, _ in entries]
+        except OSError as exc:
+            logger.debug("Could not list task directories under %s: %s", self.tasks_dir, exc)
+            return False, []
+
+    def sync_task_dirs_from_disk(self) -> bool:
+        """Discover task folders created or removed by another Pyruns process."""
+        if not self.tasks_dir or not os.path.exists(self.tasks_dir):
+            with self._lock:
+                had_tasks = bool(self.tasks)
+                self.tasks = []
+                self._running_ids.clear()
+                self._rebuild_indexes_locked()
+                self._recompute_processing_flag_locked()
+                self._disk_scan_complete = True
+            return had_tasks
+
+        scan_ok, disk_names = self._scan_task_dir_names()
+        if not scan_ok:
+            return False
+
+        disk_name_set = set(disk_names)
+        with self._lock:
+            known_names = set(self._tasks_by_name)
+
+        missing_names = known_names - disk_name_set
+        new_names = [name for name in disk_names if name not in known_names]
+        if not missing_names and not new_names:
+            return False
+
+        if len(new_names) > 8:
+            with ThreadPoolExecutor(max_workers=min(16, len(new_names))) as pool:
+                results = list(pool.map(self._load_task_dir, new_names))
+            new_tasks = [task for task in results if task is not None]
+        else:
+            new_tasks = [
+                task
+                for task in (self._load_task_dir(name) for name in new_names)
+                if task is not None
+            ]
+
+        changed = False
+        with self._lock:
+            if missing_names:
+                before_count = len(self.tasks)
+                self.tasks = [
+                    task
+                    for task in self.tasks
+                    if task and task.get("name") not in missing_names
+                ]
+                self._running_ids.difference_update(missing_names)
+                changed = changed or len(self.tasks) != before_count
+                self._rebuild_indexes_locked()
+
+            current_names = set(self._tasks_by_name)
+            for task in reversed(new_tasks):
+                task_name = str(task.get("name", "") or "")
+                if task_name and task_name not in current_names:
+                    self.tasks.insert(0, task)
+                    current_names.add(task_name)
+                    changed = True
+
+            if changed:
+                disk_order = {name: index for index, name in enumerate(disk_names)}
+                self.tasks.sort(
+                    key=lambda task: disk_order.get(
+                        str((task or {}).get("name", "") or ""),
+                        len(disk_order),
+                    )
+                )
+                self._rebuild_indexes_locked()
+                self._recompute_processing_flag_locked()
+                self._disk_scan_complete = True
+        return changed
 
     @staticmethod
     def _lease_until_value(info: Dict[str, Any]) -> float:
@@ -315,12 +407,14 @@ class TaskManager:
         task_ids: List[str] | None = None,
         force_all: bool = False,
         check_all: bool = False,
+        discover: bool = False,
     ) -> bool:
         """Refresh active or requested tasks from task_info.json files."""
+        has_changed = self.sync_task_dirs_from_disk() if discover else False
+
         with self._lock:
             current = list(self.tasks)
 
-        has_changed = False
         target_ids = set(task_ids) if task_ids else None
         for task in current:
             if not task:
@@ -334,9 +428,6 @@ class TaskManager:
                 continue
 
             info_path = os.path.join(task["dir"], TASK_INFO_FILENAME)
-            if not os.path.exists(info_path):
-                continue
-
             try:
                 mtime_ns = os.stat(info_path).st_mtime_ns
                 if not force_all and task.get("_mtime_ns") == mtime_ns:
@@ -696,6 +787,7 @@ class TaskManager:
                     event="stopped",
                     reason="cancelled_by_user",
                     detail_lines=[f"previous_status={previous_status}"],
+                    lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist cancel summary for %s yet: %s", target_name, exc)
@@ -706,6 +798,7 @@ class TaskManager:
                     event="stopped",
                     reason="cancelled_by_user",
                     detail_lines=[f"previous_status={previous_status}"],
+                    lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist queued cancel state for %s yet: %s", target_name, exc)
@@ -743,6 +836,7 @@ class TaskManager:
                         event="stopped",
                         reason="deleted_while_active",
                         detail_lines=[f"previous_status={previous_status}"],
+                        lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                     )
                 if target in self.tasks:
                     self.tasks.remove(target)
@@ -782,7 +876,7 @@ class TaskManager:
         """Submit queued tasks up to max_workers and keep UI state fresh."""
         last_trigger = 0.0
         last_refresh = 0.0
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 # Only refresh from disk if we have active tasks or it's been >1s
                 now = time.time()
@@ -800,28 +894,33 @@ class TaskManager:
                             self.trigger_update()
 
                 if not self.is_processing:
-                    time.sleep(0.5)
+                    if self._shutdown_event.wait(0.5):
+                        break
                     continue
 
                 self._ensure_executor()
 
                 if len(self._running_ids) >= self.max_workers:
-                    time.sleep(0.1)
+                    if self._shutdown_event.wait(0.1):
+                        break
                     continue
 
                 target, run_index = self._pick_queued_task()
                 if not target:
                     with self._lock:
                         self._recompute_processing_flag_locked()
-                    time.sleep(0.1)
+                    if self._shutdown_event.wait(0.1):
+                        break
                     continue
 
                 self._submit_task(target, run_index, independent=False)
             except Exception as exc:
                 logger.error("Scheduler error: %s", exc, exc_info=True)
-                time.sleep(1)
+                if self._shutdown_event.wait(1):
+                    break
 
-            time.sleep(0.2)
+            if self._shutdown_event.wait(0.2):
+                break
 
     def _ensure_executor(self) -> None:
         """Create or recreate the batch executor when mode/worker count changes."""
@@ -971,38 +1070,93 @@ class TaskManager:
 
     def _cleanup_on_shutdown(self) -> None:
         """Fail any queued/running tasks when the app is shutting down."""
+        with self._shutdown_lock:
+            if self._shutdown_cleanup_done:
+                return
+            self._shutdown_cleanup_done = True
+
         logger.info("System shutting down; cleaning up stuck task states...")
         acquired = self._lock.acquire(timeout=2.0)
         if not acquired:
+            with self._shutdown_lock:
+                self._shutdown_cleanup_done = False
             logger.warning("Skip shutdown cleanup: task manager lock not acquired in time.")
             return
 
         try:
-            for task in self.tasks:
-                status = task.get("status") if task else None
-                if status not in ("running", "queued"):
+            active_tasks = [
+                task
+                for task in self.tasks
+                if task and task.get("status") in ("running", "queued")
+            ]
+        finally:
+            self._lock.release()
+
+        changed = False
+        for task in active_tasks:
+            status = task.get("status")
+            task_name = str(task.get("name", ""))
+            if status == "running":
+                disk_info = load_task_info(task["dir"])
+                if disk_info and self._is_foreign_live_runner(disk_info):
                     continue
-                if status == "running":
-                    disk_info = load_task_info(task["dir"])
-                    if disk_info and self._is_foreign_live_runner(disk_info):
-                        continue
-                    pid = self._latest_pid(disk_info) if disk_info else None
-                    if pid and self._is_local_or_legacy_runner(disk_info or {}):
-                        try:
-                            logger.info(f"Shutdown cleanup: terminating running process {pid} for task {task.get('name')}")
-                            kill_process(pid)
-                        except Exception as e:
-                            logger.warning(f"Failed to kill pid {pid} on shutdown cleanup: {e}")
-                task["status"] = "failed"
+                pid = self._latest_pid(disk_info) if disk_info else None
+                if pid and self._is_local_or_legacy_runner(disk_info or {}):
+                    try:
+                        logger.info(
+                            "Shutdown cleanup: terminating running process %s for task %s",
+                            pid,
+                            task_name,
+                        )
+                        kill_process(int(pid))
+                    except Exception as exc:
+                        logger.warning("Failed to kill pid %s on shutdown cleanup: %s", pid, exc)
+
+            try:
                 self._mark_failed_on_disk(
                     task,
                     event="stopped",
                     reason="system_shutdown",
                     detail_lines=["detail=Task forcibly terminated due to system shutdown or Ctrl+C."],
+                    lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                 )
+            except TimeoutError as exc:
+                logger.warning("Could not persist shutdown state for %s yet: %s", task_name, exc)
+
+            with self._lock:
+                current = self._resolve_identifier_locked(task_name)
+                if current:
+                    current["status"] = "failed"
+                    self._running_ids.discard(task_name)
+                    changed = True
+
+        with self._lock:
             self._recompute_processing_flag_locked()
-        finally:
-            self._lock.release()
+
+        if changed:
+            self.trigger_update()
+
+    def shutdown(self) -> None:
+        """Stop background scheduling and release executors promptly."""
+        self._shutdown_event.set()
+        self._cleanup_on_shutdown()
+
+        with self._executor_lock:
+            executors = [self._executor, self._independent_executor]
+            self._executor = None
+            self._independent_executor = None
+            self._executor_mode = None
+            self._executor_workers = 0
+
+        for executor in executors:
+            if executor is None:
+                continue
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
+            except Exception as exc:
+                logger.debug("Executor shutdown failed: %s", exc)
 
     def _resolve_identifier_locked(self, identifier: str | None) -> Dict[str, Any] | None:
         if not identifier:
@@ -1116,6 +1270,7 @@ class TaskManager:
         event: str,
         reason: str,
         detail_lines: List[str] | None = None,
+        lock_timeout_sec: float | None = None,
     ) -> None:
         """Store a stop summary on the active run so the worker can flush one final block."""
 
@@ -1140,7 +1295,10 @@ class TaskManager:
             }
             self._clear_runner_lease_fields(task_info)
 
-        updated = update_task_info(task_dir, _apply)
+        update_kwargs = {}
+        if lock_timeout_sec is not None:
+            update_kwargs["timeout_sec"] = lock_timeout_sec
+        updated = update_task_info(task_dir, _apply, **update_kwargs)
         if "status" in task:
             self._apply_info_to_task(task, updated)
             task["status"] = "failed"
@@ -1152,6 +1310,7 @@ class TaskManager:
         event: str = "failed",
         reason: str | None = None,
         detail_lines: List[str] | None = None,
+        lock_timeout_sec: float | None = None,
     ) -> None:
         """Persist a failed state and finalize the active run slot if needed."""
         task_dir = task["dir"]
@@ -1170,7 +1329,10 @@ class TaskManager:
             task_info["progress"] = 0.0
             self._clear_runner_lease_fields(task_info)
 
-        updated = update_task_info(task_dir, _apply)
+        update_kwargs = {}
+        if lock_timeout_sec is not None:
+            update_kwargs["timeout_sec"] = lock_timeout_sec
+        updated = update_task_info(task_dir, _apply, **update_kwargs)
         if reason or detail_lines:
             display_run_index = max(run_index, int(updated.get("run_index", 0) or 0), 1)
             lines: List[str] = []

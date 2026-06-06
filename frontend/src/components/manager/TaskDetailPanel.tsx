@@ -68,8 +68,20 @@ function createEnvPair(key = '', value = ''): EnvPair {
   return { id: `env-${nextEnvPairId}`, key, value }
 }
 
+function buildEnvPairsFromEnv(env: Record<string, string> = {}): EnvPair[] {
+  return Object.entries(env || {}).map(([key, value]) => createEnvPair(key, String(value)))
+}
+
 function buildEnvPairs(task: Task): EnvPair[] {
-  return Object.entries(task.env || {}).map(([key, value]) => createEnvPair(key, String(value)))
+  return buildEnvPairsFromEnv(task.env || {})
+}
+
+function envSignature(env: Record<string, string> = {}) {
+  return JSON.stringify(
+    Object.entries(env || {})
+      .map(([key, value]) => [key, String(value)])
+      .sort(([left], [right]) => left.localeCompare(right))
+  )
 }
 
 function getDuplicateEnvKeys(envPairs: EnvPair[]): Set<string> {
@@ -124,6 +136,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const suppressNextCloseRef = useRef(false)
   const pendingPanelWidthRef = useRef(panelWidth)
   const panelResizeFrameRef = useRef<number | null>(null)
+  const staleEnvPropSignatureRef = useRef('')
   const notify = useToastStore(state => state.notify)
 
   const startPanelResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -157,6 +170,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setEnvSaveError('')
     setPendingEnvFocusId(null)
     setDiscardConfirmOpen(false)
+    staleEnvPropSignatureRef.current = ''
   }, [task.name])
 
   useEffect(() => {
@@ -168,6 +182,9 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
   useEffect(() => {
     if (envDirty || previousTaskNameRef.current !== task.name) {
+      return
+    }
+    if (staleEnvPropSignatureRef.current === envSignature(task.env || {})) {
       return
     }
     setEnvPairs(buildEnvPairs(task))
@@ -291,8 +308,10 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
         .map(({ key, value }) => [key.trim(), value])
     )
     try {
-      await api.updateEnv(task.name, env)
-      setEnvPairs(Object.entries(env).map(([key, value]) => createEnvPair(key, String(value))))
+      const response = await api.updateEnv(task.name, env)
+      const savedEnv = response.task?.env || env
+      staleEnvPropSignatureRef.current = envSignature(task.env || {})
+      setEnvPairs(buildEnvPairsFromEnv(savedEnv))
       setEnvDirty(false)
       setEnvSaveStatus('saved')
       onRefresh()
@@ -437,7 +456,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium text-txt-primary">{task.name}</span>
+                <span className="min-w-0 select-text break-all text-sm font-medium text-txt-primary">{task.name}</span>
                 <button
                   type="button"
                   onClick={() => setRenaming(true)}
