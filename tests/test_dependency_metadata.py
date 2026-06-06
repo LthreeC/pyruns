@@ -63,3 +63,11 @@ def test_frontend_dependencies_do_not_include_unused_editor_or_terminal_addons()
     assert "@codemirror/lang-json" not in package_lock
     assert "@xterm/addon-web-links" not in package_json
     assert "@xterm/addon-web-links" not in package_lock
+
+
+def test_frontend_dependencies_include_terminal_search_addon():
+    package_json = (ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
+    package_lock = (ROOT / "frontend" / "package-lock.json").read_text(encoding="utf-8")
+
+    assert '"@xterm/addon-search"' in package_json
+    assert 'node_modules/@xterm/addon-search' in package_lock

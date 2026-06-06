@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
-import { ChevronDown, Download, FileDown, Pin, Play, Rows3, Square } from 'lucide-react'
+import { ChevronDown, ChevronUp, Download, FileDown, Pin, Play, Rows3, Search, Square, X } from 'lucide-react'
 import clsx from 'clsx'
 import { appendMonitorLogContent, useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { useLogStream } from '@/hooks/useWebSocket'
@@ -31,6 +32,17 @@ const MAX_MONITOR_SIDEBAR_WIDTH = 35
 const COMPACT_MONITOR_SIDEBAR_HEIGHT = 260
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
+const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
+const TERMINAL_SEARCH_OPTIONS: ISearchOptions = {
+  decorations: {
+    matchBackground: '#2F3A68',
+    matchBorder: '#5E6AD2',
+    matchOverviewRuler: '#5E6AD2',
+    activeMatchBackground: '#F59E0B',
+    activeMatchBorder: '#FBBF24',
+    activeMatchColorOverviewRuler: '#F59E0B',
+  },
+}
 
 function clampMonitorSidebarWidth(value: number) {
   if (!Number.isFinite(value)) {
@@ -78,16 +90,22 @@ export default function MonitorPage() {
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const searchAddonRef = useRef<SearchAddon | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
   const renderedLogRef = useRef<{ key: string; content: string } | null>(null)
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const liveLogNameRef = useRef('')
+  const terminalSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const terminalSearchQueryRef = useRef('')
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
   const wsStreamActiveRef = useRef(false)
   const pendingLiveLogChunkRef = useRef({ key: '', content: '' })
   const liveLogFlushTimerRef = useRef<number | null>(null)
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
+  const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
+  const [terminalSearchStatus, setTerminalSearchStatus] = useState('')
 
   const selectedTask = useMemo(
     () => monitorTasks.find(task => task.name === selectedTaskName),
@@ -117,6 +135,36 @@ export default function MonitorPage() {
     compactMonitorLayout ? 'flex-col' : 'flex-row',
   )
   usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
+  terminalSearchQueryRef.current = terminalSearchQuery
+
+  const runTerminalSearch = useCallback((direction: 'next' | 'previous' = 'next', incremental = false) => {
+    const query = terminalSearchQueryRef.current
+    const searchAddon = searchAddonRef.current
+    if (!searchAddon) {
+      return false
+    }
+
+    if (!query) {
+      searchAddon.clearDecorations()
+      setTerminalSearchStatus('')
+      return false
+    }
+
+    const found = direction === 'previous'
+      ? searchAddon.findPrevious(query, TERMINAL_SEARCH_OPTIONS)
+      : searchAddon.findNext(query, { ...TERMINAL_SEARCH_OPTIONS, incremental })
+    if (!found) {
+      setTerminalSearchStatus('No match')
+    }
+    return found
+  }, [])
+
+  const closeTerminalSearch = useCallback(() => {
+    setTerminalSearchOpen(false)
+    setTerminalSearchQuery('')
+    setTerminalSearchStatus('')
+    searchAddonRef.current?.clearDecorations()
+  }, [])
 
   const startMonitorSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -285,16 +333,32 @@ export default function MonitorPage() {
     })
 
     const fitAddon = new FitAddon()
+    const searchAddon = new SearchAddon({ highlightLimit: TERMINAL_SEARCH_HIGHLIGHT_LIMIT })
+    const searchResultsDisposable = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      if (!terminalSearchQueryRef.current) {
+        setTerminalSearchStatus('')
+        return
+      }
+      if (resultCount <= 0) {
+        setTerminalSearchStatus('No match')
+        return
+      }
+      setTerminalSearchStatus(resultIndex >= 0 ? `${resultIndex + 1}/${resultCount}` : `${TERMINAL_SEARCH_HIGHLIGHT_LIMIT}+`)
+    })
     term.loadAddon(fitAddon)
+    term.loadAddon(searchAddon)
 
     xtermRef.current = term
     fitAddonRef.current = fitAddon
+    searchAddonRef.current = searchAddon
 
     return () => {
       observerRef.current?.disconnect()
+      searchResultsDisposable.dispose()
       term.dispose()
       xtermRef.current = null
       fitAddonRef.current = null
+      searchAddonRef.current = null
     }
   }, [notify])
 
@@ -392,6 +456,59 @@ export default function MonitorPage() {
 
     renderedLogRef.current = { key: renderKey, content: logContent }
   }, [renderKey, selectedTaskName, logContent, shouldShowNoLogPlaceholder])
+
+  useEffect(() => {
+    if (!selectedTaskName && terminalSearchOpen) {
+      closeTerminalSearch()
+    }
+  }, [closeTerminalSearch, selectedTaskName, terminalSearchOpen])
+
+  useEffect(() => {
+    if (!terminalSearchOpen) {
+      searchAddonRef.current?.clearDecorations()
+      setTerminalSearchStatus('')
+      return
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      terminalSearchInputRef.current?.focus()
+      terminalSearchInputRef.current?.select()
+    })
+    return () => window.cancelAnimationFrame(rafId)
+  }, [terminalSearchOpen])
+
+  useEffect(() => {
+    if (!terminalSearchOpen) {
+      return
+    }
+    runTerminalSearch('next', true)
+  }, [renderKey, runTerminalSearch, terminalSearchOpen, terminalSearchQuery])
+
+  useEffect(() => {
+    const handleTerminalSearchShortcut = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase()
+      const isFind = (event.ctrlKey || event.metaKey) && !event.altKey && key === 'f'
+      if (isFind && selectedTaskNameRef.current) {
+        event.preventDefault()
+        setTerminalSearchOpen(true)
+        window.requestAnimationFrame(() => {
+          terminalSearchInputRef.current?.focus()
+          terminalSearchInputRef.current?.select()
+        })
+        return
+      }
+
+      if (!terminalSearchOpen || key !== 'f3') {
+        return
+      }
+
+      event.preventDefault()
+      runTerminalSearch(event.shiftKey ? 'previous' : 'next')
+    }
+
+    window.addEventListener('keydown', handleTerminalSearchShortcut, true)
+    return () => window.removeEventListener('keydown', handleTerminalSearchShortcut, true)
+  }, [runTerminalSearch, terminalSearchOpen])
 
   useEffect(() => {
     if (monitorTasks.length === 0 || !selectedTaskName) return
@@ -789,6 +906,74 @@ export default function MonitorPage() {
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
                   Live
                 </span>
+              )}
+
+              {terminalSearchOpen ? (
+                <form
+                  className="flex min-w-[220px] max-w-full flex-wrap items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-1.5 py-1"
+                  onSubmit={event => {
+                    event.preventDefault()
+                    runTerminalSearch('next')
+                  }}
+                >
+                  <Search className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
+                  <input
+                    ref={terminalSearchInputRef}
+                    value={terminalSearchQuery}
+                    onChange={event => setTerminalSearchQuery(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        runTerminalSearch(event.shiftKey ? 'previous' : 'next')
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        closeTerminalSearch()
+                      }
+                    }}
+                    placeholder="Search logs"
+                    aria-label="Search terminal logs"
+                    className="min-w-0 flex-1 bg-transparent px-1 py-0.5 text-xs text-txt-primary outline-none placeholder:text-txt-tertiary"
+                  />
+                  <span className="min-w-[3.25rem] text-right text-2xs text-txt-tertiary">
+                    {terminalSearchStatus}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => runTerminalSearch('previous')}
+                    className="rounded-md p-1 text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
+                    title="Previous match"
+                    aria-label="Previous match"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runTerminalSearch('next')}
+                    className="rounded-md p-1 text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
+                    title="Next match"
+                    aria-label="Next match"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeTerminalSearch}
+                    className="rounded-md p-1 text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
+                    title="Close search"
+                    aria-label="Close terminal search"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </form>
+              ) : (
+                <ActionButton
+                  icon={<Search className="h-3.5 w-3.5" />}
+                  variant="ghost"
+                  onClick={() => setTerminalSearchOpen(true)}
+                >
+                  Search
+                </ActionButton>
               )}
 
               {(selectedTask.status === 'pending' || selectedTask.status === 'failed' || selectedTask.status === 'completed') && (

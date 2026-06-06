@@ -748,6 +748,26 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     assert "normalize_log_newlines" not in source
 
 
+def test_react_monitor_supports_terminal_search_shortcut_and_controls():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "SearchAddon, type ISearchOptions" in source
+    assert "const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000" in source
+    assert "const TERMINAL_SEARCH_OPTIONS: ISearchOptions" in source
+    assert "searchAddonRef" in source
+    assert "new SearchAddon({ highlightLimit: TERMINAL_SEARCH_HIGHLIGHT_LIMIT })" in source
+    assert "term.loadAddon(searchAddon)" in source
+    assert "`${TERMINAL_SEARCH_HIGHLIGHT_LIMIT}+`" in source
+    assert "window.addEventListener('keydown', handleTerminalSearchShortcut, true)" in source
+    assert "key === 'f'" in source
+    assert "setTerminalSearchOpen(true)" in source
+    assert 'aria-label="Search terminal logs"' in source
+    assert "runTerminalSearch(event.shiftKey ? 'previous' : 'next')" in source
+    assert 'aria-label="Previous match"' in source
+    assert 'aria-label="Next match"' in source
+    assert 'aria-label="Close terminal search"' in source
+
+
 def test_react_search_input_clear_button_is_accessible():
     source = FRONTEND_SEARCH_INPUT.read_text(encoding="utf-8")
 
