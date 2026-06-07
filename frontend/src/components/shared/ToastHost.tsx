@@ -51,7 +51,7 @@ function ToastCard({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: num
       <button
         type="button"
         onClick={() => onDismiss(toast.id)}
-        className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+        className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
         aria-label="Dismiss notification"
       >
         <X className="h-3.5 w-3.5" />
@@ -69,7 +69,7 @@ export default function ToastHost() {
   }
 
   return (
-    <div className="pointer-events-none fixed right-3 top-3 z-[140] flex max-h-[calc(100vh-1.5rem)] flex-col gap-2 overflow-hidden sm:right-4 sm:top-4 sm:max-h-[calc(100vh-2rem)]">
+    <div className="pointer-events-none fixed bottom-3 right-3 z-[140] flex max-h-[calc(100vh-1.5rem)] flex-col-reverse gap-2 overflow-hidden sm:bottom-4 sm:right-4 sm:max-h-[calc(100vh-2rem)]">
       {toasts.map(toast => (
         <ToastCard key={toast.id} toast={toast} onDismiss={dismiss} />
       ))}

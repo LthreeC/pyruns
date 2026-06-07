@@ -60,11 +60,11 @@ export default function ConfirmDialog({
     <dialog
       ref={ref}
       className={`fixed inset-0 z-50 m-auto w-full ${widthClass} rounded-md border border-border-subtle bg-surface-raised p-0 shadow-md backdrop:bg-black/50`}
+      aria-modal="true"
       onCancel={event => {
         event.preventDefault()
         handleCancel()
       }}
-      onClose={handleCancel}
       onClick={event => {
         if (event.target === event.currentTarget) {
           handleCancel()

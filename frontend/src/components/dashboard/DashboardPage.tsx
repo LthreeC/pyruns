@@ -438,13 +438,16 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="gpu-detail-title"
         className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
         onClick={event => event.stopPropagation()}
       >
         <div className="shrink-0 flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-[0.18em] text-txt-tertiary">GPU Detail</div>
-            <div className="mt-1 truncate text-base font-semibold text-txt-primary">
+            <div id="gpu-detail-title" className="mt-1 truncate text-base font-semibold text-txt-primary">
               GPU {gpu.index} | {gpu.name}
             </div>
             <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary">{gpu.uuid}</div>

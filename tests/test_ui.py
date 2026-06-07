@@ -194,6 +194,8 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     assert "onCancel={event =>" in confirm_dialog
     assert "event.preventDefault()" in confirm_dialog
     assert "event.target === event.currentTarget" in confirm_dialog
+    assert 'aria-modal="true"' in confirm_dialog
+    assert "onClose={handleCancel}" not in confirm_dialog
     assert "onConfirm: () => void | Promise<void>" in confirm_dialog
     assert "const [pending, setPending]" in confirm_dialog
     assert "dialog && !dialog.open" in confirm_dialog
@@ -219,8 +221,11 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "toasts: [" in store
     assert "].slice(0, 4)" in store
     assert "ToastHost" in app
-    assert "pointer-events-none fixed right-3 top-3" in toast_host
+    assert "pointer-events-none fixed bottom-3 right-3" in toast_host
+    assert "flex-col-reverse" in toast_host
+    assert "right-3 top-3" not in toast_host
     assert "pointer-events-auto flex w-[min(380px,calc(100vw-2rem))]" in toast_host
+    assert "focus-visible:ring-2 focus-visible:ring-accent/35" in toast_host
     assert "role={toast.tone === 'error' ? 'alert' : 'status'}" in toast_host
     assert "TOAST_TIMEOUT_MS" in toast_host
     assert "Tasks queued" in manager
@@ -357,6 +362,10 @@ def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
     assert "min-h-0 flex-1 overflow-y-auto px-5 py-4" in dashboard
     assert "overflow-x-auto rounded-md border border-border-subtle" in dashboard
     assert "min-w-[640px]" in dashboard
+    assert 'role="dialog"' in dashboard
+    assert 'aria-modal="true"' in dashboard
+    assert 'aria-labelledby="gpu-detail-title"' in dashboard
+    assert 'id="gpu-detail-title"' in dashboard
     assert "Close GPU details" in dashboard
 
 
