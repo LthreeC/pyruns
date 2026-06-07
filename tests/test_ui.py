@@ -263,9 +263,11 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "GPU & System" in source
     assert "ResourceTile" in source
     assert "h-full overflow-hidden bg-surface-base" in source
-    assert "grid min-h-0 flex-1 grid-cols-1" in source
+    assert "xl:grid-cols-[minmax(20rem,0.7fr)_minmax(42rem,1.3fr)]" in source
     assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
     assert "min-h-0 flex-1 overflow-y-auto p-3" in source
+    assert "Quick status glance." in source
+    assert "task.preview_text" not in source
     assert "max-h-[560px]" not in source
     assert "ProgressTrack" not in source
     assert "normalizeTaskProgress" not in source
@@ -331,6 +333,28 @@ def test_react_gpu_process_dialog_shows_process_owner():
     assert "<span className=\"text-right\">Share</span>" in dashboard
     assert "formatPercent(gpu.mem_total > 0 ? (process.memory_mb / gpu.mem_total) * 100 : 0)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
+
+
+def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "grid grid-cols-1 gap-3 sm:grid-cols-2" in dashboard
+    assert "metrics.gpus.map(gpu =>" in dashboard
+    assert "key={gpuKey(gpu)}" in dashboard
+    assert "aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}" in dashboard
+    assert "title={gpu.name}" in dashboard
+    assert "min-h-0 flex-1 overflow-y-auto p-3" in dashboard
+
+
+def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "max-h-[calc(100vh-2rem)]" in dashboard
+    assert "flex-col overflow-hidden rounded-md" in dashboard
+    assert "min-h-0 flex-1 overflow-y-auto px-5 py-4" in dashboard
+    assert "overflow-x-auto rounded-md border border-border-subtle" in dashboard
+    assert "min-w-[640px]" in dashboard
+    assert "Close GPU details" in dashboard
 
 
 def test_react_dashboard_supports_manual_refresh_and_richer_gpu_details():

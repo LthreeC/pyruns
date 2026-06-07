@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import subprocess
 import time
 from typing import Any, Dict, List
@@ -12,7 +13,7 @@ import psutil
 class SystemMonitor:
     """Collect CPU, RAM, and optional GPU utilization metrics."""
 
-    _GPU_QUERY_TIMEOUT_SEC = 0.5
+    _GPU_QUERY_TIMEOUT_SEC = 1.0
 
     def __init__(self) -> None:
         self._gpu_cache: List[Dict[str, Any]] = []
@@ -21,6 +22,8 @@ class SystemMonitor:
         self._gpu_available: bool = True
         self._gpu_fail_count: int = 0
         self._gpu_max_fails: int = 3
+        self._gpu_disabled_at: float = 0.0
+        self._gpu_retry_sec: float = 30.0
 
     def sample(self) -> Dict[str, Any]:
         """Collect system metrics."""
@@ -60,6 +63,16 @@ class SystemMonitor:
         except Exception:
             return "unknown"
 
+    @staticmethod
+    def _parse_csv_rows(output: str) -> List[List[str]]:
+        """Parse ``nvidia-smi`` CSV output without assuming names contain no commas."""
+
+        return [
+            [item.strip() for item in row]
+            for row in csv.reader(output.splitlines(), skipinitialspace=True)
+            if any(str(item).strip() for item in row)
+        ]
+
     def _query_nvidia_smi(self, fields: str, *, scope: str) -> str:
         """Run one ``nvidia-smi`` CSV query and return stripped text."""
 
@@ -85,12 +98,7 @@ class SystemMonitor:
             return {}
 
         processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
-        for raw_line in out.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-
-            parts = [item.strip() for item in line.split(",")]
+        for parts in self._parse_csv_rows(out):
             if len(parts) < 4:
                 continue
 
@@ -126,7 +134,10 @@ class SystemMonitor:
             return self._gpu_cache
 
         if not self._gpu_available:
-            return self._gpu_cache
+            if now - self._gpu_disabled_at < self._gpu_retry_sec:
+                return self._gpu_cache
+            self._gpu_available = True
+            self._gpu_fail_count = 0
 
         try:
             out = self._query_nvidia_smi(
@@ -136,12 +147,7 @@ class SystemMonitor:
             processes_by_uuid = self._get_gpu_processes()
 
             gpus: List[Dict[str, Any]] = []
-            for raw_line in out.splitlines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-
-                parts = [item.strip() for item in line.split(",")]
+            for parts in self._parse_csv_rows(out):
                 if len(parts) < 6:
                     continue
 
@@ -163,9 +169,11 @@ class SystemMonitor:
             self._gpu_cache = gpus
             self._gpu_cache_at = now
             self._gpu_fail_count = 0
+            self._gpu_disabled_at = 0.0
             return gpus
         except Exception:
             self._gpu_fail_count += 1
             if self._gpu_fail_count >= self._gpu_max_fails:
                 self._gpu_available = False
+                self._gpu_disabled_at = now
             return self._gpu_cache

@@ -970,6 +970,51 @@ def test_system_monitor_gpu_process_user_falls_back_to_unknown(mock_subprocess, 
     assert processes["GPU-AAA"][0]["user"] == "unknown"
 
 
+@patch("pyruns.core.system_metrics.psutil.Process")
+@patch("pyruns.core.system_metrics.subprocess.check_output")
+def test_system_monitor_gpu_csv_parser_handles_quoted_names(mock_subprocess, mock_process):
+    mock_process.return_value.username.return_value = "alice"
+    mock_subprocess.side_effect = [
+        b'0, "NVIDIA, RTX 4090", GPU-AAA, 45.0, 4000.0, 8000.0\n',
+        b'GPU-AAA, 1234, "python, train.py", 2048\n',
+    ]
+
+    monitor = SystemMonitor()
+    gpus = monitor._get_gpu_metrics()
+
+    assert gpus[0]["name"] == "NVIDIA, RTX 4090"
+    assert gpus[0]["processes"][0]["name"] == "python, train.py"
+
+
+@patch("pyruns.core.system_metrics.time.monotonic")
+@patch("pyruns.core.system_metrics.subprocess.check_output")
+def test_system_monitor_retries_after_gpu_disable_cooldown(mock_subprocess, mock_monotonic):
+    mock_monotonic.side_effect = [0.0, 1.0, 2.0, 20.0, 40.0]
+    mock_subprocess.side_effect = [
+        Exception("nvidia-smi failed"),
+        Exception("nvidia-smi failed"),
+        Exception("nvidia-smi failed"),
+        b"0, NVIDIA RTX 4090, GPU-AAA, 45.0, 4000.0, 8000.0\n",
+        b"",
+    ]
+
+    monitor = SystemMonitor()
+
+    assert monitor._get_gpu_metrics() == []
+    assert monitor._get_gpu_metrics() == []
+    assert monitor._get_gpu_metrics() == []
+    assert monitor._gpu_available is False
+    assert mock_subprocess.call_count == 3
+
+    assert monitor._get_gpu_metrics() == []
+    assert mock_subprocess.call_count == 3
+
+    gpus = monitor._get_gpu_metrics()
+    assert len(gpus) == 1
+    assert gpus[0]["uuid"] == "GPU-AAA"
+    assert monitor._gpu_available is True
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Executor
 # ═══════════════════════════════════════════════════════════════
