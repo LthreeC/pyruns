@@ -254,28 +254,44 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
 
     assert "max-w-[1600px]" not in source
     assert "mx-auto" not in source
-    assert "flex w-full flex-col" in source
+    assert "flex h-full min-h-0 w-full flex-col" in source
     assert "const workspaceKindLabel" in source
     assert "Shell Workspace" in source
     assert "border border-border-default bg-surface-raised" in source
     assert "Start New Task" in source
-    assert "workspacePathSegments" in source
+    assert "Recent Tasks" in source
+    assert "GPU & System" in source
+    assert "ResourceTile" in source
+    assert "h-full overflow-hidden bg-surface-base" in source
+    assert "grid min-h-0 flex-1 grid-cols-1" in source
+    assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
+    assert "min-h-0 flex-1 overflow-y-auto p-3" in source
+    assert "max-h-[560px]" not in source
+    assert "ProgressTrack" not in source
+    assert "normalizeTaskProgress" not in source
+    assert "TaskFocusPanel" not in source
+    assert "data?.active_task" not in source
+    assert "Latest Task" not in source
+    assert "InfoRow" not in source
+    assert "queuedCount" in source
+    assert "pendingCount" in source
 
 
-def test_react_dashboard_displays_working_root_and_labels_storage_root():
+def test_react_dashboard_keeps_workspace_chrome_compact():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "working_root?: string" in types
     assert "getWorkspaceWorkingPath" in source
-    assert "getWorkspaceStoragePath" in source
     assert "const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)" in source
-    assert "const workspaceStoragePath = getWorkspaceStoragePath(workspace)" in source
-    assert "splitPathSegments(workspaceWorkingPath)" in source
     assert "title={workspaceWorkingPath || ''}" in source
     assert "{workspaceWorkingPath || 'Choose a workspace to start'}" in source
-    assert 'InfoRow label="Working" value={workspaceWorkingPath || \'--\'} mono' in source
-    assert 'InfoRow label="Storage" value={workspaceStoragePath || \'--\'} mono' in source
+    assert "getWorkspaceStoragePath" not in source
+    assert "splitPathSegments(workspaceWorkingPath)" not in source
+    assert 'InfoRow label="Working"' not in source
+    assert 'InfoRow label="Storage"' not in source
+    assert 'InfoRow label="Project"' not in source
+    assert 'InfoRow label="Runtime"' not in source
     assert "splitPathSegments(workspace?.run_root)" not in source
 
 
@@ -309,9 +325,30 @@ def test_react_gpu_process_dialog_shows_process_owner():
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "user: string" in types
-    assert "grid-cols-[88px_132px_minmax(0,1fr)_120px]" in dashboard
+    assert "grid-cols-[88px_132px_minmax(0,1fr)_120px_88px]" in dashboard
     assert "<span>User</span>" in dashboard
     assert "process.user || 'unknown'" in dashboard
+    assert "<span className=\"text-right\">Share</span>" in dashboard
+    assert "formatPercent(gpu.mem_total > 0 ? (process.memory_mb / gpu.mem_total) * 100 : 0)" in dashboard
+    assert "sortedProcesses.map(process =>" in dashboard
+
+
+def test_react_dashboard_supports_manual_refresh_and_richer_gpu_details():
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "RefreshCw" in dashboard
+    assert "manualRefreshing" in dashboard
+    assert "const handleManualRefresh = useCallback(async () => {" in dashboard
+    assert "Dashboard refreshed" in dashboard
+    assert "Task summary and system metrics are up to date." in dashboard
+    assert "Refresh dashboard now" in dashboard
+    assert "GpuMiniMetric" in dashboard
+    assert "Free VRAM" in dashboard
+    assert "Proc VRAM" in dashboard
+    assert "Avg/proc" in dashboard
+    assert "Top proc:" in dashboard
+    assert "getTopGpuProcess" in dashboard
+    assert "formatPercent" in dashboard
 
 
 def test_react_monitor_sidebar_width_is_clamped():
@@ -487,8 +524,27 @@ def test_react_generator_stacks_editor_and_settings_on_narrow_viewports():
     assert "const generatorBodyClassName = clsx(" in generator
     assert "compactGeneratorLayout ? 'flex-col overflow-y-auto' : 'overflow-hidden'" in generator
     assert "compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1'" in generator
-    assert "compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'w-[286px] border-l border-border-subtle'" in generator
-    assert "style={compactGeneratorLayout ? undefined : { minWidth: 268, maxWidth: 296 }}" in generator
+    assert "compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle'" in generator
+    assert "style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}" in generator
+
+
+def test_react_generator_settings_panel_can_be_resized():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "GENERATOR_SETTINGS_WIDTH_STORAGE_KEY" in generator
+    assert "clampGeneratorSettingsWidth" in generator
+    assert "readStoredGeneratorSettingsWidth" in generator
+    assert "startGeneratorSettingsResize" in generator
+    assert "generatorBodyRef" in generator
+    assert "pendingGeneratorSettingsWidthRef" in generator
+    assert "generatorSettingsResizeFrameRef" in generator
+    assert "window.requestAnimationFrame(applyPendingGeneratorSettingsWidth)" in generator
+    assert "window.cancelAnimationFrame(generatorSettingsResizeFrameRef.current)" in generator
+    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in generator
+    assert "window.removeEventListener('pointercancel', stopResize)" in generator
+    assert "localStorage.setItem(GENERATOR_SETTINGS_WIDTH_STORAGE_KEY" in generator
+    assert 'aria-label="Resize generator settings panel"' in generator
+    assert "cursor-col-resize" in generator
 
 
 def test_react_icon_only_buttons_have_accessible_names():
@@ -1131,7 +1187,14 @@ def test_react_generator_tree_mode_uses_outline_explorer():
     assert "Search path or value" in generator
     assert "Search results" in generator
     assert "No matching parameters." in generator
-    assert "grid-cols-[minmax(220px,260px)_minmax(0,1fr)]" in generator
+    assert "TREE_OUTLINE_WIDTH_STORAGE_KEY" in generator
+    assert "clampTreeOutlineWidth" in generator
+    assert "readStoredTreeOutlineWidth" in generator
+    assert "startOutlineResize" in generator
+    assert "pendingOutlineWidthRef" in generator
+    assert "outlineResizeFrameRef" in generator
+    assert "gridTemplateColumns: `${outlineWidth}px 4px minmax(0,1fr)`" in generator
+    assert 'aria-label="Resize parameter outline"' in generator
     assert "grid-cols-[minmax(0,1fr)]" in generator
     assert "columns={1}" in generator
     assert "onClick={() => onSelectPath(section.path)}" in generator

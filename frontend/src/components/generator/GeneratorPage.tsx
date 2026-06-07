@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -37,6 +38,14 @@ import * as api from '@/api'
 import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
 
 const DEFAULT_SHELL_TEMPLATE = ''
+const GENERATOR_SETTINGS_WIDTH_STORAGE_KEY = 'pyruns.generatorSettingsWidth'
+const DEFAULT_GENERATOR_SETTINGS_WIDTH = 286
+const MIN_GENERATOR_SETTINGS_WIDTH = 268
+const MAX_GENERATOR_SETTINGS_WIDTH = 560
+const TREE_OUTLINE_WIDTH_STORAGE_KEY = 'pyruns.generatorTreeOutlineWidth'
+const DEFAULT_TREE_OUTLINE_WIDTH = 244
+const MIN_TREE_OUTLINE_WIDTH = 200
+const MAX_TREE_OUTLINE_WIDTH = 380
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
 type FormLayoutMode = 'grid' | 'tree'
 
@@ -74,6 +83,60 @@ function readCompactGeneratorLayout() {
     return false
   }
   return window.matchMedia('(max-width: 700px)').matches
+}
+
+function clampGeneratorSettingsWidth(value: number) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_GENERATOR_SETTINGS_WIDTH
+  }
+  const viewportMax = typeof window === 'undefined'
+    ? MAX_GENERATOR_SETTINGS_WIDTH
+    : Math.max(MIN_GENERATOR_SETTINGS_WIDTH, Math.min(MAX_GENERATOR_SETTINGS_WIDTH, window.innerWidth - 360))
+  return Math.min(viewportMax, Math.max(MIN_GENERATOR_SETTINGS_WIDTH, value))
+}
+
+function readStoredGeneratorSettingsWidth() {
+  if (typeof window === 'undefined') {
+    return DEFAULT_GENERATOR_SETTINGS_WIDTH
+  }
+
+  try {
+    const stored = Number(window.localStorage.getItem(GENERATOR_SETTINGS_WIDTH_STORAGE_KEY))
+    if (stored) {
+      return clampGeneratorSettingsWidth(stored)
+    }
+  } catch {
+    // Runtime resizing still works if storage is blocked.
+  }
+
+  return clampGeneratorSettingsWidth(DEFAULT_GENERATOR_SETTINGS_WIDTH)
+}
+
+function clampTreeOutlineWidth(value: number) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_TREE_OUTLINE_WIDTH
+  }
+  const viewportMax = typeof window === 'undefined'
+    ? MAX_TREE_OUTLINE_WIDTH
+    : Math.max(MIN_TREE_OUTLINE_WIDTH, Math.min(MAX_TREE_OUTLINE_WIDTH, window.innerWidth - 520))
+  return Math.min(viewportMax, Math.max(MIN_TREE_OUTLINE_WIDTH, value))
+}
+
+function readStoredTreeOutlineWidth() {
+  if (typeof window === 'undefined') {
+    return DEFAULT_TREE_OUTLINE_WIDTH
+  }
+
+  try {
+    const stored = Number(window.localStorage.getItem(TREE_OUTLINE_WIDTH_STORAGE_KEY))
+    if (stored) {
+      return clampTreeOutlineWidth(stored)
+    }
+  } catch {
+    // Keep the default when persisted state is unavailable.
+  }
+
+  return clampTreeOutlineWidth(DEFAULT_TREE_OUTLINE_WIDTH)
 }
 
 function compactPreviewText(text: string) {
@@ -484,6 +547,11 @@ export default function GeneratorPage() {
   const [treeOpenSignal, setTreeOpenSignal] = useState(0)
   const [treeOpenValue, setTreeOpenValue] = useState(true)
   const [compactGeneratorLayout, setCompactGeneratorLayout] = useState(readCompactGeneratorLayout)
+  const [generatorSettingsWidth, setGeneratorSettingsWidth] = useState(readStoredGeneratorSettingsWidth)
+  const [resizingGeneratorSettings, setResizingGeneratorSettings] = useState(false)
+  const generatorBodyRef = useRef<HTMLDivElement>(null)
+  const pendingGeneratorSettingsWidthRef = useRef(generatorSettingsWidth)
+  const generatorSettingsResizeFrameRef = useRef<number | null>(null)
   const lastWorkspaceDefaultKeyRef = useRef('')
   const lastShellRootRef = useRef('')
 
@@ -501,8 +569,16 @@ export default function GeneratorPage() {
   )
   const generatorSettingsClassName = clsx(
     'flex flex-col gap-2.5 overflow-y-auto bg-surface-raised p-2.5',
-    compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'w-[286px] border-l border-border-subtle',
+    compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle',
   )
+
+  const startGeneratorSettingsResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    if (compactGeneratorLayout) {
+      return
+    }
+    setResizingGeneratorSettings(true)
+  }, [compactGeneratorLayout])
 
   useEffect(() => {
     if (isShellWorkspace) {
@@ -538,6 +614,65 @@ export default function GeneratorPage() {
     query.addEventListener('change', handleChange)
     return () => query.removeEventListener('change', handleChange)
   }, [])
+
+  useEffect(() => {
+    if (!resizingGeneratorSettings) {
+      return
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const persistGeneratorSettingsWidth = (next: number) => {
+      try {
+        window.localStorage.setItem(GENERATOR_SETTINGS_WIDTH_STORAGE_KEY, String(next))
+      } catch {
+        // Resizing should remain usable even without persisted preferences.
+      }
+    }
+
+    const applyPendingGeneratorSettingsWidth = () => {
+      generatorSettingsResizeFrameRef.current = null
+      setGeneratorSettingsWidth(pendingGeneratorSettingsWidthRef.current)
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = generatorBodyRef.current?.getBoundingClientRect()
+      const right = rect?.right ?? window.innerWidth
+      pendingGeneratorSettingsWidthRef.current = clampGeneratorSettingsWidth(right - event.clientX)
+      if (generatorSettingsResizeFrameRef.current == null) {
+        generatorSettingsResizeFrameRef.current = window.requestAnimationFrame(applyPendingGeneratorSettingsWidth)
+      }
+    }
+
+    const stopResize = () => {
+      if (generatorSettingsResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(generatorSettingsResizeFrameRef.current)
+        generatorSettingsResizeFrameRef.current = null
+      }
+      setGeneratorSettingsWidth(pendingGeneratorSettingsWidthRef.current)
+      persistGeneratorSettingsWidth(pendingGeneratorSettingsWidthRef.current)
+      setResizingGeneratorSettings(false)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResize, { once: true })
+    window.addEventListener('pointercancel', stopResize, { once: true })
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
+      if (generatorSettingsResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(generatorSettingsResizeFrameRef.current)
+        generatorSettingsResizeFrameRef.current = null
+      }
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [resizingGeneratorSettings])
 
   useEffect(() => {
     if (!workspace?.run_root || isShellWorkspace) {
@@ -884,8 +1019,8 @@ export default function GeneratorPage() {
         </div>
       </div>
 
-      <div className={generatorBodyClassName}>
-        <div className={generatorEditorClassName} style={compactGeneratorLayout ? undefined : { flexBasis: '78%' }}>
+      <div ref={generatorBodyRef} className={generatorBodyClassName}>
+        <div className={generatorEditorClassName}>
           {!isShellWorkspace && loading ? (
             <div className="flex h-full items-center justify-center">
               <div className="animate-pulse text-xs text-txt-tertiary">Loading template...</div>
@@ -928,9 +1063,22 @@ export default function GeneratorPage() {
           )}
         </div>
 
+        {!compactGeneratorLayout && (
+          <button
+            type="button"
+            aria-label="Resize generator settings panel"
+            aria-orientation="vertical"
+            onPointerDown={startGeneratorSettingsResize}
+            className={clsx(
+              'h-full w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+              resizingGeneratorSettings ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
+            )}
+          />
+        )}
+
         <aside
           className={generatorSettingsClassName}
-          style={compactGeneratorLayout ? undefined : { minWidth: 268, maxWidth: 296 }}
+          style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}
         >
           <CompactSection title="Naming" bodyClassName="space-y-2.5 p-2">
             <div>
@@ -1489,6 +1637,11 @@ function TreeParameterExplorer({
   const [selectedPath, setSelectedPath] = useState('')
   const [filterText, setFilterText] = useState('')
   const [outlineCollapsed, setOutlineCollapsed] = useState(false)
+  const [outlineWidth, setOutlineWidth] = useState(readStoredTreeOutlineWidth)
+  const [resizingOutline, setResizingOutline] = useState(false)
+  const explorerRef = useRef<HTMLDivElement>(null)
+  const pendingOutlineWidthRef = useRef(outlineWidth)
+  const outlineResizeFrameRef = useRef<number | null>(null)
   const outlineSections = useMemo(() => {
     const rootEntries = Object.keys(data).filter(key => !key.startsWith('_meta'))
     return [
@@ -1525,11 +1678,79 @@ function TreeParameterExplorer({
     }
   }, [outlinePathSet, selectedPath])
 
+  const startOutlineResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    setResizingOutline(true)
+  }, [])
+
+  useEffect(() => {
+    if (!resizingOutline) {
+      return
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const persistOutlineWidth = (next: number) => {
+      try {
+        window.localStorage.setItem(TREE_OUTLINE_WIDTH_STORAGE_KEY, String(next))
+      } catch {
+        // Keep resizing responsive even if storage is unavailable.
+      }
+    }
+
+    const applyPendingOutlineWidth = () => {
+      outlineResizeFrameRef.current = null
+      setOutlineWidth(pendingOutlineWidthRef.current)
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = explorerRef.current?.getBoundingClientRect()
+      const left = rect?.left ?? 0
+      pendingOutlineWidthRef.current = clampTreeOutlineWidth(event.clientX - left)
+      if (outlineResizeFrameRef.current == null) {
+        outlineResizeFrameRef.current = window.requestAnimationFrame(applyPendingOutlineWidth)
+      }
+    }
+
+    const stopResize = () => {
+      if (outlineResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(outlineResizeFrameRef.current)
+        outlineResizeFrameRef.current = null
+      }
+      setOutlineWidth(pendingOutlineWidthRef.current)
+      persistOutlineWidth(pendingOutlineWidthRef.current)
+      setResizingOutline(false)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResize, { once: true })
+    window.addEventListener('pointercancel', stopResize, { once: true })
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
+      if (outlineResizeFrameRef.current != null) {
+        window.cancelAnimationFrame(outlineResizeFrameRef.current)
+        outlineResizeFrameRef.current = null
+      }
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+    }
+  }, [resizingOutline])
+
   return (
-    <div className={clsx(
-      'grid h-full min-h-0 p-3',
-      outlineCollapsed ? 'grid-cols-[minmax(0,1fr)]' : 'grid-cols-[minmax(220px,260px)_minmax(0,1fr)] gap-3',
-    )}>
+    <div
+      ref={explorerRef}
+      className={clsx(
+        'grid h-full min-h-0 p-3',
+        outlineCollapsed ? 'grid-cols-[minmax(0,1fr)]' : 'gap-2',
+      )}
+      style={outlineCollapsed ? undefined : { gridTemplateColumns: `${outlineWidth}px 4px minmax(0,1fr)` }}
+    >
       {!outlineCollapsed && (
       <aside className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised/85">
         <div className="border-b border-border-subtle p-2">
@@ -1591,6 +1812,19 @@ function TreeParameterExplorer({
           </div>
         </div>
       </aside>
+      )}
+
+      {!outlineCollapsed && (
+        <button
+          type="button"
+          aria-label="Resize parameter outline"
+          aria-orientation="vertical"
+          onPointerDown={startOutlineResize}
+          className={clsx(
+            'h-full w-1 cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+            resizingOutline ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
+          )}
+        />
       )}
 
       <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised/50">
