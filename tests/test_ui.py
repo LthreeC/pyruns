@@ -263,7 +263,8 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "GPU & System" in source
     assert "ResourceTile" in source
     assert "h-full overflow-hidden bg-surface-base" in source
-    assert "xl:grid-cols-[minmax(20rem,0.7fr)_minmax(42rem,1.3fr)]" in source
+    assert "flex-[1.7]" in source
+    assert "flex-[0.45]" in source
     assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
     assert "min-h-0 flex-1 overflow-y-auto p-3" in source
     assert "Quick status glance." in source
@@ -338,12 +339,14 @@ def test_react_gpu_process_dialog_shows_process_owner():
 def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "grid grid-cols-1 gap-3 sm:grid-cols-2" in dashboard
+    assert "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4" in dashboard
     assert "metrics.gpus.map(gpu =>" in dashboard
     assert "key={gpuKey(gpu)}" in dashboard
     assert "aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}" in dashboard
     assert "title={gpu.name}" in dashboard
     assert "min-h-0 flex-1 overflow-y-auto p-3" in dashboard
+    assert "GpuMiniMetric" not in dashboard
+    assert "Top proc:" not in dashboard
 
 
 def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
@@ -366,12 +369,9 @@ def test_react_dashboard_supports_manual_refresh_and_richer_gpu_details():
     assert "Dashboard refreshed" in dashboard
     assert "Task summary and system metrics are up to date." in dashboard
     assert "Refresh dashboard now" in dashboard
-    assert "GpuMiniMetric" in dashboard
     assert "Free VRAM" in dashboard
     assert "Proc VRAM" in dashboard
     assert "Avg/proc" in dashboard
-    assert "Top proc:" in dashboard
-    assert "getTopGpuProcess" in dashboard
     assert "formatPercent" in dashboard
 
 
