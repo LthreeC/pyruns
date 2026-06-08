@@ -18,8 +18,9 @@ interface RuntimePanelProps {
   onClose: () => void
 }
 
-type RuntimePage = 'python' | 'env'
+type RuntimePage = 'python' | 'env' | 'gpu'
 type PythonRuntimeMode = 'follow' | 'conda' | 'python'
+type GpuTaskMode = 'single' | 'multi'
 
 function quoteEnvValue(value: string) {
   if (value === '') {
@@ -67,6 +68,31 @@ function modeFromRuntime(runtime: RuntimeInfo | null): PythonRuntimeMode {
   return 'follow'
 }
 
+function parseDeviceIds(value: string) {
+  return value
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+    .map(item => Number(item))
+    .filter(item => Number.isInteger(item) && item >= 0)
+}
+
+function formatDeviceIds(value?: number[]) {
+  return (value || []).join(',')
+}
+
+function numberInputValue(value: string, fallback: number, minimum = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.max(minimum, parsed)
+}
+
+function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number) {
+  return Math.min(maximum, numberInputValue(value, fallback, minimum))
+}
+
 export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps) {
   const refreshWorkspace = useWorkspaceStore(s => s.fetch)
   const theme = useThemeStore(s => s.theme)
@@ -79,6 +105,17 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const [condaExecutable, setCondaExecutable] = useState('conda')
   const [runtimeMode, setRuntimeMode] = useState<PythonRuntimeMode>('follow')
   const [activePage, setActivePage] = useState<RuntimePage>('python')
+  const [gpuSchedulerEnabled, setGpuSchedulerEnabled] = useState(false)
+  const [gpuTaskMode, setGpuTaskMode] = useState<GpuTaskMode>('single')
+  const [gpuCount, setGpuCount] = useState('1')
+  const [gpuDeviceIds, setGpuDeviceIds] = useState('')
+  const [gpuMemoryUsedPct, setGpuMemoryUsedPct] = useState('40')
+  const [gpuMinFreeMemoryGb, setGpuMinFreeMemoryGb] = useState('40')
+  const [gpuComputeUsedPct, setGpuComputeUsedPct] = useState('30')
+  const [gpuStableSeconds, setGpuStableSeconds] = useState('15')
+  const [gpuMaxWaitHours, setGpuMaxWaitHours] = useState(48)
+  const [gpuMaxTasksPerGpu, setGpuMaxTasksPerGpu] = useState('1')
+  const [gpuRespectCudaVisibleDevices, setGpuRespectCudaVisibleDevices] = useState(true)
   const [showCondaAdvanced, setShowCondaAdvanced] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -111,6 +148,17 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setCondaEnv(next.conda_env)
     setCondaExecutable(next.conda_executable || 'conda')
     setRuntimeMode(modeFromRuntime(next))
+    setGpuSchedulerEnabled(next.gpu_scheduler?.enabled ?? false)
+    setGpuTaskMode(next.gpu_scheduler?.task_mode === 'multi' ? 'multi' : 'single')
+    setGpuCount(String(next.gpu_scheduler?.gpus_per_task ?? 1))
+    setGpuDeviceIds(formatDeviceIds(next.gpu_scheduler?.device_ids))
+    setGpuMemoryUsedPct(String(next.gpu_scheduler?.memory_used_pct ?? 40))
+    setGpuMinFreeMemoryGb(String(next.gpu_scheduler?.min_free_memory_gb ?? 40))
+    setGpuComputeUsedPct(String(next.gpu_scheduler?.compute_used_pct ?? 30))
+    setGpuStableSeconds(String(next.gpu_scheduler?.stable_seconds ?? 15))
+    setGpuMaxWaitHours(Math.max(1, Math.round((next.gpu_scheduler?.max_wait_seconds ?? 172800) / 3600)))
+    setGpuMaxTasksPerGpu(String(next.gpu_scheduler?.max_tasks_per_gpu ?? 1))
+    setGpuRespectCudaVisibleDevices(next.gpu_scheduler?.respect_cuda_visible_devices ?? true)
   }
 
   const loadRuntime = async (showFeedback = false) => {
@@ -221,6 +269,32 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     }
   }
 
+  const chooseGpuTaskMode = (mode: GpuTaskMode) => {
+    setGpuTaskMode(mode)
+    if (mode === 'multi') {
+      setGpuCount(current => (numberInputValue(current, 1, 1) < 2 ? '2' : current))
+    }
+  }
+
+  const saveGpuScheduler = () => {
+    void saveRuntime({
+      gpu_scheduler: {
+        enabled: gpuSchedulerEnabled,
+        task_mode: gpuTaskMode,
+        gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 2, 2) : 1,
+        device_ids: parseDeviceIds(gpuDeviceIds),
+        memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100),
+        min_free_memory_gb: numberInputValue(gpuMinFreeMemoryGb, 40, 0),
+        compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100),
+        stable_seconds: numberInputValue(gpuStableSeconds, 15, 0),
+        max_wait_seconds: gpuMaxWaitHours * 3600,
+        max_tasks_per_gpu: numberInputValue(gpuMaxTasksPerGpu, 1, 1),
+        sample_interval_seconds: runtime?.gpu_scheduler?.sample_interval_seconds ?? 2,
+        respect_cuda_visible_devices: gpuRespectCudaVisibleDevices,
+      },
+    }, 'GPU scheduler saved')
+  }
+
   if (!open) {
     return null
   }
@@ -260,7 +334,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
           </div>
         </div>
         <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
-          {(['python', 'env'] as RuntimePage[]).map(page => (
+          {(['python', 'env', 'gpu'] as RuntimePage[]).map(page => (
             <button
               key={page}
               type="button"
@@ -272,7 +346,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                   : 'text-txt-secondary hover:text-txt-primary'
               )}
             >
-              {page === 'python' ? 'Python' : 'Env'}
+              {page === 'python' ? 'Python' : page === 'env' ? 'Env' : 'GPU'}
               {page === 'env' && envCount > 0 && <span className="h-1.5 w-1.5 rounded-full bg-status-completed" />}
             </button>
           ))}
@@ -440,6 +514,184 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 Save
               </button>
             </div>
+          </section>
+        )}
+
+        {activePage === 'gpu' && (
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-txt-primary">GPU Scheduler</div>
+                <div className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">
+                  Queue admission
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
+                  {[
+                    { id: false, label: 'Off' },
+                    { id: true, label: 'Auto' },
+                  ].map(item => (
+                    <button
+                      key={String(item.id)}
+                      type="button"
+                      onClick={() => setGpuSchedulerEnabled(item.id)}
+                      className={clsx(
+                        'h-7 rounded-md px-3 text-xs font-medium transition-colors',
+                        gpuSchedulerEnabled === item.id
+                          ? 'bg-surface-raised text-accent shadow-sm'
+                          : 'text-txt-secondary hover:text-txt-primary'
+                      )}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={saveGpuScheduler}
+                  disabled={saving || !runtime}
+                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                >
+                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                  Save
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Task uses</div>
+              <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
+                {[
+                  { id: 'single' as GpuTaskMode, label: 'One GPU' },
+                  { id: 'multi' as GpuTaskMode, label: 'Multiple GPUs' },
+                ].map(item => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => chooseGpuTaskMode(item.id)}
+                    className={clsx(
+                      'h-8 rounded-md px-3 text-xs font-medium transition-colors',
+                      gpuTaskMode === item.id
+                        ? 'bg-surface-raised text-accent shadow-sm'
+                        : 'text-txt-secondary hover:text-txt-primary'
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">GPUs per task</span>
+                <input
+                  type="number"
+                  min={gpuTaskMode === 'multi' ? 2 : 1}
+                  value={gpuTaskMode === 'multi' ? gpuCount : '1'}
+                  disabled={gpuTaskMode !== 'multi'}
+                  onChange={event => setGpuCount(event.target.value)}
+                  className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-50"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">GPU pool</span>
+                <input
+                  value={gpuDeviceIds}
+                  onChange={event => setGpuDeviceIds(event.target.value)}
+                  className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                  placeholder="auto"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Memory used below</span>
+                <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={gpuMemoryUsedPct}
+                    onChange={event => setGpuMemoryUsedPct(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"
+                  />
+                  <span className="flex w-10 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">%</span>
+                </div>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Free memory at least</span>
+                <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                  <input
+                    type="number"
+                    min={0}
+                    value={gpuMinFreeMemoryGb}
+                    onChange={event => setGpuMinFreeMemoryGb(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"
+                  />
+                  <span className="flex w-12 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">GiB</span>
+                </div>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Compute below</span>
+                <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={gpuComputeUsedPct}
+                    onChange={event => setGpuComputeUsedPct(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"
+                  />
+                  <span className="flex w-10 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">%</span>
+                </div>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Stable for</span>
+                <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                  <input
+                    type="number"
+                    min={0}
+                    value={gpuStableSeconds}
+                    onChange={event => setGpuStableSeconds(event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"
+                  />
+                  <span className="flex w-12 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">sec</span>
+                </div>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Max wait</span>
+                <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                  <input
+                    type="number"
+                    min={1}
+                    value={gpuMaxWaitHours}
+                    onChange={event => setGpuMaxWaitHours(numberInputValue(event.target.value, 48, 1))}
+                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"
+                  />
+                  <span className="flex w-12 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">hour</span>
+                </div>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Same GPU concurrency</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={gpuMaxTasksPerGpu}
+                  onChange={event => setGpuMaxTasksPerGpu(event.target.value)}
+                  className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                />
+              </label>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-txt-secondary">
+              <input
+                type="checkbox"
+                checked={gpuRespectCudaVisibleDevices}
+                onChange={event => setGpuRespectCudaVisibleDevices(event.target.checked)}
+                className="h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
+              />
+              <span>Do not override task CUDA_VISIBLE_DEVICES</span>
+            </label>
           </section>
         )}
       </div>

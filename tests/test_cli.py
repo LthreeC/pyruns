@@ -488,6 +488,25 @@ class TestCmdOpenStatInfo:
         assert "RAM:" in captured.out
         assert "GPU 0:" in captured.out
 
+    def test_stat_once_reports_no_gpus(self, capsys):
+        from pyruns.cli import commands
+
+        class DummyMemory:
+            used = 128 * 1024 ** 2
+            total = 1024 * 1024 ** 2
+
+        class DummyMonitor:
+            def sample(self):
+                return {"cpu_percent": 5, "mem_percent": 12, "gpus": []}
+
+        with (
+            patch.object(commands, "SystemMonitor", return_value=DummyMonitor()),
+            patch.object(commands.psutil, "virtual_memory", return_value=DummyMemory()),
+        ):
+            commands.cmd_stat(None)
+
+        assert "No GPUs detected" in capsys.readouterr().out
+
     def test_stat_interactive_flag_delegates_to_live_view(self):
         from pyruns.cli import commands
 
@@ -762,6 +781,33 @@ class TestCmdRun:
             mock_start.assert_called_once_with("detach-task")
             mock_fg.assert_not_called()
 
+    def test_run_skips_active_tasks_and_reports_no_runnable_targets(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_run
+
+        _add_task(workspace, "busy", "queued")
+        task_manager.scan_disk()
+
+        cmd_run(task_manager, ["busy", "--detach"])
+
+        output = capsys.readouterr().out
+        assert "Skipping 'busy'" in output
+        assert "No runnable tasks found" in output
+
+    def test_run_single_with_explicit_mode_and_workers_note(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_run
+
+        _add_task(workspace, "process-one", "pending")
+        task_manager.scan_disk()
+
+        with (
+            patch.object(task_manager, "start_task_now") as mock_start,
+            patch("pyruns.cli.commands.cmd_fg"),
+        ):
+            cmd_run(task_manager, ["process-one", "--mode", "process", "--workers", "3"])
+
+        mock_start.assert_called_once_with("process-one", execution_mode="process")
+        assert "--workers is ignored" in capsys.readouterr().out
+
     def test_run_batch_with_flags(self, workspace, task_manager):
         from pyruns.cli.commands import cmd_run
 
@@ -798,6 +844,45 @@ class TestCmdRun:
         assert created_names == ["quick_[1-of-2]", "quick_[2-of-2]"]
         for name in created_names:
             assert (workspace / TASKS_DIR / name / CONFIG_FILENAME).exists()
+
+    def test_run_config_reports_missing_invalid_and_generator_failures(self, task_manager, tmp_path, capsys):
+        from pyruns.cli import commands
+
+        commands.cmd_run_config(task_manager, str(tmp_path / "missing.yaml"))
+        assert "Config not found" in capsys.readouterr().out
+
+        bad_config = tmp_path / "bad.yaml"
+        bad_config.write_text("a: [1, 2\n", encoding="utf-8")
+        commands.cmd_run_config(task_manager, str(bad_config))
+        assert "Failed to prepare config" in capsys.readouterr().out
+
+        good_config = tmp_path / "good.yaml"
+        good_config.write_text("lr: 0.1\n", encoding="utf-8")
+        with patch.object(commands.TaskGenerator, "create_tasks", side_effect=ValueError("bad task name")):
+            commands.cmd_run_config(task_manager, str(good_config))
+        assert "bad task name" in capsys.readouterr().out
+
+    def test_run_config_falls_back_to_add_task_when_manager_lacks_add_tasks(self, tmp_path):
+        from pyruns.cli import commands
+
+        config_path = tmp_path / "single.yaml"
+        config_path.write_text("lr: 0.1\n", encoding="utf-8")
+
+        class DummyTaskManager:
+            tasks_dir = str(tmp_path / "tasks")
+
+            def __init__(self):
+                self.added = []
+
+            def add_task(self, task):
+                self.added.append(task["name"])
+
+        manager = DummyTaskManager()
+        with patch.object(commands, "cmd_run") as mock_run:
+            commands.cmd_run_config(manager, str(config_path), ["--detach"])
+
+        assert manager.added == ["single"]
+        assert mock_run.call_args.args[1] == ["single", "--detach"]
 
 
 class TestCmdDelete:
@@ -843,6 +928,13 @@ class TestCmdDelete:
 
 
 class TestCmdShow:
+    def test_show_no_args_prints_usage(self, task_manager, capsys):
+        from pyruns.cli.commands import cmd_show
+
+        cmd_show(task_manager)
+
+        assert "Usage: show" in capsys.readouterr().out
+
     def test_show_prints_task_detail(self, workspace, task_manager, capsys):
         from pyruns.cli.commands import cmd_show
 
@@ -853,6 +945,33 @@ class TestCmdShow:
         captured = capsys.readouterr()
         assert "detail-task" in captured.out
         assert "Status:" in captured.out
+
+
+class TestCmdLog:
+    def test_log_no_args_prints_usage(self, task_manager, capsys):
+        from pyruns.cli.commands import cmd_log
+
+        cmd_log(task_manager)
+
+        assert "Usage: log" in capsys.readouterr().out
+
+
+class TestCmdOpenEdges:
+    def test_open_no_args_and_editor_failure(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_open
+
+        cmd_open(task_manager)
+        assert "Usage: open" in capsys.readouterr().out
+
+        _add_task(workspace, "open-error", "completed")
+        task_manager.scan_disk()
+        with (
+            patch("pyruns.cli.commands._get_git_editor", return_value="bad-editor"),
+            patch("pyruns.cli.commands.subprocess.Popen", side_effect=RuntimeError("cannot launch")),
+        ):
+            cmd_open(task_manager, ["open-error"])
+
+        assert "Failed to open editor" in capsys.readouterr().out
 
 
 class TestCmdExport:
@@ -884,6 +1003,33 @@ class TestCmdExport:
         content = output_path.read_text(encoding="utf-8")
         assert "export-completed" in content
         assert "export-pending" not in content
+
+    def test_export_reports_empty_matches_and_empty_content(self, workspace, task_manager, tmp_path, capsys):
+        from pyruns.cli import commands
+
+        _add_task(workspace, "pending-export", "pending")
+        task_manager.scan_disk()
+
+        commands.cmd_export(task_manager, ["--status", "completed", "--output", str(tmp_path / "none.csv")])
+        assert "No tasks matched" in capsys.readouterr().out
+
+        with patch.object(commands, "build_export_csv", return_value=""):
+            commands.cmd_export(task_manager, ["pending-export", "--output", str(tmp_path / "empty.csv")])
+        assert "No exportable data" in capsys.readouterr().out
+
+    def test_export_json_defaults_to_generated_filename(self, workspace, task_manager, tmp_path, monkeypatch):
+        from pyruns.cli import commands
+
+        _add_task(workspace, "json-export", "completed")
+        task_manager.scan_disk()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(commands, "export_timestamp", lambda: "20260609_010203")
+
+        commands.cmd_export(task_manager, ["json-export", "--format", "json"])
+
+        output_path = tmp_path / "pyruns_export_20260609_010203.json"
+        assert output_path.exists()
+        assert json.loads(output_path.read_text(encoding="utf-8")) == []
 
 
 
@@ -1105,6 +1251,33 @@ class TestCliEntryHelpers:
         (new_ws / "script_info.json").write_text(json.dumps({"script_path": str(newer)}), encoding="utf-8")
 
         assert _resolve_workspace() == str(new_ws)
+
+    def test_interactive_repl_handles_parse_errors_unknown_commands_and_handler_errors(self, capsys):
+        from pyruns.cli import interactive
+
+        calls = []
+
+        class DummyTaskManager:
+            def refresh_from_disk(self, **kwargs):
+                calls.append(("refresh", kwargs))
+
+        def failing_handler(tm, args):
+            calls.append(("fail", args))
+            raise RuntimeError("boom")
+
+        with (
+            patch.object(interactive, "cmd_list", lambda tm, args: calls.append(("list", args))),
+            patch.dict(interactive.COMMANDS, {"fail": failing_handler}, clear=True),
+            patch("builtins.input", side_effect=["bad 'quote", "unknown", "help", "fail one", "exit"]),
+        ):
+            interactive.run_interactive(DummyTaskManager())
+
+        output = capsys.readouterr().out
+        assert "Unknown command" in output
+        assert "Pyruns CLI Commands" in output
+        assert "Command failed: RuntimeError: boom" in output
+        assert calls[0] == ("list", ["--limit", "12"])
+        assert ("fail", ["one"]) in calls
 
     def test_init_task_manager_sets_root_and_creates_tasks_dir(self, tmp_path, monkeypatch):
         import pyruns.cli as cli

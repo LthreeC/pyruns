@@ -18,6 +18,7 @@ class SystemMonitor:
     def __init__(self) -> None:
         self._gpu_cache: List[Dict[str, Any]] = []
         self._gpu_cache_at: float = 0.0
+        self._gpu_cache_valid: bool = False
         self._gpu_ttl_sec: float = 1.5
         self._gpu_available: bool = True
         self._gpu_fail_count: int = 0
@@ -130,7 +131,7 @@ class SystemMonitor:
         """Return cached GPU metrics, refreshing them with ``nvidia-smi`` when needed."""
 
         now = time.monotonic()
-        if self._gpu_cache and now - self._gpu_cache_at < self._gpu_ttl_sec:
+        if self._gpu_cache_valid and now - self._gpu_cache_at < self._gpu_ttl_sec:
             return self._gpu_cache
 
         if not self._gpu_available:
@@ -168,6 +169,7 @@ class SystemMonitor:
 
             self._gpu_cache = gpus
             self._gpu_cache_at = now
+            self._gpu_cache_valid = True
             self._gpu_fail_count = 0
             self._gpu_disabled_at = 0.0
             return gpus

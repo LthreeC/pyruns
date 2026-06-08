@@ -13,7 +13,13 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Optional
 
-from pyruns._config import RUN_LOGS_DIR, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME
+from pyruns._config import (
+    ERROR_LOG_FILENAME,
+    QUEUE_LOG_FILENAME,
+    RUN_LOGS_DIR,
+    SCRIPT_INFO_FILENAME,
+    TASK_INFO_FILENAME,
+)
 from pyruns.utils.process_utils import is_pid_running
 
 _TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
@@ -297,6 +303,10 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
     opts: Dict[str, str] = {}
     run_dir = os.path.join(task_dir, RUN_LOGS_DIR)
     if os.path.isdir(run_dir):
+        queue_path = os.path.join(run_dir, QUEUE_LOG_FILENAME)
+        if os.path.exists(queue_path):
+            opts[QUEUE_LOG_FILENAME] = queue_path
+
         files = sorted(
             [
                 f
@@ -307,8 +317,6 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         )
         for f in files:
             opts[f] = os.path.join(run_dir, f)
-
-        from pyruns._config import ERROR_LOG_FILENAME
 
         err_path = os.path.join(run_dir, ERROR_LOG_FILENAME)
         if os.path.exists(err_path):

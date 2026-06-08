@@ -394,11 +394,14 @@ def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "function readCompactMonitorLayout()" in source
-    assert "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 260" in source
+    assert "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'" in source
     assert "window.matchMedia('(max-width: 700px)')" in source
     assert "compactMonitorLayout ? 'flex-col' : 'flex-row'" in source
-    assert "compactMonitorLayout ? 'border-b border-border-subtle' : 'border-r border-border-subtle'" in source
+    assert "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'" in source
     assert "style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}" in source
+    assert 'className="flex-none border-b border-border-subtle px-2.5 py-2"' in source
+    assert 'className="min-h-0 flex-1 overflow-y-auto px-2 py-2"' in source
+    assert 'className="flex-none border-t border-border-subtle px-2.5 py-2"' in source
     assert "{!compactMonitorLayout && (" in source
 
 
@@ -538,6 +541,21 @@ def test_react_app_shell_allows_pages_to_scroll_without_horizontal_growth():
 
     assert "w-screen max-w-full" in shell
     assert '<main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">' in shell
+
+
+def test_react_mobile_pages_constrain_empty_states_and_header_actions():
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    empty_state = (FRONTEND_COMPONENTS_DIR / "shared" / "EmptyState.tsx").read_text(encoding="utf-8")
+
+    assert "'flex h-full w-full max-w-full min-w-0 overflow-hidden'" in monitor
+    assert "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'" in monitor
+    assert 'className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col"' in monitor
+    assert 'className="flex h-full min-w-0 items-center justify-center px-4"' in monitor
+    assert "grid w-full min-w-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center" in dashboard
+    assert "min-h-10 min-w-0" in dashboard
+    assert "max-w-full flex-col items-center justify-center gap-3 px-4 py-20 text-center" in empty_state
+    assert "max-w-full break-words" in empty_state
 
 
 def test_react_manager_uses_single_column_cards_on_narrow_viewports():
@@ -800,6 +818,20 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "pendingLiveLogChunkRef.current = { key, content: buffer.content + message.content }" in source
 
 
+def test_react_mobile_task_controls_keep_usable_touch_targets():
+    action_button = (FRONTEND_COMPONENTS_DIR / "shared" / "ActionButton.tsx").read_text(encoding="utf-8")
+    sidebar = (FRONTEND_COMPONENTS_DIR / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "min-h-9 gap-1.5 rounded-md px-3 py-1.5 text-xs" in action_button
+    assert "min-h-10" in sidebar
+    assert "basis-[12rem]" in monitor
+    assert "'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors'" in monitor
+    assert "'absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay'" in manager
+    assert "'inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors'" in manager
+
+
 def test_react_monitor_caps_live_log_state_for_long_tasks():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
@@ -954,6 +986,37 @@ def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     assert "conda_executable: condaExecutable" in runtime_panel
     assert "python_executable: ''" in runtime_panel
     assert "selectedConda?.python_executable || 'Choose a conda environment to preview Python path'" in runtime_panel
+
+
+def test_react_runtime_panel_exposes_gpu_scheduler_settings():
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "type RuntimePage = 'python' | 'env' | 'gpu'" in runtime_panel
+    assert "GPU Scheduler" in runtime_panel
+    assert "Task uses" in runtime_panel
+    assert "Memory used below" in runtime_panel
+    assert "Free memory at least" in runtime_panel
+    assert "Compute below" in runtime_panel
+    assert "Max wait" in runtime_panel
+    assert "useState('40')" in runtime_panel
+    assert "useState('15')" in runtime_panel
+    assert "useState(48)" in runtime_panel
+    assert "max_wait_seconds ?? 172800" in runtime_panel
+    assert "setGpuSchedulerEnabled(next.gpu_scheduler?.enabled ?? false)" in runtime_panel
+    assert "function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number)" in runtime_panel
+    assert "const chooseGpuTaskMode = (mode: GpuTaskMode) => {" in runtime_panel
+    assert "setGpuCount(current => (numberInputValue(current, 1, 1) < 2 ? '2' : current))" in runtime_panel
+    assert "min={gpuTaskMode === 'multi' ? 2 : 1}" in runtime_panel
+    assert "gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 2, 2) : 1" in runtime_panel
+    assert "memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100)" in runtime_panel
+    assert "compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100)" in runtime_panel
+    assert "max_wait_seconds: gpuMaxWaitHours * 3600" in runtime_panel
+    assert "disabled={saving || !runtime}" in runtime_panel
+    assert "gpu_scheduler:" in runtime_panel
+    assert "GpuSchedulerSettings" in types
+    assert "gpu_scheduler?: Partial<GpuSchedulerSettings>" in api
 
 
 def test_react_launcher_supports_manual_shell_folder_paths():

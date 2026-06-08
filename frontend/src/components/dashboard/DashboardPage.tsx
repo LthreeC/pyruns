@@ -104,7 +104,7 @@ export default function DashboardPage() {
       <div className="h-full overflow-hidden bg-surface-base">
         <div className="flex h-full min-h-0 w-full flex-col gap-3 px-4 py-4 2xl:px-6">
           <header className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border-default pb-3">
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 basis-full sm:basis-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="mr-2 text-lg font-semibold text-txt-primary">Dashboard</h1>
                 <span className="inline-flex items-center rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
@@ -118,23 +118,24 @@ export default function DashboardPage() {
                 {workspaceName}
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid w-full min-w-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
               <button
                 type="button"
                 onClick={() => void handleManualRefresh()}
                 disabled={manualRefreshing || loading}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2 py-2 text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
                 title="Refresh dashboard now"
               >
                 <RefreshCw className={clsx('h-4 w-4', manualRefreshing && 'animate-spin')} />
-                Refresh
+                <span className="min-w-0 truncate">Refresh</span>
               </button>
               <button
                 type="button"
                 onClick={() => navigate(workspaceReady ? '/generator' : '/?launcher=1&mode=python')}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent/90"
+                className="inline-flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-md bg-accent px-2 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent/90 sm:px-4"
               >
-                <Wand2 className="h-4 w-4" /> {workspaceReady ? 'Start New Task' : 'Choose Workspace'}
+                <Wand2 className="h-4 w-4" />
+                <span className="min-w-0 truncate">{workspaceReady ? 'Start New Task' : 'Choose Workspace'}</span>
               </button>
             </div>
           </header>

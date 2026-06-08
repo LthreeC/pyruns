@@ -61,6 +61,19 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "conda_env": "",
     "conda_executable": "conda",
     "global_env": {},
+    # GPU scheduler
+    "gpu_scheduler_enabled": False,
+    "gpu_scheduler_task_mode": "single",
+    "gpu_scheduler_gpus_per_task": 1,
+    "gpu_scheduler_device_ids": [],
+    "gpu_scheduler_memory_used_pct": 40,
+    "gpu_scheduler_min_free_memory_gb": 40,
+    "gpu_scheduler_compute_used_pct": 30,
+    "gpu_scheduler_stable_seconds": 15,
+    "gpu_scheduler_max_wait_seconds": 172800,
+    "gpu_scheduler_max_tasks_per_gpu": 1,
+    "gpu_scheduler_sample_interval_seconds": 2,
+    "gpu_scheduler_respect_cuda_visible_devices": True,
     # Persisted UI state
     "pinned_params": [],
 }
@@ -107,6 +120,20 @@ python_executable: {SETTINGS_DEFAULTS.get("python_executable")}             # ab
 conda_env: {SETTINGS_DEFAULTS.get("conda_env")}                     # conda env name; applies to Python and shell tasks
 conda_executable: {SETTINGS_DEFAULTS.get("conda_executable")}           # conda executable used by conda_env
 global_env: {{}}                       # workspace env overrides; task env overrides this
+
+# GPU scheduler
+gpu_scheduler_enabled: {SETTINGS_DEFAULTS.get("gpu_scheduler_enabled")}             # false = run normally; true = wait for eligible local GPUs
+gpu_scheduler_task_mode: {SETTINGS_DEFAULTS.get("gpu_scheduler_task_mode")}          # single | multi
+gpu_scheduler_gpus_per_task: {SETTINGS_DEFAULTS.get("gpu_scheduler_gpus_per_task")}  # used when task_mode is multi
+gpu_scheduler_device_ids: []             # empty = any GPU; example: [0, 1, 2, 3]
+gpu_scheduler_memory_used_pct: {SETTINGS_DEFAULTS.get("gpu_scheduler_memory_used_pct")}      # eligible when memory used is below this percent
+gpu_scheduler_min_free_memory_gb: {SETTINGS_DEFAULTS.get("gpu_scheduler_min_free_memory_gb")} # eligible when free memory is at least this many GiB
+gpu_scheduler_compute_used_pct: {SETTINGS_DEFAULTS.get("gpu_scheduler_compute_used_pct")}     # eligible when GPU compute is below this percent
+gpu_scheduler_stable_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_stable_seconds")}         # limits must stay eligible for this long
+gpu_scheduler_max_wait_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_max_wait_seconds")}     # default 48h
+gpu_scheduler_max_tasks_per_gpu: {SETTINGS_DEFAULTS.get("gpu_scheduler_max_tasks_per_gpu")}
+gpu_scheduler_sample_interval_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_sample_interval_seconds")}
+gpu_scheduler_respect_cuda_visible_devices: {SETTINGS_DEFAULTS.get("gpu_scheduler_respect_cuda_visible_devices")}
 
 """
 

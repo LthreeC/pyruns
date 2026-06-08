@@ -36,6 +36,7 @@ from pyruns._config import (
     TASK_KIND_SHELL,
     TRACKS_KEY,
 )
+from pyruns.core.gpu_scheduler import CUDA_VISIBLE_DEVICES, PYRUNS_ASSIGNED_GPUS
 from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import (
@@ -54,6 +55,11 @@ _ISOLATED_IMPORT_ROOT_CACHE: Dict[str, str] = {}
 _SITE_GUARD_ROOT_CACHE: Dict[str, str] = {}
 _SOURCE_STATE_GIT_TIMEOUT_SEC = 1.0
 _SOURCE_STATE_DIGEST_LEN = 12
+_CUDA_OOM_MARKERS = (
+    "cuda out of memory",
+    "torch.cuda.outofmemoryerror",
+    "cublas_status_alloc_failed",
+)
 
 
 def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
@@ -65,6 +71,53 @@ def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
         f"[PYRUNS] Task {name} {phase.lower()}ed at {timestamp}\n"
         f"[PYRUNS] {'=' * (42 + len(title))}\n"
     )
+
+
+def _detect_cuda_oom_text(text: str) -> bool:
+    """Return whether a log/error snippet looks like a CUDA OOM failure."""
+
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in _CUDA_OOM_MARKERS)
+
+
+def _gpu_assignment_log(env: Dict[str, str]) -> str:
+    """Build run-log lines describing the GPU assignment used by a task."""
+
+    assigned = str(env.get(PYRUNS_ASSIGNED_GPUS, "") or "").strip()
+    cuda_visible = str(env.get(CUDA_VISIBLE_DEVICES, "") or "").strip()
+    if not assigned and not cuda_visible:
+        return ""
+
+    lines = [f"[PYRUNS] GPU assignment: {assigned or cuda_visible}"]
+    if cuda_visible:
+        lines.append(f"[PYRUNS] CUDA_VISIBLE_DEVICES={cuda_visible}")
+    return "\n".join(lines) + "\n"
+
+
+def _read_log_tail_text(log_path: str, max_bytes: int = 64 * 1024) -> str:
+    """Read a bounded log suffix for failure classification."""
+
+    try:
+        with open(log_path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            return handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _gpu_failure_detail_lines(env: Dict[str, str]) -> List[str]:
+    """Return GPU details that are useful in failure summaries."""
+
+    details: List[str] = []
+    assigned = str(env.get(PYRUNS_ASSIGNED_GPUS, "") or "").strip()
+    cuda_visible = str(env.get(CUDA_VISIBLE_DEVICES, "") or "").strip()
+    if assigned:
+        details.append(f"assigned_gpus={assigned}")
+    if cuda_visible:
+        details.append(f"cuda_visible_devices={cuda_visible}")
+    return details
 
 
 def _append_run_log_text(log_path: str, text: str, *, clean_boundary: bool = False) -> str:
@@ -891,6 +944,10 @@ def _build_command(
                     raw_name = info.get("name", "")
                     if isinstance(raw_name, (list, tuple)):
                         raw_name = raw_name[0] if raw_name else ""
+                    if not raw_name:
+                        flags = info.get("flags")
+                        if isinstance(flags, (list, tuple)) and flags:
+                            raw_name = flags[0]
                     if not str(raw_name).startswith("-"):
                         positional_order.append(dest)
             except Exception:
@@ -1192,9 +1249,10 @@ def run_task_worker(
 
         start_str = get_now_str()
         start_log = _lifecycle_banner("start", name, start_str)
+        start_payload = start_log + _gpu_assignment_log(env)
         with open(log_path, "w", encoding="utf-8") as handle:
-            handle.write(start_log)
-        log_emitter.emit(name, start_log.replace("\n", "\r\n"))
+            handle.write(start_payload)
+        log_emitter.emit(name, start_payload.replace("\n", "\r\n"))
 
         def _mark_started(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)
@@ -1281,16 +1339,20 @@ def run_task_worker(
                     detail_lines=detail_lines,
                 )
             else:
+                log_tail = _read_log_tail_text(log_path)
+                failure_reason = "cuda_out_of_memory" if _detect_cuda_oom_text(log_tail) else f"exit_code {ret}"
+                detail_lines = [
+                    f"reason={failure_reason}",
+                    *_gpu_failure_detail_lines(env),
+                    f"command={command!r}",
+                    f"workdir={workdir!r}",
+                    f"log={log_path}",
+                ]
                 _append_error_summary(
                     task_dir,
                     run_index=run_index,
                     title=f"Run #{run_index} failed at {end_str}",
-                    detail_lines=[
-                        f"reason=exit_code {ret}",
-                        f"command={command!r}",
-                        f"workdir={workdir!r}",
-                        f"log={log_path}",
-                    ],
+                    detail_lines=detail_lines,
                 )
 
         logger.info("Task %s finished  status=%s", name, status)
@@ -1315,6 +1377,7 @@ def run_task_worker(
 
         detail_lines = [
             f"exception={type(exc).__name__}: {exc}",
+            *_gpu_failure_detail_lines(env_vars or {}),
             f"command={command!r}",
             f"workdir={workdir!r}",
             f"task_dir={task_dir!r}",

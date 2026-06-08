@@ -75,11 +75,27 @@ export interface CondaEnvInfo {
   active?: boolean
 }
 
+export interface GpuSchedulerSettings {
+  enabled: boolean
+  task_mode: 'single' | 'multi'
+  gpus_per_task: number
+  device_ids: number[]
+  memory_used_pct: number
+  min_free_memory_gb: number
+  compute_used_pct: number
+  stable_seconds: number
+  max_wait_seconds: number
+  max_tasks_per_gpu: number
+  sample_interval_seconds: number
+  respect_cuda_visible_devices: boolean
+}
+
 export interface RuntimeInfo {
   python_executable: string
   conda_env: string
   conda_executable: string
   global_env: Record<string, string>
+  gpu_scheduler?: GpuSchedulerSettings
   process: {
     python_executable: string
     conda_env: string

@@ -3,6 +3,7 @@ Tests for pyruns.utils — parse_utils, log_io, process_utils, sort_utils,
 settings, info_io, config_utils, batch_utils, and validation.
 """
 import builtins
+import codecs
 import importlib
 import json
 import logging
@@ -25,6 +26,8 @@ from pyruns._config import (
     DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
     SETTINGS_FILENAME, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME, RUN_LOGS_DIR, RECORDS_KEY,
     BATCH_ESCAPE,
+    CONFIG_FILENAME, POWERSHELL_CONFIG_FILENAME, SHELL_CONFIG_FILENAME,
+    TASK_KIND_CONFIG, TASK_KIND_SHELL, WORKSPACE_KIND_SCRIPT, WORKSPACE_KIND_SHELL,
 )
 from pyruns.utils.batch_utils import (
     _parse_pipe_value, _split_by_pipe,
@@ -48,6 +51,15 @@ from pyruns.utils.sort_utils import task_sort_key, filter_tasks, sort_tasks_for_
 from pyruns.utils.info_io import (
     load_task_info, save_task_info, update_task_info, load_record_data,
     get_log_options, resolve_log_path, validate_task_name, task_info_lock,
+)
+from pyruns.utils.task_files import (
+    build_task_preview_and_search,
+    is_known_task_kind,
+    normalize_task_kind,
+    normalize_workspace_kind,
+    read_task_payload,
+    resolve_task_config_file,
+    write_task_payload,
 )
 
 
@@ -92,6 +104,41 @@ def test_detect_config_source_fast(tmp_path):
         encoding="utf-8",
     )
     assert detect_config_source_fast(str(p_hydra_alias)) == ("hydra", None)
+
+
+def test_detect_config_source_fast_accepts_utf8_bom_argparse_script(tmp_path):
+    p_bom = tmp_path / "bom_argparse.py"
+    p_bom.write_bytes(
+        codecs.BOM_UTF8
+        + b"import argparse\n"
+        + b"parser = argparse.ArgumentParser()\n"
+        + b"parser.add_argument('--lr', type=float, default=0.01)\n"
+    )
+
+    assert detect_config_source_fast(str(p_bom)) == ("argparse", None)
+    assert extract_argparse_params(str(p_bom))["lr"]["default"] == 0.01
+
+
+def test_parse_utils_handles_missing_invalid_and_multiline_cli_edges(tmp_path, monkeypatch):
+    import pyruns.utils.parse_utils as parse_utils
+
+    missing_script = tmp_path / "missing.py"
+    assert parse_utils._cache_key(str(missing_script))[1:] == (0, 0)
+    assert detect_config_source_fast(str(missing_script)) == ("unknown", None)
+    assert extract_argparse_params(str(missing_script)) == {}
+
+    invalid_script = tmp_path / "invalid.py"
+    invalid_script.write_text("def bad(:\n", encoding="utf-8")
+    assert detect_config_source_fast(str(invalid_script)) == ("unknown", None)
+
+    assert split_cli_args("") == []
+    assert split_cli_args("  \n") == []
+    assert split_cli_args("--name 'quoted value' \\\n  --flag") == ["--name", "quoted value", "--flag"]
+    with pytest.raises(ValueError, match="unmatched quotes"):
+        split_cli_args("--name 'unterminated")
+
+    monkeypatch.setattr(parse_utils.os, "name", "nt")
+    assert split_cli_args('"--literal"') == ["--literal"]
 
 
 def test_extract_argparse_params(tmp_path):
@@ -149,6 +196,30 @@ parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=
 
     assert params["compile"]["action"] == "argparse.BooleanOptionalAction"
     assert params["compile"]["default"] is True
+
+
+def test_extract_argparse_params_literal_edges_and_store_false_default(tmp_path):
+    p_script = tmp_path / "literal_edges.py"
+    p_script.write_text(
+        """
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--no-cache", action="store_false")
+parser.add_argument("--scale", default=+2)
+parser.add_argument("--shape", default=(1, 2))
+parser.add_argument("--mapping", default={"a": -1})
+parser.add_argument(*["--dynamic"])
+""",
+        encoding="utf-8",
+    )
+
+    params = extract_argparse_params(str(p_script))
+
+    assert params["no_cache"]["default"] is True
+    assert params["scale"]["default"] == 2
+    assert params["shape"]["default"] == (1, 2)
+    assert params["mapping"]["default"] == {"a": -1}
+    assert "dynamic" not in params
 
 
 def test_argparse_params_to_dict():
@@ -234,6 +305,72 @@ def test_generate_config_file(tmp_path):
 # ═══════════════════════════════════════════════════════════════
 #  log_io
 # ═══════════════════════════════════════════════════════════════
+
+
+def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkeypatch):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+
+    assert normalize_workspace_kind(WORKSPACE_KIND_SHELL) == WORKSPACE_KIND_SHELL
+    assert normalize_workspace_kind("bad") == WORKSPACE_KIND_SCRIPT
+    assert normalize_task_kind("py") == TASK_KIND_CONFIG
+    assert normalize_task_kind(TASK_KIND_SHELL) == TASK_KIND_SHELL
+    assert is_known_task_kind("") is True
+    assert is_known_task_kind("bad") is False
+
+    assert resolve_task_config_file({"task_kind": TASK_KIND_SHELL}, TASK_KIND_SHELL, str(task_dir)) == SHELL_CONFIG_FILENAME
+    (task_dir / POWERSHELL_CONFIG_FILENAME).write_text("Write-Host hi\n", encoding="utf-8")
+    assert resolve_task_config_file({"task_kind": TASK_KIND_SHELL}, TASK_KIND_SHELL, str(task_dir)) == POWERSHELL_CONFIG_FILENAME
+    assert resolve_task_config_file({"config_file": "custom.yaml"}) == "custom.yaml"
+
+    kind, config, text, error = read_task_payload(str(task_dir), {"task_kind": TASK_KIND_CONFIG})
+    assert kind == TASK_KIND_CONFIG
+    assert config == {}
+    assert text == ""
+    assert error == f"{CONFIG_FILENAME} is missing"
+
+    kind, config, text, error = read_task_payload(str(task_dir), {"task_kind": TASK_KIND_SHELL})
+    assert kind == TASK_KIND_SHELL
+    assert config == {}
+    assert "Write-Host hi" in text
+    assert error == ""
+
+    def fail_open(*args, **kwargs):
+        raise OSError("cannot read")
+
+    monkeypatch.setattr("builtins.open", fail_open)
+    kind, config, text, error = read_task_payload(str(task_dir), {"task_kind": TASK_KIND_SHELL})
+    assert kind == TASK_KIND_SHELL
+    assert config == {}
+    assert text == ""
+    assert "cannot read" in error
+    monkeypatch.undo()
+
+    config_dir = tmp_path / "config-task"
+    write_task_payload(str(config_dir), task_kind=TASK_KIND_CONFIG, config_file=CONFIG_FILENAME, config={"lr": 0.1})
+    assert load_yaml_strict(str(config_dir / CONFIG_FILENAME)) == {"lr": 0.1}
+
+    shell_dir = tmp_path / "shell-task"
+    write_task_payload(
+        str(shell_dir),
+        task_kind=TASK_KIND_SHELL,
+        config_file=SHELL_CONFIG_FILENAME,
+        config_text="echo hi\r\n",
+    )
+    assert (shell_dir / SHELL_CONFIG_FILENAME).read_text(encoding="utf-8") == "echo hi\n"
+
+    long_line = "echo " + "x" * 140
+    preview, search = build_task_preview_and_search(
+        task_kind=TASK_KIND_SHELL,
+        config_text=f"# ignored\n{long_line}\necho second\n",
+        task_name="shell-task",
+        notes="note",
+    )
+    assert preview.endswith("...")
+    assert len(preview) == 120
+    assert "shell-task" in search
+    empty_preview, _ = build_task_preview_and_search(task_kind=TASK_KIND_SHELL, config_text="# only comments\n")
+    assert empty_preview == "(empty shell script)"
 
 
 def test_append_read_log(tmp_path):
@@ -655,6 +792,69 @@ def test_kill_process_exception_caught():
         with patch("os.kill", side_effect=Exception("mock error")):
             # Should not raise exception
             kill_process(99999)
+
+
+def test_posix_process_group_exists_handles_lookup_permission_and_os_errors():
+    assert process_utils._posix_process_group_exists(lambda _pgid, _sig: None, 123) is True
+
+    def missing(_pgid, _sig):
+        raise ProcessLookupError()
+
+    def denied(_pgid, _sig):
+        raise PermissionError()
+
+    def failed(_pgid, _sig):
+        raise OSError()
+
+    assert process_utils._posix_process_group_exists(missing, 123) is False
+    assert process_utils._posix_process_group_exists(denied, 123) is True
+    assert process_utils._posix_process_group_exists(failed, 123) is False
+
+
+def test_kill_process_posix_returns_when_group_or_fallback_process_is_missing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+
+    def missing_group(pid, sig):
+        calls.append(("pg", pid, sig))
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(process_utils.os, "killpg", missing_group, raising=False)
+    kill_process(111)
+    assert calls == [("pg", 111, signal.SIGTERM)]
+
+    calls.clear()
+
+    def group_fails(pid, sig):
+        calls.append(("pg", pid, sig))
+        raise OSError("no process group")
+
+    def process_missing(pid, sig):
+        calls.append(("pid", pid, sig))
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(process_utils.os, "killpg", group_fails, raising=False)
+    monkeypatch.setattr(process_utils.os, "kill", process_missing)
+    kill_process(222)
+    assert calls == [("pg", 222, signal.SIGTERM), ("pid", 222, signal.SIGTERM)]
+
+
+def test_kill_process_posix_without_killpg_escalates_live_process(monkeypatch):
+    calls = []
+    alive_checks = []
+    monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+    monkeypatch.setattr(process_utils.os, "killpg", None, raising=False)
+    monkeypatch.setattr(process_utils, "_POSIX_KILL_GRACE_SEC", 0)
+    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: alive_checks.append(pid) or True)
+    monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+
+    kill_process(333)
+
+    assert calls == [
+        (333, signal.SIGTERM),
+        (333, getattr(signal, "SIGKILL", signal.SIGTERM)),
+    ]
+    assert alive_checks == [333]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1350,6 +1550,14 @@ class TestPreviewConfigLine:
 # ═══════════════════════════════════════════════════════════════
 
 class TestParsePipeValue:
+    def test_empty_split_and_ranges_that_do_not_expand(self):
+        assert _split_by_pipe("") == []
+        assert _parse_pipe_value("(5, 1)") is None
+        assert _parse_pipe_value("(1, 5, 0)") is None
+        assert _parse_pipe_value("(1, nope)") is None
+        assert _parse_pipe_value("1:5:0") is None
+        assert _parse_pipe_value("1:nope") is None
+
     def test_product_syntax(self):
         result = _parse_pipe_value("0.001 | 0.01 | 0.1")
         assert result is not None
@@ -2045,6 +2253,11 @@ def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatc
     shell_runtime._probe_shell_executable.cache_clear()
     assert shell_runtime._probe_shell_executable(str(executable), "bash") is True
 
+    monkeypatch.setattr(shell_runtime.os, "name", "posix")
+    monkeypatch.setattr(shell_runtime.subprocess, "run", lambda *args, **kwargs: Result(0))
+    shell_runtime._probe_shell_executable.cache_clear()
+    assert shell_runtime._probe_shell_executable(str(executable), "sh") is True
+
 
 def test_shell_runtime_workspace_and_follow_fallback_branches(tmp_path, monkeypatch):
     import pyruns.utils.shell_runtime as shell_runtime
@@ -2103,3 +2316,91 @@ def test_shell_runtime_process_tree_and_fallback_edges(tmp_path, monkeypatch):
     runtime = shell_runtime._fallback_follow_shell()
     assert runtime["terminal_kind"] == "sh"
     assert runtime["available"] is True
+
+
+def test_shell_runtime_probe_cleanup_and_process_tree_edge_branches(tmp_path, monkeypatch):
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    executable = tmp_path / "bash"
+    executable.write_text("", encoding="utf-8")
+    probe_path = tmp_path / "probe.sh"
+    removed = []
+
+    class Result:
+        returncode = 0
+
+    def fake_mkstemp(**_kwargs):
+        fd = os.open(probe_path, os.O_CREAT | os.O_RDWR)
+        return fd, str(probe_path)
+
+    monkeypatch.setattr(shell_runtime.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(shell_runtime.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(shell_runtime.os, "remove", lambda path: removed.append(path) or (_ for _ in ()).throw(OSError("locked")))
+
+    assert shell_runtime._probe_windows_posix_script_execution(str(executable)) is True
+    assert removed == [str(probe_path)]
+
+    class BadNameProcess:
+        def parents(self):
+            return []
+
+        def name(self):
+            raise RuntimeError("name unavailable")
+
+    class NoShellProcess:
+        def parents(self):
+            return []
+
+        def name(self):
+            return "python.exe"
+
+    class ExeFailProcess:
+        def parents(self):
+            return []
+
+        def name(self):
+            return "bash.exe"
+
+        def exe(self):
+            raise RuntimeError("exe unavailable")
+
+    class Psutil:
+        def __init__(self, proc):
+            self.proc = proc
+
+        def Process(self, _pid):
+            return self.proc
+
+    monkeypatch.setattr(shell_runtime, "psutil", Psutil(BadNameProcess()))
+    assert shell_runtime._find_shell_in_process_tree() is None
+
+    monkeypatch.setattr(shell_runtime, "psutil", Psutil(NoShellProcess()))
+    assert shell_runtime._find_shell_in_process_tree() is None
+
+    monkeypatch.setattr(shell_runtime, "psutil", Psutil(ExeFailProcess()))
+    monkeypatch.setattr(shell_runtime, "_resolve_candidate_path", lambda value: str(executable) if value == "bash.exe" else "")
+    runtime = shell_runtime._find_shell_in_process_tree()
+    assert runtime is not None
+    assert runtime["terminal_kind"] == "bash"
+    assert runtime["executable"] == str(executable)
+
+    assert shell_runtime._shell_settings_root_for_task(None) is None
+
+
+def test_shell_runtime_windows_and_unknown_fallbacks(monkeypatch):
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    monkeypatch.setattr(shell_runtime.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", "weird-shell.exe")
+    monkeypatch.setattr(shell_runtime, "_resolve_candidate_path", lambda value: "")
+    runtime = shell_runtime._fallback_follow_shell()
+    assert runtime["terminal_kind"] == "cmd"
+    assert runtime["display_name"] == "Command Prompt"
+    assert runtime["executable"] == "weird-shell.exe"
+
+    monkeypatch.setattr(shell_runtime.os, "name", "posix")
+    monkeypatch.setenv("SHELL", "/opt/custom-shell")
+    monkeypatch.setattr(shell_runtime, "_resolve_candidate_path", lambda value: "/opt/custom-shell")
+    runtime = shell_runtime._fallback_follow_shell()
+    assert runtime["terminal_kind"] == "sh"
+    assert runtime["display_name"] == "Shell"

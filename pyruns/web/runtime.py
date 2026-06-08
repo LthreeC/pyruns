@@ -27,6 +27,7 @@ from pyruns._config import (
 )
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
+from pyruns.core.gpu_scheduler import GpuSchedulerConfig
 from pyruns.core.task_manager import TaskManager
 from pyruns.core.report import build_export_csv
 from pyruns.launcher import (
@@ -62,6 +63,7 @@ from pyruns.utils.info_io import validate_task_name
 from pyruns.utils.task_files import build_task_preview_and_search, normalize_task_kind, normalize_workspace_kind
 
 
+_DEFAULT_GPU_SCHEDULER_CONFIG = GpuSchedulerConfig.from_settings({})
 TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
@@ -78,6 +80,20 @@ SHELL_TEMPLATE_SKIP_DIRS = {
 SHELL_TEMPLATE_MAX_DEPTH = 3
 SHELL_TEMPLATE_LIMIT = 80
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_GPU_SCHEDULER_PAYLOAD_KEYS = {
+    "enabled": "gpu_scheduler_enabled",
+    "task_mode": "gpu_scheduler_task_mode",
+    "gpus_per_task": "gpu_scheduler_gpus_per_task",
+    "device_ids": "gpu_scheduler_device_ids",
+    "memory_used_pct": "gpu_scheduler_memory_used_pct",
+    "min_free_memory_gb": "gpu_scheduler_min_free_memory_gb",
+    "compute_used_pct": "gpu_scheduler_compute_used_pct",
+    "stable_seconds": "gpu_scheduler_stable_seconds",
+    "max_wait_seconds": "gpu_scheduler_max_wait_seconds",
+    "max_tasks_per_gpu": "gpu_scheduler_max_tasks_per_gpu",
+    "sample_interval_seconds": "gpu_scheduler_sample_interval_seconds",
+    "respect_cuda_visible_devices": "gpu_scheduler_respect_cuda_visible_devices",
+}
 
 
 def _strip_unquoted_comment(value: str) -> str:
@@ -146,6 +162,109 @@ def _int_setting(settings: Dict[str, Any], key: str, default: int, *, minimum: i
     except (TypeError, ValueError):
         value = default
     return max(minimum, value)
+
+
+def _coerce_bool_payload(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _coerce_int_payload(value: Any, default: int, *, minimum: int = 1) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, parsed)
+
+
+def _coerce_float_payload(value: Any, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, parsed)
+
+
+def _coerce_gpu_device_ids_payload(value: Any) -> List[int]:
+    if value in (None, "", "auto"):
+        return []
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return []
+    ids: List[int] = []
+    seen: set[int] = set()
+    for raw in raw_items:
+        text = str(raw).strip()
+        if text.isdigit():
+            value = int(text)
+            if value not in seen:
+                ids.append(value)
+                seen.add(value)
+    return ids
+
+
+def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    clean: Dict[str, Any] = {}
+    task_mode = str(payload.get("task_mode", "") or "").strip().lower()
+    for key, setting_key in _GPU_SCHEDULER_PAYLOAD_KEYS.items():
+        if key not in payload:
+            continue
+        value = payload[key]
+        if key in {"enabled", "respect_cuda_visible_devices"}:
+            clean[setting_key] = _coerce_bool_payload(value)
+        elif key == "task_mode":
+            mode = str(value or "single").strip().lower()
+            clean[setting_key] = "multi" if mode == "multi" else "single"
+        elif key == "device_ids":
+            clean[setting_key] = _coerce_gpu_device_ids_payload(value)
+        elif key == "gpus_per_task":
+            minimum = 2 if task_mode == "multi" else 1
+            clean[setting_key] = _coerce_int_payload(value, minimum, minimum=minimum)
+        elif key == "max_tasks_per_gpu":
+            clean[setting_key] = _coerce_int_payload(
+                value,
+                _DEFAULT_GPU_SCHEDULER_CONFIG.max_tasks_per_gpu,
+                minimum=1,
+            )
+        elif key == "sample_interval_seconds":
+            clean[setting_key] = _coerce_float_payload(
+                value,
+                _DEFAULT_GPU_SCHEDULER_CONFIG.sample_interval_seconds,
+                minimum=0.5,
+            )
+        elif key == "max_wait_seconds":
+            clean[setting_key] = _coerce_float_payload(
+                value,
+                _DEFAULT_GPU_SCHEDULER_CONFIG.max_wait_seconds,
+                minimum=1.0,
+            )
+        elif key in {"memory_used_pct", "compute_used_pct"}:
+            default = (
+                _DEFAULT_GPU_SCHEDULER_CONFIG.memory_used_pct
+                if key == "memory_used_pct"
+                else _DEFAULT_GPU_SCHEDULER_CONFIG.compute_used_pct
+            )
+            clean[setting_key] = min(100.0, _coerce_float_payload(value, default, minimum=0.0))
+        elif key == "min_free_memory_gb":
+            clean[setting_key] = _coerce_float_payload(
+                value,
+                _DEFAULT_GPU_SCHEDULER_CONFIG.min_free_memory_gb,
+                minimum=0.0,
+            )
+        elif key == "stable_seconds":
+            clean[setting_key] = _coerce_float_payload(
+                value,
+                _DEFAULT_GPU_SCHEDULER_CONFIG.stable_seconds,
+                minimum=0.0,
+            )
+        else:
+            clean[setting_key] = _coerce_float_payload(value, 0.0, minimum=0.0)
+    return clean
 
 
 def _clip_text_middle(text: str, max_chars: int) -> str:
@@ -434,11 +553,26 @@ class PyrunsRuntime:
         global_env = settings.get("global_env", {})
         if not isinstance(global_env, dict):
             global_env = {}
+        gpu_config = GpuSchedulerConfig.from_settings(settings)
         runtime = {
             "python_executable": self._clean_setting_text(settings.get("python_executable")),
             "conda_env": self._clean_setting_text(settings.get("conda_env")),
             "conda_executable": self._clean_setting_text(settings.get("conda_executable")) or "conda",
             "global_env": {str(k): str(v) for k, v in global_env.items()},
+            "gpu_scheduler": {
+                "enabled": gpu_config.enabled,
+                "task_mode": "multi" if gpu_config.task_mode == "multi" else "single",
+                "gpus_per_task": gpu_config.gpus_per_task,
+                "device_ids": list(gpu_config.device_ids),
+                "memory_used_pct": gpu_config.memory_used_pct,
+                "min_free_memory_gb": gpu_config.min_free_memory_gb,
+                "compute_used_pct": gpu_config.compute_used_pct,
+                "stable_seconds": gpu_config.stable_seconds,
+                "max_wait_seconds": gpu_config.max_wait_seconds,
+                "max_tasks_per_gpu": gpu_config.max_tasks_per_gpu,
+                "sample_interval_seconds": gpu_config.sample_interval_seconds,
+                "respect_cuda_visible_devices": gpu_config.respect_cuda_visible_devices,
+            },
             "process": {
                 "python_executable": os.path.abspath(sys.executable),
                 "conda_env": os.getenv("CONDA_DEFAULT_ENV", ""),
@@ -454,11 +588,16 @@ class PyrunsRuntime:
     def update_runtime_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Persist runtime settings and return the refreshed runtime info."""
 
-        allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text"}
+        allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text", "gpu_scheduler"}
         for key, value in payload.items():
             if key not in allowed:
                 continue
-            if key == "global_env_text":
+            if key == "gpu_scheduler":
+                if not isinstance(value, dict):
+                    raise ValueError("gpu_scheduler must be an object")
+                for setting_key, clean_value in _clean_gpu_scheduler_payload(value).items():
+                    save_setting_for_root(self.root_dir, setting_key, clean_value)
+            elif key == "global_env_text":
                 save_setting_for_root(self.root_dir, "global_env", parse_global_env_text(str(value or "")))
             elif key == "global_env":
                 if not isinstance(value, dict):
@@ -829,10 +968,12 @@ class PyrunsRuntime:
             raise ValueError("No valid tasks were provided for batch delete.")
 
         self.invalidate_cache()
-        self.task_manager.delete_tasks(normalized_names)
+        deleted_names = self.task_manager.delete_tasks(normalized_names)
+        if not deleted_names:
+            raise ValueError("Could not move any selected tasks to trash.")
         return {
-            "count": len(normalized_names),
-            "deleted": normalized_names,
+            "count": len(deleted_names),
+            "deleted": deleted_names,
         }
 
     def export_tasks_csv(self, task_names: List[str]) -> str:
@@ -955,7 +1096,15 @@ class PyrunsRuntime:
         selected_name = str(log_file_name or "").strip()
         selected_path = log_options.get(selected_name) if selected_name else None
 
-        if not selected_name and str(task.get("status", "")).lower() in {"running", "queued"}:
+        task_status = str(task.get("status", "")).lower()
+        if not selected_name and task_status == "queued":
+            queue_name = _cfg.QUEUE_LOG_FILENAME
+            selected_name = queue_name
+            selected_path = log_options.get(queue_name)
+            if queue_name not in available_logs:
+                available_logs.insert(0, queue_name)
+
+        if not selected_name and task_status == "running":
             try:
                 run_index = max(1, int(task.get("run_index", 1) or 1))
             except (TypeError, ValueError):

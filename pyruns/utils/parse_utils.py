@@ -21,7 +21,7 @@ def _cache_key(filepath: str) -> Tuple[str, int, int]:
 def _read_tree_cached(cache_key: Tuple[str, int, int]) -> Optional[ast.AST]:
     path = cache_key[0]
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return ast.parse(f.read(), filename=path)
     except Exception:
         return None

@@ -15,6 +15,7 @@ import type {
   GeneratorMode,
   PathValidationResult,
   RuntimeInfo,
+  GpuSchedulerSettings,
 } from './types'
 
 const BASE = ''
@@ -43,6 +44,7 @@ export const updateRuntimeInfo = (payload: Partial<{
   conda_executable: string
   global_env: Record<string, string>
   global_env_text: string
+  gpu_scheduler?: Partial<GpuSchedulerSettings>
 }>) => request<RuntimeInfo>('/api/runtime', { method: 'PATCH', body: JSON.stringify(payload) })
 
 export const getTemplates = () => request<{ items: { value: string; label: string }[] }>('/api/templates')

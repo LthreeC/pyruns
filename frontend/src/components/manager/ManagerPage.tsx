@@ -955,7 +955,7 @@ function TaskCard({
           title={task.pinned ? 'Unpin' : 'Pin'}
           aria-label={task.pinned ? `Unpin ${task.name}` : `Pin ${task.name}`}
           className={clsx(
-            'absolute right-2.5 top-2.5 rounded-md p-1 transition-colors hover:bg-surface-overlay',
+            'absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay',
             task.pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
           )}
         >
@@ -1018,7 +1018,7 @@ function TaskCard({
               }}
               title={actionBtn.label}
               aria-label={`${actionBtn.label} ${task.name}`}
-              className={clsx('rounded-md p-1.5 transition-colors', actionBtn.className)}
+              className={clsx('inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors', actionBtn.className)}
             >
               <actionBtn.icon className="h-3.5 w-3.5" />
             </button>
@@ -1031,7 +1031,7 @@ function TaskCard({
             }}
             title="View logs"
             aria-label={`View logs for ${task.name}`}
-            className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
           >
             <Terminal className="h-3.5 w-3.5" />
           </button>
@@ -1043,7 +1043,7 @@ function TaskCard({
             }}
             title="Delete task"
             aria-label={`Delete ${task.name}`}
-            className="rounded-md p-1.5 text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>

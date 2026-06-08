@@ -29,7 +29,7 @@ const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
 const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
-const COMPACT_MONITOR_SIDEBAR_HEIGHT = 260
+const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
 const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
@@ -131,7 +131,7 @@ export default function MonitorPage() {
   const monitorResizeFrameRef = useRef<number | null>(null)
   const terminalVisible = Boolean(selectedTaskName)
   const monitorShellClassName = clsx(
-    'flex h-full min-w-0 overflow-hidden',
+    'flex h-full w-full max-w-full min-w-0 overflow-hidden',
     compactMonitorLayout ? 'flex-col' : 'flex-row',
   )
   usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
@@ -764,11 +764,11 @@ export default function MonitorPage() {
       <aside
         className={clsx(
           'flex flex-none flex-col overflow-hidden bg-surface-raised',
-          compactMonitorLayout ? 'border-b border-border-subtle' : 'border-r border-border-subtle',
+          compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle',
         )}
         style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}
       >
-        <div className="border-b border-border-subtle px-2.5 py-2">
+        <div className="flex-none border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
             <div>
               <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">Monitor</div>
@@ -781,7 +781,7 @@ export default function MonitorPage() {
           <SearchInput value={sidebarQuery} onChange={setSidebarQuery} placeholder="Filter tasks..." debounceMs={150} />
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2 py-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           {pinnedTasks.length > 0 && (
             <CompactSection
               title="Pinned Tasks"
@@ -827,7 +827,7 @@ export default function MonitorPage() {
           </CompactSection>
         </div>
 
-        <div className="border-t border-border-subtle px-2.5 py-2">
+        <div className="flex-none border-t border-border-subtle px-2.5 py-2">
           {!exportMode ? (
             <ActionButton
               icon={<FileDown className="h-3.5 w-3.5" />}
@@ -887,12 +887,12 @@ export default function MonitorPage() {
         />
       )}
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col" style={{ background: '#0A0A0B' }}>
+      <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" style={{ background: '#0A0A0B' }}>
         <div className="flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-3 py-2">
           {selectedTask ? (
             <>
               <StatusBadge status={selectedTask.status as TaskStatus} />
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 basis-[12rem]">
                 <div className="truncate text-sm font-medium text-txt-primary" title={selectedTask.name}>
                   {selectedTask.name}
                 </div>
@@ -1025,7 +1025,7 @@ export default function MonitorPage() {
           {selectedTaskName ? (
             <div ref={termContainerRef} className="monitor-terminal-shell h-full w-full" />
           ) : (
-            <div className="flex h-full items-center justify-center">
+            <div className="flex h-full min-w-0 items-center justify-center px-4">
               <EmptyState title="No task selected" description="Select a task from the sidebar to inspect logs" />
             </div>
           )}
@@ -1063,7 +1063,7 @@ function SidebarItem({
       type="button"
       onClick={onClick}
       className={clsx(
-        'flex w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors',
+        'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'

@@ -20,8 +20,8 @@ const VARIANT_STYLES: Record<ActionButtonVariant, string> = {
 }
 
 const SIZE_STYLES: Record<ActionButtonSize, string> = {
-  sm: 'gap-1.5 rounded-md px-3 py-1.5 text-xs',
-  md: 'gap-2 rounded-md px-3.5 py-2 text-sm',
+  sm: 'min-h-9 gap-1.5 rounded-md px-3 py-1.5 text-xs',
+  md: 'min-h-10 gap-2 rounded-md px-3.5 py-2 text-sm',
 }
 
 export default function ActionButton({

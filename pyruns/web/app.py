@@ -100,6 +100,7 @@ class RuntimeUpdateRequest(BaseModel):
     conda_executable: str | None = None
     global_env: dict[str, Any] | None = None
     global_env_text: str | None = None
+    gpu_scheduler: dict[str, Any] | None = None
 
 
 class TaskRenameRequest(BaseModel):

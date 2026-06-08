@@ -11,10 +11,13 @@ from fastapi.testclient import TestClient
 
 from pyruns import __version__
 from pyruns._config import (
+    CONFIG_DEFAULT_FILENAME,
     CONFIG_FILENAME,
     DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
+    SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
+    SHELL_WORKSPACE_NAME,
     TASKS_DIR,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
@@ -611,6 +614,132 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
         "--no-capture-output",
         "python",
     ]
+
+
+def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "gpu_scheduler": {
+                "enabled": True,
+                "task_mode": "multi",
+                "gpus_per_task": 2,
+                "device_ids": "0,1,2,3",
+                "memory_used_pct": 75,
+                "min_free_memory_gb": 8,
+                "compute_used_pct": 30,
+                "stable_seconds": 6,
+                "max_wait_seconds": 86400,
+                "max_tasks_per_gpu": 1,
+                "respect_cuda_visible_devices": True,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["gpu_scheduler"]
+    assert payload["enabled"] is True
+    assert payload["task_mode"] == "multi"
+    assert payload["gpus_per_task"] == 2
+    assert payload["device_ids"] == [0, 1, 2, 3]
+    assert payload["max_wait_seconds"] == 86400.0
+    settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
+    assert "gpu_scheduler_enabled: true" in settings_text
+    assert "gpu_scheduler_task_mode: multi" in settings_text
+    assert "- 0" in settings_text
+
+
+def test_runtime_update_multi_gpu_scheduler_requires_at_least_two_gpus(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "gpu_scheduler": {
+                "enabled": True,
+                "task_mode": "multi",
+                "gpus_per_task": 1,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["gpu_scheduler"]
+    assert payload["task_mode"] == "multi"
+    assert payload["gpus_per_task"] == 2
+    settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
+    assert "gpu_scheduler_gpus_per_task: 2" in settings_text
+
+
+def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "gpu_scheduler": {
+                "device_ids": "0,0,2",
+                "memory_used_pct": 250,
+                "compute_used_pct": -5,
+                "min_free_memory_gb": "bad",
+                "stable_seconds": "bad",
+                "max_wait_seconds": "bad",
+                "max_tasks_per_gpu": "bad",
+                "sample_interval_seconds": 0.1,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["gpu_scheduler"]
+    assert payload["device_ids"] == [0, 2]
+    assert payload["memory_used_pct"] == 100.0
+    assert payload["compute_used_pct"] == 0.0
+    assert payload["min_free_memory_gb"] == 40.0
+    assert payload["stable_seconds"] == 15.0
+    assert payload["max_wait_seconds"] == 172800.0
+    assert payload["max_tasks_per_gpu"] == 1
+    assert payload["sample_interval_seconds"] == 0.5
+
+
+def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "gpu_wait", status="queued")
+    queue_log = workspace / TASKS_DIR / "gpu_wait" / "run_logs" / "queue.log"
+    queue_log.write_text("[PYRUNS] GPU WAIT\nwaiting for GPU resources\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+
+    payload = runtime.get_task_logs("gpu_wait", tail_lines=20)
+
+    assert payload["selected_log"] == "queue.log"
+    assert payload["available_logs"][0] == "queue.log"
+    assert "waiting for GPU resources" in payload["content"]
 
 
 def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):
@@ -1921,6 +2050,37 @@ def test_runtime_helper_edges_and_conda_error_paths(tmp_path, monkeypatch):
     assert payload["error"] == "stdout failure"
 
 
+def test_runtime_list_conda_envs_parses_successful_payloads(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    root_prefix = tmp_path / "conda"
+    env_prefix = root_prefix / "envs" / "train"
+    runtime.settings["conda_executable"] = "conda"
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "train")
+    monkeypatch.setattr(runtime, "_resolve_executable", lambda value: str(tmp_path / "conda.exe"))
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(command, **kwargs):
+        if command[1:3] == ["info", "--json"]:
+            return Result(stdout=json.dumps({"root_prefix": str(root_prefix)}))
+        return Result(stdout=json.dumps({"envs": [str(root_prefix), str(env_prefix), str(env_prefix)]}))
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+
+    payload = runtime.list_conda_envs()
+
+    assert payload["available"] is True
+    assert [item["name"] for item in payload["envs"]] == ["base", "train"]
+    assert payload["envs"][1]["active"] is True
+
+
 def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
@@ -1944,6 +2104,10 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
         runtime.delete_tasks_batch(["", " "])
     with pytest.raises(ValueError, match="No valid tasks"):
         runtime.export_tasks_csv(["", " "])
+
+    monkeypatch.setattr(runtime.task_manager, "delete_tasks", lambda names: [])
+    with pytest.raises(ValueError, match="Could not move any selected tasks to trash"):
+        runtime.delete_tasks_batch(["alpha"])
 
     monkeypatch.setattr(runtime.task_manager, "set_task_pinned", lambda name, pinned: (False, "Task not found"))
     with pytest.raises(KeyError):
@@ -1979,6 +2143,191 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items: (False, "bad order"))
     with pytest.raises(ValueError, match="bad order"):
         runtime.reorder_tasks([])
+
+
+def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    old_manager = runtime.task_manager
+    shutdowns = []
+    monkeypatch.setattr(old_manager, "shutdown", lambda: shutdowns.append("old"))
+
+    new_workspace = _make_workspace(tmp_path, "next")
+    info = runtime.change_run_root(str(new_workspace))
+
+    assert info["run_root"] == str(new_workspace).replace("\\", "/")
+    assert shutdowns == ["old"]
+
+    with pytest.raises(ValueError, match="Run Root must contain"):
+        runtime.change_run_root(str(tmp_path / "plain"))
+
+    manager = runtime.task_manager
+    monkeypatch.setattr(manager, "shutdown", lambda: shutdowns.append("current"))
+    runtime.shutdown()
+    assert "current" in shutdowns
+
+    shell_workspace = _make_workspace(tmp_path, SHELL_WORKSPACE_NAME)
+    (shell_workspace / SCRIPT_INFO_FILENAME).write_text(json.dumps({"workspace_kind": WORKSPACE_KIND_SHELL}), encoding="utf-8")
+    shell_runtime = _build_runtime(shell_workspace)
+    shell_info = shell_runtime.get_workspace_info()
+    assert shell_info["workspace_kind"] == WORKSPACE_KIND_SHELL
+    assert shell_info["working_root"].endswith(str(tmp_path).replace("\\", "/"))
+
+    assert runtime_mod._coerce_bool_payload(True) is True
+    assert runtime_mod._coerce_bool_payload("yes") is True
+    assert runtime_mod._coerce_bool_payload("no") is False
+    assert runtime_mod._coerce_int_payload("bad", 7, minimum=2) == 7
+    assert runtime_mod._coerce_float_payload("bad", 1.5, minimum=2.0) == 2.0
+    assert runtime_mod._coerce_gpu_device_ids_payload(["0", "0", "x", 2]) == [0, 2]
+    assert runtime_mod._coerce_gpu_device_ids_payload(object()) == []
+
+
+def test_runtime_generator_preview_and_create_error_edges(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+
+    with pytest.raises(ValueError, match="Unsupported generator mode"):
+        runtime.preview_tasks_from_template(mode="bad", yaml_text="lr: 1")
+    with pytest.raises(ValueError, match="Invalid YAML"):
+        runtime.preview_tasks_from_template(mode="form", yaml_text="lr: [")
+    with pytest.raises(ValueError, match="mapping"):
+        runtime.preview_tasks_from_template(mode="form", yaml_text="[1, 2]")
+    with pytest.raises(ValueError, match="YAML mode does not support batch syntax"):
+        runtime.preview_tasks_from_template(mode="yaml", yaml_text="lr: 1 | 2")
+
+    template = workspace / CONFIG_DEFAULT_FILENAME
+    template.write_text("lr: 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="类型错误"):
+        runtime.preview_tasks_from_template(mode="form", yaml_text="lr: text", template_value=CONFIG_DEFAULT_FILENAME)
+
+    result = runtime.preview_tasks_from_template(mode="form", yaml_text="lr: 1 | 2")
+    assert result["count"] == 2
+    assert len(result["items"]) == 2
+
+    created = runtime.create_tasks_from_template(name_prefix="unit", mode="yaml", yaml_text="lr: 3", append_timestamp=False)
+    assert created["count"] == 1
+    assert created["task_kind"] == TASK_KIND_CONFIG
+
+    with pytest.raises(ValueError, match="Unsupported generator mode"):
+        runtime.create_tasks_from_template(name_prefix="bad", mode="bad", yaml_text="lr: 1", append_timestamp=False)
+
+    shell_workspace = _make_workspace(tmp_path, SHELL_WORKSPACE_NAME)
+    (shell_workspace / SCRIPT_INFO_FILENAME).write_text(json.dumps({"workspace_kind": WORKSPACE_KIND_SHELL}), encoding="utf-8")
+    shell_runtime = _build_runtime(shell_workspace)
+    with pytest.raises(ValueError, match="Shell workspace only supports shell mode"):
+        shell_runtime.preview_tasks_from_template(mode="form", shell_text="echo hi")
+    with pytest.raises(ValueError, match="non-empty"):
+        shell_runtime.preview_tasks_from_template(mode="shell", shell_text="")
+    shell_preview = shell_runtime.preview_tasks_from_template(mode="shell", shell_text="echo hi")
+    assert shell_preview["task_kind"] == TASK_KIND_SHELL
+
+    shell_created = shell_runtime.create_tasks_from_template(
+        name_prefix="shell-task",
+        mode="shell",
+        shell_text="echo hi",
+        append_timestamp=False,
+    )
+    assert shell_created["count"] == 1
+    assert shell_created["task_kind"] == TASK_KIND_SHELL
+
+
+def test_runtime_export_tasks_csv_handles_duplicate_names_and_empty_monitor_data(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "with-records", status="completed")
+    update_task_info(
+        str(workspace / TASKS_DIR / "with-records"),
+        lambda info: info.update({"records": [{"loss": 0.12}]}),
+    )
+    _add_task(workspace, "no-records", status="completed")
+    runtime = _build_runtime(workspace)
+
+    csv_text = runtime.export_tasks_csv(["with-records", "", "with-records"])
+
+    assert "with-records" in csv_text
+    assert "loss" in csv_text
+    with pytest.raises(ValueError, match="No valid tasks"):
+        runtime.export_tasks_csv(["", " "])
+
+
+def test_runtime_log_selection_and_launcher_picker_edges(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "missing-log", status="completed")
+    _add_task(workspace, "running-log", status="running")
+    running = workspace / TASKS_DIR / "running-log"
+    log_dir = running / "run_logs"
+    log_dir.mkdir(exist_ok=True)
+    (log_dir / "run1.log").write_text("hello\nworld\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+
+    empty_logs = runtime.get_task_logs("missing-log", log_file_name="run99.log")
+    assert empty_logs["content"] == ""
+    assert empty_logs["selected_log"] == "run99.log"
+    with pytest.raises(KeyError):
+        runtime.get_task_logs("ghost")
+
+    monkeypatch.setattr(
+        runtime,
+        "get_task",
+        lambda task_name, refresh=False: {
+            "name": task_name,
+            "dir": str(running),
+            "status": "running",
+            "run_index": "bad",
+        },
+    )
+    payload = runtime.get_task_logs("running-log", tail_lines=1)
+    assert payload["selected_log"] == "run1.log"
+    assert "world" in payload["content"]
+    chunk_payload = runtime.get_task_logs("running-log", offset=0, chunk_size=5)
+    assert chunk_payload["content"].startswith("hello")
+    tail_payload = runtime.get_task_logs("running-log", tail_bytes=5)
+    assert tail_payload["content"].endswith("rld\r\n")
+
+    script = tmp_path / "train.py"
+    config = tmp_path / "config.yaml"
+    script.write_text("print('x')\n", encoding="utf-8")
+    config.write_text("lr: 1\n", encoding="utf-8")
+    assert runtime.validate_launcher_path("python", str(script))["ok"] is True
+    assert runtime.validate_launcher_path("python", str(config))["ok"] is False
+    assert runtime.validate_launcher_path("shell", str(tmp_path))["ok"] is True
+    assert runtime.validate_launcher_path("config", "config.yaml", script_path=str(script))["ok"] is True
+    assert runtime.validate_launcher_path("config", str(tmp_path / "bad.txt"))["ok"] is False
+    assert runtime.validate_launcher_path("weird", str(tmp_path))["ok"] is False
+    assert runtime.validate_launcher_path("python", "")["message"] == "Path is empty."
+
+    monkeypatch.setattr(runtime_mod, "native_picker_available", lambda: False)
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_launcher_script_path()
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_launcher_config_path(str(script))
+    with pytest.raises(ValueError, match="Native file picker"):
+        runtime.pick_and_open_launcher_workspace()
+    with pytest.raises(ValueError, match="Native folder picker"):
+        runtime.pick_and_open_shell_workspace()
+
+    monkeypatch.setattr(runtime_mod, "native_picker_available", lambda: True)
+    monkeypatch.setattr(runtime_mod, "choose_script_file", lambda initial: "")
+    with pytest.raises(ValueError, match="No script selected"):
+        runtime.pick_launcher_script_path()
+    with pytest.raises(ValueError, match="No script selected"):
+        runtime.pick_and_open_launcher_workspace()
+    monkeypatch.setattr(runtime_mod, "choose_directory", lambda initial: "")
+    with pytest.raises(ValueError, match="No directory selected"):
+        runtime.pick_and_open_shell_workspace()
+    with pytest.raises(FileNotFoundError):
+        runtime.pick_launcher_config_path(str(tmp_path / "missing.py"))
+
+    config_info = runtime.get_template_content(CONFIG_DEFAULT_FILENAME)
+    assert config_info["mode_hint"] == "yaml"
+    assert config_info["parsed_config"]["lr"] == 0.01
+    shell_template = tmp_path / "run.sh"
+    shell_template.write_text("echo hi\n", encoding="utf-8")
+    shell_info = runtime.get_template_content(str(shell_template))
+    assert shell_info["mode_hint"] == "shell"
 
 
 def test_runtime_shell_templates_include_task_payloads_and_filter_project_scripts(tmp_path, monkeypatch):
