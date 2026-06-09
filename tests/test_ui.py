@@ -1347,13 +1347,15 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "max-w-[34%]" not in generator
 
 
-def test_react_generator_shell_mode_loads_existing_shell_scripts():
+def test_react_generator_shell_mode_loads_existing_shell_tasks():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
 
     assert "handlePickShellFile" in generator
     assert "api.pickGeneratorShellFile()" in generator
-    assert "Load task or script" in generator
+    assert "Load task" in generator
+    assert "Search tasks" in generator
+    assert "No matching tasks" in generator
     assert "Browse Shell" in generator
     assert "Shell Workspace" not in generator
     assert "templates.some(template => template.value === selectedTemplate)" in generator
@@ -1367,7 +1369,6 @@ def test_react_generator_template_picker_supports_search():
     assert "templateFilter" in generator
     assert "filteredOptions" in generator
     assert "Search templates" in generator
-    assert "Search tasks or scripts" in generator
     assert "No matching templates" in generator
     assert 'role="listbox"' in generator
     assert 'aria-expanded={open}' in generator

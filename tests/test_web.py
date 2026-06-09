@@ -1673,9 +1673,7 @@ def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
     shell_payload = shell_response.json()
     assert shell_payload["workspace_kind"] == WORKSPACE_KIND_SHELL
     assert shell_payload["script_name"] == "_shell_"
-    assert shell_payload["templates"] == [
-        {"value": str(shell_file).replace("\\", "/"), "label": "run_smoke.sh"}
-    ]
+    assert shell_payload["templates"] == []
 
     template_response = client.get("/api/templates/content", params={"value": str(shell_file)})
     assert template_response.status_code == 200
@@ -1722,7 +1720,7 @@ def test_shell_workspace_templates_include_existing_shell_task_payloads_first(tm
     items = response.json()["items"]
     assert items[0]["label"] == task["name"]
     assert items[0]["value"] == f"tasks/{task['name']}/{task['config_file']}"
-    assert {"value": str(shell_file).replace("\\", "/"), "label": "run_smoke.sh"} in items
+    assert {"value": str(shell_file).replace("\\", "/"), "label": "run_smoke.sh"} not in items
 
     content_response = client.get("/api/templates/content", params={"value": items[0]["value"]})
     assert content_response.status_code == 200
@@ -2410,7 +2408,7 @@ def test_runtime_log_selection_and_launcher_picker_edges(tmp_path, monkeypatch):
     assert shell_info["mode_hint"] == "shell"
 
 
-def test_runtime_shell_templates_include_task_payloads_and_filter_project_scripts(tmp_path, monkeypatch):
+def test_runtime_shell_templates_only_include_task_payloads(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     project_root = tmp_path / "shell-project"
     project_root.mkdir()
@@ -2457,10 +2455,52 @@ def test_runtime_shell_templates_include_task_payloads_and_filter_project_script
     labels = [item["label"] for item in items]
 
     assert labels[0] == "from-task"
-    assert "run.sh" in labels
-    assert "scripts/deep/train.sh" in labels
+    assert "run.sh" not in labels
+    assert "scripts/deep/train.sh" not in labels
     assert ".git/ignored.sh" not in labels
     assert "notes.txt" not in labels
+
+
+def test_runtime_shell_templates_follow_manager_order(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    runtime.open_shell_workspace()
+
+    def add_shell_task(name, **info):
+        task_dir = Path(runtime.tasks_dir) / name
+        task_dir.mkdir(parents=True)
+        (task_dir / SHELL_CONFIG_FILENAME).write_text(f"echo {name}\n", encoding="utf-8")
+        save_task_info(
+            str(task_dir),
+            {
+                "name": name,
+                "task_kind": TASK_KIND_SHELL,
+                "config_file": SHELL_CONFIG_FILENAME,
+                "status": "pending",
+                "created_at": "2026-05-28_02-25-46",
+                "start_times": [],
+                "finish_times": [],
+                "pinned": False,
+                **info,
+            },
+        )
+
+    add_shell_task("manual-completed", status="completed", task_order=0)
+    add_shell_task("fresh-new", created_at="2026-05-31_22-50-00")
+    add_shell_task(
+        "running-manual",
+        status="running",
+        start_times=["2026-05-28_02-25-48"],
+        task_order=2,
+    )
+    add_shell_task("pinned-fresh", pinned=True, created_at="2026-05-31_22-55-00")
+
+    assert [item["label"] for item in runtime.list_shell_templates()] == [
+        "pinned-fresh",
+        "running-manual",
+        "fresh-new",
+        "manual-completed",
+    ]
 
 
 def test_runtime_generator_shell_and_picker_error_branches(tmp_path, monkeypatch):

@@ -181,6 +181,7 @@ interface TemplatePickerProps {
   options: TemplateOption[]
   placeholder: string
   searchPlaceholder: string
+  emptyLabel?: string
   allowEmpty?: boolean
   onChange: (value: string) => void
 }
@@ -190,6 +191,7 @@ function TemplatePicker({
   options,
   placeholder,
   searchPlaceholder,
+  emptyLabel = 'No matching templates',
   allowEmpty = false,
   onChange,
 }: TemplatePickerProps) {
@@ -301,7 +303,7 @@ function TemplatePicker({
                 </button>
               ))
             ) : (
-              <div className="px-3 py-2 text-xs text-txt-tertiary">No matching templates</div>
+              <div className="px-3 py-2 text-xs text-txt-tertiary">{emptyLabel}</div>
             )}
           </div>
         </div>
@@ -886,8 +888,9 @@ export default function GeneratorPage() {
               <TemplatePicker
                 value={shellTemplateSelectValue}
                 options={templates}
-                placeholder="Load task or script"
-                searchPlaceholder="Search tasks or scripts"
+                placeholder="Load task"
+                searchPlaceholder="Search tasks"
+                emptyLabel="No matching tasks"
                 allowEmpty
                 onChange={value => {
                   if (value) {

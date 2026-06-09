@@ -68,17 +68,6 @@ TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
 SHELL_TEMPLATE_EXTENSIONS = {".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd"}
-SHELL_TEMPLATE_SKIP_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".venv",
-    "__pycache__",
-    "node_modules",
-    _cfg.DEFAULT_ROOT_NAME,
-}
-SHELL_TEMPLATE_MAX_DEPTH = 3
-SHELL_TEMPLATE_LIMIT = 80
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _GPU_SCHEDULER_PAYLOAD_KEYS = {
     "enabled": "gpu_scheduler_enabled",
@@ -654,15 +643,13 @@ class PyrunsRuntime:
         return result
 
     def list_shell_templates(self, script_info: Dict[str, Any] | None = None) -> List[Dict[str, str]]:
-        """Return shell payloads and nearby scripts that can seed shell-mode tasks."""
+        """Return existing shell task payloads that can seed shell-mode tasks."""
 
-        info = script_info if script_info is not None else load_script_info(self.root_dir)
         items: List[Dict[str, str]] = []
-        seen_values: set[str] = set()
 
         tasks_dir = os.path.join(self.root_dir, TASKS_DIR)
         if os.path.isdir(tasks_dir):
-            task_entries: list[tuple[str, str, float]] = []
+            task_entries: List[Dict[str, Any]] = []
             for dir_name in sorted(os.listdir(tasks_dir)):
                 if dir_name.startswith("."):
                     continue
@@ -689,62 +676,52 @@ class PyrunsRuntime:
 
                 value = os.path.join(TASKS_DIR, dir_name, payload_name).replace("\\", "/")
                 try:
-                    mtime = os.path.getmtime(os.path.join(task_dir, _cfg.TASK_INFO_FILENAME))
+                    fallback_mtime = os.path.getmtime(os.path.join(task_dir, _cfg.TASK_INFO_FILENAME))
                 except OSError:
                     try:
-                        mtime = os.path.getmtime(os.path.join(task_dir, payload_name))
+                        fallback_mtime = os.path.getmtime(os.path.join(task_dir, payload_name))
                     except OSError:
-                        mtime = 0.0
-                task_entries.append((value, dir_name, mtime))
+                        fallback_mtime = 0.0
+                task_entries.append(
+                    {
+                        "name": dir_name,
+                        "status": task_info.get("status", "pending"),
+                        "created_at": task_info.get("created_at")
+                        or (
+                            time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(fallback_mtime))
+                            if fallback_mtime
+                            else ""
+                        ),
+                        "start_times": task_info.get("start_times", []),
+                        "finish_times": task_info.get("finish_times", []),
+                        "pinned": task_info.get("pinned", False),
+                        "task_order": task_info.get("task_order"),
+                        "_template_path": value,
+                    }
+                )
 
-            task_entries.sort(key=lambda item: item[2], reverse=True)
-            for value, label, _ in task_entries:
-                items.append({"value": value, "label": label})
-                seen_values.add(value)
+            for task in sort_tasks_for_manager(task_entries):
+                items.append({"value": str(task["_template_path"]), "label": str(task["name"])})
 
-        project_root = str(info.get("project_root", "") or "")
-        if not project_root:
-            project_root = shell_project_root_for_workspace(self.root_dir)
-        project_root = self._normalize_path(project_root)
-        if not os.path.isdir(project_root):
-            return items
-
-        project_items: List[Dict[str, str]] = []
-        for dirpath, dirnames, filenames in os.walk(project_root):
-            normalized_dir = self._normalize_path(dirpath)
-            rel_dir = os.path.relpath(normalized_dir, project_root)
-            depth = 0 if rel_dir == "." else len(rel_dir.split(os.sep))
-            if depth >= SHELL_TEMPLATE_MAX_DEPTH:
-                dirnames[:] = []
-            else:
-                dirnames[:] = [
-                    name for name in dirnames
-                    if name not in SHELL_TEMPLATE_SKIP_DIRS and not name.startswith(".")
-                ]
-
-            for filename in sorted(filenames):
-                suffix = os.path.splitext(filename)[1].lower()
-                if suffix not in SHELL_TEMPLATE_EXTENSIONS:
-                    continue
-                path = self._normalize_path(os.path.join(normalized_dir, filename))
-                rel = os.path.relpath(path, project_root).replace("\\", "/")
-                if path in seen_values:
-                    continue
-                project_items.append({"value": path, "label": rel})
-                seen_values.add(path)
-                if len(project_items) >= SHELL_TEMPLATE_LIMIT:
-                    break
-            if len(project_items) >= SHELL_TEMPLATE_LIMIT:
-                break
-
-        items.extend(sorted(
-            project_items,
-            key=lambda item: (
-                item["label"].count("/"),
-                item["label"].lower(),
-            ),
-        ))
         return items
+
+    def _fallback_template_label(self, path: str, template_value: str, script_info: Dict[str, Any]) -> str:
+        """Return a readable label for templates loaded outside the picker list."""
+
+        workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
+        if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
+            project_root = str(script_info.get("project_root", "") or "")
+            if not project_root:
+                project_root = shell_project_root_for_workspace(self.root_dir)
+            project_root = self._normalize_path(project_root)
+            try:
+                common_root = self._normalize_path(os.path.commonpath([path, project_root]))
+                if project_root and os.path.normcase(common_root) == os.path.normcase(project_root):
+                    return os.path.relpath(path, project_root).replace("\\", "/")
+            except (OSError, ValueError):
+                pass
+
+        return os.path.basename(path)
 
     def resolve_template_path(self, template_value: str) -> str:
         """Resolve one template entry from workspace-relative or absolute value."""
@@ -770,11 +747,11 @@ class PyrunsRuntime:
         with open(path, "r", encoding="utf-8") as handle:
             content = handle.read()
 
+        script_info = load_script_info(self.root_dir)
         label = next(
             (item["label"] for item in self.list_templates() if item["value"] == path or item["value"] == template_value),
-            os.path.basename(path),
+            self._fallback_template_label(path, template_value, script_info),
         )
-        script_info = load_script_info(self.root_dir)
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
         suffix = os.path.splitext(path)[1].lower()
         mode_hint = "shell" if (
