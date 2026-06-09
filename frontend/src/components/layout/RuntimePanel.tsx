@@ -271,9 +271,6 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
   const chooseGpuTaskMode = (mode: GpuTaskMode) => {
     setGpuTaskMode(mode)
-    if (mode === 'multi') {
-      setGpuCount(current => (numberInputValue(current, 1, 1) < 2 ? '2' : current))
-    }
   }
 
   const saveGpuScheduler = () => {
@@ -281,7 +278,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       gpu_scheduler: {
         enabled: gpuSchedulerEnabled,
         task_mode: gpuTaskMode,
-        gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 2, 2) : 1,
+        gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1,
         device_ids: parseDeviceIds(gpuDeviceIds),
         memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100),
         min_free_memory_gb: numberInputValue(gpuMinFreeMemoryGb, 40, 0),
@@ -564,7 +561,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
                 {[
                   { id: 'single' as GpuTaskMode, label: 'One GPU' },
-                  { id: 'multi' as GpuTaskMode, label: 'Multiple GPUs' },
+                  { id: 'multi' as GpuTaskMode, label: 'Custom Count' },
                 ].map(item => (
                   <button
                     key={item.id}
@@ -588,7 +585,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">GPUs per task</span>
                 <input
                   type="number"
-                  min={gpuTaskMode === 'multi' ? 2 : 1}
+                  min={1}
                   value={gpuTaskMode === 'multi' ? gpuCount : '1'}
                   disabled={gpuTaskMode !== 'multi'}
                   onChange={event => setGpuCount(event.target.value)}

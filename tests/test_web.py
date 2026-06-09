@@ -659,7 +659,7 @@ def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
     assert "- 0" in settings_text
 
 
-def test_runtime_update_multi_gpu_scheduler_requires_at_least_two_gpus(tmp_path, monkeypatch):
+def test_runtime_update_multi_gpu_scheduler_allows_one_gpu_limit(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
     monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
@@ -684,9 +684,9 @@ def test_runtime_update_multi_gpu_scheduler_requires_at_least_two_gpus(tmp_path,
     assert response.status_code == 200
     payload = response.json()["gpu_scheduler"]
     assert payload["task_mode"] == "multi"
-    assert payload["gpus_per_task"] == 2
+    assert payload["gpus_per_task"] == 1
     settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
-    assert "gpu_scheduler_gpus_per_task: 2" in settings_text
+    assert "gpu_scheduler_gpus_per_task: 1" in settings_text
 
 
 def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(tmp_path, monkeypatch):

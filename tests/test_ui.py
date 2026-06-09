@@ -996,6 +996,7 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "type RuntimePage = 'python' | 'env' | 'gpu'" in runtime_panel
     assert "GPU Scheduler" in runtime_panel
     assert "Task uses" in runtime_panel
+    assert "Custom Count" in runtime_panel
     assert "Memory used below" in runtime_panel
     assert "Free memory at least" in runtime_panel
     assert "Compute below" in runtime_panel
@@ -1007,9 +1008,8 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "setGpuSchedulerEnabled(next.gpu_scheduler?.enabled ?? false)" in runtime_panel
     assert "function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number)" in runtime_panel
     assert "const chooseGpuTaskMode = (mode: GpuTaskMode) => {" in runtime_panel
-    assert "setGpuCount(current => (numberInputValue(current, 1, 1) < 2 ? '2' : current))" in runtime_panel
-    assert "min={gpuTaskMode === 'multi' ? 2 : 1}" in runtime_panel
-    assert "gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 2, 2) : 1" in runtime_panel
+    assert "min={1}" in runtime_panel
+    assert "gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1" in runtime_panel
     assert "memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100)" in runtime_panel
     assert "compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100)" in runtime_panel
     assert "max_wait_seconds: gpuMaxWaitHours * 3600" in runtime_panel

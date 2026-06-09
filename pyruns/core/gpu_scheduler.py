@@ -87,11 +87,10 @@ class GpuSchedulerConfig:
     def from_settings(cls, settings: Dict[str, Any]) -> "GpuSchedulerConfig":
         task_mode = str(settings.get("gpu_scheduler_task_mode", "single") or "single").strip().lower()
         task_mode = "multi" if task_mode == "multi" else "single"
-        min_gpus_per_task = 2 if task_mode == "multi" else 1
         return cls(
             enabled=_coerce_bool(settings.get("gpu_scheduler_enabled", False), False),
             task_mode=task_mode,
-            gpus_per_task=max(min_gpus_per_task, _coerce_int(settings.get("gpu_scheduler_gpus_per_task"), min_gpus_per_task)),
+            gpus_per_task=max(1, _coerce_int(settings.get("gpu_scheduler_gpus_per_task"), 1)),
             device_ids=_coerce_device_ids(settings.get("gpu_scheduler_device_ids", [])),
             memory_used_pct=_coerce_pct(settings.get("gpu_scheduler_memory_used_pct"), 40.0),
             min_free_memory_gb=max(0.0, _coerce_float(settings.get("gpu_scheduler_min_free_memory_gb"), 40.0)),
@@ -106,7 +105,7 @@ class GpuSchedulerConfig:
     @property
     def required_gpu_count(self) -> int:
         if self.task_mode == "multi":
-            return max(2, int(self.gpus_per_task or 2))
+            return max(1, int(self.gpus_per_task or 1))
         return 1
 
 

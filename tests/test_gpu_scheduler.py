@@ -184,6 +184,26 @@ def test_gpu_scheduler_limits_to_gpu_pool_and_reports_insufficient_multi_gpu_cap
     assert decision.reason == "need 2 eligible GPUs, only 1 available"
 
 
+def test_gpu_scheduler_multi_mode_can_request_one_gpu_when_limit_is_one():
+    provider = SequenceGpuProvider([[_gpu(0, used=1024, util=0)]])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 35.0)
+    config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        gpus_per_task=1,
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=0,
+    )
+
+    decision = scheduler.try_reserve("multi-one", 1, config, task_env={})
+
+    assert decision.assignment is not None
+    assert decision.assignment.gpu_ids == [0]
+    assert decision.assignment.env["CUDA_VISIBLE_DEVICES"] == "0"
+
+
 def test_gpu_scheduler_allows_same_gpu_concurrency_until_configured_limit():
     provider = SequenceGpuProvider([[_gpu(0, used=1024, util=0)]])
     scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 40.0)
@@ -377,14 +397,14 @@ def test_gpu_scheduler_config_defaults_match_conservative_local_gpu_profile():
     assert config.respect_cuda_visible_devices is True
 
 
-def test_gpu_scheduler_config_multi_mode_requires_at_least_two_gpus():
+def test_gpu_scheduler_config_multi_mode_allows_one_gpu_when_limit_is_one():
     config = GpuSchedulerConfig.from_settings({
         "gpu_scheduler_task_mode": "multi",
         "gpu_scheduler_gpus_per_task": 1,
     })
 
-    assert config.gpus_per_task == 2
-    assert config.required_gpu_count == 2
+    assert config.gpus_per_task == 1
+    assert config.required_gpu_count == 1
 
 
 def test_gpu_scheduler_config_clamps_percent_thresholds():

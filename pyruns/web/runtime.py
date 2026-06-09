@@ -210,7 +210,6 @@ def _coerce_gpu_device_ids_payload(value: Any) -> List[int]:
 
 def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     clean: Dict[str, Any] = {}
-    task_mode = str(payload.get("task_mode", "") or "").strip().lower()
     for key, setting_key in _GPU_SCHEDULER_PAYLOAD_KEYS.items():
         if key not in payload:
             continue
@@ -223,8 +222,7 @@ def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         elif key == "device_ids":
             clean[setting_key] = _coerce_gpu_device_ids_payload(value)
         elif key == "gpus_per_task":
-            minimum = 2 if task_mode == "multi" else 1
-            clean[setting_key] = _coerce_int_payload(value, minimum, minimum=minimum)
+            clean[setting_key] = _coerce_int_payload(value, 1, minimum=1)
         elif key == "max_tasks_per_gpu":
             clean[setting_key] = _coerce_int_payload(
                 value,
