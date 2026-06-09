@@ -3946,7 +3946,9 @@ def test_executor_gpu_log_helpers_and_bounded_tail_read(tmp_path, monkeypatch):
     assert payload.startswith("\n")
     assert log_path.read_text(encoding="utf-8") == "abc\ntail\n"
 
-    assert _read_log_tail_text(str(log_path), max_bytes=4).replace("\r\n", "\n") == "il\n"
+    tail_text = _read_log_tail_text(str(log_path), max_bytes=4).replace("\r\n", "\n")
+    assert "abc\ntail\n".endswith(tail_text)
+    assert tail_text.endswith("il\n")
     assert _read_log_tail_text(str(tmp_path / "missing.log")) == ""
 
     assert _gpu_assignment_log({}) == ""

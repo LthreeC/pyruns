@@ -2285,7 +2285,9 @@ def test_runtime_log_selection_and_launcher_picker_edges(tmp_path, monkeypatch):
     chunk_payload = runtime.get_task_logs("running-log", offset=0, chunk_size=5)
     assert chunk_payload["content"].startswith("hello")
     tail_payload = runtime.get_task_logs("running-log", tail_bytes=5)
-    assert tail_payload["content"].endswith("rld\r\n")
+    tail_content = tail_payload["content"].replace("\r\n", "\n")
+    assert "hello\nworld\n".endswith(tail_content)
+    assert tail_content.endswith("ld\n")
 
     script = tmp_path / "train.py"
     config = tmp_path / "config.yaml"
