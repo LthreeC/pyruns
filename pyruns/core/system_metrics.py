@@ -15,11 +15,15 @@ class SystemMonitor:
 
     _GPU_QUERY_TIMEOUT_SEC = 1.0
 
-    def __init__(self) -> None:
+    def __init__(self, *, gpu_ttl_sec: float = 1.5) -> None:
         self._gpu_cache: List[Dict[str, Any]] = []
         self._gpu_cache_at: float = 0.0
         self._gpu_cache_valid: bool = False
-        self._gpu_ttl_sec: float = 1.5
+        try:
+            ttl = float(gpu_ttl_sec)
+        except (TypeError, ValueError):
+            ttl = 1.5
+        self._gpu_ttl_sec: float = max(0.0, ttl)
         self._gpu_available: bool = True
         self._gpu_fail_count: int = 0
         self._gpu_max_fails: int = 3

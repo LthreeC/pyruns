@@ -196,6 +196,43 @@ def _coerce_gpu_device_ids_payload(value: Any) -> List[int]:
     return ids
 
 
+def _prettify_gpu_queue_log_content(content: str) -> str:
+    """Make legacy GPU queue logs readable without changing normal run logs."""
+
+    if not content:
+        return ""
+
+    text = str(content).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(
+        r"(?m)^(\[PYRUNS\] ={3,} [A-Z][A-Z ]* ={3,})\n{2,}",
+        r"\1\n",
+        text,
+    )
+    text = re.sub(
+        r"(?m)\n{2,}(\[PYRUNS\] ={20,})\n{2,}",
+        r"\n\1\n",
+        text,
+    )
+    text = re.sub(r"(?m)^\[PYRUNS\] -+ RUN #\d+ -+\n{0,2}", "", text)
+    lines = re.sub(r"\n{3,}", "\n\n", text).splitlines()
+    output: List[str] = []
+    last_run_index: str | None = None
+
+    for line in lines:
+        match = re.search(r"\bRun #(\d+)\b", line)
+        if match:
+            run_index = match.group(1)
+            if last_run_index and run_index != last_run_index:
+                if output and output[-1] != "":
+                    output.append("")
+                output.append(f"[PYRUNS] -------------------- RUN #{run_index} --------------------")
+                output.append("")
+            last_run_index = run_index
+        output.append(line)
+
+    return "\n".join(output) + ("\n" if text.endswith("\n") else "")
+
+
 def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     clean: Dict[str, Any] = {}
     for key, setting_key in _GPU_SCHEDULER_PAYLOAD_KEYS.items():
@@ -1090,12 +1127,10 @@ class PyrunsRuntime:
         selected_path = log_options.get(selected_name) if selected_name else None
 
         task_status = str(task.get("status", "")).lower()
-        if not selected_name and task_status == "queued":
-            queue_name = _cfg.QUEUE_LOG_FILENAME
+        queue_name = _cfg.QUEUE_LOG_FILENAME
+        if not selected_name and task_status == "queued" and queue_name in log_options:
             selected_name = queue_name
             selected_path = log_options.get(queue_name)
-            if queue_name not in available_logs:
-                available_logs.insert(0, queue_name)
 
         if not selected_name and task_status == "running":
             try:
@@ -1152,6 +1187,9 @@ class PyrunsRuntime:
                     _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
                 )
             content, new_offset = safe_read_log(selected_path, max(0, offset), max_bytes=max(1, byte_limit))
+
+        if selected_name == _cfg.QUEUE_LOG_FILENAME:
+            content = _prettify_gpu_queue_log_content(content)
 
         return {
             "task_name": task_name,

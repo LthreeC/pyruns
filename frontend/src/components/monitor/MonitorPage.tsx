@@ -114,12 +114,14 @@ export default function MonitorPage() {
   )
   const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
+  const isQueueLogSelected = selectedLog === QUEUE_LOG_NAME
+  const isViewingLiveRunLog = !selectedLog || selectedLog === liveLogName
   const isLive = Boolean(
     selectedTask
     && (selectedTask.status === 'running' || selectedTask.status === 'queued')
-    && (!selectedLog || selectedLog === liveLogName)
+    && (isViewingLiveRunLog || isQueueLogSelected)
   )
-  const canUseLogStream = selectedTask?.status === 'running' && liveLogName === runLogName
+  const canUseLogStream = selectedTask?.status === 'running' && (!selectedLog || selectedLog === runLogName)
   const hasActive = useMemo(
     () => monitorTasks.some(task => task.status === 'running' || task.status === 'queued'),
     [monitorTasks],
@@ -598,42 +600,6 @@ export default function MonitorPage() {
     livePollInFlightRef.current = false
     wsStreamActiveRef.current = false
   }, [liveLogName, selectedTaskName])
-
-  useEffect(() => {
-    if (!selectedTaskName || !selectedTask) {
-      return
-    }
-
-    if (
-      selectedTask.status === 'running'
-      && selectedLog === QUEUE_LOG_NAME
-      && runLogName
-      && availableLogs.includes(runLogName)
-    ) {
-      useMonitorStore.setState({
-        selectedLog: runLogName,
-        logContent: '',
-        logOffset: 0,
-      })
-      selectedLogRef.current = runLogName
-      void api.getTaskLogs(selectedTaskName, {
-        logFileName: runLogName,
-        tailLines: monitorScrollback,
-      }).then(logs => {
-        if (selectedTaskNameRef.current !== selectedTaskName) {
-          return
-        }
-        useMonitorStore.setState({
-          logContent: logs.content,
-          logOffset: logs.offset,
-          availableLogs: logs.available_logs,
-          selectedLog: logs.selected_log,
-        })
-      }).catch(() => {
-        // Live polling will retry on the next tick.
-      })
-    }
-  }, [availableLogs, monitorScrollback, runLogName, selectedLog, selectedTask, selectedTaskName])
 
   const handleChunk = useCallback((message: LogStreamMessage) => {
     const activeTaskName = selectedTaskNameRef.current

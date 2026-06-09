@@ -2705,6 +2705,7 @@ def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_p
     assert "[PYRUNS] ================= GPU ASSIGNED =================" in text
     assert "Run #1 assigned GPUs 0,1" in text
     assert "CUDA_VISIBLE_DEVICES=0,1" in text
+    assert "PYRUNS_ASSIGNED_GPUS=0,1" in text
     assert "Updated at " in text
     assert "Last status at " in text
 
@@ -4134,6 +4135,17 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     assert "still waiting after 00:01:01" in periodic[0]
 
     queue_text = (task_dir / RUN_LOGS_DIR / "queue.log").read_text(encoding="utf-8")
+    assert b"\r" not in (task_dir / RUN_LOGS_DIR / "queue.log").read_bytes()
+    assert "\r" not in queue_text
+    assert "[PYRUNS] ================= GPU WAIT =================\n[PYRUNS] Updated at " in queue_text
+    assert "[PYRUNS] ================= GPU WAIT =================\n\n[PYRUNS] Updated at " not in queue_text
+    assert "-------------------- RUN #2 --------------------" in queue_text
+    run_one_text, run_two_text = queue_text.split("-------------------- RUN #2 --------------------", 1)
+    run_two_body = run_two_text.lstrip("\n")
+    assert "\n\n[PYRUNS] Last status at " not in run_one_text
+    assert "\n\n[PYRUNS] ================= GPU ASSIGNED =================" not in run_one_text
+    assert run_two_body.startswith("[PYRUNS] ================= GPU ASSIGNED =================")
+    assert "\n\n[PYRUNS] Last status at " not in run_two_body
     assert "GPU WAIT" in queue_text
     assert "GPU ASSIGNED" in queue_text
     assert "still waiting after 00:00:10" in queue_text

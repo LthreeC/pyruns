@@ -831,6 +831,70 @@ def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
     assert "waiting for GPU resources" in payload["content"]
 
 
+def test_runtime_get_task_logs_prefers_latest_run_when_gpu_task_completed(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "gpu_done", status="completed", log_text="run output\n")
+    task_dir = workspace / TASKS_DIR / "gpu_done"
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update({
+            "status": "completed",
+            "run_index": 1,
+        }),
+    )
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("[PYRUNS] queue summary\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+
+    payload = runtime.get_task_logs("gpu_done", tail_lines=20)
+
+    assert payload["selected_log"] == "run1.log"
+    assert payload["available_logs"][0] == "queue.log"
+    assert "run output" in payload["content"]
+    assert "queue summary" not in payload["content"]
+
+    queue_payload = runtime.get_task_logs("gpu_done", log_file_name="queue.log", tail_lines=20)
+
+    assert queue_payload["selected_log"] == "queue.log"
+    assert "queue summary" in queue_payload["content"]
+
+
+def test_runtime_get_task_logs_prettifies_legacy_gpu_queue_log(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "gpu_wait", status="queued", log_text="completed run\n")
+    task_dir = workspace / TASKS_DIR / "gpu_wait"
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update({
+            "status": "queued",
+            "run_index": 1,
+        }),
+    )
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_bytes(
+        (
+            "[PYRUNS] ================= GPU WAIT =================\n"
+            "[PYRUNS] Updated at 2026-06-09_21-17-30\n"
+            "[PYRUNS] waiting\n"
+            "[PYRUNS] ============================================\n"
+            "[PYRUNS] Last status at 2026-06-09_21-17-30: waiting\r"
+            "[PYRUNS] ================= GPU ASSIGNED =================\n"
+            "[PYRUNS] Updated at 2026-06-09_21-17-45\n"
+        ).encode("utf-8")
+    )
+    runtime = _build_runtime(workspace)
+
+    payload = runtime.get_task_logs("gpu_wait", tail_lines=20)
+
+    content = payload["content"]
+    assert "\r" not in content
+    assert "[PYRUNS] ================= GPU WAIT =================\n[PYRUNS] Updated at " in content
+    assert "[PYRUNS] ================= GPU WAIT =================\n\n[PYRUNS] Updated at " not in content
+    assert "\n\n[PYRUNS] Last status at 2026-06-09_21-17-30: waiting\n\n" not in content
+    assert "\n[PYRUNS] Last status at 2026-06-09_21-17-30: waiting\n[PYRUNS] ================= GPU ASSIGNED" in content
+    assert "\n\n[PYRUNS] ================= GPU ASSIGNED =================\n\n[PYRUNS] Updated at " not in content
+
+
 def test_runtime_get_task_logs_does_not_invent_missing_selected_run_log(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "running_gpu", status="running", log_text="first run\n")

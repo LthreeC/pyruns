@@ -6,6 +6,7 @@ import atexit
 import copy
 import dataclasses
 import os
+import re
 import socket
 import shutil
 import threading
@@ -53,6 +54,7 @@ from pyruns.utils.task_files import (
 
 logger = get_logger(__name__)
 _STOP_TASK_INFO_LOCK_TIMEOUT_SEC = 1.0
+_GPU_QUEUE_RUN_RE = re.compile(r"\bRun #(\d+)\b")
 
 
 class TaskClaimConflict(RuntimeError):
@@ -1614,6 +1616,32 @@ class TaskManager:
             "waited_seconds": assignment.waited_seconds,
         }
 
+    @staticmethod
+    def _gpu_queue_run_index(lines: List[str]) -> int | None:
+        for line in lines:
+            match = _GPU_QUEUE_RUN_RE.search(str(line))
+            if match:
+                return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _last_gpu_queue_run_index(queue_log: str) -> int | None:
+        try:
+            with open(queue_log, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - 64 * 1024))
+                text = handle.read().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+
+        matches = _GPU_QUEUE_RUN_RE.findall(text)
+        return int(matches[-1]) if matches else None
+
+    @staticmethod
+    def _gpu_queue_run_separator(run_index: int) -> str:
+        return f"[PYRUNS] -------------------- RUN #{run_index} --------------------\n\n"
+
     def _append_gpu_queue_log(self, task: Dict[str, Any], title: str, lines: List[str]) -> None:
         log_dir = os.path.join(str(task.get("dir", "")), RUN_LOGS_DIR)
         os.makedirs(log_dir, exist_ok=True)
@@ -1621,10 +1649,24 @@ class TaskManager:
         updated_at = get_now_str()
         detail_lines = [f"Updated at {updated_at}", *lines]
         status_summary = str(lines[0] if lines else title).strip()
+        run_index = self._gpu_queue_run_index(lines)
         try:
+            prefix = ""
+            last_run_index = None
+            if os.path.exists(queue_log) and os.path.getsize(queue_log) > 0:
+                with open(queue_log, "rb") as existing:
+                    existing.seek(-1, os.SEEK_END)
+                    last_byte = existing.read(1)
+                prefix = "" if last_byte == b"\n" else "\n"
+                last_run_index = task.get("_gpu_queue_log_last_run_index") or self._last_gpu_queue_run_index(queue_log)
+            if run_index is not None and last_run_index is not None and run_index != last_run_index:
+                prefix = f"{prefix}\n{self._gpu_queue_run_separator(run_index)}"
             with open(queue_log, "a", encoding="utf-8", newline="") as handle:
+                handle.write(prefix)
                 handle.write(format_gpu_queue_block(title, detail_lines))
-                handle.write(f"[PYRUNS] Last status at {updated_at}: {status_summary}\r")
+                handle.write(f"[PYRUNS] Last status at {updated_at}: {status_summary}\n")
+            if run_index is not None:
+                task["_gpu_queue_log_last_run_index"] = run_index
         except Exception as exc:
             logger.error("Failed to write GPU queue log for %s: %s", task.get("name"), exc)
 
@@ -1706,6 +1748,7 @@ class TaskManager:
                     f"Run #{assignment.run_index} assigned GPUs {gpu_label} "
                     f"after {self._format_elapsed(assignment.waited_seconds)}"
                 ),
+                f"PYRUNS_ASSIGNED_GPUS={gpu_label}",
                 f"CUDA_VISIBLE_DEVICES={cuda_visible}",
             ],
         )

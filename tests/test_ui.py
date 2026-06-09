@@ -859,12 +859,13 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "const QUEUE_LOG_NAME = 'queue.log'" in monitor
     assert "selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName" in monitor
     assert "selectedTask.status === 'running' || selectedTask.status === 'queued'" in monitor
-    assert "const canUseLogStream = selectedTask?.status === 'running' && liveLogName === runLogName" in monitor
+    assert "const isQueueLogSelected = selectedLog === QUEUE_LOG_NAME" in monitor
+    assert "&& (isViewingLiveRunLog || isQueueLogSelected)" in monitor
+    assert "const canUseLogStream = selectedTask?.status === 'running' && (!selectedLog || selectedLog === runLogName)" in monitor
     assert "enabled: isLive && canUseLogStream" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
-    assert "availableLogs.includes(runLogName)" in monitor
-    assert "selectedLog: runLogName" in monitor
     assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
+    assert "selectedLog: runLogName" not in monitor
 
 
 def test_react_monitor_memoizes_task_list_derivations_during_log_streaming():

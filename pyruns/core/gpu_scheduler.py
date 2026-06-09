@@ -11,6 +11,7 @@ from pyruns.core.system_metrics import SystemMonitor
 
 CUDA_VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
 PYRUNS_ASSIGNED_GPUS = "PYRUNS_ASSIGNED_GPUS"
+_STABLE_SAMPLE_MAX_GAP_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class SystemGpuProvider:
     """GPU provider backed by the existing ``SystemMonitor``."""
 
     def __init__(self, monitor: Optional[SystemMonitor] = None) -> None:
-        self.monitor = monitor or SystemMonitor()
+        self.monitor = monitor or SystemMonitor(gpu_ttl_sec=_STABLE_SAMPLE_MAX_GAP_SECONDS)
 
     def sample(self) -> List[GpuDevice]:
         metrics = self.monitor.sample().get("gpus", [])
@@ -146,6 +147,7 @@ class GpuResourceScheduler:
         self._snapshot: List[GpuDevice] = []
         self._snapshot_at: float = -10**12
         self._eligible_since: Dict[int, float] = {}
+        self._eligible_last_seen: Dict[int, float] = {}
         self._reservations: Dict[str, List[int]] = {}
         self._lock = threading.RLock()
 
@@ -225,15 +227,30 @@ class GpuResourceScheduler:
             return GpuDecision(assignment=assignment, reason="assigned", snapshot=snapshot)
 
     def _refresh_eligible_since(self, config: GpuSchedulerConfig, now: float) -> None:
-        visible_ids = {gpu.index for gpu in self._candidate_devices(config)}
-        for gpu in self._candidate_devices(config):
+        candidates = self._candidate_devices(config)
+        visible_ids = {gpu.index for gpu in candidates}
+        for gpu in candidates:
             if self._meets_static_limits(gpu, config):
-                self._eligible_since.setdefault(gpu.index, now)
+                last_seen = self._eligible_last_seen.get(gpu.index)
+                # A long sampling gap means we did not observe every second in the stable window.
+                if (
+                    last_seen is None
+                    or now < last_seen
+                    or now - last_seen > _STABLE_SAMPLE_MAX_GAP_SECONDS
+                ):
+                    self._eligible_since[gpu.index] = now
+                else:
+                    self._eligible_since.setdefault(gpu.index, now)
+                self._eligible_last_seen[gpu.index] = now
             else:
                 self._eligible_since.pop(gpu.index, None)
+                self._eligible_last_seen.pop(gpu.index, None)
         for gpu_id in list(self._eligible_since):
             if gpu_id not in visible_ids:
                 self._eligible_since.pop(gpu_id, None)
+        for gpu_id in list(self._eligible_last_seen):
+            if gpu_id not in visible_ids:
+                self._eligible_last_seen.pop(gpu_id, None)
 
     def _candidate_devices(self, config: GpuSchedulerConfig) -> List[GpuDevice]:
         allowed = set(config.device_ids or [])
