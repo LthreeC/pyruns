@@ -2693,11 +2693,20 @@ def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_p
     assert target is not None
     assert run_index == 1
     assert target["_scheduled_env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert target["_scheduled_env"]["PYRUNS_ASSIGNED_GPUS"] == "0,1"
+    assert target["_gpu_assignment"]["run_index"] == run_index
     assert target["_gpu_assignment"]["gpu_ids"] == [0, 1]
+    assert target["_gpu_assignment"]["env"] == {
+        "PYRUNS_ASSIGNED_GPUS": "0,1",
+        "CUDA_VISIBLE_DEVICES": "0,1",
+    }
     queue_log = Path(task["dir"]) / RUN_LOGS_DIR / "queue.log"
     text = queue_log.read_text(encoding="utf-8")
     assert "[PYRUNS] ================= GPU ASSIGNED =================" in text
+    assert "Run #1 assigned GPUs 0,1" in text
     assert "CUDA_VISIBLE_DEVICES=0,1" in text
+    assert "Updated at " in text
+    assert "Last status at " in text
 
 
 def test_task_manager_gpu_wait_does_not_advance_public_run_index_until_assignment(tmp_path):
@@ -4126,10 +4135,12 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
 
     queue_text = (task_dir / RUN_LOGS_DIR / "queue.log").read_text(encoding="utf-8")
     assert "GPU WAIT" in queue_text
-    assert "GPU ASSIGNED" not in queue_text
+    assert "GPU ASSIGNED" in queue_text
     assert "still waiting after 00:00:10" in queue_text
     assert "still waiting after 00:01:01" not in queue_text
-    assert "CUDA_VISIBLE_DEVICES=GPU-uuid-0,MIG-GPU-uuid/0/1" not in queue_text
+    assert "CUDA_VISIBLE_DEVICES=GPU-uuid-0,MIG-GPU-uuid/0/1" in queue_text
+    assert "Updated at " in queue_text
+    assert "Last status at " in queue_text
 
     class FakeGpu:
         def __init__(self, index, memory_used_pct, compute_util_pct, free_memory_gb):

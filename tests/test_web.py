@@ -831,6 +831,21 @@ def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
     assert "waiting for GPU resources" in payload["content"]
 
 
+def test_runtime_get_task_logs_does_not_invent_missing_selected_run_log(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "running_gpu", status="running", log_text="first run\n")
+    task_dir = workspace / TASKS_DIR / "running_gpu"
+    update_task_info(str(task_dir), lambda info: info.update({"status": "running", "run_index": 2}))
+    runtime = _build_runtime(workspace)
+
+    payload = runtime.get_task_logs("running_gpu", log_file_name="run2.log", tail_lines=20)
+
+    assert payload["selected_log"] == "run2.log"
+    assert "run1.log" in payload["available_logs"]
+    assert "run2.log" not in payload["available_logs"]
+    assert payload["content"] == ""
+
+
 def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

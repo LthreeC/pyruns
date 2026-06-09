@@ -862,6 +862,8 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "const canUseLogStream = selectedTask?.status === 'running' && liveLogName === runLogName" in monitor
     assert "enabled: isLive && canUseLogStream" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
+    assert "availableLogs.includes(runLogName)" in monitor
+    assert "selectedLog: runLogName" in monitor
     assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
 
 

@@ -1618,9 +1618,13 @@ class TaskManager:
         log_dir = os.path.join(str(task.get("dir", "")), RUN_LOGS_DIR)
         os.makedirs(log_dir, exist_ok=True)
         queue_log = os.path.join(log_dir, QUEUE_LOG_FILENAME)
+        updated_at = get_now_str()
+        detail_lines = [f"Updated at {updated_at}", *lines]
+        status_summary = str(lines[0] if lines else title).strip()
         try:
-            with open(queue_log, "w", encoding="utf-8") as handle:
-                handle.write(format_gpu_queue_block(title, lines))
+            with open(queue_log, "a", encoding="utf-8", newline="") as handle:
+                handle.write(format_gpu_queue_block(title, detail_lines))
+                handle.write(f"[PYRUNS] Last status at {updated_at}: {status_summary}\r")
         except Exception as exc:
             logger.error("Failed to write GPU queue log for %s: %s", task.get("name"), exc)
 

@@ -604,12 +604,18 @@ export default function MonitorPage() {
       return
     }
 
-    if (selectedTask.status === 'running' && selectedLog === QUEUE_LOG_NAME && runLogName) {
+    if (
+      selectedTask.status === 'running'
+      && selectedLog === QUEUE_LOG_NAME
+      && runLogName
+      && availableLogs.includes(runLogName)
+    ) {
       useMonitorStore.setState({
-        selectedLog: '',
+        selectedLog: runLogName,
         logContent: '',
         logOffset: 0,
       })
+      selectedLogRef.current = runLogName
       void api.getTaskLogs(selectedTaskName, {
         logFileName: runLogName,
         tailLines: monitorScrollback,
@@ -627,7 +633,7 @@ export default function MonitorPage() {
         // Live polling will retry on the next tick.
       })
     }
-  }, [monitorScrollback, runLogName, selectedLog, selectedTask, selectedTaskName])
+  }, [availableLogs, monitorScrollback, runLogName, selectedLog, selectedTask, selectedTaskName])
 
   const handleChunk = useCallback((message: LogStreamMessage) => {
     const activeTaskName = selectedTaskNameRef.current
