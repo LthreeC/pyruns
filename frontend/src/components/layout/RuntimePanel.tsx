@@ -93,10 +93,20 @@ function boundedNumberInputValue(value: string, fallback: number, minimum: numbe
   return Math.min(maximum, numberInputValue(value, fallback, minimum))
 }
 
+function isInsidePanel(panel: HTMLDivElement | null, target: EventTarget | null) {
+  return Boolean(panel && target instanceof Node && panel.contains(target))
+}
+
 export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps) {
   const refreshWorkspace = useWorkspaceStore(s => s.fetch)
   const theme = useThemeStore(s => s.theme)
   const panelRef = useRef<HTMLDivElement>(null)
+  const closeGestureRef = useRef<{
+    startedInside: boolean
+    startX: number
+    startY: number
+    dragged: boolean
+  } | null>(null)
   const notify = useToastStore(state => state.notify)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
   const [envText, setEnvText] = useState('')
@@ -188,13 +198,34 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       return
     }
 
-    const handleDocumentClick = (event: MouseEvent) => {
-      const panel = panelRef.current
-      const target = event.target
-      if (panel && target instanceof Node && panel.contains(target)) {
+    const handleDocumentPointerDown = (event: PointerEvent) => {
+      closeGestureRef.current = {
+        startedInside: isInsidePanel(panelRef.current, event.target),
+        startX: event.clientX,
+        startY: event.clientY,
+        dragged: false,
+      }
+    }
+    const handleDocumentPointerMove = (event: PointerEvent) => {
+      const gesture = closeGestureRef.current
+      if (!gesture) {
+        return
+      }
+      const moved = Math.abs(event.clientX - gesture.startX) > 6 || Math.abs(event.clientY - gesture.startY) > 6
+      if (moved) {
+        gesture.dragged = true
+      }
+    }
+    const handleDocumentPointerUp = (event: PointerEvent) => {
+      const gesture = closeGestureRef.current
+      closeGestureRef.current = null
+      if (!gesture || gesture.startedInside || gesture.dragged || isInsidePanel(panelRef.current, event.target)) {
         return
       }
       onClose()
+    }
+    const handleDocumentPointerCancel = () => {
+      closeGestureRef.current = null
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -202,16 +233,32 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       }
     }
 
-    const clickListenerTimer = window.setTimeout(() => {
-      document.addEventListener('click', handleDocumentClick)
+    const pointerListenerTimer = window.setTimeout(() => {
+      document.addEventListener('pointerdown', handleDocumentPointerDown)
+      document.addEventListener('pointermove', handleDocumentPointerMove)
+      document.addEventListener('pointerup', handleDocumentPointerUp)
+      document.addEventListener('pointercancel', handleDocumentPointerCancel)
     }, 0)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
-      window.clearTimeout(clickListenerTimer)
-      document.removeEventListener('click', handleDocumentClick)
+      window.clearTimeout(pointerListenerTimer)
+      document.removeEventListener('pointerdown', handleDocumentPointerDown)
+      document.removeEventListener('pointermove', handleDocumentPointerMove)
+      document.removeEventListener('pointerup', handleDocumentPointerUp)
+      document.removeEventListener('pointercancel', handleDocumentPointerCancel)
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [open, onClose])
+
+  const refreshWorkspaceInBackground = () => {
+    void refreshWorkspace().catch(err => {
+      notify({
+        tone: 'error',
+        title: 'Runtime saved, workspace refresh failed',
+        detail: errorMessage(err, 'Refresh the workspace to see the latest runtime summary.'),
+      })
+    })
+  }
 
   const saveRuntime = async (
     payload: Parameters<typeof api.updateRuntimeInfo>[0],
@@ -220,9 +267,9 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setSaving(true)
     setError('')
     try {
-      applyRuntimeState(await api.updateRuntimeInfo(payload))
-      await refreshWorkspace()
+      applyRuntimeState(await api.updateRuntimeInfo(payload, false))
       notify({ tone: 'success', title: successTitle })
+      refreshWorkspaceInBackground()
     } catch (err) {
       const message = errorMessage(err, 'Could not save runtime settings.')
       setError(message)

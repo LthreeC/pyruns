@@ -181,19 +181,24 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "event.target === event.currentTarget" in launcher
+    assert "backdropPointerStartedRef.current = event.target === event.currentTarget" in launcher
     assert "window.addEventListener('keydown', handleKeyDown)" in launcher
     assert 'aria-modal="true"' in launcher
     assert "panelRef" in runtime_panel
-    assert "const clickListenerTimer = window.setTimeout" in runtime_panel
-    assert "document.addEventListener('click', handleDocumentClick)" in runtime_panel
-    assert "window.clearTimeout(clickListenerTimer)" in runtime_panel
+    assert "closeGestureRef" in runtime_panel
+    assert "const pointerListenerTimer = window.setTimeout" in runtime_panel
+    assert "document.addEventListener('pointerdown', handleDocumentPointerDown)" in runtime_panel
+    assert "document.addEventListener('pointermove', handleDocumentPointerMove)" in runtime_panel
+    assert "document.addEventListener('pointerup', handleDocumentPointerUp)" in runtime_panel
+    assert "document.addEventListener('pointercancel', handleDocumentPointerCancel)" in runtime_panel
+    assert "gesture.startedInside || gesture.dragged" in runtime_panel
+    assert "window.clearTimeout(pointerListenerTimer)" in runtime_panel
     assert "document.addEventListener('keydown', handleKeyDown)" in runtime_panel
     assert "onClick={event => event.stopPropagation()}" in runtime_panel
     assert 'aria-label="Runtime settings"' in runtime_panel
     assert "onCancel={event =>" in confirm_dialog
     assert "event.preventDefault()" in confirm_dialog
-    assert "event.target === event.currentTarget" in confirm_dialog
+    assert "backdropPointerStartedRef.current = event.target === event.currentTarget" in confirm_dialog
     assert 'aria-modal="true"' in confirm_dialog
     assert "onClose={handleCancel}" not in confirm_dialog
     assert "onConfirm: () => void | Promise<void>" in confirm_dialog
@@ -205,6 +210,7 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     assert ".catch(() => undefined)" in confirm_dialog
     assert "Loader2" in confirm_dialog
     assert "window.addEventListener('keydown', handleKeyDown)" in dashboard
+    assert "backdropPointerStartedRef.current && event.target === event.currentTarget" in dashboard
 
 
 def test_react_toasts_cover_command_feedback_without_blocking_ui():
@@ -635,8 +641,9 @@ def test_react_task_detail_panel_can_be_resized_from_left_edge():
     assert "cursor-col-resize" in source
     assert "style={{ width: panelWidth }}" in source
     assert "suppressNextCloseRef" in source
+    assert "backdropPointerStartedRef" in source
     assert "function handlePanelBackdropClick" in source
-    assert "onClick={handlePanelBackdropClick}" in source
+    assert "backdropPointerStartedRef.current && event.target === event.currentTarget" in source
     assert "w-5 -translate-x-2.5" in source
     assert "group-hover:bg-accent/45" in source
     assert "window.innerWidth - 8" in source
@@ -974,8 +981,12 @@ def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     assert "export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')" in api
     assert "export const updateRuntimeInfo" in api
     assert "applyRuntimeState(await api.getRuntimeInfo())" in runtime_panel
-    assert "applyRuntimeState(await api.updateRuntimeInfo(payload))" in runtime_panel
-    assert "await refreshWorkspace()" in runtime_panel
+    assert "refresh_providers=${refreshProviders}" in api
+    assert "applyRuntimeState(await api.updateRuntimeInfo(payload, false))" in runtime_panel
+    assert "refreshWorkspaceInBackground" in runtime_panel
+    assert "void refreshWorkspace().catch" in runtime_panel
+    assert "Runtime saved, workspace refresh failed" in runtime_panel
+    assert "await refreshWorkspace()" not in runtime_panel
     assert "setCondaEnv(next.conda_env)" in runtime_panel
     assert "setCondaExecutable(next.conda_executable || 'conda')" in runtime_panel
     assert "setRuntimeMode(modeFromRuntime(next))" in runtime_panel

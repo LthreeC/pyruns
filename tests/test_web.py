@@ -558,7 +558,7 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
     fake_conda = tmp_path / "conda.exe"
     fake_conda.write_text("", encoding="utf-8")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
         "available": False,
         "executable": str(fake_conda.resolve()),
         "envs": [],
@@ -619,7 +619,7 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
 def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
         "available": False,
         "executable": "conda",
         "envs": [],
@@ -662,7 +662,7 @@ def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
 def test_runtime_update_multi_gpu_scheduler_allows_one_gpu_limit(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
         "available": False,
         "executable": "conda",
         "envs": [],
@@ -689,10 +689,66 @@ def test_runtime_update_multi_gpu_scheduler_allows_one_gpu_limit(tmp_path, monke
     assert "gpu_scheduler_gpus_per_task: 1" in settings_text
 
 
+def test_runtime_update_skips_provider_refresh_by_default(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    calls = []
+
+    def fake_list_conda_envs(*, refresh=True):
+        calls.append(refresh)
+        if refresh:
+            raise AssertionError("runtime update should not refresh conda providers by default")
+        return {
+            "available": False,
+            "executable": "conda",
+            "envs": [],
+            "error": "",
+        }
+
+    monkeypatch.setattr(runtime, "list_conda_envs", fake_list_conda_envs)
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={"gpu_scheduler": {"enabled": True}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["gpu_scheduler"]["enabled"] is True
+    assert calls == [False]
+
+
+def test_runtime_update_can_refresh_providers_when_requested(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    calls = []
+
+    def fake_list_conda_envs(*, refresh=True):
+        calls.append(refresh)
+        return {
+            "available": True,
+            "executable": "conda",
+            "envs": [{"name": "eval", "path": "/envs/eval", "python_executable": "/envs/eval/bin/python"}],
+            "error": "",
+        }
+
+    monkeypatch.setattr(runtime, "list_conda_envs", fake_list_conda_envs)
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime?refresh_providers=true",
+        json={"conda_env": "eval"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["conda"]["available"] is True
+    assert calls == [True]
+
+
 def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
         "available": False,
         "executable": "conda",
         "envs": [],
@@ -745,7 +801,7 @@ def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
 def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
         "available": False,
         "executable": "conda",
         "envs": [],
@@ -785,7 +841,7 @@ def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch)
 def test_runtime_update_rejects_invalid_global_env_text(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda: {
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
         "available": False,
         "executable": "conda",
         "envs": [],

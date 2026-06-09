@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   FileCode, ChevronRight, Rocket, FileSearch, FolderPlus,
@@ -82,6 +82,7 @@ function validationFromResult(result: PathValidationResult): PathValidationState
 }
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
+  const backdropPointerStartedRef = useRef(false)
   const {
     configs, selectedScript, requiresConfigTemplate, configSource, step, loading,
     selectScript, selectConfig, reset: resetLauncher,
@@ -374,16 +375,23 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   return (
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-3 sm:p-4"
+      onPointerDown={event => {
+        backdropPointerStartedRef.current = event.target === event.currentTarget
+      }}
       onClick={event => {
-        if (event.target === event.currentTarget) {
+        if (backdropPointerStartedRef.current && event.target === event.currentTarget) {
           onClose()
         }
+        backdropPointerStartedRef.current = false
       }}
     >
       <div
         role="dialog"
         aria-modal="true"
         className="flex max-h-[80vh] w-full max-w-[calc(100vw-1.5rem)] sm:max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md"
+        onPointerDown={() => {
+          backdropPointerStartedRef.current = false
+        }}
         onClick={event => event.stopPropagation()}
       >
         {/* Header */}

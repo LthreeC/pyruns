@@ -45,7 +45,8 @@ export const updateRuntimeInfo = (payload: Partial<{
   global_env: Record<string, string>
   global_env_text: string
   gpu_scheduler?: Partial<GpuSchedulerSettings>
-}>) => request<RuntimeInfo>('/api/runtime', { method: 'PATCH', body: JSON.stringify(payload) })
+}>, refreshProviders = false) =>
+  request<RuntimeInfo>(`/api/runtime?refresh_providers=${refreshProviders}`, { method: 'PATCH', body: JSON.stringify(payload) })
 
 export const getTemplates = () => request<{ items: { value: string; label: string }[] }>('/api/templates')
 export const getTemplateContent = (value: string) =>

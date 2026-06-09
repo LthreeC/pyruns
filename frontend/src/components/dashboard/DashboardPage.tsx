@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ElementType, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ElementType, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity,
@@ -411,6 +411,8 @@ function UsageTrack({ label, value, tone }: { label: string; value: number; tone
 }
 
 function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: () => void }) {
+  const backdropPointerStartedRef = useRef(false)
+
   useEffect(() => {
     if (!gpu) {
       return
@@ -437,12 +439,26 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
   const averageProcessMemory = sortedProcesses.length ? processMemoryTotal / sortedProcesses.length : 0
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onPointerDown={event => {
+        backdropPointerStartedRef.current = event.target === event.currentTarget
+      }}
+      onClick={event => {
+        if (backdropPointerStartedRef.current && event.target === event.currentTarget) {
+          onClose()
+        }
+        backdropPointerStartedRef.current = false
+      }}
+    >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="gpu-detail-title"
         className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
+        onPointerDown={() => {
+          backdropPointerStartedRef.current = false
+        }}
         onClick={event => event.stopPropagation()}
       >
         <div className="shrink-0 flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">

@@ -321,10 +321,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         return get_runtime().get_runtime_info()
 
     @app.patch("/api/runtime")
-    def update_runtime_info(payload: RuntimeUpdateRequest) -> dict[str, Any]:
+    def update_runtime_info(
+        payload: RuntimeUpdateRequest,
+        refresh_providers: bool = Query(False),
+    ) -> dict[str, Any]:
         try:
             data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
-            return get_runtime().update_runtime_settings(data)
+            return get_runtime().update_runtime_settings(data, refresh_providers=refresh_providers)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

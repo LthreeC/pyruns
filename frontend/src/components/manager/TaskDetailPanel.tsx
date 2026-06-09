@@ -134,6 +134,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const previousTaskNameRef = useRef(task.name)
   const envKeyInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const suppressNextCloseRef = useRef(false)
+  const backdropPointerStartedRef = useRef(false)
   const pendingPanelWidthRef = useRef(panelWidth)
   const panelResizeFrameRef = useRef<number | null>(null)
   const staleEnvPropSignatureRef = useRef('')
@@ -388,10 +389,24 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   return (
     <>
       <div className="fixed inset-0 z-50 flex justify-end">
-        <div className="absolute inset-0 bg-black/30" onClick={handlePanelBackdropClick} />
+        <div
+          className="absolute inset-0 bg-black/30"
+          onPointerDown={event => {
+            backdropPointerStartedRef.current = event.target === event.currentTarget
+          }}
+          onClick={event => {
+            if (backdropPointerStartedRef.current && event.target === event.currentTarget) {
+              handlePanelBackdropClick()
+            }
+            backdropPointerStartedRef.current = false
+          }}
+        />
         <div
           className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
           style={{ width: panelWidth }}
+          onPointerDown={() => {
+            backdropPointerStartedRef.current = false
+          }}
           onClick={event => event.stopPropagation()}
         >
         <button

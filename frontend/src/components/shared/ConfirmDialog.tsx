@@ -18,6 +18,7 @@ export default function ConfirmDialog({
   confirmVariant = 'primary', onConfirm, onCancel, children,
 }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
+  const backdropPointerStartedRef = useRef(false)
   const [pending, setPending] = useState(false)
   const widthClass = size === 'lg' ? 'max-w-2xl' : 'max-w-md'
 
@@ -65,14 +66,24 @@ export default function ConfirmDialog({
         event.preventDefault()
         handleCancel()
       }}
+      onMouseDown={event => {
+        backdropPointerStartedRef.current = event.target === event.currentTarget
+      }}
       onClick={event => {
-        if (event.target === event.currentTarget) {
+        if (backdropPointerStartedRef.current && event.target === event.currentTarget) {
           handleCancel()
         }
+        backdropPointerStartedRef.current = false
       }}
       aria-busy={pending || undefined}
     >
-      <div className="p-6" onClick={event => event.stopPropagation()}>
+      <div
+        className="p-6"
+        onMouseDown={() => {
+          backdropPointerStartedRef.current = false
+        }}
+        onClick={event => event.stopPropagation()}
+      >
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
           <button

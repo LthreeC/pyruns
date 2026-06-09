@@ -337,6 +337,7 @@ class PyrunsRuntime:
         self._metrics_sampler: SystemMonitor | None = None
         self._tasks_loaded = False
         self._last_full_refresh_time = 0.0
+        self._conda_envs_cache: Dict[str, Any] | None = None
         self.reload(root_dir)
 
     @staticmethod
@@ -374,6 +375,7 @@ class PyrunsRuntime:
             self._metrics_sampler = None
             self._tasks_loaded = False
             self._last_full_refresh_time = 0.0
+            self._conda_envs_cache = None
 
         if old_task_manager is not None:
             old_task_manager.shutdown()
@@ -466,18 +468,30 @@ class PyrunsRuntime:
             return configured
         return self._clean_setting_text(os.getenv("CONDA_EXE")) or configured or "conda"
 
-    def list_conda_envs(self) -> Dict[str, Any]:
+    def list_conda_envs(self, *, refresh: bool = True) -> Dict[str, Any]:
         """Return conda environments discoverable from the current server process."""
+
+        if not refresh and self._conda_envs_cache is not None:
+            return dict(self._conda_envs_cache)
+        if not refresh:
+            return {
+                "available": False,
+                "executable": self._conda_executable_for_runtime(),
+                "envs": [],
+                "error": "Conda providers have not been refreshed yet.",
+            }
 
         conda_executable = self._conda_executable_for_runtime()
         resolved_conda = self._resolve_executable(conda_executable)
         if not resolved_conda:
-            return {
+            payload = {
                 "available": False,
                 "executable": conda_executable,
                 "envs": [],
                 "error": f"conda executable not found: {conda_executable}",
             }
+            self._conda_envs_cache = dict(payload)
+            return payload
 
         root_prefix = ""
         try:
@@ -504,20 +518,24 @@ class PyrunsRuntime:
                 check=False,
             )
         except Exception as exc:
-            return {
+            payload = {
                 "available": False,
                 "executable": resolved_conda,
                 "envs": [],
                 "error": str(exc),
             }
+            self._conda_envs_cache = dict(payload)
+            return payload
 
         if result.returncode != 0:
-            return {
+            payload = {
                 "available": False,
                 "executable": resolved_conda,
                 "envs": [],
                 "error": result.stderr.strip() or result.stdout.strip() or "conda env list failed",
             }
+            self._conda_envs_cache = dict(payload)
+            return payload
 
         data = yaml.safe_load(result.stdout) or {}
         raw_envs = data.get("envs", []) if isinstance(data, dict) else []
@@ -536,18 +554,20 @@ class PyrunsRuntime:
                 "active": name == os.getenv("CONDA_DEFAULT_ENV") or path == os.getenv("CONDA_PREFIX"),
             })
 
-        return {
+        payload = {
             "available": True,
             "executable": resolved_conda,
             "envs": envs,
             "error": "",
         }
+        self._conda_envs_cache = dict(payload)
+        return payload
 
-    def get_runtime_info(self) -> Dict[str, Any]:
+    def get_runtime_info(self, *, refresh_providers: bool = True) -> Dict[str, Any]:
         """Return runtime settings and environment providers for the current workspace."""
 
         settings = dict(self.settings)
-        conda = self.list_conda_envs()
+        conda = self.list_conda_envs(refresh=refresh_providers)
         global_env = settings.get("global_env", {})
         if not isinstance(global_env, dict):
             global_env = {}
@@ -583,13 +603,17 @@ class PyrunsRuntime:
         }
         return runtime
 
-    def update_runtime_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def update_runtime_settings(self, payload: Dict[str, Any], *, refresh_providers: bool = False) -> Dict[str, Any]:
         """Persist runtime settings and return the refreshed runtime info."""
 
         allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text", "gpu_scheduler"}
+        current_conda_executable = self._clean_setting_text(self.settings.get("conda_executable")) or "conda"
+        provider_settings_changed = False
         for key, value in payload.items():
             if key not in allowed:
                 continue
+            if key == "conda_executable":
+                provider_settings_changed = (self._clean_setting_text(value) or "conda") != current_conda_executable
             if key == "gpu_scheduler":
                 if not isinstance(value, dict):
                     raise ValueError("gpu_scheduler must be an object")
@@ -610,7 +634,9 @@ class PyrunsRuntime:
                 save_setting_for_root(self.root_dir, key, self._clean_setting_text(value))
 
         self.settings = load_settings(self.root_dir)
-        return self.get_runtime_info()
+        if provider_settings_changed:
+            self._conda_envs_cache = None
+        return self.get_runtime_info(refresh_providers=refresh_providers)
 
     def list_templates(self) -> List[Dict[str, str]]:
         """Return loadable template options for the Generator page."""
