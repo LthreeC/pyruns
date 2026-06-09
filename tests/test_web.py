@@ -809,8 +809,16 @@ def test_runtime_update_gpu_scheduler_clamps_stable_seconds_minimum(tmp_path, mo
 
 def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "gpu_wait", status="queued")
-    queue_log = workspace / TASKS_DIR / "gpu_wait" / "run_logs" / "queue.log"
+    _add_task(workspace, "gpu_wait", status="queued", log_text="completed run\n")
+    task_dir = workspace / TASKS_DIR / "gpu_wait"
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update({
+            "status": "queued",
+            "run_index": 1,
+        }),
+    )
+    queue_log = task_dir / "run_logs" / "queue.log"
     queue_log.write_text("[PYRUNS] GPU WAIT\nwaiting for GPU resources\n", encoding="utf-8")
     runtime = _build_runtime(workspace)
 
@@ -818,6 +826,8 @@ def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
 
     assert payload["selected_log"] == "queue.log"
     assert payload["available_logs"][0] == "queue.log"
+    assert "run1.log" in payload["available_logs"]
+    assert "run2.log" not in payload["available_logs"]
     assert "waiting for GPU resources" in payload["content"]
 
 

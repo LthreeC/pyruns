@@ -599,6 +599,36 @@ export default function MonitorPage() {
     wsStreamActiveRef.current = false
   }, [liveLogName, selectedTaskName])
 
+  useEffect(() => {
+    if (!selectedTaskName || !selectedTask) {
+      return
+    }
+
+    if (selectedTask.status === 'running' && selectedLog === QUEUE_LOG_NAME && runLogName) {
+      useMonitorStore.setState({
+        selectedLog: '',
+        logContent: '',
+        logOffset: 0,
+      })
+      void api.getTaskLogs(selectedTaskName, {
+        logFileName: runLogName,
+        tailLines: monitorScrollback,
+      }).then(logs => {
+        if (selectedTaskNameRef.current !== selectedTaskName) {
+          return
+        }
+        useMonitorStore.setState({
+          logContent: logs.content,
+          logOffset: logs.offset,
+          availableLogs: logs.available_logs,
+          selectedLog: logs.selected_log,
+        })
+      }).catch(() => {
+        // Live polling will retry on the next tick.
+      })
+    }
+  }, [monitorScrollback, runLogName, selectedLog, selectedTask, selectedTaskName])
+
   const handleChunk = useCallback((message: LogStreamMessage) => {
     const activeTaskName = selectedTaskNameRef.current
     if (!activeTaskName || message.task_name !== activeTaskName) {
@@ -636,11 +666,16 @@ export default function MonitorPage() {
     const requestedLog = selectedLogRef.current || liveLog
     const currentOffset = useMonitorStore.getState().logOffset
     try {
-      const logs = await api.getTaskLogs(activeTaskName, {
-        logFileName: requestedLog,
-        offset: currentOffset,
-        chunkSize: monitorChunkSize,
-      })
+      const logs = await api.getTaskLogs(activeTaskName, requestedLog === QUEUE_LOG_NAME
+        ? {
+            logFileName: requestedLog,
+            tailLines: monitorScrollback,
+          }
+        : {
+            logFileName: requestedLog,
+            offset: currentOffset,
+            chunkSize: monitorChunkSize,
+          })
       if (selectedTaskNameRef.current !== activeTaskName) {
         return
       }
@@ -649,8 +684,13 @@ export default function MonitorPage() {
         return
       }
 
+      const shouldReplaceContent = logs.offset < currentOffset || requestedLog === QUEUE_LOG_NAME
       useMonitorStore.setState(state => ({
-        logContent: logs.content ? appendMonitorLogContent(state.logContent, logs.content) : state.logContent,
+        logContent: shouldReplaceContent
+          ? logs.content
+          : logs.content
+            ? appendMonitorLogContent(state.logContent, logs.content)
+            : state.logContent,
         logOffset: logs.offset,
         availableLogs: logs.available_logs,
         selectedLog: state.selectedLog || logs.selected_log,
@@ -660,7 +700,7 @@ export default function MonitorPage() {
     } finally {
       livePollInFlightRef.current = false
     }
-  }, [canUseLogStream, monitorChunkSize])
+  }, [canUseLogStream, monitorChunkSize, monitorScrollback])
 
   usePolling(pollLiveLog, 1000, Boolean(isLive), false)
 

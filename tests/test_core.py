@@ -68,7 +68,7 @@ from pyruns.launcher import (
     workspace_root_for_script,
 )
 from pyruns.utils.batch_utils import generate_batch_configs
-from pyruns.utils.info_io import save_task_info, update_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace, get_shell_runtime_for_workspace
 
@@ -2508,6 +2508,8 @@ def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_pat
 
     queued_info = json.loads((Path(tasks[4]["dir"]) / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert queued_info["status"] == "queued"
+    assert queued_info["run_index"] == 0
+    assert "_queued_run_index" not in queued_info
 
 
 def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
@@ -2541,6 +2543,31 @@ def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     assert refreshed["run_index"] == 1
 
 
+def test_task_manager_plain_queued_pick_computes_next_run_from_history(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("plain-queued-history", {"value": 1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "queued",
+            "run_index": 2,
+            "start_times": ["2026-01-01_00-00-00", "2026-01-01_00-00-02"],
+            "finish_times": ["2026-01-01_00-00-01", "2026-01-01_00-00-03"],
+        }),
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    picked, run_index = manager._pick_queued_task()
+
+    assert picked is not None
+    assert picked["name"] == task["name"]
+    assert run_index == 3
+    assert picked["run_index"] == 3
+
+
 def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -2572,6 +2599,9 @@ def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch
     assert statuses[tasks[1]["name"]] == "running"
     assert statuses[tasks[2]["name"]] == "queued"
     assert manager.get_task(tasks[0]["name"])["run_index"] == 1
+    queued_info = json.loads((Path(tasks[2]["dir"]) / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert queued_info["run_index"] == 0
+    assert "_queued_run_index" not in queued_info
 
 
 def test_task_manager_gpu_auto_queues_and_writes_queue_log_before_assignment(tmp_path, monkeypatch):
@@ -2605,7 +2635,14 @@ def test_task_manager_gpu_auto_queues_and_writes_queue_log_before_assignment(tmp
     manager.start_batch_tasks([task["name"]], max_workers=1)
 
     assert submitted == []
-    assert manager.get_task(task["name"])["status"] == "queued"
+    queued = manager.get_task(task["name"])
+    assert queued["status"] == "queued"
+    assert queued["run_index"] == 0
+    assert "_queued_run_index" not in queued
+    queued_info = json.loads((Path(task["dir"]) / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert queued_info["status"] == "queued"
+    assert queued_info["run_index"] == 0
+    assert "_queued_run_index" not in queued_info
     queue_log = Path(task["dir"]) / RUN_LOGS_DIR / "queue.log"
     text = queue_log.read_text(encoding="utf-8")
     assert "[PYRUNS] ================= GPU WAIT =================" in text
@@ -2661,6 +2698,64 @@ def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_p
     text = queue_log.read_text(encoding="utf-8")
     assert "[PYRUNS] ================= GPU ASSIGNED =================" in text
     assert "CUDA_VISIBLE_DEVICES=0,1" in text
+
+
+def test_task_manager_gpu_wait_does_not_advance_public_run_index_until_assignment(tmp_path):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_task_mode: single",
+                "gpu_scheduler_memory_used_pct: 75",
+                "gpu_scheduler_min_free_memory_gb: 8",
+                "gpu_scheduler_compute_used_pct: 30",
+                "gpu_scheduler_stable_seconds: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-public-index", {"lr": 0.1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "completed",
+            "run_index": 1,
+            "start_times": ["2026-01-01_00-00-00"],
+            "finish_times": ["2026-01-01_00-00-01"],
+        }),
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager.start_batch_tasks([task["name"]], max_workers=1)
+
+    queued = manager.get_task(task["name"])
+    assert queued["status"] == "queued"
+    assert queued["run_index"] == 1
+    assert "_queued_run_index" not in queued
+    queued_info = load_task_info(task["dir"])
+    assert queued_info["status"] == "queued"
+    assert queued_info["run_index"] == 1
+    assert "_queued_run_index" not in queued_info
+
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 1024, 40960, 0)]),
+        clock=lambda: now[0],
+    )
+    manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
+    now[0] += 1.0
+    target, run_index = manager._pick_queued_task()
+
+    assert target is not None
+    assert run_index == 2
+    assert target["run_index"] == 2
+    assert "_queued_run_index" not in target
 
 
 def test_task_manager_gpu_auto_independent_task_can_bypass_full_batch_slots(tmp_path):
@@ -2723,7 +2818,14 @@ def test_task_manager_start_task_now_queues_gpu_task_as_independent(tmp_path, mo
     tasks_dir = workspace / TASKS_DIR
     tasks_dir.mkdir(parents=True)
     (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
-        "gpu_scheduler_enabled: true\ngpu_scheduler_stable_seconds: 1\n",
+        "\n".join([
+            "gpu_scheduler_enabled: true",
+            "gpu_scheduler_memory_used_pct: 99",
+            "gpu_scheduler_min_free_memory_gb: 0.5",
+            "gpu_scheduler_compute_used_pct: 30",
+            "gpu_scheduler_stable_seconds: 1",
+        ])
+        + "\n",
         encoding="utf-8",
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("run-now-gpu", {"lr": 0.1})
@@ -2902,12 +3004,107 @@ def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path)
 
     assert target is None
     assert manager.get_task(task["name"])["status"] == "failed"
+    info = load_task_info(task["dir"])
+    assert info["run_index"] == 0
+    assert info["start_times"] == []
+    assert info["finish_times"] == []
     log_dir = Path(task["dir"]) / RUN_LOGS_DIR
     queue_text = (log_dir / "queue.log").read_text(encoding="utf-8")
     error_text = (log_dir / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
     assert "[PYRUNS] ================= GPU WAIT TIMEOUT =================" in queue_text
     assert "max wait=1s" in queue_text
+    assert "Queued task failed" in error_text
+    assert "Run #1 failed" not in error_text
     assert "reason=gpu_wait_timeout" in error_text
+
+
+def test_task_manager_queued_placeholder_run_slot_is_trimmed_before_next_assignment(tmp_path):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join([
+            "gpu_scheduler_enabled: true",
+            "gpu_scheduler_memory_used_pct: 99",
+            "gpu_scheduler_min_free_memory_gb: 0.5",
+            "gpu_scheduler_compute_used_pct: 30",
+            "gpu_scheduler_stable_seconds: 1",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-placeholder", {"lr": 0.1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "queued",
+            "run_index": 2,
+            "start_times": ["2026-01-01_00-00-00", ""],
+            "finish_times": ["2026-01-01_00-00-01", ""],
+            "pids": [123, None],
+            "records": [{"loss": 1.0}, {}],
+            "tracks": [{}, {}],
+            "_queued_run_index": 2,
+        }),
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    queued = manager.get_task(task["name"])
+    assert queued["status"] == "queued"
+    assert queued["run_index"] == 1
+    assert queued["start_times"] == ["2026-01-01_00-00-00"]
+    assert "_queued_run_index" not in queued
+
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 1024, 40960, 0)]),
+        clock=lambda: now[0],
+    )
+    manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
+    now[0] += 1.0
+
+    target, run_index = manager._pick_queued_task()
+
+    assert target is not None
+    assert run_index == 2
+    assert target["run_index"] == 2
+    assert target["_gpu_assignment"]["run_index"] == 2
+
+
+def test_task_manager_cancel_queued_task_does_not_create_run_slot(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("queued-cancel", {"lr": 0.1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "queued",
+            "run_index": 1,
+            "start_times": ["2026-01-01_00-00-00", ""],
+            "finish_times": ["2026-01-01_00-00-01", ""],
+            "pids": [123, None],
+            "records": [{}, {}],
+            "tracks": [{}, {}],
+        }),
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager.cancel_task(task["name"]) is True
+
+    info = load_task_info(task["dir"])
+    assert info["status"] == "failed"
+    assert info["run_index"] == 1
+    assert info["start_times"] == ["2026-01-01_00-00-00"]
+    assert info["finish_times"] == ["2026-01-01_00-00-01"]
+    error_text = (Path(task["dir"]) / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
+    assert "Queued task stopped" in error_text
+    assert "Run #2 stopped" not in error_text
+    assert "reason=cancelled_by_user" in error_text
+    assert "previous_status=queued" in error_text
 
 
 def test_run_task_worker_records_gpu_assignment_in_run_log(tmp_path):
@@ -3658,7 +3855,9 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
     with manager._lock:
         target = manager._tasks_by_name["alpha"]
         target["status"] = "queued"
-        target["run_index"] = 3
+        target["run_index"] = 2
+        target["start_times"] = ["2026-01-01_00-00-00", "2026-01-01_00-00-02"]
+        target["finish_times"] = ["2026-01-01_00-00-01", "2026-01-01_00-00-03"]
         manager._recompute_processing_flag_locked()
 
     picked, run_index = manager._pick_queued_task()
@@ -3704,7 +3903,9 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
 
     with manager._lock:
         manager._tasks_by_name["queued"]["status"] = "queued"
-        manager._tasks_by_name["queued"]["run_index"] = 2
+        manager._tasks_by_name["queued"]["run_index"] = 1
+        manager._tasks_by_name["queued"]["start_times"] = ["2026-01-01_00-00-00"]
+        manager._tasks_by_name["queued"]["finish_times"] = ["2026-01-01_00-00-01"]
         manager._tasks_by_name["running"]["status"] = "running"
         manager._tasks_by_name["running"]["run_index"] = 1
         manager._running_ids.add("running")
@@ -3925,8 +4126,10 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
 
     queue_text = (task_dir / RUN_LOGS_DIR / "queue.log").read_text(encoding="utf-8")
     assert "GPU WAIT" in queue_text
-    assert "GPU ASSIGNED" in queue_text
-    assert "CUDA_VISIBLE_DEVICES=GPU-uuid-0,MIG-GPU-uuid/0/1" in queue_text
+    assert "GPU ASSIGNED" not in queue_text
+    assert "still waiting after 00:00:10" in queue_text
+    assert "still waiting after 00:01:01" not in queue_text
+    assert "CUDA_VISIBLE_DEVICES=GPU-uuid-0,MIG-GPU-uuid/0/1" not in queue_text
 
     class FakeGpu:
         def __init__(self, index, memory_used_pct, compute_util_pct, free_memory_gb):

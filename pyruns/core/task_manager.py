@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import copy
+import dataclasses
 import os
 import socket
 import shutil
@@ -357,6 +358,7 @@ class TaskManager:
         except Exception as exc:
             logger.error("Error loading info for %s: %s", dir_name, exc)
             return None
+        info = self._strip_queued_placeholder_run(info)
 
         task_kind, config_data, config_text, load_error = read_task_payload(task_dir, info)
 
@@ -446,6 +448,7 @@ class TaskManager:
                 info = load_task_info(task["dir"])
                 if not info:
                     continue
+                info = self._strip_queued_placeholder_run(info)
 
                 with self._lock:
                     existing = self._tasks_by_name.get(task["name"])
@@ -533,6 +536,50 @@ class TaskManager:
         ):
             task.pop(key, None)
 
+    @staticmethod
+    def _next_run_index(task: Dict[str, Any]) -> int:
+        return max(1, TaskManager._effective_run_slot_count(task) + 1)
+
+    @staticmethod
+    def _run_slot_has_data(meta: Dict[str, Any], slot: int) -> bool:
+        for key in ("start_times", "finish_times", "pids", "records", "tracks"):
+            values = list(meta.get(key, []) or [])
+            if slot >= len(values):
+                continue
+            value = values[slot]
+            if value not in (None, "", {}, []):
+                return True
+        return False
+
+    @classmethod
+    def _realized_run_slot_count(cls, meta: Dict[str, Any]) -> int:
+        total = run_slot_count(meta)
+        while total > 0 and not cls._run_slot_has_data(meta, total - 1):
+            total -= 1
+        return total
+
+    @classmethod
+    def _effective_run_slot_count(cls, meta: Dict[str, Any]) -> int:
+        if str(meta.get("status", "") or "").lower() == "queued":
+            return cls._realized_run_slot_count(meta)
+        return run_slot_count(meta)
+
+    @staticmethod
+    def _trim_run_slots(meta: Dict[str, Any], total: int) -> None:
+        target = max(0, int(total or 0))
+        for key in ("start_times", "finish_times", "pids", "records", "tracks"):
+            meta[key] = list(meta.get(key, []) or [])[:target]
+        meta["run_index"] = target
+        meta.pop("_run_index", None)
+
+    @classmethod
+    def _strip_queued_placeholder_run(cls, info: Dict[str, Any]) -> Dict[str, Any]:
+        if str(info.get("status", "") or "").lower() != "queued":
+            return info
+        cleaned = copy.deepcopy(info)
+        cls._trim_run_slots(cleaned, cls._realized_run_slot_count(cleaned))
+        return cleaned
+
     def start_batch_tasks(
         self,
         task_ids: List[str],
@@ -562,9 +609,8 @@ class TaskManager:
                 if task.get("status") in ("running", "queued"):
                     logger.info("Skip queuing active task %s", task["name"])
                     continue
-                run_index = max(int(task.get("run_index", 0) or 0), len(task.get("start_times", []))) + 1
+                run_index = self._next_run_index(task)
                 self._clear_gpu_schedule_state(task)
-                task["run_index"] = run_index
                 if gpu_enabled:
                     task["status"] = "queued"
                     task["_gpu_wait_started_at"] = time.monotonic()
@@ -573,6 +619,7 @@ class TaskManager:
                     to_wait_log.append((task, run_index))
                 elif available_slots > 0:
                     task["status"] = "running"
+                    task["run_index"] = run_index
                     self._running_ids.add(task["name"])
                     to_submit.append((task, run_index))
                     to_sync.append((task["name"], "running", run_index))
@@ -620,9 +667,8 @@ class TaskManager:
                 if target.get("_load_error"):
                     logger.warning("Skip running %s: %s", target["name"], target["_load_error"])
                     return
-                run_index = max(int(target.get("run_index", 0) or 0), len(target.get("start_times", []))) + 1
+                run_index = self._next_run_index(target)
                 self._clear_gpu_schedule_state(target)
-                target["run_index"] = run_index
                 if gpu_config.enabled:
                     target["status"] = "queued"
                     target["_gpu_wait_started_at"] = time.monotonic()
@@ -630,6 +676,7 @@ class TaskManager:
                     target["_queued_execution_mode"] = execution_mode
                 else:
                     target["status"] = "running"
+                    target["run_index"] = run_index
                     self._running_ids.add(target["name"])
                 self._recompute_processing_flag_locked()
 
@@ -655,10 +702,9 @@ class TaskManager:
                 logger.warning("Skip re-queuing %s: %s", target["name"], target["_load_error"])
                 return False
 
-            run_index = max(int(target.get("run_index", 0) or 0), len(target.get("start_times", []))) + 1
+            run_index = self._next_run_index(target)
             self._clear_gpu_schedule_state(target)
             target["status"] = "queued"
-            target["run_index"] = run_index
             if gpu_config.enabled:
                 target["_gpu_wait_started_at"] = time.monotonic()
                 target["_queued_independent"] = False
@@ -1068,8 +1114,9 @@ class TaskManager:
             with self._lock:
                 for task in self.tasks:
                     if task and task["status"] == "queued" and (not independent_only or task.get("_queued_independent")):
-                        run_index = int(task.get("run_index", 1) or 1)
+                        run_index = self._next_run_index(task)
                         task["status"] = "running"
+                        task["run_index"] = run_index
                         self._running_ids.add(task["name"])
                         self._recompute_processing_flag_locked()
                         return task, run_index
@@ -1100,7 +1147,7 @@ class TaskManager:
                 task_name = str(candidate["name"])
                 attempted.add(task_name)
                 is_independent = bool(candidate.get("_queued_independent"))
-                run_index = int(candidate.get("run_index", 1) or 1)
+                run_index = self._next_run_index(candidate)
                 queued_at = float(candidate.get("_gpu_wait_started_at", now) or now)
                 candidate["_gpu_wait_started_at"] = queued_at
                 waited = max(0.0, now - queued_at)
@@ -1146,10 +1193,11 @@ class TaskManager:
             assignment_log: tuple[Dict[str, Any], GpuAssignment] | None = None
             with self._lock:
                 current = self._resolve_identifier_locked(task_name)
-                if not current or current.get("status") != "queued" or int(current.get("run_index", 1) or 1) != run_index:
+                if not current or current.get("status") != "queued":
                     if decision.assignment is not None:
                         self.gpu_scheduler.release(task_name)
                     continue
+                run_index = self._next_run_index(current)
 
                 if decision.assignment is None:
                     lines = self._gpu_wait_decision_lines(current, run_index, gpu_config, decision, waited, now)
@@ -1157,13 +1205,15 @@ class TaskManager:
                         wait_log = (current, lines)
                     self._recompute_processing_flag_locked()
                 else:
-                    current["_scheduled_env"] = dict(decision.assignment.env)
-                    current["_gpu_assignment"] = self._gpu_assignment_to_dict(decision.assignment)
+                    assignment = dataclasses.replace(decision.assignment, run_index=run_index)
+                    current["_scheduled_env"] = dict(assignment.env)
+                    current["_gpu_assignment"] = self._gpu_assignment_to_dict(assignment)
                     current["status"] = "running"
+                    current["run_index"] = run_index
                     if not is_independent:
                         self._running_ids.add(current["name"])
                     self._recompute_processing_flag_locked()
-                    assignment_log = (current, decision.assignment)
+                    assignment_log = (current, assignment)
                     target = current
 
             if wait_log:
@@ -1193,6 +1243,7 @@ class TaskManager:
                 if current:
                     info = load_task_info(current["dir"])
                     if info:
+                        info = self._strip_queued_placeholder_run(info)
                         self._apply_info_to_task(current, info)
                 self._recompute_processing_flag_locked()
             self.trigger_update()
@@ -1275,6 +1326,7 @@ class TaskManager:
             try:
                 info = load_task_info(task["dir"])
                 if info:
+                    info = self._strip_queued_placeholder_run(info)
                     self._apply_info_to_task(task, info)
             except Exception:
                 pass
@@ -1458,7 +1510,11 @@ class TaskManager:
             if status in {"queued", "running"} and task_info.get("status") == "running" and self._is_foreign_live_runner(task_info):
                 raise TaskClaimConflict("task already owned by another live runner")
             task_info["status"] = status
-            task_info["run_index"] = run_index
+            if status == "running":
+                task_info["run_index"] = run_index
+            task_info.pop("_queued_run_index", None)
+            if status == "queued":
+                self._trim_run_slots(task_info, self._realized_run_slot_count(task_info))
             if status != "running":
                 self._clear_runner_lease_fields(task_info)
             else:
@@ -1472,6 +1528,8 @@ class TaskManager:
                 refreshed = load_task_info(task_dir)
             except Exception:
                 refreshed = None
+            if refreshed:
+                refreshed = self._strip_queued_placeholder_run(refreshed)
             with self._lock:
                 current = self._resolve_identifier_locked(identifier)
                 if current and refreshed:
@@ -1487,7 +1545,7 @@ class TaskManager:
             current = self._resolve_identifier_locked(identifier)
             if current and updated:
                 current["status"] = updated.get("status", status)
-                current["run_index"] = int(updated.get("run_index", run_index) or run_index)
+                current["run_index"] = int(updated.get("run_index", current.get("run_index", 0)) or 0)
                 current["runner_id"] = updated.get("runner_id")
                 current["runner_host"] = updated.get("runner_host")
                 current["lease_until"] = updated.get("lease_until")
@@ -1561,7 +1619,7 @@ class TaskManager:
         os.makedirs(log_dir, exist_ok=True)
         queue_log = os.path.join(log_dir, QUEUE_LOG_FILENAME)
         try:
-            with open(queue_log, "a", encoding="utf-8") as handle:
+            with open(queue_log, "w", encoding="utf-8") as handle:
                 handle.write(format_gpu_queue_block(title, lines))
         except Exception as exc:
             logger.error("Failed to write GPU queue log for %s: %s", task.get("name"), exc)
@@ -1751,12 +1809,22 @@ class TaskManager:
         task_dir = task["dir"]
         finish_now = get_now_str()
         run_index = int(task.get("run_index", 0) or 0)
+        failure_context = {"finalized_run_slot": False, "original_status": ""}
 
         def _apply(task_info: Dict[str, Any]) -> None:
-            slot_count = run_slot_count(task_info)
+            original_status = str(task_info.get("status", "") or "").lower()
+            failure_context["original_status"] = original_status
+            slot_count = (
+                self._realized_run_slot_count(task_info)
+                if original_status == "queued"
+                else run_slot_count(task_info)
+            )
+            if original_status == "queued":
+                self._trim_run_slots(task_info, slot_count)
             target_index = max(run_index, slot_count)
-            should_finalize_slot = slot_count > 0 or task_info.get("status") == "running"
-            if should_finalize_slot and target_index > 0:
+            should_finalize_slot = original_status == "running" and target_index > 0
+            failure_context["finalized_run_slot"] = should_finalize_slot
+            if should_finalize_slot:
                 slot = ensure_run_slot(task_info, target_index)
                 if not task_info["finish_times"][slot]:
                     task_info["finish_times"][slot] = finish_now
@@ -1769,14 +1837,20 @@ class TaskManager:
             update_kwargs["timeout_sec"] = lock_timeout_sec
         updated = update_task_info(task_dir, _apply, **update_kwargs)
         if reason or detail_lines:
-            display_run_index = max(run_index, int(updated.get("run_index", 0) or 0), 1)
+            if failure_context.get("finalized_run_slot"):
+                display_run_index = max(run_index, int(updated.get("run_index", 0) or 0), 1)
+                title = f"Run #{display_run_index} {event} at {finish_now}"
+            elif failure_context.get("original_status") == "queued":
+                title = f"Queued task {event} at {finish_now}"
+            else:
+                title = f"Task {event} at {finish_now}"
             lines: List[str] = []
             if reason:
                 lines.append(f"reason={reason}")
             lines.extend(detail_lines or [])
             self._append_error_summary(
                 task_dir,
-                title=f"Run #{display_run_index} {event} at {finish_now}",
+                title=title,
                 detail_lines=lines,
             )
         if "status" in task:
