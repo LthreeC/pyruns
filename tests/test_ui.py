@@ -1035,6 +1035,7 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1" in runtime_panel
     assert "memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100)" in runtime_panel
     assert "compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100)" in runtime_panel
+    assert "stable_seconds: numberInputValue(gpuStableSeconds, 15, 1)" in runtime_panel
     assert "max_wait_seconds: gpuMaxWaitHours * 3600" in runtime_panel
     assert "disabled={saving || !runtime}" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel

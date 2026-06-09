@@ -258,7 +258,7 @@ def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             clean[setting_key] = _coerce_float_payload(
                 value,
                 _DEFAULT_GPU_SCHEDULER_CONFIG.stable_seconds,
-                minimum=0.0,
+                minimum=1.0,
             )
         else:
             clean[setting_key] = _coerce_float_payload(value, 0.0, minimum=0.0)

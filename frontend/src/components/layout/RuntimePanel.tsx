@@ -330,7 +330,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100),
         min_free_memory_gb: numberInputValue(gpuMinFreeMemoryGb, 40, 0),
         compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100),
-        stable_seconds: numberInputValue(gpuStableSeconds, 15, 0),
+        stable_seconds: numberInputValue(gpuStableSeconds, 15, 1),
         max_wait_seconds: gpuMaxWaitHours * 3600,
         max_tasks_per_gpu: numberInputValue(gpuMaxTasksPerGpu, 1, 1),
         sample_interval_seconds: runtime?.gpu_scheduler?.sample_interval_seconds ?? 2,
@@ -694,7 +694,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
                   <input
                     type="number"
-                    min={0}
+                    min={1}
                     value={gpuStableSeconds}
                     onChange={event => setGpuStableSeconds(event.target.value)}
                     className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"

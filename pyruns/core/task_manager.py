@@ -1603,6 +1603,12 @@ class TaskManager:
         if lines:
             self._append_gpu_queue_log(task, "GPU WAIT", lines)
 
+    @staticmethod
+    def _gpu_wait_log_interval(config: GpuSchedulerConfig) -> float:
+        sample_interval = max(0.5, float(config.sample_interval_seconds or 0.5))
+        stable_seconds = max(1.0, float(config.stable_seconds or 1.0))
+        return max(sample_interval, stable_seconds)
+
     def _gpu_wait_decision_lines(
         self,
         task: Dict[str, Any],
@@ -1615,7 +1621,7 @@ class TaskManager:
         reason = str(decision.reason or "waiting")
         last_reason = str(task.get("_gpu_last_wait_reason", "") or "")
         last_log_at = float(task.get("_gpu_last_wait_log_at", 0.0) or 0.0)
-        periodic_seconds = max(60.0, float(config.sample_interval_seconds) * 30.0)
+        periodic_seconds = self._gpu_wait_log_interval(config)
         if reason == last_reason and now - last_log_at < periodic_seconds:
             return None
 

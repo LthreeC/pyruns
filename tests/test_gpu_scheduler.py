@@ -34,6 +34,11 @@ def _gpu(index: int, *, used: float, total: float = 40960.0, util: float = 0.0) 
     )
 
 
+def _warm_stable_window(scheduler: GpuResourceScheduler, now: list[float], config: GpuSchedulerConfig) -> None:
+    scheduler.snapshot(config)
+    now[0] += config.stable_seconds
+
+
 def test_gpu_scheduler_reserves_multi_gpu_after_stable_window_and_reuses_snapshot():
     now = [100.0]
     provider = SequenceGpuProvider([
@@ -93,9 +98,10 @@ def test_gpu_scheduler_respects_existing_cuda_visible_devices_when_parseable():
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
+    _warm_stable_window(scheduler, now, config)
 
     decision = scheduler.try_reserve(
         "manual",
@@ -116,7 +122,7 @@ def test_gpu_scheduler_respects_existing_cuda_visible_devices_when_unparseable()
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
 
@@ -134,6 +140,7 @@ def test_gpu_scheduler_respects_existing_cuda_visible_devices_when_unparseable()
 
 
 def test_gpu_scheduler_single_mode_skips_blocked_devices_and_prefers_most_free_memory():
+    now = [20.0]
     provider = SequenceGpuProvider([
         [
             _gpu(0, used=30000, util=5),
@@ -141,15 +148,16 @@ def test_gpu_scheduler_single_mode_skips_blocked_devices_and_prefers_most_free_m
             _gpu(2, used=1024, util=91),
         ],
     ])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 20.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
     )
+    _warm_stable_window(scheduler, now, config)
 
     decision = scheduler.try_reserve("single", 1, config, task_env={})
 
@@ -159,6 +167,7 @@ def test_gpu_scheduler_single_mode_skips_blocked_devices_and_prefers_most_free_m
 
 
 def test_gpu_scheduler_limits_to_gpu_pool_and_reports_insufficient_multi_gpu_capacity():
+    now = [30.0]
     provider = SequenceGpuProvider([
         [
             _gpu(0, used=1024, util=0),
@@ -166,7 +175,7 @@ def test_gpu_scheduler_limits_to_gpu_pool_and_reports_insufficient_multi_gpu_cap
             _gpu(2, used=1024, util=0),
         ],
     ])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 30.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="multi",
@@ -175,8 +184,9 @@ def test_gpu_scheduler_limits_to_gpu_pool_and_reports_insufficient_multi_gpu_cap
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
     )
+    _warm_stable_window(scheduler, now, config)
 
     decision = scheduler.try_reserve("multi", 1, config, task_env={})
 
@@ -185,8 +195,9 @@ def test_gpu_scheduler_limits_to_gpu_pool_and_reports_insufficient_multi_gpu_cap
 
 
 def test_gpu_scheduler_multi_mode_can_request_one_gpu_when_limit_is_one():
+    now = [35.0]
     provider = SequenceGpuProvider([[_gpu(0, used=1024, util=0)]])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 35.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="multi",
@@ -194,8 +205,9 @@ def test_gpu_scheduler_multi_mode_can_request_one_gpu_when_limit_is_one():
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
     )
+    _warm_stable_window(scheduler, now, config)
 
     decision = scheduler.try_reserve("multi-one", 1, config, task_env={})
 
@@ -205,17 +217,19 @@ def test_gpu_scheduler_multi_mode_can_request_one_gpu_when_limit_is_one():
 
 
 def test_gpu_scheduler_allows_same_gpu_concurrency_until_configured_limit():
+    now = [40.0]
     provider = SequenceGpuProvider([[_gpu(0, used=1024, util=0)]])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 40.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         max_tasks_per_gpu=2,
     )
+    _warm_stable_window(scheduler, now, config)
 
     first = scheduler.try_reserve("task-a", 1, config, task_env={})
     second = scheduler.try_reserve("task-b", 1, config, task_env={})
@@ -237,7 +251,7 @@ def test_gpu_scheduler_allows_same_gpu_concurrency_until_configured_limit():
 def test_gpu_scheduler_waits_when_no_gpu_metrics_are_available():
     provider = SequenceGpuProvider([[]])
     scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 50.0)
-    config = GpuSchedulerConfig(enabled=True, task_mode="single", stable_seconds=0)
+    config = GpuSchedulerConfig(enabled=True, task_mode="single", stable_seconds=1)
 
     decision = scheduler.try_reserve("no-gpu", 1, config, task_env={})
 
@@ -258,7 +272,7 @@ def test_gpu_scheduler_reuses_empty_snapshot_until_sample_interval_expires():
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         sample_interval_seconds=2,
     )
 
@@ -270,6 +284,8 @@ def test_gpu_scheduler_reuses_empty_snapshot_until_sample_interval_expires():
     assert provider.calls == 1
 
     now[0] = 52.1
+    scheduler.snapshot(config)
+    now[0] = 53.2
     assigned = scheduler.try_reserve("gpu-ready", 1, config, task_env={})
 
     assert provider.calls == 2
@@ -278,10 +294,11 @@ def test_gpu_scheduler_reuses_empty_snapshot_until_sample_interval_expires():
 
 
 def test_gpu_scheduler_validates_fixed_cuda_devices_against_pool_and_required_count():
+    now = [60.0]
     provider = SequenceGpuProvider([
         [_gpu(0, used=1024, util=0), _gpu(1, used=1024, util=0), _gpu(2, used=1024, util=0)],
     ])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 60.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="multi",
@@ -290,9 +307,10 @@ def test_gpu_scheduler_validates_fixed_cuda_devices_against_pool_and_required_co
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
+    _warm_stable_window(scheduler, now, config)
 
     too_few = scheduler.try_reserve("manual-one", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "0"})
     outside_pool = scheduler.try_reserve("manual-outside", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "0,2"})
@@ -314,7 +332,7 @@ def test_gpu_scheduler_reports_fixed_cuda_device_block_reason_when_threshold_fai
         memory_used_pct=50,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
 
@@ -325,19 +343,21 @@ def test_gpu_scheduler_reports_fixed_cuda_device_block_reason_when_threshold_fai
 
 
 def test_gpu_scheduler_ignores_blank_cuda_visible_devices_and_assigns_automatically():
+    now = [62.0]
     provider = SequenceGpuProvider([
         [_gpu(0, used=1024, util=0)],
     ])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 62.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
+    _warm_stable_window(scheduler, now, config)
 
     decision = scheduler.try_reserve("blank-cuda", 1, config, task_env={"CUDA_VISIBLE_DEVICES": " , "})
 
@@ -447,19 +467,21 @@ def test_system_gpu_provider_filters_non_dict_metrics_and_non_list_payloads():
 
 
 def test_gpu_scheduler_deduplicates_cuda_visible_devices_and_reports_missing_fixed_gpu():
+    now = [70.0]
     provider = SequenceGpuProvider([
         [_gpu(0, used=1024, util=0)],
     ])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 70.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
+    _warm_stable_window(scheduler, now, config)
 
     assigned = scheduler.try_reserve("manual-dup", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "0,0"})
     missing = scheduler.try_reserve("manual-missing", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "3"})
@@ -478,6 +500,7 @@ def test_gpu_scheduler_config_parses_device_id_variants_and_invalid_values():
         "gpu_scheduler_device_ids": ["0", "0", "x", 2],
         "gpu_scheduler_gpus_per_task": "bad",
         "gpu_scheduler_min_free_memory_gb": -4,
+        "gpu_scheduler_stable_seconds": 0,
         "gpu_scheduler_max_wait_seconds": 0,
         "gpu_scheduler_sample_interval_seconds": 0,
         "gpu_scheduler_max_tasks_per_gpu": 0,
@@ -487,6 +510,7 @@ def test_gpu_scheduler_config_parses_device_id_variants_and_invalid_values():
     assert config.device_ids == [0, 2]
     assert config.gpus_per_task == 1
     assert config.min_free_memory_gb == 0.0
+    assert config.stable_seconds == 1.0
     assert config.max_wait_seconds == 1.0
     assert config.sample_interval_seconds == 0.5
     assert config.max_tasks_per_gpu == 1
@@ -523,7 +547,7 @@ def test_gpu_scheduler_reports_memory_free_memory_and_compute_block_reasons():
         memory_used_pct=50,
         min_free_memory_gb=20,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
     )
     free_config = GpuSchedulerConfig(
         enabled=True,
@@ -531,7 +555,7 @@ def test_gpu_scheduler_reports_memory_free_memory_and_compute_block_reasons():
         memory_used_pct=90,
         min_free_memory_gb=20,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
     )
     compute_config = GpuSchedulerConfig(
         enabled=True,
@@ -539,7 +563,7 @@ def test_gpu_scheduler_reports_memory_free_memory_and_compute_block_reasons():
         memory_used_pct=90,
         min_free_memory_gb=20,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
     )
 
     memory_scheduler = GpuResourceScheduler(
@@ -607,19 +631,21 @@ def test_gpu_scheduler_clears_stable_window_for_devices_that_leave_pool():
 
 
 def test_gpu_scheduler_ignores_existing_cuda_visible_devices_when_respect_is_disabled():
+    now = [100.0]
     provider = SequenceGpuProvider([
         [_gpu(0, used=1024, util=0), _gpu(1, used=2048, util=0)],
     ])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 100.0)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
         memory_used_pct=75,
         min_free_memory_gb=8,
         compute_used_pct=30,
-        stable_seconds=0,
+        stable_seconds=1,
         respect_cuda_visible_devices=False,
     )
+    _warm_stable_window(scheduler, now, config)
 
     decision = scheduler.try_reserve(
         "override",
@@ -636,7 +662,7 @@ def test_gpu_scheduler_ignores_existing_cuda_visible_devices_when_respect_is_dis
 
 def test_gpu_scheduler_rejects_blank_and_non_numeric_cuda_visible_devices_as_existing_masks():
     scheduler = GpuResourceScheduler(provider=SequenceGpuProvider([[]]), clock=lambda: 110.0)
-    config = GpuSchedulerConfig(enabled=True, task_mode="single", stable_seconds=0)
+    config = GpuSchedulerConfig(enabled=True, task_mode="single", stable_seconds=1)
 
     blank = scheduler.try_reserve("blank", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "  "})
     non_numeric = scheduler.try_reserve("bad", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "0,gpu"})

@@ -83,6 +83,9 @@ class GpuSchedulerConfig:
     sample_interval_seconds: float = 2.0
     respect_cuda_visible_devices: bool = True
 
+    def __post_init__(self) -> None:
+        self.stable_seconds = max(1.0, _coerce_float(self.stable_seconds, 15.0))
+
     @classmethod
     def from_settings(cls, settings: Dict[str, Any]) -> "GpuSchedulerConfig":
         task_mode = str(settings.get("gpu_scheduler_task_mode", "single") or "single").strip().lower()
@@ -95,7 +98,7 @@ class GpuSchedulerConfig:
             memory_used_pct=_coerce_pct(settings.get("gpu_scheduler_memory_used_pct"), 40.0),
             min_free_memory_gb=max(0.0, _coerce_float(settings.get("gpu_scheduler_min_free_memory_gb"), 40.0)),
             compute_used_pct=_coerce_pct(settings.get("gpu_scheduler_compute_used_pct"), 30.0),
-            stable_seconds=max(0.0, _coerce_float(settings.get("gpu_scheduler_stable_seconds"), 15.0)),
+            stable_seconds=max(1.0, _coerce_float(settings.get("gpu_scheduler_stable_seconds"), 15.0)),
             max_wait_seconds=max(1.0, _coerce_float(settings.get("gpu_scheduler_max_wait_seconds"), 172800.0)),
             max_tasks_per_gpu=max(1, _coerce_int(settings.get("gpu_scheduler_max_tasks_per_gpu"), 1)),
             sample_interval_seconds=max(0.5, _coerce_float(settings.get("gpu_scheduler_sample_interval_seconds"), 2.0)),

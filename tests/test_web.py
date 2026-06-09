@@ -784,6 +784,28 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
     assert payload["sample_interval_seconds"] == 0.5
 
 
+def test_runtime_update_gpu_scheduler_clamps_stable_seconds_minimum(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={"gpu_scheduler": {"stable_seconds": 0}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["gpu_scheduler"]["stable_seconds"] == 1.0
+    settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
+    assert "gpu_scheduler_stable_seconds: 1.0" in settings_text
+
+
 def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "gpu_wait", status="queued")
