@@ -30,6 +30,7 @@ const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
 const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
 const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'
+const QUEUE_LOG_NAME = 'queue.log'
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
 const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
@@ -111,8 +112,14 @@ export default function MonitorPage() {
     () => monitorTasks.find(task => task.name === selectedTaskName),
     [monitorTasks, selectedTaskName],
   )
-  const liveLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
-  const isLive = selectedTask?.status === 'running' && (!selectedLog || selectedLog === liveLogName)
+  const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
+  const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
+  const isLive = Boolean(
+    selectedTask
+    && (selectedTask.status === 'running' || selectedTask.status === 'queued')
+    && (!selectedLog || selectedLog === liveLogName)
+  )
+  const canUseLogStream = selectedTask?.status === 'running' && liveLogName === runLogName
   const hasActive = useMemo(
     () => monitorTasks.some(task => task.status === 'running' || task.status === 'queued'),
     [monitorTasks],
@@ -616,12 +623,12 @@ export default function MonitorPage() {
     }
   }, [flushLiveLogChunkBuffer])
 
-  useLogStream({ taskName: selectedTaskName, onChunk: handleChunk, enabled: isLive })
+  useLogStream({ taskName: selectedTaskName, onChunk: handleChunk, enabled: isLive && canUseLogStream })
 
   const pollLiveLog = useCallback(async () => {
     const activeTaskName = selectedTaskNameRef.current
     const liveLog = liveLogNameRef.current
-    if (!activeTaskName || !liveLog || wsStreamActiveRef.current || livePollInFlightRef.current) {
+    if (!activeTaskName || !liveLog || (canUseLogStream && wsStreamActiveRef.current) || livePollInFlightRef.current) {
       return
     }
 
@@ -653,7 +660,7 @@ export default function MonitorPage() {
     } finally {
       livePollInFlightRef.current = false
     }
-  }, [monitorChunkSize])
+  }, [canUseLogStream, monitorChunkSize])
 
   usePolling(pollLiveLog, 1000, Boolean(isLive), false)
 

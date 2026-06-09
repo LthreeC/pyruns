@@ -853,6 +853,18 @@ def test_react_monitor_caps_live_log_state_for_long_tasks():
     assert "appendMonitorLogContent(state.logContent, logs.content)" in monitor
 
 
+def test_react_monitor_live_polls_queued_gpu_queue_log():
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "const QUEUE_LOG_NAME = 'queue.log'" in monitor
+    assert "selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName" in monitor
+    assert "selectedTask.status === 'running' || selectedTask.status === 'queued'" in monitor
+    assert "const canUseLogStream = selectedTask?.status === 'running' && liveLogName === runLogName" in monitor
+    assert "enabled: isLive && canUseLogStream" in monitor
+    assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
+    assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
+
+
 def test_react_monitor_memoizes_task_list_derivations_during_log_streaming():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
