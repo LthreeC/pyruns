@@ -80,7 +80,6 @@ _GPU_SCHEDULER_PAYLOAD_KEYS = {
     "stable_seconds": "gpu_scheduler_stable_seconds",
     "max_wait_seconds": "gpu_scheduler_max_wait_seconds",
     "max_tasks_per_gpu": "gpu_scheduler_max_tasks_per_gpu",
-    "sample_interval_seconds": "gpu_scheduler_sample_interval_seconds",
     "respect_cuda_visible_devices": "gpu_scheduler_respect_cuda_visible_devices",
 }
 
@@ -217,12 +216,6 @@ def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 value,
                 _DEFAULT_GPU_SCHEDULER_CONFIG.max_tasks_per_gpu,
                 minimum=1,
-            )
-        elif key == "sample_interval_seconds":
-            clean[setting_key] = _coerce_float_payload(
-                value,
-                _DEFAULT_GPU_SCHEDULER_CONFIG.sample_interval_seconds,
-                minimum=0.5,
             )
         elif key == "max_wait_seconds":
             clean[setting_key] = _coerce_float_payload(
@@ -577,7 +570,6 @@ class PyrunsRuntime:
                 "stable_seconds": gpu_config.stable_seconds,
                 "max_wait_seconds": gpu_config.max_wait_seconds,
                 "max_tasks_per_gpu": gpu_config.max_tasks_per_gpu,
-                "sample_interval_seconds": gpu_config.sample_interval_seconds,
                 "respect_cuda_visible_devices": gpu_config.respect_cuda_visible_devices,
             },
             "process": {

@@ -72,7 +72,6 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "gpu_scheduler_stable_seconds": 15,
     "gpu_scheduler_max_wait_seconds": 172800,
     "gpu_scheduler_max_tasks_per_gpu": 1,
-    "gpu_scheduler_sample_interval_seconds": 2,
     "gpu_scheduler_respect_cuda_visible_devices": True,
     # Persisted UI state
     "pinned_params": [],
@@ -132,7 +131,6 @@ gpu_scheduler_compute_used_pct: {SETTINGS_DEFAULTS.get("gpu_scheduler_compute_us
 gpu_scheduler_stable_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_stable_seconds")}         # limits must stay eligible for this long
 gpu_scheduler_max_wait_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_max_wait_seconds")}     # default 48h
 gpu_scheduler_max_tasks_per_gpu: {SETTINGS_DEFAULTS.get("gpu_scheduler_max_tasks_per_gpu")}
-gpu_scheduler_sample_interval_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_sample_interval_seconds")}
 gpu_scheduler_respect_cuda_visible_devices: {SETTINGS_DEFAULTS.get("gpu_scheduler_respect_cuda_visible_devices")}
 
 """

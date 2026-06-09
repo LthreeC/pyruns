@@ -39,7 +39,7 @@ def _warm_stable_window(scheduler: GpuResourceScheduler, now: list[float], confi
     now[0] += config.stable_seconds
 
 
-def test_gpu_scheduler_reserves_multi_gpu_after_stable_window_and_reuses_snapshot():
+def test_gpu_scheduler_reserves_multi_gpu_after_stable_window():
     now = [100.0]
     provider = SequenceGpuProvider([
         [_gpu(0, used=4096, util=0), _gpu(1, used=8192, util=10)],
@@ -53,7 +53,6 @@ def test_gpu_scheduler_reserves_multi_gpu_after_stable_window_and_reuses_snapsho
         min_free_memory_gb=8,
         compute_used_pct=30,
         stable_seconds=4,
-        sample_interval_seconds=2,
     )
 
     first = scheduler.try_reserve("task-a", 1, config, task_env={})
@@ -62,7 +61,7 @@ def test_gpu_scheduler_reserves_multi_gpu_after_stable_window_and_reuses_snapsho
 
     second_task = scheduler.try_reserve("task-b", 1, config, task_env={})
     assert second_task.assignment is None
-    assert provider.calls == 1
+    assert provider.calls == 2
 
     now[0] = 102.0
     warming = scheduler.try_reserve("task-a", 1, config, task_env={})
@@ -259,7 +258,7 @@ def test_gpu_scheduler_waits_when_no_gpu_metrics_are_available():
     assert decision.reason == "no NVIDIA GPU metrics available"
 
 
-def test_gpu_scheduler_reuses_empty_snapshot_until_sample_interval_expires():
+def test_gpu_scheduler_resamples_each_check_but_waits_for_stable_window():
     now = [50.0]
     provider = SequenceGpuProvider([
         [],
@@ -273,7 +272,6 @@ def test_gpu_scheduler_reuses_empty_snapshot_until_sample_interval_expires():
         min_free_memory_gb=8,
         compute_used_pct=30,
         stable_seconds=1,
-        sample_interval_seconds=2,
     )
 
     first = scheduler.try_reserve("no-gpu-a", 1, config, task_env={})
@@ -281,14 +279,19 @@ def test_gpu_scheduler_reuses_empty_snapshot_until_sample_interval_expires():
 
     assert first.assignment is None
     assert second.assignment is None
-    assert provider.calls == 1
+    assert provider.calls == 2
+    assert "waiting stable" in second.reason
 
-    now[0] = 52.1
+    now[0] = 50.5
+    still_warming = scheduler.try_reserve("gpu-warming", 1, config, task_env={})
+    assert still_warming.assignment is None
+    assert "waiting stable" in still_warming.reason
+
+    now[0] = 51.0
     scheduler.snapshot(config)
-    now[0] = 53.2
+    now[0] = 52.1
     assigned = scheduler.try_reserve("gpu-ready", 1, config, task_env={})
 
-    assert provider.calls == 2
     assert assigned.assignment is not None
     assert assigned.assignment.gpu_ids == [0]
 
@@ -502,7 +505,6 @@ def test_gpu_scheduler_config_parses_device_id_variants_and_invalid_values():
         "gpu_scheduler_min_free_memory_gb": -4,
         "gpu_scheduler_stable_seconds": 0,
         "gpu_scheduler_max_wait_seconds": 0,
-        "gpu_scheduler_sample_interval_seconds": 0,
         "gpu_scheduler_max_tasks_per_gpu": 0,
     })
 
@@ -512,7 +514,6 @@ def test_gpu_scheduler_config_parses_device_id_variants_and_invalid_values():
     assert config.min_free_memory_gb == 0.0
     assert config.stable_seconds == 1.0
     assert config.max_wait_seconds == 1.0
-    assert config.sample_interval_seconds == 0.5
     assert config.max_tasks_per_gpu == 1
 
 
@@ -598,7 +599,6 @@ def test_gpu_scheduler_clears_stable_window_for_devices_that_leave_pool():
         min_free_memory_gb=8,
         compute_used_pct=30,
         stable_seconds=10,
-        sample_interval_seconds=1,
     )
     config_gpu_1 = GpuSchedulerConfig(
         enabled=True,
@@ -608,7 +608,6 @@ def test_gpu_scheduler_clears_stable_window_for_devices_that_leave_pool():
         min_free_memory_gb=8,
         compute_used_pct=30,
         stable_seconds=10,
-        sample_interval_seconds=1,
     )
 
     assert scheduler.try_reserve("warm-0", 1, config_gpu_0, task_env={}).assignment is None

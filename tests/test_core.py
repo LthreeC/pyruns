@@ -2756,7 +2756,7 @@ def test_task_manager_clears_stale_gpu_schedule_env_before_plain_rerun(tmp_path,
         target["_scheduled_env"] = {"CUDA_VISIBLE_DEVICES": "7", "PYRUNS_ASSIGNED_GPUS": "7"}
         target["_gpu_assignment"] = {"gpu_ids": [7]}
         target["_gpu_wait_started_at"] = 1.0
-        target["_gpu_last_wait_reason"] = "old"
+        target["_gpu_last_wait_log_at"] = 1.0
         target["_queued_independent"] = True
         target["_queued_execution_mode"] = "process"
 
@@ -2772,7 +2772,7 @@ def test_task_manager_clears_stale_gpu_schedule_env_before_plain_rerun(tmp_path,
     assert "_scheduled_env" not in submitted[0]
     assert "_gpu_assignment" not in submitted[0]
     assert "_gpu_wait_started_at" not in submitted[0]
-    assert "_gpu_last_wait_reason" not in submitted[0]
+    assert "_gpu_last_wait_log_at" not in submitted[0]
     assert "_queued_independent" not in submitted[0]
     assert "_queued_execution_mode" not in submitted[0]
 
@@ -3956,7 +3956,7 @@ def test_task_manager_gpu_wait_log_interval_uses_stable_window(tmp_path):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
     task = {"name": "task", "dir": str(tasks_dir / "task"), "run_index": 1}
-    config = GpuSchedulerConfig(enabled=True, stable_seconds=15, sample_interval_seconds=2)
+    config = GpuSchedulerConfig(enabled=True, stable_seconds=15)
     decision = GpuDecision(assignment=None, reason="busy", snapshot=[])
 
     assert manager._gpu_wait_log_interval(config) == 15
@@ -3969,24 +3969,25 @@ def test_task_manager_gpu_wait_log_interval_uses_stable_window(tmp_path):
     assert "still waiting after 00:00:15" in second[0]
 
 
-def test_task_manager_gpu_wait_log_interval_respects_sample_interval_floor(tmp_path):
+def test_task_manager_gpu_wait_log_interval_ignores_reason_changes_until_stable_window(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
     task = {"name": "task", "dir": str(tasks_dir / "task"), "run_index": 1}
-    config = GpuSchedulerConfig(enabled=True, stable_seconds=1, sample_interval_seconds=2)
-    decision = GpuDecision(assignment=None, reason="busy", snapshot=[])
+    config = GpuSchedulerConfig(enabled=True, stable_seconds=15)
+    first_decision = GpuDecision(assignment=None, reason="GPU 0 memory 22% > 20%", snapshot=[])
+    changed_decision = GpuDecision(assignment=None, reason="GPU 0 memory 24% > 20%", snapshot=[])
 
-    assert manager._gpu_wait_log_interval(config) == 2
+    assert manager._gpu_wait_log_interval(config) == 15
 
-    first = manager._gpu_wait_decision_lines(task, 1, config, decision, waited=0, now=100)
+    first = manager._gpu_wait_decision_lines(task, 1, config, first_decision, waited=0, now=100)
     assert first is not None
-    assert manager._gpu_wait_decision_lines(task, 1, config, decision, waited=1, now=101) is None
-    second = manager._gpu_wait_decision_lines(task, 1, config, decision, waited=2, now=102)
+    assert manager._gpu_wait_decision_lines(task, 1, config, changed_decision, waited=1, now=101) is None
+    second = manager._gpu_wait_decision_lines(task, 1, config, changed_decision, waited=15, now=115)
     assert second is not None
-    assert "still waiting after 00:00:02" in second[0]
+    assert "still waiting after 00:00:15" in second[0]
 
 
 def test_executor_gpu_log_helpers_and_bounded_tail_read(tmp_path, monkeypatch):

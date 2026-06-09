@@ -8,7 +8,7 @@ import {
 import clsx from 'clsx'
 import * as api from '@/api'
 import type { RuntimeInfo } from '@/types'
-import { useThemeStore, useToastStore, useWorkspaceStore } from '@/store'
+import { useRuntimeStore, useThemeStore, useToastStore, useWorkspaceStore } from '@/store'
 import CodeTextEditor from '@/components/shared/CodeTextEditor'
 import { errorMessage } from '@/utils/errors'
 
@@ -45,9 +45,21 @@ function formatEnv(env: Record<string, string>) {
     .join('\n')
 }
 
-function runtimeLabel(runtime: RuntimeInfo | null) {
+function cleanSettingText(value: unknown) {
+  return String(value || '').trim()
+}
+
+function runtimeLabel(runtime: RuntimeInfo | null, settings?: Record<string, any>) {
   if (!runtime) {
-    return 'Loading'
+    const pythonExecutable = cleanSettingText(settings?.python_executable)
+    if (pythonExecutable) {
+      return `Python: ${pythonExecutable.split(/[\\/]/).pop() || 'custom'}`
+    }
+    const condaEnv = cleanSettingText(settings?.conda_env)
+    if (condaEnv) {
+      return `Conda: ${condaEnv}`
+    }
+    return 'Follow process'
   }
   if (runtime.python_executable) {
     return `Python: ${runtime.python_executable.split(/[\\/]/).pop() || 'custom'}`
@@ -68,6 +80,16 @@ function modeFromRuntime(runtime: RuntimeInfo | null): PythonRuntimeMode {
   return 'follow'
 }
 
+function modeFromSettings(settings?: Record<string, any>): PythonRuntimeMode {
+  if (cleanSettingText(settings?.python_executable)) {
+    return 'python'
+  }
+  if (cleanSettingText(settings?.conda_env)) {
+    return 'conda'
+  }
+  return 'follow'
+}
+
 function parseDeviceIds(value: string) {
   return value
     .split(',')
@@ -79,6 +101,20 @@ function parseDeviceIds(value: string) {
 
 function formatDeviceIds(value?: number[]) {
   return (value || []).join(',')
+}
+
+function formatDeviceIdsSetting(value: unknown) {
+  if (Array.isArray(value)) {
+    return formatDeviceIds(
+      value
+        .map(item => Number(item))
+        .filter(item => Number.isInteger(item) && item >= 0)
+    )
+  }
+  if (typeof value === 'string') {
+    return formatDeviceIds(parseDeviceIds(value))
+  }
+  return ''
 }
 
 function numberInputValue(value: string, fallback: number, minimum = 0) {
@@ -93,12 +129,39 @@ function boundedNumberInputValue(value: string, fallback: number, minimum: numbe
   return Math.min(maximum, numberInputValue(value, fallback, minimum))
 }
 
+function settingNumber(value: unknown, fallback: number, minimum = 0, maximum = Number.POSITIVE_INFINITY) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.min(maximum, Math.max(minimum, parsed))
+}
+
+function settingBool(value: unknown, fallback: boolean) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  const text = cleanSettingText(value).toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(text)) {
+    return true
+  }
+  if (['0', 'false', 'no', 'off'].includes(text)) {
+    return false
+  }
+  return fallback
+}
+
 function isInsidePanel(panel: HTMLDivElement | null, target: EventTarget | null) {
   return Boolean(panel && target instanceof Node && panel.contains(target))
 }
 
 export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps) {
   const refreshWorkspace = useWorkspaceStore(s => s.fetch)
+  const workspaceSettings = useWorkspaceStore(s => s.workspace?.settings)
+  const cachedRuntime = useRuntimeStore(s => s.runtime)
+  const runtimeLoading = useRuntimeStore(s => s.loading)
+  const fetchRuntime = useRuntimeStore(s => s.fetchRuntime)
+  const updateRuntime = useRuntimeStore(s => s.updateRuntime)
   const theme = useThemeStore(s => s.theme)
   const panelRef = useRef<HTMLDivElement>(null)
   const closeGestureRef = useRef<{
@@ -107,8 +170,9 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     startY: number
     dragged: boolean
   } | null>(null)
+  const runtimeLoadSeqRef = useRef(0)
   const notify = useToastStore(state => state.notify)
-  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null)
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(cachedRuntime)
   const [envText, setEnvText] = useState('')
   const [pythonPath, setPythonPath] = useState('')
   const [condaEnv, setCondaEnv] = useState('')
@@ -133,7 +197,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
   const condaAvailable = !!runtime?.conda.available
   const envCount = Object.keys(runtime?.global_env || {}).length
-  const currentLabel = useMemo(() => runtimeLabel(runtime), [runtime])
+  const currentLabel = useMemo(() => runtimeLabel(runtime, workspaceSettings), [runtime, workspaceSettings])
   const codeMirrorTheme = theme === 'dark' ? 'dark' : 'light'
   const selectedConda = useMemo(() => {
     const found = runtime?.conda.envs.find(env => env.name === condaEnv)
@@ -171,11 +235,36 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setGpuRespectCudaVisibleDevices(next.gpu_scheduler?.respect_cuda_visible_devices ?? true)
   }
 
+  const applyWorkspaceRuntimeSettings = (settings?: Record<string, any>) => {
+    setRuntime(null)
+    setEnvText(formatEnv(settings?.global_env || {}))
+    setPythonPath(cleanSettingText(settings?.python_executable))
+    setCondaEnv(cleanSettingText(settings?.conda_env))
+    setCondaExecutable(cleanSettingText(settings?.conda_executable) || 'conda')
+    setRuntimeMode(modeFromSettings(settings))
+    setGpuSchedulerEnabled(settingBool(settings?.gpu_scheduler_enabled, false))
+    setGpuTaskMode(cleanSettingText(settings?.gpu_scheduler_task_mode) === 'multi' ? 'multi' : 'single')
+    setGpuCount(String(settingNumber(settings?.gpu_scheduler_gpus_per_task, 1, 1)))
+    setGpuDeviceIds(formatDeviceIdsSetting(settings?.gpu_scheduler_device_ids))
+    setGpuMemoryUsedPct(String(settingNumber(settings?.gpu_scheduler_memory_used_pct, 40, 0, 100)))
+    setGpuMinFreeMemoryGb(String(settingNumber(settings?.gpu_scheduler_min_free_memory_gb, 40, 0)))
+    setGpuComputeUsedPct(String(settingNumber(settings?.gpu_scheduler_compute_used_pct, 30, 0, 100)))
+    setGpuStableSeconds(String(settingNumber(settings?.gpu_scheduler_stable_seconds, 15, 1)))
+    setGpuMaxWaitHours(Math.max(1, Math.round(settingNumber(settings?.gpu_scheduler_max_wait_seconds, 172800, 1) / 3600)))
+    setGpuMaxTasksPerGpu(String(settingNumber(settings?.gpu_scheduler_max_tasks_per_gpu, 1, 1)))
+    setGpuRespectCudaVisibleDevices(settingBool(settings?.gpu_scheduler_respect_cuda_visible_devices, true))
+  }
+
   const loadRuntime = async (showFeedback = false) => {
+    const loadSeq = runtimeLoadSeqRef.current + 1
+    runtimeLoadSeqRef.current = loadSeq
     setLoading(true)
     setError('')
     try {
-      applyRuntimeState(await api.getRuntimeInfo())
+      const next = await fetchRuntime()
+      if (loadSeq === runtimeLoadSeqRef.current) {
+        applyRuntimeState(next)
+      }
     } catch (err) {
       const message = errorMessage(err, 'Could not refresh runtime.')
       setError(message)
@@ -189,6 +278,11 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
   useEffect(() => {
     if (open) {
+      if (cachedRuntime) {
+        applyRuntimeState(cachedRuntime)
+      } else {
+        applyWorkspaceRuntimeSettings(workspaceSettings)
+      }
       void loadRuntime()
     }
   }, [open])
@@ -264,10 +358,11 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     payload: Parameters<typeof api.updateRuntimeInfo>[0],
     successTitle = 'Runtime saved',
   ) => {
+    runtimeLoadSeqRef.current += 1
     setSaving(true)
     setError('')
     try {
-      applyRuntimeState(await api.updateRuntimeInfo(payload, false))
+      applyRuntimeState(await updateRuntime(payload, false))
       notify({ tone: 'success', title: successTitle })
       refreshWorkspaceInBackground()
     } catch (err) {
@@ -333,7 +428,6 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         stable_seconds: numberInputValue(gpuStableSeconds, 15, 1),
         max_wait_seconds: gpuMaxWaitHours * 3600,
         max_tasks_per_gpu: numberInputValue(gpuMaxTasksPerGpu, 1, 1),
-        sample_interval_seconds: runtime?.gpu_scheduler?.sample_interval_seconds ?? 2,
         respect_cuda_visible_devices: gpuRespectCudaVisibleDevices,
       },
     }, 'GPU scheduler saved')
@@ -398,11 +492,11 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         <button
           type="button"
           onClick={() => void loadRuntime(true)}
-          disabled={loading || saving}
+          disabled={loading || runtimeLoading || saving}
           className="rounded-md p-2 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50"
           aria-label="Reload runtime"
         >
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          {loading || runtimeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         </button>
         <button
           type="button"
@@ -594,7 +688,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 <button
                   type="button"
                   onClick={saveGpuScheduler}
-                  disabled={saving || !runtime}
+                  disabled={saving}
                   className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
                 >
                   {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}

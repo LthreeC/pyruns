@@ -527,7 +527,6 @@ class TaskManager:
             "_gpu_assignment",
             "_gpu_wait_started_at",
             "_gpu_wait_logged_for",
-            "_gpu_last_wait_reason",
             "_gpu_last_wait_log_at",
             "_queued_independent",
             "_queued_execution_mode",
@@ -1574,6 +1573,7 @@ class TaskManager:
         config: GpuSchedulerConfig,
     ) -> None:
         task["_gpu_wait_logged_for"] = run_index
+        task["_gpu_last_wait_log_at"] = time.monotonic()
         timeout = self._format_duration(config.max_wait_seconds)
         mode = "multi" if config.required_gpu_count > 1 else "single"
         self._append_gpu_queue_log(
@@ -1605,9 +1605,7 @@ class TaskManager:
 
     @staticmethod
     def _gpu_wait_log_interval(config: GpuSchedulerConfig) -> float:
-        sample_interval = max(0.5, float(config.sample_interval_seconds or 0.5))
-        stable_seconds = max(1.0, float(config.stable_seconds or 1.0))
-        return max(sample_interval, stable_seconds)
+        return max(1.0, float(config.stable_seconds or 1.0))
 
     def _gpu_wait_decision_lines(
         self,
@@ -1619,13 +1617,13 @@ class TaskManager:
         now: float,
     ) -> List[str] | None:
         reason = str(decision.reason or "waiting")
-        last_reason = str(task.get("_gpu_last_wait_reason", "") or "")
         last_log_at = float(task.get("_gpu_last_wait_log_at", 0.0) or 0.0)
         periodic_seconds = self._gpu_wait_log_interval(config)
-        if reason == last_reason and now - last_log_at < periodic_seconds:
+        if last_log_at > now:
+            last_log_at = 0.0
+        if last_log_at > 0 and now - last_log_at < periodic_seconds:
             return None
 
-        task["_gpu_last_wait_reason"] = reason
         task["_gpu_last_wait_log_at"] = now
         lines = [
             f"Run #{run_index} still waiting after {self._format_elapsed(waited)}",

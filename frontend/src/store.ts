@@ -3,6 +3,7 @@ import type {
   ConfigCandidate,
   Dashboard,
   GeneratorMode,
+  RuntimeInfo,
   ScriptCandidate,
   Task,
   TemplateContent,
@@ -142,6 +143,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ loading: true })
     try {
       const ws = await api.getWorkspace()
+      const previousRunRoot = get().workspace?.run_root
+      if (previousRunRoot && ws?.run_root && previousRunRoot !== ws.run_root) {
+        useRuntimeStore.getState().setRuntime(null)
+      }
       set(state => ({
         workspace: ws,
         lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
@@ -151,6 +156,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
   setWorkspace(workspace) {
+    const previousRunRoot = get().workspace?.run_root
+    if (previousRunRoot && workspace?.run_root && previousRunRoot !== workspace.run_root) {
+      useRuntimeStore.getState().setRuntime(null)
+    }
     set(state => ({
       workspace,
       lastScriptWorkspace: workspace?.workspace_kind === 'script' ? workspace : state.lastScriptWorkspace,
@@ -158,6 +167,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   async setRunRoot(path: string) {
     const ws = await api.setRunRoot(path)
+    const previousRunRoot = get().workspace?.run_root
+    if (previousRunRoot !== ws.run_root) {
+      useRuntimeStore.getState().setRuntime(null)
+    }
     set(state => ({
       workspace: ws,
       lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
@@ -165,6 +178,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   async openShellWorkspace() {
     const ws = await api.openShellWorkspace()
+    const previousRunRoot = get().workspace?.run_root
+    if (previousRunRoot !== ws.run_root) {
+      useRuntimeStore.getState().setRuntime(null)
+    }
     set(state => ({ workspace: ws, lastScriptWorkspace: state.lastScriptWorkspace }))
   },
   async exitShellWorkspace() {
@@ -174,8 +191,51 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
 
     const ws = await api.setRunRoot(nextWorkspace.run_root)
+    const previousRunRoot = get().workspace?.run_root
+    if (previousRunRoot !== ws.run_root) {
+      useRuntimeStore.getState().setRuntime(null)
+    }
     set({ workspace: ws, lastScriptWorkspace: ws })
     return ws
+  },
+}))
+
+interface RuntimeState {
+  runtime: RuntimeInfo | null
+  loading: boolean
+  setRuntime: (runtime: RuntimeInfo | null) => void
+  fetchRuntime: () => Promise<RuntimeInfo>
+  updateRuntime: (
+    payload: Parameters<typeof api.updateRuntimeInfo>[0],
+    refreshProviders?: boolean,
+  ) => Promise<RuntimeInfo>
+}
+
+export const useRuntimeStore = create<RuntimeState>((set) => ({
+  runtime: null,
+  loading: false,
+  setRuntime(runtime) {
+    set({ runtime })
+  },
+  async fetchRuntime() {
+    set({ loading: true })
+    try {
+      const runtime = await api.getRuntimeInfo()
+      set({ runtime })
+      return runtime
+    } finally {
+      set({ loading: false })
+    }
+  },
+  async updateRuntime(payload, refreshProviders = false) {
+    set({ loading: true })
+    try {
+      const runtime = await api.updateRuntimeInfo(payload, refreshProviders)
+      set({ runtime })
+      return runtime
+    } finally {
+      set({ loading: false })
+    }
   },
 }))
 

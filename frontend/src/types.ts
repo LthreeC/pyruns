@@ -86,7 +86,6 @@ export interface GpuSchedulerSettings {
   stable_seconds: number
   max_wait_seconds: number
   max_tasks_per_gpu: number
-  sample_interval_seconds: number
   respect_cuda_visible_devices: boolean
 }
 

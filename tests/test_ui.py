@@ -989,12 +989,16 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
 def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
 
     assert "export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')" in api
     assert "export const updateRuntimeInfo" in api
-    assert "applyRuntimeState(await api.getRuntimeInfo())" in runtime_panel
+    assert "export const useRuntimeStore = create<RuntimeState>" in store
+    assert "const next = await fetchRuntime()" in runtime_panel
+    assert "applyRuntimeState(next)" in runtime_panel
     assert "refresh_providers=${refreshProviders}" in api
-    assert "applyRuntimeState(await api.updateRuntimeInfo(payload, false))" in runtime_panel
+    assert "applyRuntimeState(await updateRuntime(payload, false))" in runtime_panel
+    assert "runtimeLoadSeqRef" in runtime_panel
     assert "refreshWorkspaceInBackground" in runtime_panel
     assert "void refreshWorkspace().catch" in runtime_panel
     assert "Runtime saved, workspace refresh failed" in runtime_panel
@@ -1037,9 +1041,14 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100)" in runtime_panel
     assert "stable_seconds: numberInputValue(gpuStableSeconds, 15, 1)" in runtime_panel
     assert "max_wait_seconds: gpuMaxWaitHours * 3600" in runtime_panel
-    assert "disabled={saving || !runtime}" in runtime_panel
+    assert "sample_interval_seconds" not in runtime_panel
+    assert "gpu_scheduler_sample_interval_seconds" not in runtime_panel
+    assert "disabled={saving || !runtime}" not in runtime_panel
+    assert "disabled={saving}" in runtime_panel
+    assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
     assert "GpuSchedulerSettings" in types
+    assert "sample_interval_seconds" not in types
     assert "gpu_scheduler?: Partial<GpuSchedulerSettings>" in api
 
 

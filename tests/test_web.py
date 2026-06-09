@@ -767,7 +767,6 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
                 "stable_seconds": "bad",
                 "max_wait_seconds": "bad",
                 "max_tasks_per_gpu": "bad",
-                "sample_interval_seconds": 0.1,
             }
         },
     )
@@ -781,7 +780,9 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
     assert payload["stable_seconds"] == 15.0
     assert payload["max_wait_seconds"] == 172800.0
     assert payload["max_tasks_per_gpu"] == 1
-    assert payload["sample_interval_seconds"] == 0.5
+    assert "sample_interval_seconds" not in payload
+    settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
+    assert "gpu_scheduler_sample_interval_seconds" not in settings_text
 
 
 def test_runtime_update_gpu_scheduler_clamps_stable_seconds_minimum(tmp_path, monkeypatch):

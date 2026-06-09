@@ -80,7 +80,6 @@ class GpuSchedulerConfig:
     stable_seconds: float = 15.0
     max_wait_seconds: float = 172800.0
     max_tasks_per_gpu: int = 1
-    sample_interval_seconds: float = 2.0
     respect_cuda_visible_devices: bool = True
 
     def __post_init__(self) -> None:
@@ -101,7 +100,6 @@ class GpuSchedulerConfig:
             stable_seconds=max(1.0, _coerce_float(settings.get("gpu_scheduler_stable_seconds"), 15.0)),
             max_wait_seconds=max(1.0, _coerce_float(settings.get("gpu_scheduler_max_wait_seconds"), 172800.0)),
             max_tasks_per_gpu=max(1, _coerce_int(settings.get("gpu_scheduler_max_tasks_per_gpu"), 1)),
-            sample_interval_seconds=max(0.5, _coerce_float(settings.get("gpu_scheduler_sample_interval_seconds"), 2.0)),
             respect_cuda_visible_devices=_coerce_bool(settings.get("gpu_scheduler_respect_cuda_visible_devices", True), True),
         )
 
@@ -132,8 +130,8 @@ class GpuDecision:
 class GpuResourceScheduler:
     """Small in-memory GPU reservation manager.
 
-    The scheduler samples once per interval and shares the same snapshot across
-    all queued tasks, so admission checks do not run ``nvidia-smi`` per task.
+    Admission checks resample on each scheduling pass. ``stable_seconds``
+    controls how long a GPU must remain eligible before it can be reserved.
     """
 
     def __init__(
@@ -151,15 +149,12 @@ class GpuResourceScheduler:
         self._reservations: Dict[str, List[int]] = {}
         self._lock = threading.RLock()
 
-    def snapshot(self, config: GpuSchedulerConfig) -> List[GpuDevice]:
+    def snapshot(self, config: GpuSchedulerConfig, *, now: float | None = None) -> List[GpuDevice]:
         with self._lock:
-            now = self.clock()
-            if now - self._snapshot_at < config.sample_interval_seconds:
-                return self._snapshot
-
+            sample_at = self.clock() if now is None else now
             self._snapshot = self.provider.sample()
-            self._snapshot_at = now
-            self._refresh_eligible_since(config, now)
+            self._snapshot_at = sample_at
+            self._refresh_eligible_since(config, sample_at)
             return self._snapshot
 
     def release(self, task_name: str) -> None:
@@ -178,7 +173,7 @@ class GpuResourceScheduler:
         with self._lock:
             now = self.clock()
             env = {str(k): str(v) for k, v in (task_env or {}).items() if str(k)}
-            snapshot = self.snapshot(config)
+            snapshot = self.snapshot(config, now=now)
             waited = max(0.0, now - queued_since) if queued_since is not None else 0.0
 
             existing_cuda = str(env.get(CUDA_VISIBLE_DEVICES, "") or "").strip()
