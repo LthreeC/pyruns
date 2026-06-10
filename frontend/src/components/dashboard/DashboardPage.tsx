@@ -101,8 +101,8 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="h-full overflow-hidden bg-surface-base">
-        <div className="flex h-full min-h-0 w-full flex-col gap-3 px-4 py-4 2xl:px-6">
+      <div className="h-full overflow-y-auto bg-surface-base">
+        <div className="flex min-h-full w-full flex-col gap-3 px-4 py-4 2xl:px-6">
           <header className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border-default pb-3">
             <div className="min-w-0 flex-1 basis-full sm:basis-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -185,7 +185,7 @@ export default function DashboardPage() {
               )}
             </div>
 
-            <div className="max-h-[21.75rem] overflow-y-auto p-3">
+            <div className="p-3">
               {metrics?.gpus?.length ? (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                   {metrics.gpus.map(gpu => (

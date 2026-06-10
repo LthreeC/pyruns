@@ -265,7 +265,7 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
 
     assert "max-w-[1600px]" not in source
     assert "mx-auto" not in source
-    assert "flex h-full min-h-0 w-full flex-col" in source
+    assert "flex min-h-full w-full flex-col" in source
     assert "const workspaceKindLabel" in source
     assert "Shell Workspace" in source
     assert "border border-border-default bg-surface-raised" in source
@@ -273,10 +273,12 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "Recent Tasks" in source
     assert "GPU & System" in source
     assert "ResourceTile" in source
-    assert "h-full overflow-hidden bg-surface-base" in source
+    assert "h-full overflow-y-auto bg-surface-base" in source
     assert "flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
-    assert "max-h-[21.75rem] overflow-y-auto p-3" in source
+    assert '<div className="p-3">' in source
     assert "h-[10.5rem] w-full rounded-md border border-border-subtle" in source
+    assert "h-[23.25rem]" not in source
+    assert "max-h-[21.75rem]" not in source
     assert "max-h-[min(52vh,34rem)]" not in source
     assert "flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
     assert "flex-[1.7]" not in source
@@ -360,8 +362,10 @@ def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
     assert "key={gpuKey(gpu)}" in dashboard
     assert "aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}" in dashboard
     assert "title={gpu.name}" in dashboard
-    assert "max-h-[21.75rem] overflow-y-auto p-3" in dashboard
+    assert '<div className="p-3">' in dashboard
     assert "h-[10.5rem] w-full rounded-md border border-border-subtle" in dashboard
+    assert "h-[23.25rem]" not in dashboard
+    assert "max-h-[21.75rem]" not in dashboard
     assert "min-h-0 flex-1 overflow-y-auto p-3" not in dashboard
     assert "GpuMiniMetric" not in dashboard
     assert "Top proc:" not in dashboard
