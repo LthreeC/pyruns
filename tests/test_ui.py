@@ -839,12 +839,15 @@ def test_react_mobile_task_controls_keep_usable_touch_targets():
     assert "'inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors'" in manager
 
 
-def test_react_monitor_caps_live_log_state_for_long_tasks():
+def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
-    assert "MONITOR_LOG_STATE_MAX_CHARS" in store
-    assert "MONITOR_LOG_STATE_TRIM_THRESHOLD" in store
+    assert "export function trimMonitorLogContent(content: string, maxLines = currentMonitorScrollback())" in store
+    assert "const lineLimit = Math.max(0, Math.trunc(maxLines))" in store
+    assert "content.charCodeAt(index) !== 10" in store
+    assert "if (keptLines > lineLimit)" in store
+    assert "charCodeAt(index) !== 13" not in store
     assert "function isPyrunsLifecycleChunk" in store
     assert "function comparableLogText" in store
     assert "export function appendMonitorLogContent" in store

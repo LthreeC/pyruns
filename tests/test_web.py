@@ -1610,19 +1610,31 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
     assert "line 3" not in content
 
 
-def test_logs_endpoint_caps_tail_lines_by_initial_byte_limit(tmp_path):
+def test_logs_endpoint_tails_requested_lines_without_hidden_byte_cap(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
-    (workspace.parent / "_pyruns_settings.yaml").write_text(
-        "monitor_initial_tail_bytes: 16\n",
-        encoding="utf-8",
-    )
-    log_text = ("A" * 40 + "\n") + ("B" * 40 + "\n")
+    log_text = "first\n" + ("x" * 5_000_001) + "\nlast\n"
     _add_task(workspace, "alpha", status="running", log_text=log_text)
     (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").write_bytes(log_text.encode("utf-8"))
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
     response = client.get("/api/tasks/alpha/logs", params={"tail_lines": 100})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"].replace("\r", "") == log_text
+    assert payload["offset"] == len(log_text)
+
+
+def test_logs_endpoint_only_caps_tail_lines_when_tail_bytes_is_explicit(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    log_text = ("A" * 40 + "\n") + ("B" * 40 + "\n")
+    _add_task(workspace, "alpha", status="running", log_text=log_text)
+    (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").write_bytes(log_text.encode("utf-8"))
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks/alpha/logs", params={"tail_lines": 100, "tail_bytes": 16})
 
     assert response.status_code == 200
     payload = response.json()

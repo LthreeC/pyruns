@@ -21,8 +21,6 @@ const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
-const MONITOR_LOG_STATE_MAX_CHARS = 5_000_000
-const MONITOR_LOG_STATE_TRIM_THRESHOLD = MONITOR_LOG_STATE_MAX_CHARS * 2
 
 interface ThemeState {
   theme: 'dark' | 'light'
@@ -69,11 +67,24 @@ function readStoredStringArray(key: string) {
   }
 }
 
-export function trimMonitorLogContent(content: string) {
-  if (content.length <= MONITOR_LOG_STATE_TRIM_THRESHOLD) {
-    return content
+export function trimMonitorLogContent(content: string, maxLines = currentMonitorScrollback()) {
+  const lineLimit = Math.max(0, Math.trunc(maxLines))
+  if (!content || lineLimit === 0) {
+    return ''
   }
-  return content.slice(-MONITOR_LOG_STATE_MAX_CHARS)
+
+  let keptLines = content.endsWith('\n') ? 0 : 1
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    if (content.charCodeAt(index) !== 10) {
+      continue
+    }
+    keptLines += 1
+    if (keptLines > lineLimit) {
+      return content.slice(index + 1)
+    }
+  }
+
+  return content
 }
 
 function comparableLogText(text: string) {
@@ -94,9 +105,6 @@ export function appendMonitorLogContent(content: string, text: string) {
     if (comparableLogText(contentTail).endsWith(comparableLogText(text))) {
       return content
     }
-  }
-  if (text.length >= MONITOR_LOG_STATE_TRIM_THRESHOLD) {
-    return text.slice(-MONITOR_LOG_STATE_MAX_CHARS)
   }
   return trimMonitorLogContent(content + text)
 }

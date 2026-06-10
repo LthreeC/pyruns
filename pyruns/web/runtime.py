@@ -1157,17 +1157,10 @@ class PyrunsRuntime:
 
         if offset is None:
             if tail_lines is not None:
-                byte_limit = tail_bytes
-                if byte_limit is None:
-                    byte_limit = _int_setting(
-                        self.settings,
-                        "monitor_initial_tail_bytes",
-                        _cfg.DEFAULT_MONITOR_INITIAL_TAIL_BYTES,
-                    )
                 content, new_offset = read_last_lines(
                     selected_path,
                     max_lines=max(0, tail_lines),
-                    max_bytes=max(1, byte_limit),
+                    max_bytes=None if tail_bytes is None else max(1, tail_bytes),
                 )
             else:
                 byte_limit = tail_bytes
