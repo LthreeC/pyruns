@@ -140,7 +140,7 @@ export default function DashboardPage() {
             </div>
           </header>
 
-          <section className="flex max-h-[min(52vh,34rem)] shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
+          <section className="flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
             <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-border-subtle px-4 py-3">
               <div>
                 <h2 className="text-sm font-medium text-txt-primary">GPU & System</h2>
@@ -185,7 +185,7 @@ export default function DashboardPage() {
               )}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="max-h-[21.75rem] overflow-y-auto p-3">
               {metrics?.gpus?.length ? (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                   {metrics.gpus.map(gpu => (
@@ -362,7 +362,7 @@ function GpuMetricCard({ gpu, onClick }: { gpu: GPUMetric; onClick: () => void }
       type="button"
       onClick={onClick}
       aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}
-      className="w-full rounded-md border border-border-subtle bg-surface-raised px-4 py-4 text-left transition-colors hover:border-accent/25 hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      className="h-[10.5rem] w-full rounded-md border border-border-subtle bg-surface-raised px-4 py-4 text-left transition-colors hover:border-accent/25 hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
