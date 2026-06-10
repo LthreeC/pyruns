@@ -623,7 +623,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         disconnected = asyncio.Event()
         dropped_notice_sent = False
 
-        def on_chunk(chunk_text: str) -> None:
+        def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
             nonlocal dropped_notice_sent
             if disconnected.is_set():
                 return
@@ -632,6 +632,9 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 "task_name": task_name,
                 "content": chunk_text,
             }
+            offset = (metadata or {}).get("offset")
+            if offset is not None:
+                message["offset"] = offset
             try:
                 queue.put_nowait(message)
                 return
@@ -659,7 +662,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 disconnected.set()
 
         watcher = asyncio.create_task(watch_client_messages())
-        log_emitter.subscribe(task_name, on_chunk, loop=loop)
+        log_emitter.subscribe(task_name, on_chunk, loop=loop, include_metadata=True)
         try:
             while not disconnected.is_set():
                 try:

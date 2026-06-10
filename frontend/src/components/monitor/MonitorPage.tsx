@@ -45,6 +45,11 @@ const TERMINAL_SEARCH_OPTIONS: ISearchOptions = {
   },
 }
 
+type PendingLiveLogChunk = {
+  content: string
+  offset?: number
+}
+
 function clampMonitorSidebarWidth(value: number) {
   if (!Number.isFinite(value)) {
     return DEFAULT_MONITOR_SIDEBAR_WIDTH
@@ -81,7 +86,7 @@ export default function MonitorPage() {
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
     selectedTaskName, logContent, availableLogs, selectedLog, loading, exportIds,
-    selectTask, selectLogFile, appendLog, toggleExport, selectAllExport, clearExport,
+    selectTask, selectLogFile, toggleExport, selectAllExport, clearExport,
   } = useMonitorStore()
 
   const [sidebarQuery, setSidebarQuery] = useState('')
@@ -102,7 +107,7 @@ export default function MonitorPage() {
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
   const wsStreamActiveRef = useRef(false)
-  const pendingLiveLogChunkRef = useRef({ key: '', content: '' })
+  const pendingLiveLogChunkRef = useRef({ key: '', chunks: [] as PendingLiveLogChunk[] })
   const liveLogFlushTimerRef = useRef<number | null>(null)
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
   const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
@@ -567,19 +572,38 @@ export default function MonitorPage() {
     }
 
     const buffer = pendingLiveLogChunkRef.current
-    if (!buffer.content) {
+    if (buffer.chunks.length === 0) {
       return
     }
 
-    pendingLiveLogChunkRef.current = { key: '', content: '' }
+    pendingLiveLogChunkRef.current = { key: '', chunks: [] }
 
     const activeTaskName = selectedTaskNameRef.current
     const activeLog = selectedLogRef.current || liveLogNameRef.current
     const activeKey = activeTaskName ? `${activeTaskName}::${activeLog}` : ''
     if (buffer.key === activeKey) {
-      appendLog(buffer.content)
+      useMonitorStore.setState(state => {
+        let nextContent = state.logContent
+        let nextOffset = state.logOffset
+
+        for (const chunk of buffer.chunks) {
+          const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)
+            ? Math.max(0, Math.trunc(chunk.offset))
+            : null
+          if (chunkOffset !== null && chunkOffset <= nextOffset) {
+            nextOffset = Math.max(nextOffset, chunkOffset)
+            continue
+          }
+          nextContent = appendMonitorLogContent(nextContent, chunk.content)
+          if (chunkOffset !== null) {
+            nextOffset = Math.max(nextOffset, chunkOffset)
+          }
+        }
+
+        return { logContent: nextContent, logOffset: nextOffset }
+      })
     }
-  }, [appendLog])
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -587,7 +611,7 @@ export default function MonitorPage() {
         window.clearTimeout(liveLogFlushTimerRef.current)
         liveLogFlushTimerRef.current = null
       }
-      pendingLiveLogChunkRef.current = { key: '', content: '' }
+      pendingLiveLogChunkRef.current = { key: '', chunks: [] }
     }
   }, [])
 
@@ -615,10 +639,13 @@ export default function MonitorPage() {
     wsStreamActiveRef.current = true
     const key = `${activeTaskName}::${activeLog || liveLogNameRef.current}`
     const buffer = pendingLiveLogChunkRef.current
+    const chunk: PendingLiveLogChunk = typeof message.offset === 'number' && Number.isFinite(message.offset)
+      ? { content: message.content, offset: message.offset }
+      : { content: message.content }
     if (buffer.key === key) {
-      pendingLiveLogChunkRef.current = { key, content: buffer.content + message.content }
+      pendingLiveLogChunkRef.current = { key, chunks: [...buffer.chunks, chunk] }
     } else {
-      pendingLiveLogChunkRef.current = { key, content: message.content }
+      pendingLiveLogChunkRef.current = { key, chunks: [chunk] }
     }
     if (liveLogFlushTimerRef.current === null) {
       liveLogFlushTimerRef.current = window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)

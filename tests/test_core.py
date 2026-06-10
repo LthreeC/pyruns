@@ -2429,6 +2429,48 @@ def test_run_task_worker_separates_finish_banner_after_output_without_newline(
     assert "last output without newline[PYRUNS]" not in content
 
 
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_preserves_tqdm_carriage_return_stream_and_emit_offsets(
+    mock_popen,
+    mock_emit,
+    mock_detect,
+    tmp_path,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
+        json.dump({"name": "ProgressTask", "script": "script.py", "status": "queued"}, f)
+
+    progress_chunk = b"\r  0%|          | 0/2 [00:00<?, ?it/s]\r                                         \r\n\r 50%|#####     | 1/2 [00:01<00:01,  1.00s/it]"
+    mock_proc = MagicMock()
+    mock_proc.pid = 7778
+    mock_proc.wait.return_value = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[progress_chunk, b""])
+    mock_popen.return_value = mock_proc
+
+    with patch("pyruns.core.executor._build_run_source_state", return_value=""):
+        result = run_task_worker(
+            task_dir=task_dir,
+            name="ProgressTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert result["status"] == "completed"
+    log_path = Path(task_dir) / RUN_LOGS_DIR / "run1.log"
+    log_bytes = log_path.read_bytes()
+    assert progress_chunk in log_bytes
+    assert b"\r                                         \r\n\r 50%" in log_bytes
+
+    progress_text = progress_chunk.decode("utf-8")
+    progress_call = next(call for call in mock_emit.call_args_list if call.args[1] == progress_text)
+    assert progress_call.kwargs["offset"] == log_bytes.index(progress_chunk) + len(progress_chunk)
+
+
 def test_run_task_worker_internal_spawn_error_persists_failure_and_keeps_cleanup_error_secondary(tmp_path, monkeypatch):
     import pyruns.core.executor as executor
     from pyruns.utils.info_io import load_task_info

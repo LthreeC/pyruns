@@ -172,6 +172,7 @@ export interface LogStreamMessage {
   type: 'chunk'
   task_name: string
   content: string
+  offset?: number
 }
 
 export interface GPUProcessInfo {

@@ -2134,16 +2134,19 @@ def test_tasks_endpoint_keeps_active_and_new_tasks_ahead_of_old_manual_order(tmp
 def test_logs_websocket_streams_live_chunks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    log_file.write_text("hello from stream", encoding="utf-8")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
-        log_emitter.emit("alpha", "hello from stream")
+        log_emitter.emit("alpha", "hello from stream", offset=log_file.stat().st_size)
         payload = websocket.receive_json()
 
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
     assert payload["content"] == "hello from stream"
+    assert payload["offset"] == log_file.stat().st_size
 
 
 def test_logs_websocket_stream_uses_bounded_queue():
@@ -2151,6 +2154,7 @@ def test_logs_websocket_stream_uses_bounded_queue():
 
     assert "LOG_STREAM_QUEUE_LIMIT" in source
     assert "asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)" in source
+    assert "include_metadata=True" in source
     assert "except asyncio.QueueFull" in source
     assert "queue.get_nowait()" in source
 

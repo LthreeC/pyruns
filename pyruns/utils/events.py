@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 class _LogSubscriber:
     callback: Callable
     loop: Any = None
+    include_metadata: bool = False
 
 
 class LogEmitter:
@@ -47,9 +48,9 @@ class LogEmitter:
         with self._lock:
             self._loop = loop
 
-    def subscribe(self, task_name: str, callback: Callable, loop=None) -> None:
+    def subscribe(self, task_name: str, callback: Callable, loop=None, include_metadata: bool = False) -> None:
         """Register *callback* to receive log chunks for *task_name*."""
-        subscriber = _LogSubscriber(callback=callback, loop=loop)
+        subscriber = _LogSubscriber(callback=callback, loop=loop, include_metadata=include_metadata)
         with self._lock:
             if not any(item.callback is callback for item in self._subscribers[task_name]):
                 self._subscribers[task_name].append(subscriber)
@@ -63,7 +64,7 @@ class LogEmitter:
                 if not subs:
                     del self._subscribers[task_name]
 
-    def emit(self, task_name: str, chunk_text: str) -> None:
+    def emit(self, task_name: str, chunk_text: str, *, offset: int | None = None) -> None:
         """Broadcast *chunk_text* to all subscribers of *task_name*.
 
         Called from executor reader threads — dispatches into the
@@ -80,16 +81,21 @@ class LogEmitter:
         if not subs:
             return
 
+        metadata: Dict[str, Any] = {}
+        if offset is not None:
+            metadata["offset"] = offset
+
         for subscriber in subs:
             cb = subscriber.callback
             loop = subscriber.loop or default_loop
+            args = (chunk_text, metadata) if subscriber.include_metadata else (chunk_text,)
             try:
                 if loop and loop.is_running():
-                    loop.call_soon_threadsafe(cb, chunk_text)
+                    loop.call_soon_threadsafe(cb, *args)
                 else:
                     # CLI / non-async context: call directly (thread-safe
                     # by convention — CLI consumers use queue.Queue).
-                    cb(chunk_text)
+                    cb(*args)
             except Exception as exc:
                 logger.debug("LogEmitter callback error: %s", exc)
 

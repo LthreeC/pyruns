@@ -724,7 +724,7 @@ def _persist_run_source_state(
     line = f"[PYRUNS] Source {source_state}\n"
     try:
         payload = _append_run_log_text(log_path, line, clean_boundary=True)
-        log_emitter.emit(task_name, payload.replace("\n", "\r\n"))
+        log_emitter.emit(task_name, payload.replace("\n", "\r\n"), offset=os.path.getsize(log_path))
     except Exception as exc:
         logger.debug("Failed to append source state log for %s: %s", task_name, exc)
 
@@ -1252,7 +1252,8 @@ def run_task_worker(
         start_payload = start_log + _gpu_assignment_log(env)
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(start_payload)
-        log_emitter.emit(name, start_payload.replace("\n", "\r\n"))
+            start_offset = handle.tell()
+        log_emitter.emit(name, start_payload.replace("\n", "\r\n"), offset=start_offset)
 
         def _mark_started(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)
@@ -1283,11 +1284,12 @@ def run_task_worker(
                         break
                     handle.write(chunk)
                     handle.flush()
+                    chunk_offset = handle.tell()
                     text = normalize_log_newlines(decoder.decode(chunk))
-                    log_emitter.emit(name, text)
+                    log_emitter.emit(name, text, offset=chunk_offset)
                 tail = decoder.decode(b"", final=True)
                 if tail:
-                    log_emitter.emit(name, normalize_log_newlines(tail))
+                    log_emitter.emit(name, normalize_log_newlines(tail), offset=handle.tell())
 
         reader_thread = threading.Thread(target=_tee_output, daemon=True)
         reader_thread.start()
@@ -1300,7 +1302,7 @@ def run_task_worker(
 
         finish_log = _lifecycle_banner("finish", name, end_str)
         finish_payload = _append_run_log_text(log_path, finish_log, clean_boundary=True)
-        log_emitter.emit(name, finish_payload.replace("\n", "\r\n"))
+        log_emitter.emit(name, finish_payload.replace("\n", "\r\n"), offset=os.path.getsize(log_path))
 
         def _mark_finished(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)

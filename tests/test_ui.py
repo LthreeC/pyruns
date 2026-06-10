@@ -816,13 +816,20 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "LOG_STREAM_FLUSH_MS" in source
+    assert "type PendingLiveLogChunk" in source
     assert "pendingLiveLogChunkRef" in source
     assert "flushLiveLogChunkBuffer" in source
     assert "window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)" in source
-    assert "appendLog(buffer.content)" in source
-    assert "pendingLiveLogChunkRef.current = { key, content: buffer.content + message.content }" in source
+    assert "chunks: [] as PendingLiveLogChunk[]" in source
+    assert "const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)" in source
+    assert "chunkOffset <= nextOffset" in source
+    assert "nextContent = appendMonitorLogContent(nextContent, chunk.content)" in source
+    assert "return { logContent: nextContent, logOffset: nextOffset }" in source
+    assert "pendingLiveLogChunkRef.current = { key, chunks: [...buffer.chunks, chunk] }" in source
+    assert "offset?: number" in types
 
 
 def test_react_mobile_task_controls_keep_usable_touch_targets():

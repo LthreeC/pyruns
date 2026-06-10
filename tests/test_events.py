@@ -66,3 +66,17 @@ def test_log_emitter_dispatches_each_subscriber_on_its_own_loop():
 
     assert loop_a.calls == [(on_a, "live\n")]
     assert loop_b.calls == [(on_b, "live\n")]
+
+
+def test_log_emitter_can_include_optional_metadata_without_changing_default_callbacks():
+    emitter = LogEmitter()
+    plain = []
+    with_metadata = []
+
+    emitter.subscribe("task1", lambda chunk: plain.append(chunk))
+    emitter.subscribe("task1", lambda chunk, metadata: with_metadata.append((chunk, metadata)), include_metadata=True)
+
+    emitter.emit("task1", "live\n", offset=42)
+
+    assert plain == ["live\n"]
+    assert with_metadata == [("live\n", {"offset": 42})]
