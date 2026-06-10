@@ -13,3 +13,5 @@ verbose: 2
 dropout: -1.0
 device: cpu
 seed: 7
+steps: 3
+step_delay: 0.005

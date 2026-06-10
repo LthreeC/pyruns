@@ -25,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dropout", type=float, default=-1.0)
     parser.add_argument("--device", choices=["cpu", "cuda", "mps"], default="cpu")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--step-delay", type=float, default=0.02)
     return parser
 
 
@@ -43,14 +45,18 @@ def main() -> None:
         "dropout": args.dropout,
         "device": args.device,
         "seed": args.seed,
+        "steps": args.steps,
+        "step_delay": args.step_delay,
         "env_marker": os.environ.get("PYRUNS_EXAMPLE_ENV", ""),
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
 
     width = max(1, sum(args.layers))
     loss = 1.0
-    for step in tqdm(range(1, 4), ascii=True, unit="step"):
-        time.sleep(0.005)
+    total_steps = max(1, args.steps)
+    step_delay = max(0.0, args.step_delay)
+    for step in tqdm(range(1, total_steps + 1), ascii=True, unit="step"):
+        time.sleep(step_delay)
         loss = round(loss * (0.72 + random.random() * 0.04), 6)
         throughput = round(width / step, 3)
         print(f"step={step} loss={loss} throughput={throughput}")
