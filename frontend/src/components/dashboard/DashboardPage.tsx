@@ -140,7 +140,7 @@ export default function DashboardPage() {
             </div>
           </header>
 
-          <section className="flex min-h-0 flex-[1.7] flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
+          <section className="flex max-h-[min(52vh,34rem)] shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
             <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-border-subtle px-4 py-3">
               <div>
                 <h2 className="text-sm font-medium text-txt-primary">GPU & System</h2>
@@ -233,7 +233,7 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          <section className="flex min-h-0 flex-[0.45] flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
+          <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
             <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
               <div>
                 <h2 className="text-sm font-medium text-txt-primary">Recent Tasks</h2>

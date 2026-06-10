@@ -274,8 +274,10 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "GPU & System" in source
     assert "ResourceTile" in source
     assert "h-full overflow-hidden bg-surface-base" in source
-    assert "flex-[1.7]" in source
-    assert "flex-[0.45]" in source
+    assert "max-h-[min(52vh,34rem)] shrink-0" in source
+    assert "flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
+    assert "flex-[1.7]" not in source
+    assert "flex-[0.45]" not in source
     assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
     assert "min-h-0 flex-1 overflow-y-auto p-3" in source
     assert "Quick status glance." in source
