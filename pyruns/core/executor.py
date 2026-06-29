@@ -80,7 +80,11 @@ def _detect_cuda_oom_text(text: str) -> bool:
     return any(marker in lowered for marker in _CUDA_OOM_MARKERS)
 
 
-def _gpu_assignment_log(env: Dict[str, str]) -> str:
+def _gpu_assignment_log(
+    env: Dict[str, str],
+    *,
+    run_index: int | None = None,
+) -> str:
     """Build run-log lines describing the GPU assignment used by a task."""
 
     assigned = str(env.get(PYRUNS_ASSIGNED_GPUS, "") or "").strip()
@@ -88,9 +92,19 @@ def _gpu_assignment_log(env: Dict[str, str]) -> str:
     if not assigned and not cuda_visible:
         return ""
 
-    lines = [f"[PYRUNS] GPU assignment: {assigned or cuda_visible}"]
+    gpu_label = assigned or cuda_visible
+    lines = [
+        f"[PYRUNS] {'-' * 20} GPU CONTEXT {'-' * 20}",
+        f"[PYRUNS] GPU assignment: {gpu_label}",
+    ]
+    if run_index is not None:
+        lines.append(f"[PYRUNS] Run #{run_index} uses GPU(s): {gpu_label}")
+        lines.append(f"[PYRUNS] Run log: run{run_index}.log")
+    if assigned:
+        lines.append(f"[PYRUNS] PYRUNS_ASSIGNED_GPUS={assigned}")
     if cuda_visible:
         lines.append(f"[PYRUNS] CUDA_VISIBLE_DEVICES={cuda_visible}")
+    lines.append(f"[PYRUNS] {'-' * 53}")
     return "\n".join(lines) + "\n"
 
 
@@ -1249,7 +1263,7 @@ def run_task_worker(
 
         start_str = get_now_str()
         start_log = _lifecycle_banner("start", name, start_str)
-        start_payload = start_log + _gpu_assignment_log(env)
+        start_payload = start_log + _gpu_assignment_log(env, run_index=run_index)
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(start_payload)
             start_offset = handle.tell()

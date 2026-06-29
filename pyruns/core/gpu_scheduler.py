@@ -312,8 +312,8 @@ class GpuResourceScheduler:
             return f"GPU {gpu.index} compute {gpu.compute_util_pct:.0f}% > {config.compute_used_pct:g}%"
         since = self._eligible_since.get(gpu.index)
         if since is None or now - since < config.stable_seconds:
-            remaining = config.stable_seconds if since is None else config.stable_seconds - (now - since)
-            return f"GPU {gpu.index} waiting stable for {max(0.0, remaining):.0f}s"
+            observed = 0.0 if since is None else max(0.0, now - since)
+            return f"GPU {gpu.index} stabilizing {observed:.1f}/{config.stable_seconds:g}s"
         return ""
 
     def _meets_static_limits(self, gpu: GpuDevice, config: GpuSchedulerConfig) -> bool:
@@ -331,12 +331,16 @@ def format_gpu_queue_block(title: str, lines: List[str]) -> str:
     """Format a Pyruns-owned GPU queue event for ``queue.log``."""
 
     clean_title = str(title or "GPU").strip().upper()
-    body = "\n".join(f"[PYRUNS] {line}" for line in lines)
-    return (
-        f"[PYRUNS] {'=' * 17} {clean_title} {'=' * 17}\n"
-        f"{body}\n"
-        f"[PYRUNS] {'=' * (36 + len(clean_title))}\n"
-    )
+    clean_lines = [str(line).strip() for line in lines if str(line).strip()]
+    summary = clean_lines[0] if clean_lines else ""
+    body_lines = clean_lines[1:]
+
+    header = f"[PYRUNS] [{clean_title}]"
+    if summary:
+        header = f"{header} {summary}"
+    block = [header]
+    block.extend(f"[PYRUNS]   {line}" for line in body_lines)
+    return "\n".join(block) + "\n"
 
 
 def format_gpu_rule(config: GpuSchedulerConfig) -> str:

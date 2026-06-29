@@ -196,43 +196,6 @@ def _coerce_gpu_device_ids_payload(value: Any) -> List[int]:
     return ids
 
 
-def _prettify_gpu_queue_log_content(content: str) -> str:
-    """Make legacy GPU queue logs readable without changing normal run logs."""
-
-    if not content:
-        return ""
-
-    text = str(content).replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(
-        r"(?m)^(\[PYRUNS\] ={3,} [A-Z][A-Z ]* ={3,})\n{2,}",
-        r"\1\n",
-        text,
-    )
-    text = re.sub(
-        r"(?m)\n{2,}(\[PYRUNS\] ={20,})\n{2,}",
-        r"\n\1\n",
-        text,
-    )
-    text = re.sub(r"(?m)^\[PYRUNS\] -+ RUN #\d+ -+\n{0,2}", "", text)
-    lines = re.sub(r"\n{3,}", "\n\n", text).splitlines()
-    output: List[str] = []
-    last_run_index: str | None = None
-
-    for line in lines:
-        match = re.search(r"\bRun #(\d+)\b", line)
-        if match:
-            run_index = match.group(1)
-            if last_run_index and run_index != last_run_index:
-                if output and output[-1] != "":
-                    output.append("")
-                output.append(f"[PYRUNS] -------------------- RUN #{run_index} --------------------")
-                output.append("")
-            last_run_index = run_index
-        output.append(line)
-
-    return "\n".join(output) + ("\n" if text.endswith("\n") else "")
-
-
 def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     clean: Dict[str, Any] = {}
     for key, setting_key in _GPU_SCHEDULER_PAYLOAD_KEYS.items():
@@ -1181,9 +1144,6 @@ class PyrunsRuntime:
                 )
             content, new_offset = safe_read_log(selected_path, max(0, offset), max_bytes=max(1, byte_limit))
 
-        if selected_name == _cfg.QUEUE_LOG_FILENAME:
-            content = _prettify_gpu_queue_log_content(content)
-
         return {
             "task_name": task_name,
             "selected_log": selected_name,
@@ -1274,7 +1234,7 @@ class PyrunsRuntime:
                 raise ValueError(str(exc)) from exc
         else:
             if count_batch_configs(base_config) != 1:
-                raise ValueError("YAML mode does not support batch syntax. Switch back to Form mode.")
+                raise ValueError("YAML mode does not support batch syntax. Switch to Grid or Tree mode.")
             configs = [base_config]
 
         if template_value and orig_config:
@@ -1362,7 +1322,7 @@ class PyrunsRuntime:
                 raise ValueError(str(exc)) from exc
         else:
             if count_batch_configs(base_config) != 1:
-                raise ValueError("YAML mode does not support batch syntax. Switch back to Form mode.")
+                raise ValueError("YAML mode does not support batch syntax. Switch to Grid or Tree mode.")
             configs = [base_config]
 
         if template_value and orig_config:

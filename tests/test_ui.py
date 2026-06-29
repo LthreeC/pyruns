@@ -584,6 +584,25 @@ def test_react_manager_uses_single_column_cards_on_narrow_viewports():
     assert "columns={effectiveTaskColumns}" in manager
 
 
+def test_react_manager_batch_run_sends_worker_count_and_execution_mode():
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+
+    assert "const [executionMode, setExecutionMode] = useState('thread')" in manager
+    assert "const [maxWorkersInput, setMaxWorkersInput] = useState('2')" in manager
+    assert "const normalizeWorkerInput = useCallback((value: string) => {" in manager
+    assert "return Math.min(32, Math.max(1, parsed))" in manager
+    assert "const maxWorkers = normalizeWorkerInput(maxWorkersInput)" in manager
+    assert "setMaxWorkersInput(String(maxWorkers))" in manager
+    assert "await api.batchRunTasks(names, executionMode, maxWorkers)" in manager
+    assert "value={executionMode}" in manager
+    assert '<option value="thread">Thread</option>' in manager
+    assert '<option value="process">Process</option>' in manager
+    assert "Workers" in manager
+    assert "value={maxWorkersInput}" in manager
+    assert "body: JSON.stringify({ task_names: taskNames, execution_mode: executionMode, max_workers: maxWorkers })" in api
+
+
 def test_react_generator_stacks_editor_and_settings_on_narrow_viewports():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
 
@@ -886,8 +905,11 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "enabled: isLive && canUseLogStream" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
     assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
-    assert "selectedLog: runLogName" not in monitor
-
+    assert "previousSelectedTaskStatusRef" in monitor
+    assert "previous.status !== 'queued'" in monitor
+    assert "taskStatus !== 'running'" in monitor
+    assert "selectedLog !== QUEUE_LOG_NAME" in monitor
+    assert "selectLogFile(runLogName)" in monitor
 
 def test_react_monitor_memoizes_task_list_derivations_during_log_streaming():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
@@ -923,13 +945,31 @@ def test_react_monitor_supports_terminal_search_shortcut_and_controls():
     assert "term.loadAddon(searchAddon)" in source
     assert "`${TERMINAL_SEARCH_HIGHLIGHT_LIMIT}+`" in source
     assert "window.addEventListener('keydown', handleTerminalSearchShortcut, true)" in source
+    assert "terminalSearchShortcutScopeRef" in source
+    assert "shortcutTargetsTerminal" in source
     assert "key === 'f'" in source
     assert "setTerminalSearchOpen(true)" in source
     assert 'aria-label="Search terminal logs"' in source
+    assert "bg-[#252526]" in source
+    assert "text-[#cccccc]" in source
+    assert "text-[#f48771]" in source
     assert "runTerminalSearch(event.shiftKey ? 'previous' : 'next')" in source
     assert 'aria-label="Previous match"' in source
     assert 'aria-label="Next match"' in source
     assert 'aria-label="Close terminal search"' in source
+
+
+def test_react_monitor_supports_configurable_terminal_line_height():
+    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    settings_source = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "monitorSettings.ts").read_text(encoding="utf-8")
+
+    assert "resolveMonitorLineHeight" in source
+    assert "const monitorLineHeight = resolveMonitorLineHeight(workspace?.settings)" in source
+    assert "lineHeight: DEFAULT_MONITOR_LINE_HEIGHT" in source
+    assert "xtermRef.current.options.lineHeight = monitorLineHeight" in source
+    assert "fitAddonRef.current?.fit()" in source
+    assert "monitor_line_height" in settings_source
+    assert "DEFAULT_MONITOR_LINE_HEIGHT" in settings_source
 
 
 def test_react_search_input_clear_button_is_accessible():
@@ -1253,7 +1293,7 @@ def test_react_generator_nested_form_uses_tree_depth_guides():
     assert "treeConnector" in generator
     assert "border-l border-dashed border-border-strong/60" in generator
     assert "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'" in generator
-    assert "!treeSection && depth > 0 && 'border-l-2 border-border-subtle pl-3'" in generator
+    assert "!treeSection && depth > 0 && 'border-l-2 border-border pl-3'" in generator
     assert "treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }" not in generator
     assert "style={undefined}" not in generator
     assert "aria-expanded={open}" in generator
@@ -1264,10 +1304,17 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
 
     assert "type FormLayoutMode = 'grid' | 'tree'" in generator
+    assert "type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'" in generator
+    assert "['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]" in generator
+    assert "handleDisplayModeChange" in generator
     assert "formLayoutMode" in generator
     assert "setFormLayoutMode" in generator
     assert "Grid" in generator
     assert "Tree" in generator
+    assert "YAML" in generator
+    assert "['form', 'yaml']" not in generator
+    assert "Switch back to Form mode" not in generator
+    assert "Use Form mode" not in generator
     assert "Expand all" in generator
     assert "Collapse all" in generator
     assert "treeOpenSignal" in generator
@@ -1285,9 +1332,12 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "TREE_FIELD_GRID_STYLE" not in generator
     assert "repeat(auto-fit, minmax(360px, 1fr))" not in generator
     assert "repeat(auto-fit, minmax(300px, 1fr))" not in generator
-    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'" in generator
+    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
     assert "const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'" in generator
-    assert "editorMode === 'form' && (formLayoutMode === 'tree' || formLayoutMode === 'grid')" in generator
+    assert "onSetAllSections={setAllTreeSections}" in generator
+    assert "hasNestedSections && (" in generator
+    assert "outlineSections.length > 1 && (" in generator
+    assert "<SectionExpandControls onSetAllSections={onSetAllSections} />" in generator
     assert "layoutMode={formLayoutMode}" in generator
     assert "min-w-[280px]" in generator
     assert "ml-auto flex flex-wrap items-center gap-2" in generator
@@ -1299,8 +1349,8 @@ def test_react_generator_grid_mode_keeps_sibling_fields_on_one_row():
     assert "function buildColumnGridStyle(columns: number)" in generator
     assert "repeat(${columns}, minmax(20rem, 1fr))" in generator
     assert "const effectiveColumns = Math.max(1, columns)" in generator
-    assert "const contentClassName = 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'" in generator
-    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'" in generator
+    assert "const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
+    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
     assert "columns - depth" not in generator
     assert "Math.max(1, columns, itemCount)" not in generator
 
@@ -1308,8 +1358,8 @@ def test_react_generator_grid_mode_keeps_sibling_fields_on_one_row():
 def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
 
-    assert "grid min-h-10 grid-cols-[minmax(9rem,0.75fr)_auto_minmax(12rem,1.25fr)]" in generator
-    assert "flex flex-none items-center justify-end gap-1" in generator
+    assert "grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)]" in generator
+    assert "flex min-w-0 items-center gap-1.5" in generator
     assert '<div className="min-w-0 w-full">' in generator
     assert "group flex flex-col justify-between gap-1.5" not in generator
     grid_row_start = generator.index("if (!treeParamRow)")
@@ -1361,18 +1411,18 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "const treeParamRow = layoutMode === 'tree'" in generator
     assert "treeParamRow" in generator
     assert "grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]" in generator
-    assert "border-border-subtle bg-surface-raised" in generator
+    assert "border-border bg-surface-raised" in generator
     assert "treeParamRow ? 'min-w-0' : 'flex-1'" in generator
     assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
     assert "treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1'" in generator
     assert "if (!treeParamRow)" in generator
-    assert "group grid min-h-10 grid-cols-[minmax(9rem,0.75fr)_auto_minmax(12rem,1.25fr)] items-center gap-2 rounded-md border border-border-subtle bg-surface-raised/40 px-2.5 py-1.5 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
+    assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
-    assert "h-7 w-full rounded-md border bg-surface-overlay/45" in generator
+    assert "h-6 w-full rounded-md border bg-[var(--input-bg)]" in generator
     assert "focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
-    assert "focus:border-accent focus:bg-surface-overlay/45 focus:ring-2 focus:ring-accent/15" in generator
+    assert "hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-visible:ring-2 focus-visible:ring-accent/30" in generator
     assert "border-border-subtle bg-surface-raised hover:border-border" not in generator
     assert "ml-auto min-w-[180px] max-w-[420px] flex-[1.2]" not in generator

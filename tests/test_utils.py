@@ -1015,6 +1015,8 @@ def test_ensure_settings_file(tmp_path):
     res_path = settings.ensure_settings_file(root_dir)
     assert res_path == file_path
     assert os.path.exists(file_path)
+    with open(file_path, "r", encoding="utf-8") as f:
+        assert "monitor_line_height:" in f.read()
     
     # 2. File exists (should not overwrite)
     with open(file_path, "w", encoding="utf-8") as f:

@@ -18,13 +18,21 @@ _LOCAL_TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
 @pytest.fixture()
 def tmp_path():
     """Workspace-local replacement for pytest's default tmp_path fixture."""
-    _LOCAL_TMP_ROOT.mkdir(parents=True, exist_ok=True)
-    path = _LOCAL_TMP_ROOT / uuid.uuid4().hex
-    path.mkdir(parents=True, exist_ok=True)
+    root = _LOCAL_TMP_ROOT
+    path = root / uuid.uuid4().hex
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        root = Path(tempfile.mkdtemp(prefix="pyruns-tests-"))
+        path = root / uuid.uuid4().hex
+        path.mkdir(parents=True, exist_ok=True)
     try:
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
+        if root != _LOCAL_TMP_ROOT:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest.fixture()

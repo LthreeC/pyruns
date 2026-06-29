@@ -15,6 +15,7 @@ import {
   ChevronRight,
   CheckCircle2,
   FileCode,
+  FoldVertical,
   Hash,
   LayoutGrid,
   ListChecks,
@@ -23,6 +24,7 @@ import {
   Search,
   Sparkles,
   Terminal,
+  UnfoldVertical,
   Workflow,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -48,6 +50,7 @@ const MIN_TREE_OUTLINE_WIDTH = 200
 const MAX_TREE_OUTLINE_WIDTH = 380
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
 type FormLayoutMode = 'grid' | 'tree'
+type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'
 
 interface CreatedTaskResult {
   count: number
@@ -798,6 +801,18 @@ export default function GeneratorPage() {
     setTreeOpenValue(open)
     setTreeOpenSignal(signal => signal + 1)
   }, [])
+  const handleDisplayModeChange = useCallback((mode: GeneratorDisplayMode) => {
+    if (mode === 'shell') {
+      setViewMode('shell')
+      return
+    }
+    if (mode === 'yaml') {
+      setViewMode('yaml')
+      return
+    }
+    setFormLayoutMode(mode)
+    setViewMode('form')
+  }, [setViewMode])
   const handlePickShellFile = useCallback(async () => {
     setError('')
     try {
@@ -942,48 +957,35 @@ export default function GeneratorPage() {
         </div>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1">
-            {(isShellWorkspace ? ['shell'] : ['form', 'yaml']).map(mode => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setViewMode(mode as 'form' | 'yaml' | 'shell')}
-                className={clsx(
-                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
-                  editorMode === mode
-                    ? 'bg-surface-overlay text-txt-primary'
-                    : 'text-txt-secondary hover:text-txt-primary'
-                )}
-              >
-                {mode === 'form' && <LayoutGrid className="h-3 w-3" />}
-                {mode === 'yaml' && <FileCode className="h-3 w-3" />}
-                {mode === 'shell' && <Terminal className="h-3 w-3" />}
-                <span>{mode.charAt(0).toUpperCase() + mode.slice(1)}</span>
-              </button>
-            ))}
-          </div>
-
-          {editorMode === 'form' && (
-            <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
-              {(['grid', 'tree'] as FormLayoutMode[]).map(mode => (
+          <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
+            {(isShellWorkspace ? ['shell'] : ['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]).map(mode => {
+              const active = mode === 'shell'
+                ? editorMode === 'shell'
+                : mode === 'yaml'
+                  ? editorMode === 'yaml'
+                  : editorMode === 'form' && formLayoutMode === mode
+              return (
                 <button
                   key={mode}
                   type="button"
-                  aria-pressed={formLayoutMode === mode}
-                  onClick={() => setFormLayoutMode(mode)}
+                  aria-pressed={active}
+                  onClick={() => handleDisplayModeChange(mode as GeneratorDisplayMode)}
                   className={clsx(
-                    'inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors',
-                    formLayoutMode === mode
+                    'inline-flex items-center gap-1.5 border-l border-border-subtle px-3 py-1.5 text-xs font-medium transition-colors first:border-l-0',
+                    active
                       ? 'bg-surface-raised text-txt-primary'
-                      : 'text-txt-secondary hover:text-txt-primary',
+                      : 'text-txt-secondary hover:bg-surface-raised/55 hover:text-txt-primary',
                   )}
                 >
-                  {mode === 'grid' ? <LayoutGrid className="h-3 w-3" /> : <Workflow className="h-3 w-3" />}
-                  <span>{mode === 'grid' ? 'Grid' : 'Tree'}</span>
+                  {mode === 'grid' && <LayoutGrid className="h-3 w-3" />}
+                  {mode === 'tree' && <Workflow className="h-3 w-3" />}
+                  {mode === 'yaml' && <FileCode className="h-3 w-3" />}
+                  {mode === 'shell' && <Terminal className="h-3 w-3" />}
+                  <span>{mode === 'yaml' ? 'YAML' : mode.charAt(0).toUpperCase() + mode.slice(1)}</span>
                 </button>
-              ))}
-            </div>
-          )}
+              )
+            })}
+          </div>
 
           {editorMode === 'form' && formLayoutMode === 'grid' && (
             <div className="relative">
@@ -1001,24 +1003,6 @@ export default function GeneratorPage() {
             </div>
           )}
 
-          {editorMode === 'form' && (formLayoutMode === 'tree' || formLayoutMode === 'grid') && (
-            <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
-              <button
-                type="button"
-                onClick={() => setAllTreeSections(true)}
-                className="px-2.5 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
-              >
-                Expand all
-              </button>
-              <button
-                type="button"
-                onClick={() => setAllTreeSections(false)}
-                className="border-l border-border-subtle px-2.5 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
-              >
-                Collapse all
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -1039,6 +1023,7 @@ export default function GeneratorPage() {
               pinnedParams={pinnedParams}
               batchParams={batchParams}
               onTogglePin={togglePin}
+              onSetAllSections={setAllTreeSections}
               onChange={data => setYamlText(yamlStringify(data))}
             />
           ) : editorMode === 'yaml' ? (
@@ -1148,11 +1133,11 @@ export default function GeneratorPage() {
                 YAML mode creates exactly one <code className="text-txt-primary">config.yaml</code> task.
               </div>
               <div className="text-2xs leading-relaxed text-txt-secondary">
-                Batch syntax is disabled here. Switch back to <span className="text-txt-primary">Form</span> for batch expansion and parameter pinning.
+                Batch syntax is disabled here. Switch to <span className="text-txt-primary">Grid</span> or <span className="text-txt-primary">Tree</span> for batch expansion and parameter pinning.
               </div>
               {yamlContainsBatchSyntax && (
                 <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-2xs text-amber-400">
-                  Batch syntax was detected in YAML mode, but YAML mode only creates one task. Use Form mode if you want batch generation.
+                  Batch syntax was detected in YAML mode, but YAML mode only creates one task. Use Grid or Tree mode if you want batch generation.
                 </div>
               )}
             </CompactSection>
@@ -1192,7 +1177,7 @@ export default function GeneratorPage() {
                 editorMode === 'form' && hasBatchSyntax
                   ? batchHintText
                   : editorMode === 'yaml' && yamlContainsBatchSyntax
-                    ? 'YAML mode does not expand batch syntax. Switch back to Form mode.'
+                    ? 'YAML mode does not expand batch syntax. Switch to Grid or Tree mode.'
                   : editorMode === 'shell'
                     ? 'Creates one shell task immediately.'
                     : 'Creates one task immediately.'
@@ -1470,6 +1455,35 @@ function ShellRuntimeRow({
   )
 }
 
+function SectionExpandControls({
+  onSetAllSections,
+}: {
+  onSetAllSections: (open: boolean) => void
+}) {
+  return (
+    <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
+      <button
+        type="button"
+        title="Expand all sections"
+        aria-label="Expand all sections"
+        onClick={() => onSetAllSections(true)}
+        className="inline-flex h-7 w-7 items-center justify-center text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
+      >
+        <UnfoldVertical className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        title="Collapse all sections"
+        aria-label="Collapse all sections"
+        onClick={() => onSetAllSections(false)}
+        className="inline-flex h-7 w-7 items-center justify-center border-l border-border-subtle text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
+      >
+        <FoldVertical className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
 function FormEditor({
   config,
   columns,
@@ -1480,6 +1494,7 @@ function FormEditor({
   pinnedParams,
   batchParams,
   onTogglePin,
+  onSetAllSections,
   onChange,
 }: {
   config: Record<string, any> | null
@@ -1491,6 +1506,7 @@ function FormEditor({
   pinnedParams: string[]
   batchParams: string[]
   onTogglePin: (key: string) => void
+  onSetAllSections: (open: boolean) => void
   onChange: (data: Record<string, any>) => void
 }) {
   const [data, setData] = useState<Record<string, any>>(config || {})
@@ -1511,6 +1527,7 @@ function FormEditor({
   }
 
   const allKeys = Object.keys(data).filter(key => !key.startsWith('_meta'))
+  const hasNestedSections = allKeys.some(key => isNestedGroup(data[key]))
 
   const handleChange = (key: string, value: any) => {
     const next = { ...data, [key]: value }
@@ -1536,6 +1553,7 @@ function FormEditor({
         pinnedRowKeys={pinnedRowKeys}
         batchParams={batchParams}
         onTogglePin={onTogglePin}
+        onSetAllSections={onSetAllSections}
         onChangeRoot={handleChange}
         onChangePath={handlePinnedChange}
       />
@@ -1545,7 +1563,7 @@ function FormEditor({
   const visibleKeys = allKeys.filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))
   const gridStyle = buildColumnGridStyle(columns)
   const contentStyle = gridStyle
-  const contentClassName = 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'
+  const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'
   const childSectionClassName = 'col-span-full'
 
   return (
@@ -1559,12 +1577,17 @@ function FormEditor({
           onChange={handlePinnedChange}
         />
       )}
-      {pinnedRows.length > 0 && (
-        <div className="mb-2 mt-3 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
+      <div className={clsx('mb-2 flex flex-wrap items-center gap-2', pinnedRows.length > 0 && 'mt-3')}>
+        <div className="flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
           <LayoutGrid className="h-3.5 w-3.5" />
-          <span>All Parameters</span>
+          <span>{pinnedRows.length > 0 ? 'All Parameters' : 'Parameters'}</span>
         </div>
-      )}
+        {hasNestedSections && (
+          <div className="ml-auto">
+            <SectionExpandControls onSetAllSections={onSetAllSections} />
+          </div>
+        )}
+      </div>
       <div
         className={contentClassName}
         style={contentStyle}
@@ -1622,6 +1645,7 @@ function TreeParameterExplorer({
   pinnedRowKeys,
   batchParams,
   onTogglePin,
+  onSetAllSections,
   onChangeRoot,
   onChangePath,
 }: {
@@ -1634,6 +1658,7 @@ function TreeParameterExplorer({
   pinnedRowKeys: Set<string>
   batchParams: string[]
   onTogglePin: (key: string) => void
+  onSetAllSections: (open: boolean) => void
   onChangeRoot: (key: string, value: any) => void
   onChangePath: (fullKey: string, value: any) => void
 }) {
@@ -1830,9 +1855,9 @@ function TreeParameterExplorer({
         />
       )}
 
-      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised/50">
-        <div className="border-b border-border-subtle bg-surface-raised/80 px-3 py-2">
-          <div className="flex min-w-0 items-center gap-2">
+      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-surface-raised">
+        <div className="border-b border-border bg-surface-raised px-3 py-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {outlineCollapsed && (
               <button
                 type="button"
@@ -1849,6 +1874,11 @@ function TreeParameterExplorer({
             <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs text-txt-secondary">
               {query ? searchRows.length : selectedSection.leafCount}
             </span>
+            {outlineSections.length > 1 && (
+              <div className="ml-auto">
+                <SectionExpandControls onSetAllSections={onSetAllSections} />
+              </div>
+            )}
           </div>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-2xs text-txt-tertiary">
             {(query ? ['filter', filterText.trim()] : selectedCrumbs).filter(Boolean).map((crumb, index) => (
@@ -2056,7 +2086,7 @@ function SearchResultRows({
   return (
     <div className="space-y-2">
       {rows.map(row => (
-        <div key={row.fullKey} className="rounded-md border border-border-subtle bg-surface-raised p-1.5">
+        <div key={row.fullKey} className="rounded-md border border-border bg-surface-raised p-1.5 shadow-sm">
           <div className="mb-1 truncate px-1 font-mono text-2xs text-txt-tertiary" title={row.fullKey}>
             {row.fullKey}
           </div>
@@ -2162,7 +2192,7 @@ function NestedSection({
   const effectiveColumns = Math.max(1, columns)
   const gridStyle = buildColumnGridStyle(effectiveColumns)
   const contentStyle = layoutMode === 'tree' ? undefined : gridStyle
-  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-2.5 overflow-x-auto pb-1'
+  const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'
   const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'
 
   useEffect(() => {
@@ -2182,8 +2212,8 @@ function NestedSection({
           : 'relative',
         treeSection && depth === 0 && 'border-border bg-surface-raised shadow-sm',
         treeSection && depth > 0 && 'rounded-none',
-        !treeSection && depth === 0 && 'overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-sm',
-        !treeSection && depth > 0 && 'border-l-2 border-border-subtle pl-3',
+        !treeSection && depth === 0 && 'overflow-hidden rounded-md border border-border bg-surface-raised shadow-sm',
+        !treeSection && depth > 0 && 'border-l-2 border-border pl-3',
       )}
     >
       {treeConnector && (
@@ -2200,8 +2230,8 @@ function NestedSection({
             : 'px-2.5 py-1.5 hover:bg-surface-overlay',
           treeSection && depth === 0 && open && 'border-b border-border bg-surface-overlay/50',
           treeSection && depth > 0 && 'rounded-md',
-          !treeSection && depth === 0 && open && 'border-b border-border-subtle bg-surface-overlay/55',
-          !treeSection && depth > 0 && 'rounded-md bg-surface-overlay/25',
+          !treeSection && depth === 0 && open && 'border-b border-border bg-surface-overlay/55',
+          !treeSection && depth > 0 && 'rounded-md bg-surface-base',
         )}
         title={`${prefix} (${Object.keys(data).length} fields)`}
       >
@@ -2220,7 +2250,7 @@ function NestedSection({
         </span>
       </button>
       {open && (
-        <div className={treeSection ? 'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1' : (depth === 0 ? 'p-2.5' : 'pb-2 pl-3 pt-1.5')}>
+        <div className={treeSection ? 'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1' : (depth === 0 ? 'p-1.5' : 'pb-1 pl-3 pt-0.5')}>
           <div
             className={contentClassName}
             style={contentStyle}
@@ -2341,7 +2371,7 @@ function ParamRow({
     return (
       <div
         className={clsx(
-          'group grid min-h-10 grid-cols-[minmax(9rem,0.75fr)_auto_minmax(12rem,1.25fr)] items-center gap-2 rounded-md border border-border-subtle bg-surface-raised/40 px-2.5 py-1.5 shadow-sm transition-all hover:border-border hover:bg-surface-overlay/30 focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+          'group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
           pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : '',
           (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.03] ring-1 ring-amber-500/20',
         )}
@@ -2356,19 +2386,24 @@ function ParamRow({
             title={pinned ? 'Unpin' : 'Pin'}
             aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
             className={clsx(
-              'flex h-5 w-5 flex-none items-center justify-center rounded transition-colors',
+              'flex h-4.5 w-4.5 flex-none items-center justify-center rounded transition-colors',
               pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
             )}
           >
-            <Pin className="h-3 w-3" />
+            <Pin className="h-2.5 w-2.5" />
           </button>
 
-          <span className="truncate text-xs font-semibold text-txt-primary" title={name}>
+          <span className="min-w-0 truncate text-xs font-semibold text-txt-primary" title={name}>
             {name}
           </span>
-        </div>
 
-        <div className="flex flex-none items-center justify-end gap-1">
+          <span className={clsx(
+            'flex-none rounded-md px-1.5 py-0 text-[10px] leading-4 font-mono',
+            PARAM_TYPE_STYLES[originalType]
+          )}>
+            {originalType}
+          </span>
+
           {pinned && (
             <span className="rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
               Pin
@@ -2380,21 +2415,14 @@ function ParamRow({
               Batch
             </span>
           )}
-
-          <span className={clsx(
-            'rounded-md px-1.5 py-0.5 text-[10px] font-mono',
-            PARAM_TYPE_STYLES[originalType]
-          )}>
-            {originalType}
-          </span>
         </div>
 
         <div className="min-w-0 w-full">
           {originalType === 'bool' && !hasBatch ? (
             <div
               className={clsx(
-                'flex h-7 w-full items-center justify-between gap-2 rounded-md border bg-surface-overlay/45 px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
-                batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+                'flex h-6 w-full items-center justify-between gap-2 rounded-md border bg-[var(--input-bg)] px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+                batchActive ? 'border-amber-500/40' : 'border-border',
               )}
             >
               <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
@@ -2430,8 +2458,8 @@ function ParamRow({
               spellCheck={false}
               title={localValue}
               className={clsx(
-                'h-7 w-full rounded-md border bg-surface-overlay/45 px-2 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
-                hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+                'h-6 w-full rounded-md border bg-[var(--input-bg)] px-2 text-xs font-mono leading-4 text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
+                hasBatch || batchActive ? 'border-amber-500/40' : 'border-border',
               )}
             />
           )}
@@ -2443,7 +2471,7 @@ function ParamRow({
   return (
     <div
       className={clsx(
-        'grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)] min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border hover:bg-surface-overlay focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20',
+        'grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)] min-w-0 items-center gap-2 rounded-md border border-border bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20',
         pinned && 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.04]',
         (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.04]',
       )}
@@ -2529,9 +2557,9 @@ function ParamRow({
           spellCheck={false}
           title={localValue}
           className={clsx(
-            'rounded-md border bg-transparent px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-accent focus:bg-surface-overlay/45 focus:ring-2 focus:ring-accent/15',
+            'rounded-md border bg-[var(--input-bg)] px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
             treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1',
-            hasBatch || batchActive ? 'border-amber-500/20' : 'border-border-subtle',
+            hasBatch || batchActive ? 'border-amber-500/40' : 'border-border',
           )}
         />
       )}

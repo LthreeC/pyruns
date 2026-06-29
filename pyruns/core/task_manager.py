@@ -533,6 +533,7 @@ class TaskManager:
             "_gpu_wait_started_at",
             "_gpu_wait_logged_for",
             "_gpu_last_wait_log_at",
+            "_gpu_wait_refresh_width",
             "_queued_independent",
             "_queued_execution_mode",
         ):
@@ -1219,7 +1220,7 @@ class TaskManager:
                     target = current
 
             if wait_log:
-                self._append_gpu_queue_log(wait_log[0], "GPU WAIT", wait_log[1])
+                self._append_gpu_wait_refresh(wait_log[0], wait_log[1])
                 continue
             if assignment_log:
                 self._append_gpu_assignment(assignment_log[0], assignment_log[1])
@@ -1640,16 +1641,21 @@ class TaskManager:
 
     @staticmethod
     def _gpu_queue_run_separator(run_index: int) -> str:
-        return f"[PYRUNS] -------------------- RUN #{run_index} --------------------\n\n"
+        return f"[PYRUNS] -------------------- RUN #{run_index} --------------------\n"
+
+    @staticmethod
+    def _gpu_queue_paragraph_prefix(last_byte: bytes) -> str:
+        return "\n" if last_byte == b"\n" else "\n\n"
 
     def _append_gpu_queue_log(self, task: Dict[str, Any], title: str, lines: List[str]) -> None:
         log_dir = os.path.join(str(task.get("dir", "")), RUN_LOGS_DIR)
         os.makedirs(log_dir, exist_ok=True)
         queue_log = os.path.join(log_dir, QUEUE_LOG_FILENAME)
         updated_at = get_now_str()
-        detail_lines = [f"Updated at {updated_at}", *lines]
         status_summary = str(lines[0] if lines else title).strip()
         run_index = self._gpu_queue_run_index(lines)
+        run_context = [f"Run log: run{run_index}.log"] if run_index is not None else []
+        detail_lines = [status_summary, f"Updated at {updated_at}", *run_context, *lines[1:]]
         try:
             prefix = ""
             last_run_index = None
@@ -1657,18 +1663,76 @@ class TaskManager:
                 with open(queue_log, "rb") as existing:
                     existing.seek(-1, os.SEEK_END)
                     last_byte = existing.read(1)
-                prefix = "" if last_byte == b"\n" else "\n"
+                prefix = self._gpu_queue_paragraph_prefix(last_byte)
                 last_run_index = task.get("_gpu_queue_log_last_run_index") or self._last_gpu_queue_run_index(queue_log)
             if run_index is not None and last_run_index is not None and run_index != last_run_index:
-                prefix = f"{prefix}\n{self._gpu_queue_run_separator(run_index)}"
+                prefix = f"{prefix}{self._gpu_queue_run_separator(run_index)}"
             with open(queue_log, "a", encoding="utf-8", newline="") as handle:
                 handle.write(prefix)
                 handle.write(format_gpu_queue_block(title, detail_lines))
-                handle.write(f"[PYRUNS] Last status at {updated_at}: {status_summary}\n")
             if run_index is not None:
                 task["_gpu_queue_log_last_run_index"] = run_index
         except Exception as exc:
             logger.error("Failed to write GPU queue log for %s: %s", task.get("name"), exc)
+
+    def _append_gpu_wait_refresh(self, task: Dict[str, Any], lines: List[str]) -> None:
+        log_dir = os.path.join(str(task.get("dir", "")), RUN_LOGS_DIR)
+        os.makedirs(log_dir, exist_ok=True)
+        queue_log = os.path.join(log_dir, QUEUE_LOG_FILENAME)
+        run_index = self._gpu_queue_run_index(lines)
+        status_line = self._gpu_wait_refresh_line(lines)
+        if not status_line:
+            return
+
+        try:
+            prefix = ""
+            last_run_index = None
+            if os.path.exists(queue_log) and os.path.getsize(queue_log) > 0:
+                with open(queue_log, "rb") as existing:
+                    existing.seek(-1, os.SEEK_END)
+                    last_byte = existing.read(1)
+                last_run_index = task.get("_gpu_queue_log_last_run_index") or self._last_gpu_queue_run_index(queue_log)
+                if run_index is not None and last_run_index is not None and run_index != last_run_index:
+                    prefix = f"{self._gpu_queue_paragraph_prefix(last_byte)}{self._gpu_queue_run_separator(run_index)}"
+                elif last_byte == b"\n":
+                    prefix = "\n"
+
+            previous_width = int(task.get("_gpu_wait_refresh_width", 0) or 0)
+            visible_width = len(status_line)
+            task["_gpu_wait_refresh_width"] = max(previous_width, visible_width)
+            padding = " " * max(0, previous_width - visible_width)
+            with open(queue_log, "a", encoding="utf-8", newline="") as handle:
+                handle.write(prefix)
+                handle.write(f"\r{status_line}{padding}")
+            if run_index is not None:
+                task["_gpu_queue_log_last_run_index"] = run_index
+        except Exception as exc:
+            logger.error("Failed to write GPU wait refresh for %s: %s", task.get("name"), exc)
+
+    @staticmethod
+    def _gpu_wait_refresh_line(lines: List[str]) -> str:
+        clean_lines = [str(line).strip() for line in lines if str(line).strip()]
+        if not clean_lines:
+            return ""
+
+        summary = clean_lines[0]
+        reason = ""
+        snapshot = ""
+        for line in clean_lines[1:]:
+            if line.startswith("Blocked: "):
+                reason = "blocked: " + line[len("Blocked: "):]
+            elif line.startswith("Stabilizing: "):
+                reason = "stabilizing: " + line[len("Stabilizing: "):]
+            elif line.startswith("GPU "):
+                snapshot = line
+                break
+
+        parts = [summary]
+        if reason:
+            parts.append(reason)
+        if snapshot:
+            parts.append(snapshot)
+        return "[PYRUNS] " + " | ".join(parts)
 
     def _append_gpu_wait_started(
         self,
@@ -1705,7 +1769,7 @@ class TaskManager:
     ) -> None:
         lines = self._gpu_wait_decision_lines(task, run_index, config, decision, waited, now)
         if lines:
-            self._append_gpu_queue_log(task, "GPU WAIT", lines)
+            self._append_gpu_wait_refresh(task, lines)
 
     @staticmethod
     def _gpu_wait_log_interval(config: GpuSchedulerConfig) -> float:
@@ -1729,9 +1793,10 @@ class TaskManager:
             return None
 
         task["_gpu_last_wait_log_at"] = now
+        reason_line = "Stabilizing" if "stabilizing" in reason else "Blocked"
         lines = [
             f"Run #{run_index} still waiting after {self._format_elapsed(waited)}",
-            f"Blocked: {reason}",
+            f"{reason_line}: {reason}",
             format_gpu_rule(config),
         ]
         lines.extend(self._gpu_snapshot_lines(decision.snapshot, config))

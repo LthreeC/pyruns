@@ -859,7 +859,7 @@ def test_runtime_get_task_logs_prefers_latest_run_when_gpu_task_completed(tmp_pa
     assert "queue summary" in queue_payload["content"]
 
 
-def test_runtime_get_task_logs_prettifies_legacy_gpu_queue_log(tmp_path):
+def test_runtime_get_task_logs_returns_queue_log_without_presentation_rewrite(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "gpu_wait", status="queued", log_text="completed run\n")
     task_dir = workspace / TASKS_DIR / "gpu_wait"
@@ -878,6 +878,7 @@ def test_runtime_get_task_logs_prettifies_legacy_gpu_queue_log(tmp_path):
             "[PYRUNS] waiting\n"
             "[PYRUNS] ============================================\n"
             "[PYRUNS] Last status at 2026-06-09_21-17-30: waiting\r"
+            "[PYRUNS] -------------------- RUN #2 --------------------\n\n"
             "[PYRUNS] ================= GPU ASSIGNED =================\n"
             "[PYRUNS] Updated at 2026-06-09_21-17-45\n"
         ).encode("utf-8")
@@ -887,12 +888,11 @@ def test_runtime_get_task_logs_prettifies_legacy_gpu_queue_log(tmp_path):
     payload = runtime.get_task_logs("gpu_wait", tail_lines=20)
 
     content = payload["content"]
-    assert "\r" not in content
-    assert "[PYRUNS] ================= GPU WAIT =================\n[PYRUNS] Updated at " in content
-    assert "[PYRUNS] ================= GPU WAIT =================\n\n[PYRUNS] Updated at " not in content
-    assert "\n\n[PYRUNS] Last status at 2026-06-09_21-17-30: waiting\n\n" not in content
-    assert "\n[PYRUNS] Last status at 2026-06-09_21-17-30: waiting\n[PYRUNS] ================= GPU ASSIGNED" in content
-    assert "\n\n[PYRUNS] ================= GPU ASSIGNED =================\n\n[PYRUNS] Updated at " not in content
+    assert "[PYRUNS] ================= GPU WAIT =================" in content
+    assert "[PYRUNS] Last status at 2026-06-09_21-17-30: waiting" in content
+    assert "[PYRUNS] -------------------- RUN #2 --------------------" in content
+    assert "[PYRUNS] ================= GPU ASSIGNED =================" in content
+    assert "[PYRUNS] [GPU WAIT]" not in content
 
 
 def test_runtime_get_task_logs_does_not_invent_missing_selected_run_log(tmp_path):
@@ -2000,8 +2000,10 @@ def test_batch_run_and_delete_endpoints(tmp_path):
     _add_task(workspace, "beta")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
+    calls = []
 
     def fake_start_batch(task_names, execution_mode=None, max_workers=None):
+        calls.append((list(task_names), execution_mode, max_workers))
         for task_name in task_names:
             task_dir = workspace / TASKS_DIR / task_name
 
@@ -2011,11 +2013,19 @@ def test_batch_run_and_delete_endpoints(tmp_path):
             update_task_info(str(task_dir), apply)
 
     with patch.object(runtime.task_manager, "start_batch_tasks", side_effect=fake_start_batch):
-        run_response = client.post("/api/tasks/batch/run", json={"task_names": ["alpha", "beta"]})
+        run_response = client.post(
+            "/api/tasks/batch/run",
+            json={
+                "task_names": ["alpha", "beta"],
+                "execution_mode": "process",
+                "max_workers": 5,
+            },
+        )
 
     delete_response = client.post("/api/tasks/batch/delete", json={"task_names": ["alpha"]})
 
     assert run_response.status_code == 200
+    assert calls == [(["alpha", "beta"], "process", 5)]
     assert run_response.json()["count"] == 2
     assert {item["status"] for item in run_response.json()["items"]} == {"queued"}
     assert delete_response.status_code == 200

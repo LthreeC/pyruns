@@ -2687,9 +2687,70 @@ def test_task_manager_gpu_auto_queues_and_writes_queue_log_before_assignment(tmp
     assert "_queued_run_index" not in queued_info
     queue_log = Path(task["dir"]) / RUN_LOGS_DIR / "queue.log"
     text = queue_log.read_text(encoding="utf-8")
-    assert "[PYRUNS] ================= GPU WAIT =================" in text
-    assert "Run #1 waiting for GPU resources" in text
+    assert "[PYRUNS] [GPU WAIT] Run #1 waiting for GPU resources" in text
+    assert "[PYRUNS]   Run log: run1.log" in text
     assert "max wait=24h" in text
+
+
+def test_task_manager_gpu_batch_run_waits_each_selected_task(tmp_path, monkeypatch):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_task_mode: single",
+                "gpu_scheduler_memory_used_pct: 40",
+                "gpu_scheduler_min_free_memory_gb: 40",
+                "gpu_scheduler_compute_used_pct: 30",
+                "gpu_scheduler_stable_seconds: 1",
+                "gpu_scheduler_max_wait_seconds: 86400",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    tasks = [generator.create_task(f"gpu-batch-{idx}", {"lr": idx}) for idx in range(3)]
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    submitted = []
+    monkeypatch.setattr(manager, "_submit_task", lambda *args, **kwargs: submitted.append((args, kwargs)))
+
+    manager.start_batch_tasks([task["name"] for task in tasks], execution_mode="thread", max_workers=3)
+
+    assert submitted == []
+    assert manager.max_workers == 3
+    assert manager.execution_mode == "thread"
+    for task in tasks:
+        queued = manager.get_task(task["name"])
+        assert queued["status"] == "queued"
+        assert queued["run_index"] == 0
+        queue_log = Path(task["dir"]) / RUN_LOGS_DIR / "queue.log"
+        queue_text = queue_log.read_text(encoding="utf-8")
+        assert "[PYRUNS] [GPU WAIT] Run #1 waiting for GPU resources" in queue_text
+        assert "[PYRUNS]   Run log: run1.log" in queue_text
+
+    now = time.monotonic()
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 36000, 40960, 1)]),
+        clock=lambda: now,
+    )
+    with manager._lock:
+        for task in tasks:
+            current = manager._tasks_by_name[task["name"]]
+            current["_gpu_last_wait_log_at"] = 0.0
+
+    target, _ = manager._pick_queued_task()
+
+    assert target is None
+    for task in tasks:
+        queue_bytes = (Path(task["dir"]) / RUN_LOGS_DIR / "queue.log").read_bytes()
+        assert b"\r[PYRUNS] Run #1 still waiting after " in queue_bytes
+        assert b"blocked: GPU 0 memory" in queue_bytes
 
 
 def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_path):
@@ -2744,12 +2805,12 @@ def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_p
     }
     queue_log = Path(task["dir"]) / RUN_LOGS_DIR / "queue.log"
     text = queue_log.read_text(encoding="utf-8")
-    assert "[PYRUNS] ================= GPU ASSIGNED =================" in text
-    assert "Run #1 assigned GPUs 0,1" in text
+    assert "[PYRUNS] [GPU ASSIGNED] Run #1 assigned GPUs 0,1" in text
+    assert "Run log: run1.log" in text
     assert "CUDA_VISIBLE_DEVICES=0,1" in text
     assert "PYRUNS_ASSIGNED_GPUS=0,1" in text
     assert "Updated at " in text
-    assert "Last status at " in text
+    assert "Last status at " not in text
 
 
 def test_task_manager_gpu_wait_does_not_advance_public_run_index_until_assignment(tmp_path):
@@ -3063,7 +3124,7 @@ def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path)
     log_dir = Path(task["dir"]) / RUN_LOGS_DIR
     queue_text = (log_dir / "queue.log").read_text(encoding="utf-8")
     error_text = (log_dir / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
-    assert "[PYRUNS] ================= GPU WAIT TIMEOUT =================" in queue_text
+    assert "[PYRUNS] [GPU WAIT TIMEOUT] Run #1 GPU wait timed out" in queue_text
     assert "max wait=1s" in queue_text
     assert "Queued task failed" in error_text
     assert "Run #1 failed" not in error_text
@@ -3197,7 +3258,11 @@ def test_run_task_worker_records_gpu_assignment_in_run_log(tmp_path):
     assert result["status"] == "completed"
     run_log = task_dir / RUN_LOGS_DIR / "run1.log"
     text = run_log.read_text(encoding="utf-8")
+    assert "GPU CONTEXT" in text
     assert "[PYRUNS] GPU assignment: 0,1" in text
+    assert "[PYRUNS] Run #1 uses GPU(s): 0,1" in text
+    assert "[PYRUNS] Run log: run1.log" in text
+    assert "[PYRUNS] PYRUNS_ASSIGNED_GPUS=0,1" in text
     assert "[PYRUNS] CUDA_VISIBLE_DEVICES=0,1" in text
     assert "visible=0,1" in text
 
@@ -4136,6 +4201,14 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     assert manager._gpu_assignment_to_dict(assignment)["gpu_ids"] == [1, 3]
 
     manager._append_gpu_wait_started(task, 1, config)
+    manager._append_gpu_wait_decision(
+        task,
+        1,
+        config,
+        GpuDecision(assignment=None, reason="busy", snapshot=[]),
+        waited=10,
+        now=100,
+    )
     manager._append_gpu_assignment(task, assignment)
     manager._append_gpu_assignment(
         task,
@@ -4147,14 +4220,6 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
             env={"PYRUNS_ASSIGNED_GPUS": "GPU-uuid-0,MIG-GPU-uuid/0/1"},
             waited_seconds=0,
         ),
-    )
-    manager._append_gpu_wait_decision(
-        task,
-        1,
-        config,
-        GpuDecision(assignment=None, reason="busy", snapshot=[]),
-        waited=10,
-        now=100,
     )
     repeated = manager._gpu_wait_decision_lines(
         task,
@@ -4176,17 +4241,28 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     assert periodic is not None
     assert "still waiting after 00:01:01" in periodic[0]
 
-    queue_text = (task_dir / RUN_LOGS_DIR / "queue.log").read_text(encoding="utf-8")
-    assert b"\r" not in (task_dir / RUN_LOGS_DIR / "queue.log").read_bytes()
-    assert "\r" not in queue_text
-    assert "[PYRUNS] ================= GPU WAIT =================\n[PYRUNS] Updated at " in queue_text
-    assert "[PYRUNS] ================= GPU WAIT =================\n\n[PYRUNS] Updated at " not in queue_text
+    queue_log = task_dir / RUN_LOGS_DIR / "queue.log"
+    queue_bytes = queue_log.read_bytes()
+    with open(queue_log, "r", encoding="utf-8", newline="") as handle:
+        queue_text = handle.read()
+    refresh_line = (
+        "\r[PYRUNS] Run #1 still waiting after 00:00:10 | "
+        "blocked: busy | GPU snapshot: no NVIDIA GPU metrics available"
+    )
+    assert refresh_line.encode("utf-8") in queue_bytes
+    assert refresh_line in queue_text
+    assert "\n" + refresh_line in queue_text
+    assert "[PYRUNS] [GPU WAIT] Run #1 still waiting after 00:00:10" not in queue_text
+    assert "[PYRUNS]   Updated at " in queue_text
     assert "-------------------- RUN #2 --------------------" in queue_text
     run_one_text, run_two_text = queue_text.split("-------------------- RUN #2 --------------------", 1)
+    assert not run_two_text.startswith("\n\n")
     run_two_body = run_two_text.lstrip("\n")
     assert "\n\n[PYRUNS] Last status at " not in run_one_text
-    assert "\n\n[PYRUNS] ================= GPU ASSIGNED =================" not in run_one_text
-    assert run_two_body.startswith("[PYRUNS] ================= GPU ASSIGNED =================")
+    assert "\n\n[PYRUNS] [GPU ASSIGNED]" in run_one_text
+    assert refresh_line + "\n\n[PYRUNS] [GPU ASSIGNED] Run #1 assigned GPUs 1,3 after 00:01:01" in run_one_text
+    assert "\n\n[PYRUNS] -------------------- RUN #2 --------------------" in queue_text
+    assert run_two_body.startswith("[PYRUNS] [GPU ASSIGNED]")
     assert "\n\n[PYRUNS] Last status at " not in run_two_body
     assert "GPU WAIT" in queue_text
     assert "GPU ASSIGNED" in queue_text
@@ -4194,7 +4270,7 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     assert "still waiting after 00:01:01" not in queue_text
     assert "CUDA_VISIBLE_DEVICES=GPU-uuid-0,MIG-GPU-uuid/0/1" in queue_text
     assert "Updated at " in queue_text
-    assert "Last status at " in queue_text
+    assert "Last status at " not in queue_text
 
     class FakeGpu:
         def __init__(self, index, memory_used_pct, compute_util_pct, free_memory_gb):
@@ -4237,6 +4313,23 @@ def test_task_manager_gpu_wait_log_interval_uses_stable_window(tmp_path):
     assert "still waiting after 00:00:15" in second[0]
 
 
+def test_task_manager_gpu_wait_refresh_labels_stabilizing_candidates():
+    line = TaskManager._gpu_wait_refresh_line(
+        [
+            "Run #3 still waiting after 00:00:05",
+            "Stabilizing: GPU 0 stabilizing 0.0/5s",
+            "GPU 0 eligible: memory 58%, compute 2%, free 5.1 GiB",
+        ]
+    )
+
+    assert line == (
+        "[PYRUNS] Run #3 still waiting after 00:00:05 | "
+        "stabilizing: GPU 0 stabilizing 0.0/5s | "
+        "GPU 0 eligible: memory 58%, compute 2%, free 5.1 GiB"
+    )
+    assert "blocked:" not in line
+
+
 def test_task_manager_gpu_wait_log_interval_ignores_reason_changes_until_stable_window(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -4272,7 +4365,12 @@ def test_executor_gpu_log_helpers_and_bounded_tail_read(tmp_path, monkeypatch):
     assert _read_log_tail_text(str(tmp_path / "missing.log")) == ""
 
     assert _gpu_assignment_log({}) == ""
-    assert "[PYRUNS] GPU assignment: 2" in _gpu_assignment_log({"PYRUNS_ASSIGNED_GPUS": "2"})
+    assigned_log = _gpu_assignment_log({"PYRUNS_ASSIGNED_GPUS": "2"}, run_index=3)
+    assert "GPU CONTEXT" in assigned_log
+    assert "[PYRUNS] GPU assignment: 2" in assigned_log
+    assert "Run #3 uses GPU(s): 2" in assigned_log
+    assert "Run log: run3.log" in assigned_log
+    assert "PYRUNS_ASSIGNED_GPUS=2" in assigned_log
     cuda_log = _gpu_assignment_log({"CUDA_VISIBLE_DEVICES": "4"})
     assert "GPU assignment: 4" in cuda_log
     assert "CUDA_VISIBLE_DEVICES=4" in cuda_log

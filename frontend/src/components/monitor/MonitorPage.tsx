@@ -20,8 +20,10 @@ import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 import {
+  DEFAULT_MONITOR_LINE_HEIGHT,
   DEFAULT_MONITOR_SCROLLBACK,
   resolveMonitorChunkSize,
+  resolveMonitorLineHeight,
   resolveMonitorScrollback,
 } from '@/utils/monitorSettings'
 
@@ -36,11 +38,11 @@ const LOG_STREAM_FLUSH_MS = 50
 const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
 const TERMINAL_SEARCH_OPTIONS: ISearchOptions = {
   decorations: {
-    matchBackground: '#2F3A68',
-    matchBorder: '#5E6AD2',
-    matchOverviewRuler: '#5E6AD2',
-    activeMatchBackground: '#F59E0B',
-    activeMatchBorder: '#FBBF24',
+    matchBackground: '#1F4E79',
+    matchBorder: '#4FC1FF',
+    matchOverviewRuler: '#4FC1FF',
+    activeMatchBackground: '#5F3B00',
+    activeMatchBorder: '#F59E0B',
     activeMatchColorOverviewRuler: '#F59E0B',
   },
 }
@@ -102,7 +104,12 @@ export default function MonitorPage() {
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const liveLogNameRef = useRef('')
+  const previousSelectedTaskStatusRef = useRef<{ taskName: string | null; status: Task['status'] | null }>({
+    taskName: null,
+    status: null,
+  })
   const terminalSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const terminalSearchShortcutScopeRef = useRef(false)
   const terminalSearchQueryRef = useRef('')
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
@@ -133,6 +140,7 @@ export default function MonitorPage() {
   )
   const monitorChunkSize = resolveMonitorChunkSize(workspace?.settings)
   const monitorScrollback = resolveMonitorScrollback(workspace?.settings)
+  const monitorLineHeight = resolveMonitorLineHeight(workspace?.settings)
   const sidebarWidthRaw = Number(workspace?.settings?.monitor_sidebar_width_pct ?? 14)
   const settingsSidebarWidthPct = Number.isFinite(sidebarWidthRaw)
     ? Math.min(35, Math.max(10, sidebarWidthRaw))
@@ -171,6 +179,16 @@ export default function MonitorPage() {
       setTerminalSearchStatus('No match')
     }
     return found
+  }, [])
+
+  const isTerminalSearchShortcutTarget = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Node)) {
+      return false
+    }
+    return Boolean(
+      termContainerRef.current?.contains(target)
+      || terminalSearchInputRef.current?.contains(target),
+    )
   }, [])
 
   const closeTerminalSearch = useCallback(() => {
@@ -292,6 +310,7 @@ export default function MonitorPage() {
       scrollback: DEFAULT_MONITOR_SCROLLBACK,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+      lineHeight: DEFAULT_MONITOR_LINE_HEIGHT,
       allowProposedApi: true,
       theme: {
         background: '#0A0A0B',
@@ -381,6 +400,21 @@ export default function MonitorPage() {
       xtermRef.current.options.scrollback = monitorScrollback
     }
   }, [monitorScrollback])
+
+  useEffect(() => {
+    if (!xtermRef.current) {
+      return
+    }
+    xtermRef.current.options.lineHeight = monitorLineHeight
+    const rafId = window.requestAnimationFrame(() => {
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        // xterm can reject fitting while its container is between layouts.
+      }
+    })
+    return () => window.cancelAnimationFrame(rafId)
+  }, [monitorLineHeight])
 
   useEffect(() => {
     if (!terminalVisible) {
@@ -499,11 +533,29 @@ export default function MonitorPage() {
   }, [renderKey, runTerminalSearch, terminalSearchOpen, terminalSearchQuery])
 
   useEffect(() => {
+    const handleTerminalPointerScope = (event: PointerEvent) => {
+      terminalSearchShortcutScopeRef.current = isTerminalSearchShortcutTarget(event.target)
+    }
+
+    window.addEventListener('pointerdown', handleTerminalPointerScope, true)
+    return () => window.removeEventListener('pointerdown', handleTerminalPointerScope, true)
+  }, [isTerminalSearchShortcutTarget])
+
+  useEffect(() => {
     const handleTerminalSearchShortcut = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase()
       const isFind = (event.ctrlKey || event.metaKey) && !event.altKey && key === 'f'
-      if (isFind && selectedTaskNameRef.current) {
+      const activeElement = document.activeElement
+      const activeIsPageRoot = activeElement === document.body || activeElement === document.documentElement
+      const shortcutTargetsTerminal = (
+        isTerminalSearchShortcutTarget(event.target)
+        || isTerminalSearchShortcutTarget(activeElement)
+        || (terminalSearchShortcutScopeRef.current && activeIsPageRoot)
+      )
+
+      if (isFind && selectedTaskNameRef.current && shortcutTargetsTerminal) {
         event.preventDefault()
+        terminalSearchShortcutScopeRef.current = true
         setTerminalSearchOpen(true)
         window.requestAnimationFrame(() => {
           terminalSearchInputRef.current?.focus()
@@ -512,7 +564,7 @@ export default function MonitorPage() {
         return
       }
 
-      if (!terminalSearchOpen || key !== 'f3') {
+      if (!terminalSearchOpen || key !== 'f3' || !shortcutTargetsTerminal) {
         return
       }
 
@@ -522,7 +574,7 @@ export default function MonitorPage() {
 
     window.addEventListener('keydown', handleTerminalSearchShortcut, true)
     return () => window.removeEventListener('keydown', handleTerminalSearchShortcut, true)
-  }, [runTerminalSearch, terminalSearchOpen])
+  }, [isTerminalSearchShortcutTarget, runTerminalSearch, terminalSearchOpen])
 
   useEffect(() => {
     if (monitorTasks.length === 0 || !selectedTaskName) return
@@ -564,6 +616,32 @@ export default function MonitorPage() {
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
   liveLogNameRef.current = liveLogName
+
+  useEffect(() => {
+    const taskName = selectedTask?.name ?? null
+    const taskStatus = selectedTask?.status ?? null
+    const previous = previousSelectedTaskStatusRef.current
+    previousSelectedTaskStatusRef.current = { taskName, status: taskStatus }
+
+    if (
+      !taskName
+      || previous.taskName !== taskName
+      || previous.status !== 'queued'
+      || taskStatus !== 'running'
+      || selectedLog !== QUEUE_LOG_NAME
+      || !runLogName
+    ) {
+      return
+    }
+
+    if (liveLogFlushTimerRef.current !== null) {
+      window.clearTimeout(liveLogFlushTimerRef.current)
+      liveLogFlushTimerRef.current = null
+    }
+    pendingLiveLogChunkRef.current = { key: '', chunks: [] }
+    void selectLogFile(runLogName)
+      .catch(err => notify({ tone: 'error', title: 'Could not load run log', detail: errorMessage(err) }))
+  }, [notify, runLogName, selectLogFile, selectedLog, selectedTask?.name, selectedTask?.status])
 
   const flushLiveLogChunkBuffer = useCallback(() => {
     if (liveLogFlushTimerRef.current !== null) {
@@ -954,74 +1032,6 @@ export default function MonitorPage() {
                 </span>
               )}
 
-              {terminalSearchOpen ? (
-                <form
-                  className="flex min-w-[220px] max-w-full flex-wrap items-center gap-1 rounded-md border border-border-subtle bg-surface-overlay px-1.5 py-1"
-                  onSubmit={event => {
-                    event.preventDefault()
-                    runTerminalSearch('next')
-                  }}
-                >
-                  <Search className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
-                  <input
-                    ref={terminalSearchInputRef}
-                    value={terminalSearchQuery}
-                    onChange={event => setTerminalSearchQuery(event.target.value)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault()
-                        runTerminalSearch(event.shiftKey ? 'previous' : 'next')
-                      }
-                      if (event.key === 'Escape') {
-                        event.preventDefault()
-                        closeTerminalSearch()
-                      }
-                    }}
-                    placeholder="Search logs"
-                    aria-label="Search terminal logs"
-                    className="min-w-0 flex-1 bg-transparent px-1 py-0.5 text-xs text-txt-primary outline-none placeholder:text-txt-tertiary"
-                  />
-                  <span className="min-w-[3.25rem] text-right text-2xs text-txt-tertiary">
-                    {terminalSearchStatus}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => runTerminalSearch('previous')}
-                    className="rounded-md p-1 text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
-                    title="Previous match"
-                    aria-label="Previous match"
-                  >
-                    <ChevronUp className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => runTerminalSearch('next')}
-                    className="rounded-md p-1 text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
-                    title="Next match"
-                    aria-label="Next match"
-                  >
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={closeTerminalSearch}
-                    className="rounded-md p-1 text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
-                    title="Close search"
-                    aria-label="Close terminal search"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </form>
-              ) : (
-                <ActionButton
-                  icon={<Search className="h-3.5 w-3.5" />}
-                  variant="ghost"
-                  onClick={() => setTerminalSearchOpen(true)}
-                >
-                  Search
-                </ActionButton>
-              )}
-
               {(selectedTask.status === 'pending' || selectedTask.status === 'failed' || selectedTask.status === 'completed') && (
                 <ActionButton
                   icon={<Play className="h-3.5 w-3.5" />}
@@ -1067,9 +1077,75 @@ export default function MonitorPage() {
           )}
         </div>
 
-        <div className="flex-1 overflow-hidden">
+        <div className="relative flex-1 overflow-hidden">
           {selectedTaskName ? (
-            <div ref={termContainerRef} className="monitor-terminal-shell h-full w-full" />
+            <>
+              <div ref={termContainerRef} className="monitor-terminal-shell h-full w-full" />
+              {terminalSearchOpen && (
+                <form
+                  className="absolute right-3 top-3 z-20 flex w-[calc(100%-1.5rem)] max-w-[26rem] items-center gap-1 rounded-md border border-[#454545] bg-[#252526] px-1.5 py-1 text-[#cccccc] shadow-[0_2px_10px_rgba(0,0,0,0.45)]"
+                  onSubmit={event => {
+                    event.preventDefault()
+                    runTerminalSearch('next')
+                  }}
+                >
+                  <Search className="h-3.5 w-3.5 flex-none text-[#8b949e]" />
+                  <input
+                    ref={terminalSearchInputRef}
+                    value={terminalSearchQuery}
+                    onChange={event => setTerminalSearchQuery(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        runTerminalSearch(event.shiftKey ? 'previous' : 'next')
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        closeTerminalSearch()
+                      }
+                    }}
+                    placeholder="Search logs"
+                    aria-label="Search terminal logs"
+                    className="min-w-0 flex-1 bg-transparent px-1 py-0.5 text-xs text-[#cccccc] caret-[#cccccc] outline-none selection:bg-[#264f78] selection:text-white placeholder:text-[#6f7787]"
+                  />
+                  <span
+                    className={clsx(
+                      'min-w-[3.25rem] text-right text-2xs',
+                      terminalSearchStatus === 'No match' ? 'text-[#f48771]' : 'text-[#a0a6b1]',
+                    )}
+                  >
+                    {terminalSearchStatus}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => runTerminalSearch('previous')}
+                    className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
+                    title="Previous match"
+                    aria-label="Previous match"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => runTerminalSearch('next')}
+                    className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
+                    title="Next match"
+                    aria-label="Next match"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeTerminalSearch}
+                    className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
+                    title="Close search"
+                    aria-label="Close terminal search"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </form>
+              )}
+            </>
           ) : (
             <div className="flex h-full min-w-0 items-center justify-center px-4">
               <EmptyState title="No task selected" description="Select a task from the sidebar to inspect logs" />

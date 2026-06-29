@@ -66,7 +66,7 @@ def test_gpu_scheduler_reserves_multi_gpu_after_stable_window():
 
     first = scheduler.try_reserve("task-a", 1, config, task_env={})
     assert first.assignment is None
-    assert "stable for 4s" in first.reason
+    assert "stabilizing 0.0/4s" in first.reason
 
     second_task = scheduler.try_reserve("task-b", 1, config, task_env={})
     assert second_task.assignment is None
@@ -290,12 +290,12 @@ def test_gpu_scheduler_resamples_each_check_but_waits_for_stable_window():
     assert first.assignment is None
     assert second.assignment is None
     assert provider.calls == 2
-    assert "waiting stable" in second.reason
+    assert "stabilizing 0.0/1s" in second.reason
 
     now[0] = 50.5
     still_warming = scheduler.try_reserve("gpu-warming", 1, config, task_env={})
     assert still_warming.assignment is None
-    assert "waiting stable" in still_warming.reason
+    assert "stabilizing 0.5/1s" in still_warming.reason
 
     now[0] = 51.0
     scheduler.snapshot(config)
@@ -327,7 +327,7 @@ def test_gpu_scheduler_restarts_stable_window_after_unsampled_gap():
     now[0] = 74.1
     stale_sample = scheduler.try_reserve("gap", 1, config, task_env={})
     assert stale_sample.assignment is None
-    assert "waiting stable" in stale_sample.reason
+    assert "stabilizing 0.0/4s" in stale_sample.reason
 
     for timestamp in (75.1, 76.1, 77.1):
         now[0] = timestamp
@@ -414,7 +414,7 @@ def test_gpu_scheduler_ignores_blank_cuda_visible_devices_and_assigns_automatica
     assert decision.assignment.env["CUDA_VISIBLE_DEVICES"] == "0"
 
 
-def test_gpu_queue_log_block_uses_pyruns_banner_and_final_assignment(tmp_path: Path):
+def test_gpu_queue_log_block_uses_compact_title_and_final_assignment(tmp_path: Path):
     block = format_gpu_queue_block(
         "GPU ASSIGNED",
         [
@@ -423,9 +423,9 @@ def test_gpu_queue_log_block_uses_pyruns_banner_and_final_assignment(tmp_path: P
         ],
     )
 
-    assert "[PYRUNS] ================= GPU ASSIGNED =================" in block
-    assert "[PYRUNS] Run #3 assigned GPUs 0,1 after 00:03:42" in block
-    assert "[PYRUNS] CUDA_VISIBLE_DEVICES=0,1" in block
+    assert "[PYRUNS] [GPU ASSIGNED] Run #3 assigned GPUs 0,1 after 00:03:42" in block
+    assert "[PYRUNS]   CUDA_VISIBLE_DEVICES=0,1" in block
+    assert "=================" not in block
 
 
 def test_gpu_scheduler_config_parses_string_booleans_from_settings():
@@ -671,9 +671,9 @@ def test_gpu_scheduler_clears_stable_window_for_devices_that_leave_pool():
     ready_gpu_1 = scheduler.try_reserve("ready-1", 1, config_gpu_1, task_env={})
 
     assert stale_gpu_0.assignment is None
-    assert "GPU 0 waiting stable for" in stale_gpu_0.reason
+    assert "GPU 0 stabilizing" in stale_gpu_0.reason
     assert restarted_gpu_1.assignment is None
-    assert "GPU 1 waiting stable for" in restarted_gpu_1.reason
+    assert "GPU 1 stabilizing" in restarted_gpu_1.reason
     assert ready_gpu_1.assignment is not None
     assert ready_gpu_1.assignment.gpu_ids == [1]
 
