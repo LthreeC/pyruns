@@ -1091,19 +1091,23 @@ class PyrunsRuntime:
 
         task_status = str(task.get("status", "")).lower()
         queue_name = _cfg.QUEUE_LOG_FILENAME
-        if not selected_name and task_status == "queued" and queue_name in log_options:
-            selected_name = queue_name
-            selected_path = log_options.get(queue_name)
-
-        if not selected_name and task_status == "running":
+        active_run_name = ""
+        if task_status == "running":
             try:
                 run_index = max(1, int(task.get("run_index", 1) or 1))
             except (TypeError, ValueError):
                 run_index = 1
-            selected_name = f"run{run_index}.log"
+            active_run_name = f"run{run_index}.log"
+        if not selected_name and task_status == "queued" and queue_name in log_options:
+            selected_name = queue_name
+            selected_path = log_options.get(queue_name)
+
+        if not selected_name and active_run_name:
+            selected_name = active_run_name
             selected_path = log_options.get(selected_name)
-            if selected_name not in available_logs:
-                available_logs.insert(0, selected_name)
+
+        if selected_name and selected_name == active_run_name and selected_name not in available_logs:
+            available_logs.insert(0, selected_name)
 
         if not selected_name:
             selected_path = resolve_log_path(task_dir)

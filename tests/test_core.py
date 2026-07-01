@@ -2521,6 +2521,193 @@ def test_run_task_worker_internal_spawn_error_persists_failure_and_keeps_cleanup
     assert cleanup_path.exists()
 
 
+def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, monkeypatch):
+    import pyruns.core.executor as executor
+    from pyruns.utils.info_io import load_task_info
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script = tmp_path / "train.py"
+    script.write_text("print('train')\n", encoding="utf-8")
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "StartedTask",
+            "status": "queued",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "script": str(script),
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {})
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9876
+    mock_proc.poll.return_value = None
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b""])
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda *args, **kwargs: mock_proc)
+    monkeypatch.setattr(
+        executor,
+        "_build_command",
+        lambda *args, **kwargs: ([sys.executable, "-c", "print('ok')"], str(tmp_path), []),
+    )
+
+    original_update = executor.update_task_info
+    update_calls = {"count": 0}
+
+    def flaky_update(*args, **kwargs):
+        update_calls["count"] += 1
+        if update_calls["count"] == 1:
+            raise RuntimeError("task info update failed")
+        return original_update(*args, **kwargs)
+
+    killed = []
+    monkeypatch.setattr(executor, "update_task_info", flaky_update)
+    monkeypatch.setattr(executor, "kill_process", lambda pid: killed.append(pid))
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="StartedTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    assert "task info update failed" in result["error"]
+    assert killed == [9876]
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "failed"
+    error_log = task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME
+    error_text = error_log.read_text(encoding="utf-8")
+    assert "Internal error during run #1" in error_text
+    assert "child_process_terminated=True" in error_text
+
+
+def test_run_task_worker_pending_stop_before_process_start_skips_popen(tmp_path, monkeypatch):
+    import pyruns.core.executor as executor
+    from pyruns.utils.info_io import load_task_info
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "PreStopTask",
+            "status": "running",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+            "_pending_stop_summary": {
+                "run_index": 1,
+                "event": "stopped",
+                "reason": "cancelled_by_user",
+                "detail_lines": ["previous_status=running"],
+            },
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {})
+    monkeypatch.setattr(executor, "_build_command", lambda *args, **kwargs: pytest.fail("command should not be built"))
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("process should not start"))
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="PreStopTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "failed"
+    assert info["progress"] == 0.0
+    assert info["finish_times"][0]
+    assert "_pending_stop_summary" not in info
+    error_text = (task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
+    assert "Run #1 stopped" in error_text
+    assert "process_started=False" in error_text
+    assert not (task_dir / RUN_LOGS_DIR / "run1.log").exists()
+
+
+def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist(tmp_path, monkeypatch):
+    import pyruns.core.executor as executor
+    from pyruns.utils.info_io import load_task_info
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "PostPopenStopTask",
+            "status": "running",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {})
+    monkeypatch.setattr(
+        executor,
+        "_build_command",
+        lambda *args, **kwargs: ([sys.executable, "-c", "print('ok')"], str(tmp_path), []),
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9877
+    mock_proc.poll.return_value = None
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b""])
+
+    def fake_popen(*args, **kwargs):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update({
+                "_pending_stop_summary": {
+                    "run_index": 1,
+                    "event": "stopped",
+                    "reason": "cancelled_by_user",
+                    "detail_lines": ["previous_status=running"],
+                },
+            }),
+        )
+        return mock_proc
+
+    killed = []
+    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor, "kill_process", lambda pid: killed.append(pid))
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="PostPopenStopTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    assert killed == [9877]
+    mock_proc.wait.assert_called_once_with(timeout=1)
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "failed"
+    assert info["progress"] == 0.0
+    assert info["pids"][0] == 9877
+    assert "_pending_stop_summary" not in info
+    error_text = (task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
+    assert "Run #1 stopped" in error_text
+    assert "process_started=True" in error_text
+    assert "process_terminated=True" in error_text
+    assert not (task_dir / RUN_LOGS_DIR / "run1.log").exists()
+
+
 def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -3337,8 +3524,16 @@ def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
+    events = []
+    original_persist = manager._persist_pending_stop_summary
+
+    def record_persist(*args, **kwargs):
+        events.append("persist")
+        return original_persist(*args, **kwargs)
+
     monkeypatch.setattr(manager, "_latest_pid_from_disk", lambda task: 12345)
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
+    monkeypatch.setattr(manager, "_persist_pending_stop_summary", record_persist)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: events.append(("kill", pid)))
 
     assert manager.cancel_task("runner") is True
 
@@ -3346,6 +3541,7 @@ def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
     assert info["status"] == "failed"
     assert info["_pending_stop_summary"]["reason"] == "cancelled_by_user"
     assert info["_pending_stop_summary"]["detail_lines"] == ["previous_status=running"]
+    assert events == ["persist", ("kill", 12345)]
 
 
 def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch):
@@ -4599,19 +4795,27 @@ def test_run_task_worker_merges_pending_stop_summary_into_single_error_block(moc
         "start_times": ["2026-03-20_00-00-01"],
         "finish_times": [""],
         "pids": [7777],
-        "_pending_stop_summary": {
-            "run_index": 1,
-            "event": "stopped",
-            "reason": "cancelled_by_user",
-            "detail_lines": ["previous_status=running"],
-        },
     }
     with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w", encoding="utf-8") as f:
         json.dump(task_info, f)
 
+    def finish_with_pending_stop():
+        update_task_info(
+            task_dir,
+            lambda info: info.update({
+                "_pending_stop_summary": {
+                    "run_index": 1,
+                    "event": "stopped",
+                    "reason": "cancelled_by_user",
+                    "detail_lines": ["previous_status=running"],
+                },
+            }),
+        )
+        return 1
+
     mock_proc = MagicMock()
     mock_proc.pid = 7777
-    mock_proc.wait.return_value = 1
+    mock_proc.wait.side_effect = finish_with_pending_stop
     mock_proc.returncode = 1
     mock_proc.stdout.read1 = MagicMock(side_effect=[b"stopped output", b""])
     mock_popen.return_value = mock_proc
@@ -4636,6 +4840,75 @@ def test_run_task_worker_merges_pending_stop_summary_into_single_error_block(moc
 
     final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert "_pending_stop_summary" not in final_info
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_pending_stop_summary_forces_failed_even_when_exit_code_zero(
+    mock_popen,
+    mock_emit,
+    mock_detect,
+    tmp_path,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+
+    task_info = {
+        "name": "StopTask",
+        "script": "script.py",
+        "status": "failed",
+        "run_index": 1,
+        "start_times": ["2026-03-20_00-00-01"],
+        "finish_times": [""],
+        "pids": [7777],
+    }
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w", encoding="utf-8") as f:
+        json.dump(task_info, f)
+
+    def finish_with_pending_stop():
+        update_task_info(
+            task_dir,
+            lambda info: info.update({
+                "_pending_stop_summary": {
+                    "run_index": 1,
+                    "event": "stopped",
+                    "reason": "cancelled_by_user",
+                    "detail_lines": ["previous_status=running"],
+                },
+            }),
+        )
+        return 0
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 7777
+    mock_proc.wait.side_effect = finish_with_pending_stop
+    mock_proc.returncode = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"stopped output", b""])
+    mock_popen.return_value = mock_proc
+
+    res = run_task_worker(
+        task_dir=task_dir,
+        name="StopTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert res["status"] == "failed"
+    final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert final_info["status"] == "failed"
+    assert final_info["progress"] == 0.0
+    assert "_pending_stop_summary" not in final_info
+
+    error_log = os.path.join(task_dir, "run_logs", "error.log")
+    with open(error_log, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "Run #1 stopped" in content
+    assert "reason=cancelled_by_user" in content
+    assert "exit_code=0" in content
+    assert "reason=exit_code 0" not in content
 
 # ═══════════════════════════════════════════════════════════════
 #  LogEmitter — publish-subscribe event bus

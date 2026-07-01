@@ -46,6 +46,32 @@ def test_flake8_ignores_local_editor_history():
     config = (ROOT / ".flake8").read_text(encoding="utf-8")
 
     assert ".history" in config
+    assert ".venv" in config
+
+
+def test_packaging_includes_static_svg_assets():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"*.svg"' in pyproject
+    assert '"**/*.svg"' in pyproject
+    assert (ROOT / "pyruns" / "web" / "static" / "pyruns.svg").exists()
+
+
+def test_examples_extra_declares_hydra_dependencies():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    examples_readme = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+
+    assert "examples = [" in pyproject
+    assert '"hydra-core>=' in pyproject
+    assert '"omegaconf>=' in pyproject
+    assert 'pip install "pyruns[examples]"' in examples_readme
+
+
+def test_root_package_metadata_marks_docs_workspace_private():
+    package_json = (ROOT / "package.json").read_text(encoding="utf-8")
+
+    assert '"name": "pyruns-docs-workspace"' in package_json
+    assert '"private": true' in package_json
 
 
 def test_pages_workflow_uploads_docs_vitepress_dist():

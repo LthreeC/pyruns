@@ -858,7 +858,7 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "chunkOffset <= nextOffset" in source
     assert "nextContent = appendMonitorLogContent(nextContent, chunk.content)" in source
     assert "return { logContent: nextContent, logOffset: nextOffset }" in source
-    assert "pendingLiveLogChunkRef.current = { key, chunks: [...buffer.chunks, chunk] }" in source
+    assert "buffer.chunks.push(chunk)" in source
     assert "offset?: number" in types
 
 
@@ -905,11 +905,14 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "enabled: isLive && canUseLogStream" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
     assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
-    assert "previousSelectedTaskStatusRef" in monitor
-    assert "previous.status !== 'queued'" in monitor
+    assert "queuedLiveLogTaskRef" in monitor
+    assert "manualHistoricalLogRef" in monitor
+    assert "const viewingQueueOrLiveLog = !selectedLog || selectedLog === QUEUE_LOG_NAME" in monitor
+    assert "taskStatus === 'queued' && viewingQueueOrLiveLog" in monitor
     assert "taskStatus !== 'running'" in monitor
-    assert "selectedLog !== QUEUE_LOG_NAME" in monitor
+    assert "selectedLog && selectedLog !== QUEUE_LOG_NAME && selectedLog !== runLogName" in monitor
     assert "selectLogFile(runLogName)" in monitor
+    assert "logName !== QUEUE_LOG_NAME" in monitor
 
 def test_react_monitor_memoizes_task_list_derivations_during_log_streaming():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")

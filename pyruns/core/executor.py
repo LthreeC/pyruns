@@ -45,6 +45,7 @@ from pyruns.utils.info_io import (
     update_task_info,
 )
 from pyruns.utils.log_io import normalize_log_newlines
+from pyruns.utils.process_utils import kill_process
 from pyruns.utils.shell_runtime import get_shell_runtime_for_task
 from pyruns.utils.settings import load_settings
 from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
@@ -1094,6 +1095,17 @@ def _append_error_summary(
 def _consume_pending_stop_summary(task_dir: str, run_index: int) -> Dict[str, Any] | None:
     """Pop one pending stop summary for the finished run, if present."""
 
+    current = load_task_info(task_dir)
+    raw_current = current.get("_pending_stop_summary") if isinstance(current, dict) else None
+    if not isinstance(raw_current, dict):
+        return None
+    try:
+        raw_index = int(raw_current.get("run_index", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if raw_index != int(run_index):
+        return None
+
     captured: Dict[str, Any] = {}
 
     def _apply(info: Dict[str, Any]) -> None:
@@ -1108,6 +1120,25 @@ def _consume_pending_stop_summary(task_dir: str, run_index: int) -> Dict[str, An
 
     update_task_info(task_dir, _apply)
     return captured or None
+
+
+def _terminate_started_process(proc: Any, *, task_name: str, run_index: int) -> bool:
+    """Kill a child process that survived an internal worker failure."""
+
+    if proc is None:
+        return False
+    try:
+        if proc.poll() is not None:
+            return False
+        kill_process(int(proc.pid))
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        logger.warning("Failed to terminate child process for %s run #%d: %s", task_name, run_index, exc)
+        return False
 
 
 def run_task_worker(
@@ -1164,6 +1195,7 @@ def run_task_worker(
     progress = 0.0
     start_str = ""
     end_str = ""
+    stop_summary: Dict[str, Any] | None = None
     heartbeat_stop = threading.Event()
     heartbeat_thread: threading.Thread | None = None
 
@@ -1211,7 +1243,59 @@ def run_task_worker(
             source_state=collected,
         )
 
+    def _finish_stopped_run(
+        summary: Dict[str, Any],
+        *,
+        process_started: bool,
+        process_terminated: bool,
+    ) -> Dict[str, Any]:
+        nonlocal end_str, progress, status
+        status = "failed"
+        progress = 0.0
+        end_str = get_now_str()
+
+        def _mark_stopped(info: Dict[str, Any]) -> None:
+            slot = ensure_run_slot(info, run_index)
+            info["status"] = status
+            info["progress"] = progress
+            if start_str and not info["start_times"][slot]:
+                info["start_times"][slot] = start_str
+            info["finish_times"][slot] = end_str
+            if proc is not None:
+                info["pids"][slot] = proc.pid
+            _clear_runner_lease(info, runner_id)
+
+        update_task_info(task_dir, _mark_stopped)
+
+        detail_lines = [f"reason={summary.get('reason', 'stopped')}"]
+        detail_lines.extend(list(summary.get("detail_lines", []) or []))
+        detail_lines.extend(
+            [
+                f"process_started={process_started}",
+                f"process_terminated={process_terminated}",
+                f"command={command!r}",
+                f"workdir={workdir!r}",
+                f"log={log_path}",
+            ]
+        )
+        _append_error_summary(
+            task_dir,
+            run_index=run_index,
+            title=f"Run #{run_index} {summary.get('event', 'stopped')} at {end_str}",
+            detail_lines=detail_lines,
+        )
+        logger.info("Task %s stopped before normal execution  status=%s", name, status)
+        return {"status": status, "progress": progress}
+
     try:
+        stop_summary = _consume_pending_stop_summary(task_dir, run_index)
+        if stop_summary:
+            return _finish_stopped_run(
+                stop_summary,
+                process_started=False,
+                process_terminated=False,
+            )
+
         python_runtime = _resolve_python_runtime(task_dir, env_vars)
         command, workdir, cleanup_paths = _build_command(
             meta_cmd,
@@ -1251,6 +1335,14 @@ def run_task_worker(
         if isinstance(command, str):
             command = shlex.split(command, posix=not _is_windows())
 
+        stop_summary = _consume_pending_stop_summary(task_dir, run_index)
+        if stop_summary:
+            return _finish_stopped_run(
+                stop_summary,
+                process_started=False,
+                process_terminated=False,
+            )
+
         proc = subprocess.Popen(
             command,
             shell=False,
@@ -1260,6 +1352,14 @@ def run_task_worker(
             env=env,
             **_popen_process_group_kwargs(),
         )
+
+        stop_summary = _consume_pending_stop_summary(task_dir, run_index)
+        if stop_summary:
+            return _finish_stopped_run(
+                stop_summary,
+                process_started=True,
+                process_terminated=_terminate_started_process(proc, task_name=name, run_index=run_index),
+            )
 
         start_str = get_now_str()
         start_log = _lifecycle_banner("start", name, start_str)
@@ -1310,9 +1410,14 @@ def run_task_worker(
         ret = proc.wait()
         reader_thread.join(timeout=5)
 
-        status = "completed" if ret == 0 else "failed"
-        progress = 1.0 if ret == 0 else 0.0
         end_str = get_now_str()
+        stop_summary = _consume_pending_stop_summary(task_dir, run_index)
+        if stop_summary:
+            status = "failed"
+            progress = 0.0
+        else:
+            status = "completed" if ret == 0 else "failed"
+            progress = 1.0 if ret == 0 else 0.0
 
         finish_log = _lifecycle_banner("finish", name, end_str)
         finish_payload = _append_run_log_text(log_path, finish_log, clean_boundary=True)
@@ -1335,47 +1440,46 @@ def run_task_worker(
 
         update_task_info(task_dir, _mark_finished)
 
-        if status == "failed":
-            stop_summary = _consume_pending_stop_summary(task_dir, run_index)
-            if stop_summary:
-                detail_lines = [f"reason={stop_summary.get('reason', 'stopped')}"]
-                detail_lines.extend(list(stop_summary.get("detail_lines", []) or []))
-                detail_lines.extend(
-                    [
-                        f"exit_code={ret}",
-                        f"command={command!r}",
-                        f"workdir={workdir!r}",
-                        f"log={log_path}",
-                    ]
-                )
-                _append_error_summary(
-                    task_dir,
-                    run_index=run_index,
-                    title=f"Run #{run_index} {stop_summary.get('event', 'stopped')} at {end_str}",
-                    detail_lines=detail_lines,
-                )
-            else:
-                log_tail = _read_log_tail_text(log_path)
-                failure_reason = "cuda_out_of_memory" if _detect_cuda_oom_text(log_tail) else f"exit_code {ret}"
-                detail_lines = [
-                    f"reason={failure_reason}",
-                    *_gpu_failure_detail_lines(env),
+        if stop_summary:
+            detail_lines = [f"reason={stop_summary.get('reason', 'stopped')}"]
+            detail_lines.extend(list(stop_summary.get("detail_lines", []) or []))
+            detail_lines.extend(
+                [
+                    f"exit_code={ret}",
                     f"command={command!r}",
                     f"workdir={workdir!r}",
                     f"log={log_path}",
                 ]
-                _append_error_summary(
-                    task_dir,
-                    run_index=run_index,
-                    title=f"Run #{run_index} failed at {end_str}",
-                    detail_lines=detail_lines,
-                )
+            )
+            _append_error_summary(
+                task_dir,
+                run_index=run_index,
+                title=f"Run #{run_index} {stop_summary.get('event', 'stopped')} at {end_str}",
+                detail_lines=detail_lines,
+            )
+        elif status == "failed":
+            log_tail = _read_log_tail_text(log_path)
+            failure_reason = "cuda_out_of_memory" if _detect_cuda_oom_text(log_tail) else f"exit_code {ret}"
+            detail_lines = [
+                f"reason={failure_reason}",
+                *_gpu_failure_detail_lines(env),
+                f"command={command!r}",
+                f"workdir={workdir!r}",
+                f"log={log_path}",
+            ]
+            _append_error_summary(
+                task_dir,
+                run_index=run_index,
+                title=f"Run #{run_index} failed at {end_str}",
+                detail_lines=detail_lines,
+            )
 
         logger.info("Task %s finished  status=%s", name, status)
         return {"status": status, "progress": progress}
 
     except Exception as exc:
         end_str = get_now_str()
+        child_process_terminated = _terminate_started_process(proc, task_name=name, run_index=run_index)
 
         def _mark_error(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)
@@ -1397,6 +1501,7 @@ def run_task_worker(
             f"command={command!r}",
             f"workdir={workdir!r}",
             f"task_dir={task_dir!r}",
+            f"child_process_terminated={child_process_terminated}",
         ]
         _append_error_summary(
             task_dir,

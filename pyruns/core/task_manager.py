@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from pyruns._config import (
     DEFAULT_RUNNER_LEASE_SECONDS,
     ERROR_LOG_FILENAME,
+    EXECUTION_MODES,
     QUEUE_LOG_FILENAME,
     RUN_LOGS_DIR,
     TASK_KIND_CONFIG,
@@ -83,6 +84,7 @@ class TaskManager:
         self._observers: List[Callable[[], None]] = []
         self._executor = None
         self._independent_executor = None
+        self._independent_executor_mode = None
         self._executor_mode = None
         self._executor_workers = 0
         self.runner_host = socket.gethostname().lower()
@@ -575,6 +577,17 @@ class TaskManager:
         meta["run_index"] = target
         meta.pop("_run_index", None)
 
+    @staticmethod
+    def _validate_execution_mode(mode: str | None, fallback: str | None = None) -> str:
+        """Return a supported execution mode or raise a user-facing error."""
+
+        raw_mode = fallback if mode is None else mode
+        normalized = str(raw_mode or "").strip().lower()
+        if normalized not in EXECUTION_MODES:
+            expected = ", ".join(EXECUTION_MODES)
+            raise ValueError(f"Invalid execution_mode {mode!r}; expected one of: {expected}")
+        return normalized
+
     @classmethod
     def _strip_queued_placeholder_run(cls, info: Dict[str, Any]) -> Dict[str, Any]:
         if str(info.get("status", "") or "").lower() != "queued":
@@ -590,8 +603,10 @@ class TaskManager:
         max_workers: int | None = None,
     ) -> None:
         """Queue a batch of tasks for scheduler-driven execution."""
-        if execution_mode:
-            self.execution_mode = execution_mode
+
+        selected_execution_mode = self._validate_execution_mode(execution_mode, self.execution_mode)
+        if execution_mode is not None:
+            self.execution_mode = selected_execution_mode
         if max_workers is not None:
             self.max_workers = max(1, int(max_workers))
 
@@ -656,7 +671,7 @@ class TaskManager:
         execution_mode: str | None = None,
     ) -> None:
         """Immediately submit a single task outside the batch queue."""
-        execution_mode = execution_mode or self.execution_mode
+        execution_mode = self._validate_execution_mode(execution_mode, self.execution_mode)
 
         target = None
         run_index = 1
@@ -912,8 +927,6 @@ class TaskManager:
         if was_running:
             disk_info = load_task_info(target_ref["dir"])
             pid = self._latest_pid(disk_info) if disk_info else None
-            if pid and self._is_local_or_legacy_runner(disk_info or {}):
-                kill_process(int(pid))
             try:
                 self._persist_pending_stop_summary(
                     target_ref,
@@ -924,6 +937,8 @@ class TaskManager:
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist cancel summary for %s yet: %s", target_name, exc)
+            if pid and self._is_local_or_legacy_runner(disk_info or {}):
+                kill_process(int(pid))
         else:
             try:
                 self._mark_failed_on_disk(
@@ -1095,6 +1110,7 @@ class TaskManager:
     def _ensure_executor(self) -> None:
         """Create or recreate the batch executor when mode/worker count changes."""
         with self._executor_lock:
+            self.execution_mode = self._validate_execution_mode(self.execution_mode, "thread")
             workers = max(1, int(self.max_workers))
             changed = self._executor_mode != self.execution_mode or self._executor_workers != workers
             if self._executor and not changed:
@@ -1254,11 +1270,18 @@ class TaskManager:
 
         try:
             if independent:
-                mode = execution_mode or self.execution_mode
+                mode = self._validate_execution_mode(execution_mode, self.execution_mode)
                 with self._executor_lock:
+                    if self._independent_executor and self._independent_executor_mode != mode:
+                        try:
+                            self._independent_executor.shutdown(wait=False)
+                        except Exception:
+                            pass
+                        self._independent_executor = None
                     if not self._independent_executor:
                         cls = ProcessPoolExecutor if mode == "process" else ThreadPoolExecutor
                         self._independent_executor = cls(max_workers=32)
+                        self._independent_executor_mode = mode
                 executor = self._independent_executor
             else:
                 self._ensure_executor()
@@ -1430,6 +1453,7 @@ class TaskManager:
             executors = [self._executor, self._independent_executor]
             self._executor = None
             self._independent_executor = None
+            self._independent_executor_mode = None
             self._executor_mode = None
             self._executor_workers = 0
 

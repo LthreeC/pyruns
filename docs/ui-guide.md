@@ -98,11 +98,6 @@ Manager 是任务的调度台。
 
 ![Manager 全页界面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
-建议这里放：
-
-- 一张带状态摘要、筛选器、任务卡片网格的整页截图
-- 最好能看见 pinned 区和卡片底部按钮
-
 ### 你可以做什么
 
 - 搜索任务
@@ -141,11 +136,6 @@ Monitor 的目标不是“把日志显示出来”，而是把日志变成一个
 
 ![Monitor 全页界面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
-建议这里放：
-
-- 一张带左侧任务栏、中央 xterm、顶部动作栏的截图
-- 最好包含一段真实运行日志
-
 ### 默认行为
 
 - 直接从侧边栏或 tab 进入时默认不选中任何任务
@@ -177,9 +167,6 @@ Dashboard 是第一页，也是最适合做“项目展示图”的页面。
 - CPU / RAM / GPU 状态
 - 多 GPU 卡片布局
 - GPU 显存占用与进程明细入口
-
-这一页目前还缺一张真正能代表首页状态的截图。  
-如果你后面继续补素材，最值得新增的依然是 Dashboard 总览图和 GPU 明细图。
 
 ## 三页统一设计语言
 

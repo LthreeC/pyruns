@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pyruns import __version__
-from pyruns._config import DEFAULT_UI_PORT
+from pyruns._config import DEFAULT_UI_PORT, QUEUE_LOG_FILENAME
 from pyruns.utils.events import log_emitter
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.web.runtime import PyrunsRuntime
@@ -29,6 +29,9 @@ from pyruns.utils import get_logger
 logger = get_logger(__name__)
 
 LOG_STREAM_QUEUE_LIMIT = 256
+LOG_STREAM_TAIL_INTERVAL_SEC = 0.5
+LOG_STREAM_TAIL_CHUNK_SIZE = 64 * 1024
+LOG_STREAM_EMITTER_QUIET_SEC = 2.0
 LOG_STREAM_DROPPED_NOTICE = (
     "[pyruns] Live log stream skipped older buffered output; "
     "open the log file for full history.\n"
@@ -622,19 +625,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)
         disconnected = asyncio.Event()
         dropped_notice_sent = False
+        stream_log_name = ""
+        stream_offset = 0
+        stream_initialized = False
+        last_emitter_chunk_at = 0.0
 
-        def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
+        def enqueue_message(message: dict[str, Any]) -> None:
             nonlocal dropped_notice_sent
-            if disconnected.is_set():
-                return
-            message = {
-                "type": "chunk",
-                "task_name": task_name,
-                "content": chunk_text,
-            }
-            offset = (metadata or {}).get("offset")
-            if offset is not None:
-                message["offset"] = offset
             try:
                 queue.put_nowait(message)
                 return
@@ -645,12 +642,87 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                     pass
 
             if not dropped_notice_sent:
-                message = {**message, "content": LOG_STREAM_DROPPED_NOTICE + chunk_text}
+                message = {**message, "content": LOG_STREAM_DROPPED_NOTICE + str(message.get("content") or "")}
                 dropped_notice_sent = True
             try:
                 queue.put_nowait(message)
             except asyncio.QueueFull:
                 logger.debug("Dropping live log chunk for %s because websocket queue is full", task_name)
+
+        def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
+            nonlocal last_emitter_chunk_at, stream_offset
+            if disconnected.is_set():
+                return
+            last_emitter_chunk_at = time.monotonic()
+            message = {
+                "type": "chunk",
+                "task_name": task_name,
+                "content": chunk_text,
+            }
+            offset = (metadata or {}).get("offset")
+            if offset is not None:
+                try:
+                    chunk_offset = max(0, int(offset))
+                except (TypeError, ValueError):
+                    chunk_offset = None
+                if chunk_offset is not None:
+                    if chunk_offset <= stream_offset:
+                        return
+                    stream_offset = chunk_offset
+                    message["offset"] = chunk_offset
+            enqueue_message(message)
+
+        async def tail_log_file() -> None:
+            nonlocal stream_initialized, stream_log_name, stream_offset
+            while not disconnected.is_set():
+                try:
+                    if not stream_initialized:
+                        payload = await asyncio.to_thread(runtime.get_task_logs, task_name, tail_lines=0)
+                        stream_log_name = str(payload.get("selected_log") or "")
+                        stream_offset = max(0, int(payload.get("offset") or 0))
+                        stream_initialized = True
+                    elif stream_log_name:
+                        emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC
+                        if emitter_quiet:
+                            switched_log = False
+                            if stream_log_name == QUEUE_LOG_FILENAME:
+                                queue_payload = await asyncio.to_thread(runtime.get_task_logs, task_name, tail_lines=0)
+                                selected_log = str(queue_payload.get("selected_log") or stream_log_name)
+                                if selected_log != stream_log_name:
+                                    stream_log_name = selected_log
+                                    stream_offset = 0
+                                    switched_log = True
+                            if not switched_log:
+                                read_offset = stream_offset
+                                payload = await asyncio.to_thread(
+                                    runtime.get_task_logs,
+                                    task_name,
+                                    log_file_name=stream_log_name,
+                                    offset=read_offset,
+                                    chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                                )
+                                selected_log = str(payload.get("selected_log") or stream_log_name)
+                                new_offset = max(0, int(payload.get("offset") or read_offset))
+                                if selected_log != stream_log_name:
+                                    stream_log_name = selected_log
+                                    stream_offset = new_offset
+                                elif new_offset > stream_offset:
+                                    content = str(payload.get("content") or "")
+                                    stream_offset = new_offset
+                                    if content:
+                                        enqueue_message({
+                                            "type": "chunk",
+                                            "task_name": task_name,
+                                            "content": content,
+                                            "offset": new_offset,
+                                        })
+                except Exception as exc:
+                    logger.debug("Log file tail fallback failed for %s: %s", task_name, exc)
+
+                try:
+                    await asyncio.wait_for(disconnected.wait(), timeout=LOG_STREAM_TAIL_INTERVAL_SEC)
+                except asyncio.TimeoutError:
+                    pass
 
         async def watch_client_messages() -> None:
             try:
@@ -662,6 +734,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 disconnected.set()
 
         watcher = asyncio.create_task(watch_client_messages())
+        tailer = asyncio.create_task(tail_log_file())
         log_emitter.subscribe(task_name, on_chunk, loop=loop, include_metadata=True)
         try:
             while not disconnected.is_set():
@@ -679,7 +752,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         finally:
             disconnected.set()
             watcher.cancel()
+            tailer.cancel()
             log_emitter.unsubscribe(task_name, on_chunk)
+            for task in (watcher, tailer):
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     @app.get("/api/system/metrics")
     def get_metrics() -> dict[str, Any]:

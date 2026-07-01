@@ -104,9 +104,13 @@ export default function MonitorPage() {
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const liveLogNameRef = useRef('')
-  const previousSelectedTaskStatusRef = useRef<{ taskName: string | null; status: Task['status'] | null }>({
+  const queuedLiveLogTaskRef = useRef<{ taskName: string | null; runLogName: string }>({
     taskName: null,
-    status: null,
+    runLogName: '',
+  })
+  const manualHistoricalLogRef = useRef<{ taskName: string | null; logName: string }>({
+    taskName: null,
+    logName: '',
   })
   const terminalSearchInputRef = useRef<HTMLInputElement | null>(null)
   const terminalSearchShortcutScopeRef = useRef(false)
@@ -620,17 +624,47 @@ export default function MonitorPage() {
   useEffect(() => {
     const taskName = selectedTask?.name ?? null
     const taskStatus = selectedTask?.status ?? null
-    const previous = previousSelectedTaskStatusRef.current
-    previousSelectedTaskStatusRef.current = { taskName, status: taskStatus }
+    const manualHistory = manualHistoricalLogRef.current
+    if (manualHistory.taskName && manualHistory.taskName !== taskName) {
+      manualHistoricalLogRef.current = { taskName: null, logName: '' }
+    }
 
+    if (!taskName) {
+      queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+      return
+    }
+
+    const viewingQueueOrLiveLog = !selectedLog || selectedLog === QUEUE_LOG_NAME
+    if (taskStatus === 'queued' && viewingQueueOrLiveLog) {
+      queuedLiveLogTaskRef.current = { taskName, runLogName }
+      return
+    }
+
+    if (taskStatus !== 'running' || !runLogName) {
+      return
+    }
+
+    const queuedLiveTask = queuedLiveLogTaskRef.current
+    if (queuedLiveTask.taskName !== taskName) {
+      return
+    }
+
+    const currentManualHistory = manualHistoricalLogRef.current
     if (
-      !taskName
-      || previous.taskName !== taskName
-      || previous.status !== 'queued'
-      || taskStatus !== 'running'
-      || selectedLog !== QUEUE_LOG_NAME
-      || !runLogName
+      currentManualHistory.taskName === taskName
+      && currentManualHistory.logName
+      && currentManualHistory.logName !== QUEUE_LOG_NAME
+      && currentManualHistory.logName !== runLogName
     ) {
+      return
+    }
+
+    if (selectedLog && selectedLog !== QUEUE_LOG_NAME && selectedLog !== runLogName) {
+      return
+    }
+
+    queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+    if (selectedLog === runLogName) {
       return
     }
 
@@ -721,7 +755,7 @@ export default function MonitorPage() {
       ? { content: message.content, offset: message.offset }
       : { content: message.content }
     if (buffer.key === key) {
-      pendingLiveLogChunkRef.current = { key, chunks: [...buffer.chunks, chunk] }
+      buffer.chunks.push(chunk)
     } else {
       pendingLiveLogChunkRef.current = { key, chunks: [chunk] }
     }
@@ -879,6 +913,16 @@ export default function MonitorPage() {
   }, [clearExport, exportIds, notify])
 
   const handleSelectLogFile = useCallback((logName: string) => {
+    const taskName = selectedTaskNameRef.current
+    const liveLog = liveLogNameRef.current
+    manualHistoricalLogRef.current = (
+      taskName
+      && logName
+      && logName !== QUEUE_LOG_NAME
+      && logName !== liveLog
+    )
+      ? { taskName, logName }
+      : { taskName: null, logName: '' }
     void selectLogFile(logName)
       .catch(err => notify({ tone: 'error', title: 'Could not load log file', detail: errorMessage(err) }))
   }, [notify, selectLogFile])

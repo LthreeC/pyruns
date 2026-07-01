@@ -24,6 +24,12 @@ pyr examples/2_pyruns_config/main1.py examples/2_pyruns_config/config1.yaml
 Hydra is best launched from shell workspace tasks, because Hydra owns its own
 CLI override grammar and output directory behavior.
 
+Install the example dependencies before running this folder:
+
+```bash
+pip install "pyruns[examples]"
+```
+
 ```bash
 cd examples/3_hydra_script
 pyr

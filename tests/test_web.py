@@ -3,6 +3,7 @@ import ast
 import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from pyruns._config import (
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
     TASKS_DIR,
+    TASK_INFO_FILENAME,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
     WORKSPACE_KIND_SCRIPT,
@@ -895,7 +897,7 @@ def test_runtime_get_task_logs_returns_queue_log_without_presentation_rewrite(tm
     assert "[PYRUNS] [GPU WAIT]" not in content
 
 
-def test_runtime_get_task_logs_does_not_invent_missing_selected_run_log(tmp_path):
+def test_runtime_get_task_logs_includes_missing_active_run_log_for_running_task(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "running_gpu", status="running", log_text="first run\n")
     task_dir = workspace / TASKS_DIR / "running_gpu"
@@ -906,7 +908,23 @@ def test_runtime_get_task_logs_does_not_invent_missing_selected_run_log(tmp_path
 
     assert payload["selected_log"] == "run2.log"
     assert "run1.log" in payload["available_logs"]
+    assert "run2.log" in payload["available_logs"]
+    assert payload["content"] == ""
+
+
+def test_runtime_get_task_logs_does_not_invent_missing_non_active_run_log(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "running_gpu", status="running", log_text="first run\n")
+    task_dir = workspace / TASKS_DIR / "running_gpu"
+    update_task_info(str(task_dir), lambda info: info.update({"status": "running", "run_index": 2}))
+    runtime = _build_runtime(workspace)
+
+    payload = runtime.get_task_logs("running_gpu", log_file_name="run3.log", tail_lines=20)
+
+    assert payload["selected_log"] == "run3.log"
+    assert "run1.log" in payload["available_logs"]
     assert "run2.log" not in payload["available_logs"]
+    assert "run3.log" not in payload["available_logs"]
     assert payload["content"] == ""
 
 
@@ -1514,6 +1532,49 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
     assert run_response.json()["task"]["status"] == "running"
     assert cancel_response.status_code == 200
     assert cancel_response.json()["task"]["status"] == "failed"
+
+
+def test_batch_run_rejects_invalid_execution_mode_without_state_changes(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    runtime.task_manager.execution_mode = "thread"
+    runtime.task_manager.max_workers = 1
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/api/tasks/batch/run",
+        json={
+            "task_names": ["alpha"],
+            "execution_mode": "proces",
+            "max_workers": 4,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Invalid execution_mode" in response.json()["detail"]
+    assert runtime.task_manager.execution_mode == "thread"
+    assert runtime.task_manager.max_workers == 1
+    assert runtime.get_task("alpha", refresh=True)["status"] == "pending"
+    info = json.loads((workspace / TASKS_DIR / "alpha" / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert info["status"] == "pending"
+
+
+def test_run_task_rejects_invalid_execution_mode_without_state_changes(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    runtime.task_manager.execution_mode = "thread"
+    client = TestClient(create_app(runtime))
+
+    response = client.post("/api/tasks/alpha/run", json={"execution_mode": "proces"})
+
+    assert response.status_code == 400
+    assert "Invalid execution_mode" in response.json()["detail"]
+    assert runtime.task_manager.execution_mode == "thread"
+    assert runtime.get_task("alpha", refresh=True)["status"] == "pending"
+    info = json.loads((workspace / TASKS_DIR / "alpha" / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert info["status"] == "pending"
 
 
 def test_logs_endpoint_returns_history_and_available_logs(tmp_path):
@@ -2145,11 +2206,24 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
-    log_file.write_text("hello from stream", encoding="utf-8")
+    log_file.write_text("existing\n", encoding="utf-8")
     runtime = _build_runtime(workspace)
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+        assert initialized.wait(2)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write("hello from stream")
         log_emitter.emit("alpha", "hello from stream", offset=log_file.stat().st_size)
         payload = websocket.receive_json()
 
@@ -2159,10 +2233,110 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
     assert payload["offset"] == log_file.stat().st_size
 
 
+def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    log_file.write_text("existing\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    client = TestClient(create_app(runtime))
+
+    with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+        assert initialized.wait(2)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write("file fallback chunk\n")
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["task_name"] == "alpha"
+    assert payload["content"] == "file fallback chunk\r\n"
+    assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    assert not log_file.exists()
+    runtime = _build_runtime(workspace)
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    client = TestClient(create_app(runtime))
+
+    with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+        assert initialized.wait(2)
+        log_file.write_text("created after connect\n", encoding="utf-8")
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["task_name"] == "alpha"
+    assert payload["content"] == "created after connect\r\n"
+    assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_stream_switches_from_queue_log_to_active_run_log(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("waiting\n", encoding="utf-8")
+    run_log = task_dir / "run_logs" / "run1.log"
+    runtime = _build_runtime(workspace)
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    client = TestClient(create_app(runtime))
+
+    with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+        assert initialized.wait(2)
+        with runtime.task_manager._lock:
+            current = runtime.task_manager._tasks_by_name["alpha"]
+            current["status"] = "running"
+            current["run_index"] = 1
+        run_log.write_text("running after queue\n", encoding="utf-8")
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["task_name"] == "alpha"
+    assert payload["content"] == "running after queue\r\n"
+    assert payload["offset"] == run_log.stat().st_size
+
+
 def test_logs_websocket_stream_uses_bounded_queue():
     source = WEB_APP.read_text(encoding="utf-8")
 
     assert "LOG_STREAM_QUEUE_LIMIT" in source
+    assert "LOG_STREAM_TAIL_INTERVAL_SEC" in source
+    assert "LOG_STREAM_EMITTER_QUIET_SEC" in source
+    assert "tail_log_file" in source
+    assert "tail_lines=0" in source
+    assert "emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC" in source
+    assert "stream_log_name == QUEUE_LOG_FILENAME" in source
     assert "asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)" in source
     assert "include_metadata=True" in source
     assert "except asyncio.QueueFull" in source
