@@ -582,7 +582,7 @@ export default function MonitorPage() {
   }, [isTerminalSearchShortcutTarget, runTerminalSearch, terminalSearchOpen])
 
   useEffect(() => {
-    if (monitorTasks.length === 0 || !selectedTaskName) return
+    if (!selectedTaskName) return
     const stillExists = monitorTasks.some(task => task.name === selectedTaskName)
     if (stillExists) return
     useMonitorStore.setState({

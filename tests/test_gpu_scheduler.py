@@ -94,6 +94,20 @@ def test_gpu_scheduler_reserves_multi_gpu_after_stable_window():
     assert released.assignment.gpu_ids == [0, 1]
 
 
+def test_gpu_scheduler_synced_reservations_block_new_assignments():
+    now = [20.0]
+    provider = SequenceGpuProvider([[_gpu(0, used=1024, util=0)]])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(enabled=True, task_mode="single", stable_seconds=1)
+    _warm_stable_window(scheduler, now, config)
+
+    scheduler.sync_reservations({"remote": [0]})
+    decision = scheduler.try_reserve("local", 1, config, task_env={})
+
+    assert decision.assignment is None
+    assert "GPU 0 reserved (1/1)" in decision.reason
+
+
 def test_gpu_scheduler_respects_existing_cuda_visible_devices_when_parseable():
     now = [10.0]
     provider = SequenceGpuProvider([

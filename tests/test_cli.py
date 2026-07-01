@@ -14,6 +14,27 @@ from pyruns.utils.info_io import save_task_info
 from pyruns.utils.config_utils import save_yaml
 
 
+def test_write_console_text_replaces_unencodable_characters():
+    from pyruns.cli.console import write_console_text
+
+    class StrictAsciiStream:
+        encoding = "ascii"
+
+        def __init__(self):
+            self.value = ""
+
+        def write(self, text):
+            text.encode(self.encoding)
+            self.value += text
+            return len(text)
+
+    stream = StrictAsciiStream()
+
+    write_console_text("loss=好\n", stream=stream)
+
+    assert stream.value == "loss=?\n"
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Fixtures
 # ═══════════════════════════════════════════════════════════════

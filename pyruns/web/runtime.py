@@ -108,6 +108,16 @@ def _strip_unquoted_comment(value: str) -> str:
     return value
 
 
+def _looks_like_windows_path_value(value: str) -> bool:
+    normalized = str(value or "")
+    return (
+        len(normalized) >= 3
+        and normalized[1] == ":"
+        and normalized[0].isalpha()
+        and normalized[2] in {"\\", "/"}
+    ) or normalized.startswith("\\\\")
+
+
 def parse_global_env_text(text: str) -> Dict[str, str]:
     """Parse workspace env text using a safe shell-assignment subset."""
 
@@ -129,6 +139,10 @@ def parse_global_env_text(text: str) -> Dict[str, str]:
         value_text = _strip_unquoted_comment(raw_value.strip())
         if not value_text:
             result[key] = ""
+            continue
+
+        if _looks_like_windows_path_value(value_text):
+            result[key] = value_text
             continue
 
         lexer = shlex.shlex(value_text, posix=True)

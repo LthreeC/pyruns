@@ -6,6 +6,7 @@ import codecs
 import hashlib
 import json
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -46,7 +47,11 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.log_io import normalize_log_newlines
 from pyruns.utils.process_utils import kill_process
-from pyruns.utils.shell_runtime import get_shell_runtime_for_task
+from pyruns.utils.shell_runtime import (
+    get_shell_runtime_for_task,
+    _is_windows_wsl_bash_executable,
+    _windows_posix_script_arg,
+)
 from pyruns.utils.settings import load_settings
 from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
 
@@ -61,6 +66,7 @@ _CUDA_OOM_MARKERS = (
     "torch.cuda.outofmemoryerror",
     "cublas_status_alloc_failed",
 )
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _lifecycle_banner(phase: str, name: str, timestamp: str) -> str:
@@ -701,7 +707,14 @@ def _set_runner_lease(
 def _clear_runner_lease(info: Dict[str, Any], runner_id: str) -> None:
     if runner_id and info.get("runner_id") not in {None, "", runner_id}:
         return
-    for key in ("runner_id", "runner_host", "lease_heartbeat", "lease_until"):
+    for key in (
+        "runner_id",
+        "runner_host",
+        "lease_heartbeat",
+        "lease_until",
+        "_scheduled_env",
+        "_gpu_assignment",
+    ):
         info.pop(key, None)
 
 
@@ -871,7 +884,7 @@ def _materialize_windows_shell_wrapper(
     """Create a native Windows wrapper script around the stored shell task body."""
 
     if _is_posix_shell_executable(shell_path):
-        return [shell_path, script_path], task_dir, []
+        return [shell_path, _windows_posix_script_arg(shell_path, script_path)], task_dir, []
 
     script_body = _read_shell_script_body(script_path)
     if _is_powershell_executable(shell_path):
@@ -923,6 +936,32 @@ def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], st
         command, _, cleanup_paths = _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
         return command, workdir, cleanup_paths
     return [shell_path, script_path], workdir, []
+
+
+def _augment_wsl_env(command: List[str] | str, env: Dict[str, str], task_env_keys: set[str]) -> None:
+    if isinstance(command, str):
+        return
+    shell_path = command[0] if command else ""
+    if not _is_windows_wsl_bash_executable(shell_path):
+        return
+
+    entries = [entry for entry in str(env.get("WSLENV", "") or "").split(":") if entry]
+    for index, entry in enumerate(entries):
+        base, separator, flags = entry.partition("/")
+        if base == ENV_KEY_CONFIG and "p" not in flags:
+            flags = f"{flags}p"
+            entries[index] = f"{base}/{flags}" if separator or flags else base
+    known = {entry.split("/", 1)[0] for entry in entries}
+    if ENV_KEY_CONFIG in env and ENV_KEY_CONFIG not in known:
+        entries.append(f"{ENV_KEY_CONFIG}/p")
+        known.add(ENV_KEY_CONFIG)
+    for key in sorted(str(item) for item in task_env_keys):
+        if key in known or key not in env or not _ENV_NAME_RE.match(key):
+            continue
+        entries.append(key)
+        known.add(key)
+    if entries:
+        env["WSLENV"] = ":".join(entries)
 
 
 def _build_command(
@@ -1327,6 +1366,7 @@ def run_task_worker(
             python_runtime=python_runtime,
         )
         env[ENV_KEY_RUN_INDEX] = str(run_index)
+        _augment_wsl_env(command, env, set((env_vars or {}).keys()) | {ENV_KEY_RUN_INDEX})
 
         if workdir and not os.path.isdir(workdir):
             fallback = task_dir if task_kind == TASK_KIND_SHELL else (os.path.dirname(script_path) if script_path else os.getcwd())

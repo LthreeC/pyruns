@@ -1940,9 +1940,37 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
         str(script_path),
         "bash.exe",
     )
-    assert command == ["bash.exe", str(script_path)]
+    assert command == ["bash.exe", str(script_path).replace("\\", "/")]
     assert workdir == str(task_dir)
     assert cleanup_paths == []
+
+    wsl_command, wsl_workdir, wsl_cleanup_paths = executor._materialize_windows_shell_wrapper(
+        str(task_dir),
+        r"C:\Users\me\project\_pyruns_\shell\tasks\task\run.sh",
+        r"C:\Windows\System32\bash.exe",
+    )
+    assert wsl_command == [
+        r"C:\Windows\System32\bash.exe",
+        "/mnt/c/Users/me/project/_pyruns_/shell/tasks/task/run.sh",
+    ]
+    assert wsl_workdir == str(task_dir)
+    assert wsl_cleanup_paths == []
+
+    env = {ENV_KEY_CONFIG: r"C:\task\config.yaml", "PYRUNS_EXAMPLE_ENV": "ok", "WSLENV": "EXISTING"}
+    executor._augment_wsl_env(
+        [r"C:\Windows\System32\bash.exe", "/mnt/c/run.sh"],
+        env,
+        {"PYRUNS_EXAMPLE_ENV", "1BAD", "EXISTING"},
+    )
+    assert env["WSLENV"] == f"EXISTING:{ENV_KEY_CONFIG}/p:PYRUNS_EXAMPLE_ENV"
+
+    env = {ENV_KEY_CONFIG: r"C:\task\config.yaml", "WSLENV": f"{ENV_KEY_CONFIG}:OTHER"}
+    executor._augment_wsl_env(
+        [r"C:\Windows\System32\bash.exe", "/mnt/c/run.sh"],
+        env,
+        set(),
+    )
+    assert env["WSLENV"] == f"{ENV_KEY_CONFIG}/p:OTHER"
 
 
 def test_executor_import_isolation_helpers_copy_and_skip_edges(tmp_path, monkeypatch):
@@ -3174,6 +3202,180 @@ def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_p
     assert "Last status at " not in text
 
 
+def test_task_manager_gpu_scheduler_respects_foreign_running_assignment(tmp_path):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_task_mode: single",
+                "gpu_scheduler_memory_used_pct: 75",
+                "gpu_scheduler_min_free_memory_gb: 8",
+                "gpu_scheduler_compute_used_pct: 30",
+                "gpu_scheduler_stable_seconds: 1",
+                "gpu_scheduler_max_tasks_per_gpu: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    remote = generator.create_task("remote-gpu", {"lr": 0.1})
+    local = generator.create_task("local-gpu", {"lr": 0.2})
+    update_task_info(
+        remote["dir"],
+        lambda info: info.update({
+            "status": "running",
+            "run_index": 1,
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_until": time.time() + 60,
+            "pids": [12345],
+            "_scheduled_env": {"CUDA_VISIBLE_DEVICES": "0", "PYRUNS_ASSIGNED_GPUS": "0"},
+            "_gpu_assignment": {
+                "task_name": "remote-gpu",
+                "run_index": 1,
+                "gpu_ids": [0],
+                "cuda_visible_devices": "0",
+                "env": {"CUDA_VISIBLE_DEVICES": "0", "PYRUNS_ASSIGNED_GPUS": "0"},
+                "waited_seconds": 0,
+            },
+        }),
+    )
+    update_task_info(local["dir"], lambda info: info.update({"status": "queued"}))
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 2048, 40960, 1)]),
+        clock=lambda: now[0],
+    )
+    manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
+    now[0] += 1.0
+
+    target, _ = manager._pick_queued_task()
+
+    assert target is None
+    queued = manager.get_task("local-gpu")
+    assert queued["status"] == "queued"
+    queue_log = Path(local["dir"]) / RUN_LOGS_DIR / "queue.log"
+    assert "GPU 0 reserved (1/1)" in queue_log.read_text(encoding="utf-8")
+
+
+def test_task_manager_gpu_scheduler_respects_undiscovered_foreign_assignment(tmp_path):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_task_mode: single",
+                "gpu_scheduler_memory_used_pct: 75",
+                "gpu_scheduler_min_free_memory_gb: 8",
+                "gpu_scheduler_compute_used_pct: 30",
+                "gpu_scheduler_stable_seconds: 1",
+                "gpu_scheduler_max_tasks_per_gpu: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    local = generator.create_task("local-gpu", {"lr": 0.2})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    remote = generator.create_task("remote-gpu", {"lr": 0.1})
+    update_task_info(
+        remote["dir"],
+        lambda info: info.update({
+            "status": "running",
+            "run_index": 1,
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_until": time.time() + 60,
+            "pids": [12345],
+            "_scheduled_env": {"CUDA_VISIBLE_DEVICES": "0", "PYRUNS_ASSIGNED_GPUS": "0"},
+            "_gpu_assignment": {
+                "task_name": "remote-gpu",
+                "run_index": 1,
+                "gpu_ids": [0],
+                "cuda_visible_devices": "0",
+                "env": {"CUDA_VISIBLE_DEVICES": "0", "PYRUNS_ASSIGNED_GPUS": "0"},
+                "waited_seconds": 0,
+            },
+        }),
+    )
+    update_task_info(local["dir"], lambda info: info.update({"status": "queued"}))
+    manager.refresh_from_disk(task_ids=["local-gpu"], force_all=True)
+
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 2048, 40960, 1)]),
+        clock=lambda: now[0],
+    )
+    manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
+    now[0] += 1.0
+
+    target, _ = manager._pick_queued_task()
+
+    assert [task["name"] for task in manager.tasks] == ["local-gpu"]
+    assert target is None
+    queued = manager.get_task("local-gpu")
+    assert queued["status"] == "queued"
+    queue_log = Path(local["dir"]) / RUN_LOGS_DIR / "queue.log"
+    assert "GPU 0 reserved (1/1)" in queue_log.read_text(encoding="utf-8")
+
+
+def test_task_manager_gpu_claim_failure_restores_disk_state(tmp_path, monkeypatch):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_task_mode: single",
+                "gpu_scheduler_memory_used_pct: 75",
+                "gpu_scheduler_min_free_memory_gb: 8",
+                "gpu_scheduler_compute_used_pct: 30",
+                "gpu_scheduler_stable_seconds: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("claim-race", {"lr": 0.1})
+    update_task_info(task["dir"], lambda info: info.update({"status": "queued"}))
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 2048, 40960, 1)]),
+        clock=lambda: now[0],
+    )
+    manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
+    now[0] += 1.0
+    monkeypatch.setattr(manager, "_claim_task_for_run", lambda *args, **kwargs: None)
+
+    target, _ = manager._pick_queued_task()
+
+    assert target is None
+    refreshed = manager.get_task("claim-race")
+    assert refreshed["status"] == "queued"
+    assert "_scheduled_env" not in refreshed
+    assert "_gpu_assignment" not in refreshed
+    assert "claim-race" not in manager._running_ids
+
+
 def test_task_manager_gpu_wait_does_not_advance_public_run_index_until_assignment(tmp_path):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     tasks_dir = workspace / TASKS_DIR
@@ -4355,6 +4557,48 @@ def test_task_manager_keeps_live_foreign_runner_running(tmp_path, monkeypatch):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
     assert manager.get_task("remote")["status"] == "running"
+
+
+def test_task_manager_refresh_expires_foreign_runner_even_when_mtime_unchanged(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "remote"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "remote",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_until": time.time() + 60,
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: False)
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    task = manager.get_task("remote")
+    assert task["status"] == "running"
+    original_mtime_ns = task["_mtime_ns"]
+
+    update_task_info(str(task_dir), lambda info: info.update({"lease_until": time.time() - 60}))
+    with manager._lock:
+        manager._tasks_by_name["remote"]["_mtime_ns"] = (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns
+
+    assert manager.refresh_from_disk() is True
+    refreshed = manager.get_task("remote")
+    assert refreshed["status"] == "failed"
+    assert refreshed["_mtime_ns"] >= original_mtime_ns
 
 
 def test_task_manager_does_not_submit_when_foreign_runner_owns_lease(tmp_path, monkeypatch):

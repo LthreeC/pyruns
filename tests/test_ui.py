@@ -1066,6 +1066,15 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
     assert "value.split" not in editor
 
 
+def test_monitor_clears_stale_selection_when_task_list_becomes_empty():
+    monitor = (FRONTEND_COMPONENTS_DIR / "monitor" / "MonitorPage.tsx").read_text(encoding="utf-8")
+
+    assert "if (!selectedTaskName) return" in monitor
+    assert "monitorTasks.length === 0 || !selectedTaskName" not in monitor
+    assert "selectedTaskName: null" in monitor
+    assert "logContent: ''" in monitor
+
+
 def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")

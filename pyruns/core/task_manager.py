@@ -40,6 +40,7 @@ from pyruns.utils.info_io import (
     ensure_run_slot,
     load_task_info,
     run_slot_count,
+    task_info_lock,
     update_task_info,
     validate_task_name,
 )
@@ -55,6 +56,7 @@ from pyruns.utils.task_files import (
 
 logger = get_logger(__name__)
 _STOP_TASK_INFO_LOCK_TIMEOUT_SEC = 1.0
+_GPU_SCHEDULE_LOCK_TIMEOUT_SEC = 2.0
 _GPU_QUEUE_RUN_RE = re.compile(r"\bRun #(\d+)\b")
 
 
@@ -386,6 +388,30 @@ class TaskManager:
             return False
         return self._is_current_runner(info)
 
+    def _running_info_has_live_owner(self, info: Dict[str, Any]) -> bool:
+        pid = self._latest_pid(info)
+        foreign_runner_live = self._is_foreign_live_runner(info)
+        current_runner_live = self._is_current_runner(info) and bool(pid) and is_pid_running(pid)
+        return bool(foreign_runner_live or current_runner_live)
+
+    def _fail_unowned_running_info_if_needed(
+        self,
+        task_name: str,
+        task_dir: str,
+        info: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], bool]:
+        if info.get("status") != "running" or task_name in self._running_ids:
+            return info, False
+        if self._running_info_has_live_owner(info):
+            return info, False
+
+        self._mark_failed_on_disk(
+            {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
+        )
+        updated = load_task_info(task_dir) or info
+        logger.warning("%s: running lease is not trusted or process is gone; marked failed", task_name)
+        return updated, True
+
     @staticmethod
     def _same_task_dir(left: str | None, right: str | None) -> bool:
         if not left or not right:
@@ -411,16 +437,7 @@ class TaskManager:
         task_kind, config_data, config_text, load_error = read_task_payload(task_dir, info)
 
         task_name = dir_name
-        if info.get("status") == "running" and task_name not in self._running_ids:
-            pid = self._latest_pid(info)
-            foreign_runner_live = self._is_foreign_live_runner(info)
-            current_runner_live = self._is_current_runner(info) and pid and is_pid_running(pid)
-            if not foreign_runner_live and not current_runner_live:
-                self._mark_failed_on_disk(
-                    {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
-                )
-                info = load_task_info(task_dir)
-                logger.warning("%s: running lease is not trusted or process is gone; marked failed", dir_name)
+        info, _ = self._fail_unowned_running_info_if_needed(task_name, task_dir, info)
 
         try:
             mtime_ns = os.stat(info_path).st_mtime_ns
@@ -460,6 +477,7 @@ class TaskManager:
         pending_run_index = info.get("run_index", info.get("_run_index"))
         if pending_run_index:
             task["run_index"] = int(pending_run_index)
+        self._copy_gpu_schedule_info(task, info)
         self._refresh_derived_fields(task)
         return task
 
@@ -492,6 +510,27 @@ class TaskManager:
             try:
                 mtime_ns = os.stat(info_path).st_mtime_ns
                 if not force_all and task.get("_mtime_ns") == mtime_ns:
+                    if task.get("status") == "running" and task.get("name") not in self._running_ids:
+                        info = load_task_info(task["dir"])
+                        if not info:
+                            continue
+                        info = self._strip_queued_placeholder_run(info)
+                        info, failed = self._fail_unowned_running_info_if_needed(task["name"], task["dir"], info)
+                        if failed:
+                            try:
+                                mtime_ns = os.stat(info_path).st_mtime_ns
+                            except OSError:
+                                mtime_ns = 0
+                            with self._lock:
+                                existing = self._tasks_by_name.get(task["name"])
+                                if existing:
+                                    before = self._task_snapshot(existing)
+                                    self._apply_info_to_task(existing, info, mtime_ns=mtime_ns)
+                                    self._clear_running_locked(task["name"])
+                                    self.gpu_scheduler.release(task["name"])
+                                    self._recompute_processing_flag_locked()
+                                    after = self._task_snapshot(existing)
+                                    has_changed |= before != after
                     continue
                 info = load_task_info(task["dir"])
                 if not info:
@@ -584,6 +623,44 @@ class TaskManager:
             "_queued_execution_mode",
         ):
             task.pop(key, None)
+
+    @staticmethod
+    def _clear_gpu_schedule_info(info: Dict[str, Any]) -> None:
+        for key in ("_scheduled_env", "_gpu_assignment"):
+            info.pop(key, None)
+
+    @classmethod
+    def _copy_gpu_schedule_info(cls, task: Dict[str, Any], info: Dict[str, Any]) -> None:
+        if str(info.get("status", "") or "").lower() != "running":
+            task.pop("_scheduled_env", None)
+            task.pop("_gpu_assignment", None)
+            return
+
+        scheduled_env = info.get("_scheduled_env")
+        if isinstance(scheduled_env, dict) and scheduled_env:
+            task["_scheduled_env"] = dict(scheduled_env)
+        else:
+            task.pop("_scheduled_env", None)
+
+        assignment = info.get("_gpu_assignment")
+        if isinstance(assignment, dict) and assignment:
+            task["_gpu_assignment"] = copy.deepcopy(assignment)
+        else:
+            task.pop("_gpu_assignment", None)
+
+    @staticmethod
+    def _gpu_ids_from_assignment(assignment: Any) -> List[int]:
+        if not isinstance(assignment, dict):
+            return []
+        gpu_ids: List[int] = []
+        for raw_id in assignment.get("gpu_ids", []) or []:
+            try:
+                gpu_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if gpu_id not in gpu_ids:
+                gpu_ids.append(gpu_id)
+        return gpu_ids
 
     @staticmethod
     def _next_run_index(task: Dict[str, Any]) -> int:
@@ -1329,39 +1406,64 @@ class TaskManager:
                 )
                 return None, 1
 
-            decision = self.gpu_scheduler.try_reserve(
-                task_name,
-                run_index,
-                gpu_config,
-                task_env=task_env,
-                queued_since=queued_at,
-            )
-
             wait_log: tuple[Dict[str, Any], List[str]] | None = None
             assignment_log: tuple[Dict[str, Any], GpuAssignment] | None = None
-            with self._lock:
-                current = self._resolve_identifier_locked(task_name)
-                if not current or current.get("status") != "queued":
-                    if decision.assignment is not None:
-                        self.gpu_scheduler.release(task_name)
-                    continue
-                run_index = self._next_run_index(current)
+            target: Dict[str, Any] | None = None
+            try:
+                with task_info_lock(self.tasks_dir, timeout_sec=_GPU_SCHEDULE_LOCK_TIMEOUT_SEC):
+                    self._sync_gpu_reservations_from_running_tasks()
+                    decision = self.gpu_scheduler.try_reserve(
+                        task_name,
+                        run_index,
+                        gpu_config,
+                        task_env=task_env,
+                        queued_since=queued_at,
+                    )
 
-                if decision.assignment is None:
-                    lines = self._gpu_wait_decision_lines(current, run_index, gpu_config, decision, waited, now)
-                    if lines:
-                        wait_log = (current, lines)
-                    self._recompute_processing_flag_locked()
-                else:
-                    assignment = dataclasses.replace(decision.assignment, run_index=run_index)
-                    current["_scheduled_env"] = dict(assignment.env)
-                    current["_gpu_assignment"] = self._gpu_assignment_to_dict(assignment)
-                    current["status"] = "running"
-                    current["run_index"] = run_index
-                    self._mark_running_locked(current["name"], counts_for_batch=not is_independent)
-                    self._recompute_processing_flag_locked()
-                    assignment_log = (current, assignment)
-                    target = current
+                    with self._lock:
+                        current = self._resolve_identifier_locked(task_name)
+                        if not current or current.get("status") != "queued":
+                            if decision.assignment is not None:
+                                self.gpu_scheduler.release(task_name)
+                            continue
+                        run_index = self._next_run_index(current)
+
+                        if decision.assignment is None:
+                            lines = self._gpu_wait_decision_lines(current, run_index, gpu_config, decision, waited, now)
+                            if lines:
+                                wait_log = (current, lines)
+                            self._recompute_processing_flag_locked()
+                        else:
+                            assignment = dataclasses.replace(decision.assignment, run_index=run_index)
+                            current["_scheduled_env"] = dict(assignment.env)
+                            current["_gpu_assignment"] = self._gpu_assignment_to_dict(assignment)
+                            current["status"] = "running"
+                            current["run_index"] = run_index
+                            self._mark_running_locked(current["name"], counts_for_batch=not is_independent)
+                            self._recompute_processing_flag_locked()
+                            assignment_log = (current, assignment)
+                            target = current
+
+                    if target is not None and self._claim_task_for_run(
+                        target,
+                        run_index,
+                        counts_for_batch=not is_independent,
+                    ) is None:
+                        self.gpu_scheduler.release(task_name)
+                        with self._lock:
+                            current = self._resolve_identifier_locked(task_name)
+                            if current:
+                                info = load_task_info(current["dir"])
+                                if info:
+                                    info = self._strip_queued_placeholder_run(info)
+                                    self._apply_info_to_task(current, info)
+                                self._clear_running_locked(task_name)
+                                self._clear_gpu_schedule_state(current)
+                                self._recompute_processing_flag_locked()
+                        continue
+            except TimeoutError as exc:
+                logger.debug("GPU scheduler lock busy for %s: %s", task_name, exc)
+                return None, 1
 
             if wait_log:
                 self._append_gpu_wait_refresh(wait_log[0], wait_log[1])
@@ -1664,6 +1766,16 @@ class TaskManager:
                 raise TaskStateConflict(f"task is no longer claimable: {status}")
             info["status"] = "running"
             info["run_index"] = run_index
+            scheduled_env = task.get("_scheduled_env")
+            if isinstance(scheduled_env, dict) and scheduled_env:
+                info["_scheduled_env"] = {str(k): str(v) for k, v in scheduled_env.items() if str(k)}
+            else:
+                info.pop("_scheduled_env", None)
+            assignment = task.get("_gpu_assignment")
+            if isinstance(assignment, dict) and assignment:
+                info["_gpu_assignment"] = copy.deepcopy(assignment)
+            else:
+                info.pop("_gpu_assignment", None)
             self._set_runner_lease_fields(info)
 
         try:
@@ -1720,6 +1832,7 @@ class TaskManager:
                 self._trim_run_slots(task_info, self._realized_run_slot_count(task_info))
             if next_status != "running":
                 self._clear_runner_lease_fields(task_info)
+                self._clear_gpu_schedule_info(task_info)
             else:
                 self._set_runner_lease_fields(task_info)
 
@@ -1811,6 +1924,39 @@ class TaskManager:
             "env": dict(assignment.env),
             "waited_seconds": assignment.waited_seconds,
         }
+
+    def _sync_gpu_reservations_from_running_tasks(self) -> None:
+        scan_ok, disk_names = self._scan_task_dir_names()
+        if scan_ok:
+            task_refs = [
+                (task_name, os.path.join(self.tasks_dir, task_name))
+                for task_name in disk_names
+            ]
+        else:
+            with self._lock:
+                task_refs = [
+                    (str(task.get("name", "") or ""), str(task.get("dir", "") or ""))
+                    for task in self.tasks
+                    if task and str(task.get("status", "") or "").lower() == "running"
+                ]
+
+        reservations: Dict[str, List[int]] = {}
+        for task_name, task_dir in task_refs:
+            if not task_name or not task_dir:
+                continue
+            try:
+                info = load_task_info(task_dir)
+            except Exception:
+                continue
+            if str(info.get("status", "") or "").lower() != "running":
+                continue
+            if not (self._is_current_runner(info) or self._is_foreign_live_runner(info)):
+                continue
+            gpu_ids = self._gpu_ids_from_assignment(info.get("_gpu_assignment"))
+            if gpu_ids:
+                reservations[task_name] = gpu_ids
+
+        self.gpu_scheduler.sync_reservations(reservations)
 
     @staticmethod
     def _gpu_queue_run_index(lines: List[str]) -> int | None:
@@ -2094,6 +2240,7 @@ class TaskManager:
                 "detail_lines": list(detail_lines or []),
             }
             self._clear_runner_lease_fields(task_info)
+            self._clear_gpu_schedule_info(task_info)
 
         update_kwargs = {}
         if lock_timeout_sec is not None:
@@ -2138,6 +2285,7 @@ class TaskManager:
             task_info["status"] = "failed"
             task_info["progress"] = 0.0
             self._clear_runner_lease_fields(task_info)
+            self._clear_gpu_schedule_info(task_info)
 
         update_kwargs = {}
         if lock_timeout_sec is not None:
@@ -2227,6 +2375,7 @@ class TaskManager:
                 "lease_heartbeat": info.get("lease_heartbeat"),
             }
         )
+        self._copy_gpu_schedule_info(task, info)
         loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
         task["config"] = loaded_config

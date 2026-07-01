@@ -22,6 +22,7 @@ from pyruns._config import (
     TASK_INFO_FILENAME,
     TASK_KIND_CONFIG,
 )
+from pyruns.cli.console import write_console_text
 from pyruns.cli.display import (
     _BOLD,
     _DIM,
@@ -599,7 +600,7 @@ def cmd_fg(tm, args: list[str] | None = None) -> None:
         with open(target_log, "r", encoding="utf-8", errors="replace") as handle:
             content = handle.read()
             if content:
-                sys.stdout.write(content.replace("\r\n", "\n"))
+                write_console_text(content.replace("\r\n", "\n"))
                 sys.stdout.flush()
     except Exception:
         pass
@@ -616,7 +617,7 @@ def cmd_fg(tm, args: list[str] | None = None) -> None:
             try:
                 while True:
                     chunk = log_queue.get(timeout=0.2)
-                    sys.stdout.write(chunk.replace("\r\n", "\n"))
+                    write_console_text(chunk.replace("\r\n", "\n"))
                     sys.stdout.flush()
             except queue.Empty:
                 pass
@@ -625,7 +626,7 @@ def cmd_fg(tm, args: list[str] | None = None) -> None:
             current = task_map.get(task_name)
             if current and current.get("status") not in {"running", "queued"}:
                 while not log_queue.empty():
-                    sys.stdout.write(log_queue.get_nowait().replace("\r\n", "\n"))
+                    write_console_text(log_queue.get_nowait().replace("\r\n", "\n"))
                     sys.stdout.flush()
                 status = current.get("status", "unknown")
                 style = _STATUS_STYLES.get(status, "")

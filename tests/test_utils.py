@@ -2261,6 +2261,21 @@ def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatc
     assert shell_runtime._probe_shell_executable(str(executable), "sh") is True
 
 
+def test_shell_runtime_windows_posix_script_arg_distinguishes_wsl_and_git_bash():
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    script_path = r"C:\Users\me\project with spaces\run.sh"
+
+    assert shell_runtime._windows_posix_script_arg(
+        r"C:\Windows\System32\bash.exe",
+        script_path,
+    ) == "/mnt/c/Users/me/project with spaces/run.sh"
+    assert shell_runtime._windows_posix_script_arg(
+        r"C:\Program Files\Git\bin\bash.exe",
+        script_path,
+    ) == "C:/Users/me/project with spaces/run.sh"
+
+
 def test_shell_runtime_workspace_and_follow_fallback_branches(tmp_path, monkeypatch):
     import pyruns.utils.shell_runtime as shell_runtime
 

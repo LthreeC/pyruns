@@ -11,6 +11,7 @@ import shutil
 import sys
 import time
 
+from pyruns.cli.console import write_console_text
 from pyruns.cli.display import _BOLD, _DIM, _RESET, _get_terminal_width, _status_str, _truncate
 from pyruns.core.report import build_export_csv, build_export_json, export_timestamp
 from pyruns.utils.events import log_emitter
@@ -152,7 +153,7 @@ def run_interactive_ls(tm, query: str = "") -> None:
 
             if in_filter:
                 output.append(f"  {_BOLD}Filter:{_RESET} type query (empty=clear)\n")
-                sys.stdout.write("".join(output))
+                write_console_text("".join(output))
                 sys.stdout.flush()
                 try:
                     query = input(f"  {_BOLD}Search: {_RESET}").strip()
@@ -378,7 +379,7 @@ def _view_log(task: dict[str, object]) -> None:
                     sys.stdout.write("\033[3A")
                     sys.stdout.write("\033[J")
                     for line in chunk.replace("\r\n", "\n").splitlines():
-                        sys.stdout.write(f"  {line}\n")
+                        write_console_text(f"  {line}\n")
                     sys.stdout.write(f"\n{separator}\n")
                     sys.stdout.write(nav + "\n")
                     sys.stdout.flush()

@@ -163,6 +163,24 @@ class GpuResourceScheduler:
         with self._lock:
             self._reservations.pop(str(task_name), None)
 
+    def sync_reservations(self, reservations: Dict[str, List[int]]) -> None:
+        """Replace local reservations with active assignments recovered from disk."""
+
+        normalized: Dict[str, List[int]] = {}
+        for task_name, gpu_ids in (reservations or {}).items():
+            clean_ids: List[int] = []
+            for gpu_id in gpu_ids or []:
+                try:
+                    parsed = int(gpu_id)
+                except (TypeError, ValueError):
+                    continue
+                if parsed not in clean_ids:
+                    clean_ids.append(parsed)
+            if clean_ids:
+                normalized[str(task_name)] = clean_ids
+        with self._lock:
+            self._reservations = normalized
+
     def try_reserve(
         self,
         task_name: str,

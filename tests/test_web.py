@@ -1019,6 +1019,8 @@ def test_parse_global_env_text_handles_shell_assignment_edges():
             'QUOTED_HASH="a # b"',
             "SINGLE_HASH='x # y'",
             "HAS_EQUALS=a=b=c",
+            r"WINDOWS_PATH=C:\Users\me\data",
+            r"ESCAPED_HASH=a\#b",
             r"ESCAPED_SPACE=a\ b",
             "INLINE_COMMENT=value # dropped",
         ])
@@ -1028,6 +1030,8 @@ def test_parse_global_env_text_handles_shell_assignment_edges():
         "QUOTED_HASH": "a # b",
         "SINGLE_HASH": "x # y",
         "HAS_EQUALS": "a=b=c",
+        "WINDOWS_PATH": r"C:\Users\me\data",
+        "ESCAPED_HASH": "a#b",
         "ESCAPED_SPACE": "a b",
         "INLINE_COMMENT": "value",
     }

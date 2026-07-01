@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import ntpath
 import shutil
 import subprocess
 import tempfile
@@ -82,6 +83,35 @@ def _resolve_candidate_path(candidate: str) -> str:
     return ""
 
 
+def _is_windows_wsl_bash_executable(executable: str) -> bool:
+    """Return True for Windows WSL bash launchers, not Git/MSYS bash."""
+
+    normalized = str(executable or "").strip().replace("/", "\\").lower()
+    if not normalized.endswith("\\bash.exe") and normalized != "bash.exe":
+        return False
+    return (
+        normalized.endswith("\\windows\\system32\\bash.exe")
+        or normalized.endswith("\\windows\\sysnative\\bash.exe")
+        or normalized.endswith("\\microsoft\\windowsapps\\bash.exe")
+    )
+
+
+def _windows_path_to_wsl_path(path: str) -> str:
+    drive, tail = ntpath.splitdrive(str(path or ""))
+    if len(drive) == 2 and drive[1] == ":":
+        normalized_tail = tail.replace("\\", "/").lstrip("/")
+        return f"/mnt/{drive[0].lower()}/{normalized_tail}"
+    return str(path or "").replace("\\", "/")
+
+
+def _windows_posix_script_arg(executable: str, script_path: str) -> str:
+    """Return the script argument a Windows POSIX shell can open."""
+
+    if _is_windows_wsl_bash_executable(executable):
+        return _windows_path_to_wsl_path(script_path)
+    return str(script_path or "").replace("\\", "/")
+
+
 def _probe_windows_posix_script_execution(executable: str) -> bool:
     """Return True when a POSIX shell can execute a Windows-hosted script."""
 
@@ -91,7 +121,7 @@ def _probe_windows_posix_script_execution(executable: str) -> bool:
         with open(script_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("exit 0\n")
         result = subprocess.run(
-            [executable, script_path.replace("\\", "/")],
+            [executable, _windows_posix_script_arg(executable, script_path)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
