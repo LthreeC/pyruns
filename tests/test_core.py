@@ -2253,6 +2253,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
 
     # Check emit was called
     assert mock_emit.called
+    assert all(call.kwargs.get("log_file_name") == "run1.log" for call in mock_emit.call_args_list)
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -3620,6 +3621,79 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
     assert timeout_values == [task_manager_module._STOP_TASK_INFO_LOCK_TIMEOUT_SEC]
 
 
+def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    lock_checks = []
+
+    def fake_kill(pid):
+        acquired = manager._lock.acquire(blocking=False)
+        lock_checks.append(acquired)
+        if acquired:
+            manager._lock.release()
+
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", fake_kill)
+
+    assert manager.delete_tasks(["runner"]) == ["runner"]
+    assert lock_checks == [True]
+
+
+def test_task_manager_delete_active_task_tolerates_busy_task_info(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "queued"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "queued",
+            "status": "queued",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 0,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("busy")))
+
+    assert manager.delete_tasks(["queued"]) == ["queued"]
+    assert manager.get_task("queued") is None
+
+
 def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -4908,6 +4982,76 @@ def test_run_task_worker_pending_stop_summary_forces_failed_even_when_exit_code_
     assert "Run #1 stopped" in content
     assert "reason=cancelled_by_user" in content
     assert "exit_code=0" in content
+    assert "reason=exit_code 0" not in content
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
+    mock_popen,
+    mock_emit,
+    mock_detect,
+    tmp_path,
+    monkeypatch,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    save_task_info(
+        task_dir,
+        {
+            "name": "StopTask",
+            "script": "script.py",
+            "status": "running",
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [7777],
+        },
+    )
+
+    original_append = executor._append_run_log_text
+
+    def append_and_cancel(*args, **kwargs):
+        update_task_info(
+            task_dir,
+            lambda info: info.update({
+                "status": "failed",
+                "_pending_stop_summary": {
+                    "run_index": 1,
+                    "event": "stopped",
+                    "reason": "cancelled_by_user",
+                    "detail_lines": ["previous_status=running"],
+                },
+            }),
+        )
+        return original_append(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "_append_run_log_text", append_and_cancel)
+    mock_proc = MagicMock()
+    mock_proc.pid = 7777
+    mock_proc.wait.return_value = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"completed output", b""])
+    mock_popen.return_value = mock_proc
+
+    res = run_task_worker(
+        task_dir=task_dir,
+        name="StopTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert res["status"] == "failed"
+    final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    assert final_info["status"] == "failed"
+    assert final_info["progress"] == 0.0
+    assert "_pending_stop_summary" not in final_info
+    error_log = os.path.join(task_dir, "run_logs", "error.log")
+    with open(error_log, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "reason=cancelled_by_user" in content
     assert "reason=exit_code 0" not in content
 
 # ═══════════════════════════════════════════════════════════════

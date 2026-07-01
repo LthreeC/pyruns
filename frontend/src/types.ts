@@ -173,6 +173,7 @@ export interface LogStreamMessage {
   task_name: string
   content: string
   offset?: number
+  log_file_name?: string
 }
 
 export interface GPUProcessInfo {

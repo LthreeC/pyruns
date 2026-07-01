@@ -294,6 +294,17 @@ def _consume_ui_options(args: list[str]) -> tuple[int | None, bool | None, list[
     return selected_port, open_browser, remaining
 
 
+def _has_ui_launch_option(args: list[str]) -> bool:
+    """Return whether *args* contain options that only make sense for UI launch."""
+
+    for arg in args:
+        if arg in {"-p", "--port", "--no-browser", "--browser", "--open-browser"}:
+            return True
+        if arg.startswith("--port="):
+            return True
+    return False
+
+
 def _launch_ui(start_path: str = "/", *, port: int | None = None, open_browser: bool | None = None) -> None:
     """Launch the unified static UI and API server."""
 
@@ -341,6 +352,9 @@ def pyr() -> None:
 
     raw_argv = list(sys.argv[1:])
     if raw_argv and raw_argv[0].lower() in _CLI_COMMANDS:
+        if _has_ui_launch_option(raw_argv[1:]):
+            print("UI launch options only apply to UI launch commands.")
+            sys.exit(1)
         _dispatch_cli(raw_argv)
         return
 

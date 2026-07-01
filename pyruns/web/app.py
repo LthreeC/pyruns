@@ -152,9 +152,7 @@ class GeneratorPreviewRequest(BaseModel):
 
 
 def _frontend_candidates() -> list[Path]:
-    project_root = Path(__file__).resolve().parents[2]
     return [
-        # project_root / "frontend" / "dist", # we don't want to serve from the source dir to avoid accidentally running unbuilt code
         Path(__file__).resolve().parent / "static",
     ]
 
@@ -202,7 +200,7 @@ def _fallback_frontend_html() -> str:
     <main>
       <h1>Pyruns API server is running</h1>
       <p>The React source tree is present, but no built frontend bundle was found yet.</p>
-      <p>Once the frontend is built into <code>frontend/dist</code> or <code>pyruns/web/static</code>, this page will serve it automatically.</p>
+      <p>Once the frontend is built into <code>pyruns/web/static</code>, this page will serve it automatically.</p>
       <ul>
         <li>Workspace API: <a href="/api/workspace">/api/workspace</a></li>
         <li>Task list API: <a href="/api/tasks">/api/tasks</a></li>
@@ -627,6 +625,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         dropped_notice_sent = False
         stream_log_name = ""
         stream_offset = 0
+        stream_offsets: dict[str, int] = {}
         stream_initialized = False
         last_emitter_chunk_at = 0.0
 
@@ -650,15 +649,21 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 logger.debug("Dropping live log chunk for %s because websocket queue is full", task_name)
 
         def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
-            nonlocal last_emitter_chunk_at, stream_offset
+            nonlocal last_emitter_chunk_at, stream_log_name, stream_offset
             if disconnected.is_set():
                 return
             last_emitter_chunk_at = time.monotonic()
+            chunk_log_name = str((metadata or {}).get("log_file_name") or stream_log_name or "")
+            if chunk_log_name and stream_log_name == QUEUE_LOG_FILENAME and chunk_log_name != stream_log_name:
+                stream_log_name = chunk_log_name
+                stream_offset = stream_offsets.get(chunk_log_name, 0)
             message = {
                 "type": "chunk",
                 "task_name": task_name,
                 "content": chunk_text,
             }
+            if chunk_log_name:
+                message["log_file_name"] = chunk_log_name
             offset = (metadata or {}).get("offset")
             if offset is not None:
                 try:
@@ -666,9 +671,12 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 except (TypeError, ValueError):
                     chunk_offset = None
                 if chunk_offset is not None:
-                    if chunk_offset <= stream_offset:
+                    previous_offset = stream_offsets.get(chunk_log_name, stream_offset)
+                    if chunk_offset <= previous_offset:
                         return
-                    stream_offset = chunk_offset
+                    stream_offsets[chunk_log_name] = chunk_offset
+                    if not chunk_log_name or chunk_log_name == stream_log_name:
+                        stream_offset = chunk_offset
                     message["offset"] = chunk_offset
             enqueue_message(message)
 
@@ -680,6 +688,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                         payload = await asyncio.to_thread(runtime.get_task_logs, task_name, tail_lines=0)
                         stream_log_name = str(payload.get("selected_log") or "")
                         stream_offset = max(0, int(payload.get("offset") or 0))
+                        if stream_log_name:
+                            stream_offsets[stream_log_name] = stream_offset
                         stream_initialized = True
                     elif stream_log_name:
                         emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC
@@ -690,7 +700,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 selected_log = str(queue_payload.get("selected_log") or stream_log_name)
                                 if selected_log != stream_log_name:
                                     stream_log_name = selected_log
-                                    stream_offset = 0
+                                    stream_offset = stream_offsets.get(selected_log, 0)
                                     switched_log = True
                             if not switched_log:
                                 read_offset = stream_offset
@@ -706,15 +716,18 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 if selected_log != stream_log_name:
                                     stream_log_name = selected_log
                                     stream_offset = new_offset
+                                    stream_offsets[selected_log] = new_offset
                                 elif new_offset > stream_offset:
                                     content = str(payload.get("content") or "")
                                     stream_offset = new_offset
+                                    stream_offsets[stream_log_name] = new_offset
                                     if content:
                                         enqueue_message({
                                             "type": "chunk",
                                             "task_name": task_name,
                                             "content": content,
                                             "offset": new_offset,
+                                            "log_file_name": stream_log_name,
                                         })
                 except Exception as exc:
                     logger.debug("Log file tail fallback failed for %s: %s", task_name, exc)

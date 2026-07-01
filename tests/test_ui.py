@@ -860,6 +860,8 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "return { logContent: nextContent, logOffset: nextOffset }" in source
     assert "buffer.chunks.push(chunk)" in source
     assert "offset?: number" in types
+    assert "log_file_name?: string" in types
+    assert "message.log_file_name || liveLog" in source
 
 
 def test_react_mobile_task_controls_keep_usable_touch_targets():
@@ -1209,9 +1211,20 @@ def test_react_launcher_route_mode_does_not_trigger_script_scan():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
+    assert "const configParam = searchParams.get('config')" in launcher
+    assert "selectConfig(configParam)" in launcher
+    assert "openSelectedWorkspace(scriptParam, configParam)" in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
     assert "fetchScriptsOnce" not in launcher
     assert "<LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange}" in launcher
+
+
+def test_react_task_env_save_shows_backend_error_detail():
+    detail_panel = FRONTEND_COMPONENTS_DIR / "manager" / "TaskDetailPanel.tsx"
+    source = detail_panel.read_text(encoding="utf-8")
+
+    assert "} catch (err) {" in source
+    assert "setEnvSaveError(errorMessage(err))" in source
 
 
 def test_react_launcher_fetch_does_not_clobber_newer_selection():

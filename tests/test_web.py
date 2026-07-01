@@ -177,6 +177,8 @@ def test_root_uses_fallback_html_when_static_bundle_is_missing(tmp_path, monkeyp
 
     assert response.status_code == 200
     assert "Pyruns API server is running" in response.text
+    assert "pyruns/web/static" in response.text
+    assert "frontend/dist" not in response.text
 
 
 def test_schedule_browser_open_ignores_browser_errors(monkeypatch):
@@ -2327,6 +2329,48 @@ def test_logs_websocket_stream_switches_from_queue_log_to_active_run_log(tmp_pat
     assert payload["offset"] == run_log.stat().st_size
 
 
+def test_logs_websocket_stream_accepts_run_log_emitter_chunk_after_queue_offset(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("waiting in a much larger queue log\n", encoding="utf-8")
+    run_log = task_dir / "run_logs" / "run1.log"
+    runtime = _build_runtime(workspace)
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    client = TestClient(create_app(runtime))
+
+    with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+        assert initialized.wait(2)
+        with runtime.task_manager._lock:
+            current = runtime.task_manager._tasks_by_name["alpha"]
+            current["status"] = "running"
+            current["run_index"] = 1
+        run_log.write_text("run start\n", encoding="utf-8")
+        log_emitter.emit(
+            "alpha",
+            "run start\r\n",
+            offset=run_log.stat().st_size,
+            log_file_name="run1.log",
+        )
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["task_name"] == "alpha"
+    assert payload["content"] == "run start\r\n"
+    assert payload["offset"] == run_log.stat().st_size
+    assert payload["log_file_name"] == "run1.log"
+
+
 def test_logs_websocket_stream_uses_bounded_queue():
     source = WEB_APP.read_text(encoding="utf-8")
 
@@ -2339,6 +2383,7 @@ def test_logs_websocket_stream_uses_bounded_queue():
     assert "stream_log_name == QUEUE_LOG_FILENAME" in source
     assert "asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)" in source
     assert "include_metadata=True" in source
+    assert "stream_offsets: dict[str, int]" in source
     assert "except asyncio.QueueFull" in source
     assert "queue.get_nowait()" in source
 

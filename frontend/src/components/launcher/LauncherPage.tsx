@@ -182,6 +182,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const modeParam = searchParams.get('mode')
     const scriptParam = searchParams.get('script')
+    const configParam = searchParams.get('config')
     const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'
 
     setLaunchMode(initialLaunchMode)
@@ -194,7 +195,15 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     }
     if (scriptParam) {
       setManualScriptPath(scriptParam)
+      if (configParam) {
+        setManualConfigPath(configParam)
+      }
       void selectScript(scriptParam).then(() => {
+        if (configParam) {
+          selectConfig(configParam)
+          void openSelectedWorkspace(scriptParam, configParam)
+          return
+        }
         if (useLauncherStore.getState().step === 2) {
           void openSelectedWorkspace(scriptParam)
         }

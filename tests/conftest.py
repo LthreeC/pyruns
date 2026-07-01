@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 
-_LOCAL_TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
+_LOCAL_TMP_ROOT = Path(os.environ.get("PYRUNS_TEST_TMP_ROOT", Path(tempfile.gettempdir()) / "pyruns-tests"))
 
 
 @pytest.fixture()

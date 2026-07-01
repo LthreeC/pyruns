@@ -966,6 +966,7 @@ class TaskManager:
     def delete_tasks(self, task_ids: List[str]) -> List[str]:
         """Soft-delete tasks by moving folders into .trash."""
         targets = []
+        active_actions = []
         seen: set[str] = set()
         with self._lock:
             for identifier in task_ids:
@@ -979,25 +980,38 @@ class TaskManager:
                 if target["status"] in ("running", "queued"):
                     previous_status = str(target["status"])
                     if target["status"] == "running":
-                        disk_info = load_task_info(target["dir"])
-                        pid = self._latest_pid(disk_info) if disk_info else None
-                        if pid and self._is_local_or_legacy_runner(disk_info or {}):
-                            kill_process(int(pid))
                         self._running_ids.discard(target["name"])
                     self.gpu_scheduler.release(target["name"])
                     target["status"] = "failed"
-                    self._mark_failed_on_disk(
-                        target,
-                        event="stopped",
-                        reason="deleted_while_active",
-                        detail_lines=[f"previous_status={previous_status}"],
-                        lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
-                    )
+                    active_actions.append({
+                        "task": target,
+                        "name": target_name,
+                        "was_running": previous_status == "running",
+                        "previous_status": previous_status,
+                    })
                 targets.append({"name": target_name, "dir": target["dir"]})
             self._recompute_processing_flag_locked()
 
         if not targets:
             return []
+
+        for action in active_actions:
+            task = action["task"]
+            if action["was_running"]:
+                disk_info = load_task_info(task["dir"])
+                pid = self._latest_pid(disk_info) if disk_info else None
+                if pid and self._is_local_or_legacy_runner(disk_info or {}):
+                    kill_process(int(pid))
+            try:
+                self._mark_failed_on_disk(
+                    task,
+                    event="stopped",
+                    reason="deleted_while_active",
+                    detail_lines=[f"previous_status={action['previous_status']}"],
+                    lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                )
+            except TimeoutError as exc:
+                logger.warning("Could not persist delete state for %s yet: %s", action["name"], exc)
 
         self.trigger_update()
 

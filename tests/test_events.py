@@ -76,7 +76,7 @@ def test_log_emitter_can_include_optional_metadata_without_changing_default_call
     emitter.subscribe("task1", lambda chunk: plain.append(chunk))
     emitter.subscribe("task1", lambda chunk, metadata: with_metadata.append((chunk, metadata)), include_metadata=True)
 
-    emitter.emit("task1", "live\n", offset=42)
+    emitter.emit("task1", "live\n", offset=42, log_file_name="run1.log")
 
     assert plain == ["live\n"]
-    assert with_metadata == [("live\n", {"offset": 42})]
+    assert with_metadata == [("live\n", {"offset": 42, "log_file_name": "run1.log"})]

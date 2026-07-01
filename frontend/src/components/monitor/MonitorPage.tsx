@@ -744,12 +744,17 @@ export default function MonitorPage() {
     }
 
     const activeLog = selectedLogRef.current
-    if (activeLog && activeLog !== liveLogNameRef.current) {
+    const liveLog = liveLogNameRef.current
+    const messageLog = message.log_file_name || liveLog
+    if (messageLog && activeLog && messageLog !== activeLog) {
+      return
+    }
+    if (!activeLog && messageLog && liveLog && messageLog !== liveLog) {
       return
     }
 
     wsStreamActiveRef.current = true
-    const key = `${activeTaskName}::${activeLog || liveLogNameRef.current}`
+    const key = `${activeTaskName}::${activeLog || messageLog || liveLog}`
     const buffer = pendingLiveLogChunkRef.current
     const chunk: PendingLiveLogChunk = typeof message.offset === 'number' && Number.isFinite(message.offset)
       ? { content: message.content, offset: message.offset }

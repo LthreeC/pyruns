@@ -316,9 +316,9 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       setEnvDirty(false)
       setEnvSaveStatus('saved')
       onRefresh()
-    } catch {
+    } catch (err) {
       setEnvSaveStatus('error')
-      setEnvSaveError('Could not save environment variables.')
+      setEnvSaveError(errorMessage(err))
     } finally {
       setSaving(false)
     }

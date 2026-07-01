@@ -395,6 +395,13 @@ class TestAddMonitor:
         open(config_path, "w").close()
         monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
 
+        import pyruns
+
+        before = open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8").read()
+        pyruns.record()
+        after = open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8").read()
+        assert before == after
+
     def test_basic_track(self, tmp_path, monkeypatch):
         """track should append data to lists in tracks array."""
         task_dir = self._make_task_dir(tmp_path)

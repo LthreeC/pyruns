@@ -64,7 +64,14 @@ class LogEmitter:
                 if not subs:
                     del self._subscribers[task_name]
 
-    def emit(self, task_name: str, chunk_text: str, *, offset: int | None = None) -> None:
+    def emit(
+        self,
+        task_name: str,
+        chunk_text: str,
+        *,
+        offset: int | None = None,
+        log_file_name: str | None = None,
+    ) -> None:
         """Broadcast *chunk_text* to all subscribers of *task_name*.
 
         Called from executor reader threads — dispatches into the
@@ -84,6 +91,8 @@ class LogEmitter:
         metadata: Dict[str, Any] = {}
         if offset is not None:
             metadata["offset"] = offset
+        if log_file_name:
+            metadata["log_file_name"] = log_file_name
 
         for subscriber in subs:
             cb = subscriber.callback

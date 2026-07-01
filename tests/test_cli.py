@@ -1120,15 +1120,31 @@ class TestEntryPoint:
 
         mock_dispatch.assert_called_once_with(["info"])
 
-    def test_direct_cli_command_keeps_port_like_args(self, monkeypatch):
+    def test_direct_cli_command_rejects_ui_launch_options_after_command(self, monkeypatch, capsys):
         from pyruns.cli import pyr
 
         monkeypatch.setattr("sys.argv", ["pyr", "info", "-p", "abc"])
 
-        with patch("pyruns.cli._dispatch_cli") as mock_dispatch:
+        with pytest.raises(SystemExit):
             pyr()
 
-        mock_dispatch.assert_called_once_with(["info", "-p", "abc"])
+        assert "UI launch options only apply" in capsys.readouterr().out
+
+    def test_direct_run_config_rejects_ui_launch_options_after_config(self, tmp_path, monkeypatch, capsys):
+        from pyruns.cli import pyr
+
+        script = tmp_path / "train.py"
+        script.write_text("print('train')\n", encoding="utf-8")
+        config = tmp_path / "custom.yaml"
+        config.write_text("epochs: 1\n", encoding="utf-8")
+        monkeypatch.setattr("sys.argv", ["pyr", "run", str(script), str(config), "--no-browser"])
+
+        with patch("pyruns.cli._dispatch_cli") as mock_dispatch:
+            with pytest.raises(SystemExit):
+                pyr()
+
+        mock_dispatch.assert_not_called()
+        assert "UI launch options only apply" in capsys.readouterr().out
 
     def test_pyr_script_launch_accepts_port_after_script(self, tmp_path, monkeypatch):
         from pyruns.cli import pyr
