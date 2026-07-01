@@ -95,6 +95,7 @@ class TaskManager:
         self.max_workers = 1
         self.is_processing = False
         self._running_ids: set[str] = set()
+        self._batch_running_ids: set[str] = set()
         self._disk_scan_complete = False
         self.gpu_scheduler = GpuResourceScheduler()
 
@@ -122,6 +123,25 @@ class TaskManager:
         with self._observer_lock:
             if callback in self._observers:
                 self._observers.remove(callback)
+
+    def _mark_running_locked(self, task_name: str, *, counts_for_batch: bool) -> None:
+        if not task_name:
+            return
+        self._running_ids.add(task_name)
+        if counts_for_batch:
+            self._batch_running_ids.add(task_name)
+        else:
+            self._batch_running_ids.discard(task_name)
+
+    def _clear_running_locked(self, task_name: str) -> None:
+        if not task_name:
+            return
+        self._running_ids.discard(task_name)
+        self._batch_running_ids.discard(task_name)
+
+    def _clear_running_many_locked(self, task_names: set[str]) -> None:
+        self._running_ids.difference_update(task_names)
+        self._batch_running_ids.difference_update(task_names)
 
     def trigger_update(self) -> None:
         """Notify all current observers."""
@@ -266,6 +286,7 @@ class TaskManager:
                 had_tasks = bool(self.tasks)
                 self.tasks = []
                 self._running_ids.clear()
+                self._batch_running_ids.clear()
                 self._rebuild_indexes_locked()
                 self._recompute_processing_flag_locked()
                 self._disk_scan_complete = True
@@ -304,7 +325,7 @@ class TaskManager:
                     for task in self.tasks
                     if task and task.get("name") not in missing_names
                 ]
-                self._running_ids.difference_update(missing_names)
+                self._clear_running_many_locked(missing_names)
                 changed = changed or len(self.tasks) != before_count
                 self._rebuild_indexes_locked()
 
@@ -616,7 +637,7 @@ class TaskManager:
         to_submit: list[tuple[Dict[str, Any], int]] = []
         to_wait_log: list[tuple[Dict[str, Any], int]] = []
         with self._lock:
-            available_slots = max(0, int(self.max_workers) - len(self._running_ids))
+            available_slots = max(0, int(self.max_workers) - len(self._batch_running_ids))
             for identifier in task_ids:
                 task = self._resolve_identifier_locked(identifier)
                 if not task:
@@ -638,7 +659,7 @@ class TaskManager:
                 elif available_slots > 0:
                     task["status"] = "running"
                     task["run_index"] = run_index
-                    self._running_ids.add(task["name"])
+                    self._mark_running_locked(task["name"], counts_for_batch=True)
                     to_submit.append((task, run_index))
                     to_sync.append((task["name"], "running", run_index))
                     available_slots -= 1
@@ -695,7 +716,7 @@ class TaskManager:
                 else:
                     target["status"] = "running"
                     target["run_index"] = run_index
-                    self._running_ids.add(target["name"])
+                    self._mark_running_locked(target["name"], counts_for_batch=False)
                 self._recompute_processing_flag_locked()
 
         if not target:
@@ -956,7 +977,7 @@ class TaskManager:
             if current:
                 current["status"] = "failed"
                 if was_running:
-                    self._running_ids.discard(target_name)
+                    self._clear_running_locked(target_name)
                 self.gpu_scheduler.release(target_name)
             self._recompute_processing_flag_locked()
             logger.info("Cancelled task %s", target_name)
@@ -980,7 +1001,7 @@ class TaskManager:
                 if target["status"] in ("running", "queued"):
                     previous_status = str(target["status"])
                     if target["status"] == "running":
-                        self._running_ids.discard(target["name"])
+                        self._clear_running_locked(target["name"])
                     self.gpu_scheduler.release(target["name"])
                     target["status"] = "failed"
                     active_actions.append({
@@ -1047,7 +1068,7 @@ class TaskManager:
                     for task in self.tasks
                     if str((task or {}).get("name", "") or "") not in deleted_set
                 ]
-                self._running_ids.difference_update(deleted_set)
+                self._clear_running_many_locked(deleted_set)
                 self._rebuild_indexes_locked()
                 self._recompute_processing_flag_locked()
             self.trigger_update()
@@ -1083,7 +1104,7 @@ class TaskManager:
                 self._ensure_executor()
 
                 independent_only = False
-                if len(self._running_ids) >= self.max_workers:
+                if len(self._batch_running_ids) >= self.max_workers:
                     with self._lock:
                         has_independent_queued = any(
                             task
@@ -1148,9 +1169,10 @@ class TaskManager:
                 for task in self.tasks:
                     if task and task["status"] == "queued" and (not independent_only or task.get("_queued_independent")):
                         run_index = self._next_run_index(task)
+                        is_independent = bool(task.get("_queued_independent"))
                         task["status"] = "running"
                         task["run_index"] = run_index
-                        self._running_ids.add(task["name"])
+                        self._mark_running_locked(task["name"], counts_for_batch=not is_independent)
                         self._recompute_processing_flag_locked()
                         return task, run_index
                 self._recompute_processing_flag_locked()
@@ -1243,8 +1265,7 @@ class TaskManager:
                     current["_gpu_assignment"] = self._gpu_assignment_to_dict(assignment)
                     current["status"] = "running"
                     current["run_index"] = run_index
-                    if not is_independent:
-                        self._running_ids.add(current["name"])
+                    self._mark_running_locked(current["name"], counts_for_batch=not is_independent)
                     self._recompute_processing_flag_locked()
                     assignment_log = (current, assignment)
                     target = current
@@ -1268,10 +1289,10 @@ class TaskManager:
     ) -> None:
         """Persist a running state and submit one task to the chosen executor."""
 
-        if self._claim_task_for_run(target, run_index) is None:
+        if self._claim_task_for_run(target, run_index, counts_for_batch=not independent) is None:
             self.gpu_scheduler.release(target["name"])
             with self._lock:
-                self._running_ids.discard(target["name"])
+                self._clear_running_locked(target["name"])
                 current = self._resolve_identifier_locked(target["name"])
                 if current:
                     info = load_task_info(current["dir"])
@@ -1318,16 +1339,17 @@ class TaskManager:
             )
             future.add_done_callback(lambda fut, tid=target["name"]: self._on_task_done(fut, tid))
             logger.debug(
-                "Submitted task %s to %s executor (running=%d/%d)",
+                "Submitted task %s to %s executor (batch_running=%d/%d, local_running=%d)",
                 target["name"],
                 "independent" if independent else "batch",
-                len(self._running_ids),
+                len(self._batch_running_ids),
                 self.max_workers,
+                len(self._running_ids),
             )
         except Exception as exc:
             self.gpu_scheduler.release(target["name"])
             with self._lock:
-                self._running_ids.discard(target["name"])
+                self._clear_running_locked(target["name"])
                 self._clear_gpu_schedule_state(target)
                 target["status"] = "failed"
                 self._recompute_processing_flag_locked()
@@ -1356,7 +1378,7 @@ class TaskManager:
         need_mark_failed = False
         task_ref = None
         with self._lock:
-            self._running_ids.discard(task_id)
+            self._clear_running_locked(task_id)
             task = self._tasks_by_name.get(task_id)
             if not task:
                 self._recompute_processing_flag_locked()
@@ -1448,7 +1470,7 @@ class TaskManager:
                 current = self._resolve_identifier_locked(task_name)
                 if current:
                     current["status"] = "failed"
-                    self._running_ids.discard(task_name)
+                    self._clear_running_locked(task_name)
                     self.gpu_scheduler.release(task_name)
                     changed = True
 
@@ -1512,7 +1534,13 @@ class TaskManager:
         for key in ("runner_id", "runner_host", "lease_heartbeat", "lease_until"):
             info.pop(key, None)
 
-    def _claim_task_for_run(self, task: Dict[str, Any], run_index: int) -> Dict[str, Any] | None:
+    def _claim_task_for_run(
+        self,
+        task: Dict[str, Any],
+        run_index: int,
+        *,
+        counts_for_batch: bool,
+    ) -> Dict[str, Any] | None:
         """Atomically claim one task before submitting it to a local worker."""
         task_dir = task["dir"]
 
@@ -1535,7 +1563,7 @@ class TaskManager:
             if current:
                 self._apply_info_to_task(current, updated)
                 current["status"] = "running"
-                self._running_ids.add(current["name"])
+                self._mark_running_locked(current["name"], counts_for_batch=counts_for_batch)
                 self._recompute_processing_flag_locked()
         return updated
 
@@ -1575,7 +1603,7 @@ class TaskManager:
                 current = self._resolve_identifier_locked(identifier)
                 if current and refreshed:
                     self._apply_info_to_task(current, refreshed)
-                self._running_ids.discard(identifier)
+                self._clear_running_locked(identifier)
                 self.gpu_scheduler.release(identifier)
                 self._clear_gpu_schedule_state(current or {})
                 self._recompute_processing_flag_locked()
@@ -1592,9 +1620,9 @@ class TaskManager:
                 current["lease_until"] = updated.get("lease_until")
                 current["lease_heartbeat"] = updated.get("lease_heartbeat")
                 if current["status"] == "running":
-                    self._running_ids.add(identifier)
+                    self._mark_running_locked(identifier, counts_for_batch=True)
                 elif current.get("status") != "running":
-                    self._running_ids.discard(identifier)
+                    self._clear_running_locked(identifier)
                 self._recompute_processing_flag_locked()
         return True
 

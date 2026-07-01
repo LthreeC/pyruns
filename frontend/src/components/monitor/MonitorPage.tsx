@@ -769,7 +769,17 @@ export default function MonitorPage() {
     }
   }, [flushLiveLogChunkBuffer])
 
-  useLogStream({ taskName: selectedTaskName, onChunk: handleChunk, enabled: isLive && canUseLogStream })
+  const handleLogStreamDisconnect = useCallback(() => {
+    flushLiveLogChunkBuffer()
+    wsStreamActiveRef.current = false
+  }, [flushLiveLogChunkBuffer])
+
+  useLogStream({
+    taskName: selectedTaskName,
+    onChunk: handleChunk,
+    onDisconnect: handleLogStreamDisconnect,
+    enabled: isLive && canUseLogStream,
+  })
 
   const pollLiveLog = useCallback(async () => {
     const activeTaskName = selectedTaskNameRef.current

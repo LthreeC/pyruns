@@ -2755,7 +2755,7 @@ def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
         active = manager._tasks_by_name[task["name"]]
         active["status"] = "running"
         active["run_index"] = 1
-        manager._running_ids.add(task["name"])
+        manager._mark_running_locked(task["name"], counts_for_batch=True)
         manager._recompute_processing_flag_locked()
 
     submitted: list[str] = []
@@ -2811,7 +2811,7 @@ def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch
         active = manager._tasks_by_name[tasks[0]["name"]]
         active["status"] = "running"
         active["run_index"] = 1
-        manager._running_ids.add(active["name"])
+        manager._mark_running_locked(active["name"], counts_for_batch=True)
         manager._recompute_processing_flag_locked()
 
     submitted: list[tuple[str, int, bool]] = []
@@ -2832,6 +2832,50 @@ def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch
     queued_info = json.loads((Path(tasks[2]["dir"]) / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert queued_info["run_index"] == 0
     assert "_queued_run_index" not in queued_info
+
+
+def test_task_manager_run_now_does_not_consume_batch_slots(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    run_now = generator.create_task("run-now", {"value": 1})
+    batch = generator.create_task("batch", {"value": 2})
+
+    class CapturingExecutor:
+        instances = []
+
+        def __init__(self, max_workers=None):
+            self.max_workers = max_workers
+            self.submitted = []
+            CapturingExecutor.instances.append(self)
+
+        def submit(self, *args, **kwargs):
+            self.submitted.append((args, kwargs))
+            return Future()
+
+        def shutdown(self, **kwargs):
+            pass
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    monkeypatch.setattr(task_manager_module, "ThreadPoolExecutor", CapturingExecutor)
+
+    manager.start_task_now(run_now["name"], execution_mode="thread")
+    assert run_now["name"] in manager._running_ids
+    assert run_now["name"] not in manager._batch_running_ids
+
+    manager.start_batch_tasks([batch["name"]], max_workers=1)
+
+    assert manager.get_task(batch["name"])["status"] == "running"
+    assert batch["name"] in manager._running_ids
+    assert batch["name"] in manager._batch_running_ids
+    submitted_names = [
+        args[2]
+        for executor in CapturingExecutor.instances
+        for args, _kwargs in executor.submitted
+    ]
+    assert submitted_names == ["run-now", "batch"]
 
 
 def test_task_manager_gpu_auto_queues_and_writes_queue_log_before_assignment(tmp_path, monkeypatch):
@@ -3085,7 +3129,7 @@ def test_task_manager_gpu_auto_independent_task_can_bypass_full_batch_slots(tmp_
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
     manager.max_workers = 1
-    manager._running_ids.add("already-running")
+    manager._mark_running_locked("already-running", counts_for_batch=True)
     now = [300.0]
     manager.gpu_scheduler = GpuResourceScheduler(
         provider=_StaticGpuProvider([
@@ -3110,8 +3154,86 @@ def test_task_manager_gpu_auto_independent_task_can_bypass_full_batch_slots(tmp_
     assert target is not None
     assert target["name"] == "run-now"
     assert run_index == 1
-    assert "run-now" not in manager._running_ids
+    assert "run-now" in manager._running_ids
+    assert "run-now" not in manager._batch_running_ids
     assert manager.get_task(batch_task["name"])["status"] == "queued"
+
+
+def test_task_manager_gpu_independent_submit_does_not_consume_batch_slots(tmp_path, monkeypatch):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_task_mode: single",
+                "gpu_scheduler_memory_used_pct: 75",
+                "gpu_scheduler_min_free_memory_gb: 8",
+                "gpu_scheduler_compute_used_pct: 30",
+                "gpu_scheduler_stable_seconds: 1",
+                "gpu_scheduler_max_tasks_per_gpu: 2",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    batch_task = generator.create_task("batch", {"lr": 0.1})
+    run_now_task = generator.create_task("run-now", {"lr": 0.2})
+
+    class CapturingExecutor:
+        def __init__(self, max_workers=None):
+            self.max_workers = max_workers
+            self.submitted = []
+
+        def submit(self, *args, **kwargs):
+            self.submitted.append((args, kwargs))
+            return Future()
+
+        def shutdown(self, **kwargs):
+            pass
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    monkeypatch.setattr(task_manager_module, "ThreadPoolExecutor", CapturingExecutor)
+    manager.max_workers = 1
+    now = [300.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([
+            GpuDevice(0, "A800", "GPU-0", 1024, 40960, 0),
+        ]),
+        clock=lambda: now[0],
+    )
+    with manager._lock:
+        manager._tasks_by_name[batch_task["name"]]["status"] = "queued"
+        manager._tasks_by_name[batch_task["name"]]["run_index"] = 1
+        manager._tasks_by_name[batch_task["name"]]["_gpu_wait_started_at"] = 290.0
+        manager._tasks_by_name[run_now_task["name"]]["status"] = "queued"
+        manager._tasks_by_name[run_now_task["name"]]["run_index"] = 1
+        manager._tasks_by_name[run_now_task["name"]]["_gpu_wait_started_at"] = 290.0
+        manager._tasks_by_name[run_now_task["name"]]["_queued_independent"] = True
+        manager._recompute_processing_flag_locked()
+
+    manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
+    now[0] += 1.0
+    independent_target, run_index = manager._pick_queued_task(independent_only=True)
+    assert independent_target is not None
+    independent = bool(independent_target.pop("_queued_independent", False))
+    queued_mode = independent_target.pop("_queued_execution_mode", None)
+    manager._submit_task(independent_target, run_index, independent=independent, execution_mode=queued_mode)
+
+    assert run_now_task["name"] in manager._running_ids
+    assert run_now_task["name"] not in manager._batch_running_ids
+
+    batch_target, batch_run_index = manager._pick_queued_task()
+
+    assert batch_target is not None
+    assert batch_target["name"] == batch_task["name"]
+    assert batch_run_index == 1
+    assert batch_task["name"] in manager._running_ids
+    assert batch_task["name"] in manager._batch_running_ids
 
 
 def test_task_manager_start_task_now_queues_gpu_task_as_independent(tmp_path, monkeypatch):
@@ -3212,7 +3334,7 @@ def test_task_manager_on_task_done_clears_gpu_schedule_state(tmp_path):
         target["_scheduled_env"] = {"CUDA_VISIBLE_DEVICES": "0"}
         target["_gpu_assignment"] = {"gpu_ids": [0]}
         target["_queued_independent"] = True
-        manager._running_ids.add(task["name"])
+        manager._mark_running_locked(task["name"], counts_for_batch=False)
 
     future = Future()
     future.set_result({"status": "completed"})
@@ -3223,6 +3345,7 @@ def test_task_manager_on_task_done_clears_gpu_schedule_state(tmp_path):
     assert "_gpu_assignment" not in refreshed
     assert "_queued_independent" not in refreshed
     assert task["name"] not in manager._running_ids
+    assert task["name"] not in manager._batch_running_ids
 
 
 def test_task_manager_gpu_auto_respects_existing_cuda_visible_devices_in_task_env(tmp_path):
@@ -4116,12 +4239,14 @@ def test_task_manager_does_not_submit_when_foreign_runner_owns_lease(tmp_path, m
     with manager._lock:
         target = manager._tasks_by_name["alpha"]
         target["status"] = "queued"
-        manager._running_ids.add("alpha")
+        manager._mark_running_locked("alpha", counts_for_batch=True)
 
     manager._submit_task(target, 3, independent=False)
 
     assert submitted == []
     assert manager.get_task("alpha")["status"] == "running"
+    assert "alpha" not in manager._running_ids
+    assert "alpha" not in manager._batch_running_ids
 
 
 def test_task_manager_start_batch_sync_conflict_keeps_foreign_runner_without_submit(tmp_path, monkeypatch):
@@ -4265,7 +4390,7 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
 
     with manager._lock:
         picked["status"] = "running"
-        manager._running_ids.add("alpha")
+        manager._mark_running_locked("alpha", counts_for_batch=True)
 
     failed_marks = []
     monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: failed_marks.append(kwargs))
@@ -4275,6 +4400,7 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
 
     assert failed_marks[0]["reason"] == "worker_exception"
     assert manager.get_task("alpha")["status"] == "failed"
+    assert "alpha" not in manager._batch_running_ids
 
 
 def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch):
@@ -4295,10 +4421,10 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
         manager._tasks_by_name["queued"]["finish_times"] = ["2026-01-01_00-00-01"]
         manager._tasks_by_name["running"]["status"] = "running"
         manager._tasks_by_name["running"]["run_index"] = 1
-        manager._running_ids.add("running")
+        manager._mark_running_locked("running", counts_for_batch=True)
         manager._tasks_by_name["remote"]["status"] = "running"
         manager._tasks_by_name["remote"]["run_index"] = 1
-        manager._running_ids.add("remote")
+        manager._mark_running_locked("remote", counts_for_batch=False)
         manager._recompute_processing_flag_locked()
 
     picked, run_index = manager._pick_queued_task()
@@ -4349,6 +4475,7 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
     assert killed == [4321, 4321]
     assert manager.get_task("running")["status"] == "failed"
     assert manager.get_task("remote")["status"] == "running"
+    assert "running" not in manager._batch_running_ids
     assert manager._shutdown_cleanup_done is True
 
 

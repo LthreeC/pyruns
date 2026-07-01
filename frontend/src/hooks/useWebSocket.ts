@@ -5,18 +5,25 @@ import type { LogStreamMessage } from '@/types'
 interface UseLogStreamOptions {
   taskName: string | null
   onChunk: (message: LogStreamMessage) => void
+  onDisconnect?: () => void
   enabled?: boolean
 }
 
-export function useLogStream({ taskName, onChunk, enabled = true }: UseLogStreamOptions) {
+export function useLogStream({ taskName, onChunk, onDisconnect, enabled = true }: UseLogStreamOptions) {
   const wsRef = useRef<WebSocket | null>(null)
   const onChunkRef = useRef(onChunk)
+  const onDisconnectRef = useRef(onDisconnect)
   onChunkRef.current = onChunk
+  onDisconnectRef.current = onDisconnect
 
   const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
+    const ws = wsRef.current
+    if (ws) {
+      ws.onmessage = null
+      ws.onerror = null
+      ws.onclose = null
       wsRef.current = null
+      ws.close()
     }
   }, [])
 
@@ -39,10 +46,18 @@ export function useLogStream({ taskName, onChunk, enabled = true }: UseLogStream
     }
 
     ws.onerror = () => ws.close()
+    ws.onclose = () => {
+      if (wsRef.current !== ws) {
+        return
+      }
+      wsRef.current = null
+      onDisconnectRef.current?.()
+    }
 
     return () => {
       ws.onmessage = null
       ws.onerror = null
+      ws.onclose = null
       if (wsRef.current === ws) {
         wsRef.current = null
       }

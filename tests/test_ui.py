@@ -5,6 +5,7 @@ FRONTEND_GENERATOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / 
 FRONTEND_APP = Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx"
 FRONTEND_COMPONENTS_DIR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components"
 FRONTEND_POLLING = Path(__file__).resolve().parents[1] / "frontend" / "src" / "hooks" / "usePolling.ts"
+FRONTEND_LOG_STREAM = Path(__file__).resolve().parents[1] / "frontend" / "src" / "hooks" / "useWebSocket.ts"
 FRONTEND_STORE = Path(__file__).resolve().parents[1] / "frontend" / "src" / "store.ts"
 FRONTEND_DASHBOARD = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "dashboard" / "DashboardPage.tsx"
 FRONTEND_MONITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx"
@@ -897,6 +898,7 @@ def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
 
 def test_react_monitor_live_polls_queued_gpu_queue_log():
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    log_stream = FRONTEND_LOG_STREAM.read_text(encoding="utf-8")
 
     assert "const QUEUE_LOG_NAME = 'queue.log'" in monitor
     assert "selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName" in monitor
@@ -904,6 +906,15 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "const isQueueLogSelected = selectedLog === QUEUE_LOG_NAME" in monitor
     assert "&& (isViewingLiveRunLog || isQueueLogSelected)" in monitor
     assert "const canUseLogStream = selectedTask?.status === 'running' && (!selectedLog || selectedLog === runLogName)" in monitor
+    assert "onDisconnect?: () => void" in log_stream
+    assert "const onDisconnectRef = useRef(onDisconnect)" in log_stream
+    assert "ws.onclose = () => {" in log_stream
+    assert "onDisconnectRef.current?.()" in log_stream
+    assert "ws.onclose = null" in log_stream
+    assert "const handleLogStreamDisconnect = useCallback(() => {" in monitor
+    assert "flushLiveLogChunkBuffer()" in monitor
+    assert "wsStreamActiveRef.current = false" in monitor
+    assert "onDisconnect: handleLogStreamDisconnect" in monitor
     assert "enabled: isLive && canUseLogStream" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
     assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
