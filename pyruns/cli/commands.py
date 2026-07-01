@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import shlex
 import subprocess
 import sys
@@ -18,6 +17,7 @@ import psutil
 
 from pyruns._config import (
     CONFIG_DEFAULT_FILENAME,
+    QUEUE_LOG_FILENAME,
     RUN_LOGS_DIR,
     TASK_INFO_FILENAME,
     TASK_KIND_CONFIG,
@@ -45,8 +45,8 @@ from pyruns.utils.config_utils import (
     preview_config_line,
     safe_filename,
 )
-from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info
+from pyruns.utils.log_io import safe_read_log
 from pyruns.utils.parse_utils import resolve_config_path
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.task_files import resolve_task_config_file
@@ -583,59 +583,56 @@ def cmd_fg(tm, args: list[str] | None = None) -> None:
 
     tm.refresh_from_disk(task_ids=[task_name])
     task_info = load_task_info(task_dir) or {}
-    if task_info.get("status") in {"running", "queued"}:
-        run_index = task_info.get("run_index", 1)
-    else:
-        run_index = max(1, len(task_info.get("start_times", [])))
-
-    target_log = os.path.join(task_dir, RUN_LOGS_DIR, f"run{run_index}.log")
     print(f"\n  {_BOLD}== {task_name} =={_RESET}  (Ctrl+C to detach)\n")
 
+    def _select_log_path(info: dict[str, Any]) -> str:
+        status = str(info.get("status", "") or "").lower()
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
+        if status == "queued":
+            return os.path.join(log_dir, QUEUE_LOG_FILENAME)
+        if status == "running":
+            run_index = int(info.get("run_index", 1) or 1)
+        else:
+            run_index = max(1, len(info.get("start_times", []) or []))
+        return os.path.join(log_dir, f"run{run_index}.log")
+
+    current_log = _select_log_path(task_info)
+    offset = 0
+
     for _ in range(10):
-        if os.path.exists(target_log):
+        if os.path.exists(current_log) or str(task_info.get("status", "") or "").lower() not in {"running", "queued"}:
             break
         time.sleep(0.1)
 
-    try:
-        with open(target_log, "r", encoding="utf-8", errors="replace") as handle:
-            content = handle.read()
-            if content:
-                write_console_text(content.replace("\r\n", "\n"))
-                sys.stdout.flush()
-    except Exception:
-        pass
-
-    log_queue: queue.Queue = queue.Queue()
-
-    def _on_chunk(chunk: str) -> None:
-        log_queue.put(chunk)
-
-    log_emitter.subscribe(task_name, _on_chunk)
+    def _flush_selected_log() -> None:
+        nonlocal offset
+        content, new_offset = safe_read_log(current_log, offset, max_bytes=65536)
+        offset = new_offset
+        if content:
+            write_console_text(content.replace("\r\n", "\n"))
+            sys.stdout.flush()
 
     try:
+        _flush_selected_log()
         while True:
-            try:
-                while True:
-                    chunk = log_queue.get(timeout=0.2)
-                    write_console_text(chunk.replace("\r\n", "\n"))
-                    sys.stdout.flush()
-            except queue.Empty:
-                pass
-
             task_map = {item.get("name"): item for item in _refresh_tasks(tm)}
             current = task_map.get(task_name)
-            if current and current.get("status") not in {"running", "queued"}:
-                while not log_queue.empty():
-                    write_console_text(log_queue.get_nowait().replace("\r\n", "\n"))
-                    sys.stdout.flush()
-                status = current.get("status", "unknown")
+            latest_info = load_task_info(task_dir) or task_info
+            task_info = latest_info
+            next_log = _select_log_path(task_info)
+            if next_log != current_log:
+                current_log = next_log
+                offset = 0
+            _flush_selected_log()
+
+            status = str((current or task_info).get("status", "unknown") or "unknown").lower()
+            if status not in {"running", "queued"}:
                 style = _STATUS_STYLES.get(status, "")
                 print(f"\n\n  {_colored(f'Task {status}', style)}\n")
                 break
+            time.sleep(0.2)
     except KeyboardInterrupt:
         print(f"\n\n  {_DIM}Detached from {task_name}{_RESET}\n")
-    finally:
-        log_emitter.unsubscribe(task_name, _on_chunk)
 
 
 def cmd_log(tm, args: list[str] | None = None) -> None:

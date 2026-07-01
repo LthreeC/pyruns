@@ -8,9 +8,9 @@ import sys
 import pytest
 from unittest.mock import patch
 
-from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, TASKS_DIR
+from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, QUEUE_LOG_FILENAME, TASKS_DIR
 from pyruns.launcher import bootstrap_workspace
-from pyruns.utils.info_io import save_task_info
+from pyruns.utils.info_io import save_task_info, update_task_info
 from pyruns.utils.config_utils import save_yaml
 
 
@@ -422,6 +422,62 @@ class TestCmdForegroundAndLog:
         assert "== finished-log ==" in captured.out
         assert "line 1" in captured.out
         assert "line 2" in captured.out
+        assert "Task completed" in captured.out
+
+    def test_fg_prints_queue_log_while_task_is_queued(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_fg
+
+        _add_task(workspace, "queued-log", "queued")
+        task_dir = workspace / TASKS_DIR / "queued-log"
+        queue_log = task_dir / "run_logs" / QUEUE_LOG_FILENAME
+        queue_log.write_text("waiting for GPU\n", encoding="utf-8")
+        task_manager.scan_disk()
+
+        with patch("pyruns.cli.commands._refresh_tasks", return_value=[
+            {"name": "queued-log", "status": "completed", "dir": str(task_dir)}
+        ]):
+            cmd_fg(task_manager, ["queued-log"])
+
+        captured = capsys.readouterr()
+        assert "waiting for GPU" in captured.out
+        assert "Task completed" in captured.out
+
+    def test_fg_switches_from_queue_log_to_run_log(self, workspace, task_manager, capsys):
+        from pyruns.cli.commands import cmd_fg
+
+        _add_task(workspace, "queued-to-run", "queued")
+        task_dir = workspace / TASKS_DIR / "queued-to-run"
+        log_dir = task_dir / "run_logs"
+        (log_dir / QUEUE_LOG_FILENAME).write_text("queue phase\n", encoding="utf-8")
+        (log_dir / "run1.log").write_text("run phase\n", encoding="utf-8")
+        task_manager.scan_disk()
+
+        states = iter(["running", "completed"])
+
+        def refresh_side_effect(_tm):
+            status = next(states)
+            update_task_info(
+                str(task_dir),
+                lambda info: info.update(
+                    {
+                        "status": status,
+                        "run_index": 1,
+                        "start_times": ["2026-06-03_12-00-00"],
+                        "finish_times": ["2026-06-03_12-00-02"] if status == "completed" else [""],
+                    }
+                ),
+            )
+            return [{"name": "queued-to-run", "status": status, "dir": str(task_dir)}]
+
+        with (
+            patch("pyruns.cli.commands._refresh_tasks", side_effect=refresh_side_effect),
+            patch("pyruns.cli.commands.time.sleep", lambda _seconds: None),
+        ):
+            cmd_fg(task_manager, ["queued-to-run"])
+
+        captured = capsys.readouterr()
+        assert "queue phase" in captured.out
+        assert "run phase" in captured.out
         assert "Task completed" in captured.out
 
     def test_log_delegates_to_interactive_log_viewer(self, workspace, task_manager):

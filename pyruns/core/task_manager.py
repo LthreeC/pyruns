@@ -418,6 +418,25 @@ class TaskManager:
             return False
         return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
+    def _refresh_memory_task_from_disk_info(
+        self,
+        task_name: str,
+        task_dir: str,
+        info: Dict[str, Any],
+    ) -> None:
+        """Refresh one in-memory task after a disk-side state race is detected."""
+
+        with self._lock:
+            current = self._tasks_by_name.get(task_name)
+            if not current or not self._same_task_dir(str(current.get("dir", "") or ""), task_dir):
+                return
+            self._apply_info_to_task(current, info)
+            status = str(current.get("status", "") or "").lower()
+            if status != "running" or not self._is_current_runner(info):
+                self._clear_running_locked(task_name)
+                self.gpu_scheduler.release(task_name)
+            self._recompute_processing_flag_locked()
+
     def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
         """Load one task folder into the normalized task dict shape."""
         task_dir = os.path.join(self.tasks_dir, dir_name)
@@ -1100,51 +1119,80 @@ class TaskManager:
         """Cancel a queued or running task."""
         target_name = ""
         target_ref: Dict[str, Any] | None = None
-        previous_status = ""
-        was_running = False
 
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("queued", "running"):
                 return False
-            previous_status = str(target["status"])
-            was_running = previous_status == "running"
             target_name = target["name"]
-            target_ref = target
+            target_ref = dict(target)
 
         if target_ref is None:
             return False
 
+        disk_info = load_task_info(target_ref["dir"])
+        if not disk_info:
+            return False
+        disk_status = str(disk_info.get("status", "") or "").lower()
+        if disk_status not in {"queued", "running"}:
+            self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], disk_info)
+            self.trigger_update()
+            return False
+        if disk_status == "running" and not self._is_current_runner(disk_info):
+            self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], disk_info)
+            self.trigger_update()
+            return False
+
+        previous_status = disk_status
+        was_running = disk_status == "running"
+        action_task = dict(target_ref)
+        action_task["status"] = disk_status
+        action_task["run_index"] = int(disk_info.get("run_index", run_slot_count(disk_info)) or 0)
+
         if was_running:
-            disk_info = load_task_info(target_ref["dir"])
             pid = self._latest_pid(disk_info) if disk_info else None
             try:
                 self._persist_pending_stop_summary(
-                    target_ref,
+                    action_task,
                     event="stopped",
                     reason="cancelled_by_user",
                     detail_lines=[f"previous_status={previous_status}"],
                     lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                    expected_statuses={"running"},
+                    require_current_runner=True,
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist cancel summary for %s yet: %s", target_name, exc)
+            except (TaskClaimConflict, TaskStateConflict) as exc:
+                logger.info("Cancel skipped for %s because disk state changed: %s", target_name, exc)
+                latest = load_task_info(target_ref["dir"]) or disk_info
+                self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], latest)
+                self.trigger_update()
+                return False
             if pid and self._should_kill_task_process(disk_info or {}):
                 kill_process(int(pid))
         else:
             try:
                 self._mark_failed_on_disk(
-                    target_ref,
+                    action_task,
                     event="stopped",
                     reason="cancelled_by_user",
                     detail_lines=[f"previous_status={previous_status}"],
                     lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                    expected_statuses={"queued"},
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist queued cancel state for %s yet: %s", target_name, exc)
+            except TaskStateConflict as exc:
+                logger.info("Cancel skipped for %s because disk state changed: %s", target_name, exc)
+                latest = load_task_info(target_ref["dir"]) or disk_info
+                self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], latest)
+                self.trigger_update()
+                return False
 
         with self._lock:
-            current = self._resolve_identifier_locked(target_name)
-            if current:
+            current = self._tasks_by_name.get(target_name)
+            if current and self._same_task_dir(str(current.get("dir", "") or ""), target_ref["dir"]):
                 current["status"] = "failed"
                 if was_running:
                     self._clear_running_locked(target_name)
@@ -1156,8 +1204,7 @@ class TaskManager:
 
     def delete_tasks(self, task_ids: List[str]) -> List[str]:
         """Soft-delete tasks by moving folders into .trash."""
-        targets = []
-        active_actions = []
+        candidates: list[Dict[str, Any]] = []
         seen: set[str] = set()
         with self._lock:
             for identifier in task_ids:
@@ -1168,41 +1215,74 @@ class TaskManager:
                 if not target_name or target_name in seen:
                     continue
                 seen.add(target_name)
-                if target["status"] in ("running", "queued"):
-                    previous_status = str(target["status"])
-                    if target["status"] == "running":
-                        self._clear_running_locked(target["name"])
-                    self.gpu_scheduler.release(target["name"])
-                    target["status"] = "failed"
-                    active_actions.append({
-                        "task": target,
-                        "name": target_name,
-                        "was_running": previous_status == "running",
-                        "previous_status": previous_status,
-                    })
-                targets.append({"name": target_name, "dir": target["dir"]})
-            self._recompute_processing_flag_locked()
+                candidates.append({
+                    "name": target_name,
+                    "dir": target["dir"],
+                    "status": target.get("status"),
+                    "run_index": target.get("run_index", 0),
+                })
 
-        if not targets:
+        if not candidates:
             return []
 
-        for action in active_actions:
-            task = action["task"]
-            if action["was_running"]:
-                disk_info = load_task_info(task["dir"])
-                pid = self._latest_pid(disk_info) if disk_info else None
-                if pid and self._should_kill_task_process(disk_info or {}):
+        targets: list[Dict[str, Any]] = []
+        for candidate in candidates:
+            disk_info = load_task_info(candidate["dir"])
+            disk_status = str((disk_info or {}).get("status", candidate.get("status", "")) or "").lower()
+            if disk_status == "running" and not self._is_current_runner(disk_info or {}):
+                logger.info("Delete skipped for %s because another runner owns it", candidate["name"])
+                if disk_info:
+                    self._refresh_memory_task_from_disk_info(candidate["name"], candidate["dir"], disk_info)
+                continue
+
+            action_task = dict(candidate)
+            if disk_info:
+                action_task["run_index"] = int(disk_info.get("run_index", run_slot_count(disk_info)) or 0)
+            action_task["status"] = disk_status
+
+            if disk_status in {"queued", "running"}:
+                previous_status = disk_status
+                marked_failed = False
+                pid = None
+                if disk_status == "running":
+                    pid = self._latest_pid(disk_info) if disk_info else None
+                    expected_statuses = {"running"}
+                    require_current_runner = True
+                else:
+                    expected_statuses = {"queued"}
+                    require_current_runner = False
+                try:
+                    self._mark_failed_on_disk(
+                        action_task,
+                        event="stopped",
+                        reason="deleted_while_active",
+                        detail_lines=[f"previous_status={previous_status}"],
+                        lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                        expected_statuses=expected_statuses,
+                        require_current_runner=require_current_runner,
+                    )
+                    marked_failed = True
+                except TimeoutError as exc:
+                    logger.warning("Could not persist delete state for %s yet: %s", candidate["name"], exc)
+                    marked_failed = True
+                except (TaskClaimConflict, TaskStateConflict) as exc:
+                    logger.info("Delete skipped for %s because disk state changed: %s", candidate["name"], exc)
+                    latest = load_task_info(candidate["dir"])
+                    if latest:
+                        self._refresh_memory_task_from_disk_info(candidate["name"], candidate["dir"], latest)
+                    continue
+                if marked_failed:
+                    with self._lock:
+                        current = self._tasks_by_name.get(candidate["name"])
+                        if current and self._same_task_dir(str(current.get("dir", "") or ""), candidate["dir"]):
+                            current["status"] = "failed"
+                            self._clear_running_locked(candidate["name"])
+                            self.gpu_scheduler.release(candidate["name"])
+                            self._recompute_processing_flag_locked()
+                if disk_status == "running" and pid and self._should_kill_task_process(disk_info or {}):
                     kill_process(int(pid))
-            try:
-                self._mark_failed_on_disk(
-                    task,
-                    event="stopped",
-                    reason="deleted_while_active",
-                    detail_lines=[f"previous_status={action['previous_status']}"],
-                    lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
-                )
-            except TimeoutError as exc:
-                logger.warning("Could not persist delete state for %s yet: %s", action["name"], exc)
+
+            targets.append({"name": candidate["name"], "dir": candidate["dir"]})
 
         self.trigger_update()
 
@@ -2217,6 +2297,8 @@ class TaskManager:
         reason: str,
         detail_lines: List[str] | None = None,
         lock_timeout_sec: float | None = None,
+        expected_statuses: set[str] | None = None,
+        require_current_runner: bool = False,
     ) -> None:
         """Store a stop summary on the active run so the worker can flush one final block."""
 
@@ -2225,6 +2307,11 @@ class TaskManager:
         run_index = int(task.get("run_index", 0) or 0)
 
         def _apply(task_info: Dict[str, Any]) -> None:
+            original_status = str(task_info.get("status", "") or "").lower()
+            if expected_statuses is not None and original_status not in expected_statuses:
+                raise TaskStateConflict(f"expected {sorted(expected_statuses)}, found {original_status!r}")
+            if require_current_runner and not self._is_current_runner(task_info):
+                raise TaskClaimConflict("task already owned by another runner")
             slot_count = run_slot_count(task_info)
             target_index = max(run_index, slot_count)
             if target_index > 0:
@@ -2258,6 +2345,8 @@ class TaskManager:
         reason: str | None = None,
         detail_lines: List[str] | None = None,
         lock_timeout_sec: float | None = None,
+        expected_statuses: set[str] | None = None,
+        require_current_runner: bool = False,
     ) -> None:
         """Persist a failed state and finalize the active run slot if needed."""
         task_dir = task["dir"]
@@ -2267,6 +2356,10 @@ class TaskManager:
 
         def _apply(task_info: Dict[str, Any]) -> None:
             original_status = str(task_info.get("status", "") or "").lower()
+            if expected_statuses is not None and original_status not in expected_statuses:
+                raise TaskStateConflict(f"expected {sorted(expected_statuses)}, found {original_status!r}")
+            if require_current_runner and not self._is_current_runner(task_info):
+                raise TaskClaimConflict("task already owned by another runner")
             failure_context["original_status"] = original_status
             slot_count = (
                 self._realized_run_slot_count(task_info)

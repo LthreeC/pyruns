@@ -811,12 +811,23 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
         @app.get("/{full_path:path}")
         def serve_frontend(full_path: str) -> FileResponse:
-            requested = (dist_dir / full_path).resolve()
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
+
+            requested: Path | None = None
+            inside_static = False
+            try:
+                requested = (dist_dir / full_path).resolve()
+                inside_static = os.path.commonpath([str(requested), str(dist_dir)]) == str(dist_dir)
+            except (OSError, ValueError):
+                inside_static = False
+
             if (
                 full_path
+                and inside_static
+                and requested is not None
                 and requested.exists()
                 and requested.is_file()
-                and os.path.commonpath([str(requested), str(dist_dir)]) == str(dist_dir)
             ):
                 return FileResponse(requested)
             return FileResponse(
@@ -828,6 +839,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
         @app.get("/{full_path:path}")
         def serve_frontend_fallback(full_path: str) -> HTMLResponse:
+            if full_path == "api" or full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
             return HTMLResponse(_fallback_frontend_html())
 
     return app

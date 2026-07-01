@@ -1602,7 +1602,7 @@ def test_build_command_shell_task_windows_cmd(mock_shell, tmp_path, monkeypatch)
     assert cmd == [r"C:\Windows\System32\cmd.exe", "/d", "/c", str(wrapper_path)]
     assert wd == str(task_dir)
     assert wrapper_path.exists()
-    assert wrapper_path.parent != task_dir
+    assert wrapper_path.parent == task_dir
     wrapper_content = wrapper_path.read_text(encoding="utf-8-sig")
     assert "#!/usr/bin/env bash" not in wrapper_content
     assert "echo hello" in wrapper_content
@@ -1640,7 +1640,7 @@ def test_build_command_shell_task_windows_powershell(mock_shell, tmp_path, monke
     ]
     assert wd == str(task_dir)
     assert wrapper_path.exists()
-    assert wrapper_path.parent != task_dir
+    assert wrapper_path.parent == task_dir
     wrapper_content = wrapper_path.read_text(encoding="utf-8-sig")
     assert "#!/usr/bin/env bash" not in wrapper_content
     assert "Write-Host 'hello'" in wrapper_content
@@ -1964,6 +1964,22 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
     )
     assert env["WSLENV"] == f"EXISTING:{ENV_KEY_CONFIG}/p:PYRUNS_EXAMPLE_ENV"
 
+    env = {ENV_KEY_CONFIG: r"C:\task\config.yaml", "PYRUNS_TASK_ENV": "ok"}
+    executor._augment_wsl_env(
+        [
+            r"C:\miniconda\condabin\conda.bat",
+            "run",
+            "-n",
+            "train",
+            "--no-capture-output",
+            r"C:\Windows\System32\bash.exe",
+            "/mnt/c/run.sh",
+        ],
+        env,
+        {"PYRUNS_TASK_ENV"},
+    )
+    assert env["WSLENV"] == f"{ENV_KEY_CONFIG}/p:PYRUNS_TASK_ENV"
+
     env = {ENV_KEY_CONFIG: r"C:\task\config.yaml", "WSLENV": f"{ENV_KEY_CONFIG}:OTHER"}
     executor._augment_wsl_env(
         [r"C:\Windows\System32\bash.exe", "/mnt/c/run.sh"],
@@ -1971,6 +1987,39 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
         set(),
     )
     assert env["WSLENV"] == f"{ENV_KEY_CONFIG}/p:OTHER"
+
+    ps_script = task_dir / "run.ps1"
+    ps_script.write_text(
+        "if (-not (Test-Path (Join-Path $PSScriptRoot 'sentinel.txt'))) { exit 7 }\n",
+        encoding="utf-8",
+    )
+    cmd_script = task_dir / "run.cmd"
+    cmd_script.write_text(
+        "if not exist \"%~dp0sentinel.txt\" exit /b 7\n",
+        encoding="utf-8",
+    )
+    (task_dir / "sentinel.txt").write_text("ok", encoding="utf-8")
+
+    ps_command, _, ps_cleanup_paths = executor._materialize_windows_shell_wrapper(
+        str(task_dir),
+        str(ps_script),
+        "powershell.exe",
+    )
+    cmd_command, _, cmd_cleanup_paths = executor._materialize_windows_shell_wrapper(
+        str(task_dir),
+        str(cmd_script),
+        "cmd.exe",
+    )
+    try:
+        assert ps_command[-1] == ps_cleanup_paths[0]
+        assert cmd_command[-1] == cmd_cleanup_paths[0]
+        assert Path(ps_cleanup_paths[0]).parent == task_dir
+        assert Path(cmd_cleanup_paths[0]).parent == task_dir
+        assert "$PSScriptRoot" in Path(ps_cleanup_paths[0]).read_text(encoding="utf-8-sig")
+        assert "%~dp0sentinel.txt" in Path(cmd_cleanup_paths[0]).read_text(encoding="utf-8-sig")
+    finally:
+        for cleanup_path in [*ps_cleanup_paths, *cmd_cleanup_paths]:
+            Path(cleanup_path).unlink(missing_ok=True)
 
 
 def test_executor_import_isolation_helpers_copy_and_skip_edges(tmp_path, monkeypatch):
@@ -2809,6 +2858,7 @@ def test_task_manager_sync_status_does_not_revive_cancelled_queued_task(tmp_path
     with manager._lock:
         current = manager._tasks_by_name[task["name"]]
         current["status"] = "queued"
+    update_task_info(task["dir"], lambda info: info.update({"status": "queued"}))
 
     assert manager.cancel_task(task["name"]) is True
     assert manager._sync_status_to_disk(
@@ -4082,6 +4132,87 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
     assert timeout_values == [task_manager_module._STOP_TASK_INFO_LOCK_TIMEOUT_SEC]
 
 
+def test_task_manager_cancel_task_refreshes_completed_disk_state(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "race"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "race",
+            "status": "queued",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 0,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update(
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "start_times": ["2026-03-20_00-00-01"],
+                "finish_times": ["2026-03-20_00-00-02"],
+            }
+        ),
+    )
+
+    assert manager.cancel_task("race") is False
+    assert manager.get_task("race")["status"] == "completed"
+    assert load_task_info(str(task_dir))["status"] == "completed"
+
+
+def test_task_manager_cancel_foreign_live_runner_preserves_owner_and_gpu(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "foreign"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "foreign",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_heartbeat": time.time(),
+            "lease_until": time.time() + 60,
+            "_gpu_assignment": {"device_ids": ["0"]},
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager.cancel_task("foreign") is False
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "running"
+    assert info["runner_id"] == "other-host:123:abcdef"
+    assert info["_gpu_assignment"] == {"device_ids": ["0"]}
+
+
 def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -4154,6 +4285,91 @@ def test_task_manager_delete_active_task_tolerates_busy_task_info(tmp_path, monk
 
     assert manager.delete_tasks(["queued"]) == ["queued"]
     assert manager.get_task("queued") is None
+
+
+def test_task_manager_delete_completed_disk_state_does_not_mark_failed(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "done"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "done",
+            "status": "queued",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 0,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update(
+            {
+                "status": "completed",
+                "progress": 1.0,
+                "start_times": ["2026-03-20_00-00-01"],
+                "finish_times": ["2026-03-20_00-00-02"],
+            }
+        ),
+    )
+
+    assert manager.delete_tasks(["done"]) == ["done"]
+    moved_info = load_task_info(str(tasks_dir / TRASH_DIR / "done"))
+    assert moved_info["status"] == "completed"
+    assert manager.get_task("done") is None
+
+
+def test_task_manager_delete_foreign_live_runner_preserves_task(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "foreign"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "foreign",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_heartbeat": time.time(),
+            "lease_until": time.time() + 60,
+            "_gpu_assignment": {"device_ids": ["0"]},
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager.delete_tasks(["foreign"]) == []
+    assert task_dir.exists()
+    assert not (tasks_dir / TRASH_DIR / "foreign").exists()
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "running"
+    assert info["runner_id"] == "other-host:123:abcdef"
+    assert info["_gpu_assignment"] == {"device_ids": ["0"]}
+    assert manager.get_task("foreign")["status"] == "running"
 
 
 def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_path, monkeypatch):

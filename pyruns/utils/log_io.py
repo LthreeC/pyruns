@@ -200,23 +200,26 @@ def read_last_lines(log_path: str, max_lines: int = 10000, max_bytes: int | None
 def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> Tuple[str, int]:
     """Read up to ``max_bytes`` from ``filepath`` at ``offset`` safely."""
 
-    if not os.path.exists(filepath):
-        return "", offset
-
-    file_size = os.path.getsize(filepath)
-    if offset >= file_size:
-        return "", file_size
-
-    with open(filepath, "rb") as handle:
-        handle.seek(offset)
-        chunk = handle.read(max_bytes)
-
-        if not chunk:
+    try:
+        if not os.path.exists(filepath):
             return "", offset
 
-        if offset + len(chunk) < file_size:
-            last_newline = chunk.rfind(b"\n")
-            if last_newline != -1:
-                chunk = chunk[: last_newline + 1]
+        file_size = os.path.getsize(filepath)
+        if offset >= file_size:
+            return "", file_size
 
-        return normalize_log_newlines(decode_log_bytes(chunk)), offset + len(chunk)
+        with open(filepath, "rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read(max_bytes)
+
+            if not chunk:
+                return "", offset
+
+            if offset + len(chunk) < file_size:
+                last_newline = chunk.rfind(b"\n")
+                if last_newline != -1:
+                    chunk = chunk[: last_newline + 1]
+
+            return normalize_log_newlines(decode_log_bytes(chunk)), offset + len(chunk)
+    except OSError:
+        return "", offset

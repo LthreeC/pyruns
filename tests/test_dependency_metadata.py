@@ -2,6 +2,7 @@ from html.parser import HTMLParser
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import zipfile
 
 try:
@@ -35,6 +36,16 @@ def _load_json(path: Path):
 def _load_static_checker():
     script_path = ROOT / "scripts" / "check_wheel_static.py"
     spec = importlib.util.spec_from_file_location("check_wheel_static", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_frontend_static_checker():
+    script_path = ROOT / "scripts" / "check_frontend_static.py"
+    spec = importlib.util.spec_from_file_location("check_frontend_static", script_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -183,6 +194,13 @@ def test_package_workflow_cleans_build_and_checks_wheel_static_assets():
     assert "python scripts/check_wheel_static.py .tmp-dist/*.whl" in workflow
 
 
+def test_frontend_workflow_checks_committed_static_assets():
+    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
+
+    assert "python scripts/check_frontend_static.py" in workflow
+    assert "python scripts/check_frontend_static.py" in workflow.split("npm --prefix frontend ci", 1)[1]
+
+
 def test_wheel_static_checker_rejects_stale_assets(tmp_path):
     source_static = tmp_path / "pyruns" / "web" / "static"
     source_assets = source_static / "assets"
@@ -212,6 +230,27 @@ def test_wheel_static_checker_rejects_stale_assets(tmp_path):
         wheel.writestr("pyruns/web/static/assets/index-old.js", "console.log('old')\n")
 
     assert any("stale static assets" in error for error in checker.check_wheel_static(stale_wheel, root=tmp_path))
+
+
+def test_frontend_static_checker_rejects_stale_assets(tmp_path, monkeypatch):
+    frontend_dir = tmp_path / "frontend"
+    static_dir = tmp_path / "pyruns" / "web" / "static"
+    frontend_dir.mkdir(parents=True)
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_text("old\n", encoding="utf-8")
+
+    checker = _load_frontend_static_checker()
+    monkeypatch.setattr(checker.shutil, "which", lambda _name: "npm")
+
+    def fake_run(command, cwd, text, capture_output, **_kwargs):
+        build_dir = Path(command[command.index("--outDir") + 1])
+        build_dir.mkdir(parents=True)
+        (build_dir / "index.html").write_text("new\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(checker.subprocess, "run", fake_run)
+
+    assert checker.check_frontend_static(root=tmp_path) == ["changed committed static asset: index.html"]
 
 
 def test_frontend_log_stream_passes_resume_options_without_offset_reconnects():

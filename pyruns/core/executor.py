@@ -836,10 +836,13 @@ def _write_temp_shell_wrapper(
     content: str,
     encoding: str,
     newline: str,
+    directory: str | None = None,
 ) -> str:
-    """Write one temporary wrapper file outside the task directory."""
+    """Write one temporary wrapper file and return its path."""
 
-    fd, wrapper_path = tempfile.mkstemp(prefix="pyruns-shell-", suffix=suffix)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    fd, wrapper_path = tempfile.mkstemp(prefix=".pyruns-shell-", suffix=suffix, dir=directory)
     os.close(fd)
     with open(wrapper_path, "w", encoding=encoding, newline=newline) as handle:
         handle.write(content)
@@ -899,6 +902,7 @@ def _materialize_windows_shell_wrapper(
             content=wrapper_body,
             encoding="utf-8-sig",
             newline="\r\n",
+            directory=task_dir,
         )
         return [
             shell_path,
@@ -922,6 +926,7 @@ def _materialize_windows_shell_wrapper(
         content="\r\n".join(wrapper_lines) + "\r\n",
         encoding="utf-8-sig",
         newline="\r\n",
+        directory=task_dir,
     )
     return [shell_path, "/d", "/c", wrapper_path], task_dir, [wrapper_path]
 
@@ -941,8 +946,7 @@ def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], st
 def _augment_wsl_env(command: List[str] | str, env: Dict[str, str], task_env_keys: set[str]) -> None:
     if isinstance(command, str):
         return
-    shell_path = command[0] if command else ""
-    if not _is_windows_wsl_bash_executable(shell_path):
+    if not any(_is_windows_wsl_bash_executable(str(part)) for part in command):
         return
 
     entries = [entry for entry in str(env.get("WSLENV", "") or "").split(":") if entry]

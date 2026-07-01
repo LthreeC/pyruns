@@ -591,6 +591,11 @@ def test_log_io_error_and_empty_read_edges(tmp_path, monkeypatch):
     assert read_log_chunk("missing.log", 7) == ("", 7)
     assert read_last_bytes("missing.log", 10) == ("", 0)
     assert read_last_lines("missing.log", max_lines=5) == ("", 0)
+    assert safe_read_log("missing.log", 7) == ("", 7)
+
+    monkeypatch.setattr(log_io.os.path, "getsize", lambda _path: 10)
+    monkeypatch.setattr(builtins, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("open failed")))
+    assert safe_read_log("missing.log", 7) == ("", 7)
 
 
 def test_safe_read_log_keeps_offset_when_read_returns_no_bytes(monkeypatch):

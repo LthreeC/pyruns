@@ -1079,6 +1079,29 @@ def test_root_serves_fallback_frontend_when_static_bundle_is_missing(tmp_path):
     assert "Pyruns API server is running" in response.text
 
 
+def test_unknown_api_get_returns_json_404(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["detail"] == "Not Found"
+
+
+def test_frontend_fallback_handles_windows_drive_path(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/C:/Windows/win.ini")
+
+    assert response.status_code == 200
+    assert "<title>Pyruns</title>" in response.text
+
+
 def test_dashboard_endpoint_returns_summary_and_recent_tasks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
