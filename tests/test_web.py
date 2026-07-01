@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -143,9 +144,31 @@ def _add_task(workspace: Path, name: str, status: str = "pending", log_text: str
 
 
 def _build_runtime(workspace: Path) -> PyrunsRuntime:
+    def mark_existing_running_tasks_owned(tasks_dir: str, manager: TaskManager) -> None:
+        for task_dir in Path(tasks_dir).iterdir():
+            if not task_dir.is_dir():
+                continue
+            info_path = task_dir / TASK_INFO_FILENAME
+            if not info_path.exists():
+                continue
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            if info.get("status") != "running":
+                continue
+
+            def _apply(task_info, manager=manager):
+                task_info["runner_id"] = manager.runner_id
+                task_info["runner_host"] = manager.runner_host
+                task_info["lease_heartbeat"] = time.time()
+                task_info["lease_until"] = time.time() + 60
+
+            update_task_info(str(task_dir), _apply)
+
     def make_task_manager(tasks_dir: str) -> TaskManager:
         with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-            return TaskManager(tasks_dir=tasks_dir, lazy_scan=False)
+            manager = TaskManager(tasks_dir=tasks_dir, lazy_scan=None)
+            mark_existing_running_tasks_owned(tasks_dir, manager)
+            manager.scan_disk()
+            return manager
 
     return PyrunsRuntime(root_dir=str(workspace), task_manager_factory=make_task_manager)
 
@@ -2233,6 +2256,30 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
     assert payload["task_name"] == "alpha"
     assert payload["content"] == "hello from stream"
     assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_stream_catches_up_from_client_offset(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    log_file.write_text("initial\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    initial = client.get("/api/tasks/alpha/logs", params={"log_file_name": "run1.log", "tail_lines": 20})
+    assert initial.status_code == 200
+    offset = initial.json()["offset"]
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write("gap-before-ws\n")
+
+    with client.websocket_connect(f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}") as websocket:
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["task_name"] == "alpha"
+    assert "gap-before-ws" in payload["content"]
+    assert payload["offset"] == log_file.stat().st_size
+    assert payload["log_file_name"] == "run1.log"
 
 
 def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):

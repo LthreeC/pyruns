@@ -107,11 +107,14 @@ def _remove_stale_lock_file(lock_path: str) -> bool:
 
 
 @contextmanager
-def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC):
+def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, create_dir: bool = True):
     """Acquire a task-local thread/process lock for task_info.json updates."""
     thread_lock = _thread_lock_for(task_dir)
     lock_path = os.path.join(task_dir, _LOCK_FILENAME)
-    os.makedirs(task_dir, exist_ok=True)
+    if create_dir:
+        os.makedirs(task_dir, exist_ok=True)
+    elif not os.path.isdir(task_dir):
+        raise FileNotFoundError(task_dir)
     acquired = thread_lock.acquire(timeout=timeout_sec)
     if not acquired:
         raise TimeoutError(f"Timed out acquiring task lock for {task_dir}")
@@ -237,7 +240,7 @@ def update_task_info(
 ) -> Dict[str, Any]:
     """Read-modify-write task_info.json using the shared atomic save path."""
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
-    with task_info_lock(task_dir, timeout_sec=timeout_sec):
+    with task_info_lock(task_dir, timeout_sec=timeout_sec, create_dir=not raise_error):
         if os.path.exists(info_path):
             try:
                 with open(info_path, "r", encoding="utf-8") as f:

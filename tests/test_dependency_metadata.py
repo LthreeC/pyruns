@@ -1,6 +1,8 @@
 from html.parser import HTMLParser
+import importlib.util
 import json
 from pathlib import Path
+import zipfile
 
 try:
     import tomllib
@@ -28,6 +30,16 @@ def _load_pyproject():
 
 def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_static_checker():
+    script_path = ROOT / "scripts" / "check_wheel_static.py"
+    spec = importlib.util.spec_from_file_location("check_wheel_static", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _walk_json(value):
@@ -162,3 +174,67 @@ def test_built_static_index_references_existing_assets():
     assert any(ref.endswith(".css") for ref in refs)
     for ref in refs:
         assert (ROOT / "pyruns" / "web" / "static" / ref.removeprefix("/")).exists(), ref
+
+
+def test_package_workflow_cleans_build_and_checks_wheel_static_assets():
+    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
+
+    assert "rm -rf build .tmp-dist" in workflow
+    assert "python scripts/check_wheel_static.py .tmp-dist/*.whl" in workflow
+
+
+def test_wheel_static_checker_rejects_stale_assets(tmp_path):
+    source_static = tmp_path / "pyruns" / "web" / "static"
+    source_assets = source_static / "assets"
+    source_assets.mkdir(parents=True)
+    (source_assets / "index-current.js").write_text("console.log('ok')\n", encoding="utf-8")
+    (source_assets / "index-current.css").write_text("body{}\n", encoding="utf-8")
+    (source_static / "index.html").write_text(
+        '<link rel="stylesheet" href="/assets/index-current.css">'
+        '<script type="module" src="/assets/index-current.js"></script>',
+        encoding="utf-8",
+    )
+
+    checker = _load_static_checker()
+    good_wheel = tmp_path / "good.whl"
+    with zipfile.ZipFile(good_wheel, "w") as wheel:
+        wheel.write(source_static / "index.html", "pyruns/web/static/index.html")
+        wheel.write(source_assets / "index-current.js", "pyruns/web/static/assets/index-current.js")
+        wheel.write(source_assets / "index-current.css", "pyruns/web/static/assets/index-current.css")
+
+    assert checker.check_wheel_static(good_wheel, root=tmp_path) == []
+
+    stale_wheel = tmp_path / "stale.whl"
+    with zipfile.ZipFile(stale_wheel, "w") as wheel:
+        wheel.write(source_static / "index.html", "pyruns/web/static/index.html")
+        wheel.write(source_assets / "index-current.js", "pyruns/web/static/assets/index-current.js")
+        wheel.write(source_assets / "index-current.css", "pyruns/web/static/assets/index-current.css")
+        wheel.writestr("pyruns/web/static/assets/index-old.js", "console.log('old')\n")
+
+    assert any("stale static assets" in error for error in checker.check_wheel_static(stale_wheel, root=tmp_path))
+
+
+def test_frontend_log_stream_passes_resume_options_without_offset_reconnects():
+    api_source = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+    hook_source = (ROOT / "frontend" / "src" / "hooks" / "useWebSocket.ts").read_text(encoding="utf-8")
+    monitor_source = (ROOT / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "createLogStream(taskName: string, options:" in api_source
+    assert "sp.set('log_file_name', options.logFileName)" in api_source
+    assert "sp.set('offset', String(options.offset))" in api_source
+    assert "offsetRef.current = offset" in hook_source
+    assert "createLogStream(taskName, { logFileName, offset: offsetRef.current })" in hook_source
+    assert "[taskName, enabled, disconnect, logFileName]" in hook_source
+    assert "enabled: !loading && isLive && canUseLogStream" in monitor_source
+    assert "logFileName: selectedLog || liveLogName || undefined" in monitor_source
+    assert "offset: logOffsetRef.current" in monitor_source
+
+
+def test_frontend_task_store_retries_last_valid_page_after_empty_page():
+    store_source = (ROOT / "frontend" / "src" / "store.ts").read_text(encoding="utf-8")
+
+    assert "page.items.length === 0" in store_source
+    assert "Math.floor((page.total - 1) / limit) * limit" in store_source
+    assert "retryPage = await api.getTasks" in store_source

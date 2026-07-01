@@ -3,14 +3,17 @@ Tests for pyruns.core — config_manager, system_metrics, executor,
 task_generator, and report.
 """
 import csv
+import gc
 import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
+import weakref
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -81,6 +84,31 @@ class _StaticGpuProvider:
     def sample(self):
         self.calls += 1
         return list(self.devices)
+
+
+def _mark_task_owned_by_manager(
+    manager: TaskManager,
+    task_name: str,
+    task_dir: Path,
+    *,
+    pids: list[int] | None = None,
+    counts_for_batch: bool = True,
+) -> None:
+    def _apply(info):
+        info["status"] = "running"
+        info["run_index"] = 1
+        info["pids"] = list(pids or [12345])
+        info["runner_id"] = manager.runner_id
+        info["runner_host"] = manager.runner_host
+        info["lease_heartbeat"] = time.time()
+        info["lease_until"] = time.time() + 60
+
+    updated = update_task_info(str(task_dir), _apply)
+    with manager._lock:
+        current = manager._tasks_by_name[task_name]
+        manager._apply_info_to_task(current, updated)
+        manager._mark_running_locked(task_name, counts_for_batch=counts_for_batch)
+        manager._recompute_processing_flag_locked()
 
 
 def test_prepare_env_allows_child_to_import_current_pyruns_from_script_workdir(tmp_path, monkeypatch):
@@ -2742,6 +2770,107 @@ def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_pat
     assert "_queued_run_index" not in queued_info
 
 
+def test_task_manager_sync_status_does_not_revive_cancelled_queued_task(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("race-cancel", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with manager._lock:
+        current = manager._tasks_by_name[task["name"]]
+        current["status"] = "queued"
+
+    assert manager.cancel_task(task["name"]) is True
+    assert manager._sync_status_to_disk(
+        task["name"],
+        "queued",
+        run_index=1,
+        expected_statuses={"pending"},
+    ) is False
+
+    info = load_task_info(task["dir"])
+    assert info["status"] == "failed"
+    assert manager.get_task(task["name"])["status"] == "failed"
+
+
+def test_task_manager_submit_after_delete_does_not_recreate_or_execute(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("delete-race", {"value": 1})
+    update_task_info(task["dir"], lambda info: info.update({"status": "queued"}))
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    picked, run_index = manager._pick_queued_task()
+    assert picked is not None
+    assert picked["name"] == task["name"]
+
+    submitted: list[str] = []
+
+    class CapturingExecutor:
+        def __init__(self, max_workers=None):
+            self.max_workers = max_workers
+
+        def submit(self, *args, **kwargs):
+            submitted.append(args[2])
+            return Future()
+
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(task_manager_module, "ThreadPoolExecutor", CapturingExecutor)
+
+    assert manager.delete_tasks([task["name"]]) == [task["name"]]
+    assert not Path(task["dir"]).exists()
+
+    manager._submit_task(picked, run_index, independent=False)
+
+    assert submitted == []
+    assert not Path(task["dir"]).exists()
+    assert manager.get_task(task["name"]) is None
+
+
+def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "expired"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "expired",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [os.getpid()],
+            "records": [],
+            "tracks": [],
+            "runner_id": "old-runner",
+            "runner_host": socket.gethostname().lower(),
+            "lease_until": time.time() - 60,
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    killed: list[int] = []
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    assert manager.get_task("expired")["status"] == "failed"
+    assert manager.cancel_task("expired") is False
+    assert killed == []
+
+
 def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -3146,6 +3275,8 @@ def test_task_manager_gpu_auto_independent_task_can_bypass_full_batch_slots(tmp_
         manager._tasks_by_name[run_now_task["name"]]["_gpu_wait_started_at"] = 290.0
         manager._tasks_by_name[run_now_task["name"]]["_queued_independent"] = True
         manager._recompute_processing_flag_locked()
+    update_task_info(batch_task["dir"], lambda info: info.update({"status": "queued"}))
+    update_task_info(run_now_task["dir"], lambda info: info.update({"status": "queued"}))
 
     manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
     now[0] += 1.0
@@ -3215,6 +3346,8 @@ def test_task_manager_gpu_independent_submit_does_not_consume_batch_slots(tmp_pa
         manager._tasks_by_name[run_now_task["name"]]["_gpu_wait_started_at"] = 290.0
         manager._tasks_by_name[run_now_task["name"]]["_queued_independent"] = True
         manager._recompute_processing_flag_locked()
+    update_task_info(batch_task["dir"], lambda info: info.update({"status": "queued"}))
+    update_task_info(run_now_task["dir"], lambda info: info.update({"status": "queued"}))
 
     manager.gpu_scheduler.snapshot(manager._gpu_scheduler_config())
     now[0] += 1.0
@@ -3647,6 +3780,7 @@ def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     events = []
     original_persist = manager._persist_pending_stop_summary
@@ -3694,6 +3828,7 @@ def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     monkeypatch.setattr(manager, "_latest_pid_from_disk", lambda task: 12345)
     monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
@@ -3730,6 +3865,7 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
     timeout_values = []
@@ -3770,6 +3906,7 @@ def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypat
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     lock_checks = []
 
@@ -3865,6 +4002,7 @@ def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_pa
     monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", running_dir, pids=[111, 222])
 
     manager._cleanup_on_shutdown()
 
@@ -3888,6 +4026,22 @@ def test_task_manager_shutdown_cleanup_ignores_malformed_in_memory_tasks(tmp_pat
     manager._cleanup_on_shutdown()
 
     assert manager.tasks == [{}, {"name": "missing-status"}, None]
+
+
+def test_task_manager_shutdown_unregisters_atexit_callback(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager_ref = weakref.ref(manager)
+    manager.shutdown()
+    manager._scheduler_thread.join(timeout=1)
+    del manager
+    gc.collect()
+
+    assert manager_ref() is None
 
 
 def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
@@ -4158,6 +4312,7 @@ def test_task_manager_delete_active_task_preserves_folder_when_trash_move_fails(
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     manager.delete_tasks(["missing"])
     assert manager.get_task("runner") is not None
@@ -4371,6 +4526,15 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
         target["start_times"] = ["2026-01-01_00-00-00", "2026-01-01_00-00-02"]
         target["finish_times"] = ["2026-01-01_00-00-01", "2026-01-01_00-00-03"]
         manager._recompute_processing_flag_locked()
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "queued",
+            "run_index": 2,
+            "start_times": ["2026-01-01_00-00-00", "2026-01-01_00-00-02"],
+            "finish_times": ["2026-01-01_00-00-01", "2026-01-01_00-00-03"],
+        }),
+    )
 
     picked, run_index = manager._pick_queued_task()
     assert picked["name"] == "alpha"

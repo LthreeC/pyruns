@@ -611,12 +611,19 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
 
     @app.websocket("/api/tasks/{task_name}/logs/stream")
-    async def stream_task_logs(websocket: WebSocket, task_name: str) -> None:
+    async def stream_task_logs(
+        websocket: WebSocket,
+        task_name: str,
+        log_file_name: str | None = None,
+        offset: int | None = Query(default=None),
+    ) -> None:
         runtime = get_runtime()
         if runtime.get_task(task_name, refresh=False) is None:
             await websocket.close(code=4404, reason="Task not found")
             return
 
+        requested_log_name = str(log_file_name or "").strip()
+        requested_offset = None if offset is None else max(0, int(offset))
         await websocket.accept()
         loop = asyncio.get_running_loop()
         log_emitter.bind_loop(loop)
@@ -685,11 +692,34 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             while not disconnected.is_set():
                 try:
                     if not stream_initialized:
-                        payload = await asyncio.to_thread(runtime.get_task_logs, task_name, tail_lines=0)
+                        if requested_offset is None:
+                            payload = await asyncio.to_thread(
+                                runtime.get_task_logs,
+                                task_name,
+                                log_file_name=requested_log_name or None,
+                                tail_lines=0,
+                            )
+                        else:
+                            payload = await asyncio.to_thread(
+                                runtime.get_task_logs,
+                                task_name,
+                                log_file_name=requested_log_name or None,
+                                offset=requested_offset,
+                                chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                            )
                         stream_log_name = str(payload.get("selected_log") or "")
                         stream_offset = max(0, int(payload.get("offset") or 0))
                         if stream_log_name:
                             stream_offsets[stream_log_name] = stream_offset
+                        content = str(payload.get("content") or "")
+                        if requested_offset is not None and content:
+                            enqueue_message({
+                                "type": "chunk",
+                                "task_name": task_name,
+                                "content": content,
+                                "offset": stream_offset,
+                                "log_file_name": stream_log_name,
+                            })
                         stream_initialized = True
                     elif stream_log_name:
                         emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC

@@ -7,14 +7,18 @@ interface UseLogStreamOptions {
   onChunk: (message: LogStreamMessage) => void
   onDisconnect?: () => void
   enabled?: boolean
+  logFileName?: string
+  offset?: number
 }
 
-export function useLogStream({ taskName, onChunk, onDisconnect, enabled = true }: UseLogStreamOptions) {
+export function useLogStream({ taskName, onChunk, onDisconnect, enabled = true, logFileName, offset }: UseLogStreamOptions) {
   const wsRef = useRef<WebSocket | null>(null)
   const onChunkRef = useRef(onChunk)
   const onDisconnectRef = useRef(onDisconnect)
+  const offsetRef = useRef(offset)
   onChunkRef.current = onChunk
   onDisconnectRef.current = onDisconnect
+  offsetRef.current = offset
 
   const disconnect = useCallback(() => {
     const ws = wsRef.current
@@ -30,7 +34,7 @@ export function useLogStream({ taskName, onChunk, onDisconnect, enabled = true }
   useEffect(() => {
     if (!taskName || !enabled) { disconnect(); return }
 
-    const ws = createLogStream(taskName)
+    const ws = createLogStream(taskName, { logFileName, offset: offsetRef.current })
     wsRef.current = ws
 
     ws.onmessage = (ev) => {
@@ -63,7 +67,7 @@ export function useLogStream({ taskName, onChunk, onDisconnect, enabled = true }
       }
       ws.close()
     }
-  }, [taskName, enabled, disconnect])
+  }, [taskName, enabled, disconnect, logFileName])
 
   return { disconnect }
 }

@@ -80,7 +80,9 @@ jobs:
     - name: Build wheel and smoke installed app
       run: |
         python -m pip install --upgrade pip build
+        rm -rf build .tmp-dist
         python -m build --wheel --outdir .tmp-dist
+        python scripts/check_wheel_static.py .tmp-dist/*.whl
         python -m venv .tmp-wheel-venv
         .tmp-wheel-venv/bin/pip install .tmp-dist/*.whl
         .tmp-wheel-venv/bin/python -c "from pyruns.web.app import create_app; app=create_app(); print(app.title)"

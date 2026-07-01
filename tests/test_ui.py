@@ -915,7 +915,7 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "flushLiveLogChunkBuffer()" in monitor
     assert "wsStreamActiveRef.current = false" in monitor
     assert "onDisconnect: handleLogStreamDisconnect" in monitor
-    assert "enabled: isLive && canUseLogStream" in monitor
+    assert "enabled: !loading && isLive && canUseLogStream" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
     assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
     assert "queuedLiveLogTaskRef" in monitor

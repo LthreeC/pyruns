@@ -174,9 +174,16 @@ export const getTaskLogs = (name: string, options: {
   return request<TaskLogs>(`/api/tasks/${encodeURIComponent(name)}/logs?${sp}`)
 }
 
-export function createLogStream(taskName: string): WebSocket {
+export function createLogStream(taskName: string, options: {
+  logFileName?: string
+  offset?: number
+} = {}): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream`)
+  const sp = new URLSearchParams()
+  if (options.logFileName) sp.set('log_file_name', options.logFileName)
+  if (options.offset != null) sp.set('offset', String(options.offset))
+  const query = sp.toString()
+  return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream${query ? `?${query}` : ''}`)
 }
 
 export const getMetrics = () => request<SystemMetrics>('/api/system/metrics')

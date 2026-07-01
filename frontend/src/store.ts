@@ -344,6 +344,35 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (requestId !== taskRequestSeq) {
         return
       }
+      if (limit > 0 && offset > 0 && page.items.length === 0) {
+        const nextOffset = page.total > 0
+          ? Math.max(0, Math.floor((page.total - 1) / limit) * limit)
+          : 0
+        if (nextOffset !== offset && offset >= page.total) {
+          set({ offset: nextOffset })
+          const retryPage = await api.getTasks({
+            query,
+            status: statusFilter,
+            offset: nextOffset,
+            limit,
+            summary: true,
+          })
+          if (requestId !== taskRequestSeq) {
+            return
+          }
+          set({
+            tasks: retryPage.items,
+            total: retryPage.total,
+            hasMore: retryPage.has_more,
+            offset: nextOffset,
+          })
+          return
+        }
+      }
+      if (page.total === 0 && offset !== 0) {
+        set({ tasks: page.items, total: page.total, hasMore: page.has_more, offset: 0 })
+        return
+      }
       set({ tasks: page.items, total: page.total, hasMore: page.has_more })
     } finally {
       if (requestId === taskRequestSeq) {

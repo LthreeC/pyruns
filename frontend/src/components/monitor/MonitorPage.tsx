@@ -87,7 +87,7 @@ export default function MonitorPage() {
   const { monitorTasks, fetchMonitorTasks, upsertMonitorTask } = useTaskStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
-    selectedTaskName, logContent, availableLogs, selectedLog, loading, exportIds,
+    selectedTaskName, logContent, logOffset, availableLogs, selectedLog, loading, exportIds,
     selectTask, selectLogFile, toggleExport, selectAllExport, clearExport,
   } = useMonitorStore()
 
@@ -103,6 +103,7 @@ export default function MonitorPage() {
   const renderedLogRef = useRef<{ key: string; content: string } | null>(null)
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
+  const logOffsetRef = useRef(logOffset)
   const liveLogNameRef = useRef('')
   const queuedLiveLogTaskRef = useRef<{ taskName: string | null; runLogName: string }>({
     taskName: null,
@@ -619,6 +620,7 @@ export default function MonitorPage() {
 
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
+  logOffsetRef.current = logOffset
   liveLogNameRef.current = liveLogName
 
   useEffect(() => {
@@ -778,7 +780,9 @@ export default function MonitorPage() {
     taskName: selectedTaskName,
     onChunk: handleChunk,
     onDisconnect: handleLogStreamDisconnect,
-    enabled: isLive && canUseLogStream,
+    enabled: !loading && isLive && canUseLogStream,
+    logFileName: selectedLog || liveLogName || undefined,
+    offset: logOffsetRef.current,
   })
 
   const pollLiveLog = useCallback(async () => {
