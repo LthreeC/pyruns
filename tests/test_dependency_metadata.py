@@ -253,6 +253,27 @@ def test_frontend_static_checker_rejects_stale_assets(tmp_path, monkeypatch):
     assert checker.check_frontend_static(root=tmp_path) == ["changed committed static asset: index.html"]
 
 
+def test_frontend_static_checker_allows_text_line_ending_differences(tmp_path, monkeypatch):
+    frontend_dir = tmp_path / "frontend"
+    static_dir = tmp_path / "pyruns" / "web" / "static"
+    frontend_dir.mkdir(parents=True)
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_bytes(b"<div>\r\nok\r\n</div>\r\n")
+
+    checker = _load_frontend_static_checker()
+    monkeypatch.setattr(checker.shutil, "which", lambda _name: "npm")
+
+    def fake_run(command, cwd, text, capture_output, **_kwargs):
+        build_dir = Path(command[command.index("--outDir") + 1])
+        build_dir.mkdir(parents=True)
+        (build_dir / "index.html").write_bytes(b"<div>\nok\n</div>\n")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(checker.subprocess, "run", fake_run)
+
+    assert checker.check_frontend_static(root=tmp_path) == []
+
+
 def test_frontend_log_stream_passes_resume_options_without_offset_reconnects():
     api_source = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
     hook_source = (ROOT / "frontend" / "src" / "hooks" / "useWebSocket.ts").read_text(encoding="utf-8")

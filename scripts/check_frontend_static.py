@@ -17,12 +17,22 @@ FRONTEND_DIR = ROOT / "frontend"
 STATIC_DIR = ROOT / "pyruns" / "web" / "static"
 
 
-def _file_hash(path: Path) -> str:
+def _hash_bytes(data: bytes) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    digest.update(data)
     return digest.hexdigest()
+
+
+def _file_hash(path: Path) -> str:
+    data = path.read_bytes()
+    if b"\0" in data:
+        return _hash_bytes(data)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return _hash_bytes(data)
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return _hash_bytes(normalized.encode("utf-8"))
 
 
 def _snapshot_files(root: Path) -> dict[str, str]:
