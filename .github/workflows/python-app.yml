@@ -62,12 +62,18 @@ jobs:
     - name: Set up Node
       uses: actions/setup-node@v4
       with:
-        node-version: 20
-    - name: Build frontend
+        node-version: 24
+    - name: Print frontend tool versions
       run: |
-        npm --prefix frontend ci
-        python scripts/check_frontend_static.py
-        npm run frontend:build
+        node --version
+        npm --version
+        python --version
+    - name: Install frontend dependencies
+      run: npm --prefix frontend ci
+    - name: Check frontend static assets
+      run: python scripts/check_frontend_static.py
+    - name: Build frontend
+      run: npm run frontend:build
     - name: Build docs
       run: |
         npm ci
