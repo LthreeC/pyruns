@@ -22,6 +22,7 @@ from pyruns.core.task_generator import TaskGenerator
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace, list_config_candidates, list_script_candidates
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import load_yaml
+from pyruns.utils.settings import save_setting_for_root
 from pyruns.utils.shell_runtime import _probe_shell_executable
 from pyruns.web.runtime import PyrunsRuntime
 
@@ -219,6 +220,7 @@ def test_pyruns_config_examples_run_through_runtime(tmp_path, script_name, confi
     config = example / config_name
 
     workspace = bootstrap_workspace(str(script), str(config))
+    save_setting_for_root(workspace, "gpu_scheduler_enabled", False)
     runtime = PyrunsRuntime(workspace)
     created = runtime.create_tasks_from_template(
         name_prefix=script.stem,
@@ -240,6 +242,7 @@ def test_advanced_argparse_example_runs_through_runtime(tmp_path):
     config = example / "configs" / "quick.yaml"
 
     workspace = bootstrap_workspace(str(script), str(config))
+    save_setting_for_root(workspace, "gpu_scheduler_enabled", False)
     runtime = PyrunsRuntime(workspace)
     created = runtime.create_tasks_from_template(
         name_prefix="advanced",
@@ -337,6 +340,7 @@ def test_pyruns_load_nested_accelerate_example_runs_through_runtime(tmp_path):
     config = example / "configs" / "accelerate.yaml"
 
     workspace = bootstrap_workspace(str(script), str(config))
+    save_setting_for_root(workspace, "gpu_scheduler_enabled", False)
     runtime = PyrunsRuntime(workspace)
     created = runtime.create_tasks_from_template(
         name_prefix="accelerate-nested",
@@ -351,6 +355,7 @@ def test_pyruns_load_nested_accelerate_example_runs_through_runtime(tmp_path):
             "ACCEL_OFF": "1",
             "ACCEL_MP": "bf16",
             "ACCEL_PORT": "29501",
+            "CUDA_VISIBLE_DEVICES": "",
             "PYRUNS_EXAMPLE_ENV": "accelerate-env-ok",
         },
     )

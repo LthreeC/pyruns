@@ -2345,7 +2345,7 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
 
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
-    assert payload["content"] == "file fallback chunk\r\n"
+    assert payload["content"].replace("\r\n", "\n") == "file fallback chunk\n"
     assert payload["offset"] == log_file.stat().st_size
 
 
@@ -2374,7 +2374,7 @@ def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_pa
 
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
-    assert payload["content"] == "created after connect\r\n"
+    assert payload["content"].replace("\r\n", "\n") == "created after connect\n"
     assert payload["offset"] == log_file.stat().st_size
 
 
@@ -2409,7 +2409,7 @@ def test_logs_websocket_stream_switches_from_queue_log_to_active_run_log(tmp_pat
 
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
-    assert payload["content"] == "running after queue\r\n"
+    assert payload["content"].replace("\r\n", "\n") == "running after queue\n"
     assert payload["offset"] == run_log.stat().st_size
 
 

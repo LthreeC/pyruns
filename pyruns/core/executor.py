@@ -794,15 +794,20 @@ def _resolve_shell_executable(task_dir: str | None = None) -> str:
 def _is_posix_shell_executable(shell_path: str) -> bool:
     """Return True when the resolved shell should execute the script directly."""
 
-    name = os.path.basename(shell_path).lower()
+    name = _shell_executable_name(shell_path)
     return name in {"bash", "bash.exe", "sh", "sh.exe", "zsh", "zsh.exe", "fish", "fish.exe"}
 
 
 def _is_powershell_executable(shell_path: str) -> bool:
     """Return True when the resolved shell uses PowerShell script semantics."""
 
-    name = os.path.basename(shell_path).lower()
+    name = _shell_executable_name(shell_path)
     return "powershell" in name or name.startswith("pwsh")
+
+
+def _shell_executable_name(shell_path: str) -> str:
+    normalized = str(shell_path or "").replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1].lower()
 
 
 def _read_shell_script_body(script_path: str) -> str:
