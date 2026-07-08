@@ -21,6 +21,7 @@ interface RuntimePanelProps {
 type RuntimePage = 'python' | 'env' | 'gpu'
 type PythonRuntimeMode = 'follow' | 'conda' | 'python'
 type GpuTaskMode = 'single' | 'multi'
+type GpuSelectionMode = 'auto' | 'specified'
 
 function quoteEnvValue(value: string) {
   if (value === '') {
@@ -181,6 +182,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const [activePage, setActivePage] = useState<RuntimePage>('python')
   const [gpuSchedulerEnabled, setGpuSchedulerEnabled] = useState(false)
   const [gpuTaskMode, setGpuTaskMode] = useState<GpuTaskMode>('single')
+  const [gpuSelectionMode, setGpuSelectionMode] = useState<GpuSelectionMode>('auto')
   const [gpuCount, setGpuCount] = useState('1')
   const [gpuDeviceIds, setGpuDeviceIds] = useState('')
   const [gpuMemoryUsedPct, setGpuMemoryUsedPct] = useState('40')
@@ -190,6 +192,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const [gpuMaxWaitHours, setGpuMaxWaitHours] = useState(48)
   const [gpuMaxTasksPerGpu, setGpuMaxTasksPerGpu] = useState('1')
   const [gpuRespectCudaVisibleDevices, setGpuRespectCudaVisibleDevices] = useState(true)
+  const [gpuRequireSameModel, setGpuRequireSameModel] = useState(false)
   const [showCondaAdvanced, setShowCondaAdvanced] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -224,6 +227,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setRuntimeMode(modeFromRuntime(next))
     setGpuSchedulerEnabled(next.gpu_scheduler?.enabled ?? false)
     setGpuTaskMode(next.gpu_scheduler?.task_mode === 'multi' ? 'multi' : 'single')
+    setGpuSelectionMode(next.gpu_scheduler?.selection_mode === 'specified' ? 'specified' : 'auto')
     setGpuCount(String(next.gpu_scheduler?.gpus_per_task ?? 1))
     setGpuDeviceIds(formatDeviceIds(next.gpu_scheduler?.device_ids))
     setGpuMemoryUsedPct(String(next.gpu_scheduler?.memory_used_pct ?? 40))
@@ -233,6 +237,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setGpuMaxWaitHours(Math.max(1, Math.round((next.gpu_scheduler?.max_wait_seconds ?? 172800) / 3600)))
     setGpuMaxTasksPerGpu(String(next.gpu_scheduler?.max_tasks_per_gpu ?? 1))
     setGpuRespectCudaVisibleDevices(next.gpu_scheduler?.respect_cuda_visible_devices ?? true)
+    setGpuRequireSameModel(next.gpu_scheduler?.require_same_gpu_model ?? false)
   }
 
   const applyWorkspaceRuntimeSettings = (settings?: Record<string, any>) => {
@@ -244,6 +249,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setRuntimeMode(modeFromSettings(settings))
     setGpuSchedulerEnabled(settingBool(settings?.gpu_scheduler_enabled, false))
     setGpuTaskMode(cleanSettingText(settings?.gpu_scheduler_task_mode) === 'multi' ? 'multi' : 'single')
+    setGpuSelectionMode(cleanSettingText(settings?.gpu_scheduler_selection_mode) === 'specified' ? 'specified' : 'auto')
     setGpuCount(String(settingNumber(settings?.gpu_scheduler_gpus_per_task, 1, 1)))
     setGpuDeviceIds(formatDeviceIdsSetting(settings?.gpu_scheduler_device_ids))
     setGpuMemoryUsedPct(String(settingNumber(settings?.gpu_scheduler_memory_used_pct, 40, 0, 100)))
@@ -253,6 +259,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setGpuMaxWaitHours(Math.max(1, Math.round(settingNumber(settings?.gpu_scheduler_max_wait_seconds, 172800, 1) / 3600)))
     setGpuMaxTasksPerGpu(String(settingNumber(settings?.gpu_scheduler_max_tasks_per_gpu, 1, 1)))
     setGpuRespectCudaVisibleDevices(settingBool(settings?.gpu_scheduler_respect_cuda_visible_devices, true))
+    setGpuRequireSameModel(settingBool(settings?.gpu_scheduler_require_same_gpu_model, false))
   }
 
   const loadRuntime = async (showFeedback = false) => {
@@ -420,6 +427,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       gpu_scheduler: {
         enabled: gpuSchedulerEnabled,
         task_mode: gpuTaskMode,
+        selection_mode: gpuSelectionMode,
         gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1,
         device_ids: parseDeviceIds(gpuDeviceIds),
         memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100),
@@ -429,6 +437,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         max_wait_seconds: gpuMaxWaitHours * 3600,
         max_tasks_per_gpu: numberInputValue(gpuMaxTasksPerGpu, 1, 1),
         respect_cuda_visible_devices: gpuRespectCudaVisibleDevices,
+        require_same_gpu_model: gpuRequireSameModel,
       },
     }, 'GPU scheduler saved')
   }
@@ -721,6 +730,30 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               </div>
             </div>
 
+            <div className="space-y-2">
+              <div className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Selection</div>
+              <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
+                {[
+                  { id: 'auto' as GpuSelectionMode, label: 'Auto pick' },
+                  { id: 'specified' as GpuSelectionMode, label: 'Specified IDs' },
+                ].map(item => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setGpuSelectionMode(item.id)}
+                    className={clsx(
+                      'h-8 rounded-md px-3 text-xs font-medium transition-colors',
+                      gpuSelectionMode === item.id
+                        ? 'bg-surface-raised text-accent shadow-sm'
+                        : 'text-txt-secondary hover:text-txt-primary'
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block">
                 <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">GPUs per task</span>
@@ -734,12 +767,14 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">GPU pool</span>
+                <span className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">
+                  {gpuSelectionMode === 'specified' ? 'GPU IDs' : 'GPU pool'}
+                </span>
                 <input
                   value={gpuDeviceIds}
                   onChange={event => setGpuDeviceIds(event.target.value)}
                   className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
-                  placeholder="auto"
+                  placeholder={gpuSelectionMode === 'specified' ? '0,1' : 'auto'}
                 />
               </label>
               <label className="block">
@@ -829,6 +864,16 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 className="h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
               />
               <span>Do not override task CUDA_VISIBLE_DEVICES</span>
+            </label>
+
+            <label className="flex items-center gap-2 text-sm text-txt-secondary">
+              <input
+                type="checkbox"
+                checked={gpuRequireSameModel}
+                onChange={event => setGpuRequireSameModel(event.target.checked)}
+                className="h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
+              />
+              <span>Require same GPU model for multi-GPU</span>
             </label>
           </section>
         )}

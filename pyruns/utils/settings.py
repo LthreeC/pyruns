@@ -64,6 +64,7 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     # GPU scheduler
     "gpu_scheduler_enabled": False,
     "gpu_scheduler_task_mode": "single",
+    "gpu_scheduler_selection_mode": "auto",
     "gpu_scheduler_gpus_per_task": 1,
     "gpu_scheduler_device_ids": [],
     "gpu_scheduler_memory_used_pct": 40,
@@ -73,6 +74,7 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "gpu_scheduler_max_wait_seconds": 172800,
     "gpu_scheduler_max_tasks_per_gpu": 1,
     "gpu_scheduler_respect_cuda_visible_devices": True,
+    "gpu_scheduler_require_same_gpu_model": False,
     # Persisted UI state
     "pinned_params": [],
 }
@@ -123,8 +125,9 @@ global_env: {{}}                       # workspace env overrides; task env overr
 # GPU scheduler
 gpu_scheduler_enabled: {SETTINGS_DEFAULTS.get("gpu_scheduler_enabled")}             # false = run normally; true = wait for eligible local GPUs
 gpu_scheduler_task_mode: {SETTINGS_DEFAULTS.get("gpu_scheduler_task_mode")}          # single | multi
+gpu_scheduler_selection_mode: {SETTINGS_DEFAULTS.get("gpu_scheduler_selection_mode")} # auto | specified
 gpu_scheduler_gpus_per_task: {SETTINGS_DEFAULTS.get("gpu_scheduler_gpus_per_task")}  # used when task_mode is multi
-gpu_scheduler_device_ids: []             # empty = any GPU; example: [0, 1, 2, 3]
+gpu_scheduler_device_ids: []             # auto mode: pool; specified mode: exact GPU IDs
 gpu_scheduler_memory_used_pct: {SETTINGS_DEFAULTS.get("gpu_scheduler_memory_used_pct")}      # eligible when memory used is below this percent
 gpu_scheduler_min_free_memory_gb: {SETTINGS_DEFAULTS.get("gpu_scheduler_min_free_memory_gb")} # eligible when free memory is at least this many GiB
 gpu_scheduler_compute_used_pct: {SETTINGS_DEFAULTS.get("gpu_scheduler_compute_used_pct")}     # eligible when GPU compute is below this percent
@@ -132,6 +135,7 @@ gpu_scheduler_stable_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_stable_secon
 gpu_scheduler_max_wait_seconds: {SETTINGS_DEFAULTS.get("gpu_scheduler_max_wait_seconds")}     # default 48h
 gpu_scheduler_max_tasks_per_gpu: {SETTINGS_DEFAULTS.get("gpu_scheduler_max_tasks_per_gpu")}
 gpu_scheduler_respect_cuda_visible_devices: {SETTINGS_DEFAULTS.get("gpu_scheduler_respect_cuda_visible_devices")}
+gpu_scheduler_require_same_gpu_model: {SETTINGS_DEFAULTS.get("gpu_scheduler_require_same_gpu_model")}
 
 """
 

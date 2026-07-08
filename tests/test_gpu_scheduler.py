@@ -23,10 +23,17 @@ class SequenceGpuProvider:
         return self.snapshots[index]
 
 
-def _gpu(index: int, *, used: float, total: float = 40960.0, util: float = 0.0) -> GpuDevice:
+def _gpu(
+    index: int,
+    *,
+    used: float,
+    total: float = 40960.0,
+    util: float = 0.0,
+    name: str | None = None,
+) -> GpuDevice:
     return GpuDevice(
         index=index,
-        name=f"GPU {index}",
+        name=name or f"GPU {index}",
         uuid=f"GPU-{index}",
         memory_used_mb=used,
         memory_total_mb=total,
@@ -239,6 +246,150 @@ def test_gpu_scheduler_multi_mode_can_request_one_gpu_when_limit_is_one():
     assert decision.assignment.env["CUDA_VISIBLE_DEVICES"] == "0"
 
 
+def test_gpu_scheduler_specified_selection_waits_for_configured_single_gpu():
+    now = [36.0]
+    provider = SequenceGpuProvider([
+        [
+            _gpu(0, used=1024, util=0),
+            _gpu(2, used=4096, util=0),
+        ],
+    ])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="single",
+        selection_mode="specified",
+        device_ids=[2],
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+    )
+    _warm_stable_window(scheduler, now, config)
+
+    decision = scheduler.try_reserve("specified-single", 1, config, task_env={})
+
+    assert decision.assignment is not None
+    assert decision.assignment.gpu_ids == [2]
+    assert decision.assignment.env["CUDA_VISIBLE_DEVICES"] == "2"
+
+
+def test_gpu_scheduler_specified_selection_requires_exact_configured_count():
+    provider = SequenceGpuProvider([[_gpu(0, used=1024), _gpu(1, used=1024), _gpu(2, used=1024)]])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 37.0)
+    too_few_config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        selection_mode="specified",
+        gpus_per_task=2,
+        device_ids=[0],
+        stable_seconds=1,
+    )
+    too_many_config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        selection_mode="specified",
+        gpus_per_task=2,
+        device_ids=[0, 1, 2],
+        stable_seconds=1,
+    )
+
+    too_few = scheduler.try_reserve("specified-too-few", 1, too_few_config, task_env={})
+    too_many = scheduler.try_reserve("specified-too-many", 1, too_many_config, task_env={})
+
+    assert too_few.assignment is None
+    assert too_few.reason == "specified mode needs 2 GPU IDs, only 1 configured"
+    assert too_many.assignment is None
+    assert too_many.reason == "specified mode needs exactly 2 GPU IDs, got 3 configured"
+
+
+def test_gpu_scheduler_specified_multi_waits_for_configured_ids():
+    now = [38.0]
+    provider = SequenceGpuProvider([
+        [
+            _gpu(0, used=1024, util=0),
+            _gpu(1, used=4096, util=0),
+            _gpu(2, used=1024, util=0),
+        ],
+    ])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        selection_mode="specified",
+        gpus_per_task=2,
+        device_ids=[1, 2],
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+    )
+    _warm_stable_window(scheduler, now, config)
+
+    decision = scheduler.try_reserve("specified-multi", 1, config, task_env={})
+
+    assert decision.assignment is not None
+    assert decision.assignment.gpu_ids == [1, 2]
+    assert decision.assignment.env["CUDA_VISIBLE_DEVICES"] == "1,2"
+
+
+def test_gpu_scheduler_requires_same_model_when_auto_selecting_multi_gpu():
+    now = [39.0]
+    provider = SequenceGpuProvider([
+        [
+            _gpu(0, used=1024, total=81920, util=0, name="RTX 4090"),
+            _gpu(1, used=4096, total=40960, util=0, name="A800"),
+            _gpu(2, used=4096, total=40960, util=0, name="A800"),
+        ],
+    ])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        gpus_per_task=2,
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+        require_same_gpu_model=True,
+    )
+    _warm_stable_window(scheduler, now, config)
+
+    decision = scheduler.try_reserve("same-model", 1, config, task_env={})
+
+    assert decision.assignment is not None
+    assert decision.assignment.gpu_ids == [1, 2]
+    assert decision.assignment.env["CUDA_VISIBLE_DEVICES"] == "1,2"
+
+
+def test_gpu_scheduler_waits_when_same_model_group_is_too_small():
+    now = [39.5]
+    provider = SequenceGpuProvider([
+        [
+            _gpu(0, used=1024, total=81920, util=0, name="RTX 4090"),
+            _gpu(1, used=1024, total=40960, util=0, name="A800"),
+            _gpu(2, used=1024, total=40960, util=0, name="L40S"),
+        ],
+    ])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        gpus_per_task=2,
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+        require_same_gpu_model=True,
+    )
+    _warm_stable_window(scheduler, now, config)
+
+    decision = scheduler.try_reserve("same-model-missing", 1, config, task_env={})
+
+    assert decision.assignment is None
+    assert decision.reason == "need 2 eligible GPUs with same model, best RTX 4090 has 1"
+
+
 def test_gpu_scheduler_allows_same_gpu_concurrency_until_configured_limit():
     now = [40.0]
     provider = SequenceGpuProvider([[_gpu(0, used=1024, util=0)]])
@@ -382,6 +533,34 @@ def test_gpu_scheduler_validates_fixed_cuda_devices_against_pool_and_required_co
     assert outside_pool.reason == "GPU 2 outside configured GPU pool"
 
 
+def test_gpu_scheduler_rejects_fixed_cuda_devices_when_same_model_required():
+    now = [60.5]
+    provider = SequenceGpuProvider([
+        [
+            _gpu(0, used=1024, util=0, name="A800"),
+            _gpu(1, used=1024, util=0, name="RTX 4090"),
+        ],
+    ])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        task_mode="multi",
+        gpus_per_task=2,
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+        respect_cuda_visible_devices=True,
+        require_same_gpu_model=True,
+    )
+    _warm_stable_window(scheduler, now, config)
+
+    decision = scheduler.try_reserve("manual-mixed", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "0,1"})
+
+    assert decision.assignment is None
+    assert decision.reason == "requested GPUs must use the same model, got A800, RTX 4090"
+
+
 def test_gpu_scheduler_reports_fixed_cuda_device_block_reason_when_threshold_fails():
     provider = SequenceGpuProvider([
         [_gpu(0, used=30720, total=40960, util=0)],
@@ -467,6 +646,7 @@ def test_gpu_scheduler_config_defaults_match_conservative_local_gpu_profile():
 
     assert config.enabled is False
     assert config.task_mode == "single"
+    assert config.selection_mode == "auto"
     assert config.gpus_per_task == 1
     assert config.device_ids == []
     assert config.memory_used_pct == 40.0
@@ -476,6 +656,7 @@ def test_gpu_scheduler_config_defaults_match_conservative_local_gpu_profile():
     assert config.max_wait_seconds == 172800.0
     assert config.max_tasks_per_gpu == 1
     assert config.respect_cuda_visible_devices is True
+    assert config.require_same_gpu_model is False
 
 
 def test_gpu_scheduler_config_multi_mode_allows_one_gpu_when_limit_is_one():
@@ -558,21 +739,33 @@ def test_gpu_scheduler_deduplicates_cuda_visible_devices_and_reports_missing_fix
 def test_gpu_scheduler_config_parses_device_id_variants_and_invalid_values():
     config = GpuSchedulerConfig.from_settings({
         "gpu_scheduler_enabled": "maybe",
+        "gpu_scheduler_selection_mode": "manual",
         "gpu_scheduler_device_ids": ["0", "0", "x", 2],
         "gpu_scheduler_gpus_per_task": "bad",
         "gpu_scheduler_min_free_memory_gb": -4,
         "gpu_scheduler_stable_seconds": 0,
         "gpu_scheduler_max_wait_seconds": 0,
         "gpu_scheduler_max_tasks_per_gpu": 0,
+        "gpu_scheduler_require_same_gpu_model": "yes",
     })
 
     assert config.enabled is False
+    assert config.selection_mode == "specified"
     assert config.device_ids == [0, 2]
     assert config.gpus_per_task == 1
     assert config.min_free_memory_gb == 0.0
     assert config.stable_seconds == 1.0
     assert config.max_wait_seconds == 1.0
     assert config.max_tasks_per_gpu == 1
+    assert config.require_same_gpu_model is True
+
+
+def test_gpu_scheduler_config_defaults_unknown_selection_mode_to_auto():
+    config = GpuSchedulerConfig.from_settings({
+        "gpu_scheduler_selection_mode": "random",
+    })
+
+    assert config.selection_mode == "auto"
 
 
 def test_gpu_scheduler_config_uses_default_for_unparseable_min_free_memory():

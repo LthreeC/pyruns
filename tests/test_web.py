@@ -660,8 +660,9 @@ def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
             "gpu_scheduler": {
                 "enabled": True,
                 "task_mode": "multi",
+                "selection_mode": "specified",
                 "gpus_per_task": 2,
-                "device_ids": "0,1,2,3",
+                "device_ids": "0,1",
                 "memory_used_pct": 75,
                 "min_free_memory_gb": 8,
                 "compute_used_pct": 30,
@@ -669,6 +670,7 @@ def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
                 "max_wait_seconds": 86400,
                 "max_tasks_per_gpu": 1,
                 "respect_cuda_visible_devices": True,
+                "require_same_gpu_model": True,
             }
         },
     )
@@ -677,12 +679,16 @@ def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
     payload = response.json()["gpu_scheduler"]
     assert payload["enabled"] is True
     assert payload["task_mode"] == "multi"
+    assert payload["selection_mode"] == "specified"
     assert payload["gpus_per_task"] == 2
-    assert payload["device_ids"] == [0, 1, 2, 3]
+    assert payload["device_ids"] == [0, 1]
     assert payload["max_wait_seconds"] == 86400.0
+    assert payload["require_same_gpu_model"] is True
     settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
     assert "gpu_scheduler_enabled: true" in settings_text
     assert "gpu_scheduler_task_mode: multi" in settings_text
+    assert "gpu_scheduler_selection_mode: specified" in settings_text
+    assert "gpu_scheduler_require_same_gpu_model: true" in settings_text
     assert "- 0" in settings_text
 
 
@@ -787,6 +793,7 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
         "/api/runtime",
         json={
             "gpu_scheduler": {
+                "selection_mode": "bad",
                 "device_ids": "0,0,2",
                 "memory_used_pct": 250,
                 "compute_used_pct": -5,
@@ -794,12 +801,14 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
                 "stable_seconds": "bad",
                 "max_wait_seconds": "bad",
                 "max_tasks_per_gpu": "bad",
+                "require_same_gpu_model": "yes",
             }
         },
     )
 
     assert response.status_code == 200
     payload = response.json()["gpu_scheduler"]
+    assert payload["selection_mode"] == "auto"
     assert payload["device_ids"] == [0, 2]
     assert payload["memory_used_pct"] == 100.0
     assert payload["compute_used_pct"] == 0.0
@@ -807,6 +816,7 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
     assert payload["stable_seconds"] == 15.0
     assert payload["max_wait_seconds"] == 172800.0
     assert payload["max_tasks_per_gpu"] == 1
+    assert payload["require_same_gpu_model"] is True
     assert "sample_interval_seconds" not in payload
     settings_text = (workspace.parent / "_pyruns_settings.yaml").read_text(encoding="utf-8")
     assert "gpu_scheduler_sample_interval_seconds" not in settings_text

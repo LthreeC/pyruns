@@ -72,6 +72,7 @@ _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _GPU_SCHEDULER_PAYLOAD_KEYS = {
     "enabled": "gpu_scheduler_enabled",
     "task_mode": "gpu_scheduler_task_mode",
+    "selection_mode": "gpu_scheduler_selection_mode",
     "gpus_per_task": "gpu_scheduler_gpus_per_task",
     "device_ids": "gpu_scheduler_device_ids",
     "memory_used_pct": "gpu_scheduler_memory_used_pct",
@@ -81,6 +82,7 @@ _GPU_SCHEDULER_PAYLOAD_KEYS = {
     "max_wait_seconds": "gpu_scheduler_max_wait_seconds",
     "max_tasks_per_gpu": "gpu_scheduler_max_tasks_per_gpu",
     "respect_cuda_visible_devices": "gpu_scheduler_respect_cuda_visible_devices",
+    "require_same_gpu_model": "gpu_scheduler_require_same_gpu_model",
 }
 
 
@@ -216,11 +218,14 @@ def _clean_gpu_scheduler_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if key not in payload:
             continue
         value = payload[key]
-        if key in {"enabled", "respect_cuda_visible_devices"}:
+        if key in {"enabled", "respect_cuda_visible_devices", "require_same_gpu_model"}:
             clean[setting_key] = _coerce_bool_payload(value)
         elif key == "task_mode":
             mode = str(value or "single").strip().lower()
             clean[setting_key] = "multi" if mode == "multi" else "single"
+        elif key == "selection_mode":
+            mode = str(value or "auto").strip().lower()
+            clean[setting_key] = "specified" if mode in {"specified", "fixed", "manual"} else "auto"
         elif key == "device_ids":
             clean[setting_key] = _coerce_gpu_device_ids_payload(value)
         elif key == "gpus_per_task":
@@ -576,6 +581,7 @@ class PyrunsRuntime:
             "gpu_scheduler": {
                 "enabled": gpu_config.enabled,
                 "task_mode": "multi" if gpu_config.task_mode == "multi" else "single",
+                "selection_mode": "specified" if gpu_config.uses_specified_devices else "auto",
                 "gpus_per_task": gpu_config.gpus_per_task,
                 "device_ids": list(gpu_config.device_ids),
                 "memory_used_pct": gpu_config.memory_used_pct,
@@ -585,6 +591,7 @@ class PyrunsRuntime:
                 "max_wait_seconds": gpu_config.max_wait_seconds,
                 "max_tasks_per_gpu": gpu_config.max_tasks_per_gpu,
                 "respect_cuda_visible_devices": gpu_config.respect_cuda_visible_devices,
+                "require_same_gpu_model": gpu_config.require_same_gpu_model,
             },
             "process": {
                 "python_executable": os.path.abspath(sys.executable),

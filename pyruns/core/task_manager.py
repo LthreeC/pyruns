@@ -1991,8 +1991,9 @@ class TaskManager:
     @staticmethod
     def _gpu_pool_label(config: GpuSchedulerConfig) -> str:
         if not config.device_ids:
-            return "any"
-        return ",".join(str(device_id) for device_id in config.device_ids)
+            return "not set" if config.uses_specified_devices else "any"
+        label = ",".join(str(device_id) for device_id in config.device_ids)
+        return f"specified {label}" if config.uses_specified_devices else label
 
     @staticmethod
     def _gpu_assignment_to_dict(assignment: GpuAssignment) -> Dict[str, Any]:
@@ -2173,6 +2174,7 @@ class TaskManager:
                     f"Run #{run_index} waiting for GPU resources, mode={mode}, "
                     f"need={self._gpu_need_label(config)}, timeout={timeout}, max wait={timeout}"
                 ),
+                f"GPU selection={config.selection_mode}",
                 f"GPU pool={self._gpu_pool_label(config)}",
                 format_gpu_rule(config),
                 f"Per-GPU concurrency limit={config.max_tasks_per_gpu}",

@@ -1112,7 +1112,11 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "type RuntimePage = 'python' | 'env' | 'gpu'" in runtime_panel
     assert "GPU Scheduler" in runtime_panel
     assert "Task uses" in runtime_panel
+    assert "Selection" in runtime_panel
+    assert "Auto pick" in runtime_panel
+    assert "Specified IDs" in runtime_panel
     assert "Custom Count" in runtime_panel
+    assert "GPU IDs" in runtime_panel
     assert "Memory used below" in runtime_panel
     assert "Free memory at least" in runtime_panel
     assert "Compute below" in runtime_panel
@@ -1122,14 +1126,19 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "useState(48)" in runtime_panel
     assert "max_wait_seconds ?? 172800" in runtime_panel
     assert "setGpuSchedulerEnabled(next.gpu_scheduler?.enabled ?? false)" in runtime_panel
+    assert "setGpuSelectionMode(next.gpu_scheduler?.selection_mode === 'specified' ? 'specified' : 'auto')" in runtime_panel
+    assert "setGpuRequireSameModel(next.gpu_scheduler?.require_same_gpu_model ?? false)" in runtime_panel
     assert "function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number)" in runtime_panel
     assert "const chooseGpuTaskMode = (mode: GpuTaskMode) => {" in runtime_panel
     assert "min={1}" in runtime_panel
+    assert "selection_mode: gpuSelectionMode" in runtime_panel
     assert "gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1" in runtime_panel
     assert "memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100)" in runtime_panel
     assert "compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100)" in runtime_panel
     assert "stable_seconds: numberInputValue(gpuStableSeconds, 15, 1)" in runtime_panel
     assert "max_wait_seconds: gpuMaxWaitHours * 3600" in runtime_panel
+    assert "require_same_gpu_model: gpuRequireSameModel" in runtime_panel
+    assert "Require same GPU model for multi-GPU" in runtime_panel
     assert "sample_interval_seconds" not in runtime_panel
     assert "gpu_scheduler_sample_interval_seconds" not in runtime_panel
     assert "disabled={saving || !runtime}" not in runtime_panel
@@ -1137,6 +1146,8 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
     assert "GpuSchedulerSettings" in types
+    assert "selection_mode: 'auto' | 'specified'" in types
+    assert "require_same_gpu_model: boolean" in types
     assert "sample_interval_seconds" not in types
     assert "gpu_scheduler?: Partial<GpuSchedulerSettings>" in api
 

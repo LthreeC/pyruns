@@ -78,6 +78,7 @@ export interface CondaEnvInfo {
 export interface GpuSchedulerSettings {
   enabled: boolean
   task_mode: 'single' | 'multi'
+  selection_mode: 'auto' | 'specified'
   gpus_per_task: number
   device_ids: number[]
   memory_used_pct: number
@@ -87,6 +88,7 @@ export interface GpuSchedulerSettings {
   max_wait_seconds: number
   max_tasks_per_gpu: number
   respect_cuda_visible_devices: boolean
+  require_same_gpu_model: boolean
 }
 
 export interface RuntimeInfo {

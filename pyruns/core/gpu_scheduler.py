@@ -12,6 +12,8 @@ from pyruns.core.system_metrics import SystemMonitor
 CUDA_VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
 PYRUNS_ASSIGNED_GPUS = "PYRUNS_ASSIGNED_GPUS"
 _STABLE_SAMPLE_MAX_GAP_SECONDS = 1.0
+GPU_SELECTION_AUTO = "auto"
+GPU_SELECTION_SPECIFIED = "specified"
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class SystemGpuProvider:
 class GpuSchedulerConfig:
     enabled: bool = False
     task_mode: str = "single"
+    selection_mode: str = GPU_SELECTION_AUTO
     gpus_per_task: int = 1
     device_ids: List[int] = field(default_factory=list)
     memory_used_pct: float = 40.0
@@ -82,9 +85,11 @@ class GpuSchedulerConfig:
     max_wait_seconds: float = 172800.0
     max_tasks_per_gpu: int = 1
     respect_cuda_visible_devices: bool = True
+    require_same_gpu_model: bool = False
 
     def __post_init__(self) -> None:
         self.stable_seconds = max(1.0, _coerce_float(self.stable_seconds, 15.0))
+        self.selection_mode = _coerce_selection_mode(self.selection_mode)
 
     @classmethod
     def from_settings(cls, settings: Dict[str, Any]) -> "GpuSchedulerConfig":
@@ -93,6 +98,7 @@ class GpuSchedulerConfig:
         return cls(
             enabled=_coerce_bool(settings.get("gpu_scheduler_enabled", False), False),
             task_mode=task_mode,
+            selection_mode=_coerce_selection_mode(settings.get("gpu_scheduler_selection_mode", GPU_SELECTION_AUTO)),
             gpus_per_task=max(1, _coerce_int(settings.get("gpu_scheduler_gpus_per_task"), 1)),
             device_ids=_coerce_device_ids(settings.get("gpu_scheduler_device_ids", [])),
             memory_used_pct=_coerce_pct(settings.get("gpu_scheduler_memory_used_pct"), 40.0),
@@ -102,6 +108,7 @@ class GpuSchedulerConfig:
             max_wait_seconds=max(1.0, _coerce_float(settings.get("gpu_scheduler_max_wait_seconds"), 172800.0)),
             max_tasks_per_gpu=max(1, _coerce_int(settings.get("gpu_scheduler_max_tasks_per_gpu"), 1)),
             respect_cuda_visible_devices=_coerce_bool(settings.get("gpu_scheduler_respect_cuda_visible_devices", True), True),
+            require_same_gpu_model=_coerce_bool(settings.get("gpu_scheduler_require_same_gpu_model", False), False),
         )
 
     @property
@@ -109,6 +116,10 @@ class GpuSchedulerConfig:
         if self.task_mode == "multi":
             return max(1, int(self.gpus_per_task or 1))
         return 1
+
+    @property
+    def uses_specified_devices(self) -> bool:
+        return self.selection_mode == GPU_SELECTION_SPECIFIED
 
 
 @dataclass(frozen=True)
@@ -215,6 +226,12 @@ class GpuResourceScheduler:
                 required_ids = requested_ids
                 visible = existing_cuda
                 inject_cuda = False
+            elif config.uses_specified_devices:
+                required_ids, reason = self._configured_fixed_ids(config)
+                if not required_ids:
+                    return GpuDecision(assignment=None, reason=reason, snapshot=snapshot)
+                visible = ",".join(str(gpu_id) for gpu_id in required_ids)
+                inject_cuda = True
             else:
                 required_ids = []
                 visible = ""
@@ -278,22 +295,51 @@ class GpuResourceScheduler:
 
     def _select_available_group(self, config: GpuSchedulerConfig, now: float) -> tuple[List[int], str]:
         required_count = config.required_gpu_count
-        selected: List[int] = []
+        eligible: List[GpuDevice] = []
         blocked: List[str] = []
         for gpu in self._candidate_devices(config):
             reason = self._blocked_reason(gpu, config, now)
             if reason:
                 blocked.append(reason)
                 continue
-            selected.append(gpu.index)
-            if len(selected) >= required_count:
-                return selected, "assigned"
+            eligible.append(gpu)
+
+        if len(eligible) >= required_count:
+            if required_count > 1 and config.require_same_gpu_model:
+                same_model_ids, same_model_reason = self._select_same_model_group(eligible, required_count)
+                if same_model_ids:
+                    return same_model_ids, "assigned"
+                return [], same_model_reason
+            return [gpu.index for gpu in eligible[:required_count]], "assigned"
 
         if not self._snapshot:
             return [], "no NVIDIA GPU metrics available"
-        if selected:
-            return [], f"need {required_count} eligible GPUs, only {len(selected)} available"
+        if eligible:
+            return [], f"need {required_count} eligible GPUs, only {len(eligible)} available"
         return [], "; ".join(blocked[:3]) or f"waiting for GPUs to be stable for {config.stable_seconds:g}s"
+
+    def _select_same_model_group(self, devices: List[GpuDevice], required_count: int) -> tuple[List[int], str]:
+        groups: Dict[str, List[GpuDevice]] = {}
+        for gpu in devices:
+            model = _gpu_model_name(gpu)
+            group = groups.setdefault(model, [])
+            group.append(gpu)
+            if len(group) >= required_count:
+                return [item.index for item in group[:required_count]], "assigned"
+
+        if not groups:
+            return [], f"need {required_count} eligible GPUs with same model"
+        best_model, best_group = max(groups.items(), key=lambda item: len(item[1]))
+        return [], f"need {required_count} eligible GPUs with same model, best {best_model} has {len(best_group)}"
+
+    def _configured_fixed_ids(self, config: GpuSchedulerConfig) -> tuple[List[int], str]:
+        requested_ids = list(config.device_ids or [])
+        required_count = config.required_gpu_count
+        if len(requested_ids) < required_count:
+            return [], f"specified mode needs {required_count} GPU IDs, only {len(requested_ids)} configured"
+        if len(requested_ids) > required_count:
+            return [], f"specified mode needs exactly {required_count} GPU IDs, got {len(requested_ids)} configured"
+        return requested_ids, "assigned"
 
     def _validate_fixed_ids(
         self,
@@ -307,6 +353,7 @@ class GpuResourceScheduler:
 
         allowed = set(config.device_ids or [])
         devices_by_id = {gpu.index: gpu for gpu in self._snapshot}
+        selected_devices: List[GpuDevice] = []
         for gpu_id in requested_ids:
             if allowed and gpu_id not in allowed:
                 return [], f"GPU {gpu_id} outside configured GPU pool"
@@ -316,7 +363,19 @@ class GpuResourceScheduler:
             reason = self._blocked_reason(gpu, config, now)
             if reason:
                 return [], reason
+            selected_devices.append(gpu)
+        same_model_reason = self._same_model_violation(selected_devices, config, scope="requested")
+        if same_model_reason:
+            return [], same_model_reason
         return list(requested_ids), "assigned"
+
+    def _same_model_violation(self, devices: List[GpuDevice], config: GpuSchedulerConfig, *, scope: str) -> str:
+        if not config.require_same_gpu_model or len(devices) <= 1:
+            return ""
+        models = sorted({_gpu_model_name(gpu) for gpu in devices})
+        if len(models) <= 1:
+            return ""
+        return f"{scope} GPUs must use the same model, got {', '.join(models)}"
 
     def _blocked_reason(self, gpu: GpuDevice, config: GpuSchedulerConfig, now: float) -> str:
         reserved = self._reserved_count(gpu.index)
@@ -362,12 +421,21 @@ def format_gpu_queue_block(title: str, lines: List[str]) -> str:
 
 
 def format_gpu_rule(config: GpuSchedulerConfig) -> str:
-    return (
+    rule = (
         f"Rule: memory used <= {config.memory_used_pct:g}%; "
         f"compute <= {config.compute_used_pct:g}%; "
         f"free memory >= {config.min_free_memory_gb:g} GiB; "
         f"stable for {config.stable_seconds:g}s"
     )
+    if config.uses_specified_devices:
+        rule += "; specified GPUs only"
+    if config.require_same_gpu_model and config.required_gpu_count > 1:
+        rule += "; same model required"
+    return rule
+
+
+def _gpu_model_name(gpu: GpuDevice) -> str:
+    return str(gpu.name or "GPU").strip() or "GPU"
 
 
 def _parse_cuda_visible_devices(value: str) -> Optional[List[int]]:
@@ -415,6 +483,13 @@ def _coerce_float(value: Any, default: float) -> float:
 
 def _coerce_pct(value: Any, default: float) -> float:
     return min(100.0, max(0.0, _coerce_float(value, default)))
+
+
+def _coerce_selection_mode(value: Any) -> str:
+    text = str(value or GPU_SELECTION_AUTO).strip().lower()
+    if text in {GPU_SELECTION_SPECIFIED, "fixed", "manual"}:
+        return GPU_SELECTION_SPECIFIED
+    return GPU_SELECTION_AUTO
 
 
 def _coerce_device_ids(value: Any) -> List[int]:
