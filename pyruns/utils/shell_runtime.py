@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import Any, Dict
 
 from pyruns._config import (
+    ENV_KEY_CLI_SHELL_EXECUTABLE,
     ENV_KEY_SHELL,
     SHELL_CONFIG_FILENAME,
     SHELL_KIND_TO_CONFIG_FILENAME,
@@ -52,6 +53,44 @@ _SHELL_KIND_ALIASES = {
     "fish": "fish",
     "fish.exe": "fish",
 }
+_CMD_META_CHARS = frozenset("&|<>^()%!")
+
+
+def quote_windows_cmd_argument(value: str) -> str:
+    """Render one literal argv item inside a Windows batch command."""
+
+    value = str(value)
+    if "\r" in value or "\n" in value:
+        raise ValueError("cmd cannot preserve newlines inside exact command arguments")
+    value = value.replace("%", "%%")
+    needs_quotes = (
+        not value
+        or " " in value
+        or "\t" in value
+        or any(character in _CMD_META_CHARS for character in value)
+    )
+    if not needs_quotes and '"' not in value:
+        return value
+
+    result = ['"'] if needs_quotes else []
+    backslashes = 0
+    for character in value:
+        if character == chr(92):
+            backslashes += 1
+            continue
+        if character == '"':
+            result.append(chr(92) * (backslashes * 2 + 1))
+            result.append('"')
+        else:
+            if backslashes:
+                result.append(chr(92) * backslashes)
+            result.append(character)
+        backslashes = 0
+    if backslashes:
+        result.append(chr(92) * (backslashes * (2 if needs_quotes else 1)))
+    if needs_quotes:
+        result.append('"')
+    return "".join(result)
 
 
 def normalize_shell_mode(value: Any) -> str:
@@ -272,6 +311,17 @@ def _fallback_follow_shell() -> Dict[str, str]:
 def get_follow_shell_runtime() -> Dict[str, str]:
     """Return the cached runtime info for the current launching terminal."""
 
+    explicit = str(os.getenv(ENV_KEY_CLI_SHELL_EXECUTABLE, "") or "").strip()
+    if explicit:
+        resolved = _resolve_candidate_path(explicit) or explicit
+        kind, display = classify_shell_executable(resolved)
+        return {
+            "source": "cli_parent_terminal",
+            "terminal_kind": kind,
+            "display_name": display,
+            "executable": resolved,
+            "available": bool(_resolve_candidate_path(explicit)),
+        }
     return _find_shell_in_process_tree() or _fallback_follow_shell()
 
 
@@ -315,6 +365,94 @@ def get_shell_runtime_for_task(task_dir: str | None = None) -> Dict[str, Any]:
     """Return the effective shell runtime configuration for one task directory."""
 
     return get_shell_runtime_for_workspace(_shell_settings_root_for_task(task_dir))
+
+
+def _resolve_available_shell(candidates: list[str], kind: str) -> str:
+    """Return the first runnable shell candidate of the requested kind."""
+
+    for candidate in candidates:
+        resolved = _resolve_candidate_path(candidate)
+        if resolved and _probe_shell_executable(resolved, kind):
+            return resolved
+    return ""
+
+
+def build_script_file_argv(
+    script_path: str,
+    script_args: list[str],
+    settings_root: str | None = None,
+) -> list[str]:
+    """Build an explicit interpreter argv for a supported shell script file."""
+
+    extension = os.path.splitext(script_path)[1].lower()
+    runtime = get_shell_runtime_for_workspace(settings_root)
+    runtime_kind = str(runtime.get("terminal_kind", "") or "").strip().lower()
+    runtime_executable = str(runtime.get("executable", "") or "").strip()
+    runtime_available = bool(runtime.get("available", False))
+
+    if extension == ".sh":
+        executable = (
+            runtime_executable
+            if runtime_available and runtime_kind in {"bash", "sh"}
+            else _resolve_available_shell(["bash"], "bash")
+            or _resolve_available_shell(["sh"], "sh")
+        )
+        if not executable:
+            raise RuntimeError(".sh scripts require an available Bash or sh executable")
+        executable_script = (
+            _windows_posix_script_arg(executable, script_path)
+            if os.name == "nt"
+            else script_path
+        )
+        if os.name == "nt" and _is_windows_wsl_bash_executable(executable):
+            wsl_executable = _resolve_candidate_path("wsl.exe")
+            if not wsl_executable:
+                raise RuntimeError("WSL Bash scripts require an available wsl.exe")
+            return [
+                wsl_executable,
+                "--exec",
+                "/bin/bash",
+                executable_script,
+                *script_args,
+            ]
+        return [executable, executable_script, *script_args]
+
+    if extension == ".ps1":
+        executable = (
+            runtime_executable
+            if runtime_available and runtime_kind == "powershell"
+            else _resolve_available_shell(["pwsh", "powershell"], "powershell")
+        )
+        if not executable:
+            raise RuntimeError(".ps1 scripts require an available PowerShell executable")
+        command = [executable, "-NoLogo", "-NoProfile", "-NonInteractive"]
+        if os.name == "nt":
+            command.extend(["-ExecutionPolicy", "Bypass"])
+        return [*command, "-File", script_path, *script_args]
+
+    if extension in {".cmd", ".bat"}:
+        if os.name != "nt":
+            raise RuntimeError(f"{extension} scripts can only run on Windows")
+        executable = _resolve_available_shell(
+            [str(os.getenv("COMSPEC", "") or ""), "cmd.exe"],
+            "cmd",
+        )
+        if not executable:
+            raise RuntimeError(f"{extension} scripts require an available cmd.exe")
+        values = [script_path, *script_args]
+        if any("\r" in value or "\n" in value for value in values):
+            raise RuntimeError("cmd script arguments cannot contain newlines")
+        return [
+            executable,
+            "/d",
+            "/s",
+            "/v:off",
+            "/c",
+            script_path,
+            *script_args,
+        ]
+
+    raise ValueError(f"unsupported shell script type: {extension or '<none>'}")
 
 
 def get_shell_config_filename_for_workspace(settings_root: str | None = None) -> str:

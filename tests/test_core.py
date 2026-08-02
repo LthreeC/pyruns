@@ -1980,6 +1980,14 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
     )
     assert env["WSLENV"] == f"{ENV_KEY_CONFIG}/p:PYRUNS_TASK_ENV"
 
+    env = {"PYRUNS_WSL_VALUE": "works"}
+    executor._augment_wsl_env(
+        [r"C:\Windows\System32\wsl.exe", "--exec", "/bin/bash", "/mnt/c/run.sh"],
+        env,
+        {"PYRUNS_WSL_VALUE"},
+    )
+    assert env["WSLENV"] == "PYRUNS_WSL_VALUE"
+
     env = {ENV_KEY_CONFIG: r"C:\task\config.yaml", "WSLENV": f"{ENV_KEY_CONFIG}:OTHER"}
     executor._augment_wsl_env(
         [r"C:\Windows\System32\bash.exe", "/mnt/c/run.sh"],
@@ -2015,7 +2023,10 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
         assert cmd_command[-1] == cmd_cleanup_paths[0]
         assert Path(ps_cleanup_paths[0]).parent == task_dir
         assert Path(cmd_cleanup_paths[0]).parent == task_dir
-        assert "$PSScriptRoot" in Path(ps_cleanup_paths[0]).read_text(encoding="utf-8-sig")
+        ps_wrapper_text = Path(ps_cleanup_paths[0]).read_text(encoding="utf-8-sig")
+        assert "$PSScriptRoot" in ps_wrapper_text
+        assert "$__pyrunsSucceeded = $?" in ps_wrapper_text
+        assert "exit $__pyrunsExitCode" in ps_wrapper_text
         assert "%~dp0sentinel.txt" in Path(cmd_cleanup_paths[0]).read_text(encoding="utf-8-sig")
     finally:
         for cleanup_path in [*ps_cleanup_paths, *cmd_cleanup_paths]:
@@ -2086,6 +2097,9 @@ def test_executor_runtime_source_and_summary_helpers_cover_edge_paths(tmp_path, 
 
     monkeypatch.setattr(executor, "_is_windows", lambda: False)
     assert executor._popen_process_group_kwargs() == {"start_new_session": True}
+    monkeypatch.setattr(executor, "_is_windows", lambda: True)
+    monkeypatch.setattr(executor.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    assert executor._popen_process_group_kwargs() == {"creationflags": 0x08000000}
 
     monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
     assert executor._cli_terminal_runtime_enabled() is False
@@ -2730,9 +2744,9 @@ def test_run_task_worker_pending_stop_before_process_start_skips_popen(tmp_path,
         run_index=1,
     )
 
-    assert result["status"] == "failed"
+    assert result["status"] == "cancelled"
     info = load_task_info(str(task_dir))
-    assert info["status"] == "failed"
+    assert info["status"] == "cancelled"
     assert info["progress"] == 0.0
     assert info["finish_times"][0]
     assert "_pending_stop_summary" not in info
@@ -2799,11 +2813,11 @@ def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist
         run_index=1,
     )
 
-    assert result["status"] == "failed"
+    assert result["status"] == "cancelled"
     assert killed == [9877]
     mock_proc.wait.assert_called_once_with(timeout=1)
     info = load_task_info(str(task_dir))
-    assert info["status"] == "failed"
+    assert info["status"] == "cancelled"
     assert info["progress"] == 0.0
     assert info["pids"][0] == 9877
     assert "_pending_stop_summary" not in info
@@ -2813,6 +2827,20 @@ def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist
     assert "process_terminated=True" in error_text
     assert not (task_dir / RUN_LOGS_DIR / "run1.log").exists()
 
+
+def test_task_manager_uses_explicit_runner_token(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            runner_token="submission-token",
+        )
+
+    assert manager.runner_id.rsplit(":", 1)[-1] == "submission-token"
+    manager.shutdown()
 
 def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
@@ -2869,8 +2897,8 @@ def test_task_manager_sync_status_does_not_revive_cancelled_queued_task(tmp_path
     ) is False
 
     info = load_task_info(task["dir"])
-    assert info["status"] == "failed"
-    assert manager.get_task(task["name"])["status"] == "failed"
+    assert info["status"] == "cancelled"
+    assert manager.get_task(task["name"])["status"] == "cancelled"
 
 
 def test_task_manager_submit_after_delete_does_not_recreate_or_execute(tmp_path, monkeypatch):
@@ -3687,11 +3715,12 @@ def test_task_manager_clears_stale_gpu_schedule_env_before_plain_rerun(tmp_path,
     assert "_queued_execution_mode" not in submitted[0]
 
 
-def test_task_manager_plain_rerun_does_not_create_gpu_wait_state(tmp_path):
+@pytest.mark.parametrize("final_status", ["completed", "failed", "cancelled"])
+def test_task_manager_plain_rerun_does_not_create_gpu_wait_state(tmp_path, final_status):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("plain-rerun", {"lr": 0.1})
-    update_task_info(task["dir"], lambda info: info.update({"status": "completed", "run_index": 1}))
+    update_task_info(task["dir"], lambda info: info.update({"status": final_status, "run_index": 1}))
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
@@ -3827,6 +3856,60 @@ def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path)
     assert "reason=gpu_wait_timeout" in error_text
 
 
+def test_task_manager_gpu_wait_timeout_preserves_task_claimed_by_foreign_runner(tmp_path):
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    tasks_dir = workspace / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    (tmp_path / DEFAULT_ROOT_NAME / "_pyruns_settings.yaml").write_text(
+        "\n".join(
+            [
+                "gpu_scheduler_enabled: true",
+                "gpu_scheduler_stable_seconds: 15",
+                "gpu_scheduler_max_wait_seconds: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-timeout-race", {"lr": 0.1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager.start_batch_tasks([task["name"]], max_workers=1)
+    with manager._lock:
+        manager._tasks_by_name[task["name"]]["_gpu_wait_started_at"] = time.monotonic() - 10
+
+    update_task_info(
+        task["dir"],
+        lambda info: info.update(
+            {
+                "status": "running",
+                "run_index": 1,
+                "runner_id": "other-host:4321:abcdef",
+                "runner_host": "other-host",
+                "lease_until": time.time() + 60,
+                "pids": [4321],
+            }
+        ),
+    )
+
+    target, run_index = manager._pick_queued_task()
+
+    assert target is None
+    assert run_index == 1
+    refreshed = manager.get_task(task["name"])
+    assert refreshed["status"] == "running"
+    assert refreshed["run_index"] == 1
+    assert refreshed["runner_id"] == "other-host:4321:abcdef"
+    info = load_task_info(task["dir"])
+    assert info["status"] == "running"
+    assert info["runner_id"] == "other-host:4321:abcdef"
+    queue_text = (Path(task["dir"]) / RUN_LOGS_DIR / "queue.log").read_text(encoding="utf-8")
+    assert "GPU WAIT TIMEOUT" not in queue_text
+    assert not (Path(task["dir"]) / RUN_LOGS_DIR / ERROR_LOG_FILENAME).exists()
+
+
 def test_task_manager_queued_placeholder_run_slot_is_trimmed_before_next_assignment(tmp_path):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     tasks_dir = workspace / TASKS_DIR
@@ -3905,7 +3988,7 @@ def test_task_manager_cancel_queued_task_does_not_create_run_slot(tmp_path):
     assert manager.cancel_task(task["name"]) is True
 
     info = load_task_info(task["dir"])
-    assert info["status"] == "failed"
+    assert info["status"] == "cancelled"
     assert info["run_index"] == 1
     assert info["start_times"] == ["2026-01-01_00-00-00"]
     assert info["finish_times"] == ["2026-01-01_00-00-01"]
@@ -4048,7 +4131,7 @@ def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
     assert manager.cancel_task("runner") is True
 
     info = json.loads((task_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
-    assert info["status"] == "failed"
+    assert info["status"] == "cancelled"
     assert info["_pending_stop_summary"]["reason"] == "cancelled_by_user"
     assert info["_pending_stop_summary"]["detail_lines"] == ["previous_status=running"]
     assert events == ["persist", ("kill", 12345)]
@@ -4088,7 +4171,7 @@ def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch
     with patch("pyruns.core.task_manager.update_task_info", side_effect=TimeoutError("busy")):
         assert manager.cancel_task("runner") is True
 
-    assert manager.get_task("runner")["status"] == "failed"
+    assert manager.get_task("runner")["status"] == "cancelled"
 
 
 def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatch):
@@ -4444,6 +4527,51 @@ def test_task_manager_shutdown_cleanup_ignores_malformed_in_memory_tasks(tmp_pat
     manager._cleanup_on_shutdown()
 
     assert manager.tasks == [{}, {"name": "missing-status"}, None]
+
+
+def test_task_manager_shutdown_does_not_overwrite_newer_final_disk_status(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("finished-elsewhere", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with manager._lock:
+        manager._tasks_by_name[task["name"]]["status"] = "running"
+    update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
+
+    manager._cleanup_on_shutdown()
+
+    assert load_task_info(task["dir"])["status"] == "completed"
+
+
+def test_foreign_queued_runner_lease_survives_observer_shutdown(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    first = generator.create_task("first", {"value": 1})
+    second = generator.create_task("second", {"value": 2})
+
+    with (
+        patch.object(TaskManager, "_scheduler_loop", lambda self: None),
+        patch.object(TaskManager, "_submit_task", lambda self, *args, **kwargs: None),
+    ):
+        owner = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+        owner.start_batch_tasks([first["name"], second["name"]], max_workers=1)
+        observer = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    queued_info = load_task_info(second["dir"])
+    assert queued_info["status"] == "queued"
+    assert queued_info["runner_id"] == owner.runner_id
+
+    observer._cleanup_on_shutdown()
+
+    after = load_task_info(second["dir"])
+    assert after["status"] == "queued"
+    assert after["runner_id"] == owner.runner_id
+    owner.shutdown()
+    observer.shutdown()
 
 
 def test_task_manager_shutdown_unregisters_atexit_callback(tmp_path):
@@ -4890,9 +5018,10 @@ def test_task_manager_start_batch_sync_conflict_keeps_foreign_runner_without_sub
         lambda target, run_index, *, independent, execution_mode=None: submitted.append(target["name"]),
     )
 
-    manager.start_batch_tasks(["alpha"], max_workers=1)
+    claimed = manager.start_batch_tasks(["alpha"], max_workers=1)
 
     refreshed = manager.get_task("alpha")
+    assert claimed == []
     assert submitted == []
     assert refreshed["status"] == "running"
     assert refreshed["run_index"] == 4
@@ -5653,7 +5782,7 @@ def test_run_task_worker_merges_pending_stop_summary_into_single_error_block(moc
         run_index=1,
     )
 
-    assert res["status"] == "failed"
+    assert res["status"] == "cancelled"
     error_log = os.path.join(task_dir, "run_logs", "error.log")
     with open(error_log, "r", encoding="utf-8") as f:
         content = f.read()
@@ -5662,7 +5791,8 @@ def test_run_task_worker_merges_pending_stop_summary_into_single_error_block(moc
     assert "previous_status=running" in content
     assert "exit_code=1" in content
     assert "reason=exit_code 1" not in content
-
+    run_log = Path(task_dir, "run_logs", "run1.log").read_text(encoding="utf-8")
+    assert "[PYRUNS] Final status: cancelled" in run_log
     final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert "_pending_stop_summary" not in final_info
 
@@ -5721,9 +5851,9 @@ def test_run_task_worker_pending_stop_summary_forces_failed_even_when_exit_code_
         run_index=1,
     )
 
-    assert res["status"] == "failed"
+    assert res["status"] == "cancelled"
     final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
-    assert final_info["status"] == "failed"
+    assert final_info["status"] == "cancelled"
     assert final_info["progress"] == 0.0
     assert "_pending_stop_summary" not in final_info
 
@@ -5768,7 +5898,7 @@ def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
         update_task_info(
             task_dir,
             lambda info: info.update({
-                "status": "failed",
+                "status": "cancelled",
                 "_pending_stop_summary": {
                     "run_index": 1,
                     "event": "stopped",
@@ -5794,9 +5924,9 @@ def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
         run_index=1,
     )
 
-    assert res["status"] == "failed"
+    assert res["status"] == "cancelled"
     final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
-    assert final_info["status"] == "failed"
+    assert final_info["status"] == "cancelled"
     assert final_info["progress"] == 0.0
     assert "_pending_stop_summary" not in final_info
     error_log = os.path.join(task_dir, "run_logs", "error.log")

@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: "Pyruns"
-  text: "Python 实验管理与监控 Web UI"
-  tagline: "极简、轻量且强大。基于开箱即用的设计理念，让机器学习调参过程优雅而高效。"
+  text: "可复现任务的 Git 式 CLI 与 Web UI"
+  tagline: "用一次性命令运行、记录和控制终端任务与 Python 实验，需要可视化时再显式打开 Web UI。"
   image:
     src: https://img.shields.io/pypi/v/pyruns?style=for-the-badge&logo=python&logoColor=white
     alt: Pyruns version
@@ -28,8 +28,8 @@ features:
     details: 在浏览器中实时查看 ANSI 彩色日志，内置 CPU/GPU 资源监控，支持实验指标一键导出。
   - title: 任务并行调度
     details: 支持线程/进程双模式调度，轻松管理多核并发实验。
-  - title: 命令行 CLI 等价模式
-    details: 针对无头服务器环境提供与 Web UI 功能对等的交互式终端，全键盘搞定常用工作流。
+  - title: Git 式一次性 CLI
+    details: pyr 与 pyruns 双正式入口、明确子命令、稳定 JSON 与退出码；适合终端、CI 和 AI agent，不需要操控交互提示符。
   - title: 隔离的存储策略
     details: 采用 _pyruns_ 目录自动隔离不同脚本的实验记录，有效防止数据覆写与冲突。
 ---
@@ -38,6 +38,8 @@ features:
 
 ```bash
 pip install pyruns
+pyr init
+pyr exec -n smoke -- python -V
 ```
 
 从 [安装与快速开始](/getting-started) 进入完整使用流程，或直接查看 [Web 界面操作](/ui-guide) 和 [命令行 CLI 控制](/cli-guide)。

@@ -522,7 +522,7 @@ class TestAddMonitor:
         assert pyruns.load() == {}
         output = capsys.readouterr().out
         assert "Config not found" in output
-        assert "pyr train.py your_config.yaml" in output
+        assert "pyr init train.py --config your_config.yaml" in output
         assert calls[-1] == ("load",)
 
     def test_load_reads_existing_default_config_when_manager_is_empty(self, tmp_path, monkeypatch):

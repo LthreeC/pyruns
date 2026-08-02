@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 from pyruns import ensure_config_default
 from pyruns._config import (
+    ACTIVE_WORKSPACE_FILENAME,
     CONFIG_DEFAULT_FILENAME,
     DEFAULT_ROOT_NAME,
     ENV_KEY_ROOT,
@@ -367,7 +368,22 @@ def _write_script_info(workspace_path: str, payload: dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
 
 
-def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str:
+def mark_workspace_active(workspace_path: str) -> str:
+    """Record the workspace most recently selected in its project root."""
+
+    normalized = normalize_path(workspace_path)
+    marker_path = os.path.join(os.path.dirname(normalized), ACTIVE_WORKSPACE_FILENAME)
+    with open(marker_path, "w", encoding="utf-8") as handle:
+        handle.write(os.path.basename(normalized))
+    return normalized
+
+
+def bootstrap_workspace(
+    script_path: str,
+    custom_yaml: str | None = None,
+    *,
+    preserve_default: bool = False,
+) -> str:
     """Prepare a script workspace and optionally import a selected YAML config."""
 
     filepath = validate_python_script_path(script_path)
@@ -402,18 +418,20 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
         if resolved_custom_yaml == config_default_path:
             resolved_custom_yaml = ""
 
-    if resolved_custom_yaml:
+    keep_existing_default = preserve_default and os.path.exists(config_default_path)
+    if resolved_custom_yaml and not keep_existing_default:
         shutil.copy2(resolved_custom_yaml, config_default_path)
         script_info["config_default_source"] = resolved_custom_yaml
         script_info["config_default_source_name"] = os.path.basename(resolved_custom_yaml)
-    elif mode == "argparse":
+    elif mode == "argparse" and not keep_existing_default:
         params = extract_argparse_params(filepath)
         generate_config_file(script_dir, filepath, params)
     elif mode == "pyruns_load" and not os.path.exists(config_default_path):
         raise FileNotFoundError(
             "This script uses pyruns.load() and needs a YAML template on first launch. "
-            "Choose a YAML config in the Launcher, or run `pyr <script.py> <config.yaml>` once. "
-            f"Later `pyr <script.py>` will reuse `{CONFIG_DEFAULT_FILENAME}` automatically."
+            "Choose a YAML config in the Launcher, or run "
+            "`pyr init <script.py> --config <config.yaml>` once. "
+            f"Later `pyr ui <script.py>` will reuse `{CONFIG_DEFAULT_FILENAME}` automatically."
         )
     elif existing.get("config_default_source"):
         script_info["config_default_source"] = existing["config_default_source"]
@@ -427,7 +445,7 @@ def bootstrap_workspace(script_path: str, custom_yaml: str | None = None) -> str
 
     _write_script_info(script_dir, script_info)
     os.environ[ENV_KEY_ROOT] = script_dir
-    return script_dir
+    return mark_workspace_active(script_dir)
 
 
 def bootstrap_shell_workspace(run_root: str) -> str:
@@ -453,7 +471,7 @@ def bootstrap_shell_workspace(run_root: str) -> str:
     _write_script_info(shell_root, payload)
 
     os.environ[ENV_KEY_ROOT] = shell_root
-    return shell_root
+    return mark_workspace_active(shell_root)
 
 
 def read_workspace_summary(workspace_path: str) -> dict[str, Any]:
@@ -480,10 +498,17 @@ def launcher_query(script_path: str | None = None, config_path: str | None = Non
     return f"/?{urlencode(params)}"
 
 
-def bootstrap_from_cli(script_path: str, custom_yaml: str | None = None) -> str:
+def bootstrap_from_cli(
+    script_path: str,
+    custom_yaml: str | None = None,
+    *,
+    preserve_default: bool = False,
+) -> str:
     """CLI wrapper for workspace bootstrap that exits on user-facing errors."""
 
     try:
+        if preserve_default:
+            return bootstrap_workspace(script_path, custom_yaml, preserve_default=True)
         return bootstrap_workspace(script_path, custom_yaml)
     except FileNotFoundError as exc:
         print(f"Error: {exc}")

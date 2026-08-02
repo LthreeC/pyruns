@@ -278,14 +278,17 @@ export default function ManagerPage() {
     const maxWorkers = normalizeWorkerInput(maxWorkersInput)
     setMaxWorkersInput(String(maxWorkers))
     try {
-      await api.batchRunTasks(names, executionMode, maxWorkers)
+      const result = await api.batchRunTasks(names, executionMode, maxWorkers)
       clearSelection()
       setSelectMode(false)
       await fetchTasks()
+      const skipped = result.skipped || []
       notify({
-        tone: 'success',
-        title: 'Tasks queued',
-        detail: `${names.length} task${names.length === 1 ? '' : 's'} scheduled with ${maxWorkers} worker${maxWorkers === 1 ? '' : 's'}.`,
+        tone: skipped.length ? 'info' : 'success',
+        title: skipped.length ? 'Some tasks skipped' : 'Tasks queued',
+        detail: skipped.length
+          ? `${result.count} queued; skipped ${skipped.join(', ')}.`
+          : `${result.count} task${result.count === 1 ? '' : 's'} scheduled with ${maxWorkers} worker${maxWorkers === 1 ? '' : 's'}.`,
       })
     } catch (err) {
       notify({ tone: 'error', title: 'Could not start tasks', detail: errorMessage(err) })
@@ -1153,6 +1156,7 @@ function getActionButton(task: Task) {
   switch (task.status) {
     case 'pending':
     case 'failed':
+    case 'cancelled':
       return {
         action: 'run' as const,
         icon: Play,

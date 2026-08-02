@@ -2,448 +2,364 @@
 
 ![logo](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/pyruns_logo2.png)
 
-[English](README-en.md) | **简体中文**
+[English](README-en.md) | 简体中文
 
 [![PyPI version](https://img.shields.io/pypi/v/pyruns.svg)](https://pypi.org/project/pyruns/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pyruns.svg)](https://pypi.org/project/pyruns/)
 [![License](https://img.shields.io/pypi/l/pyruns.svg)](https://github.com/LthreeC/pyruns/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-2563eb.svg)](https://lthreec.github.io/pyruns/)
 
-> Python 实验管理 Web UI 工具：参数可视化编辑、批量任务生成、任务调度管理、实时日志流式查看与 CSV 指标导出。  
-> 全流程本地运行，围绕磁盘工作区组织状态，让脚本实验这件事终于变得清楚、直接、可追踪。
+Pyruns 是一个磁盘优先、面向复现实验和终端任务的运行管理器。它把命令、配置、日志、环境、运行历史和指标保存在项目的 `_pyruns_` 目录中，并提供 Git 式一次性 CLI 与可选 Web UI。
 
 ![Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
-Pyruns 为 Python 脚本提供基于本地浏览器的图形界面。它的核心思路不是“接管你的工程”，而是尽量贴着你已经在用的工作方式走：
-
-- 继续使用原脚本
-- 继续使用原终端 / shell
-- 继续使用原 conda 环境与环境变量
-- 把任务、配置、日志、备注、运行历史稳稳落在 `_pyruns_` 工作区里
-
-**无需注册账号 · 无需联网 · 无需数据库 · 所有流程均在本地执行**
+## 30 秒开始
 
 ```bash
 pip install pyruns
-pyr train.py
-pyr train.py my_config.yaml
-pyr train.py -p 9000
-pyruns train.py -p 9000
-pyruns train.py -p 9000 --no-browser
-pyr
+
+# 两个正式入口完全等价；下面用短写 pyr
+pyr --help
+pyruns --help
+pyr help -a  # 查看全部命令
+
+# 初始化当前项目的 shell workspace
+pyr init
+
+# 运行并记录一个命令
+pyr exec -n smoke -- python -V
+
+# 查询结果
+pyr -w shell ls
+pyr -w shell show smoke
+pyr -w shell log smoke
 ```
 
-在 tmux、SSH 或无图形界面的服务器里，Pyruns 默认只打印本地 URL，不会自动调用系统浏览器；如需强制打开浏览器，可使用 `--browser` 或设置 `PYRUNS_OPEN_BROWSER=1`。
+长任务使用 `--detach`，随后用独立命令控制：
 
-推荐优先从这两条主路径开始：
+```bash
+pyr exec -n train -d -- python train.py --epochs 100
+pyr -w shell status
+pyr -w shell wait train
+pyr -w shell log train
+```
 
-- `pyr train.py`
-- `pyr train.py my_config.yaml`
+需要 Web UI 时显式启动：
 
-这两条是 Pyruns 最自然、也最应该被用户第一眼看到的接入方式。  
-`pyr` 仍然可用，但更适合作为 shell / 命令任务的补充入口。
+```bash
+pyr ui
+pyr ui train.py
+pyr ui --shell
+```
 
-除了 Generator / Manager / Monitor，现在首页也会先把系统状态、任务概览和 GPU 资源收拢成一个更适合“刚打开就快速判断下一步”的入口。
+`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。裸命令显示精简帮助，`help -a` 展开全部命令；两者都没有需要持续操控的交互式 REPL。
+
+## 为什么它有用
+
+- 每个任务都有稳定目录，不再靠终端滚屏和记忆找结果。
+- 命令、参数、环境变量、日志、指标和 artifacts 一起落盘。
+- Shell 命令与 Python 配置实验使用同一套任务生命周期。
+- CLI 一次调用完成一件事，适合人、脚本、CI 和 AI agent。
+- 前台执行返回真实结果；批量任务任一失败，整体退出非零。
+- detached runner 独立于调用终端，Windows 上不会弹出额外控制台窗口。
+- Web UI 与 CLI 共享磁盘状态，不存在两套数据源。
 
 ![Home](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
 
-## 为什么它顺手
+## Git 式 CLI
 
-很多实验工具做得很大，但真正落到日常工作里，最麻烦的问题往往还是这些：
-
-### 痛点 1：超参搜索还在靠手写循环
-
-没有 Pyruns 时，你常常要写这种让人头皮发麻的嵌套循环：
-
-```bash
-for lr in 0.001 0.01 0.1; do
-  for bs in 32 64 128; do
-    for opt in adam sgd; do
-      python train.py --lr $lr --batch_size $bs --optimizer $opt \
-        > logs/lr${lr}_bs${bs}_${opt}.log 2>&1 &
-    done
-  done
-done
-wait
+```text
+pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
-用了 Pyruns，在 `Form` 模式里写成这样就够了：
+常用全局参数：
 
-```yaml
-lr: 0.001 | 0.01 | 0.1
-batch_size: 32 | 64 | 128
-optimizer: adam | sgd
+```text
+-C, --directory PATH
+-w, --workspace NAME|PATH|SCRIPT.py
+--json
+--no-color
+--debug
+--version
 ```
 
-点击生成后，就会自动展开成多组独立任务，每个任务都拥有自己的配置快照、运行目录和日志文件。
+正式命令集：
 
-### 痛点 2：实验记录全靠人脑回忆
-
-“上周那组 `lr=0.01` 的实验，用的到底是哪个 `batch_size`？”  
-“那次 shell 任务跑在什么环境里？”  
-“日志在哪个目录？”
-
-Pyruns 会为每个任务保存：
-
-- `config.yaml` 或 `config.sh`
-- `task_info.json`
-- `run_logs/runN.log`
-- 运行时间线、PID、备注、环境信息
-
-这意味着任务不是跑完就散掉，而是会留下完整、可检索、可复用的历史。
-
-### 痛点 3：多任务并发时日志全混在一起
-
-多个任务一起跑的时候，最难受的就是终端输出互相穿插。Pyruns 把每个任务的输出都隔离到独立日志文件，并在 `Monitor` 页面里提供更像真实终端的实时查看体验。
-
-![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
-
-对于 shell 工作流，这点尤其重要：
-
-![Shell Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_monitor.png)
-
-## 核心特性
-
-| 特性 | 说明 |
+| 命令 | 用途 |
 | --- | --- |
-| `React Generator` | 支持 `Form` / `YAML` / `Shell` 三种生成入口。脚本工作区可视化调参，shell 工作区直接编辑命令正文。 |
-| `Form 批量生成` | 在 `Form` 模式中支持 `|`、`(|)`、`start:stop:step` 等批量语法，用于笛卡尔积、配对组合与区间展开。 |
-| `YAML 单任务模式` | `YAML` 模式专注于一次生成一个完整 `config.yaml` 任务，不承担 batch 展开。 |
-| `Shell Workspace` | 每个 shell 任务保存为 `config.sh`，默认跟随启动 `pyr` 的那个终端语义执行。 |
-| `Manager 控制台` | 支持搜索、状态筛选、批量运行、批量删除、pin、详情查看与日志跳转。 |
-| `Monitor 终端` | 使用 xterm.js 实时查看日志流、切换历史日志、复制终端内容，并导出 CSV 聚合结果。 |
-| `指标导出` | 通过 `pyruns.record()` 记录实验指标后，可在 Monitor 中按任务勾选导出 CSV。 |
-| `磁盘工作区` | 真实状态以磁盘为准。页面刷新、CLI / Web 共用、手工检查与备份都更简单。 |
+| `init` | 初始化 shell 或 Python script workspace |
+| `exec` | 创建并运行一个受跟踪的终端命令或 Shell 脚本 |
+| `add` | 从 YAML 添加不可变任务快照 |
+| `run` | 运行一个或多个精确任务名 |
+| `ls` | 稳定过滤和排序任务 |
+| `status` | 查看 workspace 状态汇总 |
+| `show` | 查看任务元数据和路径 |
+| `log` | 打印、跟随或定位日志 |
+| `wait` | 等待已在运行的任务 |
+| `stop` | 向拥有任务的 runner 请求停止，并标记为 `cancelled` |
+| `rm` / `restore` | 软删除与恢复任务 |
+| `mv` / `pin` | 管理任务名称与置顶状态 |
+| `export` | 导出 CSV 或 JSON 记录 |
+| `config` | 查看或修改项目设置 |
+| `metrics` | 输出一次 CPU、内存和 GPU 快照 |
+| `ui` / `dev` | 显式启动 Web UI |
+| `help` | 查看总帮助或子命令帮助 |
+
+完整说明见 [CLI 详细指南](docs/cli-guide.md)。
 
 ## 两种工作区
 
-先用一句话区分：
+### Shell Workspace
 
-- `script` 模式：围绕一个 Python 脚本建立工作区
-- `shell` 模式：围绕一个目录里的命令任务建立工作区
-
-| 模式 | 入口 | 选择对象 | 任务文件 | 更适合 |
-| --- | --- | --- | --- | --- |
-| `script` | `pyr train.py` / `pyr train.py config.yaml` | Python 脚本 | `config.yaml` | `argparse`、`pyruns.load()`、配置驱动实验 |
-| `shell` | `pyr` | 当前目录 | `config.sh` | PowerShell / cmd / bash 命令任务、终端工作流 |
-
-最重要的区别不是页面像不像，而是 Pyruns 正在管理什么：
-
-- `script` 模式管理的是“脚本 + 配置任务”
-- `shell` 模式管理的是“目录 + 命令任务”
-
-### 1. Script Workspace
-
-当你打开一个普通 Python 脚本时，Pyruns 会围绕它创建一个独立工作区：
-
-```text
-project/
-├─ train.py
-└─ _pyruns_/
-   ├─ _pyruns_settings.yaml
-   └─ train/
-      ├─ script_info.json
-      ├─ config_default.yaml
-      └─ tasks/
-```
-
-这一模式适合：
-
-- `argparse` 脚本
-- `pyruns.load()` / `pyruns.read()` 风格脚本
-- 希望每个任务都带独立 `config.yaml` 的 Python 任务
-- 把参数调优、模板配置、批量生成放在首位的工作流
-
-### 2. Shell Workspace
-
-当你切到 shell 模式时，Pyruns 管理的对象不再是某个 `.py` 文件，而是一个目录。  
-也就是说，shell workspace 的起点是“文件夹”，不是“Python 脚本”。
-
-当你切到 shell 模式，工作区会变成：
-
-```text
-project/
-└─ _pyruns_/
-   └─ _shell_/
-      ├─ script_info.json
-      └─ tasks/
-```
-
-每个 shell 任务落盘为：
-
-```text
-_pyruns_/_shell_/tasks/<task_name>/config.sh
-```
-
-最重要的语义是：
-
-- 默认 `shell_mode: follow`
-- 默认跟随启动 `pyr` 的当前终端
-- 当前 Python 进程环境会继续继承给子进程
-- 不自动做跨 shell 语法翻译
-
-所以 shell 模式更像是：
-
-- 把原本散落在终端历史里的命令整理成任务
-- 把同一目录下的一组命令工作流纳入 Manager / Monitor
-- 保留“像在原终端里执行”这件事本身
-
-也就是说，shell task 的目标语义就是：
-
-> 尽量等价于“在你启动 `pyr` 的那个终端里，再手动执行一次同样的命令”
-
-![Shell Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
-
-## 接入方式
-
-### 模式 1：零侵入接入 `argparse`
-
-如果你的脚本本来就是用 `argparse`：
+用于任意终端命令、仓库复现、安装、预处理、训练、评估和流水线：
 
 ```bash
-pyr train.py
+pyr init
+pyr exec -n env-check -- python -V
+pyr exec -n install -- python -m pip install -r requirements.txt
+pyr exec -n baseline -d -- python train.py --config baseline.yaml
 ```
 
-Pyruns 会尝试提取参数定义，生成可编辑表单，并把你在界面里修改后的值再拼回命令行参数。
-
-### 模式 2：基于 YAML 模板接入
-
-如果你的脚本通过 `pyruns.load()` 读取配置：
+Shell 脚本文件也直接交给 `exec`，不需要手写解释器：
 
 ```bash
-pyr train.py my_config.yaml
+pyr exec -n setup -- ./scripts/setup.sh
+pyr exec -n setup-ps -- .\scripts\setup.ps1
+pyr exec -n setup-cmd -- .\scripts\setup.cmd
+pyr exec -n setup-bat -- .\scripts\setup.bat
 ```
 
-首次运行时，Pyruns 会把这份模板作为 `config_default.yaml` 保存下来。之后再次运行：
+Pyruns 根据 `.sh`、`.ps1`、`.cmd`、`.bat` 扩展名选择 Bash/sh、PowerShell 或 `cmd.exe`。文件路径之后的内容是该脚本自己的参数，不是 Pyruns 参数。Pyruns 会保留参数边界，并记录每次运行时的脚本内容哈希。任务重跑仍使用原脚本路径，因此依赖脚本原目录的相对路径语义不会改变。
+
+当命令确实依赖 shell 管道、重定向或变量展开时，显式使用 `--shell`：
 
 ```bash
-pyr train.py
+pyr exec -n report --shell "python eval.py > metrics.txt"
 ```
 
-系统会继续围绕这个工作区进行调参、生成和运行。
+普通程序调用优先使用 `--` 后的精确参数向量，这比拼接一整段命令字符串更可靠。
 
-如果从 UI Launcher 里选择脚本，规则也一样：`argparse` 脚本可以直接打开；`pyruns.load()` 脚本第一次没有 `config_default.yaml` 时，需要先选择一份 YAML 作为默认模板。之后只要工作区里已有 `config_default.yaml`，就会直接复用；如果是 `argparse` 脚本，默认模板会按当前脚本参数重新刷新。
+执行前可做真正无副作用的预览；加入全局 `--json` 可得到稳定计划对象：
 
-## 脚本内 API
+```bash
+pyr exec --dry-run -n report -- python eval.py
+pyr --json exec --dry-run -n report -- python eval.py
+```
 
-Pyruns 暴露给训练脚本的 API 很少，基本就这几个：
+预览不会创建 `_pyruns_`、任务或设置文件，也不会启动用户命令。
 
-| API | 用途 |
-| --- | --- |
-| `pyruns.load()` | 读取当前任务的 YAML / JSON 配置，返回可用点号访问的配置对象。 |
-| `pyruns.read(path=None)` | 显式读取配置文件；通常直接用 `pyruns.load()` 就够了。 |
-| `pyruns.record(**kwargs)` | 写入本次运行的最终指标，例如 `final_loss`、`acc`、`seed`。同一次运行会合并到一个 records 槽位。 |
-| `pyruns.track(**kwargs)` | 写入时间序列指标，例如每个 epoch 的 `loss`、`acc`，会追加到 tracks 里。 |
-| `pyruns.get_task_dir()` | 返回当前任务目录；不在 Pyruns 任务中运行时返回 `None`。 |
-| `pyruns.get_run_index()` | 返回当前 run 槽位；适合一个任务多次运行时区分记录。 |
-| `pyruns.artifact_dir()` | 返回当前 run 的输出目录：`artifacts/runN`；会自动创建。 |
+Shell 任务保存在：
 
-最常见的脚本写法：
+```text
+<project>/_pyruns_/_shell_/tasks/<task>/
+├── task_info.json
+├── config.ps1 | config.cmd | config.sh
+└── run_logs/runN.log
+```
+
+### Script Workspace
+
+用于 `argparse`、`pyruns.load()`、YAML 配置、batch 展开和参数化实验：
+
+```bash
+pyr init train.py
+pyr -w train add configs/quick.yaml
+pyr -w train run quick
+```
+
+创建并立即运行：
+
+```bash
+pyr -w train run --from configs/sweep.yaml -n sweep -j 4
+pyr -w train run --from configs/sweep.yaml -n sweep -j 4 --dry-run
+```
+
+`run --from ... --dry-run` 会验证 YAML 并列出展开后的候选任务，但不创建或运行它们。
+
+Script 任务保存在：
+
+```text
+<project>/_pyruns_/train/tasks/<task>/
+├── task_info.json
+├── config.yaml
+├── run_logs/runN.log
+└── artifacts/runN/
+```
+
+## 工作区选择
+
+Pyruns 会从当前目录向父目录寻找最近的 `_pyruns_`。只有一个 workspace 时自动选择；存在多个时必须显式传 `-w`，不会猜测：
+
+```bash
+pyr -w shell ls
+pyr -w train status
+pyr -w ./train.py show baseline
+pyr -w ./_pyruns_/train log baseline
+```
+
+任务必须使用精确名称，不支持序号和模糊匹配。`show` 与 `log` 额外支持 `TASK@RUN` 选择历史运行，因此 `@` 不能出现在新任务名中。
+
+## Python 脚本接入
+
+### 零侵入 `argparse`
+
+```python
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--lr", type=float, default=1e-3)
+parser.add_argument("--epochs", type=int, default=10)
+args = parser.parse_args()
+```
+
+```bash
+pyr init train.py
+pyr ui train.py
+```
+
+Pyruns 会解析脚本参数并建立默认配置模板。
+
+### `pyruns.load()` 配置
 
 ```python
 import os
+
+import pyruns
+
+cfg = pyruns.load()
+print(cfg.training.lr)
+```
+
+首次初始化时传入 YAML：
+
+```bash
+pyr init train.py --config configs/default.yaml
+pyr -w train add configs/default.yaml -n baseline
+pyr -w train run baseline
+```
+
+## 脚本内 API
+
+| API | 用途 |
+| --- | --- |
+| `pyruns.load()` | 加载当前任务配置并返回点号访问对象 |
+| `pyruns.read(path=None)` | 显式读取 YAML / JSON 配置 |
+| `pyruns.record(**kwargs)` | 保存当前 run 的最终指标 |
+| `pyruns.track(**kwargs)` | 追加时间序列指标 |
+| `pyruns.get_task_dir()` | 返回当前任务目录 |
+| `pyruns.get_run_index()` | 返回当前 run 编号 |
+| `pyruns.artifact_dir()` | 创建并返回 `artifacts/runN` |
+
+```python
 import pyruns
 
 cfg = pyruns.load()
 
 for epoch in range(cfg.training.epochs):
-    loss = train_one_epoch(cfg)
-    pyruns.track(loss=loss)
+    loss = train_one_epoch()
+    pyruns.track(epoch=epoch, loss=loss)
 
 pyruns.record(final_loss=loss, seed=cfg.training.seed)
-
-artifact_dir = pyruns.artifact_dir()
-metrics_path = os.path.join(artifact_dir, "metrics.json")
-with open(metrics_path, "w", encoding="utf-8") as f:
-    f.write("{}")
+model.save(os.path.join(pyruns.artifact_dir(), "model.pt"))
 ```
 
-### 模式 3：CLI 交互模式
-
-如果你在无头服务器上，或者更偏爱命令行操作，可以直接进入 CLI 交互模式：
+## 查询、日志和生命周期
 
 ```bash
-pyr cli train.py
+pyr -w train ls -s running --status queued
+pyr -w train status
+pyr -w train show baseline
+pyr -w train show baseline@2
+pyr -w train log baseline -f
+pyr -w train log baseline@2
+pyr -w train wait baseline --timeout 600
+pyr -w train stop baseline
+pyr -w train mv baseline baseline-lr1e3
+pyr -w train pin baseline-lr1e3
+pyr -w train rm baseline-lr1e3
+pyr -w train ls --trash
+pyr -w train restore baseline-lr1e3
 ```
 
-CLI 和 Web UI 使用同一套磁盘工作区与任务数据，操作结果天然互通。
+`rm` 会立即执行，不询问确认，但它只是可恢复的软删除。
 
-### 模式 4：直接打开 shell workspace
+## JSON 与自动化
 
-如果你现在没有固定的 Python 入口脚本，只是想在当前目录直接管理一组命令：
+全局 `--json` 放在子命令之前：
 
 ```bash
-pyr
+pyr --json -w shell ls
+pyr --json -w shell status
+pyr --json -w shell show smoke
+pyr --json -w shell show smoke@2
+pyr --json -w shell log smoke --path
+pyr --json -w shell log smoke@2 --path
+pyr --json -w shell config list
+pyr --json metrics
 ```
 
-这会直接创建并打开：
-
-```text
-<current_dir>/_pyruns_/_shell_
-```
-
-这条链路尤其适合：
-
-- 命令型实验
-- PowerShell / cmd / bash 任务
-- 先从 shell 起步，再慢慢沉淀成稳定脚本工作流
-
-## 实际上手示例
-
-仓库中的 `examples/` 已经提供了可以直接运行的示例。
-
-### 示例 1：Argparse 原生支持
-
-目录：
-
-```text
-examples/1_argparse_script/
-```
-
-适合展示的页面通常是：
-
-- `Generator` 表单页
-- `Manager` 中展开后的任务卡片
-
-### 示例 2：使用 `pyruns.load()` 加载 YAML
-
-目录：
-
-```text
-examples/2_pyruns_config/
-```
-
-这一类脚本更适合展示：
-
-- 独立 `config.yaml` 任务快照
-- `Task Info` / `Env` 等任务详情
-
-![Task Detail](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
-
-## 页面模块
-
-### Home
-
-Home 是进入工作区后的第一眼总览。  
-它负责先把“现在这台机器和这份工作区处于什么状态”讲清楚，而不是让你一上来就扎进任务列表。
-
-![Home Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
-
-这一页适合先看：
-
-- 当前任务总览
-- 活跃 / 已完成 / 失败的状态分布
-- GPU 与系统资源占用
-- 接下来该去 Generator、Manager 还是 Monitor
-
-### Generator
-
-Generator 是参数编辑与任务生成的入口。  
-这一页要做的不是“展示所有字段”，而是让你在高密度信息里依然能快速找到重点参数、快速生成任务。
-
-![Generator Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
-
-你可以在这里做这些事：
-
-- 选择模板
-- 用 `Form` 模式快速调整参数
-- 用 `YAML` 模式编辑完整配置
-- 用 `Shell` 模式直接写命令正文
-- 使用 pin 把关键参数固定在视线里
-- 预览 batch 展开的结果
-
-### Manager
-
-Manager 是任务调度台。  
-这里不只是“看任务”，更是“处理任务”。
-
-![Manager Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
-
-它支持：
-
-- 多行搜索
-- 状态筛选
-- 批量运行 / 删除
-- pinned tasks 独立展示
-- 任务详情抽屉
-- 一键跳转到 Monitor 看日志
-
-### Monitor
-
-Monitor 是运行中任务的观测面。  
-它承担的是“让日志真正变得可工作”，而不是只把 stdout 放在页面上。
-
-它支持：
-
-- 实时日志流
-- 历史日志切换
-- 终端复制
-- 按任务勾选导出 CSV
-- 与 Manager / Task Detail 形成来回联动
-
-## 配置入口
-
-工作区配置文件位于：
-
-```text
-<project>/_pyruns_/_pyruns_settings.yaml
-```
-
-比较重要的键包括：
-
-- `header_refresh_interval`
-- `generator_form_columns`
-- `manager_columns`
-- `manager_execution_mode`
-- `monitor_sidebar_width_pct`
-- `shell_mode`
-- `shell_executable`
-- `python_executable`
-- `conda_env`
-- `conda_executable`
-- `global_env`
-
-其中 shell 相关最重要的理解方式是：
-
-- 默认保持 `shell_mode: follow`
-- 只有明确需要固定某个 shell 时，才切到 `custom`
-
-运行环境切换会同时作用于 Python 任务和 Shell 任务：
-
-```yaml
-conda_env: eval-env
-conda_executable: conda
-```
-
-也可以直接指定 Python：
-
-```yaml
-python_executable: /shared/ywl/miniconda3/envs/eval-env/bin/python
-```
-
-`global_env` 是工作区级别环境变量，覆盖顺序为：终端环境 < `global_env` < 任务 Env。任务级 Env 里的 `PYRUNS_CONDA_ENV`、`PYRUNS_CONDA_EXE`、`PYRUNS_PYTHON_EXECUTABLE` 会覆盖工作区默认运行环境。
-
-UI 里的 Workspace Env 支持接近 `.bashrc` 的安全赋值子集：
+日志默认原样写 stdout；需要结构化引用时使用 `log --path`。导出默认写 stdout：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0
-export TOKENIZERS_PARALLELISM=false
-HF_HOME="/data/hf cache"
+pyr -w train export -f csv
+pyr -w train export baseline -f json
+pyr -w train export -s completed -o results.csv
 ```
 
-支持单双引号和行首注释；不执行命令替换、变量展开或任意 shell 代码。
+退出码：
 
-直接用 CLI 运行任务时，例如 `pyr run 1`，会继承当前终端环境；Web UI 的 Runtime / Workspace Env 设置只影响 UI 发起的任务运行。
+```text
+0    命令和等待的任务全部成功
+1    工作区、目标、运行时或任务失败
+2    命令行用法错误
+130  等待或跟随日志时被中断
+```
 
-## 文档导航
+## Web UI
 
-- [快速开始](docs/getting-started.md)
-- [页面展示](docs/showcase.md)
-- [界面指南](docs/ui-guide.md)
+![Manager](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
+
+```bash
+pyr ui
+pyr ui train.py
+pyr ui train.py --config configs/default.yaml
+pyr ui --shell
+pyr ui --shell --no-browser
+pyr dev train.py
+```
+
+- Generator：编辑脚本配置或 shell payload，并创建任务。
+- Manager：搜索、筛选、运行、取消、重命名、置顶和删除任务。
+- Monitor：查看运行日志、指标和任务详情。
+- Dashboard：查看项目级运行状态和资源概览。
+
+![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
+
+## 磁盘是最终状态源
+
+```text
+<project>/_pyruns_/
+├── _pyruns_settings.yaml
+├── _shell_/
+│   ├── script_info.json
+│   └── tasks/
+└── <script_name>/
+    ├── script_info.json
+    ├── config_default.yaml
+    └── tasks/
+```
+
+CLI 和 Web UI 都只是在这套磁盘状态上工作，因此任务不会因为关闭某个界面而消失，也能被版本控制、备份工具和自动化脚本直接检查。
+
+## 文档
+
+- [安装与快速开始](docs/getting-started.md)
+- [CLI 详细指南](docs/cli-guide.md)
 - [配置说明](docs/configuration.md)
+- [Web UI 指南](docs/ui-guide.md)
+- [批量配置语法](docs/batch-syntax.md)
+- [脚本 API](docs/api-reference.md)
 - [架构说明](docs/architecture.md)
-- [批量语法](docs/batch-syntax.md)
-- [CLI 指南](docs/cli-guide.md)
 
 ## License
 

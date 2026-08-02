@@ -1,4 +1,4 @@
-﻿import json
+import json
 import ast
 import socket
 import subprocess
@@ -844,6 +844,43 @@ def test_runtime_update_gpu_scheduler_clamps_stable_seconds_minimum(tmp_path, mo
     assert "gpu_scheduler_stable_seconds: 1.0" in settings_text
 
 
+def test_runtime_update_gpu_scheduler_rejects_non_finite_numeric_values(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "gpu_scheduler": {
+                "gpus_per_task": "Infinity",
+                "memory_used_pct": "NaN",
+                "min_free_memory_gb": "Infinity",
+                "compute_used_pct": "-Infinity",
+                "stable_seconds": "Infinity",
+                "max_wait_seconds": "NaN",
+                "max_tasks_per_gpu": "Infinity",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["gpu_scheduler"]
+    assert payload["gpus_per_task"] == 1
+    assert payload["memory_used_pct"] == 40.0
+    assert payload["min_free_memory_gb"] == 40.0
+    assert payload["compute_used_pct"] == 30.0
+    assert payload["stable_seconds"] == 15.0
+    assert payload["max_wait_seconds"] == 172800.0
+    assert payload["max_tasks_per_gpu"] == 1
+
+
 def test_runtime_get_task_logs_prefers_queue_log_for_queued_tasks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "gpu_wait", status="queued", log_text="completed run\n")
@@ -1116,6 +1153,7 @@ def test_dashboard_endpoint_returns_summary_and_recent_tasks(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     _add_task(workspace, "beta", status="failed")
+    _add_task(workspace, "gamma", status="cancelled")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
@@ -1123,10 +1161,11 @@ def test_dashboard_endpoint_returns_summary_and_recent_tasks(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["summary"]["total"] == 2
+    assert payload["summary"]["total"] == 3
     assert payload["summary"]["running"] == 1
     assert payload["summary"]["failed"] == 1
-    assert payload["recent_tasks"][0]["name"] in {"alpha", "beta"}
+    assert payload["summary"]["cancelled"] == 1
+    assert payload["recent_tasks"][0]["name"] in {"alpha", "beta", "gamma"}
 
 
 def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
@@ -1568,19 +1607,20 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    def fake_start(task_name: str, execution_mode: str | None = None) -> None:
+    def fake_start(task_name: str, execution_mode: str | None = None) -> bool:
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
             info["status"] = "running"
 
         update_task_info(str(task_dir), apply)
+        return True
 
     def fake_cancel(task_name: str) -> bool:
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
-            info["status"] = "failed"
+            info["status"] = "cancelled"
 
         update_task_info(str(task_dir), apply)
         return True
@@ -1593,8 +1633,20 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
     assert run_response.status_code == 200
     assert run_response.json()["task"]["status"] == "running"
     assert cancel_response.status_code == 200
-    assert cancel_response.json()["task"]["status"] == "failed"
+    assert cancel_response.json()["task"]["status"] == "cancelled"
 
+
+def test_run_task_endpoint_rejects_unclaimed_start(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    with patch.object(runtime.task_manager, "start_task_now", return_value=False):
+        response = client.post("/api/tasks/alpha/run", json={})
+
+    assert response.status_code == 400
+    assert "could not be started" in response.json()["detail"]
 
 def test_batch_run_rejects_invalid_execution_mode_without_state_changes(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
@@ -2134,6 +2186,7 @@ def test_batch_run_and_delete_endpoints(tmp_path):
                 info["status"] = "queued"
 
             update_task_info(str(task_dir), apply)
+        return list(task_names)
 
     with patch.object(runtime.task_manager, "start_batch_tasks", side_effect=fake_start_batch):
         run_response = client.post(
@@ -2154,6 +2207,40 @@ def test_batch_run_and_delete_endpoints(tmp_path):
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted"] == ["alpha"]
 
+
+def test_batch_run_reports_only_claimed_tasks(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    _add_task(workspace, "beta", status="running")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    with patch.object(runtime.task_manager, "start_batch_tasks", return_value=["alpha"]):
+        response = client.post(
+            "/api/tasks/batch/run",
+            json={"task_names": ["alpha", "beta"]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert [item["name"] for item in response.json()["items"]] == ["alpha"]
+    assert response.json()["skipped"] == ["beta"]
+
+
+def test_batch_run_rejects_when_no_task_is_claimed(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    with patch.object(runtime.task_manager, "start_batch_tasks", return_value=[]):
+        response = client.post(
+            "/api/tasks/batch/run",
+            json={"task_names": ["alpha"]},
+        )
+
+    assert response.status_code == 400
+    assert "could be started" in response.json()["detail"]
 
 def test_pin_notes_env_and_rename_endpoints(tmp_path):
     workspace = _make_workspace(tmp_path, "main")

@@ -3,6 +3,16 @@
 当前的 Pyruns UI 已经不再是“附带页面”，而是一套真正承担主流程的 React 工作台。  
 它的目标不是做得花，而是做得顺、做得稳、做得像你每天真的会打开的工具。
 
+Web UI 必须显式启动；裸 `pyr` 或 `pyruns` 只显示 CLI 帮助：
+
+```bash
+pyr ui
+pyr ui train.py
+pyr ui train.py --config configs/default.yaml
+pyr ui --shell
+pyr ui --shell --no-browser
+```
+
 ## 页面整体气质
 
 这一版 UI 的收口方向很明确：
@@ -86,8 +96,8 @@ Generator 是整个 UI 最像“工作台”的页面。
 
 - 编辑的是脚本正文
 - 每次只生成一个任务
-- 落盘文件为 `config.sh`
-- 默认跟随启动 `pyr` 的终端语义执行
+- 落盘文件为当前 runtime 对应的 `config.ps1` / `config.cmd` / `config.sh`
+- 默认跟随启动 Web UI 时的终端语义执行
 
 ![Shell Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
 
@@ -126,7 +136,7 @@ Manager 是任务的调度台。
 其中：
 
 - `python` 任务显示 `config.yaml`
-- `shell` 任务显示 `config.sh`
+- `shell` 任务显示当前 runtime 对应的 `config.ps1` / `config.cmd` / `config.sh`
 
 ![任务详情面板](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
 

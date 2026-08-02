@@ -13,9 +13,10 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from pyruns._config import (
+    DEFAULT_RUNNER_HEARTBEAT_SECONDS,
     DEFAULT_RUNNER_LEASE_SECONDS,
     ERROR_LOG_FILENAME,
     EXECUTION_MODES,
@@ -71,7 +72,7 @@ class TaskStateConflict(RuntimeError):
 class TaskManager:
     """Central task registry, scheduler, and UI notification source."""
 
-    def __init__(self, tasks_dir: str | None = None, lazy_scan: bool | None = True):
+    def __init__(self, tasks_dir: str | None = None, lazy_scan: bool | None = True, runner_token: str | None = None):
         if tasks_dir is None:
             from pyruns._config import ROOT_DIR
 
@@ -94,8 +95,10 @@ class TaskManager:
         self._executor_mode = None
         self._executor_workers = 0
         self.runner_host = socket.gethostname().lower()
-        self.runner_id = f"{self.runner_host}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        token = str(runner_token or uuid.uuid4().hex[:8])
+        self.runner_id = f"{self.runner_host}:{os.getpid()}:{token}"
         self.lease_seconds = DEFAULT_RUNNER_LEASE_SECONDS
+        self._last_queued_lease_heartbeat = 0.0
         self._atexit_callback = self.shutdown
         self._atexit_registered = False
 
@@ -184,6 +187,11 @@ class TaskManager:
                 "task_order": task.get("task_order"),
                 "script": task.get("script"),
                 "task_kind": task.get("task_kind"),
+                "command_mode": task.get("command_mode"),
+                "cmd": copy.deepcopy(task.get("cmd")),
+                "workdir": task.get("workdir"),
+                "shell_executable": task.get("shell_executable"),
+                "shell_kind": task.get("shell_kind"),
                 "start_times": list(task.get("start_times", []) or []),
                 "finish_times": list(task.get("finish_times", []) or []),
                 "pids": list(task.get("pids", []) or []),
@@ -478,6 +486,11 @@ class TaskManager:
             "task_order": info.get("task_order"),
             "script": info.get("script"),
             "task_kind": task_kind or normalize_task_kind(info.get("task_kind", info.get("config_mode"))),
+            "command_mode": info.get("command_mode"),
+            "cmd": info.get("cmd"),
+            "workdir": info.get("workdir"),
+            "shell_executable": info.get("shell_executable"),
+            "shell_kind": info.get("shell_kind"),
             "start_times": info.get("start_times", []),
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
@@ -741,7 +754,7 @@ class TaskManager:
         task_ids: List[str],
         execution_mode: str | None = None,
         max_workers: int | None = None,
-    ) -> None:
+    ) -> List[str]:
         """Queue a batch of tasks for scheduler-driven execution."""
 
         selected_execution_mode = self._validate_execution_mode(execution_mode, self.execution_mode)
@@ -809,6 +822,7 @@ class TaskManager:
             sum(1 for item in to_sync if not item.get("submit")),
         )
         to_submit: list[tuple[Dict[str, Any], int]] = []
+        claimed_names: list[str] = []
         for item in to_sync:
             task_name = str(item["name"])
             synced = self._sync_status_to_disk(
@@ -820,6 +834,7 @@ class TaskManager:
             )
             if not synced:
                 continue
+            claimed_names.append(task_name)
             with self._lock:
                 current = self._resolve_identifier_locked(task_name)
                 if not current:
@@ -836,12 +851,13 @@ class TaskManager:
         self.trigger_update()
         for task, run_index in to_submit:
             self._submit_task(task, run_index, independent=False)
+        return claimed_names
 
     def start_task_now(
         self,
         task_id: str,
         execution_mode: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Immediately submit a single task outside the batch queue."""
         execution_mode = self._validate_execution_mode(execution_mode, self.execution_mode)
 
@@ -856,10 +872,10 @@ class TaskManager:
             if target:
                 if target.get("status") in ("running", "queued"):
                     logger.info("Skip starting active task %s", target["name"])
-                    return
+                    return False
                 if target.get("_load_error"):
                     logger.warning("Skip running %s: %s", target["name"], target["_load_error"])
-                    return
+                    return False
                 target_name = str(target["name"])
                 expected_status = str(target.get("status", "pending") or "pending")
                 run_index = self._next_run_index(target)
@@ -869,16 +885,17 @@ class TaskManager:
                 self._recompute_processing_flag_locked()
 
         if not target:
-            return
+            return False
 
         if gpu_config.enabled:
-            if self._sync_status_to_disk(
+            synced = self._sync_status_to_disk(
                 target_name,
                 "queued",
                 run_index=run_index,
                 expected_statuses={expected_status},
                 counts_for_batch=False,
-            ):
+            )
+            if synced:
                 with self._lock:
                     current = self._resolve_identifier_locked(target_name)
                     if current:
@@ -888,31 +905,33 @@ class TaskManager:
                         target = current
                 self._append_gpu_wait_started(target, run_index, gpu_config)
                 self.trigger_update()
-            return
+            return synced
 
-        if self._sync_status_to_disk(
+        synced = self._sync_status_to_disk(
             target_name,
             "running",
             run_index=run_index,
             expected_statuses={expected_status},
             counts_for_batch=False,
-        ):
+        )
+        if synced:
             with self._lock:
                 current = self._resolve_identifier_locked(target_name)
                 if current:
                     target = current
             self.trigger_update()
             self._submit_task(target, run_index, independent=True, execution_mode=execution_mode)
+        return synced
 
     def rerun_task(self, task_id: str) -> bool:
-        """Queue a completed or failed task again."""
+        """Queue a completed, failed, or cancelled task again."""
         gpu_config = self._gpu_scheduler_config()
         target_name = ""
         expected_status = ""
         wait_started_at = 0.0
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
-            if not target or target["status"] not in ("completed", "failed"):
+            if not target or target["status"] not in ("completed", "failed", "cancelled"):
                 return False
             if target.get("_load_error"):
                 logger.warning("Skip re-queuing %s: %s", target["name"], target["_load_error"])
@@ -1115,6 +1134,54 @@ class TaskManager:
         event_sys.emit("on_task_rename", old_name, new_name)
         return True, new_name
 
+    def request_task_cancel(self, task_id: str) -> bool:
+        """Persist a cancellation request for the runner that owns an active task."""
+        with self._lock:
+            target = self._resolve_identifier_locked(task_id)
+            if not target:
+                return False
+            task_name = str(target.get("name", "") or "")
+            task_dir = str(target.get("dir", "") or "")
+        if not task_name or not task_dir:
+            return False
+
+        def _request(info: Dict[str, Any]) -> None:
+            status = str(info.get("status", "") or "").lower()
+            if status not in {"queued", "running"}:
+                raise TaskStateConflict(f"task is not active: {status}")
+            info["cancel_requested_at"] = get_now_str()
+
+        try:
+            updated = update_task_info(task_dir, _request, raise_error=True)
+        except (FileNotFoundError, TaskStateConflict):
+            return False
+
+        with self._lock:
+            current = self._resolve_identifier_locked(task_name)
+            if current and self._same_task_dir(current.get("dir"), task_dir):
+                self._apply_info_to_task(current, updated)
+        self.trigger_update()
+
+        if self._is_current_runner(updated):
+            return self.cancel_task(task_name)
+        return True
+
+    def _process_cancel_requests(self) -> None:
+        """Apply persisted requests only to tasks owned by this runner."""
+        with self._lock:
+            candidates = [
+                (str(task.get("name", "") or ""), str(task.get("dir", "") or ""))
+                for task in self.tasks
+                if task and str(task.get("status", "") or "") in {"queued", "running"}
+            ]
+        for task_name, task_dir in candidates:
+            if not task_name or not task_dir:
+                continue
+            info = load_task_info(task_dir) or {}
+            if not info.get("cancel_requested_at") or not self._is_current_runner(info):
+                continue
+            self.cancel_task(task_name)
+
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a queued or running task."""
         target_name = ""
@@ -1138,7 +1205,10 @@ class TaskManager:
             self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], disk_info)
             self.trigger_update()
             return False
-        if disk_status == "running" and not self._is_current_runner(disk_info):
+        if (
+            (disk_status == "running" and not self._is_current_runner(disk_info))
+            or (disk_status == "queued" and self._is_foreign_live_runner(disk_info))
+        ):
             self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], disk_info)
             self.trigger_update()
             return False
@@ -1180,6 +1250,7 @@ class TaskManager:
                     detail_lines=[f"previous_status={previous_status}"],
                     lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                     expected_statuses={"queued"},
+                    final_status="cancelled",
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist queued cancel state for %s yet: %s", target_name, exc)
@@ -1193,7 +1264,7 @@ class TaskManager:
         with self._lock:
             current = self._tasks_by_name.get(target_name)
             if current and self._same_task_dir(str(current.get("dir", "") or ""), target_ref["dir"]):
-                current["status"] = "failed"
+                current["status"] = "cancelled"
                 if was_running:
                     self._clear_running_locked(target_name)
                 self.gpu_scheduler.release(target_name)
@@ -1229,7 +1300,10 @@ class TaskManager:
         for candidate in candidates:
             disk_info = load_task_info(candidate["dir"])
             disk_status = str((disk_info or {}).get("status", candidate.get("status", "")) or "").lower()
-            if disk_status == "running" and not self._is_current_runner(disk_info or {}):
+            if (
+                (disk_status == "running" and not self._is_current_runner(disk_info or {}))
+                or (disk_status == "queued" and self._is_foreign_live_runner(disk_info or {}))
+            ):
                 logger.info("Delete skipped for %s because another runner owns it", candidate["name"])
                 if disk_info:
                     self._refresh_memory_task_from_disk_info(candidate["name"], candidate["dir"], disk_info)
@@ -1345,6 +1419,8 @@ class TaskManager:
                         if now - last_trigger >= 1.0:
                             last_trigger = now
                             self.trigger_update()
+                    self._refresh_queued_runner_leases()
+                    self._process_cancel_requests()
 
                 if not self.is_processing:
                     if self._shutdown_event.wait(0.5):
@@ -1417,7 +1493,12 @@ class TaskManager:
         if not gpu_config.enabled:
             with self._lock:
                 for task in self.tasks:
-                    if task and task["status"] == "queued" and (not independent_only or task.get("_queued_independent")):
+                    if (
+                        task
+                        and task["status"] == "queued"
+                        and not self._is_foreign_live_runner(task)
+                        and (not independent_only or task.get("_queued_independent"))
+                    ):
                         run_index = self._next_run_index(task)
                         is_independent = bool(task.get("_queued_independent"))
                         task["status"] = "running"
@@ -1428,7 +1509,7 @@ class TaskManager:
                 self._recompute_processing_flag_locked()
             return None, 1
 
-        now = time.monotonic()
+        now = self.gpu_scheduler.clock()
         attempted: set[str] = set()
         while True:
             with self._lock:
@@ -1439,6 +1520,7 @@ class TaskManager:
                         if (
                             task
                             and task["status"] == "queued"
+                            and not self._is_foreign_live_runner(task)
                             and (not independent_only or task.get("_queued_independent"))
                             and str(task.get("name", "")) not in attempted
                         )
@@ -1458,7 +1540,6 @@ class TaskManager:
                 waited = max(0.0, now - queued_at)
                 task_env = dict(candidate.get("env", {}) or {})
                 if waited >= gpu_config.max_wait_seconds:
-                    candidate["status"] = "failed"
                     self.gpu_scheduler.release(task_name)
                     self._recompute_processing_flag_locked()
                     timed_out = (candidate, run_index, waited)
@@ -1467,23 +1548,37 @@ class TaskManager:
 
             if timed_out:
                 task, run_index, waited = timed_out
-                self._append_gpu_queue_log(
-                    task,
-                    "GPU WAIT TIMEOUT",
-                    [
-                        f"Run #{run_index} GPU wait timed out after {self._format_duration(waited)}",
-                        f"max wait={self._format_duration(gpu_config.max_wait_seconds)}",
-                    ],
-                )
-                self._mark_failed_on_disk(
-                    task,
-                    event="failed",
-                    reason="gpu_wait_timeout",
-                    detail_lines=[
-                        f"waited={self._format_duration(waited)}",
-                        f"max_wait={self._format_duration(gpu_config.max_wait_seconds)}",
-                    ],
-                )
+                try:
+                    self._mark_failed_on_disk(
+                        task,
+                        event="failed",
+                        reason="gpu_wait_timeout",
+                        detail_lines=[
+                            f"waited={self._format_duration(waited)}",
+                            f"max_wait={self._format_duration(gpu_config.max_wait_seconds)}",
+                        ],
+                        expected_statuses={"queued"},
+                    )
+                except (TaskClaimConflict, TaskStateConflict) as exc:
+                    logger.info(
+                        "GPU wait timeout skipped for %s because disk state changed: %s",
+                        task_name,
+                        exc,
+                    )
+                    latest = load_task_info(task["dir"])
+                    if latest:
+                        self._refresh_memory_task_from_disk_info(task_name, task["dir"], latest)
+                    self.trigger_update()
+                    return None, 1
+                else:
+                    self._append_gpu_queue_log(
+                        task,
+                        "GPU WAIT TIMEOUT",
+                        [
+                            f"Run #{run_index} GPU wait timed out after {self._format_duration(waited)}",
+                            f"max wait={self._format_duration(gpu_config.max_wait_seconds)}",
+                        ],
+                    )
                 return None, 1
 
             wait_log: tuple[Dict[str, Any], List[str]] | None = None
@@ -1714,10 +1809,13 @@ class TaskManager:
         for task in active_tasks:
             status = task.get("status")
             task_name = str(task.get("name", ""))
+            disk_info = load_task_info(task["dir"])
+            disk_status = str((disk_info or {}).get("status", status) or "").lower()
+            if disk_info and disk_status not in {"queued", "running"}:
+                continue
+            if disk_info and self._is_foreign_live_runner(disk_info):
+                continue
             if status == "running":
-                disk_info = load_task_info(task["dir"])
-                if disk_info and self._is_foreign_live_runner(disk_info):
-                    continue
                 pid = self._latest_pid(disk_info) if disk_info else None
                 if pid and self._should_kill_task_process(disk_info or {}):
                     try:
@@ -1811,6 +1909,42 @@ class TaskManager:
         info["lease_heartbeat"] = now
         info["lease_until"] = now + max(1, int(self.lease_seconds))
 
+    def _refresh_queued_runner_leases(self) -> None:
+        """Keep locally queued tasks owned while they wait for workers or GPUs."""
+
+        now = time.time()
+        interval = min(DEFAULT_RUNNER_HEARTBEAT_SECONDS, max(1.0, self.lease_seconds / 3))
+        if now - self._last_queued_lease_heartbeat < interval:
+            return
+        self._last_queued_lease_heartbeat = now
+
+        with self._lock:
+            queued = [
+                (str(task.get("name", "") or ""), str(task.get("dir", "") or ""))
+                for task in self.tasks
+                if task and task.get("status") == "queued" and not self._is_foreign_live_runner(task)
+            ]
+
+        for task_name, task_dir in queued:
+            if not task_name or not task_dir:
+                continue
+
+            def _apply(info: Dict[str, Any]) -> None:
+                if str(info.get("status", "") or "").lower() != "queued":
+                    raise TaskStateConflict("task is no longer queued")
+                if self._is_foreign_live_runner(info):
+                    raise TaskClaimConflict("queued task already owned by another runner")
+                self._set_runner_lease_fields(info)
+
+            try:
+                updated = update_task_info(task_dir, _apply, raise_error=True)
+            except (FileNotFoundError, TaskClaimConflict, TaskStateConflict):
+                continue
+            with self._lock:
+                current = self._resolve_identifier_locked(task_name)
+                if current and self._same_task_dir(current.get("dir"), task_dir):
+                    self._apply_info_to_task(current, updated)
+
     @staticmethod
     def _clear_runner_lease_fields(info: Dict[str, Any]) -> None:
         for key in ("runner_id", "runner_host", "lease_heartbeat", "lease_until"):
@@ -1842,7 +1976,10 @@ class TaskManager:
             if status == "running":
                 if not self._is_current_runner(info):
                     raise TaskClaimConflict("task already owned by another runner")
-            elif status != "queued":
+            elif status == "queued":
+                if self._is_foreign_live_runner(info):
+                    raise TaskClaimConflict("queued task already owned by another runner")
+            else:
                 raise TaskStateConflict(f"task is no longer claimable: {status}")
             info["status"] = "running"
             info["run_index"] = run_index
@@ -1910,11 +2047,13 @@ class TaskManager:
             task_info.pop("_queued_run_index", None)
             if next_status == "queued":
                 self._trim_run_slots(task_info, self._realized_run_slot_count(task_info))
-            if next_status != "running":
-                self._clear_runner_lease_fields(task_info)
-                self._clear_gpu_schedule_info(task_info)
-            else:
+                task_info.pop("cancel_requested_at", None)
+            if next_status in {"queued", "running"}:
                 self._set_runner_lease_fields(task_info)
+            else:
+                self._clear_runner_lease_fields(task_info)
+            if next_status != "running":
+                self._clear_gpu_schedule_info(task_info)
 
         try:
             updated = update_task_info(task_dir, _apply, raise_error=True)
@@ -2320,7 +2459,7 @@ class TaskManager:
                 slot = ensure_run_slot(task_info, target_index)
                 if not task_info["finish_times"][slot]:
                     task_info["finish_times"][slot] = finish_now
-            task_info["status"] = "failed"
+            task_info["status"] = "cancelled"
             task_info["progress"] = 0.0
             task_info["_pending_stop_summary"] = {
                 "run_index": max(target_index, 1),
@@ -2337,7 +2476,7 @@ class TaskManager:
         updated = update_task_info(task_dir, _apply, **update_kwargs)
         if "status" in task:
             self._apply_info_to_task(task, updated)
-            task["status"] = "failed"
+            task["status"] = "cancelled"
 
     def _mark_failed_on_disk(
         self,
@@ -2349,6 +2488,7 @@ class TaskManager:
         lock_timeout_sec: float | None = None,
         expected_statuses: set[str] | None = None,
         require_current_runner: bool = False,
+        final_status: str = "failed",
     ) -> None:
         """Persist a failed state and finalize the active run slot if needed."""
         task_dir = task["dir"]
@@ -2377,7 +2517,7 @@ class TaskManager:
                 slot = ensure_run_slot(task_info, target_index)
                 if not task_info["finish_times"][slot]:
                     task_info["finish_times"][slot] = finish_now
-            task_info["status"] = "failed"
+            task_info["status"] = final_status
             task_info["progress"] = 0.0
             self._clear_runner_lease_fields(task_info)
             self._clear_gpu_schedule_info(task_info)
@@ -2405,7 +2545,7 @@ class TaskManager:
             )
         if "status" in task:
             self._apply_info_to_task(task, updated)
-            task["status"] = "failed"
+            task["status"] = final_status
 
     @staticmethod
     def _task_snapshot(task: Dict[str, Any]) -> tuple:
@@ -2423,6 +2563,11 @@ class TaskManager:
             task.get("task_order"),
             task.get("task_kind"),
             task.get("config_file"),
+            task.get("command_mode"),
+            repr(task.get("cmd")),
+            task.get("workdir"),
+            task.get("shell_executable"),
+            task.get("shell_kind"),
             task.get("notes", ""),
             task.get("runner_id"),
             task.get("runner_host"),
@@ -2446,6 +2591,11 @@ class TaskManager:
                 "pinned": info.get("pinned", task.get("pinned", False)),
                 "task_order": info.get("task_order", task.get("task_order")),
                 "script": info.get("script", task.get("script")),
+                "command_mode": info.get("command_mode", task.get("command_mode")),
+                "cmd": info.get("cmd", task.get("cmd")),
+                "workdir": info.get("workdir", task.get("workdir")),
+                "shell_executable": info.get("shell_executable", task.get("shell_executable")),
+                "shell_kind": info.get("shell_kind", task.get("shell_kind")),
                 "task_kind": normalize_task_kind(
                     info.get("task_kind", info.get("config_mode", task.get("task_kind", TASK_KIND_CONFIG)))
                 ),

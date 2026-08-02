@@ -2,454 +2,347 @@
 
 ![logo](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/pyruns_logo2.png)
 
-[简体中文](README.md) | **English**
+English | [简体中文](README.md)
 
 [![PyPI version](https://img.shields.io/pypi/v/pyruns.svg)](https://pypi.org/project/pyruns/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pyruns.svg)](https://pypi.org/project/pyruns/)
 [![License](https://img.shields.io/pypi/l/pyruns.svg)](https://github.com/LthreeC/pyruns/blob/main/LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-2563eb.svg)](https://lthreec.github.io/pyruns/)
 
-> A local Web UI for Python experiment work: visual parameter editing, batch task generation, task orchestration, real-time terminal logs, and CSV metric export.  
-> Everything runs locally, everything is disk-backed, and everything stays close to the scripts and terminals you already use.
+Pyruns is a disk-first runner for reproducible experiments and terminal workloads. It stores commands, configurations, logs, environments, run history, and metrics under the project's `_pyruns_` directory, then exposes them through a Git-style one-shot CLI and an optional Web UI.
 
 ![Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
 
-Pyruns is designed around a simple idea: experiment tooling should feel closer to your real workflow, not further away from it.
-
-It tries to stay aligned with what you already have:
-
-- your original scripts
-- your current terminal / shell
-- your conda environment and environment variables
-- a disk-backed workspace under `_pyruns_`
-
-**No accounts · No cloud dependency · No database required · Fully local execution**
+## Start in 30 seconds
 
 ```bash
 pip install pyruns
-pyr train.py
-pyr train.py my_config.yaml
-pyr train.py -p 9000
-pyruns train.py -p 9000
-pyruns train.py -p 9000 --no-browser
-pyr
+
+# Both official entrypoints are identical; examples below use short `pyr`
+pyr --help
+pyruns --help
+pyr help -a  # list every command
+
+# Initialize the current project's shell workspace
+pyr init
+
+# Run and track one command
+pyr exec -n smoke -- python -V
+
+# Inspect the result
+pyr -w shell ls
+pyr -w shell show smoke
+pyr -w shell log smoke
 ```
 
-In tmux, SSH, or headless sessions, Pyruns prints the local URL and skips browser auto-open by default. Use `--browser` or `PYRUNS_OPEN_BROWSER=1` when you explicitly want to force browser opening.
-
-The recommended first-glance entrypoints are:
-
-- `pyr train.py`
-- `pyr train.py my_config.yaml`
-
-These are the primary paths new users should see first.  
-`pyr` is still available, but it works better as a secondary entry for shell and command-task workflows.
-
-The newer Home view also gives the workspace a clearer entry surface: system status, task overview, and GPU usage are visible before you dive into generation, orchestration, or logs.
-
-![Home](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
-
-## Why it feels useful
-
-Many experiment tools are powerful, but everyday friction still comes from the same places.
-
-### Pain point 1: hyperparameter search still turns into hand-written loops
-
-Without Pyruns, you often end up writing nested shell loops like this:
+Detach long-running work, then control it with separate commands:
 
 ```bash
-for lr in 0.001 0.01 0.1; do
-  for bs in 32 64 128; do
-    for opt in adam sgd; do
-      python train.py --lr $lr --batch_size $bs --optimizer $opt \
-        > logs/lr${lr}_bs${bs}_${opt}.log 2>&1 &
-    done
-  done
-done
-wait
+pyr exec -n train -d -- python train.py --epochs 100
+pyr -w shell status
+pyr -w shell wait train
+pyr -w shell log train
 ```
 
-With Pyruns, the same intent can live directly in `Form` mode:
+Start the Web UI explicitly when needed:
 
-```yaml
-lr: 0.001 | 0.01 | 0.1
-batch_size: 32 | 64 | 128
-optimizer: adam | sgd
+```bash
+pyr ui
+pyr ui train.py
+pyr ui --shell
 ```
 
-That expands into isolated tasks with their own configs, logs, and histories.
+`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Bare commands print concise help and `help -a` expands the full command index; neither starts a stateful interactive REPL.
 
-### Pain point 2: experiment history lives in your memory instead of your workspace
+## Why it is useful
 
-“Which `batch_size` did I use for that `lr=0.01` run last week?”  
-“Where did that shell task log go?”  
-“What environment did it use?”
+- Every task has a stable directory instead of disappearing into terminal scrollback.
+- Commands, arguments, environment variables, logs, metrics, and artifacts stay together.
+- Shell commands and Python configuration experiments share one lifecycle.
+- One command performs one operation, making the same interface useful to people, scripts, CI, and AI agents.
+- Foreground execution returns the real task result; a batch returns non-zero if any task fails.
+- Detached runners outlive the invoking terminal and do not open extra console windows on Windows.
+- The CLI and Web UI share the same disk state.
 
-Pyruns keeps that history close:
+## Git-style CLI
 
-- `config.yaml` or `config.sh`
-- `task_info.json`
-- `run_logs/runN.log`
-- timestamps, PIDs, notes, and environment details
+```text
+pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
+```
 
-The result is simple: tasks do not disappear after they finish. They leave behind a usable history.
+Global options:
 
-### Pain point 3: concurrent logs become unreadable
+```text
+-C, --directory PATH
+-w, --workspace NAME|PATH|SCRIPT.py
+--json
+--no-color
+--debug
+--version
+```
 
-When several tasks run at once, mixed stdout is the fastest way to lose context. Pyruns isolates task output into separate log files and gives it a dedicated terminal-like surface in `Monitor`.
+Commands:
 
-![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
-
-For shell-driven workflows, this matters even more:
-
-![Shell Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_monitor.png)
-
-## Core capabilities
-
-| Capability | What it gives you |
+| Command | Purpose |
 | --- | --- |
-| `React Generator` | `Form`, `YAML`, and `Shell` entry modes for Python tasks and shell tasks. |
-| `Form batch expansion` | Batch syntax with `|`, `(|)`, and `start:stop:step` for cartesian, zip, and range expansion. |
-| `YAML single-task mode` | `YAML` mode stays focused on creating one clean `config.yaml` task at a time. |
-| `Shell Workspace` | Shell tasks are stored as `config.sh` and follow the terminal that launched `pyr` by default. |
-| `Manager control room` | Search, filter, batch run, batch delete, pin, inspect details, and jump into logs. |
-| `Monitor terminal` | Real-time xterm.js view, historical log switching, clipboard support, and CSV export. |
-| `Metric export` | Record metrics with `pyruns.record()` and export selected task results as CSV. |
-| `Disk-backed workspace` | Task state lives on disk, making refresh, recovery, CLI/Web sharing, and backup much easier. |
+| `init` | initialize a shell or Python script workspace |
+| `exec` | create and run one tracked terminal command or shell script |
+| `add` | add immutable task snapshots from YAML |
+| `run` | run one or more exact task names |
+| `ls` | filter and sort tasks deterministically |
+| `status` | summarize one workspace |
+| `show` | show task metadata and paths |
+| `log` | print, follow, or locate logs |
+| `wait` | wait for already active tasks |
+| `stop` | ask the owning runner to stop tasks and mark them `cancelled` |
+| `rm` / `restore` | soft-delete and restore tasks |
+| `mv` / `pin` | manage task names and pinned state |
+| `export` | export CSV or JSON records |
+| `config` | inspect and update project settings |
+| `metrics` | print one CPU, memory, and GPU snapshot |
+| `ui` / `dev` | start the Web UI explicitly |
+| `help` | show top-level or command help |
 
-## Two workspace modes
+See the [complete CLI guide](docs/cli-guide.md) for every option and contract.
 
-The shortest way to distinguish them is:
+## Two workspace types
 
-- `script` mode builds a workspace around a Python script
-- `shell` mode builds a workspace around command tasks in a directory
+### Shell Workspace
 
-| Mode | Entry | What you select | Task file | Best for |
-| --- | --- | --- | --- | --- |
-| `script` | `pyr train.py` / `pyr train.py config.yaml` | a Python script | `config.yaml` | `argparse`, `pyruns.load()`, config-driven experiments |
-| `shell` | `pyr` | the current directory | `config.sh` | PowerShell / cmd / bash command tasks and terminal workflows |
-
-The key difference is not visual. It is what Pyruns is actually managing:
-
-- `script` mode manages “a script plus Python tasks”
-- `shell` mode manages “a directory plus command tasks”
-
-### 1. Script Workspace
-
-When you open a normal Python script, Pyruns builds a dedicated workspace around it:
-
-```text
-project/
-├─ train.py
-└─ _pyruns_/
-   ├─ _pyruns_settings.yaml
-   └─ train/
-      ├─ script_info.json
-      ├─ config_default.yaml
-      └─ tasks/
-```
-
-This is the right fit for:
-
-- `argparse` scripts
-- `pyruns.load()` / `pyruns.read()` workflows
-- Python tasks that should keep a separate `config.yaml` snapshot per run
-- workflows where parameter editing, templates, and batch generation come first
-
-### 2. Shell Workspace
-
-When you switch into shell mode, Pyruns is no longer centered on a `.py` file.  
-It becomes centered on a directory.
-
-When you switch into shell mode, the workspace becomes:
-
-```text
-project/
-└─ _pyruns_/
-   └─ _shell_/
-      ├─ script_info.json
-      └─ tasks/
-```
-
-Each shell task is persisted as:
-
-```text
-_pyruns_/_shell_/tasks/<task_name>/config.sh
-```
-
-The key idea is not “bash compatibility”. It is this:
-
-- default `shell_mode: follow`
-- follow the terminal that launched `pyr`
-- inherit the current Python process environment
-- do not auto-translate syntax across shells
-
-So shell mode is better understood as:
-
-- turning terminal history into managed tasks
-- grouping command workflows from one directory into Manager / Monitor
-- preserving the feel of “run this in the terminal I already use”
-
-So the target behavior of a shell task is:
-
-> as close as possible to manually running the same command in the terminal that started `pyr`
-
-![Shell Generator](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
-
-## How to connect Pyruns
-
-### Mode 1: zero-intrusion `argparse` integration
-
-If your script already uses `argparse`:
+Use it for arbitrary terminal commands, repository reproduction, installation, preprocessing, training, evaluation, and pipelines:
 
 ```bash
-pyr train.py
+pyr init
+pyr exec -n env-check -- python -V
+pyr exec -n install -- python -m pip install -r requirements.txt
+pyr exec -n baseline -d -- python train.py --config baseline.yaml
 ```
 
-Pyruns will try to extract parameter definitions, build an editable form, and send modified values back as command-line arguments.
-
-### Mode 2: YAML template driven workflow
-
-If your script reads config with `pyruns.load()`:
+Pass shell script files directly to `exec`; there is no need to spell out the interpreter:
 
 ```bash
-pyr train.py my_config.yaml
+pyr exec -n setup -- ./scripts/setup.sh
+pyr exec -n setup-ps -- .\scripts\setup.ps1
+pyr exec -n setup-cmd -- .\scripts\setup.cmd
+pyr exec -n setup-bat -- .\scripts\setup.bat
 ```
 
-On the first run, Pyruns stores that file as `config_default.yaml`. After that:
+Pyruns maps `.sh`, `.ps1`, `.cmd`, and `.bat` to Bash/sh, PowerShell, or `cmd.exe`. Values after the file path are arguments for that script, not Pyruns options. Pyruns preserves those argument boundaries and records the script content hash for every run. Reruns still use the original script path, so relative-path behavior based on the script directory remains intact.
+
+Use `--shell` only when the command intentionally relies on pipes, redirects, expansion, or command chaining:
 
 ```bash
-pyr train.py
+pyr exec -n report --shell "python eval.py > metrics.txt"
 ```
 
-the same workspace can continue handling generation, scheduling, and execution.
+For ordinary programs, prefer the exact argument vector after `--`.
 
-The UI launcher follows the same rule. `argparse` scripts can open directly.
-For `pyruns.load()` scripts, the first launch needs a YAML file when
-`config_default.yaml` does not exist yet. After a default template exists, Pyruns
-reuses it directly; for `argparse` scripts, the default template is refreshed
-from the current script arguments.
+Preview an execution with no filesystem or process side effects; add global `--json` for a stable plan object:
 
-## In-script API
+```bash
+pyr exec --dry-run -n report -- python eval.py
+pyr --json exec --dry-run -n report -- python eval.py
+```
 
-The API exposed to your training script is intentionally small:
+The preview does not create `_pyruns_`, tasks, or settings files, and it does not start the user command.
 
-| API | Purpose |
-| --- | --- |
-| `pyruns.load()` | Load the current task YAML / JSON config and return a dot-accessible config object. |
-| `pyruns.read(path=None)` | Explicitly read a config file; most scripts can just call `pyruns.load()`. |
-| `pyruns.record(**kwargs)` | Store final metrics for this run, such as `final_loss`, `acc`, or `seed`. Values from the same run are merged into one records slot. |
-| `pyruns.track(**kwargs)` | Append time-series metrics, such as per-epoch `loss` or `acc`, into tracks. |
-| `pyruns.get_task_dir()` | Return the current task directory, or `None` outside a Pyruns task. |
-| `pyruns.get_run_index()` | Return the current run slot, useful when one task is run multiple times. |
-| `pyruns.artifact_dir()` | Return the current run output directory, `artifacts/runN`, and create it automatically. |
+```text
+<project>/_pyruns_/_shell_/tasks/<task>/
+├── task_info.json
+├── config.ps1 | config.cmd | config.sh
+└── run_logs/runN.log
+```
 
-Typical usage:
+### Script Workspace
+
+Use it for `argparse`, `pyruns.load()`, YAML configuration, batch expansion, and parameterized experiments:
+
+```bash
+pyr init train.py
+pyr -w train add configs/quick.yaml
+pyr -w train run quick
+pyr -w train run --from configs/sweep.yaml -n sweep -j 4
+pyr -w train run --from configs/sweep.yaml -n sweep -j 4 --dry-run
+```
+
+`run --from ... --dry-run` validates the YAML and lists expanded task candidates without creating or running them.
+
+```text
+<project>/_pyruns_/train/tasks/<task>/
+├── task_info.json
+├── config.yaml
+├── run_logs/runN.log
+└── artifacts/runN/
+```
+
+## Workspace selection
+
+Pyruns walks from the current directory toward its parents to find the nearest `_pyruns_`. It selects the workspace automatically only when exactly one exists. Multiple workspaces require `-w`:
+
+```bash
+pyr -w shell ls
+pyr -w train status
+pyr -w ./train.py show baseline
+pyr -w ./_pyruns_/train log baseline
+```
+
+Task names must be exact. Indices and fuzzy target resolution are not supported. `show` and `log` additionally accept `TASK@RUN` for a historical run, so `@` is reserved in new task names.
+
+## Python integration
+
+### Zero-intrusion `argparse`
+
+```python
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--lr", type=float, default=1e-3)
+parser.add_argument("--epochs", type=int, default=10)
+args = parser.parse_args()
+```
+
+```bash
+pyr init train.py
+pyr ui train.py
+```
+
+### `pyruns.load()` configuration
 
 ```python
 import os
+
+import pyruns
+
+cfg = pyruns.load()
+print(cfg.training.lr)
+```
+
+```bash
+pyr init train.py --config configs/default.yaml
+pyr -w train add configs/default.yaml -n baseline
+pyr -w train run baseline
+```
+
+## In-script API
+
+| API | Purpose |
+| --- | --- |
+| `pyruns.load()` | load the current task configuration as a dot-accessible object |
+| `pyruns.read(path=None)` | explicitly read YAML or JSON |
+| `pyruns.record(**kwargs)` | save final metrics for the current run |
+| `pyruns.track(**kwargs)` | append time-series metrics |
+| `pyruns.get_task_dir()` | return the current task directory |
+| `pyruns.get_run_index()` | return the current run number |
+| `pyruns.artifact_dir()` | create and return `artifacts/runN` |
+
+```python
 import pyruns
 
 cfg = pyruns.load()
 
 for epoch in range(cfg.training.epochs):
-    loss = train_one_epoch(cfg)
-    pyruns.track(loss=loss)
+    loss = train_one_epoch()
+    pyruns.track(epoch=epoch, loss=loss)
 
 pyruns.record(final_loss=loss, seed=cfg.training.seed)
-
-artifact_dir = pyruns.artifact_dir()
-metrics_path = os.path.join(artifact_dir, "metrics.json")
-with open(metrics_path, "w", encoding="utf-8") as f:
-    f.write("{}")
+model.save(os.path.join(pyruns.artifact_dir(), "model.pt"))
 ```
 
-### Mode 3: CLI interactive mode
-
-If you work on a headless server or simply prefer a terminal workflow:
+## Inspection and lifecycle
 
 ```bash
-pyr cli train.py
+pyr -w train ls -s running --status queued
+pyr -w train status
+pyr -w train show baseline
+pyr -w train show baseline@2
+pyr -w train log baseline -f
+pyr -w train log baseline@2
+pyr -w train wait baseline --timeout 600
+pyr -w train stop baseline
+pyr -w train mv baseline baseline-lr1e3
+pyr -w train pin baseline-lr1e3
+pyr -w train rm baseline-lr1e3
+pyr -w train ls --trash
+pyr -w train restore baseline-lr1e3
 ```
 
-The CLI and the Web UI share the same workspace and task data on disk.
+`rm` executes immediately without confirmation, but remains a recoverable soft delete.
 
-### Mode 4: open a shell workspace directly
+## JSON and automation
 
-If you do not want to start from a Python entry script and only want to manage command tasks in the current directory:
+Place global `--json` before the command:
 
 ```bash
-pyr
+pyr --json -w shell ls
+pyr --json -w shell status
+pyr --json -w shell show smoke
+pyr --json -w shell show smoke@2
+pyr --json -w shell log smoke --path
+pyr --json -w shell log smoke@2 --path
+pyr --json -w shell config list
+pyr --json metrics
 ```
 
-This creates and opens:
-
-```text
-<current_dir>/_pyruns_/_shell_
-```
-
-This is especially useful for:
-
-- command-driven experiments
-- PowerShell / cmd / bash task collections
-- workflows that begin as shell commands before becoming more structured scripts
-
-## Practical examples
-
-The repository already includes runnable examples under `examples/`.
-
-### Example 1: native `argparse` support
-
-Directory:
-
-```text
-examples/1_argparse_script/
-```
-
-This path is perfect for showcasing:
-
-- the `Generator` form page
-- the expanded task grid in `Manager`
-
-### Example 2: `pyruns.load()` with YAML
-
-Directory:
-
-```text
-examples/2_pyruns_config/
-```
-
-This one is especially good for showing:
-
-- per-task `config.yaml` snapshots
-- task detail tabs such as `Task Info` and environment metadata
-
-![Task Detail](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/task_info.png)
-
-## Interface modules
-
-### Home
-
-Home is the first-glance overview after entering a workspace.  
-Its job is to answer “what is happening right now?” before pushing you into a task list.
-
-![Home Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
-
-This page is useful for quickly scanning:
-
-- task totals and status distribution
-- active vs done vs failed state
-- GPU and system resource usage
-- where to jump next: Generator, Manager, or Monitor
-
-### Generator
-
-The Generator is where parameter editing and task creation happen.  
-It should feel fast, dense, and focused, not bloated.
-
-![Generator Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
-
-You can use it to:
-
-- switch templates
-- edit parameters in `Form`
-- edit complete config text in `YAML`
-- write shell scripts in `Shell`
-- pin important fields
-- preview batch expansion before creating tasks
-
-### Manager
-
-Manager is the orchestration layer.  
-This is where “seeing tasks” becomes “acting on tasks”.
-
-![Manager Preview](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
-
-It supports:
-
-- multiline search
-- status filtering
-- batch run / delete
-- pinned tasks as their own section
-- detail drawer inspection
-- direct navigation into Monitor logs
-
-### Monitor
-
-Monitor is the observation surface.  
-Its job is not just to print stdout, but to make logs workable.
-
-It supports:
-
-- real-time log streaming
-- historical log switching
-- terminal copy behavior
-- selected-task CSV export
-- tight linkage with Manager and task detail views
-
-## Configuration entrypoint
-
-Workspace settings live in:
-
-```text
-<project>/_pyruns_/_pyruns_settings.yaml
-```
-
-Important keys include:
-
-- `header_refresh_interval`
-- `generator_form_columns`
-- `manager_columns`
-- `manager_execution_mode`
-- `monitor_sidebar_width_pct`
-- `shell_mode`
-- `shell_executable`
-- `python_executable`
-- `conda_env`
-- `conda_executable`
-- `global_env`
-
-The important shell mental model is:
-
-- keep `shell_mode: follow` by default
-- switch to `custom` only when you explicitly want to lock execution to a fixed shell
-
-Runtime switching applies to both Python tasks and shell tasks:
-
-```yaml
-conda_env: eval-env
-conda_executable: conda
-```
-
-or use an explicit Python executable:
-
-```yaml
-python_executable: /shared/ywl/miniconda3/envs/eval-env/bin/python
-```
-
-`global_env` stores workspace-level environment variables. The merge order is: terminal environment < `global_env` < task Env. Task-level Env values `PYRUNS_CONDA_ENV`, `PYRUNS_CONDA_EXE`, and `PYRUNS_PYTHON_EXECUTABLE` override the workspace default runtime.
-
-The Workspace Env editor supports a safe `.bashrc`-like assignment subset:
+Logs are raw stdout by default; use `log --path` for a structured reference. Exports go to stdout unless a file is selected:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0
-export TOKENIZERS_PARALLELISM=false
-HF_HOME="/data/hf cache"
+pyr -w train export -f csv
+pyr -w train export baseline -f json
+pyr -w train export -s completed -o results.csv
 ```
 
-Single quotes, double quotes, and line-leading comments are supported. Command substitution, variable expansion, and arbitrary shell code are intentionally not executed.
+Exit status:
 
-Direct CLI task runs, such as `pyr run 1`, inherit the current terminal environment. Web UI Runtime / Workspace Env settings apply only to runs launched from the web UI.
+```text
+0    command and all waited tasks succeeded
+1    workspace, target, runtime, or task failure
+2    invalid command-line usage
+130  interrupted while waiting or following logs
+```
+
+## Web UI
+
+![Manager](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
+
+```bash
+pyr ui
+pyr ui train.py
+pyr ui train.py --config configs/default.yaml
+pyr ui --shell
+pyr ui --shell --no-browser
+pyr dev train.py
+```
+
+- Generator edits script configurations or shell payloads and creates tasks.
+- Manager searches, filters, runs, cancels, renames, pins, and removes tasks.
+- Monitor shows logs, metrics, and task details.
+- Dashboard presents project status and resource summaries.
+
+## Disk is the source of truth
+
+```text
+<project>/_pyruns_/
+├── _pyruns_settings.yaml
+├── _shell_/
+│   ├── script_info.json
+│   └── tasks/
+└── <script_name>/
+    ├── script_info.json
+    ├── config_default.yaml
+    └── tasks/
+```
+
+The CLI and Web UI operate on the same state, so tasks survive closing either interface and remain inspectable by version control, backup tools, and automation.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md)
-- [Showcase](docs/showcase.md)
-- [UI Guide](docs/ui-guide.md)
+- [Getting started](docs/getting-started.md)
+- [CLI guide](docs/cli-guide.md)
 - [Configuration](docs/configuration.md)
+- [Web UI guide](docs/ui-guide.md)
+- [Batch syntax](docs/batch-syntax.md)
+- [Script API](docs/api-reference.md)
 - [Architecture](docs/architecture.md)
-- [Batch Syntax](docs/batch-syntax.md)
-- [CLI Guide](docs/cli-guide.md)
 
 ## License
 

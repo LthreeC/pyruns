@@ -356,6 +356,8 @@ def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[st
     name = name.strip()
     if len(name) > 200:
         return "Task name is too long (max 200 characters)"
+    if "@" in name:
+        return "Task name cannot contain '@'; it is reserved for TASK@RUN references"
     bad = _INVALID_CHARS_RE.findall(name)
     if bad:
         return f"Task name contains invalid characters: {''.join(set(bad))}"

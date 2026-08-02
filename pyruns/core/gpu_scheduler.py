@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import threading
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -456,8 +457,11 @@ def _parse_cuda_visible_devices(value: str) -> Optional[List[int]]:
 
 def _coerce_int(value: Any, default: int) -> int:
     try:
-        return int(float(str(value).strip()))
-    except (TypeError, ValueError):
+        parsed = float(str(value).strip())
+        if not math.isfinite(parsed):
+            return default
+        return int(parsed)
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -476,9 +480,10 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 def _coerce_float(value: Any, default: float) -> float:
     try:
-        return float(str(value).strip())
+        parsed = float(str(value).strip())
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def _coerce_pct(value: Any, default: float) -> float:

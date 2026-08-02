@@ -116,6 +116,7 @@ class TaskGenerator:
         group_index: str = "",
         task_kind: str = TASK_KIND_CONFIG,
         config_file: str | None = None,
+        task_metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Create one task folder with task metadata, task payload, and ``run_logs/``."""
 
@@ -162,6 +163,8 @@ class TaskGenerator:
             config_text=clean_config_text,
             config_file=resolved_config_file,
         )
+        metadata = dict(task_metadata or {})
+        task_obj.update(metadata)
 
         task_info: Dict[str, Any] = {
             "name": task_obj["name"],
@@ -177,6 +180,8 @@ class TaskGenerator:
             "records": [],
             "tracks": [],
         }
+
+        task_info.update(metadata)
 
         script_path = self._resolve_script_path()
         if script_path:
@@ -222,10 +227,32 @@ class TaskGenerator:
         self,
         name_prefix: str,
         shell_text: str,
+        *,
+        command_mode: str = 'shell',
+        command_argv: List[str] | None = None,
+        workdir: str | None = None,
+        shell_executable: str | None = None,
+        shell_kind: str | None = None,
+        env: Dict[str, str] | None = None,
+        script_path: str | None = None,
     ) -> Dict[str, Any]:
         """Create a single shell task backed by one shell-native payload file."""
 
         config_file = get_shell_config_filename_for_workspace(os.path.dirname(self.root_dir))
+        metadata: Dict[str, Any] = {
+            'command_mode': str(command_mode or 'shell'),
+            'env': {str(key): str(value) for key, value in (env or {}).items()},
+        }
+        if command_argv is not None:
+            metadata['cmd'] = [str(part) for part in command_argv]
+        if workdir:
+            metadata['workdir'] = os.path.abspath(workdir)
+        if shell_executable:
+            metadata['shell_executable'] = str(shell_executable)
+        if shell_kind:
+            metadata['shell_kind'] = str(shell_kind)
+        if script_path:
+            metadata['script'] = os.path.abspath(script_path)
 
         return self.create_task(
             name_prefix,
@@ -233,4 +260,5 @@ class TaskGenerator:
             config_text=shell_text,
             task_kind=TASK_KIND_SHELL,
             config_file=config_file,
+            task_metadata=metadata,
         )

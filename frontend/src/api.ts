@@ -95,7 +95,7 @@ export const getTask = (name: string, refresh = true) =>
   request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}`)
 
 export const batchRunTasks = (taskNames: string[], executionMode?: string, maxWorkers?: number) =>
-  request<{ count: number; items: Task[] }>('/api/tasks/batch/run', {
+  request<{ count: number; items: Task[]; skipped: string[] }>('/api/tasks/batch/run', {
     method: 'POST',
     body: JSON.stringify({ task_names: taskNames, execution_mode: executionMode, max_workers: maxWorkers }),
   })

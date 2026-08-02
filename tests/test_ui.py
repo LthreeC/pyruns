@@ -1112,6 +1112,7 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "type RuntimePage = 'python' | 'env' | 'gpu'" in runtime_panel
     assert "GPU Scheduler" in runtime_panel
     assert "Task uses" in runtime_panel
+    assert "{ id: true, label: 'On' }" in runtime_panel
     assert "Selection" in runtime_panel
     assert "Auto pick" in runtime_panel
     assert "Specified IDs" in runtime_panel
@@ -1130,9 +1131,15 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "setGpuRequireSameModel(next.gpu_scheduler?.require_same_gpu_model ?? false)" in runtime_panel
     assert "function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number)" in runtime_panel
     assert "const chooseGpuTaskMode = (mode: GpuTaskMode) => {" in runtime_panel
+    assert "return Array.from(new Set(" in runtime_panel
+    assert "const selectedGpuIds = parseDeviceIds(gpuDeviceIds)" in runtime_panel
+    assert "Specified IDs must contain exactly" in runtime_panel
+    assert "aria-pressed={gpuSchedulerEnabled === item.id}" in runtime_panel
+    assert "aria-pressed={gpuTaskMode === item.id}" in runtime_panel
+    assert "aria-pressed={gpuSelectionMode === item.id}" in runtime_panel
     assert "min={1}" in runtime_panel
     assert "selection_mode: gpuSelectionMode" in runtime_panel
-    assert "gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1" in runtime_panel
+    assert "gpus_per_task: requestedGpuCount" in runtime_panel
     assert "memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100)" in runtime_panel
     assert "compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100)" in runtime_panel
     assert "stable_seconds: numberInputValue(gpuStableSeconds, 15, 1)" in runtime_panel

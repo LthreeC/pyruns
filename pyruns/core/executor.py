@@ -1,4 +1,4 @@
-﻿"""Run a single task as a subprocess and persist its lifecycle."""
+"""Run a single task as a subprocess and persist its lifecycle."""
 
 from __future__ import annotations
 
@@ -49,6 +49,7 @@ from pyruns.utils.log_io import normalize_log_newlines
 from pyruns.utils.process_utils import kill_process
 from pyruns.utils.shell_runtime import (
     get_shell_runtime_for_task,
+    quote_windows_cmd_argument,
     _is_windows_wsl_bash_executable,
     _windows_posix_script_arg,
 )
@@ -360,10 +361,10 @@ def _is_windows() -> bool:
 
 
 def _popen_process_group_kwargs() -> Dict[str, Any]:
-    """Return subprocess options that let Pyruns stop a full POSIX task tree."""
+    """Return platform process options for managed task execution."""
 
     if _is_windows():
-        return {}
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {"start_new_session": True}
 
 
@@ -786,7 +787,7 @@ def _resolve_shell_executable(task_dir: str | None = None) -> str:
 
     raise RuntimeError(
         "Unable to resolve the current terminal shell for shell tasks. "
-        "Start pyr from the shell you want to follow, or switch to "
+        "Run pyr from the shell you want to follow, or switch to "
         "shell_mode=custom in _pyruns_settings.yaml."
     )
 
@@ -899,7 +900,15 @@ def _materialize_windows_shell_wrapper(
         wrapper_body = "\n".join(
             [
                 _powershell_utf8_preamble(),
+                "$global:LASTEXITCODE = 0",
                 script_body.rstrip() or "exit 0",
+                "$__pyrunsSucceeded = $?",
+                "$__pyrunsExitCode = $LASTEXITCODE",
+                "if (-not $__pyrunsSucceeded) {",
+                "    if ($__pyrunsExitCode -ne 0) { exit $__pyrunsExitCode }",
+                "    exit 1",
+                "}",
+                "exit 0",
             ]
         )
         wrapper_path = _write_temp_shell_wrapper(
@@ -922,25 +931,74 @@ def _materialize_windows_shell_wrapper(
 
     wrapper_lines = [
         "@echo off",
-        "setlocal",
+        "setlocal DisableDelayedExpansion",
         "chcp 65001 >nul",
         script_body.rstrip() or "exit /b 0",
     ]
     wrapper_path = _write_temp_shell_wrapper(
         suffix=".cmd",
         content="\r\n".join(wrapper_lines) + "\r\n",
-        encoding="utf-8-sig",
+        encoding="utf-8",
         newline="\r\n",
         directory=task_dir,
     )
     return [shell_path, "/d", "/c", wrapper_path], task_dir, [wrapper_path]
 
 
-def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], str, List[str]]:
+def _materialize_windows_command_file(
+    command: List[str],
+    task_dir: str,
+) -> Tuple[List[str], List[str]] | None:
+    """Wrap a persisted ``cmd.exe /c FILE`` argv without reparsing its arguments."""
+
+    if len(command) < 6 or _shell_executable_name(command[0]) not in {"cmd", "cmd.exe"}:
+        return None
+    if str(command[4]).lower() != "/c":
+        return None
+    script_path = str(command[5])
+    if os.path.splitext(script_path)[1].lower() not in {".cmd", ".bat"}:
+        return None
+
+    values = [script_path, *(str(value) for value in command[6:])]
+    if any("\r" in value or "\n" in value for value in values):
+        raise RuntimeError("cmd script arguments cannot contain newlines")
+
+    def _quote(value: str) -> str:
+        return quote_windows_cmd_argument(value)
+
+    wrapper_lines = [
+        "@echo off",
+        "setlocal DisableDelayedExpansion",
+        "chcp 65001 >nul",
+        "call " + " ".join(_quote(value) for value in values),
+        "exit /b %ERRORLEVEL%",
+    ]
+    wrapper_path = _write_temp_shell_wrapper(
+        suffix=".cmd",
+        content="\r\n".join(wrapper_lines) + "\r\n",
+        encoding="utf-8",
+        newline="\r\n",
+        directory=task_dir,
+    )
+    return [*command[:5], wrapper_path], [wrapper_path]
+
+
+def _build_shell_command(
+    task_dir: str,
+    config_file: str,
+    shell_executable: str | None = None,
+) -> Tuple[List[str], str, List[str]]:
     script_path = os.path.join(task_dir, config_file or SHELL_CONFIG_FILENAME)
     if not os.path.exists(script_path):
         raise FileNotFoundError(script_path)
-    shell_path = _resolve_shell_executable(task_dir)
+    shell_path = str(shell_executable or '').strip()
+    if shell_path:
+        resolved = shutil.which(shell_path) or (shell_path if os.path.isfile(shell_path) else '')
+        if not resolved:
+            raise RuntimeError(f'Stored shell executable is unavailable: {shell_path}')
+        shell_path = resolved
+    else:
+        shell_path = _resolve_shell_executable(task_dir)
     workdir = _resolve_shell_workdir(task_dir)
     if _is_windows():
         command, _, cleanup_paths = _materialize_windows_shell_wrapper(task_dir, script_path, shell_path)
@@ -951,7 +1009,11 @@ def _build_shell_command(task_dir: str, config_file: str) -> Tuple[List[str], st
 def _augment_wsl_env(command: List[str] | str, env: Dict[str, str], task_env_keys: set[str]) -> None:
     if isinstance(command, str):
         return
-    if not any(_is_windows_wsl_bash_executable(str(part)) for part in command):
+    if not any(
+        _is_windows_wsl_bash_executable(str(part))
+        or os.path.basename(str(part)).strip().lower() in {'wsl', 'wsl.exe'}
+        for part in command
+    ):
         return
 
     entries = [entry for entry in str(env.get("WSLENV", "") or "").split(":") if entry]
@@ -983,6 +1045,7 @@ def _build_command(
     task_dir: str | None = None,
     config_file: str = CONFIG_FILENAME,
     python_runtime: Optional[Dict[str, str]] = None,
+    shell_executable: str | None = None,
 ) -> Tuple[Any, Optional[str], List[str]]:
     """Build the subprocess command list from task metadata + payload."""
 
@@ -990,7 +1053,22 @@ def _build_command(
     if normalized_kind == TASK_KIND_SHELL:
         if not task_dir:
             raise RuntimeError("Shell task execution requires a task directory")
-        command, workdir, cleanup_paths = _build_shell_command(task_dir, config_file or SHELL_CONFIG_FILENAME)
+        if isinstance(meta_cmd, list) and meta_cmd:
+            command = [str(part) for part in meta_cmd]
+            workdir = meta_workdir or _resolve_shell_workdir(task_dir)
+            if _is_windows():
+                materialized = _materialize_windows_command_file(command, task_dir)
+                if materialized is not None:
+                    command, cleanup_paths = materialized
+                    command = _apply_python_runtime_to_shell_command(command, python_runtime)
+                    return command, workdir, cleanup_paths
+            return _apply_python_runtime_to_shell_command(command, python_runtime), workdir, []
+        command, workdir, cleanup_paths = _build_shell_command(
+            task_dir,
+            config_file or SHELL_CONFIG_FILENAME,
+            shell_executable=shell_executable,
+        )
+        workdir = meta_workdir or workdir
         return _apply_python_runtime_to_shell_command(command, python_runtime), workdir, cleanup_paths
 
     command = meta_cmd or config.get("command")
@@ -1216,6 +1294,7 @@ def run_task_worker(
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
     meta_workdir = task_meta.get("workdir")
+    shell_executable = task_meta.get("shell_executable")
 
     workspace_dir = os.path.dirname(os.path.dirname(task_dir))
     script_info_path = os.path.join(workspace_dir, "script_info.json")
@@ -1303,7 +1382,7 @@ def run_task_worker(
         process_terminated: bool,
     ) -> Dict[str, Any]:
         nonlocal end_str, progress, status
-        status = "failed"
+        status = "cancelled"
         progress = 0.0
         end_str = get_now_str()
 
@@ -1361,6 +1440,7 @@ def run_task_worker(
                 SHELL_CONFIG_FILENAME if task_kind == TASK_KIND_SHELL else CONFIG_FILENAME
             ),
             python_runtime=python_runtime,
+            shell_executable=shell_executable,
         )
         logger.debug("Built command: %s  workdir=%s  python_runtime=%s", command, workdir, python_runtime)
 
@@ -1455,13 +1535,24 @@ def run_task_worker(
                 for chunk in iter(lambda: proc.stdout.read1(4096), b""):
                     if not chunk:
                         break
-                    handle.write(chunk)
+                    text = decoder.decode(chunk)
+                    encoded = text.encode("utf-8")
+                    if encoded:
+                        handle.write(encoded)
                     handle.flush()
                     chunk_offset = handle.tell()
-                    text = normalize_log_newlines(decoder.decode(chunk))
-                    log_emitter.emit(name, text, offset=chunk_offset, log_file_name=os.path.basename(log_path))
+                    normalized = normalize_log_newlines(text)
+                    if normalized:
+                        log_emitter.emit(
+                            name,
+                            normalized,
+                            offset=chunk_offset,
+                            log_file_name=os.path.basename(log_path),
+                        )
                 tail = decoder.decode(b"", final=True)
                 if tail:
+                    handle.write(tail.encode("utf-8"))
+                    handle.flush()
                     log_emitter.emit(
                         name,
                         normalize_log_newlines(tail),
@@ -1477,7 +1568,7 @@ def run_task_worker(
         end_str = get_now_str()
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
-            status = "failed"
+            status = "cancelled"
             progress = 0.0
         else:
             status = "completed" if ret == 0 else "failed"
@@ -1503,10 +1594,13 @@ def run_task_worker(
                 if raw_run_index == int(run_index):
                     stop_summary = dict(raw_stop_summary)
                     info.pop("_pending_stop_summary", None)
-                    status = "failed"
+                    status = "cancelled"
                     progress = 0.0
-            elif status == "completed" and str(info.get("status", "") or "").lower() == "failed":
-                status = "failed"
+            elif status == "completed" and str(info.get("status", "") or "").lower() in {
+                "failed",
+                "cancelled",
+            }:
+                status = str(info.get("status", "") or "").lower()
                 progress = 0.0
             slot = ensure_run_slot(info, run_index)
             info["status"] = status
@@ -1523,6 +1617,17 @@ def run_task_worker(
             _clear_runner_lease(info, runner_id)
 
         update_task_info(task_dir, _mark_finished)
+
+        if status == "cancelled":
+            final_status_payload = "[PYRUNS] Final status: cancelled\n"
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(final_status_payload)
+            log_emitter.emit(
+                name,
+                final_status_payload.replace("\n", "\r\n"),
+                offset=os.path.getsize(log_path),
+                log_file_name=os.path.basename(log_path),
+            )
 
         if stop_summary:
             detail_lines = [f"reason={stop_summary.get('reason', 'stopped')}"]

@@ -1,282 +1,330 @@
 # 快速开始
 
-这份指南对应当前的 **React + FastAPI** 主链路版本。  
-如果你想尽快看到 Pyruns 的真实手感，这一页就是最短路径。
+本页从安装开始，分别完成一个 shell 任务和一个 Python 配置任务，并说明如何查询、取消、导出和打开 Web UI。
 
-## 先看效果
-
-在开始之前，先看一眼现在的界面，会更容易进入状态。
-
-![Generator 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_generator.png)
-
-## 1. 安装
+## 1. 安装与确认入口
 
 ```bash
 pip install pyruns
+pyr --version
+pyr --help
+pyruns --version
+pyruns --help
+pyr help -a
 ```
 
-安装完成后，建议优先记住这两个入口：
+Pyruns 同时安装 `pyr` 与 `pyruns` 两个完全等价的正式命令。本文使用更短的 `pyr`；任何示例都可以原样换成 `pyruns`。裸命令与 `--help` 打印精简帮助，`help -a` 展开全部命令；它们都不会创建工作区或启动 Web 服务。
+
+## 2. 第一个 shell 任务
+
+进入一个项目目录：
 
 ```bash
-# 围绕某个 Python 脚本打开 script workspace
-pyr train.py
-
-# 围绕某个 Python 脚本并导入一份 YAML 模板
-pyr train.py my_config.yaml
+cd my-project
+pyr init
 ```
 
-这两条是 Pyruns 的首选主路径。  
-`pyr` 直接打开 shell workspace 当然也可以，但更适合作为补充方案，而不是用户第一眼看到的默认入口。
+这会创建：
 
-## 1.5 先看懂两种模式
+```text
+my-project/
+└── _pyruns_/
+    ├── _pyruns_settings.yaml
+    └── _shell_/
+        ├── script_info.json
+        └── tasks/
+```
 
-Pyruns 现在有两种很明确的工作模式：
+运行一个受跟踪的命令：
 
-| 模式 | 入口 | 核心对象 | 任务文件 | 适合场景 |
-| --- | --- | --- | --- | --- |
-| `script` | `pyr train.py` / `pyr train.py my_config.yaml` | Python 脚本 | `config.yaml` | 参数调优、训练脚本、配置模板、批量实验 |
-| `shell` | `pyr` | 当前目录 | `config.sh` | 终端命令任务、PowerShell / cmd / bash 工作流 |
+```bash
+pyr exec -n smoke -- python -V
+```
 
-可以把它们理解成：
+`--` 后面是目标程序的精确参数向量。即使命令自身带 `--epochs`、`-p` 等选项，也不会与 Pyruns 参数混淆。
 
-- `script` 模式：Pyruns 在帮你管理“脚本驱动的实验”
-- `shell` 模式：Pyruns 在帮你管理“目录驱动的命令任务”
+只预览计划、不创建 workspace/task 也不运行命令：
 
-如果你在做本地开发：
+```bash
+pyr exec --dry-run -n smoke -- python -V
+pyr --json exec --dry-run -n smoke -- python -V
+```
+
+任务结束后查询：
+
+```bash
+pyr -w shell ls
+pyr -w shell show smoke
+pyr -w shell log smoke
+```
+
+任务目录类似：
+
+```text
+_pyruns_/_shell_/tasks/smoke/
+├── task_info.json
+├── config.ps1 | config.cmd | config.sh
+└── run_logs/run1.log
+```
+
+## 3. 长任务与后台运行
+
+默认 `exec` 会跟随日志并把任务成功或失败反映到退出码。长任务可使用 `--detach`：
+
+```bash
+pyr exec -n train -d -- python train.py --epochs 100
+```
+
+runner 接受任务后，命令立即返回；关闭调用终端不会终止任务。Windows 上 runner 和任务进程不会弹出新的控制台窗口。
+
+随后可以在任意新终端中执行：
+
+```bash
+pyr -w shell status
+pyr -w shell show train
+pyr -w shell log train -f
+pyr -w shell wait train --timeout 3600
+```
+
+取消活动任务：
+
+```bash
+pyr -w shell stop train
+```
+
+取消请求会送到真正拥有该任务的 runner，而不是只修改显示状态。
+
+## 4. 什么时候使用 `--shell`
+
+普通程序调用总是优先使用精确 argv：
+
+```bash
+pyr exec -n eval -- python eval.py --checkpoint "best model.pt"
+```
+
+只有需要 shell 解析的语法时才使用 `--shell`：
+
+```bash
+pyr exec -n report --shell "python eval.py > metrics.txt"
+```
+
+给任务保存环境变量：
+
+```bash
+pyr exec -n gpu0 \
+  --env CUDA_VISIBLE_DEVICES=0 \
+  --env PYTHONUNBUFFERED=1 \
+  -- python train.py
+```
+
+## 5. 第一个 Python script workspace
+
+假设 `train.py` 使用 `argparse`：
+
+```python
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--lr", type=float, default=0.001)
+parser.add_argument("--epochs", type=int, default=10)
+args = parser.parse_args()
+
+print(f"lr={args.lr}, epochs={args.epochs}")
+```
+
+初始化：
+
+```bash
+pyr init train.py
+```
+
+这会创建 `_pyruns_/train/`，并准备 `config_default.yaml`。
+
+创建一份配置，例如 `configs/quick.yaml`：
+
+```yaml
+lr: 0.001
+epochs: 2
+```
+
+创建并运行：
+
+```bash
+pyr -w train add configs/quick.yaml -n quick
+pyr -w train run quick
+```
+
+也可以合并为一次操作：
+
+```bash
+pyr -w train run --from configs/quick.yaml -n quick
+pyr -w train run --from configs/quick.yaml -n quick --dry-run
+```
+
+## 6. `pyruns.load()` 脚本
+
+如果脚本直接读取 YAML：
+
+```python
+import pyruns
+
+cfg = pyruns.load()
+print(cfg.training.lr)
+```
+
+第一次初始化时提供模板：
+
+```bash
+pyr init train.py --config configs/default.yaml
+```
+
+后续仍使用 `add` 和 `run`：
+
+```bash
+pyr -w train add configs/sweep.yaml -n sweep
+pyr -w train run sweep_[1-of-4] sweep_[2-of-4] -j 2
+```
+
+任务名必须精确填写；Pyruns 不接受列表序号或模糊名称。
+
+## 7. Batch 配置
+
+Pyruns 可以把 YAML 中的 batch 表达式展开成多个任务。示例：
+
+```yaml
+lr: 0.0001 | 0.001
+seed: 1 | 2
+epochs: 10
+```
+
+```bash
+pyr -w train add configs/sweep.yaml -n sweep
+pyr -w train ls sweep
+pyr -w train run sweep_[1-of-4] sweep_[2-of-4] -j 2
+```
+
+完整语法见 [批量配置语法](batch-syntax.md)。
+
+## 8. 多工作区项目
+
+Pyruns 从当前目录向父目录查找最近的 `_pyruns_`：
+
+- 只有一个 workspace：自动选择。
+- 多个 workspace：必须使用 `-w`。
+- 没有 workspace：提示先 `pyr init`。
+
+```bash
+pyr -w shell ls
+pyr -w train ls
+pyr -w ./train.py status
+pyr -w ./_pyruns_/train show quick
+pyr -w ./_pyruns_/train show quick@2
+```
+
+从另一个目录操作项目可以使用 `-C`：
+
+```bash
+pyr -C D:/work/my-project -w shell status
+```
+
+全局参数要放在子命令之前。
+
+## 9. 稳定 JSON 输出
+
+脚本、CI 和 AI agent 应优先读取 JSON，而不是解析表格：
+
+```bash
+pyr --json -w shell ls
+pyr --json -w shell status
+pyr --json -w shell show smoke
+pyr --json -w shell show smoke@2
+pyr --json -w shell log smoke --path
+pyr --json -w shell log smoke@2 --path
+pyr --json -w shell config list
+pyr --json metrics
+```
+
+`log` 默认原样输出日志，因此只有 `log --path` 支持 `--json`。
+
+退出码：
+
+```text
+0    命令和等待的任务全部成功
+1    工作区、目标、运行时或任务失败
+2    命令行用法错误
+130  等待或跟随日志时被中断
+```
+
+## 10. 任务生命周期
+
+```bash
+pyr -w train mv quick quick-lr1e3
+pyr -w train pin quick-lr1e3
+pyr -w train pin quick-lr1e3 --off
+pyr -w train rm quick-lr1e3
+pyr -w train ls --trash
+pyr -w train restore quick-lr1e3
+```
+
+`rm` 不询问确认并立即执行，但只是可恢复的软删除。
+
+## 11. 导出与配置
+
+导出默认写 stdout：
+
+```bash
+pyr -w train export -f csv
+pyr -w train export quick -f json
+pyr -w train export -s completed -o results.csv
+```
+
+管理项目配置：
+
+```bash
+pyr -w train config list
+pyr -w train config get manager_max_workers
+pyr -w train config set manager_max_workers 4
+pyr -w train config unset manager_max_workers
+pyr -w train config path
+```
+
+## 12. 显式打开 Web UI
+
+CLI 是默认控制面；需要可视化浏览时显式启动：
+
+```bash
+pyr ui                                  # workspace launcher
+pyr ui train.py                         # script workspace
+pyr ui train.py --config config.yaml    # 导入模板
+pyr ui --shell                          # shell workspace
+pyr ui --shell --no-browser             # headless server
+pyr dev train.py                        # 开发热更新
+```
+
+Web UI 与 CLI 共用 `_pyruns_` 状态。可以用 CLI 提交，再在 UI 中观察，或者反过来查询和取消。
+
+## 13. 从源码开发
 
 ```bash
 git clone https://github.com/LthreeC/pyruns.git
 cd pyruns
-pip install -e .
+python -m pip install -e .
+pyr --help
 ```
 
-## 2. 打开第一个脚本工作区
+前端开发与构建：
 
 ```bash
-pyr train.py
+npm --prefix frontend install
+npm --prefix frontend run dev
+npm --prefix frontend run build
 ```
-
-执行后，Pyruns 会围绕脚本创建一个稳定的本地工作区：
-
-```text
-project/
-├─ train.py
-└─ _pyruns_/
-   ├─ _pyruns_settings.yaml
-   └─ train/
-      ├─ script_info.json
-      ├─ config_default.yaml
-      └─ tasks/
-```
-
-这里的几个关键文件各司其职：
-
-- `script_info.json`：保存脚本与工作区元信息
-- `config_default.yaml`：Generator 的默认模板来源
-- `tasks/`：所有生成任务的真实落盘位置
-
-如果你已经有一份现成模板，也可以直接这样开：
-
-```bash
-pyr train.py my_config.yaml
-```
-
-它会把 `my_config.yaml` 作为当前工作区的默认模板。
-
-## 3. 直接打开当前目录的 Shell Workspace
-
-如果你现在还没有固定脚本，只是想先把当前目录里的命令任务纳入 Pyruns：
-
-```bash
-pyr
-```
-
-这条命令会直接打开当前目录的 shell workspace，并进入 React UI。
-
-对应的工作区结构是：
-
-```text
-project/
-└─ _pyruns_/
-   └─ _shell_/
-      ├─ script_info.json
-      └─ tasks/
-```
-
-这里的 shell 任务会保存为：
-
-```text
-_pyruns_/_shell_/tasks/<task_name>/config.sh
-```
-
-![Shell Generator 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/shell_generator.png)
-
-## 4. Script Workspace 适合什么
-
-Script workspace 最适合两类脚本：
-
-### `argparse` 脚本
-
-Pyruns 会尽量提取参数定义，生成可编辑表单，再把修改后的值拼回命令行参数。
-
-### `pyruns.load()` 脚本
-
-Pyruns 会为每个任务写入独立的 `config.yaml`，并在执行时通过 `__PYRUNS_CONFIG__` 指向它。
-
-这也是为什么 `script` 模式通常应该被当作首选入口：
-
-- 它更适合标准 Python 实验脚本
-- 它和参数编辑、模板管理、batch 生成的结合最自然
-- 它更符合大多数用户第一次接触 Pyruns 时的预期
-
-## 5. shell 的默认语义
-
-shell 模式最重要的一点不是“像不像 bash”，而是：
-
-- 默认 `shell_mode: follow`
-- 默认跟随启动 `pyr` 的当前终端 / shell
-- 继续继承当前 Python 进程环境
-- 不自动做跨 shell 语法翻译
-
-这意味着：
-
-- conda 环境会继承
-- `PATH` 会继承
-- 启动 `pyr` 时已有的环境变量会继承
-
-同时要注意，shell 模式和 script 模式的任务并不是一回事：
-
-- script 模式的任务核心是 `config.yaml`
-- shell 模式的任务核心是 `config.sh`
-- script 模式更强调“参数如何组织”
-- shell 模式更强调“命令如何直接执行”
-
-平台差异只体现在“跟随谁”：
-
-- Windows：通常跟随 PowerShell 或 cmd
-- Linux / macOS：通常跟随当前 POSIX shell
-
-如果你确实要固定到某个 shell，可在 `_pyruns_settings.yaml` 中写：
-
-```yaml
-shell_mode: custom
-shell_executable: C:\Program Files\PowerShell\7\pwsh.exe
-```
-
-或者：
-
-```yaml
-shell_mode: custom
-shell_executable: /bin/bash
-```
-
-## 6. 三个主页面怎么用
-
-### Generator
-
-- script workspace：`form` / `yaml`
-- shell workspace：`shell`
-- 可做单任务，也可做 batch 批量任务
-
-### Manager
-
-- 查找任务
-- 批量运行 / 删除
-- 查看任务详情
-- 一键跳转日志
-
-### Monitor
-
-- 实时日志
-- 历史日志切换
-- 多任务日志导出
-- 从 tab 直接进入时默认空选中
-
-![Manager 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
-
-![Monitor 预览](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
-
-## 7. `pyr` / `pyr ui` / `pyr cli` 分别做什么
-
-- `pyr`
-  直接打开当前目录的 shell workspace。
-- `pyr ui`
-  打开 launcher，更适合先选脚本再进入 script workspace。
-- `pyr cli`
-  进入交互式 CLI；如果当前目录已有工作区，会直接接管这份工作区。
-
-如果你忘了入口差异，可以随时运行：
-
-```bash
-pyr help
-```
-
-## 8. 第一个 shell 任务示例
-
-进入 shell workspace 后，在 Generator 中输入：
-
-```powershell
-Write-Host "hello from pyruns shell"
-python --version
-```
-
-或者在 Linux / macOS 下：
-
-```bash
-echo "hello from pyruns shell"
-python --version
-```
-
-注意：
-
-- 你写的语法必须匹配当前 follow/custom 对应的 shell
-- Pyruns 不会把 PowerShell 自动翻译成 bash，也不会反过来翻译
-
-## 9. 第一个 batch 示例
-
-在 script workspace 的 `form` 或 `yaml` 模式里：
-
-```yaml
-lr: 0.001 | 0.01 | 0.1
-batch_size: 32 | 64
-optimizer: adam | sgd
-```
-
-这会展开成多个独立任务，每个任务都拥有自己的：
-
-- `task_info.json`
-- `config.yaml`
-- `run_logs/runN.log`
-- `artifacts/runN/`（当脚本通过 `pyruns.artifact_dir()` 保存文件时）
-
-批量生成完成之后，最适合继续去看的页面就是 Manager，因为任务会以独立卡片的形式稳定落盘，状态和历史都会马上变得可见。
-
-## 10. 前端开发与打包
-
-前端源码在：
-
-```text
-frontend/
-```
-
-打包命令：
-
-```bash
-cd frontend
-npm run build
-```
-
-打包结果会写入：
-
-```text
-pyruns/web/static/
-```
-
-后端会直接服务这里的静态资源。
 
 ## 下一步
 
-- [界面指南](ui-guide.md)
+- [CLI 详细指南](cli-guide.md)
 - [配置说明](configuration.md)
+- [Web UI 指南](ui-guide.md)
+- [批量配置语法](batch-syntax.md)
+- [脚本 API](api-reference.md)
 - [架构说明](architecture.md)
-- [CLI 指南](cli-guide.md)

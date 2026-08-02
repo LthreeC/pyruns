@@ -50,7 +50,7 @@ Generator 是 Pyruns 的第一张脸。
 - Shell Workspace 的视觉状态
 - 更接近真实编辑器的脚本输入区
 - 当前 shell runtime 的说明信息
-- 单任务 `config.sh` 生成语义
+- 单任务 shell payload 生成语义
 
 ## Manager：不是任务列表，而是任务控制台
 

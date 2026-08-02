@@ -44,8 +44,8 @@ Pyruns 的配置不是“堆一页键值对”。
 | 项目 | `script` 模式 | `shell` 模式 |
 | --- | --- | --- |
 | 工作区对象 | 一个 Python 脚本 | 一个目录 |
-| 常见入口 | `pyr train.py` | `pyr` |
-| 任务文件 | `config.yaml` | `config.sh` |
+| 常见入口 | `pyr init train.py` | `pyr init` |
+| 任务文件 | `config.yaml` | `config.ps1` / `config.cmd` / `config.sh` |
 | 典型用途 | 脚本调参、模板配置、批量实验 | 命令任务、批处理、终端工作流 |
 | 运行重点 | 参数配置与脚本运行 | 原生命令执行 |
 | `__PYRUNS_CONFIG__` | 可能使用 | 不使用 |
@@ -97,7 +97,7 @@ tasks/<task_name>/
 ```text
 tasks/<task_name>/
 ├─ task_info.json
-├─ config.sh
+├─ config.ps1 | config.cmd | config.sh
 ├─ run_logs/
    ├─ run1.log
    ├─ run2.log
@@ -108,8 +108,8 @@ tasks/<task_name>/
 
 注意：
 
-- Windows 下也仍然落盘为 `config.sh`
-- 变化的是执行策略，不是任务模型
+- shell payload 文件名由当前 runtime 决定：PowerShell 通常是 `config.ps1`，cmd 是 `config.cmd`，bash / sh / zsh 是 `config.sh`
+- 变化的是 payload 文件名与执行 wrapper，不是任务模型
 - `artifacts/runN/` 只在脚本通过 `pyruns.artifact_dir()` 写入时创建
 
 ## 4. `script_info.json`
@@ -161,9 +161,11 @@ tasks/<task_name>/
 ```json
 {
   "task_kind": "shell",
-  "config_file": "config.sh"
+  "config_file": "config.ps1"
 }
 ```
+
+`config_file` 也可能是 `config.cmd` 或 `config.sh`，取决于 shell runtime。
 
 ## 6. `_pyruns_settings.yaml`
 
@@ -206,7 +208,7 @@ global_env: {}
 
 `global_env` 的覆盖顺序为：终端环境 < `global_env` < 任务 Env。UI 里的 Workspace Env 文本支持 `KEY=value`、`export KEY=value`、单双引号和注释；不会执行命令替换、变量展开或任意 shell 代码。
 
-直接用 CLI 运行任务时，例如 `pyr run 1`，会继承当前终端环境；Web UI 的 Runtime / Workspace Env 设置只影响 UI 发起的任务运行。
+直接用 CLI 运行任务时，例如 `pyr -w train run baseline`，会继承当前终端环境；Web UI 的 Runtime / Workspace Env 设置只影响 UI 发起的任务运行。CLI 只接受精确任务名，不接受序号。
 
 ## 7. 重点配置项
 
@@ -239,7 +241,7 @@ global_env: {}
 
 语义：
 
-- `follow`：默认，跟随启动 `pyr` 的当前终端
+- `follow`：默认，跟随调用 `pyr` 或启动 Web UI 时的当前终端
 - `custom`：显式指定 `shell_executable`
 
 ### `shell_executable`
@@ -250,19 +252,20 @@ global_env: {}
 
 当前 shell 任务的执行规则非常明确：
 
-- 任务正文直接来自 `config.sh`
+- 任务正文直接来自 `config_file` 指向的 shell payload 文件
 - 不读取 `config.yaml`
 - 不注入 `__PYRUNS_CONFIG__`
 - 继续继承当前 Python 进程环境
 
 这意味着 shell 任务更接近：
 
-> “在启动 `pyr` 的那个终端里，再执行一次同样的命令文本”
+> “在调用 `pyr` 或启动 Web UI 的那个终端里，再执行一次同样的命令文本”
 
 ### Windows
 
 - 默认跟随 PowerShell 或 cmd
-- 会用原生 wrapper 把 `config.sh` 内容交给对应终端执行
+- 会用原生 wrapper 把 `config.ps1` 或 `config.cmd` 内容交给对应终端执行
+- 后台 runner 和任务进程不会创建额外控制台窗口
 - 不做 bash 语法模拟
 
 ### Linux / macOS
@@ -293,5 +296,5 @@ Manager 和 Monitor 的搜索框支持多行输入。
 如果你要补一张“配置是怎么落到任务里的”展示图，最值得补的是：
 
 - `task_info.json` 详情面板截图
-- `config.yaml` / `config.sh` 面板截图
+- `config.yaml` / shell payload 面板截图
 - `Env Vars` 面板截图

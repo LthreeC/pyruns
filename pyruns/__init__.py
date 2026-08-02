@@ -57,7 +57,7 @@ def read(file_path: str = None):
             f"\n\033[93m[pyruns] Config not found: {file_path}\033[0m\n"
             f"You can either:\n"
             f"  1. Manually create the config file at {DEFAULT_ROOT_NAME}/{script_base}/{CONFIG_DEFAULT_FILENAME}\n"
-            f"  2. Or use CLI to import one: `pyr {script_name} your_config.yaml`\n"
+            f"  2. Or import one with: `pyr init {script_name} --config your_config.yaml`\n"
         )
 
     return _global_config_manager_.read(file_path)
@@ -82,7 +82,7 @@ def load():
                     f"\n\033[93m[pyruns] Config not found: {default_path}\033[0m\n"
                     f"You can either:\n"
                     f"  1. Manually create the config file at {DEFAULT_ROOT_NAME}/{script_base}/{CONFIG_DEFAULT_FILENAME}\n"
-                    f"  2. Or use CLI to import one: `pyr {script_name} your_config.yaml`\n"
+                    f"  2. Or import one with: `pyr init {script_name} --config your_config.yaml`\n"
                 )
 
     return _global_config_manager_.load()

@@ -4,6 +4,7 @@ export const STATUS_COLORS = {
   running:   { bg: 'bg-amber-500/10',    text: 'text-amber-400',   dot: 'bg-amber-400',   border: 'border-amber-500/20' },
   completed: { bg: 'bg-emerald-500/10',  text: 'text-emerald-400', dot: 'bg-emerald-400', border: 'border-emerald-500/20' },
   failed:    { bg: 'bg-rose-500/10',     text: 'text-rose-400',    dot: 'bg-rose-400',    border: 'border-rose-500/20' },
+  cancelled: { bg: 'bg-slate-500/10',    text: 'text-slate-400',   dot: 'bg-slate-400',   border: 'border-slate-500/20' },
 } as const
 
 export type TaskStatus = keyof typeof STATUS_COLORS
@@ -14,9 +15,10 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 }
 
-export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed']
+export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled']
 
 export const PARAM_TYPE_STYLES = {
   str: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',

@@ -92,12 +92,14 @@ function modeFromSettings(settings?: Record<string, any>): PythonRuntimeMode {
 }
 
 function parseDeviceIds(value: string) {
-  return value
-    .split(',')
-    .map(item => item.trim())
-    .filter(Boolean)
-    .map(item => Number(item))
-    .filter(item => Number.isInteger(item) && item >= 0)
+  return Array.from(new Set(
+    value
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .map(item => Number(item))
+      .filter(item => Number.isInteger(item) && item >= 0)
+  ))
 }
 
 function formatDeviceIds(value?: number[]) {
@@ -423,13 +425,23 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }
 
   const saveGpuScheduler = () => {
+    const requestedGpuCount = gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1
+    const selectedGpuIds = parseDeviceIds(gpuDeviceIds)
+    if (gpuSchedulerEnabled && gpuSelectionMode === 'specified' && selectedGpuIds.length !== requestedGpuCount) {
+      const idLabel = requestedGpuCount === 1 ? 'ID' : 'IDs'
+      const message = 'Specified IDs must contain exactly ' + requestedGpuCount + ' unique GPU ' + idLabel + '.'
+      setError(message)
+      notify({ tone: 'error', title: 'Invalid GPU selection', detail: message })
+      return
+    }
+
     void saveRuntime({
       gpu_scheduler: {
         enabled: gpuSchedulerEnabled,
         task_mode: gpuTaskMode,
         selection_mode: gpuSelectionMode,
-        gpus_per_task: gpuTaskMode === 'multi' ? numberInputValue(gpuCount, 1, 1) : 1,
-        device_ids: parseDeviceIds(gpuDeviceIds),
+        gpus_per_task: requestedGpuCount,
+        device_ids: selectedGpuIds,
         memory_used_pct: boundedNumberInputValue(gpuMemoryUsedPct, 40, 0, 100),
         min_free_memory_gb: numberInputValue(gpuMinFreeMemoryGb, 40, 0),
         compute_used_pct: boundedNumberInputValue(gpuComputeUsedPct, 30, 0, 100),
@@ -486,6 +498,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               key={page}
               type="button"
               onClick={() => setActivePage(page)}
+              aria-pressed={activePage === page}
               className={clsx(
                 'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
                 activePage === page
@@ -519,7 +532,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error && (
-          <div className="mb-3 rounded-md bg-status-failed/10 px-3 py-2 text-sm text-status-failed">
+          <div role="alert" className="mb-3 rounded-md bg-status-failed/10 px-3 py-2 text-sm text-status-failed">
             {error}
           </div>
         )}
@@ -677,12 +690,13 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
                   {[
                     { id: false, label: 'Off' },
-                    { id: true, label: 'Auto' },
+                    { id: true, label: 'On' },
                   ].map(item => (
                     <button
                       key={String(item.id)}
                       type="button"
                       onClick={() => setGpuSchedulerEnabled(item.id)}
+                      aria-pressed={gpuSchedulerEnabled === item.id}
                       className={clsx(
                         'h-7 rounded-md px-3 text-xs font-medium transition-colors',
                         gpuSchedulerEnabled === item.id
@@ -717,6 +731,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                     key={item.id}
                     type="button"
                     onClick={() => chooseGpuTaskMode(item.id)}
+                    aria-pressed={gpuTaskMode === item.id}
                     className={clsx(
                       'h-8 rounded-md px-3 text-xs font-medium transition-colors',
                       gpuTaskMode === item.id
@@ -741,6 +756,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                     key={item.id}
                     type="button"
                     onClick={() => setGpuSelectionMode(item.id)}
+                    aria-pressed={gpuSelectionMode === item.id}
                     className={clsx(
                       'h-8 rounded-md px-3 text-xs font-medium transition-colors',
                       gpuSelectionMode === item.id

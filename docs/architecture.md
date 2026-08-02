@@ -2,7 +2,7 @@
 
 Pyruns 当前的核心设计其实可以浓缩成一句话：
 
-> React 前端负责把体验做顺，FastAPI 运行时负责把状态串起来，core 层负责把任务真正落到磁盘并执行，磁盘才是最终真实来源。
+> 一次性 CLI 和 React/FastAPI Web UI 是两个并列控制面，core 层负责把任务真正落到磁盘并执行，磁盘才是最终真实来源。
 
 这不是一个“先有页面、再去猜状态”的系统。  
 它是一个“先把任务结构稳稳落下，再让 UI 把它看清楚”的系统。
@@ -10,15 +10,12 @@ Pyruns 当前的核心设计其实可以浓缩成一句话：
 ## 1. 整体结构
 
 ```text
-CLI / Launcher
-    ↓
-FastAPI Runtime            (pyruns/web)
-    ↓
-Core Services              (pyruns/core)
-    ↓
-Utils / File IO / Settings (pyruns/utils)
-    ↓
-Workspace on disk          (_pyruns_/...)
+One-shot CLI (pyr / pyruns) ─────┐
+                                 ├──→ Core Services (pyruns/core)
+Web UI (frontend + pyruns/web) ──┘              ↓
+                                  Utils / File IO / Settings
+                                                ↓
+                                  Workspace on disk (_pyruns_/...)
 ```
 
 前端交付链路则是：
@@ -28,6 +25,18 @@ frontend/  --build-->  pyruns/web/static/
 ```
 
 ## 2. 这套分层为什么顺
+
+### `pyruns/cli/`
+
+负责：
+
+- 用 `argparse` 定义稳定的一次性命令
+- 发现项目并精确选择 workspace
+- 把任务执行、查询、日志、生命周期、配置和导出映射到 core 服务
+- 用 stdout、stderr、JSON 和退出码提供自动化契约
+- 显式启动 Web UI，而不是让裸命令产生隐藏副作用
+
+CLI 不依赖 FastAPI，也没有交互式 REPL。`pyr exec --detach` 启动隐藏 runner；runner 接受任务后，调用端即可退出。
 
 ### `frontend/`
 
@@ -72,7 +81,7 @@ frontend/  --build-->  pyruns/web/static/
 负责把“用户想生成什么任务”真正写到磁盘：
 
 - python task 写 `config.yaml`
-- shell task 写 `config.sh`
+- shell task 写当前 runtime 对应的 `config.ps1` / `config.cmd` / `config.sh`
 - 同时生成 `task_info.json`
 
 #### `task_manager.py`
@@ -151,7 +160,7 @@ frontend/  --build-->  pyruns/web/static/
 真正能被信任、能被恢复、能被共享的是磁盘上的这些文件：
 
 - `task_info.json`
-- `config.yaml` / `config.sh`
+- `config.yaml` / `config.ps1` / `config.cmd` / `config.sh`
 - `run_logs/`
 
 这带来的好处很直接：
@@ -166,32 +175,33 @@ frontend/  --build-->  pyruns/web/static/
 ### Script Workspace 工作流
 
 ```text
-pyr train.py
+pyr init train.py
   → bootstrap_workspace(...)
   → _pyruns_/train/
-  → Generator(form / yaml)
+pyr -w train add config.yaml
   → TaskGenerator.create_tasks(..., task_kind="python")
   → tasks/<task_name>/config.yaml
-  → executor injects __PYRUNS_CONFIG__
+pyr -w train run <exact-task-name>
+  → hidden runner → executor injects __PYRUNS_CONFIG__
 ```
 
 ### Shell Workspace 工作流
 
 ```text
-Open Shell Mode
+pyr init
   → _pyruns_/_shell_/
-  → Generator(shell)
+pyr exec --name <task> -- <argv...>
   → TaskGenerator.create_shell_task(...)
-  → tasks/<task_name>/config.sh
-  → executor resolves shell runtime
-  → shell task runs with follow/custom semantics
+  → tasks/<task>/{config.ps1|config.cmd|config.sh}
+  → hidden runner → executor resolves shell runtime
+  → shell task runs and writes run_logs/runN.log
 ```
 
 ## 5. shell 执行策略
 
 Pyruns 对 shell 模式的理解不是“模拟 bash”，而是：
 
-> 尽量跟随你启动 `pyr` 的原终端
+> 尽量跟随你调用 `pyr` 或启动 Web UI 时的原终端语义
 
 默认值：
 
@@ -209,6 +219,7 @@ Pyruns 对 shell 模式的理解不是“模拟 bash”，而是：
 - 跟随 cmd：按 cmd 语义执行
 - wrapper 只负责把任务文本交给原生终端
 - 不做跨 shell 翻译
+- 后台 runner 和任务进程使用无窗口创建标志，不产生额外控制台弹窗
 
 ### Linux / macOS
 

@@ -1,19 +1,21 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyruns"
-version = "0.2.10.4"
-description = "Lightweight web UI for managing, running, and monitoring Python experiments."
+version = "0.2.11"
+description = "Git-style CLI and web UI for reproducible Python experiments and terminal workloads."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "LthreeC", email = "lanshiL3C@gmail.com" }]
 keywords = [
     "experiment-management",
     "hyperparameter-tuning",
     "task-runner",
+    "command-line-interface",
     "monitoring",
     "machine-learning",
 ]
@@ -21,7 +23,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -61,9 +62,8 @@ Repository = "https://github.com/LthreeC/pyruns"
 Documentation = "https://lthreec.github.io/pyruns"
 
 [project.scripts]
-pyr = "pyruns.cli:pyr"
-pyrun = "pyruns.cli:pyr"
-pyruns = "pyruns.cli:pyr"
+pyr = "pyruns.cli.app:main"
+pyruns = "pyruns.cli.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

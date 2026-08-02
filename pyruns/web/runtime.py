@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -18,9 +19,7 @@ import yaml
 import pyruns._config as _cfg
 from pyruns._config import (
     CONFIG_DEFAULT_FILENAME,
-    CONFIG_FILENAME,
     SCRIPT_INFO_FILENAME,
-    SHELL_WORKSPACE_NAME,
     TASKS_DIR,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
@@ -44,7 +43,6 @@ from pyruns.launcher import (
     native_picker_available,
     normalize_path,
     shell_project_root_for_workspace,
-    shell_workspace_root_for_run_root,
 )
 from pyruns.utils import get_now_str
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
@@ -177,8 +175,11 @@ def _coerce_bool_payload(value: Any) -> bool:
 
 def _coerce_int_payload(value: Any, default: int, *, minimum: int = 1) -> int:
     try:
-        parsed = int(float(str(value).strip()))
-    except (TypeError, ValueError):
+        numeric = float(str(value).strip())
+        if not math.isfinite(numeric):
+            return max(minimum, default)
+        parsed = int(numeric)
+    except (TypeError, ValueError, OverflowError):
         parsed = default
     return max(minimum, parsed)
 
@@ -187,6 +188,8 @@ def _coerce_float_payload(value: Any, default: float, *, minimum: float = 0.0) -
     try:
         parsed = float(str(value).strip())
     except (TypeError, ValueError):
+        parsed = default
+    if not math.isfinite(parsed):
         parsed = default
     return max(minimum, parsed)
 
@@ -870,6 +873,7 @@ class PyrunsRuntime:
             "queued": 0,
             "completed": 0,
             "failed": 0,
+            "cancelled": 0,
             "pending": 0,
         }
         for task in all_tasks:
@@ -916,7 +920,9 @@ class PyrunsRuntime:
         if task.get("_load_error"):
             raise ValueError(str(task["_load_error"]))
         self.invalidate_cache()
-        self.task_manager.start_task_now(task_name, execution_mode)
+        started = self.task_manager.start_task_now(task_name, execution_mode)
+        if not started:
+            raise ValueError(f"Task '{task_name}' could not be started")
         return self.get_task(task_name) or task
 
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
@@ -952,18 +958,22 @@ class PyrunsRuntime:
             raise ValueError("No valid tasks were provided for batch run.")
 
         self.invalidate_cache()
-        self.task_manager.start_batch_tasks(
+        claimed_names = self.task_manager.start_batch_tasks(
             normalized_names,
             execution_mode=execution_mode,
             max_workers=max_workers,
         )
+        if not claimed_names:
+            raise ValueError("None of the selected tasks could be started.")
+        claimed = set(claimed_names)
         items = [
             self.get_task(task_name, refresh=True) or self.require_task(task_name, refresh=False)
-            for task_name in normalized_names
+            for task_name in claimed_names
         ]
         return {
             "count": len(items),
             "items": items,
+            "skipped": [task_name for task_name in normalized_names if task_name not in claimed],
         }
 
     def delete_tasks_batch(self, task_names: List[str]) -> Dict[str, Any]:

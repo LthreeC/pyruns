@@ -792,6 +792,26 @@ def test_gpu_scheduler_config_ignores_unsupported_device_pool_payloads():
     assert config.device_ids == []
 
 
+def test_gpu_scheduler_config_rejects_non_finite_numeric_settings():
+    config = GpuSchedulerConfig.from_settings({
+        "gpu_scheduler_gpus_per_task": "Infinity",
+        "gpu_scheduler_memory_used_pct": "NaN",
+        "gpu_scheduler_min_free_memory_gb": "Infinity",
+        "gpu_scheduler_compute_used_pct": "-Infinity",
+        "gpu_scheduler_stable_seconds": "Infinity",
+        "gpu_scheduler_max_wait_seconds": "NaN",
+        "gpu_scheduler_max_tasks_per_gpu": "Infinity",
+    })
+
+    assert config.gpus_per_task == 1
+    assert config.memory_used_pct == 40.0
+    assert config.min_free_memory_gb == 40.0
+    assert config.compute_used_pct == 30.0
+    assert config.stable_seconds == 15.0
+    assert config.max_wait_seconds == 172800.0
+    assert config.max_tasks_per_gpu == 1
+
+
 def test_gpu_scheduler_reports_memory_free_memory_and_compute_block_reasons():
     memory_config = GpuSchedulerConfig(
         enabled=True,

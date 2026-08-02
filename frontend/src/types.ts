@@ -4,7 +4,7 @@ export type GeneratorMode = 'form' | 'yaml' | 'shell'
 
 export interface Task {
   name: string
-  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   dir: string
   config: Record<string, any>
   config_text: string
@@ -132,6 +132,7 @@ export interface DashboardSummary {
   queued: number
   completed: number
   failed: number
+  cancelled: number
   pending: number
 }
 

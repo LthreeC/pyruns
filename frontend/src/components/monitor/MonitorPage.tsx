@@ -1095,7 +1095,10 @@ export default function MonitorPage() {
                 </span>
               )}
 
-              {(selectedTask.status === 'pending' || selectedTask.status === 'failed' || selectedTask.status === 'completed') && (
+              {(selectedTask.status === 'pending'
+                || selectedTask.status === 'failed'
+                || selectedTask.status === 'completed'
+                || selectedTask.status === 'cancelled') && (
                 <ActionButton
                   icon={<Play className="h-3.5 w-3.5" />}
                   variant="success"
@@ -1276,6 +1279,7 @@ function StatusDot({ status }: { status: TaskStatus }) {
     running: 'bg-amber-500',
     completed: 'bg-emerald-500',
     failed: 'bg-rose-500',
+    cancelled: 'bg-slate-500',
   }
 
   return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[status])} />
