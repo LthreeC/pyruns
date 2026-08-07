@@ -61,6 +61,7 @@ from pyruns.utils.settings import (
     load_settings,
     reload_settings,
     save_setting_for_root,
+    setting_numbers_are_finite,
 )
 from pyruns.utils.shell_runtime import (
     build_script_file_argv,
@@ -255,7 +256,11 @@ def _task_manager(workspace: str, *, lazy_scan: bool | None = False) -> Iterator
     os.environ[ENV_KEY_CLI_TERMINAL_RUNTIME] = "1"
     ensure_settings_file(workspace)
     load_settings(workspace)
-    manager = TaskManager(tasks_dir=tasks_dir, lazy_scan=lazy_scan)
+    manager = TaskManager(
+        tasks_dir=tasks_dir,
+        lazy_scan=lazy_scan,
+        owns_task_lifecycle=False,
+    )
     try:
         yield manager
     finally:
@@ -297,12 +302,10 @@ def _parse_task_run_reference(value: str) -> tuple[str, int | None]:
     reference = str(value or "")
     if "@" not in reference:
         return reference, None
-    if reference.count("@") != 1:
-        raise CliUsageError(
-            f"invalid task run reference '{reference}'; expected TASK@RUN"
-        )
     task_name, run_text = reference.rsplit("@", 1)
-    if not task_name or not run_text.isdecimal() or int(run_text) <= 0:
+    if not run_text.isdecimal():
+        return reference, None
+    if not task_name or int(run_text) <= 0:
         raise CliUsageError(
             f"invalid task run reference '{reference}'; RUN must be a positive integer"
         )
@@ -1403,6 +1406,8 @@ def _validate_setting_value(key: str, value: Any) -> Any:
     if key not in SETTINGS_DEFAULTS:
         raise CliError(f"unknown setting: {key}")
     default = SETTINGS_DEFAULTS[key]
+    if not setting_numbers_are_finite(value):
+        raise CliUsageError(f"{key} must contain only finite numbers")
     expected = type(default)
     if expected is bool:
         if not isinstance(value, bool):

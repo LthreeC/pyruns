@@ -103,6 +103,7 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
             workers=1,
             submission_token="submission-token",
             tasks_json='["lost"]',
+            startup_file=str(tmp_path / "startup.json"),
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
@@ -115,6 +116,26 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
 
     assert detached_runner.main() == 1
     assert events == ["shutdown"]
+
+
+def test_cli_listing_does_not_take_over_or_fail_queued_tasks(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    tasks_dir = workspace / TASKS_DIR
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("queued-observer", {"value": 1})
+    update_task_info(task["dir"], lambda info: info.update({"status": "queued"}))
+
+    result = subprocess.run(
+        _source_cli_command("-w", "shell", "ls"),
+        cwd=tmp_path,
+        env=_source_env(),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "queued-observer" in result.stdout
+    assert load_task_info(task["dir"])["status"] == "queued"
 
 
 def test_detached_shell_run_returns_before_task_finishes(tmp_path):
@@ -204,6 +225,7 @@ def test_batch_submission_accepts_queued_handshake_without_run_index(tmp_path, m
 
     def fake_popen(command, _env):
         submission_token = command[command.index("--submission-token") + 1]
+        startup_file = Path(command[command.index("--startup-file") + 1])
         for task in tasks:
             update_task_info(
                 task["dir"],
@@ -214,6 +236,7 @@ def test_batch_submission_accepts_queued_handshake_without_run_index(tmp_path, m
                     }
                 ),
             )
+        startup_file.write_text(json.dumps({"status": "ready"}), encoding="utf-8")
         return FakeProcess()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
@@ -246,11 +269,13 @@ def test_batch_submission_rejects_foreign_queued_handshake(tmp_path, monkeypatch
         def poll():
             return None
 
-    def fake_popen(_command, _env):
+    def fake_popen(command, _env):
         update_task_info(
             task["dir"],
             lambda info: info.update({"status": "queued", "runner_id": "host:9999:foreign"}),
         )
+        startup_file = Path(command[command.index("--startup-file") + 1])
+        startup_file.write_text(json.dumps({"status": "error"}), encoding="utf-8")
         return FakeProcess()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
@@ -263,7 +288,7 @@ def test_batch_submission_rejects_foreign_queued_handshake(tmp_path, monkeypatch
         ["batch-a"],
         startup_timeout=0.1,
     ) is False
-    assert killed == [4242]
+    assert killed == []
 
 
 def test_submission_accepts_fast_failed_task_as_claimed(tmp_path, monkeypatch):
@@ -285,17 +310,129 @@ def test_submission_accepts_fast_failed_task_as_claimed(tmp_path, monkeypatch):
         def poll():
             return 1
 
-    def fake_popen(_command, _env):
+    def fake_popen(command, _env):
         update_task_info(
             task["dir"],
             lambda info: info.update({"status": "failed", "run_index": 1}),
         )
+        startup_file = Path(command[command.index("--startup-file") + 1])
+        startup_file.write_text(json.dumps({"status": "ready"}), encoding="utf-8")
         return FakeProcess()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
     monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
 
     assert runner.submit_cli_tasks(DummyTaskManager(), ["fast-failure"]) is True
+
+
+def test_submission_timeout_does_not_kill_a_runner_after_partial_claim(tmp_path, monkeypatch):
+    from pyruns.cli import runner
+
+    tasks_dir = tmp_path / "workspace" / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    tasks = [
+        TaskGenerator(root_dir=str(tasks_dir)).create_task("batch-a", {"value": 1}),
+        TaskGenerator(root_dir=str(tasks_dir)).create_task("batch-b", {"value": 2}),
+    ]
+
+    class DummyTaskManager:
+        def __init__(self):
+            self.tasks_dir = str(tasks_dir)
+            self.tasks = tasks
+
+    class FakeProcess:
+        pid = 4242
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_popen(command, _env):
+        token = command[command.index("--submission-token") + 1]
+        update_task_info(
+            tasks[0]["dir"],
+            lambda info: info.update({"status": "queued", "runner_id": f"host:9999:{token}"}),
+        )
+        return FakeProcess()
+
+    monkeypatch.setattr(runner, "_detached_popen", fake_popen)
+    monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
+    killed: list[int] = []
+    monkeypatch.setattr(runner, "kill_process", killed.append)
+
+    assert runner.submit_cli_tasks(
+        DummyTaskManager(),
+        ["batch-a", "batch-b"],
+        startup_timeout=0.05,
+    ) is True
+    assert killed == []
+
+
+def test_legacy_at_task_can_be_inspected_run_renamed_and_removed(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    tasks_dir = workspace / TASKS_DIR
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_shell_task(
+        "legacy-tag",
+        "legacy command\n",
+        command_mode="argv",
+        command_argv=[sys.executable, "-c", "print('legacy-ok')"],
+        workdir=str(tmp_path),
+    )
+    legacy_dir = tasks_dir / "legacy@tag"
+    Path(task["dir"]).rename(legacy_dir)
+    update_task_info(str(legacy_dir), lambda info: info.update({"name": "legacy@tag"}))
+
+    shown = subprocess.run(
+        _source_cli_command("-w", "shell", "show", "legacy@tag"),
+        cwd=tmp_path,
+        env=_source_env(),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert shown.returncode == 0, shown.stdout + shown.stderr
+    assert "Name:       legacy@tag" in shown.stdout
+
+    run = subprocess.run(
+        _source_cli_command("-w", "shell", "run", "legacy@tag"),
+        cwd=tmp_path,
+        env=_source_env(),
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    log = subprocess.run(
+        _source_cli_command("-w", "shell", "log", "legacy@tag@1"),
+        cwd=tmp_path,
+        env=_source_env(),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert log.returncode == 0, log.stdout + log.stderr
+    assert "legacy-ok" in log.stdout
+
+    renamed = subprocess.run(
+        _source_cli_command("-w", "shell", "mv", "legacy@tag", "legacy-migrated"),
+        cwd=tmp_path,
+        env=_source_env(),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert renamed.returncode == 0, renamed.stdout + renamed.stderr
+
+    removed = subprocess.run(
+        _source_cli_command("-w", "shell", "rm", "legacy-migrated"),
+        cwd=tmp_path,
+        env=_source_env(),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert removed.returncode == 0, removed.stdout + removed.stderr
 
 
 def test_one_shot_run_bootstrap_preserves_existing_default(tmp_path):

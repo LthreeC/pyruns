@@ -447,6 +447,15 @@ def test_react_monitor_uses_unfiltered_full_task_list():
     assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
 
 
+def test_react_monitor_preserves_cross_page_selection_until_tasks_load():
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "const [monitorTasksLoaded, setMonitorTasksLoaded] = useState(false)" in monitor
+    assert "setMonitorTasksLoaded(true)" in monitor
+    assert "if (!monitorTasksLoaded || !selectedTaskName) return" in monitor
+    assert "[monitorTasks, monitorTasksLoaded, selectedTaskName]" in monitor
+
+
 def test_react_monitor_merges_run_action_response_before_next_poll():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
@@ -1077,7 +1086,7 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
 def test_monitor_clears_stale_selection_when_task_list_becomes_empty():
     monitor = (FRONTEND_COMPONENTS_DIR / "monitor" / "MonitorPage.tsx").read_text(encoding="utf-8")
 
-    assert "if (!selectedTaskName) return" in monitor
+    assert "if (!monitorTasksLoaded || !selectedTaskName) return" in monitor
     assert "monitorTasks.length === 0 || !selectedTaskName" not in monitor
     assert "selectedTaskName: null" in monitor
     assert "logContent: ''" in monitor

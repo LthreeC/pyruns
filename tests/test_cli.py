@@ -1671,6 +1671,24 @@ def test_config_rejects_unknown_keys_and_wrong_types(tmp_path):
 @pytest.mark.parametrize(
     ("key", "value"),
     [
+        ("monitor_line_height", ".nan"),
+        ("monitor_line_height", ".inf"),
+        ("global_env", "{SAFE: value, BROKEN: .nan}"),
+        ("gpu_scheduler_device_ids", "[0, .inf]"),
+    ],
+)
+def test_config_rejects_non_finite_numbers(tmp_path, key, value):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    result = _run_cli(tmp_path, "config", "set", key, value)
+
+    assert result.returncode == 2
+    assert "finite" in result.stderr.lower()
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
         ("ui_port", "70000"),
         ("manager_max_workers", "-3"),
         ("shell_mode", "nonsense"),

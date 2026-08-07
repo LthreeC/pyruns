@@ -1591,11 +1591,10 @@ def run_task_worker(
         reader_thread = threading.Thread(target=_tee_output, daemon=True)
         reader_thread.start()
         ret = proc.wait()
-        reader_thread.join(timeout=5)
-
         exit_code = int(ret)
         _capture_process_metrics()
         end_str = get_now_str()
+        reader_thread.join(timeout=5)
         _join_source_state()
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:

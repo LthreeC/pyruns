@@ -124,6 +124,7 @@ export default function MonitorPage() {
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
   const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
   const [terminalSearchStatus, setTerminalSearchStatus] = useState('')
+  const [monitorTasksLoaded, setMonitorTasksLoaded] = useState(false)
 
   const selectedTask = useMemo(
     () => monitorTasks.find(task => task.name === selectedTaskName),
@@ -212,8 +213,24 @@ export default function MonitorPage() {
   }, [compactMonitorLayout])
 
   useEffect(() => {
+    let active = true
     void fetchMonitorTasks()
-  }, [fetchMonitorTasks])
+      .then(() => {
+        if (active) {
+          setMonitorTasksLoaded(true)
+        }
+      })
+      .catch(err => {
+        notify({
+          tone: 'error',
+          title: 'Could not load monitor tasks',
+          detail: errorMessage(err),
+        })
+      })
+    return () => {
+      active = false
+    }
+  }, [fetchMonitorTasks, notify])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -582,7 +599,7 @@ export default function MonitorPage() {
   }, [isTerminalSearchShortcutTarget, runTerminalSearch, terminalSearchOpen])
 
   useEffect(() => {
-    if (!selectedTaskName) return
+    if (!monitorTasksLoaded || !selectedTaskName) return
     const stillExists = monitorTasks.some(task => task.name === selectedTaskName)
     if (stillExists) return
     useMonitorStore.setState({
@@ -592,7 +609,7 @@ export default function MonitorPage() {
       availableLogs: [],
       selectedLog: '',
     })
-  }, [monitorTasks, selectedTaskName])
+  }, [monitorTasks, monitorTasksLoaded, selectedTaskName])
 
   useEffect(() => {
     if (!detailTask) {

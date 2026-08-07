@@ -361,20 +361,35 @@ def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Opti
 _INVALID_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[str]:
-    """Validate whether a task name can be used as a folder name."""
+def _validate_task_folder_name(name: str, *, allow_legacy_at: bool) -> Optional[str]:
     if not name or not name.strip():
         return "Task name cannot be empty"
     name = name.strip()
     if len(name) > 200:
         return "Task name is too long (max 200 characters)"
-    if "@" in name:
+    if not allow_legacy_at and "@" in name:
         return "Task name cannot contain '@'; it is reserved for TASK@RUN references"
     bad = _INVALID_CHARS_RE.findall(name)
     if bad:
         return f"Task name contains invalid characters: {''.join(set(bad))}"
     if name.startswith("."):
         return "Task name cannot start with '.'"
+
+    return None
+
+
+def validate_existing_task_name(name: str) -> Optional[str]:
+    """Validate a safe existing task folder, including legacy names containing ``@``."""
+
+    return _validate_task_folder_name(name, allow_legacy_at=True)
+
+
+def validate_task_name(name: str, root_dir: Optional[str] = None) -> Optional[str]:
+    """Validate whether a new task name can be used as a folder name."""
+    error = _validate_task_folder_name(name, allow_legacy_at=False)
+    if error:
+        return error
+    name = name.strip()
 
     if root_dir and os.path.exists(os.path.join(root_dir, name)):
         return f"Task name '{name}' already exists in the current workspace"

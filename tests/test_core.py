@@ -2380,6 +2380,59 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
+def test_run_duration_excludes_log_reader_drain_delay(mock_popen, _mock_emit, mock_detect, tmp_path, monkeypatch):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "name": "DurationTask",
+                "script": "script.py",
+                "status": "queued",
+                "start_times": [],
+                "finish_times": [],
+            },
+            handle,
+        )
+
+    clock = {"value": 100.0}
+    monkeypatch.setattr(executor.time, "monotonic", lambda: clock["value"])
+    original_join = executor.threading.Thread.join
+
+    def delayed_join(thread, timeout=None):
+        if timeout == 5:
+            clock["value"] += 5.0
+        return original_join(thread, timeout=timeout)
+
+    monkeypatch.setattr(executor.threading.Thread, "join", delayed_join)
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.returncode = 0
+    mock_proc.stdout.read1 = MagicMock(return_value=b"")
+
+    def wait():
+        clock["value"] += 2.0
+        return 0
+
+    mock_proc.wait.side_effect = wait
+    mock_popen.return_value = mock_proc
+
+    result = run_task_worker(
+        task_dir=task_dir,
+        name="DurationTask",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["duration_seconds"] == 2.0
+    assert load_task_info(task_dir)["durations"] == [2.0]
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emit, mock_detect, tmp_path):
     mock_detect.return_value = ("pyruns_load", None)
     task_dir = str(tmp_path)

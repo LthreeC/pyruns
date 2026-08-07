@@ -489,6 +489,24 @@ def test_workspace_endpoint_returns_metadata(tmp_path):
     assert payload["workspace_ready"] is True
 
 
+def test_workspace_endpoint_ignores_non_finite_settings_from_manual_yaml(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    settings_path.write_text(
+        "monitor_line_height: .nan\nunknown_nested:\n  value: .inf\n",
+        encoding="utf-8",
+    )
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/workspace")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["settings"]["monitor_line_height"] == 1.0
+    assert "unknown_nested" not in payload["settings"]
+
+
 def test_workspace_endpoint_reports_uninitialized_default_root_as_not_ready(tmp_path):
     workspace = tmp_path / "_pyruns_"
     (workspace / TASKS_DIR).mkdir(parents=True)

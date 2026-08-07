@@ -4,6 +4,7 @@ Workspace settings loader/saver for Pyruns.
 Settings are persisted to ``_pyruns_settings.yaml`` under the workspace root.
 """
 
+import math
 import os
 import re
 from typing import Any, Dict
@@ -143,6 +144,21 @@ gpu_scheduler_require_same_gpu_model: {SETTINGS_DEFAULTS.get("gpu_scheduler_requ
 _cached: Dict[str, Any] = {}
 
 
+def setting_numbers_are_finite(value: Any) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(
+            setting_numbers_are_finite(item_key) and setting_numbers_are_finite(item_value)
+            for item_key, item_value in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return all(setting_numbers_are_finite(item) for item in value)
+    return True
+
+
 def _settings_path(root_dir: str = ROOT_DIR) -> str:
     """Resolve settings path.
 
@@ -176,7 +192,11 @@ def load_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
             with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             if isinstance(data, dict):
-                merged.update(data)
+                merged.update(
+                    (key, value)
+                    for key, value in data.items()
+                    if setting_numbers_are_finite(key) and setting_numbers_are_finite(value)
+                )
         except Exception:
             pass
 

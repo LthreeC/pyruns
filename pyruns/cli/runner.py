@@ -59,9 +59,9 @@ def submit_cli_tasks(
     *,
     execution_mode: str = "thread",
     max_workers: int = 1,
-    startup_timeout: float = 5.0,
+    startup_timeout: float | None = None,
 ) -> bool:
-    """Start a detached runner and wait only until it has claimed the tasks."""
+    """Start a detached runner and wait until it reports that all tasks were claimed."""
 
     names = [str(name) for name in task_names if str(name)]
     if not names:
@@ -78,6 +78,10 @@ def submit_cli_tasks(
     before = {name: _run_index(load_task_info(task_dirs[name]) or {}) for name in names}
     workspace = os.path.dirname(os.path.abspath(str(tm.tasks_dir)))
     submission_token = uuid.uuid4().hex
+    startup_file = os.path.join(
+        str(tm.tasks_dir),
+        f".runner-startup-{submission_token}.json",
+    )
     command = [
         sys.executable,
         "-m",
@@ -90,6 +94,8 @@ def submit_cli_tasks(
         str(max(1, int(max_workers))),
         "--submission-token",
         submission_token,
+        "--startup-file",
+        startup_file,
         "--tasks-json",
         json.dumps(names),
     ]
@@ -104,33 +110,53 @@ def submit_cli_tasks(
         process = _detached_popen(command, env)
     except OSError:
         return False
-    deadline = time.monotonic() + max(0.1, float(startup_timeout))
-    while time.monotonic() < deadline:
-        exit_code = process.poll()
-        ready = True
-        owned_active = 0
-        all_final = True
-        for name in names:
-            info = load_task_info(task_dirs[name]) or {}
-            status = str(info.get("status", "") or "").lower()
-            started_new_run = _run_index(info) > before[name]
-            owned = status in _ACTIVE_STATUSES and _runner_token(info) == submission_token
-            finished = status in _FINAL_STATUSES and started_new_run
-            if owned:
-                owned_active += 1
-            if not finished:
-                all_final = False
-            if not owned and not finished:
-                ready = False
-                break
-        if ready and (owned_active > 0 or (all_final and exit_code in {0, 1})):
-            return True
-        if exit_code is not None:
-            return False
-        time.sleep(0.05)
-    if process.poll() is None:
+    deadline = (
+        time.monotonic() + max(0.05, float(startup_timeout))
+        if startup_timeout is not None
+        else None
+    )
+    try:
+        while True:
+            try:
+                with open(startup_file, "r", encoding="utf-8") as handle:
+                    startup = json.load(handle)
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                startup = {}
+            startup_status = str(startup.get("status", "") or "").lower()
+            if startup_status == "ready":
+                return True
+            if startup_status == "error":
+                return False
+
+            exit_code = process.poll()
+            owned_active = 0
+            all_final = True
+            for name in names:
+                info = load_task_info(task_dirs[name]) or {}
+                status = str(info.get("status", "") or "").lower()
+                started_new_run = _run_index(info) > before[name]
+                if status in _ACTIVE_STATUSES and _runner_token(info) == submission_token:
+                    owned_active += 1
+                if not (status in _FINAL_STATUSES and started_new_run):
+                    all_final = False
+            if exit_code is not None:
+                return bool(all_final and exit_code in {0, 1})
+
+            if deadline is not None and time.monotonic() >= deadline:
+                if owned_active:
+                    # A partially claimed batch must be left with its owning runner;
+                    # killing it here can strand task state or terminate real work.
+                    return True
+                try:
+                    kill_process(process.pid)
+                except Exception:
+                    pass
+                return False
+            time.sleep(0.05)
+    finally:
         try:
-            kill_process(process.pid)
-        except Exception:
+            os.remove(startup_file)
+        except FileNotFoundError:
             pass
-    return False
+        except OSError:
+            pass

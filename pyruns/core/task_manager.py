@@ -43,6 +43,7 @@ from pyruns.utils.info_io import (
     run_slot_count,
     task_info_lock,
     update_task_info,
+    validate_existing_task_name,
     validate_task_name,
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
@@ -72,7 +73,14 @@ class TaskStateConflict(RuntimeError):
 class TaskManager:
     """Central task registry, scheduler, and UI notification source."""
 
-    def __init__(self, tasks_dir: str | None = None, lazy_scan: bool | None = True, runner_token: str | None = None):
+    def __init__(
+        self,
+        tasks_dir: str | None = None,
+        lazy_scan: bool | None = True,
+        runner_token: str | None = None,
+        *,
+        owns_task_lifecycle: bool = True,
+    ):
         if tasks_dir is None:
             from pyruns._config import ROOT_DIR
 
@@ -87,6 +95,7 @@ class TaskManager:
         self._shutdown_lock = threading.Lock()
         self._shutdown_event = threading.Event()
         self._shutdown_cleanup_done = False
+        self.owns_task_lifecycle = bool(owns_task_lifecycle)
 
         self._observers: List[Callable[[], None]] = []
         self._executor = None
@@ -118,11 +127,12 @@ class TaskManager:
         else:
             self.scan_disk()
 
-        self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
-        self._scheduler_thread.start()
-
-        atexit.register(self._atexit_callback)
-        self._atexit_registered = True
+        self._scheduler_thread: threading.Thread | None = None
+        if self.owns_task_lifecycle:
+            self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+            self._scheduler_thread.start()
+            atexit.register(self._atexit_callback)
+            self._atexit_registered = True
 
     def on_change(self, callback: Callable[[], None]) -> None:
         """Register a callback used by reactive UI pages."""
@@ -410,7 +420,11 @@ class TaskManager:
         task_dir: str,
         info: Dict[str, Any],
     ) -> tuple[Dict[str, Any], bool]:
-        if info.get("status") != "running" or task_name in self._running_ids:
+        if (
+            not self.owns_task_lifecycle
+            or info.get("status") != "running"
+            or task_name in self._running_ids
+        ):
             return info, False
         if self._running_info_has_live_owner(info):
             return info, False
@@ -590,7 +604,7 @@ class TaskManager:
     def load_task_by_name(self, name: str) -> Dict[str, Any] | None:
         """Load one exact task folder without scanning the whole workspace."""
         task_name = str(name or "").strip()
-        if validate_task_name(task_name) is not None:
+        if validate_existing_task_name(task_name) is not None:
             return None
 
         task = self._load_task_dir(task_name)
@@ -1908,7 +1922,8 @@ class TaskManager:
                     pass
                 self._atexit_registered = False
         self._shutdown_event.set()
-        self._cleanup_on_shutdown()
+        if self.owns_task_lifecycle:
+            self._cleanup_on_shutdown()
 
         with self._executor_lock:
             executors = [self._executor, self._independent_executor]
