@@ -1261,7 +1261,7 @@ def cmd_stop(context: Any, args: Any, manager: TaskManager) -> int:
     else:
         for record in records:
             print(record["name"])
-    return 0
+    return 0 if all(record["status"] == "cancelled" for record in records) else 1
 
 
 def cmd_rm(context: Any, args: Any, manager: TaskManager) -> int:

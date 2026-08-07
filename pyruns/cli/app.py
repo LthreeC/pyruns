@@ -542,8 +542,8 @@ def build_parser(
         help_text="stop active tasks through their owning runner",
         description=(
             "Persist a cancellation request for each exact queued or running task and wait for its\n"
-            "owning runner to finish cancellation. Successfully stopped work ends as 'cancelled',\n"
-            "which remains distinct from an execution failure and can be rerun later."
+            "owning runner to finish cancellation. If that runner's lease has expired, queued work\n"
+            "becomes 'cancelled' and stale running work becomes 'failed' without killing its PID."
         ),
         epilog=_example_block(
             program,
@@ -552,6 +552,7 @@ def build_parser(
             notes=(
                 "Only active queued or running tasks can be stopped.",
                 "The default cancellation wait is 15 seconds; this command does not delete the task.",
+                "Exit status is 0 only when every target ends as cancelled; stale running work returns 1.",
             ),
         ),
         common=True,
@@ -690,7 +691,8 @@ def build_parser(
             notes=(
                 "Settings are project-wide; -w is unnecessary and does not change their scope.",
                 "VALUE is one YAML scalar, list, or mapping; quote mappings as one shell argument.",
-                "global_env values are persisted and used by later CLI and Web UI runs.",
+                "global_env is persisted for Web UI runs; CLI tasks inherit the invoking terminal.",
+                "Use 'exec -e' or '--env-file' for environment values saved with a task.",
                 "Use 'unset' to restore the built-in default rather than writing a guessed value.",
             ),
         ),

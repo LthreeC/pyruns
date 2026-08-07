@@ -1830,6 +1830,38 @@ def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path):
     assert info["runner_id"] == "other-host:123:abcdef"
 
 
+def test_cancel_task_endpoint_reconciles_expired_foreign_runner(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded()
+    task_dir = workspace / TASKS_DIR / "alpha"
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update(
+            {
+                "runner_id": "other-host:123:expired",
+                "runner_host": "other-host",
+                "lease_heartbeat": time.time() - 120,
+                "lease_until": time.time() - 60,
+                "pids": [987654321],
+            }
+        ),
+    )
+    client = TestClient(create_app(runtime))
+
+    with patch("pyruns.core.task_manager.kill_process") as kill_process:
+        response = client.post("/api/tasks/alpha/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "failed"
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "failed"
+    assert info["cancel_requested_at"]
+    assert "runner_id" not in info
+    kill_process.assert_not_called()
+
+
 def test_run_task_endpoint_rejects_unclaimed_start(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")

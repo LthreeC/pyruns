@@ -203,6 +203,10 @@ def test_help_explains_config_ui_metrics_and_help_workflows(tmp_path):
 
     assert "Settings are project-wide" in config_help.stdout
     assert "global_env" in config_help.stdout
+    assert "global_env is persisted for Web UI runs" in config_help.stdout
+    assert "CLI tasks inherit the invoking terminal" in config_help.stdout
+    assert "exec -e" in config_help.stdout
+    assert "used by later CLI and Web UI runs" not in config_help.stdout
     assert "Parse VALUE as YAML" in config_set_help.stdout
     assert "Environment variable names and values are validated" in config_set_help.stdout
     assert "does not require a workspace" in metrics_help.stdout
@@ -1558,6 +1562,108 @@ def test_stop_reaches_detached_runner(tmp_path):
     assert cancelled.returncode == 0, cancelled.stdout + cancelled.stderr
     payload = json.loads(cancelled.stdout)
     assert payload["stopped"][0]["status"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    ("initial_status", "final_status", "return_code"),
+    [("queued", "cancelled", 0), ("running", "failed", 1)],
+)
+def test_stop_reconciles_tasks_from_expired_foreign_runner(
+    tmp_path,
+    initial_status,
+    final_status,
+    return_code,
+):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    task = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        f"expired-{initial_status}", "echo stale\n"
+    )
+
+    def make_stale(info):
+        info.update(
+            {
+                "status": initial_status,
+                "runner_id": "other-host:123:expired",
+                "runner_host": "other-host",
+                "lease_heartbeat": time.time() - 120,
+                "lease_until": time.time() - 60,
+            }
+        )
+        if initial_status == "running":
+            info.update(
+                {
+                    "run_index": 1,
+                    "start_times": ["2026-03-20_00-00-01"],
+                    "finish_times": [""],
+                    "pids": [987654321],
+                }
+            )
+
+    update_task_info(task["dir"], make_stale)
+
+    stopped = _run_cli(
+        tmp_path,
+        "--json",
+        "-w",
+        "shell",
+        "stop",
+        task["name"],
+        "--timeout",
+        "0.2",
+    )
+
+    assert stopped.returncode == return_code, stopped.stdout + stopped.stderr
+    assert json.loads(stopped.stdout)["stopped"][0]["status"] == final_status
+    info = load_task_info(task["dir"])
+    assert info["status"] == final_status
+    assert info["cancel_requested_at"]
+    assert "runner_id" not in info
+    assert "lease_until" not in info
+    if initial_status == "running":
+        assert info["finish_times"][0]
+
+    removed = _run_cli(tmp_path, "-w", "shell", "rm", task["name"])
+    assert removed.returncode == 0, removed.stdout + removed.stderr
+
+
+def test_stop_only_requests_cancellation_from_live_foreign_runner(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    task = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "live-foreign", "echo live\n"
+    )
+    update_task_info(
+        task["dir"],
+        lambda info: info.update(
+            {
+                "status": "queued",
+                "runner_id": "other-host:123:live",
+                "runner_host": "other-host",
+                "lease_heartbeat": time.time(),
+                "lease_until": time.time() + 60,
+            }
+        ),
+    )
+
+    stopped = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "stop",
+        task["name"],
+        "--timeout",
+        "0.1",
+    )
+
+    assert stopped.returncode == 1
+    assert "timed out waiting" in stopped.stderr
+    info = load_task_info(task["dir"])
+    assert info["status"] == "queued"
+    assert info["runner_id"] == "other-host:123:live"
+    assert info["cancel_requested_at"]
 
 
 def test_rm_ls_trash_and_restore(tmp_path):

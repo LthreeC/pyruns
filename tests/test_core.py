@@ -3113,6 +3113,62 @@ def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path,
     assert killed == []
 
 
+def test_task_manager_does_not_fail_runner_that_renews_during_stale_reconciliation(
+    tmp_path,
+    monkeypatch,
+):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "renewed"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "renewed",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+            "runner_id": "other-host:123:abcdef",
+            "runner_host": "other-host",
+            "lease_until": time.time() - 60,
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=None)
+
+    stale_info = load_task_info(str(task_dir))
+    mark_failed = manager._mark_failed_on_disk
+
+    def renew_then_mark(task, **kwargs):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update({"lease_until": time.time() + 60}),
+        )
+        return mark_failed(task, **kwargs)
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", renew_then_mark)
+
+    updated, changed = manager._fail_unowned_running_info_if_needed(
+        "renewed",
+        str(task_dir),
+        stale_info,
+    )
+
+    assert changed is False
+    assert updated["status"] == "running"
+    assert updated["lease_until"] > time.time()
+    assert load_task_info(str(task_dir))["status"] == "running"
+
+
 def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

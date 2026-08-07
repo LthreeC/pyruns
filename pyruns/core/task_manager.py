@@ -430,9 +430,15 @@ class TaskManager:
         if self._running_info_has_live_owner(info):
             return info, False
 
-        self._mark_failed_on_disk(
-            {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
-        )
+        try:
+            self._mark_failed_on_disk(
+                {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
+                expected_statuses={"running"},
+                require_no_live_owner=True,
+            )
+        except (TaskClaimConflict, TaskStateConflict):
+            updated = load_task_info(task_dir) or info
+            return updated, False
         updated = load_task_info(task_dir) or info
         logger.warning("%s: running lease is not trusted or process is gone; marked failed", task_name)
         return updated, True
@@ -1175,21 +1181,46 @@ class TaskManager:
         return True, new_name
 
     def request_task_cancel(self, task_id: str) -> bool:
-        """Persist a cancellation request for the runner that owns an active task."""
+        """Request cancellation or safely reconcile work whose runner disappeared."""
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if not target:
                 return False
             task_name = str(target.get("name", "") or "")
             task_dir = str(target.get("dir", "") or "")
+            run_index = int(target.get("run_index", 0) or 0)
         if not task_name or not task_dir:
             return False
+
+        requested_at = get_now_str()
+        request_context: Dict[str, Any] = {
+            "action": "",
+            "original_status": "",
+            "finalized_run_slot": False,
+        }
 
         def _request(info: Dict[str, Any]) -> None:
             status = str(info.get("status", "") or "").lower()
             if status not in {"queued", "running"}:
                 raise TaskStateConflict(f"task is not active: {status}")
-            info["cancel_requested_at"] = get_now_str()
+            info["cancel_requested_at"] = requested_at
+            request_context["original_status"] = status
+            if self._is_current_runner(info):
+                request_context["action"] = "cancel_local"
+                return
+            if self._is_foreign_live_runner(info):
+                request_context["action"] = "request_foreign"
+                return
+
+            final_status = "cancelled" if status == "queued" else "failed"
+            _, finalized_run_slot = self._apply_terminal_status_to_info(
+                info,
+                run_index=run_index,
+                finish_now=requested_at,
+                final_status=final_status,
+            )
+            request_context["action"] = f"reconcile_{status}"
+            request_context["finalized_run_slot"] = finalized_run_slot
 
         try:
             updated = update_task_info(task_dir, _request, raise_error=True)
@@ -1202,8 +1233,32 @@ class TaskManager:
                 self._apply_info_to_task(current, updated)
         self.trigger_update()
 
-        if self._is_current_runner(updated):
+        action = request_context["action"]
+        if action == "cancel_local":
             return self.cancel_task(task_name)
+        if action.startswith("reconcile_"):
+            status = str(request_context["original_status"] or "")
+            if request_context["finalized_run_slot"]:
+                display_run_index = max(run_index, int(updated.get("run_index", 0) or 0), 1)
+                title = f"Run #{display_run_index} failed at {requested_at}"
+            elif status == "queued":
+                title = f"Queued task stopped at {requested_at}"
+            else:
+                title = f"Task failed at {requested_at}"
+            self._append_error_summary(
+                task_dir,
+                title=title,
+                detail_lines=[
+                    "reason=runner_unavailable_during_cancel",
+                    f"previous_status={status}",
+                ],
+            )
+            logger.warning(
+                "%s: runner unavailable during cancellation; reconciled %s as %s",
+                task_name,
+                status,
+                updated.get("status"),
+            )
         return True
 
     def _process_cancel_requests(self) -> None:
@@ -2542,6 +2597,36 @@ class TaskManager:
             self._apply_info_to_task(task, updated)
             task["status"] = "cancelled"
 
+    def _apply_terminal_status_to_info(
+        self,
+        task_info: Dict[str, Any],
+        *,
+        run_index: int,
+        finish_now: str,
+        final_status: str,
+    ) -> tuple[str, bool]:
+        """Finalize an active task-info payload while its file lock is held."""
+
+        original_status = str(task_info.get("status", "") or "").lower()
+        slot_count = (
+            self._realized_run_slot_count(task_info)
+            if original_status == "queued"
+            else run_slot_count(task_info)
+        )
+        if original_status == "queued":
+            self._trim_run_slots(task_info, slot_count)
+        target_index = max(run_index, slot_count)
+        should_finalize_slot = original_status == "running" and target_index > 0
+        if should_finalize_slot:
+            slot = ensure_run_slot(task_info, target_index)
+            if not task_info["finish_times"][slot]:
+                task_info["finish_times"][slot] = finish_now
+        task_info["status"] = final_status
+        task_info["progress"] = 0.0
+        self._clear_runner_lease_fields(task_info)
+        self._clear_gpu_schedule_info(task_info)
+        return original_status, should_finalize_slot
+
     def _mark_failed_on_disk(
         self,
         task: Dict[str, Any],
@@ -2552,6 +2637,7 @@ class TaskManager:
         lock_timeout_sec: float | None = None,
         expected_statuses: set[str] | None = None,
         require_current_runner: bool = False,
+        require_no_live_owner: bool = False,
         final_status: str = "failed",
     ) -> None:
         """Persist a failed state and finalize the active run slot if needed."""
@@ -2566,25 +2652,16 @@ class TaskManager:
                 raise TaskStateConflict(f"expected {sorted(expected_statuses)}, found {original_status!r}")
             if require_current_runner and not self._is_current_runner(task_info):
                 raise TaskClaimConflict("task already owned by another runner")
-            failure_context["original_status"] = original_status
-            slot_count = (
-                self._realized_run_slot_count(task_info)
-                if original_status == "queued"
-                else run_slot_count(task_info)
+            if require_no_live_owner and self._running_info_has_live_owner(task_info):
+                raise TaskClaimConflict("task is owned by a live runner")
+            original_status, should_finalize_slot = self._apply_terminal_status_to_info(
+                task_info,
+                run_index=run_index,
+                finish_now=finish_now,
+                final_status=final_status,
             )
-            if original_status == "queued":
-                self._trim_run_slots(task_info, slot_count)
-            target_index = max(run_index, slot_count)
-            should_finalize_slot = original_status == "running" and target_index > 0
+            failure_context["original_status"] = original_status
             failure_context["finalized_run_slot"] = should_finalize_slot
-            if should_finalize_slot:
-                slot = ensure_run_slot(task_info, target_index)
-                if not task_info["finish_times"][slot]:
-                    task_info["finish_times"][slot] = finish_now
-            task_info["status"] = final_status
-            task_info["progress"] = 0.0
-            self._clear_runner_lease_fields(task_info)
-            self._clear_gpu_schedule_info(task_info)
 
         update_kwargs = {}
         if lock_timeout_sec is not None:
