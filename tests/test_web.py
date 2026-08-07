@@ -1618,7 +1618,7 @@ def test_run_root_switch_endpoint_reloads_workspace(tmp_path):
     assert tasks["items"][0]["name"] == "task-b"
 
 
-def test_runtime_reload_keeps_workspace_managers_alive_until_server_shutdown(tmp_path):
+def test_runtime_reload_reclaims_idle_workspace_managers(tmp_path):
     workspace_a = _make_workspace(tmp_path, "main")
     workspace_b = _make_workspace(tmp_path, "alt")
     managers = []
@@ -1641,15 +1641,61 @@ def test_runtime_reload_keeps_workspace_managers_alive_until_server_shutdown(tmp
 
     runtime.reload(str(workspace_b))
 
-    assert first_manager.shutdown_count == 0
+    assert first_manager.shutdown_count == 1
     assert managers == [first_manager]
     second_manager = runtime.task_manager
     runtime.reload(str(workspace_a))
 
-    assert runtime.task_manager is first_manager
+    assert second_manager.shutdown_count == 1
+    replacement_manager = runtime.task_manager
+    assert replacement_manager is not first_manager
     runtime.shutdown()
     assert first_manager.shutdown_count == 1
     assert second_manager.shutdown_count == 1
+    assert replacement_manager.shutdown_count == 1
+
+
+def test_runtime_reclaims_a_background_manager_after_its_active_task_finishes(tmp_path):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+
+    class DummyTaskManager:
+        def __init__(self, tasks_dir: str):
+            self.tasks_dir = tasks_dir
+            self.tasks = [{"name": "active", "status": "running"}]
+            self.is_processing = True
+            self.shutdown_count = 0
+            self.callbacks = []
+
+        def on_change(self, callback) -> None:
+            self.callbacks.append(callback)
+
+        def off_change(self, callback) -> None:
+            self.callbacks.remove(callback)
+
+        def shutdown(self) -> None:
+            self.shutdown_count += 1
+
+        def finish(self) -> None:
+            self.tasks[0]["status"] = "completed"
+            self.is_processing = False
+            for callback in list(self.callbacks):
+                callback()
+
+    runtime = PyrunsRuntime(
+        root_dir=str(workspace_a),
+        task_manager_factory=DummyTaskManager,
+    )
+    background_manager = runtime.task_manager
+
+    runtime.reload(str(workspace_b))
+    assert background_manager.shutdown_count == 0
+
+    background_manager.finish()
+
+    assert background_manager.shutdown_count == 1
+    assert background_manager.callbacks == []
+    runtime.shutdown()
 
 
 def test_workspace_switch_does_not_terminate_running_task(tmp_path):
@@ -2938,7 +2984,7 @@ def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch)
     info = runtime.change_run_root(str(new_workspace))
 
     assert info["run_root"] == str(new_workspace).replace("\\", "/")
-    assert shutdowns == []
+    assert shutdowns == ["old"]
 
     with pytest.raises(ValueError, match="Run Root must contain"):
         runtime.change_run_root(str(tmp_path / "plain"))
@@ -2946,7 +2992,7 @@ def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch)
     manager = runtime.task_manager
     monkeypatch.setattr(manager, "shutdown", lambda: shutdowns.append("current"))
     runtime.shutdown()
-    assert "old" in shutdowns
+    assert shutdowns.count("old") == 1
     assert "current" in shutdowns
 
     shell_workspace = _make_workspace(tmp_path, SHELL_WORKSPACE_NAME)

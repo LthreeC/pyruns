@@ -44,7 +44,7 @@ from pyruns.launcher import (
 )
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.config_utils import load_yaml_strict, safe_filename
-from pyruns.utils.env_utils import is_valid_environment_name
+from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.info_io import (
     load_script_info,
     load_task_info,
@@ -311,6 +311,21 @@ def _parse_task_run_reference(value: str) -> tuple[str, int | None]:
             f"invalid task run reference '{reference}'; RUN must be a positive integer"
         )
     return task_name, int(run_text)
+
+
+def _resolve_task_run_reference(
+    manager: TaskManager,
+    value: str,
+) -> tuple[dict[str, Any], int | None]:
+    """Resolve an exact task name before interpreting a legacy-compatible ``@RUN`` suffix."""
+
+    reference = str(value or "")
+    exact = manager.load_task_by_name(reference)
+    if exact is not None and str(exact.get("name", "") or "") == reference:
+        return exact, None
+
+    task_name, selected_run = _parse_task_run_reference(reference)
+    return _resolve_exact_tasks(manager, [task_name])[0], selected_run
 
 
 def _latest_run_index(task: dict[str, Any], info: dict[str, Any] | None = None) -> int:
@@ -1135,8 +1150,7 @@ def cmd_status(context: Any, manager: TaskManager, workspace: str) -> int:
 
 
 def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
-    task_name, selected_run = _parse_task_run_reference(args.task)
-    task = _resolve_exact_tasks(manager, [task_name])[0]
+    task, selected_run = _resolve_task_run_reference(manager, args.task)
     record = _task_record(task, detailed=True, selected_run=selected_run)
     if context.json_output:
         _json_dump(record)
@@ -1183,7 +1197,7 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
 
 
 def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
-    task_name, reference_run = _parse_task_run_reference(args.task)
+    task, reference_run = _resolve_task_run_reference(manager, args.task)
     if reference_run is not None and args.run is not None:
         raise CliUsageError("TASK@RUN cannot be combined with --run")
     selected_run = reference_run if reference_run is not None else args.run
@@ -1193,7 +1207,6 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
         raise CliUsageError("log accepts either --follow or --path, not both")
     if context.json_output and not args.path:
         raise CliUsageError("--json is only supported by log together with --path")
-    task = _resolve_exact_tasks(manager, [task_name])[0]
     if selected_run is not None:
         _selected_run_record(task, selected_run)
     if args.follow and str(task.get("status", "pending")) == "pending":
@@ -1448,6 +1461,11 @@ def _validate_setting_value(key: str, value: Any) -> Any:
             raise CliUsageError(f"{key} expects a string")
     elif not isinstance(value, expected):
         raise CliUsageError(f"{key} expects {expected.__name__}")
+    if key == "global_env":
+        try:
+            value = normalize_environment(value, drop_none_values=True)
+        except ValueError as exc:
+            raise CliUsageError(str(exc)) from exc
     if key == "log_level":
         value = value.upper()
     choices = _SETTING_CHOICES.get(key)

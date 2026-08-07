@@ -14,10 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyruns._config import TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
+from pyruns._config import RUN_LOGS_DIR, TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
 from pyruns.cli.app import main
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
-from pyruns.utils.info_io import load_task_info
+from pyruns.utils.info_io import load_task_info, update_task_info
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -768,8 +768,9 @@ def test_exec_runs_windows_command_file_with_arguments(tmp_path, suffix):
         "setlocal DisableDelayedExpansion\n"
         "set \"first=%~1\"\n"
         "set \"second=%~2\"\n"
+        "set \"third=%~3\"\n"
         "setlocal EnableDelayedExpansion\n"
-        "echo script=!first!^|!second!\n",
+        "echo script=!first!^|!second!^|!third!\n",
         encoding="utf-8",
     )
 
@@ -782,9 +783,31 @@ def test_exec_runs_windows_command_file_with_arguments(tmp_path, suffix):
         str(script.relative_to(tmp_path)),
         "value with spaces",
         "x&y",
+        "%PATH%",
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "script=value with spaces|x&y" in result.stdout
+    assert "script=value with spaces|x&y|%PATH%" in result.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
+@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
+def test_exec_preserves_windows_command_file_exit_code(tmp_path, suffix):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+    script = tmp_path / f"fail{suffix}"
+    script.write_text("@echo off\nexit /b 7\n", encoding="utf-8")
+
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        f"fail-{suffix[1:]}",
+        "--",
+        str(script),
+    )
+
+    assert result.returncode == 1
+    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / f"fail-{suffix[1:]}"
+    assert load_task_info(str(task_dir))["exit_codes"][-1] == 7
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
@@ -1397,6 +1420,34 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert "available runs: 1-2" in missing.stderr
 
 
+def test_show_and_log_prefer_an_exact_legacy_task_name_ending_in_at_number(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    created = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "legacy", "echo legacy\n"
+    )
+    original_dir = Path(created["dir"])
+    legacy_dir = original_dir.with_name("legacy@2")
+    original_dir.rename(legacy_dir)
+    update_task_info(
+        str(legacy_dir),
+        lambda info: info.update({"name": "legacy@2", "status": "completed", "run_index": 1}),
+        raise_error=True,
+    )
+    log_dir = legacy_dir / RUN_LOGS_DIR
+    log_dir.mkdir(exist_ok=True)
+    (log_dir / "run1.log").write_text("legacy exact name\n", encoding="utf-8")
+
+    shown = _run_cli(tmp_path, "--json", "-w", "shell", "show", "legacy@2")
+    logged = _run_cli(tmp_path, "-w", "shell", "log", "legacy@2")
+
+    assert shown.returncode == 0, shown.stderr
+    assert json.loads(shown.stdout)["name"] == "legacy@2"
+    assert logged.returncode == 0, logged.stderr
+    assert "legacy exact name" in logged.stdout
+
+
 def test_task_names_reserve_at_for_run_references(tmp_path):
     result = _run_cli(
         tmp_path,
@@ -1705,6 +1756,19 @@ def test_config_rejects_unknown_keys_and_wrong_types(tmp_path):
     )
     assert unknown.returncode == 1
     assert wrong_type.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["{'BAD=KEY': value}", '{GOOD: "bad\\0value"}'],
+)
+def test_config_rejects_invalid_global_environment(tmp_path, value):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    result = _run_cli(tmp_path, "config", "set", "global_env", value)
+
+    assert result.returncode == 2
+    assert "environment" in result.stderr.lower()
 
 
 @pytest.mark.parametrize(

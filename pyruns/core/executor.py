@@ -972,8 +972,10 @@ def _materialize_windows_command_file(
         "@echo off",
         "setlocal DisableDelayedExpansion",
         "chcp 65001 >nul",
-        "call " + " ".join(_quote(value) for value in values),
-        "exit /b %ERRORLEVEL%",
+        # Do not use CALL here. CALL reparses the command and expands literal
+        # percent-delimited values such as %PATH% a second time. Transferring
+        # directly to the target batch file preserves argv and its exit code.
+        " ".join(_quote(value) for value in values),
     ]
     wrapper_path = _write_temp_shell_wrapper(
         suffix=".cmd",
@@ -1486,6 +1488,8 @@ def run_task_worker(
         _augment_wsl_env(command, env, set((env_vars or {}).keys()) | {ENV_KEY_RUN_INDEX})
 
         if workdir and not os.path.isdir(workdir):
+            if str(meta_workdir or "").strip():
+                raise RuntimeError(f"Stored working directory is unavailable: {meta_workdir}")
             fallback = task_dir if task_kind == TASK_KIND_SHELL else (os.path.dirname(script_path) if script_path else os.getcwd())
             logger.warning(
                 "Workdir '%s' is invalid, falling back to '%s'",

@@ -2731,6 +2731,47 @@ def test_run_task_worker_internal_spawn_error_persists_failure_and_keeps_cleanup
     assert cleanup_path.exists()
 
 
+def test_run_task_worker_rejects_a_missing_persisted_workdir_without_spawning(tmp_path, monkeypatch):
+    import pyruns.core.executor as executor
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    missing_workdir = tmp_path / "removed-project"
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "MissingWorkdir",
+            "status": "queued",
+            "task_kind": TASK_KIND_SHELL,
+            "cmd": [sys.executable, "-c", "print('must not run')"],
+            "workdir": str(missing_workdir),
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+        },
+    )
+    monkeypatch.setattr(
+        executor.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("process should not start for a missing stored workdir"),
+    )
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="MissingWorkdir",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    assert "Stored working directory is unavailable" in result["error"]
+    assert str(missing_workdir) in result["error"]
+    assert "Stored working directory is unavailable" in (
+        task_dir / RUN_LOGS_DIR / "run1.log"
+    ).read_text(encoding="utf-8")
+
+
 def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, monkeypatch):
     import pyruns.core.executor as executor
     from pyruns.utils.info_io import load_task_info

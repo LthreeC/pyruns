@@ -337,6 +337,7 @@ class PyrunsRuntime:
         self.settings: Dict[str, Any] = {}
         self._task_manager: TaskManager | None = None
         self._task_managers: Dict[str, TaskManager] = {}
+        self._task_manager_callbacks: Dict[str, Callable[[], None]] = {}
         self._task_generator: TaskGenerator | None = None
         self._metrics_sampler: SystemMonitor | None = None
         self._tasks_loaded = False
@@ -380,18 +381,76 @@ class PyrunsRuntime:
             self._last_full_refresh_time = 0.0
             self._conda_envs_cache = None
 
+            cached_managers = list(self._task_managers.items())
+
+        for cached_key, cached_manager in cached_managers:
+            if cached_key != manager_key:
+                self._retire_task_manager_if_idle(cached_key, cached_manager)
+
+    @staticmethod
+    def _task_manager_is_active(task_manager: TaskManager) -> bool:
+        """Conservatively report whether a manager still owns queued or running work."""
+
+        if bool(getattr(task_manager, "is_processing", False)):
+            return True
+        tasks = list(getattr(task_manager, "tasks", []) or [])
+        return any(
+            str((task or {}).get("status", "") or "").lower() in {"queued", "running"}
+            for task in tasks
+        )
+
+    def _retire_task_manager_if_idle(self, manager_key: str, task_manager: TaskManager) -> None:
+        """Stop and forget one non-current manager after its active work has finished."""
+
+        callback: Callable[[], None] | None = None
+        with self._lock:
+            if self._task_manager is task_manager:
+                return
+            if self._task_managers.get(manager_key) is not task_manager:
+                return
+            if self._task_manager_is_active(task_manager):
+                return
+            self._task_managers.pop(manager_key, None)
+            callback = self._task_manager_callbacks.pop(manager_key, None)
+
+        if callback is not None and hasattr(task_manager, "off_change"):
+            task_manager.off_change(callback)
+        task_manager.shutdown()
+
+    def _track_task_manager(self, manager_key: str, task_manager: TaskManager) -> None:
+        """Cache one manager and observe it so inactive background managers are reclaimed."""
+
+        self._task_managers[manager_key] = task_manager
+        if not hasattr(task_manager, "on_change"):
+            return
+
+        def callback() -> None:
+            self._retire_task_manager_if_idle(manager_key, task_manager)
+
+        self._task_manager_callbacks[manager_key] = callback
+        task_manager.on_change(callback)
+
     def shutdown(self) -> None:
         """Release background services owned by this runtime."""
         with self._lock:
-            task_managers = list(dict.fromkeys(self._task_managers.values()))
+            tracked_managers = list(self._task_managers.items())
+            task_managers = list(dict.fromkeys(manager for _, manager in tracked_managers))
             if self._task_manager is not None and self._task_manager not in task_managers:
                 task_managers.append(self._task_manager)
+            tracked_callbacks = [
+                (manager, self._task_manager_callbacks.get(manager_key))
+                for manager_key, manager in tracked_managers
+            ]
             self._task_manager = None
             self._task_managers.clear()
+            self._task_manager_callbacks.clear()
             self._task_generator = None
             self._metrics_sampler = None
             self._tasks_loaded = False
 
+        for task_manager, callback in tracked_callbacks:
+            if callback is not None and hasattr(task_manager, "off_change"):
+                task_manager.off_change(callback)
         for task_manager in task_managers:
             task_manager.shutdown()
 
@@ -798,7 +857,7 @@ class PyrunsRuntime:
             if self._task_manager is None:
                 self._task_manager = self._task_manager_factory(self.tasks_dir)
                 manager_key = os.path.normcase(os.path.abspath(self.tasks_dir))
-                self._task_managers[manager_key] = self._task_manager
+                self._track_task_manager(manager_key, self._task_manager)
             return self._task_manager
 
     @property
