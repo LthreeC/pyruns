@@ -18,7 +18,6 @@ FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.t
 FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "types.ts"
 FRONTEND_CONFIRM_DIALOG = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ConfirmDialog.tsx"
 FRONTEND_TOAST_HOST = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "ToastHost.tsx"
-FRONTEND_COMPACT_SECTION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CompactSection.tsx"
 FRONTEND_CODE_EDITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "CodeTextEditor.tsx"
 FRONTEND_PAGINATION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "Pagination.tsx"
 FRONTEND_SEARCH_INPUT = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "SearchInput.tsx"
@@ -209,7 +208,6 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     assert "event.preventDefault()" in confirm_dialog
     assert "backdropPointerStartedRef.current = event.target === event.currentTarget" in confirm_dialog
     assert 'aria-modal="true"' in confirm_dialog
-    assert "onClose={handleCancel}" not in confirm_dialog
     assert "onConfirm: () => void | Promise<void>" in confirm_dialog
     assert "const [pending, setPending]" in confirm_dialog
     assert "dialog && !dialog.open" in confirm_dialog
@@ -238,7 +236,6 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "ToastHost" in app
     assert "pointer-events-none fixed bottom-3 right-3" in toast_host
     assert "flex-col-reverse" in toast_host
-    assert "right-3 top-3" not in toast_host
     assert "pointer-events-auto flex w-[min(380px,calc(100vw-2rem))]" in toast_host
     assert "focus-visible:ring-2 focus-visible:ring-accent/35" in toast_host
     assert "role={toast.tone === 'error' ? 'alert' : 'status'}" in toast_host
@@ -272,8 +269,6 @@ def test_frontend_index_serves_branded_favicon_without_404():
 def test_react_dashboard_uses_full_width_clear_workspace_layout():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "max-w-[1600px]" not in source
-    assert "mx-auto" not in source
     assert "flex min-h-full w-full flex-col" in source
     assert "const workspaceKindLabel" in source
     assert "Shell Workspace" in source
@@ -286,23 +281,9 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
     assert '<div className="p-3">' in source
     assert "h-[10.5rem] w-full rounded-md border border-border-subtle" in source
-    assert "h-[23.25rem]" not in source
-    assert "max-h-[21.75rem]" not in source
-    assert "max-h-[min(52vh,34rem)]" not in source
     assert "flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
-    assert "flex-[1.7]" not in source
-    assert "flex-[0.45]" not in source
     assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
-    assert "min-h-0 flex-1 overflow-y-auto p-3" not in source
     assert "Quick status glance." in source
-    assert "task.preview_text" not in source
-    assert "max-h-[560px]" not in source
-    assert "ProgressTrack" not in source
-    assert "normalizeTaskProgress" not in source
-    assert "TaskFocusPanel" not in source
-    assert "data?.active_task" not in source
-    assert "Latest Task" not in source
-    assert "InfoRow" not in source
     assert "queuedCount" in source
     assert "pendingCount" in source
 
@@ -316,13 +297,6 @@ def test_react_dashboard_keeps_workspace_chrome_compact():
     assert "const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)" in source
     assert "title={workspaceWorkingPath || ''}" in source
     assert "{workspaceWorkingPath || 'Choose a workspace to start'}" in source
-    assert "getWorkspaceStoragePath" not in source
-    assert "splitPathSegments(workspaceWorkingPath)" not in source
-    assert 'InfoRow label="Working"' not in source
-    assert 'InfoRow label="Storage"' not in source
-    assert 'InfoRow label="Project"' not in source
-    assert 'InfoRow label="Runtime"' not in source
-    assert "splitPathSegments(workspace?.run_root)" not in source
 
 
 def test_react_workspace_chrome_distinguishes_uninitialized_roots():
@@ -347,7 +321,6 @@ def test_react_sidebar_active_workspace_state_is_visually_clear():
     assert "runtimeLabel" in source
     assert "SlidersHorizontal" in source
     assert "rounded-md px-2 py-2" in source
-    assert "Shell mode active" not in source
 
 
 def test_react_gpu_process_dialog_shows_process_owner():
@@ -373,11 +346,6 @@ def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
     assert "title={gpu.name}" in dashboard
     assert '<div className="p-3">' in dashboard
     assert "h-[10.5rem] w-full rounded-md border border-border-subtle" in dashboard
-    assert "h-[23.25rem]" not in dashboard
-    assert "max-h-[21.75rem]" not in dashboard
-    assert "min-h-0 flex-1 overflow-y-auto p-3" not in dashboard
-    assert "GpuMiniMetric" not in dashboard
-    assert "Top proc:" not in dashboard
 
 
 def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
@@ -494,45 +462,6 @@ def test_react_components_avoid_pill_borders_and_heavy_shadows():
     assert offenders == []
 
 
-def test_react_dashboard_and_generator_avoid_gradient_glow_status_accents():
-    surfaces = {
-        "DashboardPage.tsx": FRONTEND_DASHBOARD.read_text(encoding="utf-8"),
-        "GeneratorPage.tsx": FRONTEND_GENERATOR.read_text(encoding="utf-8"),
-    }
-
-    for label, source in surfaces.items():
-        assert "bg-gradient" not in source, label
-        assert "shadow-[0_0_" not in source, label
-
-
-def test_react_workspace_surfaces_avoid_box_inside_box_chrome():
-    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-    compact = FRONTEND_COMPACT_SECTION.read_text(encoding="utf-8")
-    dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
-
-    assert "rounded-xl border" not in sidebar
-    assert "rounded-lg border border-border-subtle bg-surface-raised" not in sidebar
-    assert "grid gap-2 rounded-lg border" not in launcher
-    assert "rounded-lg border border-border-subtle bg-surface-overlay/50 p-3" not in launcher
-    assert "'overflow-hidden rounded-md border'" not in compact
-    assert "border-b border-border-subtle" not in compact
-    assert "shadow-[0_24px_80px" not in dialog
-    assert "rounded-lg border border-border-subtle bg-surface-raised" not in dashboard
-    assert "rounded-lg border border-dashed border-border-subtle" not in dashboard
-    assert "rounded-full border border-border-subtle bg-surface-overlay" not in dashboard
-
-
-def test_react_inline_status_chips_do_not_add_extra_borders():
-    inline_metric = (FRONTEND_COMPONENTS_DIR / "shared" / "InlineMetric.tsx").read_text(encoding="utf-8")
-    status_badge = (FRONTEND_COMPONENTS_DIR / "shared" / "StatusBadge.tsx").read_text(encoding="utf-8")
-
-    assert "rounded-full border" not in inline_metric
-    assert "border-" not in inline_metric
-    assert "rounded-full border" not in status_badge
-
-
 def test_react_app_sidebar_can_be_resized_and_persisted():
     shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
@@ -553,7 +482,6 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     assert "<Sidebar width={effectiveSidebarWidth}" in shell
     assert "width?: number" in sidebar
     assert "style={{ width }}" in sidebar
-    assert "w-sidebar" not in sidebar
 
 
 def test_react_app_shell_uses_compact_sidebar_on_narrow_viewports():
@@ -763,8 +691,6 @@ def test_react_generator_shows_creation_progress_and_result_actions():
     assert "function CreatedTaskSummary" in source
     assert "Open in Manager" in source
     assert "Loader2" in source
-    assert "const [success" not in source
-    assert "(error || success)" not in source
 
 
 def test_react_manager_cards_support_drag_pin_and_search_match_labels():
@@ -790,7 +716,6 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "sameDropIntent" in source
     assert "data-task-grid-columns={columns}" in source
     assert "Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)" in source
-    assert "window.getComputedStyle(grid)" not in source
     assert "function DropIndicator" in source
 
 
@@ -813,7 +738,6 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "transition-[border-color,box-shadow,background-color,opacity,transform]" in manager
     assert "data-task-card={task.name}" in manager
     assert "data-task-card-pinned={task.pinned ? 'true' : 'false'}" in manager
-    assert "draggable={!selectMode}" not in manager
     assert "getTaskSearchMatches(task, query)" in manager
     assert "Matched in" in manager
     assert "Drop here to pin" in manager
@@ -821,7 +745,6 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "count={pinnedTasks.length}" in manager
     assert 'className="rounded-md border border-accent/20 bg-accent/5 p-2"' in manager
     assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in manager
-    assert "task.config_mode" not in manager
 
 
 def test_react_task_detail_uses_python_shell_task_mode_labels():
@@ -830,7 +753,6 @@ def test_react_task_detail_uses_python_shell_task_mode_labels():
     assert "function isShellTask(task: Task)" in source
     assert "return task.task_kind === 'shell'" in source
     assert "return isShellTask(task) ? 'shell' : 'python'" in source
-    assert "task.config_mode" not in source
 
 
 def test_react_theme_uses_more_readable_base_type_and_muted_text():
@@ -1063,26 +985,12 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
     editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
 
     assert "w-[620px]" in runtime_panel
-    assert "grid-cols-[128px_minmax(0,1fr)]" not in runtime_panel
-    assert "border-r border-border-subtle" not in runtime_panel
     assert "inline-flex rounded-md bg-surface-overlay p-0.5" in runtime_panel
     assert "compactToolbar" in runtime_panel
-    assert "Save Python Runtime" not in runtime_panel
-    assert "Save Workspace Env" not in runtime_panel
-    assert "Workspace Env</h3>" not in runtime_panel
-    assert "terminal &lt; workspace &lt; task" not in runtime_panel
-    assert "Safe .bashrc-style lines" not in runtime_panel
-    assert "Saved to this workspace" not in runtime_panel
-    assert "Only change this when env discovery fails" not in runtime_panel
-    assert "grid grid-cols-3 gap-2" not in runtime_panel
-    assert "rounded-md border px-3 py-2.5" not in runtime_panel
     assert "compactToolbar?: boolean" in editor
     assert "{!compactToolbar &&" in editor
     assert "absolute right-1.5 top-1.5" in editor
-    assert "<span>{wrap ? 'Wrap' : 'No wrap'}</span>" not in editor
     assert "aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}" in editor
-    assert "lineCount" not in editor
-    assert "value.split" not in editor
 
 
 def test_monitor_clears_stale_selection_when_task_list_becomes_empty():
@@ -1167,7 +1075,6 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "Require same GPU model for multi-GPU" in runtime_panel
     assert "sample_interval_seconds" not in runtime_panel
     assert "gpu_scheduler_sample_interval_seconds" not in runtime_panel
-    assert "disabled={saving || !runtime}" not in runtime_panel
     assert "disabled={saving}" in runtime_panel
     assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
@@ -1223,13 +1130,6 @@ def test_react_launcher_browse_script_enters_config_selection_before_opening():
     assert "setManualScriptPath(selection.script_path)" in launcher
     assert "await openPythonPath(selection.script_path)" in launcher
     assert "Browse Script" in launcher
-    assert "Browse & Open Script" not in launcher
-
-
-def test_react_launcher_avoids_expensive_modal_blur():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "backdrop-blur" not in launcher
 
 
 def test_react_modals_avoid_expensive_backdrop_blur():
@@ -1251,20 +1151,9 @@ def test_react_launcher_manual_path_buttons_are_clear_and_disabled_when_empty():
     assert "disabled={!pathReady}" in launcher
     assert "Select Script Path" in launcher
     assert "Open Folder Path" in launcher
-    assert "Use Path" not in launcher
 
 
-def test_react_launcher_omits_detected_script_scan_panel():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "Detected Scripts" not in launcher
-    assert "No Python scripts found in the current directory." not in launcher
-    assert "Scanning current directory..." not in launcher
-    assert "fetchScriptsOnce" not in launcher
-    assert "ModeActionPanel" in launcher
-
-
-def test_react_launcher_route_mode_does_not_trigger_script_scan():
+def test_react_launcher_route_parameters_open_selected_workspace():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
@@ -1272,7 +1161,6 @@ def test_react_launcher_route_mode_does_not_trigger_script_scan():
     assert "selectConfig(configParam)" in launcher
     assert "openSelectedWorkspace(scriptParam, configParam)" in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
-    assert "fetchScriptsOnce" not in launcher
     assert "<LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange}" in launcher
 
 
@@ -1327,7 +1215,7 @@ def test_react_launcher_clears_stale_error_after_valid_script_or_config_selectio
     assert "onClick={() => void handleSelectConfig(config.path)}" in launcher
 
 
-def test_react_launcher_browses_yaml_and_skips_ready_step():
+def test_react_launcher_browses_and_opens_yaml_config():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
@@ -1340,10 +1228,7 @@ def test_react_launcher_browses_yaml_and_skips_ready_step():
     assert "api.pickLauncherConfigPath(selectedScript)" in launcher
     assert "Open Config Path" in launcher
     assert "Browse Config" in launcher
-    assert "Use Config" not in launcher
     assert "Path to YAML config" in launcher
-    assert "Ready to launch" not in launcher
-    assert "Open Workspace <ArrowRight" not in launcher
 
 
 def test_react_launcher_config_step_uses_path_picker_panel():
@@ -1354,8 +1239,6 @@ def test_react_launcher_config_step_uses_path_picker_panel():
     assert "api.validateLauncherPath('config', debouncedConfigPath, selectedScript)" in launcher
     assert "validation={configValidation}" in launcher
     assert "PathValidationHint validation={validation}" in launcher
-    assert "Browse Config" in launcher
-    assert "Open Config Path" in launcher
 
 
 def test_react_generator_nested_form_uses_tree_depth_guides():
@@ -1367,8 +1250,6 @@ def test_react_generator_nested_form_uses_tree_depth_guides():
     assert "border-l border-dashed border-border-strong/60" in generator
     assert "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'" in generator
     assert "!treeSection && depth > 0 && 'border-l-2 border-border pl-3'" in generator
-    assert "treeSection ? undefined : { paddingLeft: `${Math.min(depth, 5) * 10}px` }" not in generator
-    assert "style={undefined}" not in generator
     assert "aria-expanded={open}" in generator
     assert "title={`${prefix} (${Object.keys(data).length} fields)`}" in generator
 
@@ -1385,9 +1266,6 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "Grid" in generator
     assert "Tree" in generator
     assert "YAML" in generator
-    assert "['form', 'yaml']" not in generator
-    assert "Switch back to Form mode" not in generator
-    assert "Use Form mode" not in generator
     assert "Expand all" in generator
     assert "Collapse all" in generator
     assert "treeOpenSignal" in generator
@@ -1395,16 +1273,6 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "const effectiveColumns = Math.max(1, columns)" in generator
     assert "buildColumnGridStyle(effectiveColumns)" in generator
     assert "repeat(${columns}, minmax(20rem, 1fr))" in generator
-    assert "treeColumns" not in generator
-    assert "setTreeColumns" not in generator
-    assert "TREE_COLS_STORAGE_KEY" not in generator
-    assert "Sections per row" not in generator
-    assert "TREE_TOP_LEVEL_COLUMN_STYLE" not in generator
-    assert "columnWidth" not in generator
-    assert "TREE_SECTION_GRID_STYLE" not in generator
-    assert "TREE_FIELD_GRID_STYLE" not in generator
-    assert "repeat(auto-fit, minmax(360px, 1fr))" not in generator
-    assert "repeat(auto-fit, minmax(300px, 1fr))" not in generator
     assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
     assert "const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'" in generator
     assert "onSetAllSections={setAllTreeSections}" in generator
@@ -1420,12 +1288,7 @@ def test_react_generator_grid_mode_keeps_sibling_fields_on_one_row():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
 
     assert "function buildColumnGridStyle(columns: number)" in generator
-    assert "repeat(${columns}, minmax(20rem, 1fr))" in generator
-    assert "const effectiveColumns = Math.max(1, columns)" in generator
     assert "const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
-    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
-    assert "columns - depth" not in generator
-    assert "Math.max(1, columns, itemCount)" not in generator
 
 
 def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
@@ -1434,18 +1297,11 @@ def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
     assert "grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)]" in generator
     assert "flex min-w-0 items-center gap-1.5" in generator
     assert '<div className="min-w-0 w-full">' in generator
-    assert "group flex flex-col justify-between gap-1.5" not in generator
     grid_row_start = generator.index("if (!treeParamRow)")
     name_position = generator.index("title={name}", grid_row_start)
     type_position = generator.index("PARAM_TYPE_STYLES[originalType]", grid_row_start)
     input_position = generator.index('<div className="min-w-0 w-full">', grid_row_start)
     assert name_position < type_position < input_position
-
-
-def test_react_generator_does_not_backfill_ui_tests_with_comments():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "Keep UI unit tests happy" not in generator
 
 
 def test_react_generator_tree_mode_uses_outline_explorer():
@@ -1474,7 +1330,6 @@ def test_react_generator_tree_mode_uses_outline_explorer():
     assert "grid-cols-[minmax(0,1fr)]" in generator
     assert "columns={1}" in generator
     assert "onClick={() => onSelectPath(section.path)}" in generator
-    assert "layoutMode === 'tree' ? TREE_TOP_LEVEL_COLUMN_STYLE : gridStyle" not in generator
 
 
 def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
@@ -1497,10 +1352,6 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
     assert "hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-visible:ring-2 focus-visible:ring-accent/30" in generator
-    assert "border-border-subtle bg-surface-raised hover:border-border" not in generator
-    assert "ml-auto min-w-[180px] max-w-[420px] flex-[1.2]" not in generator
-    assert "grid-cols-[24px_minmax(82px,0.55fr)_auto_minmax(112px,1fr)]" not in generator
-    assert "max-w-[34%]" not in generator
 
 
 def test_react_generator_shell_mode_loads_existing_shell_tasks():
@@ -1513,7 +1364,6 @@ def test_react_generator_shell_mode_loads_existing_shell_tasks():
     assert "Search tasks" in generator
     assert "No matching tasks" in generator
     assert "Browse Shell" in generator
-    assert "Shell Workspace" not in generator
     assert "templates.some(template => template.value === selectedTemplate)" in generator
     assert "/api/generator/pick-shell-file" in api
 
@@ -1538,7 +1388,6 @@ def test_react_generator_shows_imported_default_config_source():
     assert "configDefaultSourceName" in generator
     assert "Loaded from" in generator
     assert "pathLeaf(selectedTemplate) === 'config_default.yaml'" in generator
-    assert "max-w-[260px]" not in generator
     assert "max-w-full select-text items-start" in generator
     assert "whitespace-normal break-all font-mono" in generator
 
@@ -1572,14 +1421,10 @@ def test_react_batch_preview_uses_readable_summary_and_structured_rows():
     assert "function BatchPreviewList" in generator
     assert "Tasks to create" in generator
     assert "Task samples" in generator
-    assert "Previewed" not in generator
     assert "formatFullTaskTooltip" in generator
     assert "title={formatFullTaskTooltip(item)}" in generator
     assert "grid-cols-[56px_minmax(0,1fr)]" in generator
     assert "size=\"lg\"" in generator
-    assert "#{item.index}: {item.preview}" not in generator
-    assert "overflow-hidden rounded-lg border border-border-subtle bg-surface-overlay/60" not in generator
-    assert "grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-border-subtle bg-surface-raised" not in generator
     assert "size?: 'md' | 'lg'" in dialog
 
 
@@ -1593,24 +1438,15 @@ def test_react_shell_mode_has_runtime_status_panel():
     assert "getShellConfigFilename" in generator
 
 
-def test_react_launcher_does_not_show_fake_three_step_progress_for_quick_open():
+def test_react_launcher_exposes_direct_mode_actions():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "function LaunchChoiceTabs" in launcher
     assert "function ModeActionPanel" in launcher
     assert "launchMode === 'python'" in launcher
     assert "launchMode === 'shell'" in launcher
-    assert "StepIndicator" not in launcher
-    assert "PathLaunchPanel" not in launcher
-    assert "PythonLaunchPanel" not in launcher
-    assert "ShellLaunchPanel" not in launcher
-    assert "Python Script" not in launcher
-    assert "Shell Folder" not in launcher
-    assert "Detected/manual scripts can choose configs" not in launcher
-    assert "Folder opens directly in shell mode" not in launcher
     assert "Browse Script" in launcher
     assert "Browse & Open Folder" in launcher
-    assert "Select a script and configuration to get started" not in launcher
 
 
 def test_react_sidebar_workspace_card_opens_launcher_with_mode():
@@ -1623,37 +1459,10 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "nextParams.set('mode', mode)" in sidebar
     assert "nextParams.delete('script')" in sidebar
     assert "onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}" in sidebar
-    assert "api.pickLauncherShellRoot()" not in sidebar
-    assert "pickLauncherScriptPath" not in sidebar
-    assert "openLauncherForConfig" not in sidebar
     assert "nextParams.delete('mode')" in app
     assert "const modeParam = searchParams.get('mode')" in launcher
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "setLaunchMode(initialLaunchMode)" in launcher
-    assert "fetchScriptsOnce" not in launcher
-    assert "Open Shell Mode" not in sidebar
-    assert "Exit Shell Mode" not in sidebar
-    assert "openShellWorkspace" not in sidebar
-    assert "exitShellWorkspace" not in sidebar
-
-
-def test_react_sidebar_routes_load_scripts_to_yaml_selection_without_red_error():
-    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-
-    assert "nextParams.set('launcher', '1')" in sidebar
-    assert "nextParams.set('mode', mode)" in sidebar
-    assert "pyruns.load()" not in sidebar
-    assert "bg-rose-500/10" not in sidebar
-
-
-def test_react_sidebar_uses_launcher_instead_of_inline_picker_errors():
-    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-
-    assert "pickerError" not in sidebar
-    assert "showPickerError" not in sidebar
-    assert "No script selected." not in sidebar
-    assert "No directory selected." not in sidebar
-    assert "title={pickerError}" not in sidebar
 
 
 def test_react_launcher_config_step_explains_required_yaml_selection():

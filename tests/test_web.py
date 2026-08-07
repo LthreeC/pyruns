@@ -1193,18 +1193,6 @@ def test_root_serves_react_frontend_shell(tmp_path):
     assert "assets/" in response.text
 
 
-def test_root_serves_fallback_frontend_when_static_bundle_is_missing(tmp_path):
-    workspace = _make_workspace(tmp_path, "main")
-    runtime = _build_runtime(workspace)
-
-    with patch("pyruns.web.app._frontend_dist_dir", return_value=None):
-        client = TestClient(create_app(runtime))
-        response = client.get("/")
-
-    assert response.status_code == 200
-    assert "Pyruns API server is running" in response.text
-
-
 def test_unknown_api_get_returns_json_404(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

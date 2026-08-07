@@ -197,7 +197,6 @@ def test_package_workflow_cleans_build_and_checks_wheel_static_assets():
 def test_frontend_workflow_checks_committed_static_assets():
     workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
 
-    assert "python scripts/check_frontend_static.py" in workflow
     assert "python scripts/check_frontend_static.py" in workflow.split("npm --prefix frontend ci", 1)[1]
 
 

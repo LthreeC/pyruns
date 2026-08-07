@@ -1,6 +1,6 @@
 import os
 
-from pyruns.utils.events import SimpleEventBus, LogEmitter
+from pyruns.utils.events import LogEmitter, SimpleEventBus
 
 
 class RecordingLoop:
@@ -14,42 +14,83 @@ class RecordingLoop:
         self.calls.append((callback, chunk))
 
 
-def test_event_sys_subscribe_emit():
-    """Test global EventBus publish/subscribe mechanics."""
+def test_simple_event_bus_handles_sync_async_and_failing_callbacks():
     bus = SimpleEventBus()
     results = []
-    
-    def callback(data):
-        results.append(data)
-        
-    bus.on("test_event", callback)
-    bus.emit("test_event", "hello")
-    bus.emit("test_event", "world")
-    bus.emit("other_event", "ignored")
-    
-    assert results == ["hello", "world"]
+
+    async def async_listener(value):
+        results.append(("async", value))
+
+    def sync_listener(value):
+        results.append(("sync", value))
+
+    def failing_listener(value):
+        raise RuntimeError("listener failed")
+
+    bus.on("go", sync_listener)
+    bus.on("go", sync_listener)
+    bus.on("go", async_listener)
+    bus.on("go", failing_listener)
+    bus.emit("other", "ignored")
+    bus.emit("go", "value")
+    bus.off("go", sync_listener)
+    bus.emit("go", "again")
+
+    assert results == [("sync", "value")]
 
 
-def test_log_emitter_routing():
-    """Test LogEmitter routing by task name."""
+def test_log_emitter_routes_multiple_callbacks_and_unsubscribes():
     emitter = LogEmitter()
-    results = []
-    
-    def on_log(chunk):
-        results.append(chunk)
-        
-    # Subscribe to "task1"
-    emitter.subscribe("task1", on_log)
-    
-    emitter.emit("task1", "line1\n")
-    emitter.emit("task2", "line2\n") # Shouldn't be received
-    
-    assert results == ["line1\n"]
+    primary = []
+    secondary = []
+
+    def record(chunk):
+        primary.append(chunk)
+
+    emitter.subscribe("task1", record)
+    emitter.subscribe("task1", secondary.append)
+    emitter.emit("task2", "ignored")
+    emitter.emit("task1", "before")
+    emitter.unsubscribe("task1", record)
+    emitter.emit("missing", "ignored")
+    emitter.emit("task1", "after")
+
+    assert primary == ["before"]
+    assert secondary == ["before", "after"]
+
+
+def test_log_emitter_dispatches_running_loop_and_swallows_callback_errors():
+    emitter = LogEmitter()
+    received = []
+
+    class RunningLoop:
+        def __init__(self):
+            self.calls = 0
+
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, callback, *args):
+            self.calls += 1
+            callback(*args)
+
+    loop = RunningLoop()
+
+    def record(chunk):
+        received.append(chunk)
+
+    emitter.subscribe("task", record, loop=loop)
+    emitter.subscribe("task", lambda chunk: (_ for _ in ()).throw(RuntimeError("callback failed")))
+    emitter.bind_loop()
+    emitter.emit("task", "chunk")
+    emitter.unsubscribe("task", record)
+    emitter.emit("task", "after")
+
+    assert loop.calls == 1
+    assert received == ["chunk"]
 
 
 def test_log_emitter_dispatches_each_subscriber_on_its_own_loop():
-    """Concurrent UI subscribers must not overwrite each other's event loop."""
-
     emitter = LogEmitter()
     loop_a = RecordingLoop()
     loop_b = RecordingLoop()
@@ -62,7 +103,6 @@ def test_log_emitter_dispatches_each_subscriber_on_its_own_loop():
 
     emitter.subscribe("task1", on_a, loop=loop_a)
     emitter.subscribe("task1", on_b, loop=loop_b)
-
     emitter.emit("task1", "live\n")
 
     assert loop_a.calls == [(on_a, "live\n")]
@@ -74,9 +114,8 @@ def test_log_emitter_can_include_optional_metadata_without_changing_default_call
     plain = []
     with_metadata = []
 
-    emitter.subscribe("task1", lambda chunk: plain.append(chunk))
+    emitter.subscribe("task1", plain.append)
     emitter.subscribe("task1", lambda chunk, metadata: with_metadata.append((chunk, metadata)), include_metadata=True)
-
     emitter.emit("task1", "live\n", offset=42, log_file_name="run1.log")
 
     assert plain == ["live\n"]
@@ -95,7 +134,6 @@ def test_log_emitter_scopes_same_named_tasks_by_directory(tmp_path):
         include_metadata=True,
         task_dir=str(task_a),
     )
-
     emitter.emit("same-name", "wrong workspace\n", task_dir=str(task_b))
     emitter.emit("same-name", "right workspace\n", task_dir=str(task_a))
 

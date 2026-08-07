@@ -80,7 +80,6 @@ from pyruns.utils.info_io import (
     update_task_info,
 )
 from pyruns.utils.config_utils import save_yaml
-from pyruns.utils.events import LogEmitter
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace, get_shell_runtime_for_workspace
 
 
@@ -6199,59 +6198,6 @@ def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
     assert "reason=exit_code 0" not in content
 
 # ═══════════════════════════════════════════════════════════════
-#  LogEmitter — publish-subscribe event bus
-# ═══════════════════════════════════════════════════════════════
-
-def test_log_emitter_subscribe_emit():
-    emitter = LogEmitter()
-    received = []
-    emitter.subscribe("task1", lambda chunk: received.append(chunk))
-    emitter.emit("task1", "hello\r\n")
-    emitter.emit("task1", "world\r\n")
-    assert received == ["hello\r\n", "world\r\n"]
-
-
-def test_log_emitter_unsubscribe():
-    emitter = LogEmitter()
-    received = []
-
-    def cb(chunk):
-        received.append(chunk)
-
-    emitter.subscribe("task1", cb)
-    emitter.emit("task1", "before")
-    emitter.unsubscribe("task1", cb)
-    emitter.emit("task1", "after")
-    assert received == ["before"]
-
-
-def test_log_emitter_multiple_subscribers():
-    emitter = LogEmitter()
-    r1, r2 = [], []
-    emitter.subscribe("task1", lambda c: r1.append(c))
-    emitter.subscribe("task1", lambda c: r2.append(c))
-    emitter.emit("task1", "data")
-    assert r1 == ["data"]
-    assert r2 == ["data"]
-
-
-def test_log_emitter_no_subscribers():
-    """emit with no subscribers should not raise."""
-    emitter = LogEmitter()
-    emitter.emit("nonexistent_task", "should not crash")
-
-
-def test_log_emitter_isolation():
-    """Subscribers only receive events for their subscribed task."""
-    emitter = LogEmitter()
-    received = []
-    emitter.subscribe("task_A", lambda c: received.append(c))
-    emitter.emit("task_B", "wrong task")
-    emitter.emit("task_A", "right task")
-    assert received == ["right task"]
-
-
-# ═══════════════════════════════════════════════════════════════
 #  TaskGenerator — task creation and file writing
 # ═══════════════════════════════════════════════════════════════
 
@@ -6261,20 +6207,16 @@ def test_log_emitter_isolation():
 # ═══════════════════════════════════════════════════════════════
 
 class TestCreateTaskObject:
-    def test_basic_fields(self):
+    def test_python_task_fields_and_created_at_format(self):
         obj = create_task_object("/tmp/task1", "my-task", config={"lr": 0.01})
         assert obj["dir"] == "/tmp/task1"
         assert obj["name"] == "my-task"
         assert obj["status"] == "pending"
         assert obj["config"] == {"lr": 0.01}
         assert obj["env"] == {}
-
-    def test_created_at_format(self):
-        obj = create_task_object("/tmp", "t", config={})
-        # Should be like "2026-02-12 15:30:00"
         assert len(obj["created_at"]) == 19
         assert "-" in obj["created_at"]
-        assert "_" in obj["created_at"]  # 2026-02-12_15-30-00
+        assert "_" in obj["created_at"]
 
     def test_shell_task_fields(self):
         obj = create_task_object(
@@ -6293,88 +6235,39 @@ class TestCreateTaskObject:
 # ═══════════════════════════════════════════════════════════════
 
 class TestTaskGeneratorCreateTask:
-    def test_creates_folder(self, tmp_path):
+    def test_create_task_writes_expected_files_and_metadata(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
-        cfg = {"lr": 0.01, "epochs": 10}
+        cfg = {
+            "lr": 0.01,
+            "model": {"name": "resnet"},
+            "_meta_desc": "lr=0.01",
+            "_meta_other": "x",
+        }
         task = gen.create_task("my-exp", cfg)
 
         assert os.path.isdir(task["dir"])
-
-    def test_folder_name_matches_prefix(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        task = gen.create_task("baseline", {"lr": 0.01})
-
-        folder = os.path.basename(task["dir"])
-        assert folder.startswith("baseline")
-
-    def test_writes_task_info_json(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        task = gen.create_task("exp1", {"lr": 0.01})
-
-        info_path = os.path.join(task["dir"], "task_info.json")
+        assert os.path.basename(task["dir"]).startswith("my-exp")
+        info_path = os.path.join(task["dir"], TASK_INFO_FILENAME)
         assert os.path.exists(info_path)
         with open(info_path, "r", encoding="utf-8") as f:
             info = json.load(f)
-        assert info["name"] == "exp1"
+        assert info["name"] == "my-exp"
         assert info["status"] == "pending"
-
-    def test_writes_config_yaml(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        cfg = {"lr": 0.01, "model": {"name": "resnet"}}
-        task = gen.create_task("exp2", cfg)
-
-        cfg_path = os.path.join(task["dir"], "config.yaml")
+        cfg_path = os.path.join(task["dir"], CONFIG_FILENAME)
         assert os.path.exists(cfg_path)
         with open(cfg_path, "r", encoding="utf-8") as f:
             loaded = yaml.safe_load(f)
-        assert loaded["lr"] == 0.01
-        assert loaded["model"]["name"] == "resnet"
-
-    def test_creates_run_logs_dir(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        task = gen.create_task("exp3", {"x": 1})
-
+        assert loaded == {"lr": 0.01, "model": {"name": "resnet"}}
         log_dir = os.path.join(task["dir"], "run_logs")
         assert os.path.isdir(log_dir)
-        # Log file is NOT created until execution starts
         assert not os.path.exists(os.path.join(log_dir, "run1.log"))
 
-    def test_meta_keys_stripped_from_config(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        cfg = {"lr": 0.01, "_meta_desc": "lr=0.01", "_meta_other": "x"}
-        task = gen.create_task("exp4", cfg)
-
-        cfg_path = os.path.join(task["dir"], "config.yaml")
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-        assert "_meta_desc" not in loaded
-        assert "_meta_other" not in loaded
-        assert loaded["lr"] == 0.01
-
-    def test_group_index_in_folder_name(self, tmp_path):
+    def test_group_index_is_used_in_task_name_and_folder(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         task = gen.create_task("batch-run", {"x": 1}, group_index="[3-of-10]")
 
-        folder = os.path.basename(task["dir"])
-        assert "batch-run_[3-of-10]" in folder
-
-    def test_display_name_with_group_index(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        task = gen.create_task("batch-run", {"x": 1}, group_index="[3-of-10]")
         assert task["name"] == "batch-run_[3-of-10]"
-
-    def test_deduplication_on_name_clash(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        t1 = gen.create_task("same-name", {"x": 1})
-        t2 = gen.create_task("same-name", {"x": 2})
-
-        assert t1["dir"] != t2["dir"]
-        assert os.path.isdir(t1["dir"])
-        assert os.path.isdir(t2["dir"])
-        assert t2["name"] == os.path.basename(t2["dir"])
-        with open(os.path.join(t2["dir"], "task_info.json"), "r", encoding="utf-8") as f:
-            info = json.load(f)
-        assert info["name"] == t2["name"]
+        assert os.path.basename(task["dir"]) == task["name"]
 
     def test_deduplication_keeps_unique_dirs_when_timestamp_suffix_collides(self, tmp_path, monkeypatch):
         gen = TaskGenerator(root_dir=str(tmp_path))
@@ -6390,6 +6283,7 @@ class TestTaskGeneratorCreateTask:
         assert len({task["name"] for task in tasks}) == 3
         for task in tasks:
             assert os.path.isdir(task["dir"])
+            assert load_task_info(task["dir"])["name"] == task["name"]
 
     def test_empty_prefix_uses_timestamp(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
@@ -6398,33 +6292,24 @@ class TestTaskGeneratorCreateTask:
         folder = os.path.basename(task["dir"])
         assert folder.startswith("task_")
 
-    def test_task_kind_written_per_task(self, tmp_path):
+    def test_task_kind_and_runtime_specific_shell_payload_are_persisted(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         task_cfg = gen.create_task("cfg-task", {"x": 1}, task_kind=TASK_KIND_CONFIG)
-        with patch("pyruns.core.task_generator.get_shell_config_filename_for_workspace", return_value=SHELL_CONFIG_FILENAME):
-            task_shell = gen.create_shell_task("shell-task", "echo shell\n")
-
-        with open(os.path.join(task_cfg["dir"], "task_info.json"), "r", encoding="utf-8") as f:
-            info_cfg = json.load(f)
-        with open(os.path.join(task_shell["dir"], "task_info.json"), "r", encoding="utf-8") as f:
-            info_shell = json.load(f)
-
-        assert info_cfg["task_kind"] == TASK_KIND_CONFIG
-        assert "config_mode" not in info_cfg
-        assert info_cfg["config_file"] == CONFIG_FILENAME
-        assert info_shell["task_kind"] == TASK_KIND_SHELL
-        assert "config_mode" not in info_shell
-        assert info_shell["config_file"] == SHELL_CONFIG_FILENAME
-
-    def test_create_shell_task_uses_runtime_specific_payload_filename(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-
         with patch(
             "pyruns.core.task_generator.get_shell_config_filename_for_workspace",
             return_value=POWERSHELL_CONFIG_FILENAME,
         ):
             task_shell = gen.create_shell_task("shell-task", "Write-Host 'hello'\n")
 
+        info_cfg = load_task_info(task_cfg["dir"])
+        info_shell = load_task_info(task_shell["dir"])
+
+        assert info_cfg["task_kind"] == TASK_KIND_CONFIG
+        assert "config_mode" not in info_cfg
+        assert info_cfg["config_file"] == CONFIG_FILENAME
+        assert info_shell["task_kind"] == TASK_KIND_SHELL
+        assert "config_mode" not in info_shell
+        assert info_shell["config_file"] == POWERSHELL_CONFIG_FILENAME
         assert task_shell["task_kind"] == TASK_KIND_SHELL
         assert task_shell["config_file"] == POWERSHELL_CONFIG_FILENAME
         assert os.path.exists(os.path.join(task_shell["dir"], POWERSHELL_CONFIG_FILENAME))
@@ -6459,13 +6344,10 @@ class TestTaskGeneratorCreateTask:
         assert info["task_kind"] == TASK_KIND_CONFIG
         assert "config_mode" not in info
 
-    def test_invalid_task_kind_is_rejected(self, tmp_path):
+    def test_invalid_task_kind_and_name_are_rejected(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
         with pytest.raises(ValueError, match="Unsupported task kind"):
             gen.create_task("invalid", {"x": 1}, task_kind="unknown-kind")
-
-    def test_invalid_task_name_is_rejected(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
         with pytest.raises(ValueError, match="invalid characters"):
             gen.create_task("bad/name", {"x": 1})
 
@@ -6475,22 +6357,19 @@ class TestTaskGeneratorCreateTask:
 # ═══════════════════════════════════════════════════════════════
 
 class TestTaskGeneratorCreateTasks:
-    def test_single_config(self, tmp_path):
+    def test_single_and_batch_names_are_complete_and_unique(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
-        tasks = gen.create_tasks([{"x": 1}], "single")
-        assert len(tasks) == 1
-        # No index suffix for single task
-        assert tasks[0]["name"] == "single"
+        single = gen.create_tasks([{"x": 1}], "single")
+        tasks = gen.create_tasks([{"x": i} for i in range(3)], "batch")
 
-    def test_multiple_configs_get_index(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        configs = [{"x": i} for i in range(3)]
-        tasks = gen.create_tasks(configs, "batch")
-
+        assert [task["name"] for task in single] == ["single"]
         assert len(tasks) == 3
-        assert tasks[0]["name"] == "batch_[1-of-3]"
-        assert tasks[1]["name"] == "batch_[2-of-3]"
-        assert tasks[2]["name"] == "batch_[3-of-3]"
+        assert [task["name"] for task in tasks] == [
+            "batch_[1-of-3]",
+            "batch_[2-of-3]",
+            "batch_[3-of-3]",
+        ]
+        assert len({task["dir"] for task in tasks}) == 3
 
     def test_batch_with_pipe_configs(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
@@ -6506,15 +6385,6 @@ class TestTaskGeneratorCreateTasks:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             assert isinstance(cfg["lr"], (int, float))
-
-    def test_batch_folders_unique(self, tmp_path):
-        gen = TaskGenerator(root_dir=str(tmp_path))
-        configs = [{"x": i} for i in range(5)]
-        tasks = gen.create_tasks(configs, "run")
-
-        dirs = [t["dir"] for t in tasks]
-        assert len(set(dirs)) == 5  # all unique
-
 
 # ═══════════════════════════════════════════════════════════════
 #  Report — CSV and JSON export
@@ -6582,6 +6452,14 @@ class TestBuildExportCSV:
     def test_empty_tasks(self):
         csv_str = build_export_csv([])
         assert csv_str == ""
+
+    def test_uses_platform_neutral_lf_line_endings(self, tmp_path):
+        task = _make_task(tmp_path, "t3", records=[{"loss": 0.5}])
+
+        csv_str = build_export_csv([task])
+
+        assert "\r" not in csv_str
+        assert csv_str.count("\n") == 2
 
     def test_column_order(self, tmp_path):
         task = _make_task(tmp_path, "t3", records=[{"zeta": 1, "alpha": 2}])

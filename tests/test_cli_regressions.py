@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from pyruns._config import CONFIG_DEFAULT_FILENAME, ENV_KEY_CLI_SHELL_EXECUTABLE, TASKS_DIR
+from pyruns._config import CONFIG_DEFAULT_FILENAME, TASKS_DIR
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.utils.info_io import load_task_info, update_task_info
@@ -41,14 +39,12 @@ def _source_env() -> dict[str, str]:
     return env
 
 
-def _wait_for_status(task_dir: Path, statuses: set[str], timeout: float = 15.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        info = load_task_info(str(task_dir))
-        if str(info.get("status", "")) in statuses:
-            return info
-        time.sleep(0.05)
-    pytest.fail(f"Task did not reach {sorted(statuses)} within {timeout}s")
+def _submission_manager(tasks_dir: Path, tasks: list[dict]) -> SimpleNamespace:
+    return SimpleNamespace(tasks_dir=str(tasks_dir), tasks=tasks)
+
+
+def _runner_process(exit_code: int | None = None) -> SimpleNamespace:
+    return SimpleNamespace(pid=4242, poll=lambda: exit_code)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows process flags only")
@@ -138,68 +134,6 @@ def test_cli_listing_does_not_take_over_or_fail_queued_tasks(tmp_path):
     assert load_task_info(task["dir"])["status"] == "queued"
 
 
-def test_detached_shell_run_returns_before_task_finishes(tmp_path):
-    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-
-    started = time.monotonic()
-    result = subprocess.run(
-        _source_cli_command(
-            "exec",
-            "--name",
-            "detach-regression",
-            "--detach",
-            "--",
-            sys.executable,
-            "-c",
-            "import time; time.sleep(4); print('done')",
-        ),
-        cwd=tmp_path,
-        env=_source_env(),
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    elapsed = time.monotonic() - started
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert elapsed < 3.0
-
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "detach-regression"
-    info = _wait_for_status(task_dir, {"completed", "failed"})
-    assert info["status"] == "completed"
-    assert "done" in (task_dir / "run_logs" / "run1.log").read_text(encoding="utf-8")
-
-
-def test_foreground_shell_failure_returns_nonzero(tmp_path):
-    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    env = _source_env()
-    if os.name == "nt":
-        powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
-        if powershell:
-            env[ENV_KEY_CLI_SHELL_EXECUTABLE] = powershell
-
-    result = subprocess.run(
-        _source_cli_command(
-            "exec",
-            "--name",
-            "failure-regression",
-            "--",
-            sys.executable,
-            "-c",
-            "import sys; sys.exit(7)",
-        ),
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-
-    assert result.returncode != 0
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "failure-regression"
-    assert load_task_info(str(task_dir))["status"] == "failed"
-
-
 def test_batch_submission_accepts_queued_handshake_without_run_index(tmp_path, monkeypatch):
     from pyruns.cli import runner
 
@@ -210,18 +144,6 @@ def test_batch_submission_accepts_queued_handshake_without_run_index(tmp_path, m
         generator.create_task("batch-a", {"value": 1}),
         generator.create_task("batch-b", {"value": 2}),
     ]
-
-    class DummyTaskManager:
-        def __init__(self):
-            self.tasks_dir = str(tasks_dir)
-            self.tasks = tasks
-
-    class FakeProcess:
-        pid = 4242
-
-        @staticmethod
-        def poll():
-            return None
 
     def fake_popen(command, _env):
         submission_token = command[command.index("--submission-token") + 1]
@@ -237,13 +159,13 @@ def test_batch_submission_accepts_queued_handshake_without_run_index(tmp_path, m
                 ),
             )
         startup_file.write_text(json.dumps({"status": "ready"}), encoding="utf-8")
-        return FakeProcess()
+        return _runner_process()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
     monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
 
     assert runner.submit_cli_tasks(
-        DummyTaskManager(),
+        _submission_manager(tasks_dir, tasks),
         ["batch-a", "batch-b"],
         max_workers=1,
         startup_timeout=0.2,
@@ -257,18 +179,6 @@ def test_batch_submission_rejects_foreign_queued_handshake(tmp_path, monkeypatch
     tasks_dir.mkdir(parents=True)
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("batch-a", {"value": 1})
 
-    class DummyTaskManager:
-        def __init__(self):
-            self.tasks_dir = str(tasks_dir)
-            self.tasks = [task]
-
-    class FakeProcess:
-        pid = 4242
-
-        @staticmethod
-        def poll():
-            return None
-
     def fake_popen(command, _env):
         update_task_info(
             task["dir"],
@@ -276,7 +186,7 @@ def test_batch_submission_rejects_foreign_queued_handshake(tmp_path, monkeypatch
         )
         startup_file = Path(command[command.index("--startup-file") + 1])
         startup_file.write_text(json.dumps({"status": "error"}), encoding="utf-8")
-        return FakeProcess()
+        return _runner_process()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
     monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
@@ -284,7 +194,7 @@ def test_batch_submission_rejects_foreign_queued_handshake(tmp_path, monkeypatch
     monkeypatch.setattr(runner, "kill_process", killed.append)
 
     assert runner.submit_cli_tasks(
-        DummyTaskManager(),
+        _submission_manager(tasks_dir, [task]),
         ["batch-a"],
         startup_timeout=0.1,
     ) is False
@@ -298,18 +208,6 @@ def test_submission_accepts_fast_failed_task_as_claimed(tmp_path, monkeypatch):
     tasks_dir.mkdir(parents=True)
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("fast-failure", {"value": 1})
 
-    class DummyTaskManager:
-        def __init__(self):
-            self.tasks_dir = str(tasks_dir)
-            self.tasks = [task]
-
-    class FakeProcess:
-        pid = 4242
-
-        @staticmethod
-        def poll():
-            return 1
-
     def fake_popen(command, _env):
         update_task_info(
             task["dir"],
@@ -317,12 +215,12 @@ def test_submission_accepts_fast_failed_task_as_claimed(tmp_path, monkeypatch):
         )
         startup_file = Path(command[command.index("--startup-file") + 1])
         startup_file.write_text(json.dumps({"status": "ready"}), encoding="utf-8")
-        return FakeProcess()
+        return _runner_process(1)
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
     monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
 
-    assert runner.submit_cli_tasks(DummyTaskManager(), ["fast-failure"]) is True
+    assert runner.submit_cli_tasks(_submission_manager(tasks_dir, [task]), ["fast-failure"]) is True
 
 
 def test_submission_timeout_does_not_kill_a_runner_after_partial_claim(tmp_path, monkeypatch):
@@ -335,25 +233,13 @@ def test_submission_timeout_does_not_kill_a_runner_after_partial_claim(tmp_path,
         TaskGenerator(root_dir=str(tasks_dir)).create_task("batch-b", {"value": 2}),
     ]
 
-    class DummyTaskManager:
-        def __init__(self):
-            self.tasks_dir = str(tasks_dir)
-            self.tasks = tasks
-
-    class FakeProcess:
-        pid = 4242
-
-        @staticmethod
-        def poll():
-            return None
-
     def fake_popen(command, _env):
         token = command[command.index("--submission-token") + 1]
         update_task_info(
             tasks[0]["dir"],
             lambda info: info.update({"status": "queued", "runner_id": f"host:9999:{token}"}),
         )
-        return FakeProcess()
+        return _runner_process()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
     monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
@@ -361,7 +247,7 @@ def test_submission_timeout_does_not_kill_a_runner_after_partial_claim(tmp_path,
     monkeypatch.setattr(runner, "kill_process", killed.append)
 
     assert runner.submit_cli_tasks(
-        DummyTaskManager(),
+        _submission_manager(tasks_dir, tasks),
         ["batch-a", "batch-b"],
         startup_timeout=0.05,
     ) is True

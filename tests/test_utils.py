@@ -1311,57 +1311,40 @@ class TestResolveLogPath:
 #  safe_filename
 # ═══════════════════════════════════════════════════════════════
 
-class TestSafeFilename:
-    def test_normal(self):
-        assert safe_filename("hello-world") == "hello-world"
-
-    def test_spaces_replaced(self):
-        assert safe_filename("my file name") == "my_file_name"
-
-    def test_special_chars_stripped(self):
-        assert safe_filename("a/b:c*d") == "abcd"
-
-    def test_empty_string(self):
-        assert safe_filename("") == "config"
-
-    def test_only_bad_chars(self):
-        assert safe_filename("***") == "config"
+def test_safe_filename_normalizes_supported_fallback_cases():
+    cases = {
+        "hello-world": "hello-world",
+        "my file name": "my_file_name",
+        "a/b:c*d": "abcd",
+        "": "config",
+        "***": "config",
+    }
+    for value, expected in cases.items():
+        assert safe_filename(value) == expected, value
 
 
 # ═══════════════════════════════════════════════════════════════
 #  parse_value
 # ═══════════════════════════════════════════════════════════════
 
-class TestParseValue:
-    def test_int(self):
-        assert parse_value("42") == 42
-
-    def test_float(self):
-        assert parse_value("3.14") == 3.14
-
-    def test_bool_true(self):
-        assert parse_value("True") is True
-        assert parse_value("true") is True
-
-    def test_bool_false(self):
-        assert parse_value("False") is False
-        assert parse_value("false") is False
-    
-    def test_bool_passthrough(self):
-        assert parse_value(True) is True
-        assert parse_value(False) is False
-
-    def test_list(self):
-        assert parse_value("[1, 2, 3]") == [1, 2, 3]
-
-    def test_string(self):
-        assert parse_value("hello world") == "hello world"
-
-    def test_pipe_string_stays_string(self):
-        """Pipe syntax should NOT be parsed as a value — stays as string."""
-        result = parse_value("0.001 | 0.01 | 0.1")
-        assert isinstance(result, str)
-        assert result == "0.001 | 0.01 | 0.1"
+def test_parse_value_preserves_expected_scalar_and_collection_types():
+    cases = [
+        ("42", 42),
+        ("3.14", 3.14),
+        ("True", True),
+        ("true", True),
+        ("False", False),
+        ("false", False),
+        (True, True),
+        (False, False),
+        ("[1, 2, 3]", [1, 2, 3]),
+        ("hello world", "hello world"),
+        ("0.001 | 0.01 | 0.1", "0.001 | 0.01 | 0.1"),
+    ]
+    for value, expected in cases:
+        result = parse_value(value)
+        assert result == expected, value
+        assert type(result) is type(expected), value
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1419,59 +1402,46 @@ class TestFlattenUnflatten:
 # ═══════════════════════════════════════════════════════════════
 
 class TestYamlIO:
-    def test_save_and_load(self, tmp_dir):
+    def test_save_and_load(self, tmp_path):
         data = {"lr": 0.01, "model": {"name": "vgg"}}
-        path = str(tmp_dir / "test.yaml")
+        path = str(tmp_path / "test.yaml")
         save_yaml(path, data)
         loaded = load_yaml(path)
         assert loaded == data
 
-    def test_load_nonexistent(self, tmp_dir):
-        assert load_yaml(str(tmp_dir / "nope.yaml")) == {}
+    def test_load_nonexistent(self, tmp_path):
+        assert load_yaml(str(tmp_path / "nope.yaml")) == {}
 
-    def test_load_non_dict_yaml(self, tmp_dir):
-        path = str(tmp_dir / "list.yaml")
+    def test_load_non_dict_yaml(self, tmp_path):
+        path = str(tmp_path / "list.yaml")
         with open(path, "w") as f:
             f.write("- a\n- b\n")
         assert load_yaml(path) == {}
 
-    def test_load_yaml_strict_raises_on_non_mapping(self, tmp_dir):
-        path = str(tmp_dir / "list.yaml")
+    def test_load_yaml_strict_raises_on_non_mapping(self, tmp_path):
+        path = str(tmp_path / "list.yaml")
         with open(path, "w") as f:
             f.write("- a\n- b\n")
         with pytest.raises(ValueError, match="mapping"):
             load_yaml_strict(path)
 
-    def test_load_yaml_strict_raises_on_invalid_yaml(self, tmp_dir):
-        path = str(tmp_dir / "bad.yaml")
+    def test_load_yaml_strict_raises_on_invalid_yaml(self, tmp_path):
+        path = str(tmp_path / "bad.yaml")
         with open(path, "w", encoding="utf-8") as f:
             f.write("a: [1, 2\n")
         with pytest.raises(Exception):
             load_yaml_strict(path)
 
-    def test_list_yaml_files(self, tmp_dir):
+    def test_list_yaml_files(self, tmp_path):
         for name in ["a.yaml", "b.yml", "c.txt"]:
-            (tmp_dir / name).write_text("x: 1")
-        result = list_yaml_files(str(tmp_dir))
+            (tmp_path / name).write_text("x: 1")
+        result = list_yaml_files(str(tmp_path))
         assert "a.yaml" in result
         assert "b.yml" in result
         assert "c.txt" not in result
 
     def test_list_yaml_files_missing_dir(self):
         assert list_yaml_files("/nonexistent/dir") == []
-
-
-class TestTaskInfoIO:
-    def test_save_and_load(self, tmp_dir):
-        info = {"name": "test", "status": "pending", "env": {"CUDA": "0"}}
-        save_task_info(str(tmp_dir), info)
-        loaded = load_task_info(str(tmp_dir))
-        assert loaded["name"] == info["name"]
-        assert loaded["status"] == info["status"]
-        assert loaded["env"] == info["env"]
-
-    def test_load_missing(self, tmp_dir):
-        assert load_task_info(str(tmp_dir)) == {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1585,59 +1555,37 @@ class TestPreviewConfigLine:
 # ═══════════════════════════════════════════════════════════════
 
 class TestParsePipeValue:
-    def test_empty_split_and_ranges_that_do_not_expand(self):
+    def test_supported_product_zip_and_range_syntax(self):
+        cases = [
+            ("0.001 | 0.01 | 0.1", ["0.001", "0.01", "0.1"], "product"),
+            ("(a | b | c)", ["a", "b", "c"], "zip"),
+            ("  a | b | c  ", ["a", "b", "c"], "product"),
+            ("30:40:1", list(range(30, 40)), "product"),
+        ]
+        for value, expected_parts, expected_mode in cases:
+            result = _parse_pipe_value(value)
+            assert result is not None, value
+            parts, mode = result
+            assert list(parts) == expected_parts, value
+            assert mode == expected_mode, value
+
+    def test_rejects_non_batch_values_and_invalid_ranges(self):
         assert _split_by_pipe("") == []
-        assert _parse_pipe_value("(5, 1)") is None
-        assert _parse_pipe_value("(1, 5, 0)") is None
-        assert _parse_pipe_value("(1, nope)") is None
-        assert _parse_pipe_value("1:5:0") is None
-        assert _parse_pipe_value("1:nope") is None
-
-    def test_product_syntax(self):
-        result = _parse_pipe_value("0.001 | 0.01 | 0.1")
-        assert result is not None
-        parts, mode = result
-        assert mode == "product"
-        assert parts == ["0.001", "0.01", "0.1"]
-
-    def test_zip_syntax(self):
-        result = _parse_pipe_value("(a | b | c)")
-        assert result is not None
-        parts, mode = result
-        assert mode == "zip"
-        assert parts == ["a", "b", "c"]
-
-    def test_no_pipe(self):
-        assert _parse_pipe_value("hello") is None
-        assert _parse_pipe_value("0.001") is None
-
-    def test_non_string(self):
-        assert _parse_pipe_value(42) is None
-        assert _parse_pipe_value([1, 2]) is None
-        assert _parse_pipe_value(True) is None
-
-    def test_single_value_in_parens(self):
-        """(single_value) with no pipe should return None."""
-        assert _parse_pipe_value("(only_one)") is None
-
-    def test_single_value_with_pipe_in_parens(self):
-        result = _parse_pipe_value("(a | b)")
-        assert result is not None
-        assert result[1] == "zip"
-
-    def test_whitespace(self):
-        result = _parse_pipe_value("  a | b | c  ")
-        assert result is not None
-        parts, mode = result
-        assert mode == "product"
-        assert parts == ["a", "b", "c"]
-
-    def test_range_colon_syntax(self):
-        result = _parse_pipe_value("30:40:1")
-        assert result is not None
-        parts, mode = result
-        assert mode == "product"
-        assert list(parts) == list(range(30, 40))
+        invalid = [
+            "hello",
+            "0.001",
+            42,
+            [1, 2],
+            True,
+            "(only_one)",
+            "(5, 1)",
+            "(1, 5, 0)",
+            "(1, nope)",
+            "1:5:0",
+            "1:nope",
+        ]
+        for value in invalid:
+            assert _parse_pipe_value(value) is None, value
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1651,27 +1599,23 @@ class TestGenerateBatchConfigs:
         assert len(configs) == 1
         assert configs[0] is sample_config
 
-    def test_product_only(self, sample_config_with_pipes):
-        """Product: 3 × 2 = 6 configs."""
+    def test_product_values_metadata_and_fixed_fields(self, sample_config_with_pipes):
         configs = generate_batch_configs(sample_config_with_pipes)
         assert len(configs) == 6
-        # Each config should have typed values, not pipe strings
+        assert sorted({c["lr"] for c in configs}) == [0.001, 0.01, 0.1]
+        assert sorted({c["batch_size"] for c in configs}) == [32, 64]
         for c in configs:
             assert isinstance(c["lr"], (int, float))
             assert isinstance(c["batch_size"], (int, float))
-            assert c["optimizer"] == "adam"  # fixed value preserved
-
-    def test_product_values_correct(self, sample_config_with_pipes):
-        configs = generate_batch_configs(sample_config_with_pipes)
-        lr_values = sorted(set(c["lr"] for c in configs))
-        bs_values = sorted(set(c["batch_size"] for c in configs))
-        assert lr_values == [0.001, 0.01, 0.1]
-        assert bs_values == [32, 64]
+            assert c["optimizer"] == "adam"
+            assert c["model"] == {"name": "resnet", "layers": 50}
+            assert isinstance(c["_meta_desc"], str)
+            assert c["_meta_desc"]
 
     def test_mixed_product_and_zip(self, sample_config_mixed):
-        """Product(3 × 2) × Zip(3) = 18."""
         configs = generate_batch_configs(sample_config_mixed)
         assert len(configs) == 18
+        assert count_batch_configs(sample_config_mixed) == len(configs)
 
     def test_zip_only(self):
         cfg = {
@@ -1705,20 +1649,6 @@ class TestGenerateBatchConfigs:
         names = set(c["model"]["name"] for c in configs)
         assert names == {"resnet", "vgg"}
 
-    def test_meta_desc_present(self, sample_config_with_pipes):
-        configs = generate_batch_configs(sample_config_with_pipes)
-        for c in configs:
-            assert "_meta_desc" in c
-            assert isinstance(c["_meta_desc"], str)
-            assert len(c["_meta_desc"]) > 0
-
-    def test_fixed_values_preserved(self, sample_config_with_pipes):
-        configs = generate_batch_configs(sample_config_with_pipes)
-        for c in configs:
-            assert c["optimizer"] == "adam"
-            assert c["model"]["name"] == "resnet"
-            assert c["model"]["layers"] == 50
-
     def test_range_string_generates_batch(self):
         cfg = {"epochs": "30:40:1", "optimizer": "adam"}
         configs = generate_batch_configs(cfg)
@@ -1751,25 +1681,14 @@ class TestCountBatchConfigs:
     def test_product_only(self, sample_config_with_pipes):
         assert count_batch_configs(sample_config_with_pipes) == 6  # 3 × 2
 
-    def test_mixed(self, sample_config_mixed):
-        assert count_batch_configs(sample_config_mixed) == 18  # 3 × 2 × 3
-
-    def test_zip_only(self):
-        cfg = {"a": "(1 | 2 | 3)", "b": "(x | y | z)"}
-        assert count_batch_configs(cfg) == 3
-
-    def test_zip_mismatch_returns_zero(self):
-        cfg = {"a": "(1 | 2 | 3)", "b": "(x | y)"}
-        assert count_batch_configs(cfg) == 0
-
-    def test_count_matches_generate_length(self, sample_config_mixed):
-        """count should exactly match len(generate)."""
-        n = count_batch_configs(sample_config_mixed)
-        configs = generate_batch_configs(sample_config_mixed)
-        assert n == len(configs)
-
-    def test_range_colon_count(self):
-        assert count_batch_configs({"epochs": "30:40:1"}) == 10
+    def test_zip_range_and_mismatch_counts(self):
+        cases = [
+            ({"a": "(1 | 2 | 3)", "b": "(x | y | z)"}, 3),
+            ({"a": "(1 | 2 | 3)", "b": "(x | y)"}, 0),
+            ({"epochs": "30:40:1"}, 10),
+        ]
+        for config, expected in cases:
+            assert count_batch_configs(config) == expected, config
 
     def test_large_range_count_does_not_expand_values(self, monkeypatch):
         class HugeRange:
@@ -1819,42 +1738,23 @@ class TestStripBatchPipes:
 
 
 class TestValidateTaskName:
-    def test_valid_names(self):
-        assert validate_task_name("hello") is None
-        assert validate_task_name("my-experiment") is None
-        assert validate_task_name("run_001") is None
-        assert validate_task_name("中文任务名") is None
-        assert validate_task_name("test 123") is None
+    def test_accepts_supported_names_and_length_boundary(self):
+        valid = ["hello", "my-experiment", "run_001", "中文任务名", "test 123", "a" * 200]
+        for name in valid:
+            assert validate_task_name(name) is None, name
 
-    def test_empty_name(self):
-        err = validate_task_name("")
-        assert err is not None
-        assert "empty" in err.lower()
-
-    def test_whitespace_only(self):
-        err = validate_task_name("   ")
-        assert err is not None
-
-    def test_too_long(self):
-        err = validate_task_name("a" * 201)
-        assert err is not None
-        assert "long" in err.lower()
-
-    def test_exactly_200(self):
-        assert validate_task_name("a" * 200) is None
-
-    def test_invalid_chars(self):
-        for bad in ['a<b', 'a>b', 'a:b', 'a"b', 'a/b', 'a\\b', 'a|b', 'a?b', 'a*b']:
-            err = validate_task_name(bad)
-            assert err is not None, f"Should reject: {bad}"
-
-    def test_starts_with_dot(self):
-        err = validate_task_name(".hidden")
-        assert err is not None
-        assert "start with '.'" in err
-        
-        err2 = validate_task_name("..")
-        assert err2 is not None
+    def test_rejects_empty_long_hidden_and_invalid_names(self):
+        invalid_with_message = [
+            ("", "empty"),
+            ("   ", "empty"),
+            ("a" * 201, "long"),
+            (".hidden", "start with '.'"),
+            ("..", "start with '.'"),
+        ]
+        for name, message in invalid_with_message:
+            assert message in validate_task_name(name).lower(), name
+        for name in ['a<b', 'a>b', 'a:b', 'a"b', 'a/b', 'a\\b', 'a|b', 'a?b', 'a*b']:
+            assert validate_task_name(name) is not None, name
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1863,15 +1763,13 @@ class TestValidateTaskName:
 
 
 class TestTypeValidation:
-    def test_exact_match(self):
-        orig = {"lr": 0.01, "name": "resnet"}
-        new = [{"lr": 0.05, "name": "vgg"}]
-        assert validate_config_types_against_template(orig, new) is None
-
-    def test_float_int_coercion_allowed(self):
-        orig = {"lr": 0.01}
-        new = [{"lr": 1}]
-        assert validate_config_types_against_template(orig, new) is None
+    def test_accepts_exact_types_and_int_values_for_float_templates(self):
+        cases = [
+            ({"lr": 0.01, "name": "resnet"}, [{"lr": 0.05, "name": "vgg"}]),
+            ({"lr": 0.01}, [{"lr": 1}]),
+        ]
+        for template, configs in cases:
+            assert validate_config_types_against_template(template, configs) is None
 
     def test_type_mismatch_returns_error(self):
         orig = {"epochs": 100}
@@ -2183,67 +2081,6 @@ def test_save_setting_for_root_creates_file_and_swallows_write_errors(tmp_path, 
     monkeypatch.setattr(settings.os, "makedirs", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("readonly")))
     settings.save_setting_for_root(str(broken_root), "ui_port", 9999)
     assert not (broken_root / SETTINGS_FILENAME).exists()
-
-
-def test_log_emitter_dispatches_loop_direct_and_error_callbacks():
-    from pyruns.utils.events import LogEmitter
-
-    emitter = LogEmitter()
-    received = []
-
-    class RunningLoop:
-        def __init__(self):
-            self.calls = 0
-
-        def is_running(self):
-            return True
-
-        def call_soon_threadsafe(self, callback, *args):
-            self.calls += 1
-            callback(*args)
-
-    loop = RunningLoop()
-    def record(chunk):
-        received.append(chunk)
-
-    emitter.subscribe("task", record, loop=loop)
-    emitter.subscribe("task", lambda chunk: (_ for _ in ()).throw(RuntimeError("callback failed")))
-    emitter.subscribe("other", lambda chunk: received.append("other"))
-    emitter.bind_loop()
-
-    emitter.emit("missing", "ignored")
-    emitter.emit("task", "chunk")
-    emitter.unsubscribe("task", record)
-    emitter.emit("task", "after")
-
-    assert loop.calls == 1
-    assert received == ["chunk"]
-
-
-def test_simple_event_bus_handles_sync_async_and_failing_callbacks():
-    from pyruns.utils.events import SimpleEventBus
-
-    bus = SimpleEventBus()
-    received = []
-
-    async def async_listener(value):
-        received.append(("async", value))
-
-    def sync_listener(value):
-        received.append(("sync", value))
-
-    def failing_listener(value):
-        raise RuntimeError("listener failed")
-
-    bus.on("go", sync_listener)
-    bus.on("go", sync_listener)
-    bus.on("go", async_listener)
-    bus.on("go", failing_listener)
-    bus.emit("go", "value")
-    bus.off("go", sync_listener)
-    bus.emit("go", "again")
-
-    assert received == [("sync", "value")]
 
 
 def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatch):
