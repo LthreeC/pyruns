@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
+from pyruns.utils.info_io import load_task_info
+from pyruns.utils.sort_utils import sort_tasks_for_manager
+
 # Fix PyYAML parsing of scientific notation without a dot (e.g. 5e-3)
 yaml_float_pattern = re.compile(
     r'''^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
@@ -42,11 +46,6 @@ yaml.SafeLoader.add_implicit_resolver(
     yaml_int_pattern,
     list('-+0123456789'),
 )
-
-from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
-from pyruns.utils.info_io import load_task_info
-from pyruns.utils.sort_utils import sort_tasks_for_manager
-
 
 class _PrettyDumper(yaml.SafeDumper):
     """SafeDumper variant that renders multi-line strings as YAML block scalars."""
@@ -328,10 +327,10 @@ def validate_config_types_against_template(orig_config: Dict[str, Any], new_conf
                 t_o = type(ov)
                 t_n = type(v)
                 
-                if t_o == float and t_n == int:
+                if t_o is float and t_n is int:
                     continue  # safe coercion
                     
-                if t_o != t_n:
+                if t_o is not t_n:
                     return (
                         f"输入类型错误!\n"
                         f"参数 '{k}' 原本是 {t_o.__name__}，"

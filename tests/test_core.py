@@ -80,6 +80,7 @@ from pyruns.utils.info_io import (
     update_task_info,
 )
 from pyruns.utils.config_utils import save_yaml
+from pyruns.utils.events import LogEmitter
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace, get_shell_runtime_for_workspace
 
 
@@ -5438,7 +5439,10 @@ def test_task_manager_scan_async_and_disk_discovery_edge_paths(tmp_path, monkeyp
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
     callbacks = []
-    callback = lambda: callbacks.append("changed")
+
+    def callback():
+        callbacks.append("changed")
+
     manager.on_change(callback)
     manager.off_change(lambda: None)
     manager.scan_disk_async()
@@ -6142,9 +6146,6 @@ def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
 #  LogEmitter — publish-subscribe event bus
 # ═══════════════════════════════════════════════════════════════
 
-from pyruns.utils.events import LogEmitter
-
-
 def test_log_emitter_subscribe_emit():
     emitter = LogEmitter()
     received = []
@@ -6157,7 +6158,10 @@ def test_log_emitter_subscribe_emit():
 def test_log_emitter_unsubscribe():
     emitter = LogEmitter()
     received = []
-    cb = lambda chunk: received.append(chunk)
+
+    def cb(chunk):
+        received.append(chunk)
+
     emitter.subscribe("task1", cb)
     emitter.emit("task1", "before")
     emitter.unsubscribe("task1", cb)
