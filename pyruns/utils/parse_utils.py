@@ -5,7 +5,7 @@ import shlex
 import yaml
 from typing import Dict, Any, List, Optional, Tuple
 
-from .._config import DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME
+from .._config import CONFIG_DEFAULT_FILENAME
 
 
 def _cache_key(filepath: str) -> Tuple[str, int, int]:

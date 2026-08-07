@@ -2573,6 +2573,35 @@ def test_run_task_worker_failure(mock_popen, mock_emit, mock_detect, tmp_path):
         assert "reason=exit_code 1" in content
 
 
+def test_run_task_worker_prelaunch_error_is_written_to_selected_run_log(tmp_path):
+    task_dir = str(tmp_path)
+    save_task_info(
+        task_dir,
+        {
+            "name": "InvalidEnvTask",
+            "status": "running",
+            "task_kind": TASK_KIND_SHELL,
+            "config_file": SHELL_CONFIG_FILENAME,
+            "cmd": [sys.executable, "-c", "print('unreachable')"],
+            "run_index": 1,
+        },
+    )
+
+    result = run_task_worker(
+        task_dir=task_dir,
+        name="InvalidEnvTask",
+        created_at="now",
+        config={},
+        env_vars={"BAD=KEY": "x"},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    run_log = Path(task_dir, RUN_LOGS_DIR, "run1.log")
+    assert run_log.is_file()
+    assert "invalid environment variable name" in run_log.read_text(encoding="utf-8")
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
@@ -4915,7 +4944,15 @@ def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypat
     assert manager.update_task_notes("missing", "x") == (False, "Task not found")
     assert manager.update_task_notes("alpha", "note") == (True, "note")
     assert manager.update_task_env("missing", {}) == (False, "Task not found")
-    assert manager.update_task_env("alpha", {"A": 1, "": "skip"}) == (True, {"A": "1"})
+    assert manager.update_task_env("alpha", {"A": 1}) == (True, {"A": "1"})
+    assert manager.update_task_env("alpha", {"BAD=KEY": "x"}) == (
+        False,
+        "invalid environment variable name: BAD=KEY",
+    )
+    assert manager.update_task_env("alpha", {"GOOD": "bad\x00value"}) == (
+        False,
+        "environment variable 'GOOD' contains a null byte",
+    )
 
     assert manager.rename_task("alpha", "") == (False, "Task name cannot be empty")
     assert manager.rename_task("missing", "new") == (False, "Task not found")
@@ -5277,9 +5314,9 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     generator = TaskGenerator(root_dir=str(tasks_dir))
-    queued = generator.create_task("queued", {"value": 1})
-    running = generator.create_task("running", {"value": 2})
-    remote = generator.create_task("remote", {"value": 3})
+    generator.create_task("queued", {"value": 1})
+    generator.create_task("running", {"value": 2})
+    generator.create_task("remote", {"value": 3})
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
@@ -6497,12 +6534,15 @@ class TestBuildExportJSON:
         task = _make_task(tmp_path, "j1", records=[{"loss": 0.3}])
         result = json.loads(build_export_json([task]))
         assert len(result) == 1
-        assert result[0]["task_name"] == "j1"
-        assert result[0]["monitor"] == [{"loss": 0.3}]
+        assert result[0]["name"] == "j1"
+        assert result[0]["run"] == 1
+        assert result[0]["loss"] == 0.3
 
-    def test_no_monitor_excluded(self, tmp_path):
+    def test_no_monitor_still_exports_run_history(self, tmp_path):
         task = _make_task(tmp_path, "j2")
         result = json.loads(build_export_json([task]))
-        assert len(result) == 0  # tasks with no monitor are excluded
+        assert len(result) == 1
+        assert result[0]["name"] == "j2"
+        assert result[0]["run"] == 1
 
 

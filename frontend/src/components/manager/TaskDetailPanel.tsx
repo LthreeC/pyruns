@@ -29,6 +29,8 @@ type Tab = 'info' | 'config' | 'notes' | 'env'
 type EnvPair = { id: string; key: string; value: string }
 type EnvSaveStatus = 'idle' | 'saved' | 'error'
 
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 const TASK_DETAIL_WIDTH_STORAGE_KEY = 'pyruns.taskDetailPanelWidth'
 const DEFAULT_PANEL_WIDTH = 720
 const MIN_PANEL_WIDTH = 420
@@ -111,6 +113,11 @@ function getEnvValidationMessage(envPairs: EnvPair[]): string {
 
   if (envPairs.some(({ key, value }) => !key.trim() && value.trim())) {
     return 'Add a key before saving this value.'
+  }
+
+  const invalidPair = envPairs.find(({ key }) => key.trim() && !ENV_NAME_PATTERN.test(key.trim()))
+  if (invalidPair) {
+    return `Invalid environment variable name: ${invalidPair.key.trim()}`
   }
 
   return ''
@@ -558,7 +565,9 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
               {envPairs.map(pair => {
                 const normalizedKey = pair.key.trim()
-                const keyHasError = (!normalizedKey && pair.value.trim()) || duplicateEnvKeys.has(normalizedKey)
+                const keyHasError = (!normalizedKey && pair.value.trim())
+                  || duplicateEnvKeys.has(normalizedKey)
+                  || Boolean(normalizedKey && !ENV_NAME_PATTERN.test(normalizedKey))
 
                 return (
                 <div key={pair.id} className="grid grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_32px] items-center gap-2">

@@ -11,10 +11,10 @@ import time
 import webbrowser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -36,6 +36,67 @@ LOG_STREAM_DROPPED_NOTICE = (
     "[pyruns] Live log stream skipped older buffered output; "
     "open the log file for full history.\n"
 )
+_LOCAL_WEB_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_ASGI_TEST_HOST = "testserver"
+
+
+def _authority_parts(
+    authority: str,
+    *,
+    scheme: str,
+    allow_test_host: bool = False,
+) -> tuple[str, int] | None:
+    """Return a normalized local authority or ``None`` for malformed input."""
+
+    try:
+        parsed = urlsplit(f"{scheme}://{authority}")
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path or parsed.query or parsed.fragment:
+            return None
+        hostname = str(parsed.hostname or "").rstrip(".").lower()
+        port = parsed.port
+    except ValueError:
+        return None
+    if hostname not in _LOCAL_WEB_HOSTS and not (allow_test_host and hostname == _ASGI_TEST_HOST):
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return hostname, port
+
+
+def _is_allowed_local_host(host_header: str, *, scheme: str, allow_test_host: bool = False) -> bool:
+    return _authority_parts(
+        str(host_header or ""),
+        scheme=scheme,
+        allow_test_host=allow_test_host,
+    ) is not None
+
+
+def _origin_matches_request(
+    origin: str,
+    host_header: str,
+    *,
+    scheme: str,
+    allow_test_host: bool = False,
+) -> bool:
+    """Reject cross-site browser access while allowing same-origin local UI calls."""
+
+    try:
+        parsed_origin = urlsplit(str(origin or ""))
+    except ValueError:
+        return False
+    if parsed_origin.scheme not in {"http", "https"} or parsed_origin.scheme != scheme:
+        return False
+    if parsed_origin.path not in {"", "/"} or parsed_origin.query or parsed_origin.fragment:
+        return False
+    origin_parts = _authority_parts(
+        parsed_origin.netloc,
+        scheme=parsed_origin.scheme,
+        allow_test_host=allow_test_host,
+    )
+    request_parts = _authority_parts(host_header, scheme=scheme, allow_test_host=allow_test_host)
+    return origin_parts is not None and origin_parts == request_parts
 
 
 class RunRootRequest(BaseModel):
@@ -278,14 +339,24 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
     app = FastAPI(title="Pyruns API", version=__version__)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
     app.state.runtime = runtime or PyrunsRuntime()
+
+    @app.middleware("http")
+    async def protect_local_server(request: Request, call_next):
+        scheme = str(request.url.scheme or "http").lower()
+        host = request.headers.get("host", "")
+        allow_test_host = request.client is not None and request.client.host == "testclient"
+        if not _is_allowed_local_host(host, scheme=scheme, allow_test_host=allow_test_host):
+            return Response('{"detail":"Forbidden host"}', status_code=403, media_type="application/json")
+        origin = request.headers.get("origin")
+        if origin and not _origin_matches_request(
+            origin,
+            host,
+            scheme=scheme,
+            allow_test_host=allow_test_host,
+        ):
+            return Response('{"detail":"Forbidden origin"}', status_code=403, media_type="application/json")
+        return await call_next(request)
 
     dist_dir = _frontend_dist_dir()
     
@@ -617,10 +688,26 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         log_file_name: str | None = None,
         offset: int | None = Query(default=None),
     ) -> None:
+        host = websocket.headers.get("host", "")
+        origin = websocket.headers.get("origin")
+        allow_test_host = websocket.client is not None and websocket.client.host == "testclient"
+        if not _is_allowed_local_host(host, scheme="http", allow_test_host=allow_test_host) or (
+            origin and not _origin_matches_request(
+                origin,
+                host,
+                scheme="http",
+                allow_test_host=allow_test_host,
+            )
+        ):
+            await websocket.close(code=4403, reason="Forbidden origin")
+            return
+
         runtime = get_runtime()
-        if runtime.get_task(task_name, refresh=False) is None:
+        stream_task = runtime.get_task(task_name, refresh=False)
+        if stream_task is None:
             await websocket.close(code=4404, reason="Task not found")
             return
+        stream_task_dir = os.path.normcase(os.path.abspath(str(stream_task["dir"])))
 
         requested_log_name = str(log_file_name or "").strip()
         requested_offset = None if offset is None else max(0, int(offset))
@@ -691,6 +778,15 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             nonlocal stream_initialized, stream_log_name, stream_offset
             while not disconnected.is_set():
                 try:
+                    current_task = runtime.get_task(task_name, refresh=False)
+                    current_task_dir = (
+                        os.path.normcase(os.path.abspath(str(current_task["dir"])))
+                        if current_task is not None
+                        else ""
+                    )
+                    if current_task_dir != stream_task_dir:
+                        disconnected.set()
+                        break
                     if not stream_initialized:
                         if requested_offset is None:
                             payload = await asyncio.to_thread(
@@ -778,7 +874,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
         watcher = asyncio.create_task(watch_client_messages())
         tailer = asyncio.create_task(tail_log_file())
-        log_emitter.subscribe(task_name, on_chunk, loop=loop, include_metadata=True)
+        log_emitter.subscribe(
+            task_name,
+            on_chunk,
+            loop=loop,
+            include_metadata=True,
+            task_dir=stream_task_dir,
+        )
         try:
             while not disconnected.is_set():
                 try:
@@ -802,6 +904,10 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                     await task
                 except asyncio.CancelledError:
                     pass
+            try:
+                await websocket.close(code=1000)
+            except RuntimeError:
+                pass
 
     @app.get("/api/system/metrics")
     def get_metrics() -> dict[str, Any]:

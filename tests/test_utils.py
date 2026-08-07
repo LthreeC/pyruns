@@ -10,13 +10,11 @@ import logging
 import os
 import re
 import signal
-import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 import yaml
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pyruns.utils.batch_utils as batch_utils
 import pyruns.utils.log_io as log_io
@@ -1269,6 +1267,36 @@ class TestResolveLogPath:
 
         result = resolve_log_path(task_dir)
         assert result == run_log
+
+    def test_resolve_failed_run_without_run_log_falls_back_to_error_log(self, tmp_path):
+        task_dir = str(tmp_path)
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
+        os.makedirs(log_dir)
+        error_log = os.path.join(log_dir, "error.log")
+        Path(error_log).write_text("startup failed", encoding="utf-8")
+        save_task_info(
+            task_dir,
+            {
+                "name": "broken",
+                "status": "failed",
+                "run_index": 2,
+                "start_times": ["old", ""],
+                "finish_times": ["old", "now"],
+            },
+        )
+
+        assert resolve_log_path(task_dir) == error_log
+
+    def test_resolve_queued_rerun_prefers_queue_log(self, tmp_path):
+        task_dir = str(tmp_path)
+        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
+        os.makedirs(log_dir)
+        Path(log_dir, "run1.log").write_text("old run", encoding="utf-8")
+        queue_log = Path(log_dir, "queue.log")
+        queue_log.write_text("waiting", encoding="utf-8")
+        save_task_info(task_dir, {"name": "queued", "status": "queued", "run_index": 1})
+
+        assert resolve_log_path(task_dir) == str(queue_log)
 
     def test_resolve_no_logs(self, tmp_path):
         assert resolve_log_path(str(tmp_path)) is None

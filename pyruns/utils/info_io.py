@@ -346,12 +346,26 @@ def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Opti
     if log_file_name:
         return opts.get(log_file_name)
     if opts:
+        info = load_task_info(task_dir) or {}
+        status = str(info.get("status", "") or "").lower()
+        if status == "queued" and QUEUE_LOG_FILENAME in opts:
+            return opts[QUEUE_LOG_FILENAME]
+
+        latest_run = run_slot_count(info)
+        expected_name = f"run{latest_run}.log" if latest_run > 0 else ""
+        if expected_name and expected_name in opts:
+            return opts[expected_name]
+        if status == "failed" and ERROR_LOG_FILENAME in opts:
+            return opts[ERROR_LOG_FILENAME]
+
         run_logs = {
             name: path
             for name, path in opts.items()
             if name.startswith("run") and name.endswith(".log")
         }
-        candidates = run_logs or opts
+        candidates = run_logs or {
+            name: path for name, path in opts.items() if name != QUEUE_LOG_FILENAME
+        } or opts
         cached = [(f, p, os.path.getmtime(p)) for f, p in candidates.items()]
         cached.sort(key=lambda x: x[2], reverse=True)
         return cached[0][1]

@@ -18,6 +18,7 @@ from pyruns.utils.shell_runtime import get_follow_shell_runtime
 
 _ACTIVE_STATUSES = {"queued", "running"}
 _FINAL_STATUSES = {"completed", "failed", "cancelled"}
+DEFAULT_STARTUP_TIMEOUT_SEC = 15.0
 
 
 def _run_index(info: dict[str, Any]) -> int:
@@ -110,11 +111,8 @@ def submit_cli_tasks(
         process = _detached_popen(command, env)
     except OSError:
         return False
-    deadline = (
-        time.monotonic() + max(0.05, float(startup_timeout))
-        if startup_timeout is not None
-        else None
-    )
+    timeout_seconds = DEFAULT_STARTUP_TIMEOUT_SEC if startup_timeout is None else float(startup_timeout)
+    deadline = time.monotonic() + max(0.05, timeout_seconds)
     try:
         while True:
             try:
@@ -142,7 +140,7 @@ def submit_cli_tasks(
             if exit_code is not None:
                 return bool(all_final and exit_code in {0, 1})
 
-            if deadline is not None and time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
                 if owned_active:
                     # A partially claimed batch must be left with its owning runner;
                     # killing it here can strand task state or terminate real work.

@@ -721,6 +721,8 @@ def test_react_task_detail_env_controls_have_clear_feedback_states():
     assert "const savedEnv = response.task?.env || env" in source
     assert "setEnvPairs(buildEnvPairsFromEnv(savedEnv))" in source
     assert "getEnvValidationMessage(envPairs)" in source
+    assert "ENV_NAME_PATTERN" in source
+    assert "Invalid environment variable name" in source
     assert "const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)" in source
     assert "envSaveStatus === 'saved' ? 'Saved' : 'Save'" in source
     assert "envSaveStatus === 'error'" in source

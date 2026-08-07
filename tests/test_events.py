@@ -1,4 +1,5 @@
-import pytest
+import os
+
 from pyruns.utils.events import SimpleEventBus, LogEmitter
 
 
@@ -80,3 +81,24 @@ def test_log_emitter_can_include_optional_metadata_without_changing_default_call
 
     assert plain == ["live\n"]
     assert with_metadata == [("live\n", {"offset": 42, "log_file_name": "run1.log"})]
+
+
+def test_log_emitter_scopes_same_named_tasks_by_directory(tmp_path):
+    emitter = LogEmitter()
+    received = []
+    task_a = tmp_path / "workspace-a" / "tasks" / "same-name"
+    task_b = tmp_path / "workspace-b" / "tasks" / "same-name"
+
+    emitter.subscribe(
+        "same-name",
+        lambda chunk, metadata: received.append((chunk, metadata)),
+        include_metadata=True,
+        task_dir=str(task_a),
+    )
+
+    emitter.emit("same-name", "wrong workspace\n", task_dir=str(task_b))
+    emitter.emit("same-name", "right workspace\n", task_dir=str(task_a))
+
+    assert len(received) == 1
+    assert received[0][0] == "right workspace\n"
+    assert received[0][1]["task_dir"] == os.path.normcase(str(task_a.resolve()))

@@ -189,8 +189,6 @@ def list_template_files(run_root: str) -> Dict[str, str]:
     options: Dict[str, str] = {}
 
     from pyruns._config import (
-        CONFIG_DEFAULT_FILENAME,
-        CONFIG_FILENAME,
         TASKS_DIR,
         TASK_INFO_FILENAME,
     )

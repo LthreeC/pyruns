@@ -362,6 +362,7 @@ pyr -w train export --format json --output -
 ```
 
 这里的 `--output -` 明确表示 stdout。
+CSV 与 JSON 使用相同语义：每个任务的每次运行各占一条记录，并附加该次运行可用的 monitor 指标；即使任务没有写入 monitor 指标，运行时间、退出码和 PID 等基础记录也仍会导出。
 
 ## 13. 配置：`config`
 

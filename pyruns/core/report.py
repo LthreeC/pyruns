@@ -18,16 +18,10 @@ from pyruns.utils import get_now_str
 #  Export builders
 # ═══════════════════════════════════════════════════════════════
 
-def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
-    """Build CSV string — one row per task per run.
+def _build_export_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return one export row per task run, including runs without monitor data."""
 
-    Columns: name, status, run, start_time, finish_time, duration_seconds,
-             exit_code, pid,
-             plus any monitor data keys.
-    """
     all_rows: List[Dict[str, Any]] = []
-    all_keys: set = set()
-
     for t in tasks:
         name = t.get("name", "")
         status = t.get("status", "")
@@ -60,10 +54,23 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
                     row[k] = v
 
             all_rows.append(row)
-            all_keys.update(row.keys())
+
+    return all_rows
+
+
+def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
+    """Build CSV string — one row per task per run.
+
+    Columns: name, status, run, start_time, finish_time, duration_seconds,
+             exit_code, pid,
+             plus any monitor data keys.
+    """
+    all_rows = _build_export_rows(tasks)
 
     if not all_rows:
         return ""
+
+    all_keys = {key for row in all_rows for key in row}
 
     priority = [
         "name",
@@ -87,16 +94,9 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
 
 
 def build_export_json(tasks: List[Dict[str, Any]]) -> str:
-    """Build JSON string from monitor data of multiple tasks."""
-    result = []
-    for t in tasks:
-        data = [entry for entry in load_record_data(t["dir"]) if entry]
-        if data:
-            result.append({
-                "task_name": t.get("name", ""),
-                "monitor": data,
-            })
-    return json.dumps(result, indent=2, ensure_ascii=False)
+    """Build JSON with the same one-row-per-run semantics as CSV export."""
+
+    return json.dumps(_build_export_rows(tasks), indent=2, ensure_ascii=False)
 
 
 def export_timestamp() -> str:

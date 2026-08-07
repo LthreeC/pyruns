@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import psutil
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from pyruns import __version__
 from pyruns._config import (
@@ -188,6 +190,55 @@ class _RouteRuntime:
             return result
 
         return call
+
+
+def test_local_server_rejects_cross_origin_and_dns_rebinding_requests():
+    client = TestClient(create_app(_RouteRuntime()))
+
+    allowed = client.get(
+        "/api/workspace",
+        headers={"Origin": "http://testserver", "Host": "testserver"},
+    )
+    cross_origin = client.post(
+        "/api/workspace/shell",
+        headers={"Origin": "https://attacker.example", "Host": "testserver"},
+    )
+    rebound = client.get(
+        "/api/workspace",
+        headers={"Origin": "http://attacker.example", "Host": "attacker.example"},
+    )
+    malformed_host = client.get(
+        "/api/workspace",
+        headers={"Host": "127.0.0.1/attacker"},
+    )
+    preflight = client.options(
+        "/api/workspace/shell",
+        headers={
+            "Origin": "https://attacker.example",
+            "Host": "testserver",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert cross_origin.status_code == 403
+    assert rebound.status_code == 403
+    assert malformed_host.status_code == 403
+    assert preflight.status_code == 403
+    assert "access-control-allow-origin" not in cross_origin.headers
+
+
+def test_log_websocket_rejects_cross_origin_browser_clients():
+    client = TestClient(create_app(_RouteRuntime()))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/api/tasks/alpha/logs/stream",
+            headers={"Origin": "https://attacker.example", "Host": "testserver"},
+        ):
+            pass
+
+    assert exc_info.value.code == 4403
 
 
 def test_root_uses_fallback_html_when_static_bundle_is_missing(tmp_path, monkeypatch):
@@ -659,6 +710,16 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
         "--no-capture-output",
         "python",
     ]
+
+
+@pytest.mark.parametrize("global_env", [{"BAD=KEY": "x"}, {"GOOD": "bad\x00value"}])
+def test_runtime_update_rejects_invalid_global_environment(tmp_path, global_env):
+    workspace = _make_workspace(tmp_path, "main")
+    client = TestClient(create_app(_build_runtime(workspace)))
+
+    response = client.patch("/api/runtime", json={"global_env": global_env})
+
+    assert response.status_code == 400
 
 
 def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
@@ -1557,7 +1618,7 @@ def test_run_root_switch_endpoint_reloads_workspace(tmp_path):
     assert tasks["items"][0]["name"] == "task-b"
 
 
-def test_runtime_reload_shuts_down_previous_task_manager(tmp_path):
+def test_runtime_reload_keeps_workspace_managers_alive_until_server_shutdown(tmp_path):
     workspace_a = _make_workspace(tmp_path, "main")
     workspace_b = _make_workspace(tmp_path, "alt")
     managers = []
@@ -1580,8 +1641,47 @@ def test_runtime_reload_shuts_down_previous_task_manager(tmp_path):
 
     runtime.reload(str(workspace_b))
 
-    assert first_manager.shutdown_count == 1
+    assert first_manager.shutdown_count == 0
     assert managers == [first_manager]
+    second_manager = runtime.task_manager
+    runtime.reload(str(workspace_a))
+
+    assert runtime.task_manager is first_manager
+    runtime.shutdown()
+    assert first_manager.shutdown_count == 1
+    assert second_manager.shutdown_count == 1
+
+
+def test_workspace_switch_does_not_terminate_running_task(tmp_path):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    (tmp_path / "main.py").write_text(
+        "import time\nimport pyruns\npyruns.load()\nprint('started', flush=True)\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    _add_task(workspace_a, "slow")
+    runtime = _build_runtime(workspace_a)
+
+    try:
+        runtime.start_task("slow")
+        task_dir = workspace_a / TASKS_DIR / "slow"
+        deadline = time.monotonic() + 10
+        pid = None
+        while time.monotonic() < deadline:
+            info = load_task_info(str(task_dir))
+            pids = list(info.get("pids", []) or [])
+            if info.get("status") == "running" and pids and pids[-1]:
+                pid = int(pids[-1])
+                break
+            time.sleep(0.05)
+        assert pid is not None
+
+        runtime.change_run_root(str(workspace_b))
+
+        assert psutil.pid_exists(pid)
+        assert load_task_info(str(task_dir))["status"] == "running"
+    finally:
+        runtime.shutdown()
 
 
 def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
@@ -2312,6 +2412,25 @@ def test_pin_notes_env_and_rename_endpoints(tmp_path):
     assert client.get("/api/tasks/alpha-renamed").status_code == 200
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"BAD=KEY": "x"},
+        {"GOOD": "bad\x00value"},
+    ],
+)
+def test_task_env_endpoint_rejects_values_that_subprocess_cannot_use(tmp_path, env):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.patch("/api/tasks/alpha/env", json={"env": env})
+
+    assert response.status_code == 400
+    assert load_task_info(str(workspace / TASKS_DIR / "alpha")).get("env", {}) == {}
+
+
 def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
@@ -2421,13 +2540,43 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
         assert initialized.wait(2)
         with log_file.open("a", encoding="utf-8") as handle:
             handle.write("hello from stream")
-        log_emitter.emit("alpha", "hello from stream", offset=log_file.stat().st_size)
+        log_emitter.emit(
+            "alpha",
+            "hello from stream",
+            offset=log_file.stat().st_size,
+            task_dir=str(workspace / TASKS_DIR / "alpha"),
+        )
         payload = websocket.receive_json()
 
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
     assert payload["content"] == "hello from stream"
     assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_closes_when_active_workspace_changes(tmp_path):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    _add_task(workspace_a, "same-name", status="completed", log_text="workspace-a\n")
+    _add_task(workspace_b, "same-name", status="completed", log_text="workspace-b\n")
+    runtime = _build_runtime(workspace_a)
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    client = TestClient(create_app(runtime))
+
+    with client.websocket_connect("/api/tasks/same-name/logs/stream") as websocket:
+        assert initialized.wait(2)
+        runtime.change_run_root(str(workspace_b))
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_json()
 
 
 def test_logs_websocket_stream_catches_up_from_client_offset(tmp_path):
@@ -2580,6 +2729,7 @@ def test_logs_websocket_stream_accepts_run_log_emitter_chunk_after_queue_offset(
             "run start\r\n",
             offset=run_log.stat().st_size,
             log_file_name="run1.log",
+            task_dir=str(task_dir),
         )
         payload = websocket.receive_json()
 
@@ -2788,7 +2938,7 @@ def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch)
     info = runtime.change_run_root(str(new_workspace))
 
     assert info["run_root"] == str(new_workspace).replace("\\", "/")
-    assert shutdowns == ["old"]
+    assert shutdowns == []
 
     with pytest.raises(ValueError, match="Run Root must contain"):
         runtime.change_run_root(str(tmp_path / "plain"))
@@ -2796,6 +2946,7 @@ def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch)
     manager = runtime.task_manager
     monkeypatch.setattr(manager, "shutdown", lambda: shutdowns.append("current"))
     runtime.shutdown()
+    assert "old" in shutdowns
     assert "current" in shutdowns
 
     shell_workspace = _make_workspace(tmp_path, SHELL_WORKSPACE_NAME)
@@ -2996,7 +3147,7 @@ def test_runtime_shell_templates_only_include_task_payloads(tmp_path, monkeypatc
     (workspace / TASKS_DIR / "not-a-dir").write_text("skip", encoding="utf-8")
 
     runtime = _build_runtime(workspace)
-    original_getmtime = os_path_getmtime = __import__("os").path.getmtime
+    original_getmtime = __import__("os").path.getmtime
 
     def fake_getmtime(path):
         if str(path).endswith("task_info.json"):

@@ -2,7 +2,6 @@
 Shared fixtures for pyruns tests.
 """
 import os
-import json
 import shutil
 import tempfile
 import uuid

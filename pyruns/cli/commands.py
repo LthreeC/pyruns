@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -45,11 +44,14 @@ from pyruns.launcher import (
 )
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.config_utils import load_yaml_strict, safe_filename
+from pyruns.utils.env_utils import is_valid_environment_name
 from pyruns.utils.info_io import (
     load_script_info,
     load_task_info,
+    resolve_log_path,
     run_slot_count,
     update_task_info,
+    validate_existing_task_name,
     validate_task_name,
 )
 from pyruns.utils.log_io import safe_read_log
@@ -73,7 +75,6 @@ from pyruns.utils.task_files import resolve_task_config_file
 _ACTIVE_STATUSES = {"queued", "running"}
 _FINAL_STATUSES = {"completed", "failed", "cancelled"}
 _VALID_STATUSES = {"pending", "queued", "running", "completed", "failed", "cancelled"}
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CMD_META_CHARS = frozenset("&|<>^()%!")
 _SHELL_SCRIPT_EXTENSIONS = frozenset({".sh", ".ps1", ".cmd", ".bat"})
 
@@ -366,7 +367,14 @@ def _log_path(task: dict[str, Any], *, run_index: int | None = None) -> str:
     selected_run = run_index or _latest_run_index(task, info)
     if selected_run <= 0:
         selected_run = 1
-    return os.path.join(task_dir, RUN_LOGS_DIR, f"run{selected_run}.log")
+    run_path = os.path.join(task_dir, RUN_LOGS_DIR, f"run{selected_run}.log")
+    if os.path.isfile(run_path):
+        return run_path
+    if selected_run == _latest_run_index(task, info):
+        fallback = resolve_log_path(task_dir)
+        if fallback:
+            return fallback
+    return run_path
 
 
 def _task_record(
@@ -461,8 +469,10 @@ def _parse_env(items: list[str]) -> dict[str, str]:
         if "=" not in item:
             raise CliUsageError(f"environment value must use KEY=VALUE: {item}")
         key, value = item.split("=", 1)
-        if not _ENV_NAME_RE.match(key):
+        if not is_valid_environment_name(key):
             raise CliUsageError(f"invalid environment variable name: {key}")
+        if "\x00" in value:
+            raise CliUsageError(f"environment variable '{key}' contains a null byte")
         env[key] = value
     return env
 
@@ -494,9 +504,13 @@ def _load_env_files(paths: list[str], *, base_dir: str) -> dict[str, str]:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip()
-            if not _ENV_NAME_RE.match(key):
+            if not is_valid_environment_name(key):
                 raise CliUsageError(
                     f"invalid environment variable name in {display_path}:{line_number}: {key}"
+                )
+            if "\x00" in value:
+                raise CliUsageError(
+                    f"environment variable value contains a null byte in {display_path}:{line_number}: {key}"
                 )
             env[key] = value
     return env
@@ -1277,13 +1291,23 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
 
     restore_plan: list[tuple[dict[str, Any], str, str]] = []
     target_names: set[str] = set()
+    tasks_root = os.path.abspath(manager.tasks_dir)
     for record in selected:
         target_name = str(record["name"])
+        name_error = validate_existing_task_name(target_name)
+        if name_error:
+            raise CliError(f"cannot restore '{target_name}': {name_error}")
         if target_name in target_names:
             raise CliError(f"cannot restore '{target_name}': multiple trash entries have that name")
         target_names.add(target_name)
         source = str(record["directory"])
-        destination = os.path.join(manager.tasks_dir, target_name)
+        destination = os.path.abspath(os.path.join(tasks_root, target_name))
+        try:
+            inside_tasks_root = os.path.commonpath([tasks_root, destination]) == tasks_root
+        except ValueError:
+            inside_tasks_root = False
+        if not inside_tasks_root or os.path.dirname(destination) != tasks_root:
+            raise CliError(f"cannot restore '{target_name}': invalid task destination")
         if not os.path.isdir(source):
             raise CliError(f"cannot restore '{target_name}': trash entry no longer exists")
         if os.path.exists(destination):

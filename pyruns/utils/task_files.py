@@ -13,7 +13,6 @@ from pyruns._config import (
     TASK_KIND_TO_CONFIG_FILENAME,
     TASK_KINDS,
     WORKSPACE_KIND_SCRIPT,
-    WORKSPACE_KIND_SHELL,
     WORKSPACE_KINDS,
 )
 from pyruns.utils.config_utils import (

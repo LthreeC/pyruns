@@ -8,6 +8,7 @@ bound asyncio event loop so websocket/UI callbacks run on the
 correct thread.
 """
 import asyncio
+import os
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
@@ -23,6 +24,13 @@ class _LogSubscriber:
     callback: Callable
     loop: Any = None
     include_metadata: bool = False
+    task_dir: str | None = None
+
+
+def _normalize_task_dir(task_dir: str | None) -> str | None:
+    if not task_dir:
+        return None
+    return os.path.normcase(os.path.abspath(task_dir))
 
 
 class LogEmitter:
@@ -48,9 +56,21 @@ class LogEmitter:
         with self._lock:
             self._loop = loop
 
-    def subscribe(self, task_name: str, callback: Callable, loop=None, include_metadata: bool = False) -> None:
+    def subscribe(
+        self,
+        task_name: str,
+        callback: Callable,
+        loop=None,
+        include_metadata: bool = False,
+        task_dir: str | None = None,
+    ) -> None:
         """Register *callback* to receive log chunks for *task_name*."""
-        subscriber = _LogSubscriber(callback=callback, loop=loop, include_metadata=include_metadata)
+        subscriber = _LogSubscriber(
+            callback=callback,
+            loop=loop,
+            include_metadata=include_metadata,
+            task_dir=_normalize_task_dir(task_dir),
+        )
         with self._lock:
             if not any(item.callback is callback for item in self._subscribers[task_name]):
                 self._subscribers[task_name].append(subscriber)
@@ -71,6 +91,7 @@ class LogEmitter:
         *,
         offset: int | None = None,
         log_file_name: str | None = None,
+        task_dir: str | None = None,
     ) -> None:
         """Broadcast *chunk_text* to all subscribers of *task_name*.
 
@@ -93,8 +114,13 @@ class LogEmitter:
             metadata["offset"] = offset
         if log_file_name:
             metadata["log_file_name"] = log_file_name
+        normalized_task_dir = _normalize_task_dir(task_dir)
+        if normalized_task_dir:
+            metadata["task_dir"] = normalized_task_dir
 
         for subscriber in subs:
+            if subscriber.task_dir is not None and subscriber.task_dir != normalized_task_dir:
+                continue
             cb = subscriber.callback
             loop = subscriber.loop or default_loop
             args = (chunk_text, metadata) if subscriber.include_metadata else (chunk_text,)

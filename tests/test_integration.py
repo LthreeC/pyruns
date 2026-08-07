@@ -9,7 +9,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import yaml
 
 from pyruns._config import (
     DEFAULT_ROOT_NAME, TASK_INFO_FILENAME, RECORDS_KEY, ENV_KEY_CONFIG,

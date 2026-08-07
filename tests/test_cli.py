@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyruns._config import TASKS_DIR, TRASH_DIR
+from pyruns._config import TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
 from pyruns.cli.app import main
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.utils.info_io import load_task_info
@@ -29,6 +29,20 @@ def _source_cli(*args: str) -> list[str]:
         f"raise SystemExit(main({list(args)!r}))"
     )
     return [sys.executable, "-c", code]
+
+
+def test_cli_app_module_runs_without_duplicate_import_warning():
+    result = subprocess.run(
+        [sys.executable, "-m", "pyruns.cli.app", "--version"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "RuntimeWarning" not in result.stderr
 
 
 def _source_named_cli(program: str, *args: str) -> list[str]:
@@ -1533,6 +1547,28 @@ def test_restore_preflights_all_destination_conflicts(tmp_path):
     assert (workspace / TASKS_DIR / TRASH_DIR / "first").is_dir()
 
 
+def test_restore_rejects_tampered_task_name_outside_tasks_directory(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "recoverable", "echo ok\n"
+    )
+    assert _run_cli(tmp_path, "-w", "shell", "rm", "recoverable").returncode == 0
+    trash_entry = workspace / TASKS_DIR / TRASH_DIR / "recoverable"
+    info_path = trash_entry / TASK_INFO_FILENAME
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["name"] = "../escaped"
+    info_path.write_text(json.dumps(info), encoding="utf-8")
+
+    restored = _run_cli(tmp_path, "-w", "shell", "restore", "recoverable")
+
+    assert restored.returncode == 1
+    assert "cannot restore" in restored.stderr
+    assert trash_entry.is_dir()
+    assert not (workspace / "escaped").exists()
+
+
 def test_rm_rejects_active_batch_before_deleting_anything(monkeypatch):
     from pyruns.cli import commands
 
@@ -1607,6 +1643,9 @@ def test_export_defaults_to_stdout_and_can_write_file(tmp_path):
     )
     assert file_export.returncode == 0
     assert output.is_file()
+    json_rows = json.loads(output.read_text(encoding="utf-8"))
+    assert json_rows[0]["name"] == "exportable"
+    assert json_rows[0]["run"] == 1
 
     conflicting = _run_cli(
         tmp_path,

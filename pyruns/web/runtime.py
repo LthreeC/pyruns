@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import shutil
 import shlex
 import subprocess
@@ -45,6 +44,7 @@ from pyruns.launcher import (
     shell_project_root_for_workspace,
 )
 from pyruns.utils import get_now_str
+from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import (
     list_template_files,
@@ -66,7 +66,6 @@ TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
 SHELL_TEMPLATE_EXTENSIONS = {".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd"}
-_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _GPU_SCHEDULER_PAYLOAD_KEYS = {
     "enabled": "gpu_scheduler_enabled",
     "task_mode": "gpu_scheduler_task_mode",
@@ -133,7 +132,7 @@ def parse_global_env_text(text: str) -> Dict[str, str]:
 
         key, raw_value = line.split("=", 1)
         key = key.strip()
-        if not _ENV_KEY_RE.match(key):
+        if not is_valid_environment_name(key):
             raise ValueError(f"Line {line_no}: invalid env name '{key}'")
 
         value_text = _strip_unquoted_comment(raw_value.strip())
@@ -155,7 +154,7 @@ def parse_global_env_text(text: str) -> Dict[str, str]:
         if len(parts) > 1:
             raise ValueError(f"Line {line_no}: quote values that contain spaces")
         result[key] = parts[0] if parts else ""
-    return result
+    return normalize_environment(result)
 
 
 def _int_setting(settings: Dict[str, Any], key: str, default: int, *, minimum: int = 1) -> int:
@@ -337,6 +336,7 @@ class PyrunsRuntime:
         self.tasks_dir = ""
         self.settings: Dict[str, Any] = {}
         self._task_manager: TaskManager | None = None
+        self._task_managers: Dict[str, TaskManager] = {}
         self._task_generator: TaskGenerator | None = None
         self._metrics_sampler: SystemMonitor | None = None
         self._tasks_loaded = False
@@ -357,7 +357,7 @@ class PyrunsRuntime:
         return has_tasks or has_config or has_script
 
     def reload(self, root_dir: str | None = None) -> None:
-        """Reset runtime state for the active workspace without heavy I/O."""
+        """Activate a workspace without interrupting tasks owned in other workspaces."""
         resolved_root = self._normalize_path(
             root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
         )
@@ -368,32 +368,31 @@ class PyrunsRuntime:
         os.makedirs(tasks_dir, exist_ok=True)
         ensure_settings_file(resolved_root)
 
-        old_task_manager: TaskManager | None = None
+        manager_key = os.path.normcase(os.path.abspath(tasks_dir))
         with self._lock:
-            old_task_manager = self._task_manager
             self.root_dir = resolved_root
             self.tasks_dir = tasks_dir
             self.settings = load_settings(resolved_root)
-            self._task_manager = None
+            self._task_manager = self._task_managers.get(manager_key)
             self._task_generator = None
             self._metrics_sampler = None
             self._tasks_loaded = False
             self._last_full_refresh_time = 0.0
             self._conda_envs_cache = None
 
-        if old_task_manager is not None:
-            old_task_manager.shutdown()
-
     def shutdown(self) -> None:
         """Release background services owned by this runtime."""
         with self._lock:
-            task_manager = self._task_manager
+            task_managers = list(dict.fromkeys(self._task_managers.values()))
+            if self._task_manager is not None and self._task_manager not in task_managers:
+                task_managers.append(self._task_manager)
             self._task_manager = None
+            self._task_managers.clear()
             self._task_generator = None
             self._metrics_sampler = None
             self._tasks_loaded = False
 
-        if task_manager is not None:
+        for task_manager in task_managers:
             task_manager.shutdown()
 
     def change_run_root(self, new_root: str) -> Dict[str, Any]:
@@ -627,13 +626,7 @@ class PyrunsRuntime:
             elif key == "global_env_text":
                 save_setting_for_root(self.root_dir, "global_env", parse_global_env_text(str(value or "")))
             elif key == "global_env":
-                if not isinstance(value, dict):
-                    raise ValueError("global_env must be an object")
-                clean_env = {
-                    str(env_key).strip(): str(env_value)
-                    for env_key, env_value in value.items()
-                    if str(env_key).strip() and env_value is not None
-                }
+                clean_env = normalize_environment(value, drop_none_values=True)
                 save_setting_for_root(self.root_dir, key, clean_env)
             else:
                 save_setting_for_root(self.root_dir, key, self._clean_setting_text(value))
@@ -804,6 +797,8 @@ class PyrunsRuntime:
         with self._lock:
             if self._task_manager is None:
                 self._task_manager = self._task_manager_factory(self.tasks_dir)
+                manager_key = os.path.normcase(os.path.abspath(self.tasks_dir))
+                self._task_managers[manager_key] = self._task_manager
             return self._task_manager
 
     @property

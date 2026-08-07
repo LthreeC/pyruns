@@ -214,6 +214,8 @@ pyr -w train export baseline -f json
 pyr -w train export -s completed -o report.csv
 ```
 
+CSV and JSON both emit one record per task run. Runs without monitor metrics are still included with their lifecycle fields.
+
 ## Configuration And Metrics
 
 ```bash

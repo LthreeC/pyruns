@@ -48,6 +48,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.settings import load_settings
+from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.events import event_sys
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
@@ -1106,7 +1107,10 @@ class TaskManager:
                 return False, "Task not found"
             task_dir = target["dir"]
 
-        normalized_env = {str(k): str(v) for k, v in (env or {}).items() if str(k)}
+        try:
+            normalized_env = normalize_environment(env)
+        except ValueError as exc:
+            return False, str(exc)
 
         def _apply(task_info: Dict[str, Any]) -> None:
             task_info["env"] = normalized_env

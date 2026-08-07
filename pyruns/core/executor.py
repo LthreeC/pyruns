@@ -54,6 +54,7 @@ from pyruns.utils.shell_runtime import (
     _windows_posix_script_arg,
 )
 from pyruns.utils.settings import load_settings
+from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
 
 logger = get_logger(__name__)
@@ -536,7 +537,7 @@ def _load_workspace_global_env(task_dir: str | None = None) -> Dict[str, str]:
     raw_env = settings.get("global_env", {})
     if not isinstance(raw_env, dict):
         return {}
-    return {str(k): str(v) for k, v in raw_env.items() if k and v is not None}
+    return normalize_environment(raw_env, drop_none_values=True)
 
 
 def _python_command_prefix(python_runtime: Dict[str, str] | None = None) -> List[str]:
@@ -610,7 +611,7 @@ def _prepare_env(
         env.pop(ENV_KEY_CONFIG, None)
     env.update(_load_workspace_global_env(task_dir))
     if extra_env:
-        env.update({str(k): str(v) for k, v in extra_env.items() if k})
+        env.update(normalize_environment(extra_env))
     _prepend_runtime_python_to_path(env, python_runtime)
     pyruns_import_root = _current_pyruns_import_root()
     _prepend_pythonpath(env, pyruns_import_root)
@@ -758,6 +759,7 @@ def _persist_run_source_state(
             payload.replace("\n", "\r\n"),
             offset=os.path.getsize(log_path),
             log_file_name=os.path.basename(log_path),
+            task_dir=task_dir,
         )
     except Exception as exc:
         logger.debug("Failed to append source state log for %s: %s", task_name, exc)
@@ -1533,6 +1535,7 @@ def run_task_worker(
             start_payload.replace("\n", "\r\n"),
             offset=start_offset,
             log_file_name=os.path.basename(log_path),
+            task_dir=task_dir,
         )
 
         def _mark_started(info: Dict[str, Any]) -> None:
@@ -1576,6 +1579,7 @@ def run_task_worker(
                             normalized,
                             offset=chunk_offset,
                             log_file_name=os.path.basename(log_path),
+                            task_dir=task_dir,
                         )
                 tail = decoder.decode(b"", final=True)
                 if tail:
@@ -1586,6 +1590,7 @@ def run_task_worker(
                         normalize_log_newlines(tail),
                         offset=handle.tell(),
                         log_file_name=os.path.basename(log_path),
+                        task_dir=task_dir,
                     )
 
         reader_thread = threading.Thread(target=_tee_output, daemon=True)
@@ -1615,6 +1620,7 @@ def run_task_worker(
             finish_payload.replace("\n", "\r\n"),
             offset=os.path.getsize(log_path),
             log_file_name=os.path.basename(log_path),
+            task_dir=task_dir,
         )
 
         def _mark_finished(info: Dict[str, Any]) -> None:
@@ -1662,6 +1668,7 @@ def run_task_worker(
                 final_status_payload.replace("\n", "\r\n"),
                 offset=os.path.getsize(log_path),
                 log_file_name=os.path.basename(log_path),
+                task_dir=task_dir,
             )
 
         if stop_summary:
@@ -1746,8 +1753,19 @@ def run_task_worker(
             f"\n{'=' * 70}\n"
             f"[PYRUNS ERROR] Task {name} failed\n"
             + "\n".join(detail_lines)
-            + f"\n{'=' * 70}"
+            + f"\n{'=' * 70}\n"
         )
+        try:
+            run_payload = _append_run_log_text(log_path, block, clean_boundary=True)
+            log_emitter.emit(
+                name,
+                run_payload.replace("\n", "\r\n"),
+                offset=os.path.getsize(log_path),
+                log_file_name=os.path.basename(log_path),
+                task_dir=task_dir,
+            )
+        except OSError as log_exc:
+            logger.error("Failed to write run log for %s: %s", name, log_exc)
         logger.error("%s", block)
         return {
             "status": "failed",
