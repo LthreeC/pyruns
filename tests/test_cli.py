@@ -112,8 +112,10 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     output = capsys.readouterr().out
     assert "Pyruns records reproducible terminal commands" in output
     assert "pyr and pyruns are identical" in output
+    assert "Choose a workflow:" in output
     assert "Quick start:" in output
     assert "Workspace selection:" in output
+    assert "One -e accepts several KEY=VALUE entries" in output
     assert "pyr help -a" in output
     assert "    exec " in output
     assert "    show " in output
@@ -163,11 +165,52 @@ def test_official_entrypoints_render_their_own_complete_help(
     assert f"{program} exec -n setup -- ./scripts/setup.sh" in command_help.stdout
     assert "--env-file" in command_help.stdout
     assert "-e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py" in command_help.stdout
-    assert "standard -- separator" in command_help.stdout
+    assert "Choose a command form:" in command_help.stdout
+    assert "Exact argv (recommended for Python and ordinary programs):" in command_help.stdout
+    assert "Existing shell script (tracked replacement" in command_help.stdout
+    assert "Shell expression (only for pipes" in command_help.stdout
+    assert "Each following token is one program argument" in command_help.stdout
     assert "-c COMMAND_STRING" in command_help.stdout
     assert "--shell" not in command_help.stdout
-    assert "python -V > python-version.txt" in command_help.stdout
+    assert "python eval.py > metrics.txt" in command_help.stdout
     assert "&&" in command_help.stdout
+    assert "One -e accepts multiple KEY=VALUE entries" in command_help.stdout
+    assert "Variables inherited from the invoking terminal" in command_help.stdout
+    assert "are not saved" in command_help.stdout
+    assert "PYTHONUNBUFFERED=1" in command_help.stdout
+    assert f"{program} -w shell show train" in command_help.stdout
+    assert f"{program} -w shell run train" in command_help.stdout
+
+
+def test_help_explains_config_ui_metrics_and_help_workflows(tmp_path):
+    config_help = _run_cli(tmp_path, "help", "config")
+    config_set_help = _run_cli(tmp_path, "config", "set", "--help")
+    metrics_help = _run_cli(tmp_path, "help", "metrics")
+    ui_help = _run_cli(tmp_path, "help", "ui")
+    dev_help = _run_cli(tmp_path, "help", "dev")
+    help_help = _run_cli(tmp_path, "help", "help")
+
+    for result in (
+        config_help,
+        config_set_help,
+        metrics_help,
+        ui_help,
+        dev_help,
+        help_help,
+    ):
+        assert result.returncode == 0, result.stderr
+        assert "Examples:" in result.stdout
+
+    assert "Settings are project-wide" in config_help.stdout
+    assert "global_env" in config_help.stdout
+    assert "Parse VALUE as YAML" in config_set_help.stdout
+    assert "Environment variable names and values are validated" in config_set_help.stdout
+    assert "does not require a workspace" in metrics_help.stdout
+    assert "Do not write '-w shell ui'" in ui_help.stdout
+    assert "--no-browser keeps the server headless" in ui_help.stdout
+    assert "Use 'ui' for normal use" in dev_help.stdout
+    assert "Help is read-only" in help_help.stdout
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 @pytest.mark.parametrize(
@@ -199,6 +242,7 @@ def test_every_command_has_workspace_free_help(command, tmp_path):
     result = _run_cli(tmp_path, command, "--help")
     assert result.returncode == 0, result.stderr
     assert f"usage: pyr {command}" in result.stdout
+    assert "Examples:" in result.stdout
 
 
 def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(

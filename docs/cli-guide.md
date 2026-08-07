@@ -58,9 +58,14 @@ pyr -C D:/work/project -w shell status
 
 ```bash
 pyr help -a
+pyr help exec
 pyr help run
 pyr run --help
 ```
+
+`pyr help COMMAND` 与 `pyr COMMAND --help` 等价。每份命令帮助都包含用途、参数、
+典型示例和关键注意事项；其中 `pyr help exec` 是选择精确 argv、Shell 表达式、
+现有脚本、环境变量和后续任务操作的完整决策指南。帮助命令只读，不会创建工作区。
 
 默认帮助只列 `init exec add run ls show log stop` 八个日常命令，高级命令仍可直接执行；需要浏览全部命令时使用 `help -a`。
 

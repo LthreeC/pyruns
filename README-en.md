@@ -22,6 +22,7 @@ pip install pyruns
 pyr --help
 pyruns --help
 pyr help -a  # list every command
+pyr help exec  # choose between --, -c, scripts, and environment options
 
 # Initialize the current project's shell workspace
 pyr init
@@ -105,7 +106,9 @@ Commands:
 | `ui` / `dev` | start the Web UI explicitly |
 | `help` | show top-level or command help |
 
-See the [complete CLI guide](docs/cli-guide.md) for every option and contract.
+Every command has its own scenario-oriented help. For example, `pyr help exec`
+explains exact argv, shell expressions, script execution, and persisted environment
+values. See the [complete CLI guide](docs/cli-guide.md) for every option and contract.
 
 ## Two workspace types
 

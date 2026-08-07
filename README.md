@@ -22,6 +22,7 @@ pip install pyruns
 pyr --help
 pyruns --help
 pyr help -a  # 查看全部命令
+pyr help exec  # 查看 --、-c、脚本和环境变量的完整选择指南
 
 # 初始化当前项目的 shell workspace
 pyr init
@@ -107,7 +108,9 @@ pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 | `ui` / `dev` | 显式启动 Web UI |
 | `help` | 查看总帮助或子命令帮助 |
 
-完整说明见 [CLI 详细指南](docs/cli-guide.md)。
+每个命令都提供独立的场景化帮助；例如 `pyr help exec` 会直接说明精确 argv、Shell
+表达式、脚本执行和环境变量持久化之间的区别。完整说明见
+[CLI 详细指南](docs/cli-guide.md)。
 
 ## 两种工作区
 

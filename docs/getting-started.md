@@ -11,9 +11,13 @@ pyr --help
 pyruns --version
 pyruns --help
 pyr help -a
+pyr help exec
 ```
 
 Pyruns 同时安装 `pyr` 与 `pyruns` 两个完全等价的正式命令。本文使用更短的 `pyr`；任何示例都可以原样换成 `pyruns`。裸命令与 `--help` 打印精简帮助，`help -a` 展开全部命令；它们都不会创建工作区或启动 Web 服务。
+
+当你不确定应该使用 `--`、`-c`、脚本直传、`-e` 还是 `--env-file` 时，直接运行
+`pyr help exec`；它按常见场景给出选择规则和后续查看日志、等待、重跑的命令。
 
 ## 2. 第一个 shell 任务
 
