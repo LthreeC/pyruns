@@ -8,7 +8,7 @@ ways a research project usually connects to Pyruns.
 Basic `argparse` extraction. Start with:
 
 ```bash
-pyr examples/1_argparse_script/main.py
+pyr ui examples/1_argparse_script/main.py
 ```
 
 ## 2_pyruns_config
@@ -16,7 +16,8 @@ pyr examples/1_argparse_script/main.py
 Scripts that read task YAML through `pyruns.load()`.
 
 ```bash
-pyr examples/2_pyruns_config/main1.py examples/2_pyruns_config/config1.yaml
+pyr init examples/2_pyruns_config/main1.py --config examples/2_pyruns_config/config1.yaml
+pyr -w main1 run --from examples/2_pyruns_config/config1.yaml -n config1
 ```
 
 ## 3_hydra_script
@@ -32,13 +33,8 @@ pip install "pyruns[examples]"
 
 ```bash
 cd examples/3_hydra_script
-pyr
-```
-
-Then create a shell task such as:
-
-```bash
-python train.py model=small_net optimizer=adam train.epochs=2
+pyr init
+pyr exec -n hydra-smoke -- python train.py model=small_net optimizer=adam train.epochs=2
 ```
 
 ## 4_advanced_argparse
@@ -48,7 +44,8 @@ Advanced `argparse` coverage: positional args, `nargs`, append flags,
 choices, `count`, and a small `artifacts/runN/summary.json` output.
 
 ```bash
-pyr examples/4_advanced_argparse/main.py examples/4_advanced_argparse/configs/quick.yaml
+pyr init examples/4_advanced_argparse/main.py --config examples/4_advanced_argparse/configs/quick.yaml
+pyr -w main run --from examples/4_advanced_argparse/configs/quick.yaml -n quick
 ```
 
 ## 5_pyruns_load_nested
@@ -59,7 +56,8 @@ written by `pyruns.track()`. The folder also includes an optional
 and multi-GPU launch controls stay in environment variables.
 
 ```bash
-pyr examples/5_pyruns_load_nested/train.py examples/5_pyruns_load_nested/configs/base.yaml
+pyr init examples/5_pyruns_load_nested/train.py --config examples/5_pyruns_load_nested/configs/base.yaml
+pyr -w train run --from examples/5_pyruns_load_nested/configs/base.yaml -n base
 ```
 
 ## 6_shell_workspace
@@ -69,7 +67,8 @@ want Pyruns to manage commands rather than a single Python entrypoint.
 
 ```bash
 cd examples/6_shell_workspace
-pyr
+pyr init
+pyr exec -n bash-example -- ./payloads/bash_or_wsl.sh
 ```
 
 ## 7_multi_script_project

@@ -147,8 +147,13 @@ def test_official_entrypoints_render_their_own_complete_help(
     assert f"{program} exec -n smoke -- python -V" in command_help.stdout
     assert ".sh, .ps1, .cmd" in command_help.stdout
     assert f"{program} exec -n setup -- ./scripts/setup.sh" in command_help.stdout
+    assert "--env-file" in command_help.stdout
+    assert "-e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py" in command_help.stdout
+    assert "standard -- separator" in command_help.stdout
+    assert "-c COMMAND_STRING" in command_help.stdout
+    assert "--shell" not in command_help.stdout
     assert "python -V > python-version.txt" in command_help.stdout
-    assert "&&" not in command_help.stdout
+    assert "&&" in command_help.stdout
 
 
 @pytest.mark.parametrize(
@@ -182,6 +187,61 @@ def test_every_command_has_workspace_free_help(command, tmp_path):
     assert f"usage: pyr {command}" in result.stdout
 
 
+def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(
+    tmp_path,
+    monkeypatch,
+):
+    from pyruns.cli import commands
+
+    launched = {}
+
+    def launch_ui(**kwargs):
+        launched.update(kwargs)
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(commands, "_launch_ui", launch_ui)
+
+    assert main(["ui", "shell", "--no-browser"]) == 0
+    shell_workspace = tmp_path / "_pyruns_" / "_shell_"
+    assert shell_workspace.is_dir()
+    assert launched == {
+        "start_path": "/",
+        "port": None,
+        "open_browser": False,
+    }
+
+    script = tmp_path / "train.py"
+    script.write_text("print('train')\n", encoding="utf-8")
+    launched.clear()
+
+    assert main(["ui", str(script), "--port", "8123"]) == 0
+    assert launched == {
+        "start_path": "/",
+        "port": 8123,
+        "open_browser": None,
+    }
+    launched.clear()
+
+    assert main(["ui", "train"]) == 0
+    assert launched == {
+        "start_path": "/",
+        "port": None,
+        "open_browser": None,
+    }
+    assert (tmp_path / "_pyruns_" / ".active_workspace").read_text(
+        encoding="utf-8"
+    ) == "train"
+
+    removed = _run_cli(tmp_path, "ui", "--shell")
+    assert removed.returncode == 2
+    assert "unrecognized arguments: --shell" in removed.stderr
+
+    old_workspace_form = _run_cli(tmp_path, "-w", "train", "ui")
+    assert old_workspace_form.returncode == 2
+    assert "ui does not use -w/--workspace" in old_workspace_form.stderr
+
+
 @pytest.mark.parametrize(
     "removed",
     [
@@ -212,6 +272,33 @@ def test_run_rejects_old_workspace_conflicting_workers_short_flag(tmp_path):
     result = _run_cli(tmp_path, "run", "-w", "2")
     assert result.returncode == 2
     assert "unrecognized arguments: -w" in result.stderr
+
+
+def test_exec_argv_requires_the_standard_separator(tmp_path):
+    result = _run_cli(tmp_path, "exec", sys.executable, "-V")
+
+    assert result.returncode == 2
+    assert "exec argv form requires '--' before COMMAND" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("-w", "shell", "init"), "init does not use -w/--workspace"),
+        (("-w", "shell", "config", "list"), "config does not use -w/--workspace"),
+        (("-w", "shell", "metrics"), "metrics does not use -w/--workspace"),
+        (("-w", "shell", "dev", "train.py"), "dev does not use -w/--workspace"),
+        (("--json", "ui"), "--json is not supported by ui or dev"),
+        (("--json", "dev", "train.py"), "--json is not supported by ui or dev"),
+    ],
+)
+def test_commands_reject_global_options_they_do_not_use(tmp_path, args, message):
+    result = _run_cli(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_unknown_options_fail_with_usage_on_stderr(tmp_path):
@@ -342,7 +429,7 @@ def test_exec_dry_run_reports_automatic_name_collision_without_writing(tmp_path)
     assert {path.name for path in (workspace / TASKS_DIR).iterdir()} == before
 
 
-def test_exec_shell_dry_run_does_not_evaluate_the_expression(tmp_path):
+def test_exec_command_string_dry_run_does_not_evaluate_the_expression(tmp_path):
     marker = tmp_path / "must-not-exist.txt"
     expression = f'echo touched > "{marker}"'
 
@@ -350,7 +437,7 @@ def test_exec_shell_dry_run_does_not_evaluate_the_expression(tmp_path):
         tmp_path,
         "exec",
         "--dry-run",
-        "--shell",
+        "-c",
         expression,
     )
 
@@ -358,6 +445,25 @@ def test_exec_shell_dry_run_does_not_evaluate_the_expression(tmp_path):
     assert "nothing was created or run" in result.stdout
     assert not marker.exists()
     assert not (tmp_path / "_pyruns_").exists()
+
+
+def test_follow_task_retries_final_log_until_size_is_stable(monkeypatch):
+    from pyruns.cli import commands
+
+    offsets = iter([0, 7, 7, 7, 7])
+    calls = []
+
+    monkeypatch.setattr(commands, "_task_record", lambda _task: {"status": "completed"})
+    monkeypatch.setattr(commands, "_log_path", lambda _task: "run1.log")
+
+    def read_log(_path, offset):
+        calls.append(offset)
+        return next(offsets)
+
+    monkeypatch.setattr(commands, "_write_available_log", read_log)
+
+    assert commands._follow_task({"name": "fast"})["status"] == "completed"
+    assert calls == [0, 0, 7, 7, 7]
 
 
 def test_workspace_discovery_walks_upward(tmp_path, monkeypatch, capsys):
@@ -616,7 +722,7 @@ def test_shell_expression_rerun_uses_creation_shell_runtime(tmp_path):
         "exec",
         "--name",
         "stored-shell",
-        "--shell",
+        "-c",
         "Write-Output stored-shell-ok",
     )
     assert first.returncode == 0, first.stdout + first.stderr
@@ -717,7 +823,7 @@ def test_cmd_exact_argv_round_trip_preserves_batch_metacharacters(tmp_path, monk
     assert json.loads(result.stdout) == expected
 
 
-def test_exec_shell_preserves_expression(tmp_path, monkeypatch, capsys):
+def test_exec_command_string_preserves_expression(tmp_path, monkeypatch, capsys):
     from pyruns.cli import commands
 
     expression = (
@@ -727,9 +833,7 @@ def test_exec_shell_preserves_expression(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(commands, "_find_project_root", lambda: None)
-    assert main(
-        ["exec", "--name", "shell-expression", "--shell", expression]
-    ) == 0
+    assert main(["exec", "--name", "shell-expression", "-c", expression]) == 0
     output = capsys.readouterr().out
     assert "alpha" in output
     assert "beta" in output
@@ -753,7 +857,24 @@ def test_exec_failure_propagates_nonzero(tmp_path):
     )
     assert result.returncode == 1
     task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "argv-failure"
-    assert load_task_info(str(task_dir))["status"] == "failed"
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "failed"
+    assert info["exit_codes"] == [7]
+    assert len(info["durations"]) == 1
+    assert info["durations"][0] >= 0
+    assert "[PYRUNS] Exit code: 7" in result.stdout
+    assert "[PYRUNS] Duration:" in result.stdout
+
+    shown = _run_cli(tmp_path, "--json", "-w", "shell", "show", "argv-failure@1")
+    detail = json.loads(shown.stdout)
+    assert detail["exit_codes"] == [7]
+    assert detail["durations"] == info["durations"]
+    assert detail["source_states"] == info["source_states"]
+    assert detail["records"] == info["records"]
+    assert detail["tracks"] == info["tracks"]
+    assert detail["selected_run"]["exit_code"] == 7
+    assert detail["selected_run"]["duration_seconds"] == info["durations"][0]
+    assert detail["selected_run"]["source_state"] == info["source_states"][0]
 
 
 def test_exec_detach_returns_before_completion(tmp_path):
@@ -797,6 +918,138 @@ def test_exec_environment_is_persisted_and_used(tmp_path):
     assert "works" in result.stdout
     task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "env-task"
     assert load_task_info(str(task_dir))["env"] == {"PYRUNS_V1_VALUE": "works"}
+
+
+@pytest.mark.parametrize("env_flag", ["-e", "--env"])
+def test_exec_accepts_multiple_values_after_one_env_flag(tmp_path, env_flag):
+    result = _run_cli(
+        tmp_path,
+        "--json",
+        "exec",
+        env_flag,
+        "PYRUNS_ENV_A=one",
+        "PYRUNS_ENV_B=two",
+        "-e",
+        "PYRUNS_ENV_C=three",
+        "--dry-run",
+        "--name",
+        "compact-env",
+        "--",
+        sys.executable,
+        "-V",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["task"]["planned_name"] == "compact-env"
+    assert payload["env"] == {
+        "PYRUNS_ENV_A": "one",
+        "PYRUNS_ENV_B": "two",
+        "PYRUNS_ENV_C": "three",
+    }
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+def test_exec_compact_env_stops_at_command_string_option(tmp_path):
+    expression = "echo compact-env"
+    result = _run_cli(
+        tmp_path,
+        "--json",
+        "exec",
+        "-e",
+        "PYRUNS_ENV_A=one",
+        "PYRUNS_ENV_B=two",
+        "--dry-run",
+        "-c",
+        expression,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["command_mode"] == "shell"
+    assert payload["shell_expression"] == expression
+    assert payload["env"] == {
+        "PYRUNS_ENV_A": "one",
+        "PYRUNS_ENV_B": "two",
+    }
+
+
+def test_exec_env_files_merge_in_order_and_cli_env_takes_precedence(tmp_path):
+    (tmp_path / "base.env").write_text(
+        "# shared training defaults\n"
+        "PYRUNS_ENV_A=base\n"
+        "PYRUNS_ENV_SHARED=base\n"
+        "PYRUNS_ENV_TOKEN=left=right\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "override.env").write_text(
+        "\nPYRUNS_ENV_SHARED=file-two\nPYRUNS_ENV_B=second\n",
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        "env-files",
+        "--env-file",
+        "base.env",
+        "--env-file",
+        "override.env",
+        "-e",
+        "PYRUNS_ENV_SHARED=command-line",
+        "--",
+        sys.executable,
+        "-c",
+        (
+            "import json,os; "
+            "print(json.dumps({k: os.environ[k] for k in "
+            "['PYRUNS_ENV_A','PYRUNS_ENV_SHARED','PYRUNS_ENV_TOKEN','PYRUNS_ENV_B']}))"
+        ),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected = {
+        "PYRUNS_ENV_A": "base",
+        "PYRUNS_ENV_SHARED": "command-line",
+        "PYRUNS_ENV_TOKEN": "left=right",
+        "PYRUNS_ENV_B": "second",
+    }
+    assert json.dumps(expected) in result.stdout
+    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "env-files"
+    assert load_task_info(str(task_dir))["env"] == expected
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "message"),
+    [
+        ("missing.env", None, "environment file not found"),
+        ("broken.env", "BROKEN\n", "must use KEY=VALUE"),
+        ("bad-name.env", "1INVALID=value\n", "invalid environment variable name"),
+    ],
+)
+def test_exec_validates_env_files_before_creating_workspace(
+    tmp_path,
+    filename,
+    content,
+    message,
+):
+    if content is not None:
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--env-file",
+        filename,
+        "--",
+        sys.executable,
+        "-V",
+    )
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_exec_validates_environment_before_creating_workspace(tmp_path):
@@ -861,20 +1114,24 @@ def test_exec_persists_exact_argv_and_creation_workdir(tmp_path):
     assert rerun_payload == [str(nested), "value with spaces", "x&y"]
 
 
-def test_exec_shell_requires_one_quoted_expression(tmp_path):
+def test_exec_command_string_rejects_an_unquoted_tail_and_removed_shell_option(tmp_path):
     result = _run_cli(
         tmp_path,
         "exec",
         "--name",
         "bad-shell",
-        "--shell",
+        "-c",
         "echo",
         "hello",
     )
 
     assert result.returncode == 2
-    assert "requires one quoted shell expression" in result.stderr
+    assert "-c/--command accepts exactly one command string" in result.stderr
     assert not (tmp_path / "_pyruns_").exists()
+
+    removed = _run_cli(tmp_path, "exec", "--shell", "echo hello")
+    assert removed.returncode == 2
+    assert "unrecognized arguments: --shell" in removed.stderr
 
 
 def test_add_is_noninteractive_and_run_from_waits_for_all(tmp_path):
@@ -1103,6 +1360,11 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert detail["selected_run"]["index"] == 1
     assert detail["selected_run"]["start_time"]
     assert detail["selected_run"]["finish_time"]
+    assert detail["selected_run"]["duration_seconds"] >= 0
+    assert detail["selected_run"]["exit_code"] == 0
+    assert detail["selected_run"]["source_state"]
+    assert isinstance(detail["selected_run"]["record"], dict)
+    assert isinstance(detail["selected_run"]["track"], dict)
     assert detail["selected_run"]["log"].endswith("run1.log")
 
     conflict = _run_cli(
@@ -1361,16 +1623,14 @@ def test_export_defaults_to_stdout_and_can_write_file(tmp_path):
 
 def test_config_get_set_unset_and_path(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    path = _run_cli(tmp_path, "-w", "shell", "config", "path")
+    path = _run_cli(tmp_path, "config", "path")
     assert path.returncode == 0
     assert Path(path.stdout.strip()).is_file()
-    json_path = _run_cli(tmp_path, "--json", "-w", "shell", "config", "path")
+    json_path = _run_cli(tmp_path, "--json", "config", "path")
     assert Path(json.loads(json_path.stdout)["path"]).is_file()
 
     set_result = _run_cli(
         tmp_path,
-        "-w",
-        "shell",
         "config",
         "set",
         "manager_max_workers",
@@ -1379,8 +1639,6 @@ def test_config_get_set_unset_and_path(tmp_path):
     assert set_result.returncode == 0
     get_result = _run_cli(
         tmp_path,
-        "-w",
-        "shell",
         "config",
         "get",
         "manager_max_workers",
@@ -1388,8 +1646,6 @@ def test_config_get_set_unset_and_path(tmp_path):
     assert get_result.stdout.strip() == "7"
     unset_result = _run_cli(
         tmp_path,
-        "-w",
-        "shell",
         "config",
         "unset",
         "manager_max_workers",
@@ -1400,13 +1656,9 @@ def test_config_get_set_unset_and_path(tmp_path):
 
 def test_config_rejects_unknown_keys_and_wrong_types(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    unknown = _run_cli(
-        tmp_path, "-w", "shell", "config", "get", "unknown"
-    )
+    unknown = _run_cli(tmp_path, "config", "get", "unknown")
     wrong_type = _run_cli(
         tmp_path,
-        "-w",
-        "shell",
         "config",
         "set",
         "manager_max_workers",

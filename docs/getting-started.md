@@ -41,7 +41,7 @@ my-project/
 pyr exec -n smoke -- python -V
 ```
 
-`--` 后面是目标程序的精确参数向量。即使命令自身带 `--epochs`、`-p` 等选项，也不会与 Pyruns 参数混淆。
+`--` 是“Pyruns 参数到此结束”的分隔符，后面是目标程序的精确参数向量。它本身不启用 shell；即使命令自身带 `--epochs`、`-p` 等选项，也不会与 Pyruns 参数混淆。
 
 只预览计划、不创建 workspace/task 也不运行命令：
 
@@ -94,28 +94,45 @@ pyr -w shell stop train
 
 取消请求会送到真正拥有该任务的 runner，而不是只修改显示状态。
 
-## 4. 什么时候使用 `--shell`
+## 4. 什么时候使用 `-c`
 
-普通程序调用总是优先使用精确 argv：
+普通程序或脚本文件总是优先使用 `--` 后的精确 argv。直接运行脚本文件时，Pyruns 会按扩展名选择解释器，这可以直接替代 `bash xxx.sh`，同时保留日志、运行时长、退出码和源码状态：
 
 ```bash
 pyr exec -n eval -- python eval.py --checkpoint "best model.pt"
+pyr exec -n preprocess -- ./scripts/preprocess.sh "dataset A" --fast
 ```
 
-只有需要 shell 解析的语法时才使用 `--shell`：
+只有需要管道、重定向、变量展开、通配符或 `&&` 等 shell 解析时才使用 `-c` / `--command`。它后面必须是一整个被引用的 command string：
 
 ```bash
-pyr exec -n report --shell "python eval.py > metrics.txt"
+pyr exec -n report -c "python eval.py > metrics.txt"
+pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log"
 ```
 
-给任务保存环境变量：
+少量环境变量只需写一次 `-e`，`--` 明确标记目标命令的开始：
 
 ```bash
-pyr exec -n gpu0 \
-  --env CUDA_VISIBLE_DEVICES=0 \
-  --env PYTHONUNBUFFERED=1 \
-  -- python train.py
+pyr exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
 ```
+
+`-e` / `--env` 仍可重复，因此旧命令完全兼容。Pyruns 已自动为子进程设置 `PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1`。
+
+变量较多时写入 UTF-8 env 文件：
+
+```dotenv
+# .env.train
+CUDA_VISIBLE_DEVICES=0
+TOKENIZERS_PARALLELISM=false
+```
+
+```bash
+pyr exec -n gpu0 --env-file .env.train -e SEED=42 -- python train.py
+```
+
+`--env-file` 可重复：后面的文件覆盖前面的文件，命令行 `-e` 再覆盖文件值。文件只读取空行、整行 `#` 注释和 `KEY=VALUE`，不做 shell 插值。变量会明文保存到任务元数据，所以不要用于密钥。
+
+在 POSIX shell 中也可写 `CUDA_VISIBLE_DEVICES=0 pyr exec ...`，当前运行会继承该变量；但它不会被任务保存，后续从别的终端、Web UI 或 `pyr run` 重跑时不保证相同。需要可复现时仍应使用 `-e` 或 `--env-file`。
 
 ## 5. 第一个 Python script workspace
 
@@ -240,7 +257,7 @@ pyr --json -w shell show smoke
 pyr --json -w shell show smoke@2
 pyr --json -w shell log smoke --path
 pyr --json -w shell log smoke@2 --path
-pyr --json -w shell config list
+pyr --json config list
 pyr --json metrics
 ```
 
@@ -281,11 +298,11 @@ pyr -w train export -s completed -o results.csv
 管理项目配置：
 
 ```bash
-pyr -w train config list
-pyr -w train config get manager_max_workers
-pyr -w train config set manager_max_workers 4
-pyr -w train config unset manager_max_workers
-pyr -w train config path
+pyr config list
+pyr config get manager_max_workers
+pyr config set manager_max_workers 4
+pyr config unset manager_max_workers
+pyr config path
 ```
 
 ## 12. 显式打开 Web UI
@@ -296,8 +313,8 @@ CLI 是默认控制面；需要可视化浏览时显式启动：
 pyr ui                                  # workspace launcher
 pyr ui train.py                         # script workspace
 pyr ui train.py --config config.yaml    # 导入模板
-pyr ui --shell                          # shell workspace
-pyr ui --shell --no-browser             # headless server
+pyr ui shell                            # shell workspace
+pyr ui shell --no-browser               # headless server
 pyr dev train.py                        # 开发热更新
 ```
 

@@ -17,7 +17,8 @@ This example is designed to exercise common training-script argument patterns:
 Start the workspace with:
 
 ```bash
-pyr main.py configs/quick.yaml
+pyr init main.py --config configs/quick.yaml
+pyr -w main run --from configs/quick.yaml -n quick
 ```
 
 `configs/grid.yaml` is a concrete single-run recipe with larger values. UI

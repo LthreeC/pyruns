@@ -40,6 +40,7 @@ from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
     launcher_query,
+    mark_workspace_active,
     resolve_workspace_for_script,
 )
 from pyruns.utils.batch_utils import generate_batch_configs
@@ -344,6 +345,11 @@ def _selected_run_record(task: dict[str, Any], run_index: int) -> dict[str, Any]
         "start_time": value_at("start_times") or None,
         "finish_time": value_at("finish_times") or None,
         "pid": value_at("pids") or None,
+        "duration_seconds": value_at("durations"),
+        "exit_code": value_at("exit_codes"),
+        "source_state": value_at("source_states") or None,
+        "record": value_at("records") or {},
+        "track": value_at("tracks") or {},
         "log": _normalized_path(log_path) if os.path.isfile(log_path) else None,
     }
 
@@ -402,6 +408,11 @@ def _task_record(
                 "start_times": info.get("start_times", task.get("start_times", [])) or [],
                 "finish_times": info.get("finish_times", task.get("finish_times", [])) or [],
                 "pids": pids,
+                "durations": info.get("durations", task.get("durations", [])) or [],
+                "exit_codes": info.get("exit_codes", task.get("exit_codes", [])) or [],
+                "source_states": info.get("source_states", task.get("source_states", [])) or [],
+                "records": info.get("records", task.get("records", [])) or [],
+                "tracks": info.get("tracks", task.get("tracks", [])) or [],
                 "env": info.get("env", task.get("env", {})) or {},
                 "notes": info.get("notes", task.get("notes", "")) or "",
                 "config": task.get("config", {}) or {},
@@ -450,6 +461,41 @@ def _parse_env(items: list[str]) -> dict[str, str]:
         if not _ENV_NAME_RE.match(key):
             raise CliUsageError(f"invalid environment variable name: {key}")
         env[key] = value
+    return env
+
+
+def _load_env_files(paths: list[str], *, base_dir: str) -> dict[str, str]:
+    """Load simple dotenv-style files, with later files taking precedence."""
+
+    env: dict[str, str] = {}
+    for item in paths:
+        requested = os.path.expanduser(str(item))
+        path = requested if os.path.isabs(requested) else os.path.join(base_dir, requested)
+        display_path = _normalized_path(path)
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                lines = handle.readlines()
+        except FileNotFoundError as exc:
+            raise CliUsageError(f"environment file not found: {display_path}") from exc
+        except (OSError, UnicodeError) as exc:
+            raise CliUsageError(f"unable to read environment file {display_path}: {exc}") from exc
+
+        for line_number, raw_line in enumerate(lines, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                raise CliUsageError(
+                    f"environment file {display_path}:{line_number} must use KEY=VALUE"
+                )
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not _ENV_NAME_RE.match(key):
+                raise CliUsageError(
+                    f"invalid environment variable name in {display_path}:{line_number}: {key}"
+                )
+            env[key] = value
     return env
 
 
@@ -584,7 +630,16 @@ def _follow_task(task: dict[str, Any]) -> dict[str, Any]:
             offset = 0
         offset = _write_available_log(current_path, offset)
         if latest_record["status"] in _FINAL_STATUSES:
-            offset = _write_available_log(current_path, offset)
+            stable_reads = 0
+            deadline = time.monotonic() + 0.5
+            while stable_reads < 3 and time.monotonic() < deadline:
+                next_offset = _write_available_log(current_path, offset)
+                if next_offset == offset:
+                    stable_reads += 1
+                    time.sleep(0.05)
+                else:
+                    offset = next_offset
+                    stable_reads = 0
             return latest_record
         time.sleep(0.1)
 
@@ -736,24 +791,33 @@ def cmd_init(context: Any, args: Any) -> int:
 
 def cmd_exec(context: Any, args: Any) -> int:
     parts = list(args.command_argv or [])
-    if parts and parts[0] == "--":
+    has_separator = bool(parts and parts[0] == "--")
+    if has_separator:
         parts = parts[1:]
-    if not parts:
-        raise CliUsageError("exec requires COMMAND after '--'")
+    shell_command = args.shell_command
+    if shell_command is not None and parts:
+        raise CliUsageError("-c/--command accepts exactly one command string")
+    if shell_command is None and parts and not has_separator:
+        raise CliUsageError("exec argv form requires '--' before COMMAND")
+    if shell_command is None and not parts:
+        raise CliUsageError("exec requires COMMAND after '--' or -c/--command COMMAND_STRING")
 
-    env = _parse_env(list(args.env or []))
+    env = _load_env_files(
+        list(args.env_file or []),
+        base_dir=os.path.abspath(context.directory),
+    )
+    env.update(_parse_env(list(args.env or [])))
     requested_name = str(args.name or "command").strip()
     name_error = validate_task_name(requested_name)
     if name_error:
         raise CliUsageError(name_error)
 
     source_script: str | None = None
-    if args.shell:
-        if len(parts) != 1:
-            raise CliUsageError("exec --shell requires one quoted shell expression")
-        command_text = parts[0]
+    uses_shell_command = shell_command is not None
+    if uses_shell_command:
+        command_text = str(shell_command)
         if not command_text.strip():
-            raise CliUsageError("exec command cannot be empty")
+            raise CliUsageError("-c/--command cannot be empty")
     else:
         if not str(parts[0]).strip():
             raise CliUsageError("exec command cannot be empty")
@@ -764,12 +828,12 @@ def cmd_exec(context: Any, args: Any) -> int:
     command_argv: list[str] | None = None
     shell_executable: str | None = None
     shell_kind: str | None = None
-    if args.shell:
+    if uses_shell_command:
         runtime = get_shell_runtime_for_workspace(workspace)
         shell_executable = str(runtime.get("executable", "") or "").strip()
         shell_kind = str(runtime.get("terminal_kind", "") or "").strip().lower()
         if not shell_executable or not bool(runtime.get("available", False)):
-            raise CliError("unable to resolve an available shell for --shell")
+            raise CliError("unable to resolve an available shell for -c/--command")
     else:
         command_argv = _build_exec_argv(parts, workspace, source_script)
         command_text = _render_argument_command(command_argv, workspace)
@@ -792,9 +856,9 @@ def cmd_exec(context: Any, args: Any) -> int:
             "creates_workspace": not workspace_exists,
             "task": task_plan,
             "workdir": _normalized_path(context.directory),
-            "command_mode": "shell" if args.shell else "argv",
+            "command_mode": "shell" if uses_shell_command else "argv",
             "command_argv": command_argv,
-            "shell_expression": command_text if args.shell else None,
+            "shell_expression": command_text if uses_shell_command else None,
             "shell_executable": shell_executable or None,
             "shell_kind": shell_kind or None,
             "script": _normalized_path(source_script) if source_script else None,
@@ -828,7 +892,7 @@ def cmd_exec(context: Any, args: Any) -> int:
             task = generator.create_shell_task(
                 requested_name,
                 command_text.rstrip() + "\n",
-                command_mode="shell" if args.shell else "argv",
+                command_mode="shell" if uses_shell_command else "argv",
                 command_argv=command_argv,
                 workdir=context.directory,
                 shell_executable=shell_executable,
@@ -1075,6 +1139,11 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
         print(f"Started:    {run['start_time'] or '-'}")
         print(f"Finished:   {run['finish_time'] or '-'}")
         print(f"Run PID:    {run['pid'] or '-'}")
+        duration = run["duration_seconds"]
+        print(f"Duration:   {duration:.3f}s" if duration is not None else "Duration:   -")
+        exit_code = run["exit_code"]
+        print(f"Exit code:  {exit_code}" if exit_code is not None else "Exit code:  -")
+        print(f"Source:     {run['source_state'] or '-'}")
         print(f"Run log:    {run['log'] or '-'}")
     if record["command"]:
         print(f"Command:    {record['command']}")
@@ -1471,27 +1540,38 @@ def _launch_ui(*, start_path: str, port: int | None, open_browser: bool | None) 
 
 
 def cmd_ui(context: Any, args: Any) -> int:
-    if args.shell and args.script:
-        raise CliUsageError("ui accepts either SCRIPT or --shell, not both")
-    if args.config and not args.script:
-        raise CliUsageError("--config requires SCRIPT")
+    if context.workspace:
+        raise CliUsageError(
+            "ui does not use -w/--workspace; pass WORKSPACE or SCRIPT.py after 'ui'"
+        )
+    target = str(args.target or "").strip()
+    is_script = target.lower().endswith(".py")
+    if args.config and not is_script:
+        raise CliUsageError("--config requires SCRIPT.py")
     open_browser = _browser_choice(args)
-    if args.shell:
+    if target.lower() == "shell":
         project_root = _find_project_root() or _normalized_path(
             os.path.join(os.getcwd(), DEFAULT_ROOT_NAME)
         )
-        os.makedirs(project_root, exist_ok=True)
-        bootstrap_shell_workspace(project_root)
+        workspace = _normalized_path(bootstrap_shell_workspace(project_root))
+        os.environ[ENV_KEY_ROOT] = workspace
+        mark_workspace_active(workspace)
         return _launch_ui(
-            start_path="/generator?launcher=1",
+            start_path="/",
             port=args.port,
             open_browser=open_browser,
         )
-    if args.script:
+    if is_script:
         try:
-            bootstrap_workspace(args.script, args.config)
+            bootstrap_workspace(target, args.config)
         except (FileNotFoundError, ValueError) as exc:
             raise CliError(str(exc)) from exc
+        return _launch_ui(start_path="/", port=args.port, open_browser=open_browser)
+
+    if target:
+        workspace = _resolve_workspace_selector(target, _find_project_root())
+        os.environ[ENV_KEY_ROOT] = workspace
+        mark_workspace_active(workspace)
         return _launch_ui(start_path="/", port=args.port, open_browser=open_browser)
 
     os.makedirs(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME), exist_ok=True)
@@ -1521,6 +1601,10 @@ def dispatch(context: Any, args: Any) -> int:
     """Dispatch one already-parsed command."""
 
     handler = str(args.handler)
+    if context.workspace and handler in {"init", "config", "metrics", "dev"}:
+        raise CliUsageError(f"{handler} does not use -w/--workspace")
+    if context.json_output and handler in {"ui", "dev"}:
+        raise CliUsageError("--json is not supported by ui or dev")
     if handler == "init":
         return cmd_init(context, args)
     if handler == "exec":

@@ -926,10 +926,10 @@ class PyrunsRuntime:
         return self.get_task(task_name) or task
 
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
-        """Cancel one task and return the updated snapshot."""
+        """Request cancellation from the runner that owns the task."""
         task = self.require_task(task_name)
         self.invalidate_cache()
-        ok = self.task_manager.cancel_task(task_name)
+        ok = self.task_manager.request_task_cancel(task_name)
         if not ok:
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
         return self.get_task(task_name) or task

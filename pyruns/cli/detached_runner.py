@@ -68,10 +68,13 @@ def main() -> int:
 
     try:
         while True:
-            statuses = []
+            infos = []
             for task in selected:
                 info = load_task_info(str(task["dir"])) or {}
-                statuses.append(str(info.get("status", "") or "").lower())
+                infos.append(info)
+            if any(not info for info in infos):
+                return 1
+            statuses = [str(info.get("status", "") or "").lower() for info in infos]
             if all(status in _FINAL_STATUSES for status in statuses):
                 return 0 if all(status == "completed" for status in statuses) else 1
             time.sleep(0.1)

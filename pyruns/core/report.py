@@ -10,7 +10,7 @@ import json
 from typing import Dict, Any, List
 
 # Imported for internal use
-from pyruns.utils.info_io import load_record_data
+from pyruns.utils.info_io import load_record_data, run_slot_count
 from pyruns.utils import get_now_str
 
 
@@ -21,7 +21,8 @@ from pyruns.utils import get_now_str
 def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
     """Build CSV string — one row per task per run.
 
-    Columns: name, status, run, start_time, finish_time, pid,
+    Columns: name, status, run, start_time, finish_time, duration_seconds,
+             exit_code, pid,
              plus any monitor data keys.
     """
     all_rows: List[Dict[str, Any]] = []
@@ -33,9 +34,11 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
         starts = t.get("start_times") or []
         finishes = t.get("finish_times") or []
         pids = t.get("pids") or []
+        durations = t.get("durations") or []
+        exit_codes = t.get("exit_codes") or []
         data = load_record_data(t["dir"])
 
-        n_runs = max(len(starts), 1)  # at least 1 row even if never run
+        n_runs = max(run_slot_count(t), 1)  # at least 1 row even if never run
 
         for i in range(n_runs):
             row: Dict[str, Any] = {
@@ -44,6 +47,8 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
                 "run": i + 1,
                 "start_time": starts[i] if i < len(starts) else "",
                 "finish_time": finishes[i] if i < len(finishes) else "",
+                "duration_seconds": durations[i] if i < len(durations) else "",
+                "exit_code": exit_codes[i] if i < len(exit_codes) else "",
                 "pid": pids[i] if i < len(pids) else "",
             }
 
@@ -60,7 +65,16 @@ def build_export_csv(tasks: List[Dict[str, Any]]) -> str:
     if not all_rows:
         return ""
 
-    priority = ["name", "status", "run", "start_time", "finish_time", "pid"]
+    priority = [
+        "name",
+        "status",
+        "run",
+        "start_time",
+        "finish_time",
+        "duration_seconds",
+        "exit_code",
+        "pid",
+    ]
     cols = [c for c in priority if c in all_keys]
     cols += sorted(all_keys - set(priority))
 

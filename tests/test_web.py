@@ -31,7 +31,7 @@ from pyruns.core.executor import _build_command, _resolve_python_runtime
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
-from pyruns.utils.info_io import save_task_info, update_task_info
+from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
 from pyruns.web.app import create_app
 from pyruns.web.runtime import PyrunsRuntime, parse_global_env_text
 
@@ -1627,13 +1627,43 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
 
     with patch.object(runtime.task_manager, "start_task_now", side_effect=fake_start):
         run_response = client.post("/api/tasks/alpha/run", json={})
-    with patch.object(runtime.task_manager, "cancel_task", side_effect=fake_cancel):
+    with patch.object(runtime.task_manager, "request_task_cancel", side_effect=fake_cancel):
         cancel_response = client.post("/api/tasks/alpha/cancel")
 
     assert run_response.status_code == 200
     assert run_response.json()["task"]["status"] == "running"
     assert cancel_response.status_code == 200
     assert cancel_response.json()["task"]["status"] == "cancelled"
+
+
+def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded()
+    task_dir = workspace / TASKS_DIR / "alpha"
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update(
+            {
+                "runner_id": "other-host:123:abcdef",
+                "runner_host": "other-host",
+                "lease_heartbeat": time.time(),
+                "lease_until": time.time() + 60,
+                "pids": [987654],
+            }
+        ),
+    )
+    runtime.task_manager.refresh_from_disk(task_ids=["alpha"], force_all=True)
+    client = TestClient(create_app(runtime))
+
+    response = client.post("/api/tasks/alpha/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "running"
+    info = load_task_info(str(task_dir))
+    assert info["cancel_requested_at"]
+    assert info["runner_id"] == "other-host:123:abcdef"
 
 
 def test_run_task_endpoint_rejects_unclaimed_start(tmp_path):
@@ -2676,7 +2706,7 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
         runtime.start_tasks_batch(["alpha"])
 
     monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha")})
-    monkeypatch.setattr(runtime.task_manager, "cancel_task", lambda name: False)
+    monkeypatch.setattr(runtime.task_manager, "request_task_cancel", lambda name: False)
     with pytest.raises(ValueError, match="cannot be cancelled"):
         runtime.cancel_task("alpha")
 

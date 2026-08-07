@@ -61,14 +61,14 @@ pyr -C path/to/project -w shell status
 
 ## Track A Terminal Command
 
-`exec` initializes the shell workspace automatically when needed. Pass an exact argument vector after `--`:
+`exec` initializes the shell workspace automatically when needed. `--` ends Pyruns option parsing and passes every following item as an exact argument vector:
 
 ```bash
 pyr exec -n env-check -- python -V
 pyr exec -n smoke -- python train.py --epochs 1
 ```
 
-This quoting-safe form is the default. Pyruns stores the argument vector as structured task metadata and reuses the creation working directory on every rerun. Changing the configured shell later does not reinterpret an argv task.
+This quoting-safe form is the default. `--` is a separator, not a shell-mode switch: pipes, redirects, variables, globs, and command chaining are not interpreted. Pyruns stores the argument vector as structured task metadata and reuses the creation working directory on every rerun. Changing the configured shell later does not reinterpret an argv task.
 
 Pass an existing shell script file as the first exact argument to select its interpreter automatically:
 
@@ -79,23 +79,31 @@ pyr exec -n setup-cmd -- .\scripts\setup.cmd
 pyr exec -n setup-bat -- .\scripts\setup.bat
 ```
 
-`.sh` uses an available Bash/sh without requiring an executable bit; `.ps1` uses non-interactive PowerShell; `.cmd` and `.bat` use `cmd.exe` on Windows. Any values after the file path are arguments for that script, not Pyruns options. Paths and script arguments remain separate. The task keeps the original absolute path and records the script content hash at each run, so `run TASK` remains traceable if the source file changes.
+`.sh` uses an available Bash/sh without requiring an executable bit; `.ps1` uses non-interactive PowerShell; `.cmd` and `.bat` use `cmd.exe` on Windows. Any values after the file path are arguments for that script, not Pyruns options. Paths and script arguments remain separate. This is the tracked replacement for direct `bash xxx.sh` execution: Pyruns keeps logs, elapsed time, the raw exit code, Git/source state, and the original absolute script path for reruns.
 
-Use `--shell` only when the command intentionally depends on shell syntax such as pipes, redirects, variable expansion, or command chaining:
-
-```bash
-pyr exec -n report --shell "python eval.py > metrics.txt"
-```
-
-`--shell` accepts exactly one quoted expression. Pyruns stores the resolved shell executable and creation working directory, then uses both for reruns. Use argv mode whenever shell syntax is not required.
-
-Set task-local environment variables with repeatable `-e` or `--env`:
+Use `-c` / `--command` only when the command intentionally depends on shell syntax such as pipes, redirects, variable expansion, or command chaining:
 
 ```bash
-pyr exec -n train -e CUDA_VISIBLE_DEVICES=0 -- python train.py
+pyr exec -n report -c "python eval.py > metrics.txt"
 ```
 
-Task-local environment values are persisted in `task_info.json` and shown by `show`; do not put secrets there.
+`-c` follows the familiar `sh -c` convention and accepts exactly one quoted command string. Pyruns stores the resolved shell executable and creation working directory, then uses both for reruns. Use exact argv after `--` whenever shell syntax is not required.
+
+Set a few task-local environment variables with one `-e` or `--env` followed by multiple `KEY=VALUE` entries. `--` marks the target-command boundary. Repeating the option remains supported:
+
+```bash
+pyr exec -n train -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
+```
+
+Pyruns already sets `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and `PYTHONUTF8=1` for child processes. For larger sets, load one or more UTF-8 files containing blank lines, whole-line `#` comments, and `KEY=VALUE` entries:
+
+```bash
+pyr exec -n train --env-file .env.train -e SEED=42 -- python train.py
+```
+
+Later env files override earlier files; command-line `-e` values override every file. Env files do not evaluate shell syntax or interpolation. Task-local environment values are persisted in `task_info.json` and shown by `show`; do not put secrets there.
+
+Environment variables set on the invoking shell are inherited for that invocation but are not persisted with the task. Use `-e` or `--env-file` when later CLI or Web UI reruns must receive the same value.
 
 Foreground execution follows plain log output and returns the task result. Add `-d` or `--detach` only when the caller should return after the hidden runner accepts the task:
 
@@ -179,7 +187,7 @@ pyr -w shell restore train-lr1e3
 
 `log -f` streams bytes to stdout until the task finishes. It is not a prompt, REPL, full-screen viewer, or other interactive terminal mode.
 
-`log TASK@RUN` and `log TASK --run RUN` select the same historical log. Do not combine `TASK@RUN` with `--run` or `--follow`. `show TASK@RUN` includes the selected run's start time, finish time, PID, and log path.
+`log TASK@RUN` and `log TASK --run RUN` select the same historical log. Do not combine `TASK@RUN` with `--run` or `--follow`. `show TASK@RUN` includes the selected run's start time, finish time, duration, raw exit code, PID, source state, record, track, and log path.
 
 ## Machine-Readable Operations
 
@@ -192,7 +200,7 @@ pyr --json -w shell show train
 pyr --json -w shell show train@2
 pyr --json -w shell log train --path
 pyr --json -w shell log train@2 --path
-pyr --json -w shell config list
+pyr --json config list
 pyr --json metrics
 ```
 
@@ -227,11 +235,11 @@ The Web UI never starts from a bare `pyr` or `pyruns` call. Use:
 pyr ui
 pyr ui train.py
 pyr ui train.py --config configs/default.yaml
-pyr ui --shell
+pyr ui shell
 pyr dev train.py
 ```
 
-Use `--no-browser` for headless servers.
+Pass an exact existing workspace name/path, `shell`, or a Python script path directly after `ui`. Unlike task commands, `ui` and `dev` do not use global `-w` or `--json`. Use `--no-browser` for headless servers.
 
 ## Disk Layout
 

@@ -1327,9 +1327,13 @@ def run_task_worker(
     progress = 0.0
     start_str = ""
     end_str = ""
+    duration_seconds: float | None = None
+    exit_code: int | None = None
+    process_started_at: float | None = None
     stop_summary: Dict[str, Any] | None = None
     heartbeat_stop = threading.Event()
     heartbeat_thread: threading.Thread | None = None
+    source_state_thread: threading.Thread | None = None
 
     def _refresh_runner_lease() -> None:
         if not runner_id:
@@ -1375,6 +1379,26 @@ def run_task_worker(
             source_state=collected,
         )
 
+    def _join_source_state() -> None:
+        if (
+            source_state_thread is not None
+            and source_state_thread is not threading.current_thread()
+            and source_state_thread.ident is not None
+        ):
+            source_state_thread.join()
+
+    def _capture_process_metrics() -> None:
+        nonlocal duration_seconds, exit_code
+        if process_started_at is not None:
+            duration_seconds = round(max(0.0, time.monotonic() - process_started_at), 6)
+        raw_returncode = getattr(proc, "returncode", None) if proc is not None else None
+        if isinstance(raw_returncode, int):
+            exit_code = raw_returncode
+
+    def _store_process_metrics(info: Dict[str, Any], slot: int) -> None:
+        info["durations"][slot] = duration_seconds
+        info["exit_codes"][slot] = exit_code
+
     def _finish_stopped_run(
         summary: Dict[str, Any],
         *,
@@ -1385,6 +1409,7 @@ def run_task_worker(
         status = "cancelled"
         progress = 0.0
         end_str = get_now_str()
+        _capture_process_metrics()
 
         def _mark_stopped(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)
@@ -1395,6 +1420,7 @@ def run_task_worker(
             info["finish_times"][slot] = end_str
             if proc is not None:
                 info["pids"][slot] = proc.pid
+            _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
         update_task_info(task_dir, _mark_stopped)
@@ -1486,6 +1512,7 @@ def run_task_worker(
             env=env,
             **_popen_process_group_kwargs(),
         )
+        process_started_at = time.monotonic()
 
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
@@ -1523,7 +1550,8 @@ def run_task_worker(
 
         update_task_info(task_dir, _mark_started)
 
-        threading.Thread(target=_collect_source_state_async, daemon=True).start()
+        source_state_thread = threading.Thread(target=_collect_source_state_async, daemon=True)
+        source_state_thread.start()
 
         if runner_id:
             heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
@@ -1565,7 +1593,10 @@ def run_task_worker(
         ret = proc.wait()
         reader_thread.join(timeout=5)
 
+        exit_code = int(ret)
+        _capture_process_metrics()
         end_str = get_now_str()
+        _join_source_state()
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
             status = "cancelled"
@@ -1574,7 +1605,11 @@ def run_task_worker(
             status = "completed" if ret == 0 else "failed"
             progress = 1.0 if ret == 0 else 0.0
 
-        finish_log = _lifecycle_banner("finish", name, end_str)
+        finish_log = (
+            _lifecycle_banner("finish", name, end_str)
+            + f"[PYRUNS] Exit code: {exit_code}\n"
+            + f"[PYRUNS] Duration: {duration_seconds:.3f}s\n"
+        )
         finish_payload = _append_run_log_text(log_path, finish_log, clean_boundary=True)
         log_emitter.emit(
             name,
@@ -1610,6 +1645,7 @@ def run_task_worker(
             info["finish_times"][slot] = end_str
             if proc is not None:
                 info["pids"][slot] = proc.pid
+            _store_process_metrics(info, slot)
             if RECORDS_KEY not in info:
                 info[RECORDS_KEY] = []
             if TRACKS_KEY not in info:
@@ -1664,11 +1700,18 @@ def run_task_worker(
             )
 
         logger.info("Task %s finished  status=%s", name, status)
-        return {"status": status, "progress": progress}
+        return {
+            "status": status,
+            "progress": progress,
+            "duration_seconds": duration_seconds,
+            "exit_code": exit_code,
+        }
 
     except Exception as exc:
         end_str = get_now_str()
         child_process_terminated = _terminate_started_process(proc, task_name=name, run_index=run_index)
+        _capture_process_metrics()
+        _join_source_state()
 
         def _mark_error(info: Dict[str, Any]) -> None:
             slot = ensure_run_slot(info, run_index)
@@ -1680,6 +1723,7 @@ def run_task_worker(
                 info["finish_times"][slot] = end_str
             if proc is not None:
                 info["pids"][slot] = proc.pid
+            _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
         update_task_info(task_dir, _mark_error)
@@ -1706,8 +1750,15 @@ def run_task_worker(
             + f"\n{'=' * 70}"
         )
         logger.error("%s", block)
-        return {"status": "failed", "progress": 0.0, "error": str(exc)}
+        return {
+            "status": "failed",
+            "progress": 0.0,
+            "duration_seconds": duration_seconds,
+            "exit_code": exit_code,
+            "error": str(exc),
+        }
     finally:
+        _join_source_state()
         heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)

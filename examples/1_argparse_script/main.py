@@ -9,7 +9,7 @@ You do not need to import pyruns to use pyruns.
    `python main.py --lr 0.01 --epochs 50`
 
 2. Or, run this file with pyruns to manage experiments:
-   `pyr main.py`
+   `pyr ui main.py`
 """
 import pyruns
 import argparse

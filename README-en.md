@@ -49,7 +49,7 @@ Start the Web UI explicitly when needed:
 ```bash
 pyr ui
 pyr ui train.py
-pyr ui --shell
+pyr ui shell
 ```
 
 `pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Bare commands print concise help and `help -a` expands the full command index; neither starts a stateful interactive REPL.
@@ -80,6 +80,8 @@ Global options:
 --debug
 --version
 ```
+
+Use `-w` only to disambiguate task commands such as `ls`, `run`, `show`, and `log` when a project has several workspaces; omit it when only one workspace exists. `exec` always targets the shell workspace, while the Web UI takes its target directly: `pyr ui shell`, `pyr ui train`, or `pyr ui train.py`.
 
 Commands:
 
@@ -127,15 +129,26 @@ pyr exec -n setup-cmd -- .\scripts\setup.cmd
 pyr exec -n setup-bat -- .\scripts\setup.bat
 ```
 
-Pyruns maps `.sh`, `.ps1`, `.cmd`, and `.bat` to Bash/sh, PowerShell, or `cmd.exe`. Values after the file path are arguments for that script, not Pyruns options. Pyruns preserves those argument boundaries and records the script content hash for every run. Reruns still use the original script path, so relative-path behavior based on the script directory remains intact.
+This is the tracked replacement for common `bash xxx.sh` or `pwsh -File xxx.ps1` calls. Pyruns maps `.sh`, `.ps1`, `.cmd`, and `.bat` to Bash/sh, PowerShell, or `cmd.exe`. Values after the file path are arguments for that script, not Pyruns options. Pyruns records logs, elapsed time, the raw exit code, and the script content hash for every run. Reruns still use the original script path, so relative-path behavior based on the script directory remains intact.
 
-Use `--shell` only when the command intentionally relies on pipes, redirects, expansion, or command chaining:
+`--` is the standard end-of-options separator. It passes every following item as an exact argv element and is not a Pyruns execution mode. Use `-c` / `--command`, following the familiar `sh -c` convention, only when a command intentionally relies on pipes, redirects, expansion, globs, or chaining:
 
 ```bash
-pyr exec -n report --shell "python eval.py > metrics.txt"
+pyr exec -n report -c "python eval.py > metrics.txt"
 ```
 
-For ordinary programs, prefer the exact argument vector after `--`.
+`-c` accepts exactly one quoted command string. For ordinary programs and script files, prefer the exact argument vector after `--`.
+
+Use one `-e` followed by multiple `KEY=VALUE` entries, with `--` separating them from the target command. Repeating `-e` remains supported. Use a UTF-8 env file for larger sets:
+
+```bash
+pyr exec -n train -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
+pyr exec -n train --env-file .env.train -e SEED=42 -- python train.py
+```
+
+Pyruns already sets `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and `PYTHONUTF8=1` for child processes. In a POSIX shell, `CUDA_VISIBLE_DEVICES=0 pyr exec ...` also reaches the child for that invocation, but it is not persisted in task metadata and is not guaranteed on a later `pyr run`, Web UI run, or invocation from another terminal. Use `-e` or `--env-file` for reproducible values visible in `show`.
+
+`--env-file` is repeatable; later files override earlier files and command-line `-e` values override all files. Files accept blank lines, whole-line `#` comments, and `KEY=VALUE` only. Values are persisted in task metadata, so do not store secrets there.
 
 Preview an execution with no filesystem or process side effects; add global `--json` for a stable plan object:
 
@@ -279,7 +292,7 @@ pyr --json -w shell show smoke
 pyr --json -w shell show smoke@2
 pyr --json -w shell log smoke --path
 pyr --json -w shell log smoke@2 --path
-pyr --json -w shell config list
+pyr --json config list
 pyr --json metrics
 ```
 
@@ -308,8 +321,8 @@ Exit status:
 pyr ui
 pyr ui train.py
 pyr ui train.py --config configs/default.yaml
-pyr ui --shell
-pyr ui --shell --no-browser
+pyr ui shell
+pyr ui shell --no-browser
 pyr dev train.py
 ```
 

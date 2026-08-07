@@ -9,8 +9,8 @@ Web UI 必须显式启动；裸 `pyr` 或 `pyruns` 只显示 CLI 帮助：
 pyr ui
 pyr ui train.py
 pyr ui train.py --config configs/default.yaml
-pyr ui --shell
-pyr ui --shell --no-browser
+pyr ui shell
+pyr ui shell --no-browser
 ```
 
 ## 页面整体气质

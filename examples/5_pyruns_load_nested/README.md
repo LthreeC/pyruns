@@ -8,11 +8,12 @@ per-step time series.
 Start with:
 
 ```bash
-pyr train.py configs/base.yaml
+pyr init train.py --config configs/base.yaml
+pyr -w train run --from configs/base.yaml -n base
 ```
 
-In the UI launcher, choose `train.py` first, then choose `configs/base.yaml`
-as the default YAML template. This first selection creates
+The equivalent Web UI command is `pyr ui train.py --config configs/base.yaml`.
+Either initialization path creates
 `_pyruns_/train/config_default.yaml`; later direct launches can reuse it.
 
 `configs/batch_grid.yaml` is also a concrete single-run recipe with a different

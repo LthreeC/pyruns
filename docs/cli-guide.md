@@ -112,7 +112,7 @@ pyr exec --name smoke -- python -V
 pyr exec --name train -- python train.py --epochs 10 --lr 0.001
 ```
 
-Pyruns 会为每个参数做当前 shell 所需的转义，再把任务保存为 `config.ps1`、`config.cmd` 或 `config.sh`。参数里的空格和短横线不会被误认为 Pyruns 自己的选项。
+这里的 `--` 是 CLI 参数分隔符：它表示 Pyruns 的 `exec` 选项到此结束，后面的每一项都是目标命令的独立 argv。`--` 不会启动 shell 解析，所以管道、重定向、`$VAR`、通配符和 `&&` 都不会被 Pyruns 展开。Pyruns 会为每个参数做当前平台所需的转义，再把任务保存为 `config.ps1`、`config.cmd` 或 `config.sh`。参数里的空格和短横线不会被误认为 Pyruns 自己的选项。
 
 ### 无副作用预览
 
@@ -141,7 +141,7 @@ pyr exec --name setup-ps -- .\scripts\setup.ps1
 pyr exec --name setup-cmd -- .\scripts\setup.cmd
 ```
 
-脚本路径可以包含空格。路径之后如果还有内容，它们是脚本自己的参数，不是 Pyruns 参数，并会按独立 argv 传递。文件不存在、平台不支持或解释器不可用时，`exec` 会在创建任务前给出明确错误。任务保存的是解释器调用与原脚本绝对路径，不复制脚本本身；每次运行会记录脚本内容哈希和所在 Git 状态，因此重跑既保留脚本原目录语义，也能识别源文件变化。
+脚本路径可以包含空格。路径之后如果还有内容，它们是脚本自己的参数，不是 Pyruns 参数，并会按独立 argv 传递。文件不存在、平台不支持或解释器不可用时，`exec` 会在创建任务前给出明确错误。任务保存的是解释器调用与原脚本绝对路径，不复制脚本本身；每次运行会记录 stdout/stderr 日志、开始/结束时间、高精度运行时长、原始退出码、脚本内容哈希和所在 Git 状态。因此 `pyr exec -n setup -- ./xxx.sh` 是 `bash xxx.sh` 最直接的受跟踪替代，重跑也会保留脚本原目录语义并识别源文件变化。
 
 `--detach`、`run`、`wait`、`stop`、`show` 和 `log` 对这类任务没有特殊规则，和普通 Shell 任务完全一致：
 
@@ -151,24 +151,43 @@ pyr -w shell wait setup
 pyr -w shell run setup
 pyr -w shell log setup
 ```
-### 显式 shell 模式
 
-只有需要管道、重定向、变量展开或 `&&` 等 shell 语法时才使用：
+### Shell command string：`-c`
+
+`--` 只是标准参数分隔符。只有需要管道、重定向、变量展开、通配符或 `&&` 等 shell 语法时，才改用与 `sh -c` 习惯一致的 `-c` / `--command`：
 
 ```bash
-pyr exec --name report --shell "python eval.py > metrics.txt"
+pyr exec --name report -c "python eval.py > metrics.txt"
+pyr exec --name pipeline -c "python preprocess.py && python train.py | tee train.log"
 ```
+
+`-c` 后面必须只有一个完整 command string，因此外层引号不能省略；`-c echo hello` 会被拒绝。字符串由工作区解析到的 shell 执行，引用规则和可用命令可能因 Bash、PowerShell 与 cmd.exe 而不同。普通程序或脚本文件不需要这些能力时，使用 `--` 后的精确 argv。
 
 ### 环境变量
 
-`--env KEY=VALUE` 可重复，值会保存到任务元数据并在运行时注入：
+少量变量用 `-e` / `--env` 后接一个或多个 `KEY=VALUE`。`--` 是明确边界，所以多个变量不会吞掉目标命令；该选项仍可重复，旧命令保持兼容：
 
 ```bash
-pyr exec --name gpu0 \
-  --env CUDA_VISIBLE_DEVICES=0 \
-  --env PYTHONUNBUFFERED=1 \
-  -- python train.py
+pyr exec --name gpu0 -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
 ```
+
+Pyruns 已自动为子进程设置 `PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1`，一般无需再写入任务环境。
+
+在 Bash/sh 等 POSIX shell 中，`CUDA_VISIBLE_DEVICES=0 pyr exec ...` 对当前这次运行通常有同样的注入效果，因为 runner 和任务进程会继承调用端环境。但它不会保存到任务元数据；换终端、从 Web UI 启动或稍后执行 `pyr run` 时可能不同。需要稳定重跑和 `show` 可见时使用 `-e` 或 `--env-file`。
+
+变量较多时使用可重复的 `--env-file PATH`。文件是 UTF-8 文本，只接受空行、整行 `#` 注释和 `KEY=VALUE`：
+
+```dotenv
+# .env.train
+CUDA_VISIBLE_DEVICES=0
+TOKENIZERS_PARALLELISM=false
+```
+
+```bash
+pyr exec --name gpu0 --env-file .env.train -e SEED=42 -- python train.py
+```
+
+合并顺序是：前面的 env 文件 < 后面的 env 文件 < 命令行 `-e`。文件不会执行 `export`、变量插值、命令替换或行内注释；`VALUE` 可以包含额外的 `=`。所有任务环境值都会明文保存到 `task_info.json` 并由 `show` 显示，不要放入密码、token 或其他密钥。
 
 ### 前台与 detach
 
@@ -262,7 +281,7 @@ pyr --json -w train show baseline
 pyr -w train show baseline@2
 ```
 
-`show` 包含任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`TASK@RUN` 额外选择一个历史运行，并显示该次运行的开始时间、结束时间、PID 和日志路径。
+`show` 包含任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`show --json` 还提供对齐的运行时长、退出码、源码状态、record 和 track 历史。`TASK@RUN` 额外选择一个历史运行，并显示该次运行的开始时间、结束时间、时长、原始退出码、PID、源码状态、record、track 和日志路径。
 
 ## 9. 日志：`log`
 
@@ -347,11 +366,11 @@ pyr -w train export --format json --output -
 ## 13. 配置：`config`
 
 ```bash
-pyr -w train config list
-pyr -w train config get manager_max_workers
-pyr -w train config set manager_max_workers 4
-pyr -w train config unset manager_max_workers
-pyr -w train config path
+pyr config list
+pyr config get manager_max_workers
+pyr config set manager_max_workers 4
+pyr config unset manager_max_workers
+pyr config path
 ```
 
 `config set` 将值解析为 YAML，并根据已知配置项的类型验证。未知 key 或类型错误不会静默写入。
@@ -373,12 +392,12 @@ pyr --json metrics
 pyr ui                                  # 打开 workspace launcher
 pyr ui train.py                         # 打开 script workspace
 pyr ui train.py --config config.yaml    # 导入模板后打开
-pyr ui --shell                          # 打开当前项目 shell workspace
-pyr ui --shell --no-browser             # headless server
+pyr ui shell                            # 打开当前项目 shell workspace
+pyr ui shell --no-browser               # headless server
 pyr dev train.py                        # 热更新开发模式
 ```
 
-`ui` 和 `dev` 才负责启动 Web 服务。裸 `pyr` 与 `pyruns` 永远只显示帮助。
+`ui` 和 `dev` 才负责启动 Web 服务。裸 `pyr` 与 `pyruns` 永远只显示帮助。UI 的目标直接写在 `ui` 后面；`-w` 只用于 `ls`、`run`、`show` 等任务工作区命令。长时间运行的 UI 命令不接受 `--json`。
 
 ## 16. JSON 契约
 
@@ -389,7 +408,7 @@ pyr --json -w shell ls
 pyr --json -w shell status
 pyr --json -w shell show smoke
 pyr --json -w shell log smoke --path
-pyr --json -w shell config list
+pyr --json config list
 pyr --json metrics
 ```
 

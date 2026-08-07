@@ -195,6 +195,8 @@ class TaskManager:
                 "start_times": list(task.get("start_times", []) or []),
                 "finish_times": list(task.get("finish_times", []) or []),
                 "pids": list(task.get("pids", []) or []),
+                "durations": list(task.get("durations", []) or []),
+                "exit_codes": list(task.get("exit_codes", []) or []),
                 "source_states": list(task.get("source_states", []) or []),
                 "records": [],
                 "tracks": [],
@@ -494,6 +496,8 @@ class TaskManager:
             "start_times": info.get("start_times", []),
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
+            "durations": info.get("durations", []),
+            "exit_codes": info.get("exit_codes", []),
             "source_states": info.get("source_states", []),
             "records": info.get("records", []),
             "tracks": info.get("tracks", []),
@@ -700,7 +704,16 @@ class TaskManager:
 
     @staticmethod
     def _run_slot_has_data(meta: Dict[str, Any], slot: int) -> bool:
-        for key in ("start_times", "finish_times", "pids", "records", "tracks"):
+        for key in (
+            "start_times",
+            "finish_times",
+            "pids",
+            "durations",
+            "exit_codes",
+            "source_states",
+            "records",
+            "tracks",
+        ):
             values = list(meta.get(key, []) or [])
             if slot >= len(values):
                 continue
@@ -725,7 +738,16 @@ class TaskManager:
     @staticmethod
     def _trim_run_slots(meta: Dict[str, Any], total: int) -> None:
         target = max(0, int(total or 0))
-        for key in ("start_times", "finish_times", "pids", "records", "tracks"):
+        for key in (
+            "start_times",
+            "finish_times",
+            "pids",
+            "durations",
+            "exit_codes",
+            "source_states",
+            "records",
+            "tracks",
+        ):
             meta[key] = list(meta.get(key, []) or [])[:target]
         meta["run_index"] = target
         meta.pop("_run_index", None)
@@ -1810,6 +1832,29 @@ class TaskManager:
             status = task.get("status")
             task_name = str(task.get("name", ""))
             disk_info = load_task_info(task["dir"])
+            if not disk_info and not os.path.isdir(task["dir"]):
+                if status == "running":
+                    pid = self._latest_pid(task)
+                    if pid and self._should_kill_task_process(task):
+                        try:
+                            pid_value = int(pid)
+                            if pid_value != os.getpid():
+                                logger.info(
+                                    "Shutdown cleanup: terminating running process %s for deleted task %s",
+                                    pid_value,
+                                    task_name,
+                                )
+                                kill_process(pid_value)
+                        except Exception as exc:
+                            logger.warning("Failed to kill pid %s on shutdown cleanup: %s", pid, exc)
+                with self._lock:
+                    current = self._resolve_identifier_locked(task_name)
+                    if current:
+                        current["status"] = "failed"
+                        self._clear_running_locked(task_name)
+                        self.gpu_scheduler.release(task_name)
+                        changed = True
+                continue
             disk_status = str((disk_info or {}).get("status", status) or "").lower()
             if disk_info and disk_status not in {"queued", "running"}:
                 continue
@@ -2557,8 +2602,11 @@ class TaskManager:
             tuple(task.get("start_times", [])),
             tuple(task.get("finish_times", [])),
             tuple(task.get("pids", [])),
+            tuple(task.get("durations", [])),
+            tuple(task.get("exit_codes", [])),
             tuple(task.get("source_states", [])),
             tuple(repr(item) for item in (task.get("records", []) or [])),
+            tuple(repr(item) for item in (task.get("tracks", []) or [])),
             task.get("pinned"),
             task.get("task_order"),
             task.get("task_kind"),
@@ -2609,6 +2657,8 @@ class TaskManager:
                 "start_times": info.get("start_times", []),
                 "finish_times": info.get("finish_times", []),
                 "pids": info.get("pids", []),
+                "durations": info.get("durations", []),
+                "exit_codes": info.get("exit_codes", []),
                 "source_states": info.get("source_states", []),
                 "records": info.get("records", []),
                 "tracks": info.get("tracks", []),

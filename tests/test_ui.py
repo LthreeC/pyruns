@@ -74,6 +74,14 @@ def test_react_task_detail_displays_source_state_in_run_history():
     types_source = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "source_states?: string[]" in types_source
+    assert "durations?: (number | null)[]" in types_source
+    assert "exit_codes?: (number | null)[]" in types_source
+    assert "task.durations?.length ?? 0" in source
+    assert "task.exit_codes?.length ?? 0" in source
+    assert "duration: task.durations?.[index]" in source
+    assert "exitCode: task.exit_codes?.[index]" in source
+    assert ">Duration</span>" in source
+    assert ">Exit Code</span>" in source
     assert "task.source_states?.length ?? 0" in source
     assert "source: task.source_states?.[index] || ''" in source
     assert ">Source</span>" in source

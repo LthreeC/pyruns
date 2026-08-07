@@ -71,7 +71,14 @@ from pyruns.launcher import (
     workspace_root_for_script,
 )
 from pyruns.utils.batch_utils import generate_batch_configs
-from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
+from pyruns.utils.info_io import (
+    ensure_run_slot,
+    load_task_info,
+    normalize_run_history,
+    run_slot_count,
+    save_task_info,
+    update_task_info,
+)
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace, get_shell_runtime_for_workspace
 
@@ -2341,34 +2348,29 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     assert res["progress"] == 1.0
     
     # Check task_info updated
-    info = {}
-    for _ in range(100):
-        with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
-            info = json.load(f)
-        if info.get("source_states"):
-            break
-        time.sleep(0.01)
+    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
+        info = json.load(f)
         
     assert info["status"] == "completed"
     assert info["progress"] == 1.0
     assert len(info["start_times"]) == 1
     assert len(info["finish_times"]) == 1
     assert info["pids"] == [9999]
+    assert info["exit_codes"] == [0]
+    assert len(info["durations"]) == 1
+    assert info["durations"][0] >= 0
     assert len(info.get("records", [])) == 1
     assert info["source_states"] == [source_state]
 
     # Check log file was written by _tee_output
     log_path = os.path.join(task_dir, "run_logs", "run1.log")
     assert os.path.exists(log_path)
-    log_content = b""
-    for _ in range(100):
-        with open(log_path, "rb") as f:
-            log_content = f.read()
-        if source_state.encode("utf-8") in log_content:
-            break
-        time.sleep(0.01)
+    with open(log_path, "rb") as f:
+        log_content = f.read()
     assert b"hello output" in log_content
     assert source_state.encode("utf-8") in log_content
+    assert b"[PYRUNS] Exit code: 0" in log_content
+    assert b"[PYRUNS] Duration:" in log_content
 
     # Check emit was called
     assert mock_emit.called
@@ -2405,6 +2407,7 @@ def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emi
     def build_source_state(**kwargs):
         order.append("source")
         source_started.set()
+        time.sleep(0.05)
         return "git late | clean | script late"
 
     def record_popen(*args, **kwargs):
@@ -2425,6 +2428,8 @@ def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emi
     assert source_started.wait(1)
     assert order[0] == "popen"
     assert "source" in order
+    info = load_task_info(task_dir)
+    assert info["source_states"] == ["git late | clean | script late"]
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -2498,6 +2503,9 @@ def test_run_task_worker_failure(mock_popen, mock_emit, mock_detect, tmp_path):
     with open(os.path.join(task_dir, TASK_INFO_FILENAME), "r") as f:
         info = json.load(f)
     assert info["status"] == "failed"
+    assert info["exit_codes"] == [1]
+    assert len(info["durations"]) == 1
+    assert info["durations"][0] >= 0
     
     # Check failed run keeps run1.log and appends a failure summary to error.log
     run_log = os.path.join(task_dir, "run_logs", "run1.log")
@@ -2749,6 +2757,8 @@ def test_run_task_worker_pending_stop_before_process_start_skips_popen(tmp_path,
     assert info["status"] == "cancelled"
     assert info["progress"] == 0.0
     assert info["finish_times"][0]
+    assert info["durations"] == [None]
+    assert info["exit_codes"] == [None]
     assert "_pending_stop_summary" not in info
     error_text = (task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
     assert "Run #1 stopped" in error_text
@@ -2820,6 +2830,8 @@ def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist
     assert info["status"] == "cancelled"
     assert info["progress"] == 0.0
     assert info["pids"][0] == 9877
+    assert info["durations"][0] >= 0
+    assert info["exit_codes"] == [None]
     assert "_pending_stop_summary" not in info
     error_text = (task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
     assert "Run #1 stopped" in error_text
@@ -4296,6 +4308,54 @@ def test_task_manager_cancel_foreign_live_runner_preserves_owner_and_gpu(tmp_pat
     assert info["_gpu_assignment"] == {"device_ids": ["0"]}
 
 
+@pytest.mark.parametrize(
+    ("task_pid", "expected_killed"),
+    [(12345, [12345]), (os.getpid(), [])],
+)
+def test_task_manager_shutdown_does_not_recreate_deleted_owned_task(
+    tmp_path, monkeypatch, task_pid, expected_killed
+):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "owned"
+    task_dir.mkdir()
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda _pid: True)
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=None)
+
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "owned",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [task_pid],
+            "records": [],
+            "tracks": [],
+            "runner_id": manager.runner_id,
+            "runner_host": manager.runner_host,
+            "lease_heartbeat": time.time(),
+            "lease_until": time.time() + 60,
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    manager.scan_disk()
+    shutil.rmtree(task_dir)
+    killed = []
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", killed.append)
+
+    manager.shutdown()
+
+    assert killed == expected_killed
+    assert not task_dir.exists()
+
+
 def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -4621,6 +4681,8 @@ def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
             "name": "alpha",
             "status": "running",
             "env": {"A": "1"},
+            "durations": [1.25],
+            "exit_codes": [0],
             "source_states": ["git abc | clean | script abc"],
             "records": [{"loss": 0.1}],
             "tracks": [{"step": 1}],
@@ -4628,6 +4690,8 @@ def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
         summary=True,
     )
     assert summary["dir"] == "C:/tmp/task"
+    assert summary["durations"] == [1.25]
+    assert summary["exit_codes"] == [0]
     assert summary["source_states"] == ["git abc | clean | script abc"]
     assert summary["records"] == []
     assert summary["env"] == {"A": "1"}
@@ -5306,6 +5370,8 @@ def test_task_manager_default_root_serialization_and_lease_edges(tmp_path, monke
             "start_times": ("s1",),
             "finish_times": ("f1",),
             "pids": (123,),
+            "durations": (1.25,),
+            "exit_codes": (0,),
             "source_states": ("git clean",),
             "records": [{"loss": 1}],
             "tracks": [{"name": "loss"}],
@@ -5316,6 +5382,8 @@ def test_task_manager_default_root_serialization_and_lease_edges(tmp_path, monke
     assert summary["config"] == {}
     assert summary["records"] == []
     assert summary["tracks"] == []
+    assert summary["durations"] == [1.25]
+    assert summary["exit_codes"] == [0]
     assert summary["env"] == {"A": "1"}
 
     assert TaskManager._lease_until_value({"lease_until": "bad"}) == 0.0
@@ -5795,6 +5863,8 @@ def test_run_task_worker_merges_pending_stop_summary_into_single_error_block(moc
     assert "[PYRUNS] Final status: cancelled" in run_log
     final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert "_pending_stop_summary" not in final_info
+    assert final_info["exit_codes"] == [1]
+    assert final_info["durations"][0] >= 0
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -5855,6 +5925,8 @@ def test_run_task_worker_pending_stop_summary_forces_failed_even_when_exit_code_
     final_info = json.loads(Path(task_dir, TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert final_info["status"] == "cancelled"
     assert final_info["progress"] == 0.0
+    assert final_info["exit_codes"] == [0]
+    assert final_info["durations"][0] >= 0
     assert "_pending_stop_summary" not in final_info
 
     error_log = os.path.join(task_dir, "run_logs", "error.log")
@@ -6286,6 +6358,8 @@ def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=No
 class TestBuildExportCSV:
     def test_single_task_single_run(self, tmp_path):
         task = _make_task(tmp_path, "t1", records=[{"loss": 0.5, "acc": 92}])
+        task["durations"] = [12.345]
+        task["exit_codes"] = [0]
         csv_str = build_export_csv([task])
         reader = csv.DictReader(io.StringIO(csv_str))
         rows = list(reader)
@@ -6294,6 +6368,8 @@ class TestBuildExportCSV:
         assert rows[0]["run"] == "1"
         assert rows[0]["loss"] == "0.5"
         assert rows[0]["acc"] == "92"
+        assert rows[0]["duration_seconds"] == "12.345"
+        assert rows[0]["exit_code"] == "0"
 
     def test_multi_run(self, tmp_path):
         task = _make_task(
@@ -6323,6 +6399,44 @@ class TestBuildExportCSV:
         cols = reader.fieldnames
         # Priority columns should come first
         assert cols[:4] == ["name", "status", "run", "start_time"]
+
+
+def test_run_history_normalization_aligns_process_and_source_metadata():
+    meta = {
+        "run_index": 2,
+        "start_times": ["started"],
+        "source_states": ["git one", "git two"],
+    }
+
+    assert run_slot_count(meta) == 2
+    assert normalize_run_history(meta) == 2
+    assert meta["start_times"] == ["started", ""]
+    assert meta["durations"] == [None, None]
+    assert meta["exit_codes"] == [None, None]
+    assert meta["source_states"] == ["git one", "git two"]
+
+    assert ensure_run_slot(meta, 3) == 2
+    assert all(len(meta[key]) == 3 for key in (
+        "start_times",
+        "finish_times",
+        "pids",
+        "durations",
+        "exit_codes",
+        "source_states",
+        "records",
+        "tracks",
+    ))
+    TaskManager._trim_run_slots(meta, 1)
+    assert all(len(meta[key]) == 1 for key in (
+        "start_times",
+        "finish_times",
+        "pids",
+        "durations",
+        "exit_codes",
+        "source_states",
+        "records",
+        "tracks",
+    ))
 
 
 class TestBuildExportJSON:

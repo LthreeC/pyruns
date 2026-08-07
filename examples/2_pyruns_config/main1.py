@@ -5,7 +5,7 @@ Basic Example: Pyruns Config Support
 Showcases how Pyruns can provide structured configurations straight into your script.
 
 1. First launch the UI:
-   `pyr main.py`
+   `pyr ui main1.py --config config1.yaml`
    
 2. Notice how Pyruns detects `pyruns.load()` and builds an appropriate task runner for you.
 """

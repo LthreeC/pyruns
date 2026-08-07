@@ -127,8 +127,9 @@ def build_parser(
         epilog=(
             command_overview + "Workspace selection:\n"
             f"  {program} exec ... uses the shell workspace and creates it when needed.\n"
-            "  Other commands use the only nearby workspace. With several, select one with\n"
+            "  Task commands use the only nearby workspace. With several, select one with\n"
             "  -w shell, -w NAME, -w PATH, or -w SCRIPT.py.\n"
+            f"  The Web UI uses '{program} ui [WORKSPACE|SCRIPT.py]' instead of -w.\n"
             "  Global options such as -C, -w, and --json must appear before COMMAND.\n\n"
             "More help:\n"
             f"  {program} help COMMAND\n"
@@ -148,13 +149,13 @@ def build_parser(
         "-w",
         "--workspace",
         metavar="NAME|PATH|SCRIPT.py",
-        help="select an exact workspace; use 'shell' for the shell workspace",
+        help="select an exact task workspace; use 'shell' for the shell workspace",
     )
     parser.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
-        help="emit stable JSON instead of human-oriented output",
+        help="emit stable JSON for supported one-shot commands",
     )
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--debug", action="store_true", help="show Python tracebacks for internal failures")
@@ -200,7 +201,12 @@ def build_parser(
         epilog=_example_block(program, "init", "init train.py"),
         common=True,
     )
-    init.add_argument("script", nargs="?", help="Python script for a script workspace")
+    init.add_argument(
+        "script",
+        nargs="?",
+        metavar="SCRIPT.py",
+        help="Python script for a script workspace",
+    )
     init.add_argument("--config", help="initial YAML template for the script workspace")
 
     execute = command(
@@ -208,9 +214,10 @@ def build_parser(
         help_text="create and run a tracked command or shell script",
         description=(
             "Create a shell task in the project shell workspace and run it.\n"
-            "Command arguments are preserved exactly; -- is the recommended separator. A leading\n"
+            "Place the standard -- separator before an exact program argument vector. A leading\n"
             ".sh, .ps1, .cmd, or .bat file is run with its matching interpreter.\n"
-            "Use --shell only for pipelines, redirection, variables, or other shell syntax."
+            "Use -c/--command only for a shell command string containing pipelines,\n"
+            "redirection, variable expansion, &&, or other shell syntax."
         ),
         epilog=_example_block(
             program,
@@ -218,8 +225,10 @@ def build_parser(
             "exec -n setup -- ./scripts/setup.sh",
             r"exec -n setup-ps -- .\scripts\setup.ps1",
             "exec -n train -d -- python train.py --lr 0.001",
+            "exec -n train -e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py",
+            "exec -n train --env-file .env.train -e SEED=42 -- python train.py",
             "exec --dry-run -n smoke -- python -V",
-            'exec -n report --shell "python -V > python-version.txt"',
+            'exec -n report -c "python -V > python-version.txt"',
         ),
         common=True,
     )
@@ -231,17 +240,27 @@ def build_parser(
         help="preview the task and command without creating or running anything",
     )
     execute.add_argument(
-        "--shell",
-        action="store_true",
-        help="interpret COMMAND as one shell expression instead of an exact argument vector",
+        "-c",
+        "--command",
+        dest="shell_command",
+        metavar="COMMAND_STRING",
+        help="run one command string through the workspace shell",
     )
     execute.add_argument(
         "-e",
         "--env",
-        action="append",
+        action="extend",
+        nargs="+",
         default=[],
         metavar="KEY=VALUE",
-        help="set a persisted, visible task environment variable; repeatable",
+        help="set one or more persisted, visible task environment variables; repeatable",
+    )
+    execute.add_argument(
+        "--env-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="load KEY=VALUE lines from a UTF-8 file; repeatable, with -e taking precedence",
     )
     execute.add_argument("command_argv", nargs=argparse.REMAINDER, metavar="COMMAND")
 
@@ -255,7 +274,7 @@ def build_parser(
         ),
         common=True,
     )
-    add.add_argument("config", help="YAML configuration path")
+    add.add_argument("config", metavar="CONFIG", help="YAML configuration path")
     add.add_argument("-n", "--name", help="task-name prefix; defaults to the YAML filename")
 
     run = command(
@@ -299,7 +318,7 @@ def build_parser(
         ),
         common=True,
     )
-    listing.add_argument("query", nargs="?", help="case-insensitive text filter")
+    listing.add_argument("query", nargs="?", metavar="QUERY", help="case-insensitive text filter")
     listing.add_argument(
         "-s",
         "--status",
@@ -375,8 +394,8 @@ def build_parser(
         "mv",
         help_text="rename one inactive task",
     )
-    rename.add_argument("task", help="exact task name")
-    rename.add_argument("new_name", help="new exact task name")
+    rename.add_argument("task", metavar="TASK", help="exact task name")
+    rename.add_argument("new_name", metavar="NEW_NAME", help="new exact task name")
 
     pin = command(
         "pin",
@@ -427,12 +446,12 @@ def build_parser(
     config_list = config_subparsers.add_parser("list", help="list effective settings")
     config_list.set_defaults(config_action="list")
     config_get = config_subparsers.add_parser("get", help="print one effective setting")
-    config_get.add_argument("key")
+    config_get.add_argument("key", metavar="KEY")
     config_set = config_subparsers.add_parser("set", help="set one project setting")
-    config_set.add_argument("key")
-    config_set.add_argument("value", help="YAML scalar, list, or mapping")
+    config_set.add_argument("key", metavar="KEY")
+    config_set.add_argument("value", metavar="VALUE", help="YAML scalar, list, or mapping")
     config_unset = config_subparsers.add_parser("unset", help="restore one setting to its default")
-    config_unset.add_argument("key")
+    config_unset.add_argument("key", metavar="KEY")
     config_subparsers.add_parser("path", help="print the project settings path")
 
     command(
@@ -444,24 +463,37 @@ def build_parser(
     ui = command(
         "ui",
         help_text="start the optional Web UI",
+        description=(
+            "Start the Web UI workspace launcher, open an exact existing WORKSPACE, or\n"
+            "initialize and open SCRIPT.py. Use 'ui shell' for the project shell workspace.\n"
+            "Global -w/--workspace and --json do not apply to UI commands."
+        ),
         epilog=_example_block(
             program,
             "ui",
             "ui train.py",
             "ui train.py --config settings.yaml",
-            "ui --shell --no-browser",
+            "ui shell --no-browser",
         ),
     )
-    ui.add_argument("script", nargs="?", help="Python script workspace to open")
-    ui.add_argument("--shell", action="store_true", help="open the current project shell workspace")
+    ui.add_argument(
+        "target",
+        nargs="?",
+        metavar="WORKSPACE|SCRIPT.py",
+        help="existing workspace name/path, 'shell', or Python script path",
+    )
     ui.add_argument("--config", help="YAML template imported for the script workspace")
     _add_browser_options(ui)
 
     dev = command(
         "dev",
         help_text="start the Web UI with hot reload",
+        description=(
+            "Initialize and open SCRIPT.py with Web UI hot reload.\n"
+            "Global -w/--workspace and --json do not apply to UI commands."
+        ),
     )
-    dev.add_argument("script", help="Python script workspace to open")
+    dev.add_argument("script", metavar="SCRIPT.py", help="Python script workspace to open")
     dev.add_argument("--config", help="YAML template imported for the script workspace")
     _add_browser_options(dev)
 
@@ -469,7 +501,13 @@ def build_parser(
         "help",
         help_text="show top-level or command-specific help",
     )
-    help_parser.add_argument("topic", nargs="?", choices=tuple(command_parsers), help="command name")
+    help_parser.add_argument(
+        "topic",
+        nargs="?",
+        metavar="COMMAND",
+        choices=tuple(command_parsers),
+        help="command name",
+    )
     help_parser.add_argument("-a", "--all", action="store_true", dest="all_commands", help="list every command")
 
     return parser, command_parsers

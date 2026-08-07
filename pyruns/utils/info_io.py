@@ -270,6 +270,9 @@ def run_slot_count(meta: Dict[str, Any]) -> int:
         len(list(meta.get("start_times", []) or [])),
         len(list(meta.get("finish_times", []) or [])),
         len(list(meta.get("pids", []) or [])),
+        len(list(meta.get("durations", []) or [])),
+        len(list(meta.get("exit_codes", []) or [])),
+        len(list(meta.get("source_states", []) or [])),
         len(list(meta.get("records", []) or [])),
         len(list(meta.get("tracks", []) or [])),
         int(meta.get("run_index", meta.get("_run_index", 0)) or 0),
@@ -282,6 +285,9 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
     meta["start_times"] = list(meta.get("start_times", []) or [])
     meta["finish_times"] = list(meta.get("finish_times", []) or [])
     meta["pids"] = list(meta.get("pids", []) or [])
+    meta["durations"] = list(meta.get("durations", []) or [])
+    meta["exit_codes"] = list(meta.get("exit_codes", []) or [])
+    meta["source_states"] = list(meta.get("source_states", []) or [])
     meta["records"] = list(meta.get("records", []) or [])
     meta["tracks"] = list(meta.get("tracks", []) or [])
 
@@ -291,6 +297,12 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
         meta["finish_times"].append("")
     while len(meta["pids"]) < target:
         meta["pids"].append(None)
+    while len(meta["durations"]) < target:
+        meta["durations"].append(None)
+    while len(meta["exit_codes"]) < target:
+        meta["exit_codes"].append(None)
+    while len(meta["source_states"]) < target:
+        meta["source_states"].append("")
     while len(meta["records"]) < target:
         meta["records"].append({})
     while len(meta["tracks"]) < target:
@@ -376,6 +388,9 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
     starts = list(meta.get("start_times", []) or [])
     finishes = list(meta.get("finish_times", []) or [])
     pids = list(meta.get("pids", []) or [])
+    durations = list(meta.get("durations", []) or [])
+    exit_codes = list(meta.get("exit_codes", []) or [])
+    source_states = list(meta.get("source_states", []) or [])
     records = list(meta.get("records", []) or [])
     tracks = list(meta.get("tracks", []) or [])
 
@@ -385,6 +400,12 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
         finishes.append("")
     while len(pids) < total:
         pids.append(None)
+    while len(durations) < total:
+        durations.append(None)
+    while len(exit_codes) < total:
+        exit_codes.append(None)
+    while len(source_states) < total:
+        source_states.append("")
     while len(records) < total:
         records.append({})
     while len(tracks) < total:
@@ -393,6 +414,9 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
     meta["start_times"] = starts[:total]
     meta["finish_times"] = finishes[:total]
     meta["pids"] = pids[:total]
+    meta["durations"] = durations[:total]
+    meta["exit_codes"] = exit_codes[:total]
+    meta["source_states"] = source_states[:total]
     meta["records"] = records[:total]
     meta["tracks"] = tracks[:total]
     meta["run_index"] = total

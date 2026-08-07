@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +73,48 @@ def test_detached_runner_never_allocates_a_console_window(monkeypatch):
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
     assert Path(captured["cwd"]).resolve() == PROJECT_ROOT
+
+
+def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monkeypatch):
+    from pyruns.cli import detached_runner
+
+    events = []
+    task = {"name": "lost", "dir": str(tmp_path / "tasks" / "lost"), "status": "pending"}
+
+    class FakeTaskManager:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_task(self, name):
+            return task if name == "lost" else None
+
+        def start_task_now(self, name, execution_mode=None):
+            return name == "lost" and execution_mode == "thread"
+
+        def shutdown(self):
+            events.append("shutdown")
+
+    monkeypatch.setattr(
+        detached_runner,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            workspace=str(tmp_path),
+            mode="thread",
+            workers=1,
+            submission_token="submission-token",
+            tasks_json='["lost"]',
+        ),
+    )
+    monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
+    monkeypatch.setattr(detached_runner, "load_task_info", lambda _task_dir: {})
+    monkeypatch.setattr(
+        detached_runner.time,
+        "sleep",
+        lambda _seconds: pytest.fail("runner should exit instead of polling a missing task forever"),
+    )
+
+    assert detached_runner.main() == 1
+    assert events == ["shutdown"]
 
 
 def test_detached_shell_run_returns_before_task_finishes(tmp_path):
