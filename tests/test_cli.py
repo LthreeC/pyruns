@@ -112,15 +112,16 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     output = capsys.readouterr().out
     assert "Pyruns records reproducible terminal commands" in output
     assert "pyr and pyruns are identical" in output
-    assert "Choose a workflow:" in output
     assert "Quick start:" in output
-    assert "Workspace selection:" in output
-    assert "One -e accepts several KEY=VALUE entries" in output
     assert "pyr help -a" in output
     assert "    exec " in output
     assert "    show " in output
-    assert "    status " not in output
+    assert "    status " in output
+    assert "    wait " in output
+    assert "    ui " in output
     assert "    export " not in output
+    assert "Command forms for exec:" not in output
+    assert "Environment values:" not in output
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -369,6 +370,46 @@ def test_unknown_options_fail_with_usage_on_stderr(tmp_path):
     assert result.returncode == 2
     assert "unrecognized arguments: --unknown" in result.stderr
     assert result.stdout == ""
+
+
+def test_global_long_options_require_exact_spelling(tmp_path):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    abbreviated = _run_cli(tmp_path, "--js", "status")
+    assert abbreviated.returncode == 2
+    assert "--js" in abbreviated.stderr
+
+    exact = _run_cli(tmp_path, "--json", "status")
+    assert exact.returncode == 0, exact.stderr
+    assert json.loads(exact.stdout)["kind"] == "shell"
+
+
+def test_command_long_options_require_exact_spelling(tmp_path):
+    abbreviated = _run_cli(
+        tmp_path,
+        "exec",
+        "--dry",
+        "-n",
+        "planned",
+        "--",
+        sys.executable,
+        "-V",
+    )
+    assert abbreviated.returncode == 2
+    assert "--dry" in abbreviated.stderr
+
+    exact = _run_cli(
+        tmp_path,
+        "exec",
+        "--dry-run",
+        "-n",
+        "planned",
+        "--",
+        sys.executable,
+        "-V",
+    )
+    assert exact.returncode == 0, exact.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_invalid_directory_fails_as_usage(tmp_path):
@@ -1452,6 +1493,19 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert isinstance(detail["selected_run"]["track"], dict)
     assert detail["selected_run"]["log"].endswith("run1.log")
 
+    shown_with_option = _run_cli(
+        tmp_path,
+        "--json",
+        "-w",
+        "shell",
+        "show",
+        "versioned",
+        "--run",
+        "1",
+    )
+    assert shown_with_option.returncode == 0, shown_with_option.stderr
+    assert json.loads(shown_with_option.stdout)["selected_run"] == detail["selected_run"]
+
     conflict = _run_cli(
         tmp_path,
         "-w",
@@ -1461,9 +1515,20 @@ def test_show_and_log_accept_task_run_references(tmp_path):
         "--run",
         "2",
     )
+    show_conflict = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "show",
+        "versioned@1",
+        "--run",
+        "2",
+    )
     missing = _run_cli(tmp_path, "-w", "shell", "show", "versioned@3")
     assert conflict.returncode == 2
     assert "cannot be combined" in conflict.stderr
+    assert show_conflict.returncode == 2
+    assert "cannot be combined" in show_conflict.stderr
     assert missing.returncode == 1
     assert "available runs: 1-2" in missing.stderr
 
@@ -1847,6 +1912,10 @@ def test_export_defaults_to_stdout_and_can_write_file(tmp_path):
     json_rows = json.loads(output.read_text(encoding="utf-8"))
     assert json_rows[0]["name"] == "exportable"
     assert json_rows[0]["run"] == 1
+
+    inferred_json = _run_cli(tmp_path, "--json", "-w", "shell", "export")
+    assert inferred_json.returncode == 0, inferred_json.stderr
+    assert json.loads(inferred_json.stdout)[0]["name"] == "exportable"
 
     conflicting = _run_cli(
         tmp_path,

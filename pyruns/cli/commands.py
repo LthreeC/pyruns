@@ -1150,7 +1150,10 @@ def cmd_status(context: Any, manager: TaskManager, workspace: str) -> int:
 
 
 def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
-    task, selected_run = _resolve_task_run_reference(manager, args.task)
+    task, reference_run = _resolve_task_run_reference(manager, args.task)
+    if reference_run is not None and args.run is not None:
+        raise CliUsageError("TASK@RUN cannot be combined with --run")
+    selected_run = reference_run if reference_run is not None else args.run
     record = _task_record(task, detailed=True, selected_run=selected_run)
     if context.json_output:
         _json_dump(record)
@@ -1379,7 +1382,10 @@ def cmd_pin(context: Any, args: Any, manager: TaskManager) -> int:
 
 
 def cmd_export(context: Any, args: Any, manager: TaskManager) -> int:
-    if context.json_output and args.output == "-" and args.format != "json":
+    export_format = args.format or (
+        "json" if context.json_output and args.output == "-" else "csv"
+    )
+    if context.json_output and args.output == "-" and export_format != "json":
         raise CliUsageError("--json with stdout export requires '--format json'")
     if args.tasks:
         tasks = _resolve_exact_tasks(manager, list(args.tasks))
@@ -1388,9 +1394,9 @@ def cmd_export(context: Any, args: Any, manager: TaskManager) -> int:
     statuses = set(args.status or [])
     if statuses:
         tasks = [task for task in tasks if str(task.get("status", "pending")) in statuses]
-    content = build_export_json(tasks) if args.format == "json" else build_export_csv(tasks)
+    content = build_export_json(tasks) if export_format == "json" else build_export_csv(tasks)
     if not content:
-        content = "[]" if args.format == "json" else ""
+        content = "[]" if export_format == "json" else ""
     if args.output == "-":
         sys.stdout.write(content)
         if content and not content.endswith("\n"):
@@ -1403,7 +1409,7 @@ def cmd_export(context: Any, args: Any, manager: TaskManager) -> int:
     except OSError as exc:
         raise CliError(f"cannot write export '{args.output}': {exc}") from exc
     if context.json_output:
-        _json_dump({"output": _normalized_path(output), "format": args.format, "tasks": len(tasks)})
+        _json_dump({"output": _normalized_path(output), "format": export_format, "tasks": len(tasks)})
     else:
         print(_normalized_path(output))
     return 0

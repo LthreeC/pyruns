@@ -25,10 +25,10 @@ Pyruns 同时安装 `pyr` 与 `pyruns` 两个完全等价的正式命令。本�
 
 ```bash
 cd my-project
-pyr init
+pyr exec -n smoke -- python -V
 ```
 
-这会创建：
+`exec` 会自动创建 shell workspace、任务和第一次运行记录：
 
 ```text
 my-project/
@@ -37,12 +37,6 @@ my-project/
     └── _shell_/
         ├── script_info.json
         └── tasks/
-```
-
-运行一个受跟踪的命令：
-
-```bash
-pyr exec -n smoke -- python -V
 ```
 
 `--` 是“Pyruns 参数到此结束”的分隔符，后面是目标程序的精确参数向量。它本身不启用 shell；即使命令自身带 `--epochs`、`-p` 等选项，也不会与 Pyruns 参数混淆。
@@ -57,10 +51,12 @@ pyr --json exec --dry-run -n smoke -- python -V
 任务结束后查询：
 
 ```bash
-pyr -w shell ls
-pyr -w shell show smoke
-pyr -w shell log smoke
+pyr ls
+pyr show smoke
+pyr log smoke
 ```
+
+这里只有一个 workspace，因此可以省略 `-w shell`；多 workspace 项目再显式选择。
 
 任务目录类似：
 
@@ -84,16 +80,16 @@ runner 接受任务后，命令立即返回；关闭调用终端不会终止任�
 随后可以在任意新终端中执行：
 
 ```bash
-pyr -w shell status
-pyr -w shell show train
-pyr -w shell log train -f
-pyr -w shell wait train --timeout 3600
+pyr status
+pyr show train
+pyr log train -f
+pyr wait train --timeout 3600
 ```
 
 取消活动任务：
 
 ```bash
-pyr -w shell stop train
+pyr stop train
 ```
 
 取消请求会送到真正拥有该任务的 runner，而不是只修改显示状态。
@@ -232,7 +228,7 @@ Pyruns 从当前目录向父目录查找最近的 `_pyruns_`：
 
 - 只有一个 workspace：自动选择。
 - 多个 workspace：必须使用 `-w`。
-- 没有 workspace：提示先 `pyr init`。
+- 没有 workspace：`exec` 自动创建 shell workspace；其他任务命令提示先 `pyr init`。
 
 ```bash
 pyr -w shell ls
@@ -240,6 +236,7 @@ pyr -w train ls
 pyr -w ./train.py status
 pyr -w ./_pyruns_/train show quick
 pyr -w ./_pyruns_/train show quick@2
+pyr -w ./_pyruns_/train show quick --run 2
 ```
 
 从另一个目录操作项目可以使用 `-C`：
@@ -259,6 +256,7 @@ pyr --json -w shell ls
 pyr --json -w shell status
 pyr --json -w shell show smoke
 pyr --json -w shell show smoke@2
+pyr --json -w shell show smoke --run 2
 pyr --json -w shell log smoke --path
 pyr --json -w shell log smoke@2 --path
 pyr --json config list

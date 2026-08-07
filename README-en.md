@@ -18,31 +18,25 @@ Pyruns is a disk-first runner for reproducible experiments and terminal workload
 ```bash
 pip install pyruns
 
-# Both official entrypoints are identical; examples below use short `pyr`
+# Examples use short `pyr`; `pyruns` is identical
 pyr --help
-pyruns --help
-pyr help -a  # list every command
-pyr help exec  # choose between --, -c, scripts, and environment options
 
-# Initialize the current project's shell workspace
-pyr init
-
-# Run and track one command
+# Run and track one command; the shell workspace is created automatically
 pyr exec -n smoke -- python -V
 
 # Inspect the result
-pyr -w shell ls
-pyr -w shell show smoke
-pyr -w shell log smoke
+pyr ls
+pyr show smoke
+pyr log smoke
 ```
 
 Detach long-running work, then control it with separate commands:
 
 ```bash
 pyr exec -n train -d -- python train.py --epochs 100
-pyr -w shell status
-pyr -w shell wait train
-pyr -w shell log train
+pyr status
+pyr wait train
+pyr log train
 ```
 
 Start the Web UI explicitly when needed:
@@ -53,7 +47,7 @@ pyr ui train.py
 pyr ui shell
 ```
 
-`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Bare commands print concise help and `help -a` expands the full command index; neither starts a stateful interactive REPL.
+`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Use `pyr --help` for common commands, `pyr help -a` for the complete index, and `pyr help COMMAND` for command details; neither starts a stateful interactive REPL.
 
 ## Why it is useful
 
@@ -202,7 +196,7 @@ pyr -w ./train.py show baseline
 pyr -w ./_pyruns_/train log baseline
 ```
 
-Task names must be exact. Indices and fuzzy target resolution are not supported. `show` and `log` additionally accept `TASK@RUN` for a historical run, so `@` is reserved in new task names.
+Task names must be exact. Indices and fuzzy target resolution are not supported. `show` and `log` accept `TASK --run RUN` or the shorter `TASK@RUN` for a historical run, so `@` is reserved in new task names.
 
 ## Python integration
 
@@ -271,6 +265,7 @@ pyr -w train ls -s running --status queued
 pyr -w train status
 pyr -w train show baseline
 pyr -w train show baseline@2
+pyr -w train show baseline --run 2
 pyr -w train log baseline -f
 pyr -w train log baseline@2
 pyr -w train wait baseline --timeout 600
@@ -293,6 +288,7 @@ pyr --json -w shell ls
 pyr --json -w shell status
 pyr --json -w shell show smoke
 pyr --json -w shell show smoke@2
+pyr --json -w shell show smoke --run 2
 pyr --json -w shell log smoke --path
 pyr --json -w shell log smoke@2 --path
 pyr --json config list
@@ -304,8 +300,11 @@ Logs are raw stdout by default; use `log --path` for a structured reference. Exp
 ```bash
 pyr -w train export -f csv
 pyr -w train export baseline -f json
+pyr --json -w train export baseline
 pyr -w train export -s completed -o results.csv
 ```
+
+Global `--json` makes a stdout export default to JSON; omit it and use `-f csv` when CSV is required.
 
 Exit status:
 

@@ -38,7 +38,6 @@ features:
 
 ```bash
 pip install pyruns
-pyr init
 pyr exec -n smoke -- python -V
 ```
 

@@ -22,6 +22,10 @@ class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
 class _ArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with concise, consistent errors."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> None:
         self.print_usage(sys.stderr)
         self.exit(2, f"{self.prog}: error: {message}\n")
@@ -162,45 +166,24 @@ def build_parser(
         description=(
             "Pyruns records reproducible terminal commands and Python experiments under the\n"
             "project's _pyruns_ directory, including logs, duration, exit codes, and source state.\n"
-            f"{program} and {alternate} are identical. Every invocation performs one operation and exits;\n"
-            "there is no interactive CLI mode and a bare command never starts the Web UI.\n\n"
-            "Command model:\n"
-            f"  {program} [GLOBAL_OPTIONS] COMMAND [COMMAND_OPTIONS]\n"
-            "  Global options such as -C, -w, and --json must appear before COMMAND.\n"
-            "  Task names are exact: no numeric indices, fuzzy matching, or command aliases.\n\n"
-            "Choose a workflow:\n"
-            f"  {program} exec ...       Python, ordinary programs, and shell scripts; no setup needed\n"
-            f"  {program} init/add/run   configured Python entry point plus immutable YAML snapshots\n"
-            f"  {program} ui ...         optional browser UI; it is never started implicitly\n\n"
+            f"{program} and {alternate} are identical; every invocation performs one operation and exits.\n"
+            "The Web UI starts only with 'ui'; a bare command prints this help.\n\n"
             "Quick start:\n"
-            "  Track an exact program argument vector (recommended):\n"
-            f"    {program} exec -n check -- python -V\n\n"
-            "  Replace a direct shell-script launch while keeping logs and duration:\n"
-            f"    {program} exec -n setup -- ./scripts/setup.sh\n\n"
-            "  Create and run a configured Python experiment:\n"
-            f"    {program} init train.py\n"
-            f"    {program} -w train run --from configs/quick.yaml -n quick"
+            f"  {program} exec -n check -- python -V\n"
+            f"  {program} ls\n"
+            f"  {program} show check\n"
+            f"  {program} log check\n"
+            f"  {program} ui"
         ),
         epilog=(
-            command_overview + "Command forms for exec:\n"
-            f"  {program} exec -n train -- python train.py --epochs 10\n"
-            "    -- ends Pyruns option parsing. Everything after it stays as exact argv; pipes,\n"
-            "    redirects, variables, globs, and && are not interpreted by a shell.\n"
-            f"  {program} exec -n report -c \"python eval.py > metrics.txt\"\n"
-            "    -c accepts one quoted command string and is only for intentional shell syntax.\n\n"
-            "Environment values:\n"
-            f"  {program} exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py\n"
-            "  One -e accepts several KEY=VALUE entries. These values are saved with the task.\n"
-            "  Variables inherited from the invoking terminal apply now but are not saved for reruns.\n\n"
-            "Workspace selection:\n"
-            f"  {program} exec ... uses the shell workspace and creates it when needed.\n"
-            "  Other task commands use the only nearby workspace. With several, select one with\n"
-            "  -w shell, -w NAME, -w PATH, or -w SCRIPT.py.\n"
-            f"  The Web UI uses '{program} ui [WORKSPACE|SCRIPT.py]' instead of -w.\n"
-            "  Use -C PATH to resolve the project as if Pyruns had been launched there.\n\n"
+            command_overview
+            + "Notes:\n"
+            "  Put global options (-C, -w, --json) before COMMAND.\n"
+            "  Task names are exact. With several workspaces, select one with -w.\n"
+            "  exec creates the shell workspace automatically.\n\n"
             "More help:\n"
             f"  {program} help COMMAND\n"
-            f"  {program} help -a        list the complete command index\n"
+            f"  {program} help -a        list all commands\n"
             f"  {program} COMMAND --help\n\n"
             "Exit status: 0 success, 1 operation failed, 2 invalid usage, 130 interrupted."
         ),
@@ -463,6 +446,7 @@ def build_parser(
                 "Global --json and -w must appear before 'status'.",
             ),
         ),
+        common=True,
     )
 
     show = command(
@@ -470,22 +454,25 @@ def build_parser(
         help_text="show one task's metadata, command, and paths",
         description=(
             "Show one exact task's status, payload, command, working directory, environment, runtime\n"
-            "history, and log paths. Append @RUN to select one positive historical run number."
+            "history, and log paths. Use --run RUN or append @RUN to select one historical run."
         ),
         epilog=_example_block(
             program,
             "show smoke",
             "show smoke@2",
+            "show smoke --run 2",
             "--json -w train show baseline",
             notes=(
                 "TASK is an exact name. New task names reserve @ for the TASK@RUN shorthand.",
-                "TASK@RUN adds that run's times, duration, exit code, PID, source state, and log path.",
+                "TASK@RUN and --run RUN select the same historical run.",
+                "TASK@RUN cannot be combined with --run.",
                 "Use 'log TASK[@RUN]' to print the corresponding log content.",
             ),
         ),
         common=True,
     )
     show.add_argument("task", metavar="TASK[@RUN]", help="exact task name, optionally at one run number")
+    show.add_argument("--run", type=_positive_int, help="select a historical run number")
 
     logs = command(
         "log",
@@ -533,6 +520,7 @@ def build_parser(
                 "Exit status is 1 for task failure, cancellation, or timeout, and 130 if interrupted.",
             ),
         ),
+        common=True,
     )
     wait.add_argument("tasks", nargs="+", metavar="TASK", help="exact task name")
     wait.add_argument("--timeout", type=_non_negative_float, default=0.0, help="seconds to wait; zero means forever")
@@ -657,7 +645,7 @@ def build_parser(
             notes=(
                 "The default format is CSV and the default output '-' means stdout.",
                 "--status is repeatable. Runs without monitor metrics still include lifecycle fields.",
-                "With global --json, export itself must use '--format json'.",
+                "With global --json, stdout defaults to JSON; explicit '--format csv' is rejected.",
             ),
         ),
     )
@@ -669,7 +657,7 @@ def build_parser(
         choices=("pending", "queued", "running", "completed", "failed", "cancelled"),
         help="status filter; repeatable",
     )
-    export.add_argument("-f", "--format", choices=("csv", "json"), default="csv", help="output format")
+    export.add_argument("-f", "--format", choices=("csv", "json"), help="output format; defaults to CSV")
     export.add_argument("-o", "--output", default="-", metavar="PATH", help="output path; '-' means stdout")
 
     config = command(
@@ -797,6 +785,7 @@ def build_parser(
                 "--no-browser keeps the server headless; stop it with Ctrl+C or the service manager.",
             ),
         ),
+        common=True,
     )
     ui.add_argument(
         "target",

@@ -36,7 +36,7 @@ Global options must precede the command:
 --version
 ```
 
-Use exact task names. Do not pass task indices or fuzzy names. For `show` and `log` only, append `@RUN` to select one positive historical run number; `@` is reserved and cannot appear in a new task name.
+Use exact task names. Do not pass task indices or fuzzy names. For `show` and `log`, use `--run RUN` or append the shorter `@RUN` to select one positive historical run number; `@` is reserved and cannot appear in a new task name.
 
 ## Choose A Workspace
 
@@ -166,6 +166,7 @@ pyr -w shell ls -s running -s queued
 pyr -w shell status
 pyr -w shell show train
 pyr -w shell show train@2
+pyr -w shell show train --run 2
 pyr -w shell log train
 pyr -w shell log train -f
 pyr -w shell log train@2
@@ -187,7 +188,7 @@ pyr -w shell restore train-lr1e3
 
 `log -f` streams bytes to stdout until the task finishes. It is not a prompt, REPL, full-screen viewer, or other interactive terminal mode.
 
-`log TASK@RUN` and `log TASK --run RUN` select the same historical log. Do not combine `TASK@RUN` with `--run` or `--follow`. `show TASK@RUN` includes the selected run's start time, finish time, duration, raw exit code, PID, source state, record, track, and log path.
+`show` and `log` both accept `TASK@RUN` and `TASK --run RUN`. Do not combine `TASK@RUN` with `--run`, and do not follow a historical log. A selected `show` run includes its start time, finish time, duration, raw exit code, PID, source state, record, track, and log path.
 
 ## Machine-Readable Operations
 
@@ -211,10 +212,11 @@ Export records to stdout by default:
 ```bash
 pyr -w train export -f csv
 pyr -w train export baseline -f json
+pyr --json -w train export baseline
 pyr -w train export -s completed -o report.csv
 ```
 
-CSV and JSON both emit one record per task run. Runs without monitor metrics are still included with their lifecycle fields.
+CSV and JSON both emit one record per task run. Global `--json` makes a stdout export default to JSON; explicit `-f csv` still conflicts with that request. Runs without monitor metrics are still included with their lifecycle fields.
 
 ## Configuration And Metrics
 

@@ -67,7 +67,7 @@ pyr run --help
 典型示例和关键注意事项；其中 `pyr help exec` 是选择精确 argv、Shell 表达式、
 现有脚本、环境变量和后续任务操作的完整决策指南。帮助命令只读，不会创建工作区。
 
-默认帮助只列 `init exec add run ls show log stop` 八个日常命令，高级命令仍可直接执行；需要浏览全部命令时使用 `help -a`。
+默认帮助只列 `init exec add run ls status show log wait stop ui` 十一个日常命令，高级命令仍可直接执行；需要浏览全部命令时使用 `help -a`。
 
 ## 3. 工作区发现
 
@@ -284,9 +284,10 @@ pyr --json -w train status
 pyr -w train show baseline
 pyr --json -w train show baseline
 pyr -w train show baseline@2
+pyr -w train show baseline --run 2
 ```
 
-`show` 包含任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`show --json` 还提供对齐的运行时长、退出码、源码状态、record 和 track 历史。`TASK@RUN` 额外选择一个历史运行，并显示该次运行的开始时间、结束时间、时长、原始退出码、PID、源码状态、record、track 和日志路径。
+`show` 包含任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`show --json` 还提供对齐的运行时长、退出码、源码状态、record 和 track 历史。`TASK@RUN` 与 `TASK --run RUN` 都可选择一个历史运行，并显示该次运行的开始时间、结束时间、时长、原始退出码、PID、源码状态、record、track 和日志路径。
 
 ## 9. 日志：`log`
 
@@ -312,7 +313,7 @@ pyr --json -w train log baseline@2 --path
 pyr --json -w train log baseline --path
 ```
 
-`TASK@RUN` 是 `show` 和 `log` 的历史运行短语法，等价于 `log TASK --run RUN`。`RUN` 必须是已有的正整数运行编号；`TASK@RUN` 不能再和 `--run` 或 `--follow` 组合。`@` 因此是保留分隔符，不能用于新任务名。
+`TASK@RUN` 是 `show` 和 `log` 的历史运行短语法，等价于 `TASK --run RUN`。`RUN` 必须是已有的正整数运行编号；`TASK@RUN` 不能再和 `--run` 组合，历史日志也不能 `--follow`。`@` 因此是保留分隔符，不能用于新任务名。
 
 `log` 没有全屏交互查看器。`log -f` 只是持续向 stdout 输出字节，并不是交互终端。原始日志模式不能与 `--json` 混用；需要机器可读数据时先取 `--path`。
 
@@ -362,11 +363,12 @@ pyr -w train export --format csv
 
 ```bash
 pyr -w train export baseline --format json
+pyr --json -w train export baseline
 pyr -w train export --status completed --output reports/results.csv
 pyr -w train export --format json --output -
 ```
 
-这里的 `--output -` 明确表示 stdout。
+这里的 `--output -` 明确表示 stdout。全局 `--json` 会让 stdout 导出默认使用 JSON；如果同时显式指定 `--format csv`，命令会拒绝冲突请求。
 CSV 与 JSON 使用相同语义：每个任务的每次运行各占一条记录，并附加该次运行可用的 monitor 指标；即使任务没有写入 monitor 指标，运行时间、退出码和 PID 等基础记录也仍会导出。
 
 ## 13. 配置：`config`

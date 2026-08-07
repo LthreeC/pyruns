@@ -18,31 +18,25 @@ Pyruns 是一个磁盘优先、面向复现实验和终端任务的运行管理�
 ```bash
 pip install pyruns
 
-# 两个正式入口完全等价；下面用短写 pyr
+# 下面使用短入口 pyr；pyruns 与它完全等价
 pyr --help
-pyruns --help
-pyr help -a  # 查看全部命令
-pyr help exec  # 查看 --、-c、脚本和环境变量的完整选择指南
 
-# 初始化当前项目的 shell workspace
-pyr init
-
-# 运行并记录一个命令
+# 运行并记录一个命令；shell workspace 会自动创建
 pyr exec -n smoke -- python -V
 
 # 查询结果
-pyr -w shell ls
-pyr -w shell show smoke
-pyr -w shell log smoke
+pyr ls
+pyr show smoke
+pyr log smoke
 ```
 
 长任务使用 `--detach`，随后用独立命令控制：
 
 ```bash
 pyr exec -n train -d -- python train.py --epochs 100
-pyr -w shell status
-pyr -w shell wait train
-pyr -w shell log train
+pyr status
+pyr wait train
+pyr log train
 ```
 
 需要 Web UI 时显式启动：
@@ -53,7 +47,7 @@ pyr ui train.py
 pyr ui shell
 ```
 
-`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。裸命令显示精简帮助，`help -a` 展开全部命令；两者都没有需要持续操控的交互式 REPL。
+`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。使用 `pyr --help` 查看常用命令，`pyr help -a` 查看完整索引，`pyr help COMMAND` 查看命令细节；两者都没有需要持续操控的交互式 REPL。
 
 ## 为什么它有用
 
@@ -241,7 +235,7 @@ pyr -w ./train.py show baseline
 pyr -w ./_pyruns_/train log baseline
 ```
 
-任务必须使用精确名称，不支持序号和模糊匹配。`show` 与 `log` 额外支持 `TASK@RUN` 选择历史运行，因此 `@` 不能出现在新任务名中。
+任务必须使用精确名称，不支持序号和模糊匹配。`show` 与 `log` 支持 `TASK --run RUN`，也可用短写 `TASK@RUN` 选择历史运行，因此 `@` 不能出现在新任务名中。
 
 ## Python 脚本接入
 
@@ -314,6 +308,7 @@ pyr -w train ls -s running --status queued
 pyr -w train status
 pyr -w train show baseline
 pyr -w train show baseline@2
+pyr -w train show baseline --run 2
 pyr -w train log baseline -f
 pyr -w train log baseline@2
 pyr -w train wait baseline --timeout 600
@@ -336,6 +331,7 @@ pyr --json -w shell ls
 pyr --json -w shell status
 pyr --json -w shell show smoke
 pyr --json -w shell show smoke@2
+pyr --json -w shell show smoke --run 2
 pyr --json -w shell log smoke --path
 pyr --json -w shell log smoke@2 --path
 pyr --json config list
@@ -347,8 +343,11 @@ pyr --json metrics
 ```bash
 pyr -w train export -f csv
 pyr -w train export baseline -f json
+pyr --json -w train export baseline
 pyr -w train export -s completed -o results.csv
 ```
+
+全局 `--json` 会让 stdout 导出默认使用 JSON；需要 CSV 时不要传全局 `--json`，并使用 `-f csv`。
 
 退出码：
 
