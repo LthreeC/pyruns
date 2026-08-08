@@ -1,27 +1,27 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ChevronDown, GripVertical, MousePointer2, Pin, Play, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
+  AlertTriangle, ArrowDown, ArrowUp, ChevronDown, Cpu, GripVertical, Loader2, MousePointer2, Pin, Play,
+  RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useMonitorStore, useTaskStore, useToastStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
-import StatusBadge from '@/components/shared/StatusBadge'
 import SearchInput from '@/components/shared/SearchInput'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import Pagination from '@/components/shared/Pagination'
-import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
-import InlineMetric from '@/components/shared/InlineMetric'
 import TaskDetailPanel from './TaskDetailPanel'
 import type { Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
@@ -32,13 +32,41 @@ import * as api from '@/api'
 const STATUS_OPTIONS = ['All', ...ALL_STATUSES]
 type DragTarget = 'pinned' | 'tasks'
 type DragPlacement = 'before' | 'after'
+type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
+type ManagerMetricTone = 'neutral' | 'amber' | 'emerald' | 'rose'
 const DRAG_START_DISTANCE = 8
 
-function readCompactTaskGrid() {
-  if (typeof window === 'undefined') {
-    return false
-  }
-  return window.matchMedia('(max-width: 700px)').matches
+function isOrderMutation(action: PendingTaskAction) {
+  return action === 'pin' || action === 'move'
+}
+
+function hasPendingOrderMutation(actions: Map<string, PendingTaskAction>) {
+  return [...actions.values()].some(isOrderMutation)
+}
+
+const MANAGER_STATUS_STYLES: Record<TaskStatus, string> = {
+  pending: 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200',
+  queued: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950/45 dark:text-blue-300',
+  running: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300',
+  completed: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300',
+  failed: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300',
+  cancelled: 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300',
+}
+
+const MANAGER_STATUS_DOTS: Record<TaskStatus, string> = {
+  pending: 'bg-slate-500',
+  queued: 'bg-blue-600 dark:bg-blue-400',
+  running: 'bg-amber-600 dark:bg-amber-400',
+  completed: 'bg-emerald-600 dark:bg-emerald-400',
+  failed: 'bg-rose-600 dark:bg-rose-400',
+  cancelled: 'bg-slate-500 dark:bg-slate-400',
+}
+
+const MANAGER_METRIC_STYLES: Record<ManagerMetricTone, string> = {
+  neutral: 'border-border-subtle bg-surface-overlay text-txt-primary',
+  amber: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300',
+  emerald: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300',
+  rose: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300',
 }
 
 interface TaskSearchMatch {
@@ -59,11 +87,6 @@ interface DragCandidate {
   startY: number
 }
 
-function isInteractiveDragTarget(target: EventTarget | null) {
-  return target instanceof HTMLElement
-    && Boolean(target.closest('button, a, input, textarea, select, [role="button"]'))
-}
-
 function getDropTargetFromElement(element: HTMLElement | null): DragTarget | null {
   const target = element?.closest<HTMLElement>('[data-task-drop-target]')
   const value = target?.dataset.taskDropTarget
@@ -73,7 +96,13 @@ function getDropTargetFromElement(element: HTMLElement | null): DragTarget | nul
 function getCardDropPlacement(card: HTMLElement, clientX: number, clientY: number): Pick<DropIntent, 'placement' | 'axis'> {
   const rect = card.getBoundingClientRect()
   const grid = card.closest<HTMLElement>('[data-task-grid]')
-  const columnCount = Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)
+  const renderedColumnCount = grid
+    ? window.getComputedStyle(grid).gridTemplateColumns
+        .split(/\s+/)
+        .filter(track => Number.parseFloat(track) > 0).length
+    : 0
+  const configuredColumnCount = Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)
+  const columnCount = renderedColumnCount || configuredColumnCount
   const axis = columnCount <= 1 ? 'vertical' : 'horizontal'
   const placement = axis === 'vertical'
     ? (clientY < rect.top + rect.height / 2 ? 'before' : 'after')
@@ -145,14 +174,20 @@ function buildReorderedItems(tasks: Task[], taskName: string, intent: DropIntent
   ]
 }
 
+function hasReorderChanges(tasks: Task[], items: { name: string; pinned: boolean }[]) {
+  return tasks.length !== items.length || tasks.some((task, index) => (
+    task.name !== items[index]?.name || Boolean(task.pinned) !== items[index]?.pinned
+  ))
+}
+
 export default function ManagerPage() {
   const {
-    tasks, total, offset, limit, query, statusFilter, selectedIds, columns,
+    tasks, total, statusCounts, offset, limit, query, statusFilter, selectedIds, loading, error, columns,
     setQuery, setStatusFilter, setOffset, setColumns, fetchTasks,
     toggleSelect, selectAll, clearSelection,
   } = useTaskStore()
 
-  const [executionMode, setExecutionMode] = useState('thread')
+  const [bulkExecutionMode, setBulkExecutionMode] = useState('thread')
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [deleteTask, setDeleteTask] = useState<Task | null>(null)
@@ -162,38 +197,29 @@ export default function ManagerPage() {
   const [dragOverTarget, setDragOverTarget] = useState<DragTarget | null>(null)
   const [dropIntent, setDropIntent] = useState<DropIntent | null>(null)
   const [taskActionMessage, setTaskActionMessage] = useState('')
+  const [pendingTaskActions, setPendingTaskActions] = useState<Map<string, PendingTaskAction>>(() => new Map())
+  const [bulkAction, setBulkAction] = useState<'run' | 'delete' | null>(null)
   const dragCandidateRef = useRef<DragCandidate | null>(null)
   const draggedTaskNameRef = useRef('')
   const dragOverTargetRef = useRef<DragTarget | null>(null)
   const dropIntentRef = useRef<DropIntent | null>(null)
   const pendingDragPointRef = useRef<{ clientX: number; clientY: number } | null>(null)
   const dragFrameRef = useRef<number | null>(null)
-  const suppressCardClickRef = useRef('')
+  const pendingTaskActionsRef = useRef<Map<string, PendingTaskAction>>(new Map())
+  const bulkActionRef = useRef<'run' | 'delete' | null>(null)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const focusTaskName = searchParams.get('task')
-  const [compactTaskGrid, setCompactTaskGrid] = useState(readCompactTaskGrid)
   const notify = useToastStore(state => state.notify)
 
-  const hasActive = tasks.some(task => task.status === 'running' || task.status === 'queued')
-  const effectiveTaskColumns = compactTaskGrid ? 1 : columns
+  const hasActive = statusCounts
+    ? statusCounts.running + statusCounts.queued > 0
+    : tasks.some(task => task.status === 'running' || task.status === 'queued')
   usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
 
   useEffect(() => {
     void fetchTasks()
   }, [query, statusFilter, offset, fetchTasks])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    const query = window.matchMedia('(max-width: 700px)')
-    const handleChange = () => setCompactTaskGrid(query.matches)
-    handleChange()
-    query.addEventListener('change', handleChange)
-    return () => query.removeEventListener('change', handleChange)
-  }, [])
 
   useEffect(() => {
     if (!focusTaskName) {
@@ -218,7 +244,19 @@ export default function ManagerPage() {
     }
   }, [focusTaskName, searchParams, setSearchParams])
 
-  const allSelected = tasks.length > 0 && tasks.every(task => selectedIds.has(task.name))
+  const visibleSelectedCount = tasks.reduce(
+    (count, task) => count + (selectedIds.has(task.name) ? 1 : 0),
+    0,
+  )
+  const anyTaskActionPending = pendingTaskActions.size > 0
+  const orderMutationPending = hasPendingOrderMutation(pendingTaskActions)
+  const activeSelectedCount = tasks.reduce(
+    (count, task) => count + (
+      selectedIds.has(task.name) && (task.status === 'running' || task.status === 'queued') ? 1 : 0
+    ),
+    0,
+  )
+  const allPageSelected = tasks.length > 0 && visibleSelectedCount === tasks.length
   const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
   const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
   const draggedTask = useMemo(
@@ -226,16 +264,30 @@ export default function ManagerPage() {
     [draggedTaskName, tasks],
   )
   const showPinnedSection = pinnedTasks.length > 0 || Boolean(draggedTask && !draggedTask.pinned)
-  const summary = useMemo(() => ({
-    total,
-    active: tasks.filter(task => task.status === 'running' || task.status === 'queued').length,
-    completed: tasks.filter(task => task.status === 'completed').length,
-    failed: tasks.filter(task => task.status === 'failed').length,
-  }), [tasks, total])
+  const summary = useMemo(() => statusCounts ? {
+    total: Object.values(statusCounts).reduce((count, value) => count + value, 0),
+    active: statusCounts.running + statusCounts.queued,
+    completed: statusCounts.completed,
+    failed: statusCounts.failed,
+  } : null, [statusCounts])
 
   draggedTaskNameRef.current = draggedTaskName
   dragOverTargetRef.current = dragOverTarget
   dropIntentRef.current = dropIntent
+
+  useEffect(() => {
+    if (!taskActionMessage) {
+      return
+    }
+    const timeout = window.setTimeout(() => setTaskActionMessage(''), 4200)
+    return () => window.clearTimeout(timeout)
+  }, [taskActionMessage])
+
+  useEffect(() => {
+    if (deleteConfirm && visibleSelectedCount === 0 && !bulkAction) {
+      setDeleteConfirm(false)
+    }
+  }, [bulkAction, deleteConfirm, visibleSelectedCount])
 
   useEffect(() => {
     if (!detailTask) {
@@ -260,6 +312,45 @@ export default function ManagerPage() {
     }
   }, [detailTask, tasks])
 
+  const beginTaskAction = useCallback((taskName: string, action: PendingTaskAction) => {
+    if (
+      bulkActionRef.current
+      || pendingTaskActionsRef.current.has(taskName)
+      || (isOrderMutation(action) && hasPendingOrderMutation(pendingTaskActionsRef.current))
+    ) {
+      return false
+    }
+    const next = new Map(pendingTaskActionsRef.current)
+    next.set(taskName, action)
+    pendingTaskActionsRef.current = next
+    setPendingTaskActions(next)
+    return true
+  }, [])
+
+  const finishTaskAction = useCallback((taskName: string) => {
+    if (!pendingTaskActionsRef.current.has(taskName)) {
+      return
+    }
+    const next = new Map(pendingTaskActionsRef.current)
+    next.delete(taskName)
+    pendingTaskActionsRef.current = next
+    setPendingTaskActions(next)
+  }, [])
+
+  const beginBulkAction = useCallback((action: 'run' | 'delete') => {
+    if (bulkActionRef.current || pendingTaskActionsRef.current.size > 0) {
+      return false
+    }
+    bulkActionRef.current = action
+    setBulkAction(action)
+    return true
+  }, [])
+
+  const finishBulkAction = useCallback(() => {
+    bulkActionRef.current = null
+    setBulkAction(null)
+  }, [])
+
   const normalizeWorkerInput = useCallback((value: string) => {
     const trimmed = value.trim()
     if (!trimmed) {
@@ -273,12 +364,12 @@ export default function ManagerPage() {
   }, [])
 
   const handleRunSelected = useCallback(async () => {
-    const names = [...selectedIds]
-    if (!names.length) return
+    const names = tasks.filter(task => selectedIds.has(task.name)).map(task => task.name)
+    if (!names.length || !beginBulkAction('run')) return
     const maxWorkers = normalizeWorkerInput(maxWorkersInput)
     setMaxWorkersInput(String(maxWorkers))
     try {
-      const result = await api.batchRunTasks(names, executionMode, maxWorkers)
+      const result = await api.batchRunTasks(names, bulkExecutionMode, maxWorkers)
       clearSelection()
       setSelectMode(false)
       await fetchTasks()
@@ -292,54 +383,76 @@ export default function ManagerPage() {
       })
     } catch (err) {
       notify({ tone: 'error', title: 'Could not start tasks', detail: errorMessage(err) })
+    } finally {
+      finishBulkAction()
     }
-  }, [selectedIds, executionMode, maxWorkersInput, normalizeWorkerInput, clearSelection, fetchTasks, notify])
+  }, [tasks, selectedIds, beginBulkAction, normalizeWorkerInput, maxWorkersInput, bulkExecutionMode, clearSelection, fetchTasks, notify, finishBulkAction])
 
   const handleDeleteSelected = useCallback(async () => {
-    const names = [...selectedIds]
-    if (!names.length) return
+    const names = tasks.filter(task => selectedIds.has(task.name)).map(task => task.name)
+    if (!names.length || !beginBulkAction('delete')) return
     try {
-      await api.batchDeleteTasks(names)
+      const result = await api.batchDeleteTasks(names)
       clearSelection()
       setDeleteConfirm(false)
       setSelectMode(false)
       await fetchTasks()
+      const deleted = new Set(result.deleted || [])
+      const skipped = names.filter(name => !deleted.has(name))
       notify({
-        tone: 'success',
-        title: 'Tasks moved to trash',
-        detail: `${names.length} task${names.length === 1 ? '' : 's'} deleted.`,
+        tone: skipped.length ? 'info' : 'success',
+        title: skipped.length ? 'Some tasks could not be deleted' : 'Tasks moved to trash',
+        detail: skipped.length
+          ? `${result.count} deleted; skipped ${skipped.join(', ')}.`
+          : `${result.count} task${result.count === 1 ? '' : 's'} deleted.`,
       })
     } catch (err) {
       notify({ tone: 'error', title: 'Could not delete tasks', detail: errorMessage(err) })
+    } finally {
+      finishBulkAction()
     }
-  }, [selectedIds, clearSelection, fetchTasks, notify])
+  }, [tasks, selectedIds, beginBulkAction, clearSelection, fetchTasks, notify, finishBulkAction])
 
   const handleDeleteTask = useCallback(async () => {
     if (!deleteTask) return
+    const target = deleteTask
+    if (!beginTaskAction(target.name, 'delete')) return
     try {
-      await api.batchDeleteTasks([deleteTask.name])
-      if (detailTask?.name === deleteTask.name) {
+      await api.batchDeleteTasks([target.name])
+      if (detailTask?.name === target.name) {
         setDetailTask(null)
       }
       setDeleteTask(null)
       await fetchTasks()
-      notify({ tone: 'success', title: 'Task moved to trash', detail: deleteTask.name })
+      notify({ tone: 'success', title: 'Task moved to trash', detail: target.name })
     } catch (err) {
       notify({ tone: 'error', title: 'Could not delete task', detail: errorMessage(err) })
+    } finally {
+      finishTaskAction(target.name)
     }
-  }, [deleteTask, detailTask, fetchTasks, notify])
+  }, [deleteTask, beginTaskAction, detailTask, fetchTasks, notify, finishTaskAction])
 
   const handleTaskAction = useCallback(async (task: Task, action: 'run' | 'cancel' | 'rerun') => {
+    if (!beginTaskAction(task.name, action)) return
     try {
+      let updatedTask: Task | null = null
       if (action === 'run' || action === 'rerun') {
-        await api.runTask(task.name, executionMode)
+        updatedTask = (await api.runTask(task.name)).task
       } else {
-        await api.cancelTask(task.name)
+        updatedTask = (await api.cancelTask(task.name)).task
       }
       await fetchTasks()
+      const waitingForGpu = updatedTask?.status === 'queued' && Boolean(updatedTask.gpu_wait)
+      const queued = updatedTask?.status === 'queued'
       notify({
         tone: 'success',
-        title: action === 'cancel' ? 'Cancel requested' : 'Task started',
+        title: action === 'cancel'
+          ? 'Cancel requested'
+          : waitingForGpu
+            ? 'Waiting for GPU capacity'
+            : queued
+              ? 'Task queued'
+              : 'Task started',
         detail: task.name,
       })
     } catch (err) {
@@ -348,8 +461,10 @@ export default function ManagerPage() {
         title: action === 'cancel' ? 'Could not cancel task' : 'Could not start task',
         detail: errorMessage(err),
       })
+    } finally {
+      finishTaskAction(task.name)
     }
-  }, [executionMode, fetchTasks, notify])
+  }, [beginTaskAction, fetchTasks, notify, finishTaskAction])
 
   const openTaskLogs = useCallback((task: Task) => {
     void useMonitorStore.getState().selectTask(task.name)
@@ -358,17 +473,26 @@ export default function ManagerPage() {
   }, [navigate, notify])
 
   const handlePin = useCallback(async (task: Task) => {
+    if (!beginTaskAction(task.name, 'pin')) return
     try {
       await api.pinTask(task.name, !task.pinned)
       setTaskActionMessage(task.pinned ? `Moved ${task.name} back to Tasks.` : `Pinned ${task.name}.`)
       await fetchTasks()
     } catch (err) {
       notify({ tone: 'error', title: 'Could not update pin', detail: errorMessage(err) })
+    } finally {
+      finishTaskAction(task.name)
     }
-  }, [fetchTasks, notify])
+  }, [beginTaskAction, fetchTasks, notify, finishTaskAction])
 
   const handleTaskPointerDown = useCallback((task: Task, event: ReactPointerEvent<HTMLElement>) => {
-    if (selectMode || event.button !== 0 || isInteractiveDragTarget(event.target)) {
+    if (
+      selectMode
+      || Boolean(bulkActionRef.current)
+      || pendingTaskActionsRef.current.has(task.name)
+      || hasPendingOrderMutation(pendingTaskActionsRef.current)
+      || event.button !== 0
+    ) {
       return
     }
 
@@ -394,12 +518,23 @@ export default function ManagerPage() {
     if (!task) {
       return
     }
+    if (intent.targetName === task.name && intent.target === (task.pinned ? 'pinned' : 'tasks')) {
+      setTaskActionMessage(`${task.name} is already in this position.`)
+      return
+    }
+    if (!beginTaskAction(task.name, 'move')) {
+      return
+    }
 
     try {
       const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
       const items = buildReorderedItems(allTasks.items, task.name, intent)
       const movedItem = items.find(item => item.name === task.name)
       if (!items.length || !movedItem) {
+        return
+      }
+      if (!hasReorderChanges(allTasks.items, items)) {
+        setTaskActionMessage(`${task.name} is already in this position.`)
         return
       }
 
@@ -412,8 +547,46 @@ export default function ManagerPage() {
       await fetchTasks()
     } catch (err) {
       notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
+    } finally {
+      finishTaskAction(task.name)
     }
-  }, [fetchTasks, notify, tasks])
+  }, [beginTaskAction, fetchTasks, notify, tasks, finishTaskAction])
+
+  const handleMoveTask = useCallback(async (task: Task, direction: -1 | 1) => {
+    if (!beginTaskAction(task.name, 'move')) return
+    try {
+      const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
+      const sectionTasks = allTasks.items.filter(item => Boolean(item.pinned) === Boolean(task.pinned))
+      const currentIndex = sectionTasks.findIndex(item => item.name === task.name)
+      const targetTask = sectionTasks[currentIndex + direction]
+      if (currentIndex < 0 || !targetTask) {
+        setTaskActionMessage(
+          direction < 0
+            ? `${task.name} is already first in this section.`
+            : `${task.name} is already last in this section.`,
+        )
+        return
+      }
+
+      const intent: DropIntent = {
+        target: task.pinned ? 'pinned' : 'tasks',
+        targetName: targetTask.name,
+        placement: direction < 0 ? 'before' : 'after',
+        axis: 'vertical',
+      }
+      const items = buildReorderedItems(allTasks.items, task.name, intent)
+      if (!items.length) {
+        return
+      }
+      await api.reorderTasks(items)
+      setTaskActionMessage(`Moved ${task.name} ${direction < 0 ? 'earlier' : 'later'}.`)
+      await fetchTasks()
+    } catch (err) {
+      notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
+    } finally {
+      finishTaskAction(task.name)
+    }
+  }, [beginTaskAction, fetchTasks, notify, finishTaskAction])
 
   useEffect(() => {
     const applyDropIntent = (intent: DropIntent | null) => {
@@ -486,7 +659,6 @@ export default function ManagerPage() {
         return
       }
 
-      suppressCardClickRef.current = candidate.taskName
       draggedTaskNameRef.current = candidate.taskName
       if (intent) {
         void handleTaskDrop(intent, candidate.taskName)
@@ -545,11 +717,6 @@ export default function ManagerPage() {
   }
 
   const handleCardClick = useCallback((task: Task) => {
-    if (suppressCardClickRef.current === task.name) {
-      suppressCardClickRef.current = ''
-      return
-    }
-
     if (selectMode) {
       toggleSelect(task.name)
       return
@@ -573,134 +740,227 @@ export default function ManagerPage() {
   }, [searchParams, setSearchParams])
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2">
-        <div className="relative">
-          <select
-            value={statusFilter}
-            onChange={event => setStatusFilter(event.target.value)}
-            title="Filter by status"
-            className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-7 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+    <div className="flex h-full flex-col overflow-hidden bg-surface-base">
+      <header className="flex-none border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-4">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold tracking-tight text-txt-primary">Task Manager</h1>
+              {loading && tasks.length > 0 && (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-txt-tertiary" aria-label="Refreshing tasks" />
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-txt-secondary">
+              Review, organize, and run workspace tasks from one queue.
+            </p>
+          </div>
+
+          <div
+            className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap sm:justify-end"
+            aria-label="Workspace task totals"
+            title="Workspace totals are independent of the current search, status filter, and page."
           >
-            {STATUS_OPTIONS.map(option => (
-              <option key={option} value={option}>
-                {option === 'All' ? 'All Status' : STATUS_LABELS[option as TaskStatus]}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            <ManagerMetric label="All tasks" value={summary?.total ?? '—'} />
+            <ManagerMetric label="Active" value={summary?.active ?? '—'} tone="amber" />
+            <ManagerMetric label="Done" value={summary?.completed ?? '—'} tone="emerald" />
+            <ManagerMetric label="Failed" value={summary?.failed ?? '—'} tone="rose" />
+          </div>
         </div>
 
-        <div className="w-64 max-w-full">
-          <SearchInput value={query} onChange={setQuery} placeholder="Search tasks..." />
-        </div>
+        <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-start">
+          <div className="w-full min-w-0 flex-none lg:w-auto lg:flex-[1_1_22rem]">
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="Search tasks..."
+              ariaLabel="Search tasks"
+              className="[&>svg]:top-3.5 [&_button]:top-0 [&_button]:h-11 [&_button]:w-11 [&_textarea]:min-h-11 [&_textarea]:pr-11 [&_textarea]:[scrollbar-width:none] [&_textarea::-webkit-scrollbar]:hidden sm:[&>svg]:top-2.5 sm:[&_button]:top-1 sm:[&_button]:h-7 sm:[&_button]:w-7 sm:[&_textarea]:min-h-[34px] sm:[&_textarea]:pr-8"
+            />
+          </div>
 
-        <div className="relative">
-          <select
-            value={columns}
-            onChange={event => setColumns(Number(event.target.value))}
-            title="Cards per row"
-            className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 pr-6 text-xs text-txt-primary outline-none transition-colors focus:border-border"
-          >
-            {[1, 2, 3, 4, 5, 6, 7, 8].map(count => (
-              <option key={count} value={count}>{count} col{count > 1 ? 's' : ''}</option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-        </div>
-
-        <div className="flex-1" />
-
-        {taskActionMessage && (
-          <span className="rounded-md bg-accent/8 px-2.5 py-1 text-xs font-medium text-accent" title={taskActionMessage}>
-            {taskActionMessage}
-          </span>
-        )}
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <InlineMetric label="Total" value={summary.total} />
-          <InlineMetric label="Active" value={summary.active} tone="amber" />
-          <InlineMetric label="Done" value={summary.completed} tone="emerald" />
-          <InlineMetric label="Failed" value={summary.failed} tone="rose" />
-        </div>
-
-        {!selectMode ? (
-          <ActionButton
-            icon={<MousePointer2 className="h-4 w-4" />}
-            variant="primary"
-            size="md"
-            onClick={() => setSelectMode(true)}
-          >
-            Select
-          </ActionButton>
-        ) : (
           <div className="flex flex-wrap items-center gap-2">
-            <ActionButton
-              icon={<SelectionIndicator selected={allSelected} />}
-              variant="accentTint"
-              onClick={() => (allSelected ? clearSelection() : selectAll())}
-            >
-              {allSelected ? 'Deselect All' : 'Select All'}
-            </ActionButton>
-
-            <label className="flex items-center gap-1.5 text-2xs text-txt-secondary">
-              Workers
-              <input
-                type="number"
-                min={1}
-                max={32}
-                value={maxWorkersInput}
-                onChange={event => setMaxWorkersInput(event.target.value)}
-                onBlur={() => setMaxWorkersInput(current => String(normalizeWorkerInput(current)))}
-                title="Max workers"
-                className="w-12 rounded-md border border-border-subtle bg-surface-overlay px-1.5 py-1 text-xs tabular-nums text-txt-primary outline-none transition-colors focus:border-border"
-              />
-            </label>
-
-            <div className="relative">
+            <div className="relative flex-1 sm:flex-none">
               <select
-                value={executionMode}
-                onChange={event => setExecutionMode(event.target.value)}
-                title="Execution mode"
-                className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 pr-6 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+                value={statusFilter}
+                onChange={event => setStatusFilter(event.target.value)}
+                aria-label="Filter tasks by status"
+                title="Filter by status"
+                className="min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
               >
-                <option value="thread">Thread</option>
-                <option value="process">Process</option>
+                {STATUS_OPTIONS.map(option => (
+                  <option key={option} value={option}>
+                    {option === 'All' ? 'All' : STATUS_LABELS[option as TaskStatus]}
+                  </option>
+                ))}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
             </div>
 
-            <ActionButton
-              icon={<Play className="h-3.5 w-3.5" />}
-              variant="success"
-              onClick={handleRunSelected}
-              disabled={selectedIds.size === 0}
-            >
-              Run ({selectedIds.size})
-            </ActionButton>
+            <div className="relative flex-1 sm:flex-none">
+              <select
+                value={columns}
+                onChange={event => setColumns(Number(event.target.value))}
+                aria-label="Maximum cards per row"
+                title="Maximum cards per row; narrow windows reduce the count automatically"
+                className="min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8].map(count => (
+                  <option key={count} value={count}>{count} col{count > 1 ? 's' : ''}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            </div>
 
-            <ActionButton
-              icon={<Trash2 className="h-3.5 w-3.5" />}
-              variant="danger"
-              onClick={() => selectedIds.size > 0 && setDeleteConfirm(true)}
-              disabled={selectedIds.size === 0}
-            >
-              Delete
-            </ActionButton>
+            {!selectMode && (
+              <ActionButton
+                icon={<MousePointer2 className="h-4 w-4" />}
+                variant="primary"
+                size="sm"
+                className="h-11 sm:h-auto"
+                disabled={tasks.length === 0 || anyTaskActionPending || Boolean(bulkAction)}
+                title={anyTaskActionPending ? 'Wait for the current task action to finish' : undefined}
+                onClick={() => setSelectMode(true)}
+              >
+                Select tasks
+              </ActionButton>
+            )}
+          </div>
+        </div>
 
-            <ActionButton variant="ghost" onClick={exitSelectMode}>
-              Cancel
+        {taskActionMessage && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mt-2 rounded-md border border-accent/20 bg-accent/8 px-3 py-2 text-xs font-medium text-accent"
+            title={taskActionMessage}
+          >
+            {taskActionMessage}
+          </div>
+        )}
+
+        {selectMode && (
+          <div
+            className="mt-3 flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5 xl:flex-row xl:items-center"
+            role="region"
+            aria-label="Current page selection actions"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold text-txt-primary" aria-live="polite">
+                {visibleSelectedCount} of {tasks.length} selected on this page
+              </div>
+              <div className="mt-0.5 text-2xs text-txt-secondary">
+                Selection is page-scoped and resets when you change the page, search, or status filter.
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <ActionButton
+                icon={<SelectionIndicator selected={allPageSelected} />}
+                variant="accentTint"
+                className="min-h-11 sm:min-h-9"
+                disabled={Boolean(bulkAction)}
+                onClick={() => (allPageSelected ? clearSelection() : selectAll())}
+              >
+                {allPageSelected ? 'Clear page' : 'Select page'}
+              </ActionButton>
+
+              <label className="flex min-h-11 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-raised px-2.5 text-2xs text-txt-secondary sm:min-h-9">
+                Workers
+                <input
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={maxWorkersInput}
+                  disabled={Boolean(bulkAction)}
+                  onChange={event => setMaxWorkersInput(event.target.value)}
+                  onBlur={() => setMaxWorkersInput(current => String(normalizeWorkerInput(current)))}
+                  aria-label="Maximum parallel workers"
+                  className="w-10 bg-transparent text-xs tabular-nums text-txt-primary outline-none disabled:opacity-50"
+                />
+              </label>
+
+              <div className="relative">
+                <select
+                  value={bulkExecutionMode}
+                  disabled={Boolean(bulkAction)}
+                  onChange={event => setBulkExecutionMode(event.target.value)}
+                  aria-label="Execution mode for selected tasks"
+                  className="min-h-11 appearance-none rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 pr-7 text-xs text-txt-primary outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:opacity-50 sm:min-h-9"
+                >
+                  <option value="thread">Thread</option>
+                  <option value="process">Process</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              </div>
+
+              <ActionButton
+                icon={bulkAction === 'run' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                variant="success"
+                className="min-h-11 sm:min-h-9"
+                onClick={handleRunSelected}
+                disabled={visibleSelectedCount === 0 || Boolean(bulkAction)}
+                aria-busy={bulkAction === 'run' || undefined}
+              >
+                Run ({visibleSelectedCount})
+              </ActionButton>
+
+              <ActionButton
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                variant="danger"
+                className="min-h-11 sm:min-h-9"
+                onClick={() => visibleSelectedCount > 0 && setDeleteConfirm(true)}
+                disabled={visibleSelectedCount === 0 || Boolean(bulkAction)}
+              >
+                Delete
+              </ActionButton>
+
+              <ActionButton className="min-h-11 sm:min-h-9" variant="ghost" disabled={Boolean(bulkAction)} onClick={exitSelectMode}>
+                Cancel
+              </ActionButton>
+            </div>
+          </div>
+        )}
+      </header>
+
+      <section
+        className="flex-1 overflow-y-auto p-3 sm:p-4"
+        aria-label="Task list"
+        aria-busy={loading || undefined}
+      >
+        {error && (
+          <div
+            role="alert"
+            className="mb-3 flex flex-col gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2.5 text-rose-800 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300 sm:flex-row sm:items-center"
+          >
+            <AlertTriangle className="h-4 w-4 flex-none" />
+            <div className="min-w-0 flex-1 text-xs">
+              <span className="font-semibold">Tasks could not be refreshed.</span>{' '}
+              <span className="break-words">{error}</span>
+            </div>
+            <ActionButton
+              icon={<RefreshCw className="h-3.5 w-3.5" />}
+              variant="ghost"
+              className="min-h-11 sm:min-h-9"
+              disabled={loading}
+              onClick={() => void fetchTasks()}
+            >
+              Retry
             </ActionButton>
           </div>
         )}
-      </div>
 
-      <div className="flex-1 overflow-y-auto p-3">
-        {tasks.length === 0 ? (
-          <EmptyState
-            title="No tasks found"
-            description={query ? 'Try a different search' : 'Generate some tasks to get started'}
-          />
+        {loading && tasks.length === 0 ? (
+          <ManagerLoadingState columns={columns} />
+        ) : tasks.length === 0 ? (
+          error ? null : (
+            <ManagerEmptyState
+              filtered={Boolean(query) || statusFilter !== 'All'}
+              onClear={() => {
+                setQuery('')
+                setStatusFilter('All')
+              }}
+            />
+          )
         ) : (
           <div className="space-y-3">
             {showPinnedSection && (
@@ -727,15 +987,18 @@ export default function ManagerPage() {
                   ) : (
                     <TaskGrid
                       tasks={pinnedTasks}
-                      columns={effectiveTaskColumns}
+                      columns={columns}
                       query={query}
                       draggedTaskName={draggedTaskName}
                       dropIntent={dropIntent}
                       selectedIds={selectedIds}
                       selectMode={selectMode}
+                      orderMutationPending={orderMutationPending}
+                      pendingTaskActions={pendingTaskActions}
                       onCardClick={handleCardClick}
                       onTaskAction={handleTaskAction}
                       onPin={handlePin}
+                      onMove={handleMoveTask}
                       onDelete={setDeleteTask}
                       onMonitor={openTaskLogs}
                       onPointerDown={handleTaskPointerDown}
@@ -754,21 +1017,24 @@ export default function ManagerPage() {
             >
             <CompactSection
               title="Tasks"
-              subtitle={dragOverTarget === 'tasks' ? 'Drop to reorder' : `${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
+              subtitle={dragOverTarget === 'tasks' ? 'Drop to reorder' : `${otherTasks.length} on this page · ${total} matching`}
               icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
               bodyClassName="p-2"
             >
               <TaskGrid
                 tasks={otherTasks}
-                columns={effectiveTaskColumns}
+                columns={columns}
                 query={query}
                 draggedTaskName={draggedTaskName}
                 dropIntent={dropIntent}
                 selectedIds={selectedIds}
                 selectMode={selectMode}
+                orderMutationPending={orderMutationPending}
+                pendingTaskActions={pendingTaskActions}
                 onCardClick={handleCardClick}
                 onTaskAction={handleTaskAction}
                 onPin={handlePin}
+                onMove={handleMoveTask}
                 onDelete={setDeleteTask}
                 onMonitor={openTaskLogs}
                 onPointerDown={handleTaskPointerDown}
@@ -777,20 +1043,23 @@ export default function ManagerPage() {
             </div>
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="flex items-center justify-between border-t border-border-subtle bg-surface-raised px-3 py-1.5">
-        <span className="text-2xs text-txt-tertiary">
-          {selectMode && selectedIds.size > 0 ? `${selectedIds.size} selected | ` : ''}
-          {total} task{total !== 1 ? 's' : ''}
+      <footer className="flex flex-none flex-wrap items-center justify-between gap-2 border-t border-border-subtle bg-surface-raised px-3 py-2 sm:px-4">
+        <span className="text-2xs text-txt-secondary">
+          {selectMode && visibleSelectedCount > 0 ? `${visibleSelectedCount} selected on page · ` : ''}
+          {tasks.length > 0 ? `Showing ${offset + 1}–${offset + tasks.length} of ` : ''}
+          {total} matching task{total !== 1 ? 's' : ''}
         </span>
         <Pagination total={total} offset={offset} limit={limit} onOffsetChange={setOffset} />
-      </div>
+      </footer>
 
       <ConfirmDialog
         open={deleteConfirm}
         title="Delete Tasks"
-        description={`Move ${selectedIds.size} task(s) to trash?`}
+        description={activeSelectedCount > 0
+          ? `Stop ${activeSelectedCount} active task${activeSelectedCount === 1 ? '' : 's'} and move all ${visibleSelectedCount} selected tasks from this page to trash?`
+          : `Move ${visibleSelectedCount} selected task(s) from this page to trash?`}
         confirmLabel="Delete"
         confirmVariant="danger"
         onConfirm={handleDeleteSelected}
@@ -799,8 +1068,12 @@ export default function ManagerPage() {
 
       <ConfirmDialog
         open={Boolean(deleteTask)}
-        title="Delete Task"
-        description={deleteTask ? `Move '${deleteTask.name}' to trash?` : ''}
+        title={deleteTask && (deleteTask.status === 'running' || deleteTask.status === 'queued') ? 'Stop and Delete Task' : 'Delete Task'}
+        description={deleteTask
+          ? deleteTask.status === 'running' || deleteTask.status === 'queued'
+            ? `Stop '${deleteTask.name}' and move it to trash?`
+            : `Move '${deleteTask.name}' to trash?`
+          : ''}
         confirmLabel="Delete"
         confirmVariant="danger"
         onConfirm={handleDeleteTask}
@@ -822,9 +1095,12 @@ function TaskGrid({
   dropIntent,
   selectedIds,
   selectMode,
+  orderMutationPending,
+  pendingTaskActions,
   onCardClick,
   onTaskAction,
   onPin,
+  onMove,
   onDelete,
   onMonitor,
   onPointerDown,
@@ -836,9 +1112,12 @@ function TaskGrid({
   dropIntent: DropIntent | null
   selectedIds: Set<string>
   selectMode: boolean
+  orderMutationPending: boolean
+  pendingTaskActions: Map<string, PendingTaskAction>
   onCardClick: (task: Task) => void
   onTaskAction: (task: Task, action: 'run' | 'cancel' | 'rerun') => void | Promise<void>
   onPin: (task: Task) => void | Promise<void>
+  onMove: (task: Task, direction: -1 | 1) => void | Promise<void>
   onDelete: (task: Task) => void
   onMonitor: (task: Task) => void
   onPointerDown: (task: Task, event: ReactPointerEvent<HTMLElement>) => void
@@ -852,7 +1131,9 @@ function TaskGrid({
       data-task-grid="true"
       data-task-grid-columns={columns}
       className="grid gap-2"
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+      style={{
+        gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${(columns - 1) * 8}px) / ${columns}))), 1fr))`,
+      }}
     >
       {tasks.map(task => (
         <TaskCard
@@ -868,19 +1149,22 @@ function TaskGrid({
           dropAxis={dropIntent?.targetName === task.name ? dropIntent.axis : null}
           selected={selectedIds.has(task.name)}
           selectMode={selectMode}
-          onClick={() => onCardClick(task)}
-          onAction={action => void onTaskAction(task, action)}
-          onPin={() => void onPin(task)}
-          onDelete={() => onDelete(task)}
-          onMonitor={() => onMonitor(task)}
-          onPointerDown={event => onPointerDown(task, event)}
+          reorderDisabled={orderMutationPending}
+          pendingAction={pendingTaskActions.get(task.name) || null}
+          onCardClick={onCardClick}
+          onTaskAction={onTaskAction}
+          onPin={onPin}
+          onMove={onMove}
+          onDelete={onDelete}
+          onMonitor={onMonitor}
+          onPointerDown={onPointerDown}
         />
       ))}
     </div>
   )
 }
 
-function TaskCard({
+const TaskCard = memo(function TaskCard({
   task,
   query,
   dragging,
@@ -888,9 +1172,12 @@ function TaskCard({
   dropAxis,
   selected,
   selectMode,
-  onClick,
-  onAction,
+  reorderDisabled,
+  pendingAction,
+  onCardClick,
+  onTaskAction,
   onPin,
+  onMove,
   onDelete,
   onMonitor,
   onPointerDown,
@@ -902,155 +1189,331 @@ function TaskCard({
   dropAxis: 'horizontal' | 'vertical' | null
   selected: boolean
   selectMode: boolean
-  onClick: () => void
-  onAction: (action: 'run' | 'cancel' | 'rerun') => void
-  onPin: () => void
-  onDelete: () => void
-  onMonitor: () => void
-  onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
+  reorderDisabled: boolean
+  pendingAction: PendingTaskAction | null
+  onCardClick: (task: Task) => void
+  onTaskAction: (task: Task, action: 'run' | 'cancel' | 'rerun') => void | Promise<void>
+  onPin: (task: Task) => void | Promise<void>
+  onMove: (task: Task, direction: -1 | 1) => void | Promise<void>
+  onDelete: (task: Task) => void
+  onMonitor: (task: Task) => void
+  onPointerDown: (task: Task, event: ReactPointerEvent<HTMLElement>) => void
 }) {
   const actionBtn = getActionButton(task)
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
   const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
   const cardDescription = task._load_error || task.preview_text || 'No preview available.'
-  const searchMatches = getTaskSearchMatches(task, query)
+  const searchMatches = useMemo(() => getTaskSearchMatches(task, query), [task, query])
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
+  const taskPending = Boolean(pendingAction)
+  const gpuWait = task.status === 'queued' ? task.gpu_wait : null
+  const gpuCapacity = gpuWait
+    && typeof gpuWait.eligible_gpu_count === 'number'
+    && typeof gpuWait.requested_gpu_count === 'number'
+    ? `${gpuWait.eligible_gpu_count}/${gpuWait.requested_gpu_count} eligible`
+    : ''
 
   return (
-    <div
+    <article
       data-task-card={task.name}
       data-task-card-pinned={task.pinned ? 'true' : 'false'}
-      onPointerDown={onPointerDown}
+      aria-busy={taskPending || undefined}
       className={clsx(
-        'group relative cursor-grab rounded-md border bg-surface-raised px-3 py-2.5 transition-[border-color,box-shadow,background-color,opacity,transform] duration-150 ease-out active:cursor-grabbing',
+        'group relative rounded-md border bg-surface-raised [contain-intrinsic-size:220px] [content-visibility:auto] transition-[border-color,box-shadow,background-color,opacity,transform] duration-150 ease-out focus-within:border-accent',
         selected ? 'border-accent bg-accent/8 ring-1 ring-accent/20' : 'border-border-subtle hover:border-border',
         task.pinned && !selected && 'border-accent/20',
         !selected && !dragging && 'hover:-translate-y-0.5 hover:shadow-[0_8px_22px_rgba(15,23,42,0.07)]',
         dragging && 'scale-[0.985] border-accent/35 bg-accent/5 opacity-70 shadow-[0_10px_30px_rgba(15,23,42,0.14)] ring-1 ring-accent/35',
         dropPlacement && !dragging && 'border-accent/35 bg-accent/5 ring-1 ring-accent/25',
       )}
-      onClick={onClick}
     >
       {dropIndicator}
       {!selectMode && (
-        <div
+        <span
+          data-task-drag-handle="true"
+          aria-hidden="true"
+          onPointerDown={event => onPointerDown(task, event)}
           className={clsx(
-            'absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity]',
+            'absolute left-0.5 top-0.5 z-10 flex h-11 w-11 cursor-grab touch-none items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity] active:cursor-grabbing sm:left-2 sm:top-2 sm:h-7 sm:w-7',
             'group-hover:bg-surface-overlay group-hover:text-txt-secondary',
             dragging && 'bg-accent/10 text-accent',
+            (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
           )}
-          title="Drag to reorder or move"
+          title="Drag to reorder; keyboard users can use Move earlier and Move later"
         >
           <GripVertical className="h-3.5 w-3.5" />
-        </div>
+        </span>
       )}
       {selectMode ? (
-        <div className="absolute right-2.5 top-2.5">
+        <div className="pointer-events-none absolute right-2.5 top-2.5 z-10">
           <SelectionIndicator selected={selected} />
         </div>
       ) : (
         <button
           type="button"
-          onClick={event => {
-            event.stopPropagation()
-            onPin()
-          }}
+          onClick={() => void onPin(task)}
+          disabled={taskPending || reorderDisabled}
           title={task.pinned ? 'Unpin' : 'Pin'}
           aria-label={task.pinned ? `Unpin ${task.name}` : `Pin ${task.name}`}
+          aria-busy={pendingAction === 'pin' || undefined}
           className={clsx(
-            'absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay',
+            'absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
             task.pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
           )}
         >
-          <Pin className="h-3.5 w-3.5" />
+          {pendingAction === 'pin'
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <Pin className="h-3.5 w-3.5" />}
         </button>
       )}
 
-      <div className="flex items-center gap-2 pl-5 pr-7">
-        <StatusBadge status={task.status as TaskStatus} />
-        <span className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
-          {taskKindLabel}
-        </span>
-      </div>
-
-      <div className="mt-1.5 pr-7 text-sm font-medium text-txt-primary" title={task.name}>
-        {task.name}
-      </div>
-
-      <div className="mt-1 min-h-[30px] text-2xs leading-5 text-txt-secondary" title={cardDescription}>
-        <div className={clsx('truncate-2', task._load_error && 'text-rose-400')}>
-          {cardDescription}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onCardClick(task)}
+        onKeyDown={event => {
+          if (!event.repeat && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault()
+            onCardClick(task)
+          }
+        }}
+        aria-label={selectMode
+          ? `${selected ? 'Deselect' : 'Select'} ${task.name}`
+          : `Open details for ${task.name}`}
+        aria-pressed={selectMode ? selected : undefined}
+        className="block w-full rounded-md px-3 pb-2 pt-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
+      >
+        <div className="flex items-center gap-2 pl-11 pr-11 sm:pl-5 sm:pr-7">
+          <ManagerStatusBadge status={task.status as TaskStatus} />
+          <span className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
+            {taskKindLabel}
+          </span>
+          {taskPending && pendingAction !== 'pin' && (
+            <span className="ml-auto inline-flex items-center gap-1 text-2xs font-medium text-txt-secondary" role="status">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {pendingAction === 'move' ? 'Moving' : pendingAction === 'delete' ? 'Deleting' : 'Updating'}
+            </span>
+          )}
         </div>
+
+        <div className="mt-1.5 pr-11 text-sm font-semibold text-txt-primary sm:pr-7" title={task.name}>
+          {task.name}
+        </div>
+
+        <div className="mt-1 min-h-[30px] text-2xs leading-5 text-txt-secondary" title={cardDescription}>
+          <div className={clsx('truncate-2', task._load_error && 'text-rose-700 dark:text-rose-300')}>
+            {cardDescription}
+          </div>
+        </div>
+
+        {gpuWait && (
+          <div
+            className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-2xs font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-950/45 dark:text-blue-300"
+            title={gpuWait.reason || 'Waiting for GPU capacity'}
+          >
+            <Cpu className="h-3 w-3 flex-none" aria-hidden="true" />
+            <span>Waiting for GPU{gpuCapacity ? ` · ${gpuCapacity}` : ''}</span>
+          </div>
+        )}
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
+          <span title={task.created_at}>{task.created_at}</span>
+          <span title={`Run #${Math.max(task.run_index || 1, 1)}`}>Run #{Math.max(task.run_index || 1, 1)}</span>
+          <span className="truncate" title={folderName}>{folderName}</span>
+        </div>
+
+        {searchMatches.length > 0 && (
+          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-2xs text-txt-secondary" title={searchMatches.map(match => `${match.label}: ${match.detail}`).join('\n')}>
+            <Search className="h-3 w-3 flex-none text-accent" />
+            <span className="flex-none text-txt-tertiary">Matched in</span>
+            <div className="flex min-w-0 flex-wrap gap-1">
+              {searchMatches.slice(0, 3).map(match => (
+                <span key={match.label} className="rounded-md bg-accent/8 px-1.5 py-0.5 font-medium text-accent">
+                  {match.label}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {task._load_error && (
+          <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs font-medium text-rose-700 dark:text-rose-300" title={task._load_error}>
+            <AlertTriangle className="h-3 w-3" />
+            <span className="truncate">Task load error</span>
+          </div>
+        )}
       </div>
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
-        <span title={task.created_at}>{task.created_at}</span>
-        <span title={`Run #${Math.max(task.run_index || 1, 1)}`}>Run #{Math.max(task.run_index || 1, 1)}</span>
-        <span className="truncate" title={folderName}>{folderName}</span>
-      </div>
+      {!selectMode && (
+        <div className="mx-3 flex items-center justify-between gap-2 border-t border-border-subtle pb-2 pt-1.5">
+          <div className="flex items-center gap-0.5" aria-label={`Reorder ${task.name}`}>
+            <TaskIconButton
+              label={`Move ${task.name} earlier`}
+              title="Move earlier"
+              disabled={taskPending || reorderDisabled}
+              onClick={() => void onMove(task, -1)}
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+            </TaskIconButton>
+            <TaskIconButton
+              label={`Move ${task.name} later`}
+              title="Move later"
+              disabled={taskPending || reorderDisabled}
+              onClick={() => void onMove(task, 1)}
+            >
+              <ArrowDown className="h-3.5 w-3.5" />
+            </TaskIconButton>
+          </div>
 
-      {searchMatches.length > 0 && (
-        <div className="mt-2 flex min-w-0 items-center gap-1.5 text-2xs text-txt-secondary" title={searchMatches.map(match => `${match.label}: ${match.detail}`).join('\n')}>
-          <Search className="h-3 w-3 flex-none text-accent" />
-          <span className="flex-none text-txt-tertiary">Matched in</span>
-          <div className="flex min-w-0 flex-wrap gap-1">
-            {searchMatches.slice(0, 3).map(match => (
-              <span key={match.label} className="rounded-md bg-accent/8 px-1.5 py-0.5 font-medium text-accent">
-                {match.label}
-              </span>
-            ))}
+          <div className="flex items-center gap-0.5">
+            {actionBtn && (
+              <TaskIconButton
+                label={`${actionBtn.label} ${task.name}`}
+                title={actionBtn.label}
+                disabled={taskPending}
+                busy={pendingAction === actionBtn.action}
+                className={actionBtn.className}
+                onClick={() => void onTaskAction(task, actionBtn.action)}
+              >
+                {pendingAction === actionBtn.action
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : <actionBtn.icon className="h-3.5 w-3.5" />}
+              </TaskIconButton>
+            )}
+            <TaskIconButton
+              label={`View logs for ${task.name}`}
+              title="View logs"
+              onClick={() => onMonitor(task)}
+              className="text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary"
+            >
+              <Terminal className="h-3.5 w-3.5" />
+            </TaskIconButton>
+            <TaskIconButton
+              label={`Delete ${task.name}`}
+              title="Delete task"
+              disabled={taskPending}
+              onClick={() => onDelete(task)}
+              className="text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </TaskIconButton>
           </div>
         </div>
       )}
+    </article>
+  )
+})
 
-      {task._load_error && (
-        <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs text-rose-400" title={task._load_error}>
-          <AlertTriangle className="h-3 w-3" />
-          <span className="truncate">Task load error</span>
-        </div>
+function ManagerMetric({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string
+  value: number | string
+  tone?: ManagerMetricTone
+}) {
+  return (
+    <div className={clsx(
+      'flex min-w-[7.25rem] items-center justify-between gap-3 rounded-md border px-2.5 py-1.5 text-2xs sm:min-w-0',
+      MANAGER_METRIC_STYLES[tone],
+    )}>
+      <span className="font-medium uppercase tracking-[0.12em] opacity-80">{label}</span>
+      <span className="font-semibold tabular-nums">{value}</span>
+    </div>
+  )
+}
+
+function ManagerStatusBadge({ status }: { status: TaskStatus }) {
+  return (
+    <span className={clsx(
+      'inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-2xs font-semibold',
+      MANAGER_STATUS_STYLES[status],
+    )}>
+      <span className={clsx('h-1.5 w-1.5 rounded-full', MANAGER_STATUS_DOTS[status])} aria-hidden="true" />
+      {STATUS_LABELS[status]}
+    </span>
+  )
+}
+
+function TaskIconButton({
+  children,
+  label,
+  title,
+  className,
+  disabled = false,
+  busy = false,
+  onClick,
+}: {
+  children: ReactNode
+  label: string
+  title: string
+  className?: string
+  disabled?: boolean
+  busy?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      aria-busy={busy || undefined}
+      title={title}
+      className={clsx(
+        'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-not-allowed disabled:opacity-40 sm:h-9 sm:w-9',
+        className || 'text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary',
       )}
+    >
+      {children}
+    </button>
+  )
+}
 
-      {!selectMode && (
-        <div className="mt-2.5 flex items-center justify-end gap-1 border-t border-border-subtle pt-1.5">
-          {actionBtn && (
-            <button
-              type="button"
-              onClick={event => {
-                event.stopPropagation()
-                onAction(actionBtn.action)
-              }}
-              title={actionBtn.label}
-              aria-label={`${actionBtn.label} ${task.name}`}
-              className={clsx('inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors', actionBtn.className)}
-            >
-              <actionBtn.icon className="h-3.5 w-3.5" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={event => {
-              event.stopPropagation()
-              onMonitor()
-            }}
-            title="View logs"
-            aria-label={`View logs for ${task.name}`}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
-          >
-            <Terminal className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={event => {
-              event.stopPropagation()
-              onDelete()
-            }}
-            title="Delete task"
-            aria-label={`Delete ${task.name}`}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-rose-400 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
+function ManagerLoadingState({ columns }: { columns: number }) {
+  const count = Math.min(8, Math.max(2, columns * 2))
+  return (
+    <div role="status" aria-live="polite" aria-label="Loading tasks">
+      <div
+        className="grid gap-2"
+        style={{
+          gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${(columns - 1) * 8}px) / ${columns}))), 1fr))`,
+        }}
+      >
+        {Array.from({ length: count }, (_, index) => (
+          <div key={index} className="animate-pulse rounded-md border border-border-subtle bg-surface-raised p-3">
+            <div className="h-5 w-24 rounded bg-surface-overlay" />
+            <div className="mt-3 h-4 w-2/3 rounded bg-surface-overlay" />
+            <div className="mt-2 h-3 w-full rounded bg-surface-overlay" />
+            <div className="mt-1.5 h-3 w-4/5 rounded bg-surface-overlay" />
+            <div className="mt-4 h-8 rounded border-t border-border-subtle bg-surface-overlay/60" />
+          </div>
+        ))}
+      </div>
+      <span className="sr-only">Loading tasks…</span>
+    </div>
+  )
+}
+
+function ManagerEmptyState({ filtered, onClear }: { filtered: boolean; onClear: () => void }) {
+  return (
+    <div className="mx-auto flex min-h-72 max-w-md flex-col items-center justify-center rounded-md border border-dashed border-border bg-surface-raised px-6 py-12 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay text-txt-secondary">
+        <Rows3 className="h-5 w-5" />
+      </div>
+      <h2 className="mt-4 text-sm font-semibold text-txt-primary">
+        {filtered ? 'No matching tasks' : 'No tasks yet'}
+      </h2>
+      <p className="mt-1.5 max-w-sm text-xs leading-5 text-txt-secondary">
+        {filtered
+          ? 'Try a broader search or clear the status filter to see more tasks.'
+          : 'Create tasks in Generator and they will appear here ready to organize and run.'}
+      </p>
+      {filtered && (
+        <ActionButton className="mt-4 min-h-11 sm:min-h-9" variant="accentTint" onClick={onClear}>
+          Clear filters
+        </ActionButton>
       )}
     </div>
   )
@@ -1161,7 +1624,7 @@ function getActionButton(task: Task) {
         action: 'run' as const,
         icon: Play,
         label: 'Run',
-        className: 'text-emerald-400 hover:bg-emerald-500/10',
+        className: 'text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300',
       }
     case 'running':
     case 'queued':
@@ -1169,14 +1632,14 @@ function getActionButton(task: Task) {
         action: 'cancel' as const,
         icon: Square,
         label: 'Stop',
-        className: 'text-rose-400 hover:bg-rose-500/10',
+        className: 'text-rose-700 hover:bg-rose-500/10 dark:text-rose-300',
       }
     case 'completed':
       return {
         action: 'rerun' as const,
         icon: RotateCcw,
         label: 'Rerun',
-        className: 'text-blue-400 hover:bg-blue-500/10',
+        className: 'text-blue-700 hover:bg-blue-500/10 dark:text-blue-300',
       }
     default:
       return null

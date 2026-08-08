@@ -140,7 +140,7 @@ const SHELL_LANGUAGE = StreamLanguage.define({
       return 'builtin'
     }
     if (stream.match(/^[A-Za-z_][\w-]*(?==)/)) {
-      return 'definition'
+      return 'variableName.definition'
     }
     stream.next()
     return null

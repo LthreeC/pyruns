@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
@@ -56,6 +57,20 @@ interface CreatedTaskResult {
   count: number
   taskKind: string
   firstTaskName: string
+}
+
+type GenerationPayload = Readonly<{
+  name_prefix: string
+  mode: 'form' | 'yaml' | 'shell'
+  yaml_text: string
+  shell_text: string
+  template_value?: string
+  append_timestamp: boolean
+}>
+
+interface PreviewSnapshot {
+  inputKey: string
+  payload: GenerationPayload
 }
 
 function hasBatchExpression(text: string) {
@@ -240,7 +255,7 @@ function TemplatePicker({
   return (
     <div
       ref={pickerRef}
-      className="relative min-w-[280px]"
+      className="relative w-full min-w-0 min-[701px]:w-auto min-[701px]:min-w-[280px]"
       onKeyDown={event => {
         if (event.key === 'Escape') {
           setOpen(false)
@@ -489,9 +504,9 @@ function collectParamRows(
   declaredTypeMap: Record<string, ParamType>,
   batchParams: string[],
   prefix = '',
+  batchSet = new Set(batchParams),
 ) {
   const rows: PinnedParamRow[] = []
-  const batchSet = new Set(batchParams)
 
   for (const [key, value] of Object.entries(data)) {
     if (key.startsWith('_meta')) {
@@ -499,7 +514,7 @@ function collectParamRows(
     }
     const fullKey = prefix ? `${prefix}.${key}` : key
     if (isNestedGroup(value)) {
-      rows.push(...collectParamRows(value, declaredTypeMap, batchParams, fullKey))
+      rows.push(...collectParamRows(value, declaredTypeMap, batchParams, fullKey, batchSet))
       continue
     }
     rows.push({
@@ -544,6 +559,7 @@ export default function GeneratorPage() {
 
   const [previewOpen, setPreviewOpen] = useState(false)
   const [previewData, setPreviewData] = useState<GeneratorPreview | null>(null)
+  const [previewSnapshot, setPreviewSnapshot] = useState<PreviewSnapshot | null>(null)
   const [generating, setGenerating] = useState(false)
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
   const [createdSummary, setCreatedSummary] = useState<CreatedTaskResult | null>(null)
@@ -557,6 +573,8 @@ export default function GeneratorPage() {
   const generatorBodyRef = useRef<HTMLDivElement>(null)
   const pendingGeneratorSettingsWidthRef = useRef(generatorSettingsWidth)
   const generatorSettingsResizeFrameRef = useRef<number | null>(null)
+  const previewRequestSeqRef = useRef(0)
+  const generationInputKeyRef = useRef('')
   const lastWorkspaceDefaultKeyRef = useRef('')
   const lastShellRootRef = useRef('')
 
@@ -576,6 +594,25 @@ export default function GeneratorPage() {
     'flex flex-col gap-2.5 overflow-y-auto bg-surface-raised p-2.5',
     compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle',
   )
+
+  const resizeGeneratorSettingsByKeyboard = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    let nextWidth: number | null = null
+    if (event.key === 'ArrowLeft') nextWidth = generatorSettingsWidth + 16
+    if (event.key === 'ArrowRight') nextWidth = generatorSettingsWidth - 16
+    if (event.key === 'Home') nextWidth = MIN_GENERATOR_SETTINGS_WIDTH
+    if (event.key === 'End') nextWidth = MAX_GENERATOR_SETTINGS_WIDTH
+    if (nextWidth == null) return
+
+    event.preventDefault()
+    const next = clampGeneratorSettingsWidth(nextWidth)
+    pendingGeneratorSettingsWidthRef.current = next
+    setGeneratorSettingsWidth(next)
+    try {
+      window.localStorage.setItem(GENERATOR_SETTINGS_WIDTH_STORAGE_KEY, String(next))
+    } catch {
+      // Keyboard resizing remains usable without persisted preferences.
+    }
+  }, [generatorSettingsWidth])
 
   const startGeneratorSettingsResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -789,6 +826,19 @@ export default function GeneratorPage() {
     ? `Batch syntax detected. ${previewData.count} tasks will be created after confirmation.`
     : 'Batch syntax detected. A preview opens before creating multiple tasks.'
   const generationBusy = generating || generationStatus === 'previewing'
+  const currentGenerationPayload = useMemo<GenerationPayload>(() => Object.freeze({
+    name_prefix: namePrefix || 'task',
+    mode: editorMode,
+    yaml_text: editorMode === 'shell' ? '' : yamlText,
+    shell_text: editorMode === 'shell' ? shellText : '',
+    template_value: isShellWorkspace ? undefined : selectedTemplate,
+    append_timestamp: appendTimestamp,
+  }), [appendTimestamp, editorMode, isShellWorkspace, namePrefix, selectedTemplate, shellText, yamlText])
+  const generationInputKey = useMemo(
+    () => JSON.stringify(currentGenerationPayload),
+    [currentGenerationPayload],
+  )
+  generationInputKeyRef.current = generationInputKey
   const configDefaultSourceName = workspace?.config_default_source_name || ''
   const configDefaultSourcePath = workspace?.config_default_source || ''
   const showImportedConfigSource = Boolean(
@@ -797,6 +847,14 @@ export default function GeneratorPage() {
   )
   const selectedTemplateListed = templates.some(template => template.value === selectedTemplate)
   const shellTemplateSelectValue = selectedTemplateListed ? selectedTemplate : ''
+
+  useEffect(() => {
+    previewRequestSeqRef.current += 1
+    setPreviewOpen(false)
+    setPreviewData(null)
+    setPreviewSnapshot(current => current?.inputKey === generationInputKey ? current : null)
+    setGenerationStatus(current => current === 'previewing' ? 'idle' : current)
+  }, [generationInputKey])
   const setAllTreeSections = useCallback((open: boolean) => {
     setTreeOpenValue(open)
     setTreeOpenSignal(signal => signal + 1)
@@ -824,22 +882,16 @@ export default function GeneratorPage() {
     }
   }, [fetchTemplates, loadTemplate])
 
-  const doCreate = useCallback(async () => {
+  const doCreate = useCallback(async (payload: GenerationPayload = currentGenerationPayload) => {
     setGenerating(true)
     setGenerationStatus('creating')
     setCreatedSummary(null)
     setError('')
     try {
-      const result = await api.createTasks({
-        name_prefix: namePrefix || 'task',
-        mode: editorMode,
-        yaml_text: editorMode === 'shell' ? '' : yamlText,
-        shell_text: editorMode === 'shell' ? shellText : '',
-        template_value: isShellWorkspace ? undefined : selectedTemplate,
-        append_timestamp: appendTimestamp,
-      })
+      const result = await api.createTasks(payload)
       setPreviewOpen(false)
       setPreviewData(null)
+      setPreviewSnapshot(null)
 
       try {
         await fetchTemplates()
@@ -859,37 +911,52 @@ export default function GeneratorPage() {
     } finally {
       setGenerating(false)
     }
-  }, [appendTimestamp, editorMode, fetchTemplates, namePrefix, selectedTemplate, shellText, yamlText])
+  }, [currentGenerationPayload, fetchTemplates])
 
   const handleGenerate = useCallback(async () => {
     setError('')
 
     if (editorMode === 'form' && hasBatchSyntax && !previewOpen) {
+      const requestId = ++previewRequestSeqRef.current
+      const snapshot: PreviewSnapshot = {
+        inputKey: generationInputKey,
+        payload: currentGenerationPayload,
+      }
       setGenerationStatus('previewing')
       setCreatedSummary(null)
       try {
         const preview = await api.previewTasks({
-          mode: editorMode,
-          yaml_text: yamlText,
-          template_value: selectedTemplate,
+          mode: snapshot.payload.mode,
+          yaml_text: snapshot.payload.yaml_text,
+          template_value: snapshot.payload.template_value,
         })
+        if (
+          requestId !== previewRequestSeqRef.current
+          || snapshot.inputKey !== generationInputKeyRef.current
+        ) {
+          return
+        }
         setPreviewData(preview)
+        setPreviewSnapshot(snapshot)
         setPreviewOpen(true)
         setGenerationStatus('idle')
       } catch (err: any) {
+        if (requestId !== previewRequestSeqRef.current) {
+          return
+        }
         setGenerationStatus('error')
         setError(err.message)
       }
       return
     }
 
-    await doCreate()
-  }, [doCreate, editorMode, hasBatchSyntax, previewOpen, selectedTemplate, yamlText])
+    await doCreate(currentGenerationPayload)
+  }, [currentGenerationPayload, doCreate, editorMode, generationInputKey, hasBatchSyntax, previewOpen])
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+      <div className="flex flex-col gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2 min-[701px]:flex-row min-[701px]:items-center">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 min-[701px]:flex-1">
           {!isShellWorkspace ? (
             <TemplatePicker
               value={selectedTemplate}
@@ -956,8 +1023,8 @@ export default function GeneratorPage() {
           )}
         </div>
 
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <div className="inline-flex overflow-hidden rounded-md border border-border-subtle bg-surface-overlay">
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto">
+          <div className="inline-flex w-full overflow-hidden rounded-md border border-border-subtle bg-surface-overlay min-[701px]:w-auto">
             {(isShellWorkspace ? ['shell'] : ['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]).map(mode => {
               const active = mode === 'shell'
                 ? editorMode === 'shell'
@@ -971,7 +1038,7 @@ export default function GeneratorPage() {
                   aria-pressed={active}
                   onClick={() => handleDisplayModeChange(mode as GeneratorDisplayMode)}
                   className={clsx(
-                    'inline-flex items-center gap-1.5 border-l border-border-subtle px-3 py-1.5 text-xs font-medium transition-colors first:border-l-0',
+                    'inline-flex flex-1 items-center justify-center gap-1.5 border-l border-border-subtle px-3 py-1.5 text-xs font-medium transition-colors first:border-l-0 min-[701px]:flex-none',
                     active
                       ? 'bg-surface-raised text-txt-primary'
                       : 'text-txt-secondary hover:bg-surface-raised/55 hover:text-txt-primary',
@@ -1054,9 +1121,15 @@ export default function GeneratorPage() {
         {!compactGeneratorLayout && (
           <button
             type="button"
+            role="separator"
+            tabIndex={0}
             aria-label="Resize generator settings panel"
             aria-orientation="vertical"
+            aria-valuemin={MIN_GENERATOR_SETTINGS_WIDTH}
+            aria-valuemax={clampGeneratorSettingsWidth(MAX_GENERATOR_SETTINGS_WIDTH)}
+            aria-valuenow={generatorSettingsWidth}
             onPointerDown={startGeneratorSettingsResize}
+            onKeyDown={resizeGeneratorSettingsByKeyboard}
             className={clsx(
               'h-full w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
               resizingGeneratorSettings ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
@@ -1149,7 +1222,7 @@ export default function GeneratorPage() {
 
           {error && (
             <CompactSection title="Status" bodyClassName="space-y-1.5 p-2">
-              <div className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400" title={error}>
+              <div role="alert" className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400" title={error}>
                 {error}
               </div>
             </CompactSection>
@@ -1170,23 +1243,25 @@ export default function GeneratorPage() {
                   ? 'Creating...'
                   : editorMode === 'shell' ? 'Create Shell Task' : hasBatchSyntax ? 'Preview Batch Tasks' : 'Generate Tasks'}
             </ActionButton>
-            <GenerationFeedback
-              status={generationStatus}
-              createdSummary={createdSummary}
-              defaultText={
-                editorMode === 'form' && hasBatchSyntax
-                  ? batchHintText
-                  : editorMode === 'yaml' && yamlContainsBatchSyntax
-                    ? 'YAML mode does not expand batch syntax. Switch to Grid or Tree mode.'
-                  : editorMode === 'shell'
-                    ? 'Creates one shell task immediately.'
-                    : 'Creates one task immediately.'
-              }
-              onOpenManager={() => {
-                const taskName = createdSummary?.firstTaskName
-                navigate(taskName ? `/manager?task=${encodeURIComponent(taskName)}` : '/manager')
-              }}
-            />
+            <div role="status" aria-live="polite" aria-atomic="true">
+              <GenerationFeedback
+                status={generationStatus}
+                createdSummary={createdSummary}
+                defaultText={
+                  editorMode === 'form' && hasBatchSyntax
+                    ? batchHintText
+                    : editorMode === 'yaml' && yamlContainsBatchSyntax
+                      ? 'YAML mode does not expand batch syntax. Switch to Grid or Tree mode.'
+                    : editorMode === 'shell'
+                      ? 'Creates one shell task immediately.'
+                      : 'Creates one task immediately.'
+                }
+                onOpenManager={() => {
+                  const taskName = createdSummary?.firstTaskName
+                  navigate(taskName ? `/manager?task=${encodeURIComponent(taskName)}` : '/manager')
+                }}
+              />
+            </div>
           </div>
         </aside>
       </div>
@@ -1197,8 +1272,12 @@ export default function GeneratorPage() {
         description="Review the expansion before writing task folders."
         confirmLabel="Generate All"
         size="lg"
-        onConfirm={doCreate}
-        onCancel={() => setPreviewOpen(false)}
+        onConfirm={() => doCreate(previewSnapshot?.payload || currentGenerationPayload)}
+        onCancel={() => {
+          setPreviewOpen(false)
+          setPreviewData(null)
+          setPreviewSnapshot(null)
+        }}
       >
         <BatchPreviewContent preview={previewData} triggers={batchTriggerDetails} />
       </ConfirmDialog>
@@ -1664,7 +1743,7 @@ function TreeParameterExplorer({
 }) {
   const [selectedPath, setSelectedPath] = useState('')
   const [filterText, setFilterText] = useState('')
-  const [outlineCollapsed, setOutlineCollapsed] = useState(false)
+  const [outlineCollapsed, setOutlineCollapsed] = useState(readCompactGeneratorLayout)
   const [outlineWidth, setOutlineWidth] = useState(readStoredTreeOutlineWidth)
   const [resizingOutline, setResizingOutline] = useState(false)
   const explorerRef = useRef<HTMLDivElement>(null)
@@ -1699,6 +1778,18 @@ function TreeParameterExplorer({
   const selectedValue = selectedPath ? getValueAtPath(data, selectedPath) : data
   const selectedData = isNestedGroup(selectedValue) ? selectedValue : data
   const selectedCrumbs = selectedPath ? selectedPath.split('.') : ['config']
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 700px)')
+    const handleCompactLayout = () => {
+      if (query.matches) {
+        setOutlineCollapsed(true)
+      }
+    }
+    handleCompactLayout()
+    query.addEventListener('change', handleCompactLayout)
+    return () => query.removeEventListener('change', handleCompactLayout)
+  }, [])
 
   useEffect(() => {
     if (!outlinePathSet.has(selectedPath)) {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
+import clsx from 'clsx'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 
 interface Props {
@@ -8,6 +9,7 @@ interface Props {
   placeholder?: string
   ariaLabel?: string
   debounceMs?: number
+  className?: string
 }
 
 export default function SearchInput({
@@ -16,6 +18,7 @@ export default function SearchInput({
   placeholder = 'Search...',
   ariaLabel = 'Search',
   debounceMs = 300,
+  className,
 }: Props) {
   const [local, setLocal] = useState(value)
   const debounced = useDebouncedValue(local, debounceMs)
@@ -32,7 +35,7 @@ export default function SearchInput({
   }, [local])
 
   return (
-    <div className="relative flex items-start">
+    <div className={clsx('relative flex items-start', className)}>
       <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-txt-tertiary" />
       <textarea
         ref={textareaRef}

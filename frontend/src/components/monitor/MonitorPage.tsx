@@ -1,12 +1,42 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { Terminal as XTerminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
-import { ChevronDown, ChevronUp, Download, FileDown, Pin, Play, Rows3, Search, Square, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Cpu,
+  Download,
+  FileDown,
+  LoaderCircle,
+  Pin,
+  Play,
+  RefreshCw,
+  Rows3,
+  Search,
+  Square,
+  Wifi,
+  WifiOff,
+  X,
+} from 'lucide-react'
 import clsx from 'clsx'
 import { appendMonitorLogContent, useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
-import { useLogStream } from '@/hooks/useWebSocket'
+import {
+  useLogStream,
+  useTaskEvents,
+  type LogStreamStatus,
+  type TaskEventStreamStatus,
+} from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
 import StatusBadge from '@/components/shared/StatusBadge'
@@ -15,7 +45,7 @@ import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
-import type { LogStreamMessage, Task } from '@/types'
+import type { GPUWaitStatus, LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
@@ -33,8 +63,12 @@ const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
 const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'
 const QUEUE_LOG_NAME = 'queue.log'
+const RUN_LOG_PATTERN = /^run\d+\.log$/
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
+const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
+const TASK_EVENT_FALLBACK_POLL_MS = 60_000
+const TASK_EVENT_DEGRADED_POLL_MS = 5_000
 const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
 const TERMINAL_SEARCH_OPTIONS: ISearchOptions = {
   decorations: {
@@ -46,10 +80,10 @@ const TERMINAL_SEARCH_OPTIONS: ISearchOptions = {
     activeMatchColorOverviewRuler: '#F59E0B',
   },
 }
-
 type PendingLiveLogChunk = {
   content: string
   offset?: number
+  logIdentity?: string
 }
 
 function clampMonitorSidebarWidth(value: number) {
@@ -83,27 +117,77 @@ function readCompactMonitorLayout() {
   return window.matchMedia('(max-width: 700px)').matches
 }
 
+export function appendedMonitorLogDelta(previous: string, next: string): string | null {
+  if (!next) {
+    return previous ? null : ''
+  }
+  if (next.startsWith(previous)) {
+    return next.slice(previous.length)
+  }
+  if (previous.endsWith(next)) {
+    return ''
+  }
+  if (!previous) {
+    return null
+  }
+
+  const firstLineEnd = next.indexOf('\n')
+  const markerLength = Math.min(firstLineEnd >= 0 ? firstLineEnd + 1 : next.length, 256)
+  const marker = next.slice(0, markerLength)
+  const searchStart = Math.max(0, previous.length - next.length)
+  let candidate = previous.indexOf(marker, searchStart)
+  let attempts = 0
+  while (candidate >= 0 && attempts < 8) {
+    const overlapLength = previous.length - candidate
+    if (overlapLength <= next.length && next.startsWith(previous.slice(candidate))) {
+      return next.slice(overlapLength)
+    }
+    candidate = previous.indexOf(marker, candidate + 1)
+    attempts += 1
+  }
+  return null
+}
+
 export default function MonitorPage() {
-  const { monitorTasks, fetchMonitorTasks, upsertMonitorTask } = useTaskStore()
+  const {
+    monitorTasks,
+    monitorTotal,
+    monitorHasMore,
+    monitorLoading,
+    monitorError,
+    fetchMonitorTasks,
+    upsertMonitorTask,
+  } = useTaskStore()
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
-    selectedTaskName, logContent, logOffset, availableLogs, selectedLog, loading, exportIds,
+    selectedTaskName, logContent, logOffset, logIdentity, availableLogs, selectedLog,
+    logTailTruncated, logTailLimitBytes, loading, exportIds,
     selectTask, selectLogFile, toggleExport, selectAllExport, clearExport,
   } = useMonitorStore()
 
   const [sidebarQuery, setSidebarQuery] = useState('')
   const [exportMode, setExportMode] = useState(false)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
+  const [selectedTaskSnapshot, setSelectedTaskSnapshot] = useState<Task | null>(null)
+  const [streamStatus, setStreamStatus] = useState<LogStreamStatus>('idle')
+  const [taskEventStatus, setTaskEventStatus] = useState<TaskEventStreamStatus>('idle')
+  const [taskActionPending, setTaskActionPending] = useState<'run' | 'cancel' | null>(null)
   const monitorShellRef = useRef<HTMLDivElement>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
-  const renderedLogRef = useRef<{ key: string; content: string } | null>(null)
+  const renderedLogRef = useRef<{ key: string; content: string; offset: number } | null>(null)
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const logOffsetRef = useRef(logOffset)
+  const logIdentityRef = useRef(logIdentity)
+  const workspaceKey = String(workspace?.run_root || '')
+  const workspaceKeyRef = useRef(workspaceKey)
+  const detailWorkspaceKeyRef = useRef('')
+  const selectedTaskSnapshotWorkspaceKeyRef = useRef('')
+  const taskActionRequestRef = useRef(0)
   const liveLogNameRef = useRef('')
   const queuedLiveLogTaskRef = useRef<{ taskName: string | null; runLogName: string }>({
     taskName: null,
@@ -121,29 +205,38 @@ export default function MonitorPage() {
   const wsStreamActiveRef = useRef(false)
   const pendingLiveLogChunkRef = useRef({ key: '', chunks: [] as PendingLiveLogChunk[] })
   const liveLogFlushTimerRef = useRef<number | null>(null)
+  const taskRefreshTimerRef = useRef<number | null>(null)
+  const taskRefreshInFlightRef = useRef(false)
+  const taskRefreshQueuedRef = useRef(false)
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
   const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
   const [terminalSearchStatus, setTerminalSearchStatus] = useState('')
-  const [monitorTasksLoaded, setMonitorTasksLoaded] = useState(false)
-
-  const selectedTask = useMemo(
+  const selectedTaskFromList = useMemo(
     () => monitorTasks.find(task => task.name === selectedTaskName),
     [monitorTasks, selectedTaskName],
   )
+  const selectedTask = selectedTaskFromList
+    ?? (
+      selectedTaskSnapshotWorkspaceKeyRef.current === workspaceKey
+      && selectedTaskSnapshot?.name === selectedTaskName
+        ? selectedTaskSnapshot
+        : undefined
+    )
   const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
-  const isQueueLogSelected = selectedLog === QUEUE_LOG_NAME
-  const isViewingLiveRunLog = !selectedLog || selectedLog === liveLogName
-  const isLive = Boolean(
-    selectedTask
-    && (selectedTask.status === 'running' || selectedTask.status === 'queued')
-    && (isViewingLiveRunLog || isQueueLogSelected)
-  )
-  const canUseLogStream = selectedTask?.status === 'running' && (!selectedLog || selectedLog === runLogName)
-  const hasActive = useMemo(
-    () => monitorTasks.some(task => task.status === 'running' || task.status === 'queued'),
-    [monitorTasks],
-  )
+  const isFollowingQueuedTask = queuedLiveLogTaskRef.current.taskName === selectedTask?.name
+  const isLive = Boolean(selectedTask && (
+    (selectedTask.status === 'queued' && (!selectedLog || selectedLog === QUEUE_LOG_NAME))
+    || (
+      selectedTask.status === 'running'
+      && (
+        !selectedLog
+        || selectedLog === runLogName
+        || (isFollowingQueuedTask && selectedLog === QUEUE_LOG_NAME)
+      )
+    )
+  ))
+  const canUseLogStream = isLive
   const monitorChunkSize = resolveMonitorChunkSize(workspace?.settings)
   const monitorScrollback = resolveMonitorScrollback(workspace?.settings)
   const monitorLineHeight = resolveMonitorLineHeight(workspace?.settings)
@@ -162,7 +255,118 @@ export default function MonitorPage() {
     'flex h-full w-full max-w-full min-w-0 overflow-hidden',
     compactMonitorLayout ? 'flex-col' : 'flex-row',
   )
-  usePolling(fetchMonitorTasks, hasActive ? 3000 : 10000, true, false)
+  const refreshMonitorTasks = useCallback(
+    () => fetchMonitorTasks({ query: sidebarQuery, refresh: true, workspaceKey }),
+    [fetchMonitorTasks, sidebarQuery, workspaceKey],
+  )
+  const refreshDetachedSelectedTask = useCallback(async () => {
+    if (!selectedTaskName || selectedTaskFromList) {
+      return
+    }
+    const requestedWorkspaceKey = workspaceKey
+    try {
+      const task = await api.getTask(selectedTaskName, false)
+      if (
+        task.name === selectedTaskNameRef.current
+        && workspaceKeyRef.current === requestedWorkspaceKey
+      ) {
+        selectedTaskSnapshotWorkspaceKeyRef.current = requestedWorkspaceKey
+        setSelectedTaskSnapshot(task)
+      }
+    } catch (error) {
+      if (
+        /not found/i.test(errorMessage(error))
+        && selectedTaskNameRef.current === selectedTaskName
+        && workspaceKeyRef.current === requestedWorkspaceKey
+      ) {
+        setSelectedTaskSnapshot(null)
+        useMonitorStore.setState({
+          selectedTaskName: null,
+          logContent: '',
+          logOffset: 0,
+          logIdentity: '',
+          availableLogs: [],
+          selectedLog: '',
+          logTailTruncated: false,
+          logTailLimitBytes: 0,
+        })
+      }
+      // Keep the selected log visible for transient transport failures.
+    }
+  }, [selectedTaskFromList, selectedTaskName, workspaceKey])
+  const refreshMonitorSnapshot = useCallback(async () => {
+    await Promise.all([
+      fetchMonitorTasks({
+        query: sidebarQuery,
+        refresh: true,
+        background: true,
+        workspaceKey,
+      }),
+      refreshDetachedSelectedTask(),
+    ])
+  }, [fetchMonitorTasks, refreshDetachedSelectedTask, sidebarQuery, workspaceKey])
+  const refreshMonitorSnapshotRef = useRef(refreshMonitorSnapshot)
+  refreshMonitorSnapshotRef.current = refreshMonitorSnapshot
+  const runTaskSnapshotRefresh = useCallback(async () => {
+    if (taskRefreshInFlightRef.current) {
+      taskRefreshQueuedRef.current = true
+      return
+    }
+
+    taskRefreshInFlightRef.current = true
+    try {
+      do {
+        taskRefreshQueuedRef.current = false
+        try {
+          await refreshMonitorSnapshotRef.current()
+        } catch {
+          // The store exposes the degraded state; the fallback poll will retry.
+        }
+      } while (taskRefreshQueuedRef.current)
+    } finally {
+      taskRefreshInFlightRef.current = false
+    }
+  }, [])
+  const scheduleTaskSnapshotRefresh = useCallback(() => {
+    if (taskRefreshTimerRef.current !== null) {
+      return
+    }
+    taskRefreshTimerRef.current = window.setTimeout(() => {
+      taskRefreshTimerRef.current = null
+      void runTaskSnapshotRefresh()
+    }, TASK_EVENT_REFRESH_DEBOUNCE_MS)
+  }, [runTaskSnapshotRefresh])
+
+  useTaskEvents({
+    onInvalidate: scheduleTaskSnapshotRefresh,
+    onStatusChange: setTaskEventStatus,
+    enabled: Boolean(workspaceKey),
+    generationKey: workspaceKey,
+  })
+  usePolling(
+    refreshMonitorSnapshot,
+    taskEventStatus === 'live' ? TASK_EVENT_FALLBACK_POLL_MS : TASK_EVENT_DEGRADED_POLL_MS,
+    Boolean(workspaceKey),
+    false,
+  )
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleTaskSnapshotRefresh()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [scheduleTaskSnapshotRefresh])
+
+  useEffect(() => () => {
+    if (taskRefreshTimerRef.current !== null) {
+      window.clearTimeout(taskRefreshTimerRef.current)
+      taskRefreshTimerRef.current = null
+    }
+    taskRefreshQueuedRef.current = false
+  }, [workspaceKey])
   terminalSearchQueryRef.current = terminalSearchQuery
 
   const runTerminalSearch = useCallback((direction: 'next' | 'previous' = 'next', incremental = false) => {
@@ -197,12 +401,46 @@ export default function MonitorPage() {
     )
   }, [])
 
-  const closeTerminalSearch = useCallback(() => {
+  const closeTerminalSearch = useCallback((restoreTerminalFocus = true) => {
     setTerminalSearchOpen(false)
     setTerminalSearchQuery('')
     setTerminalSearchStatus('')
     searchAddonRef.current?.clearDecorations()
+    if (restoreTerminalFocus) {
+      window.requestAnimationFrame(() => xtermRef.current?.focus())
+    }
   }, [])
+
+  useEffect(() => {
+    taskActionRequestRef.current += 1
+    detailWorkspaceKeyRef.current = ''
+    selectedTaskSnapshotWorkspaceKeyRef.current = ''
+    selectedTaskNameRef.current = null
+    selectedLogRef.current = ''
+    logOffsetRef.current = 0
+    logIdentityRef.current = ''
+    liveLogNameRef.current = ''
+    livePollingKeyRef.current = ''
+    livePollInFlightRef.current = false
+    wsStreamActiveRef.current = false
+    queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+    manualHistoricalLogRef.current = { taskName: null, logName: '' }
+    if (liveLogFlushTimerRef.current !== null) {
+      window.clearTimeout(liveLogFlushTimerRef.current)
+      liveLogFlushTimerRef.current = null
+    }
+    pendingLiveLogChunkRef.current = { key: '', chunks: [] }
+    renderedLogRef.current = null
+    xtermRef.current?.clear()
+    xtermRef.current?.reset()
+    setSidebarQuery('')
+    setExportMode(false)
+    setDetailTask(null)
+    setSelectedTaskSnapshot(null)
+    setTaskActionPending(null)
+    setStreamStatus('idle')
+    closeTerminalSearch(false)
+  }, [closeTerminalSearch, workspaceKey])
 
   const startMonitorSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -212,25 +450,44 @@ export default function MonitorPage() {
     setResizingMonitorSidebar(true)
   }, [compactMonitorLayout])
 
-  useEffect(() => {
-    let active = true
-    void fetchMonitorTasks()
-      .then(() => {
-        if (active) {
-          setMonitorTasksLoaded(true)
-        }
-      })
-      .catch(err => {
-        notify({
-          tone: 'error',
-          title: 'Could not load monitor tasks',
-          detail: errorMessage(err),
-        })
-      })
-    return () => {
-      active = false
+  const resizeMonitorSidebarByKeyboard = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const deltas: Record<string, number> = { ArrowLeft: -2, ArrowRight: 2 }
+    let next = monitorSidebarWidthPct
+    if (event.key in deltas) {
+      next = clampMonitorSidebarWidth(monitorSidebarWidthPct + deltas[event.key])
+    } else if (event.key === 'Home') {
+      next = MIN_MONITOR_SIDEBAR_WIDTH
+    } else if (event.key === 'End') {
+      next = MAX_MONITOR_SIDEBAR_WIDTH
+    } else {
+      return
     }
-  }, [fetchMonitorTasks, notify])
+    event.preventDefault()
+    pendingMonitorSidebarWidthRef.current = next
+    setMonitorSidebarWidthPct(next)
+    try {
+      window.localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY, String(next))
+    } catch {
+      // Keyboard resizing remains available when storage is blocked.
+    }
+  }, [monitorSidebarWidthPct])
+
+  useEffect(() => {
+    void refreshMonitorTasks().catch(err => {
+      notify({
+        tone: 'error',
+        title: 'Could not load monitor tasks',
+        detail: errorMessage(err),
+      })
+    })
+  }, [notify, refreshMonitorTasks])
+
+  useEffect(() => {
+    if (selectedTaskFromList) {
+      selectedTaskSnapshotWorkspaceKeyRef.current = workspaceKey
+      setSelectedTaskSnapshot(selectedTaskFromList)
+    }
+  }, [selectedTaskFromList, workspaceKey])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -476,7 +733,7 @@ export default function MonitorPage() {
     }
   }, [terminalVisible])
 
-  const renderKey = `${selectedTaskName ?? ''}::${selectedLog || ''}`
+  const renderKey = `${workspaceKey}::${selectedTaskName ?? ''}::${selectedLog || ''}`
   const shouldShowNoLogPlaceholder = !loading && availableLogs.length === 0 && !selectedLog
 
   useEffect(() => {
@@ -501,16 +758,19 @@ export default function MonitorPage() {
       } else if (shouldShowNoLogPlaceholder) {
         term.write('\x1b[2m  < NO LOG >\x1b[0m\r\n')
       }
-      renderedLogRef.current = { key: renderKey, content: logContent }
+      renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
       return
     }
 
     if (logContent === previous.content) {
+      previous.offset = logOffset
       return
     }
 
-    if (logContent.startsWith(previous.content)) {
-      const nextChunk = logContent.slice(previous.content.length)
+    const nextChunk = logOffset < previous.offset
+      ? null
+      : appendedMonitorLogDelta(previous.content, logContent)
+    if (nextChunk !== null) {
       if (nextChunk) {
         term.write(nextChunk)
       }
@@ -524,12 +784,12 @@ export default function MonitorPage() {
       }
     }
 
-    renderedLogRef.current = { key: renderKey, content: logContent }
-  }, [renderKey, selectedTaskName, logContent, shouldShowNoLogPlaceholder])
+    renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
+  }, [renderKey, selectedTaskName, logContent, logOffset, shouldShowNoLogPlaceholder])
 
   useEffect(() => {
     if (!selectedTaskName && terminalSearchOpen) {
-      closeTerminalSearch()
+      closeTerminalSearch(false)
     }
   }, [closeTerminalSearch, selectedTaskName, terminalSearchOpen])
 
@@ -599,19 +859,6 @@ export default function MonitorPage() {
   }, [isTerminalSearchShortcutTarget, runTerminalSearch, terminalSearchOpen])
 
   useEffect(() => {
-    if (!monitorTasksLoaded || !selectedTaskName) return
-    const stillExists = monitorTasks.some(task => task.name === selectedTaskName)
-    if (stillExists) return
-    useMonitorStore.setState({
-      selectedTaskName: null,
-      logContent: '',
-      logOffset: 0,
-      availableLogs: [],
-      selectedLog: '',
-    })
-  }, [monitorTasks, monitorTasksLoaded, selectedTaskName])
-
-  useEffect(() => {
     if (!detailTask) {
       return
     }
@@ -638,7 +885,9 @@ export default function MonitorPage() {
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
   logOffsetRef.current = logOffset
+  logIdentityRef.current = logIdentity
   liveLogNameRef.current = liveLogName
+  workspaceKeyRef.current = workspaceKey
 
   useEffect(() => {
     const taskName = selectedTask?.name ?? null
@@ -682,18 +931,29 @@ export default function MonitorPage() {
       return
     }
 
-    queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
     if (selectedLog === runLogName) {
+      queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
       return
     }
 
-    if (liveLogFlushTimerRef.current !== null) {
-      window.clearTimeout(liveLogFlushTimerRef.current)
-      liveLogFlushTimerRef.current = null
-    }
-    pendingLiveLogChunkRef.current = { key: '', chunks: [] }
-    void selectLogFile(runLogName)
-      .catch(err => notify({ tone: 'error', title: 'Could not load run log', detail: errorMessage(err) }))
+    const fallbackTimer = window.setTimeout(() => {
+      if (
+        selectedTaskNameRef.current !== taskName
+        || selectedLogRef.current !== QUEUE_LOG_NAME
+        || queuedLiveLogTaskRef.current.taskName !== taskName
+      ) {
+        return
+      }
+      queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+      if (liveLogFlushTimerRef.current !== null) {
+        window.clearTimeout(liveLogFlushTimerRef.current)
+        liveLogFlushTimerRef.current = null
+      }
+      pendingLiveLogChunkRef.current = { key: '', chunks: [] }
+      void selectLogFile(runLogName)
+        .catch(err => notify({ tone: 'error', title: 'Could not load run log', detail: errorMessage(err) }))
+    }, 1500)
+    return () => window.clearTimeout(fallbackTimer)
   }, [notify, runLogName, selectLogFile, selectedLog, selectedTask?.name, selectedTask?.status])
 
   const flushLiveLogChunkBuffer = useCallback(() => {
@@ -711,11 +971,14 @@ export default function MonitorPage() {
 
     const activeTaskName = selectedTaskNameRef.current
     const activeLog = selectedLogRef.current || liveLogNameRef.current
-    const activeKey = activeTaskName ? `${activeTaskName}::${activeLog}` : ''
+    const activeKey = activeTaskName
+      ? `${workspaceKeyRef.current}::${activeTaskName}::${activeLog}`
+      : ''
     if (buffer.key === activeKey) {
       useMonitorStore.setState(state => {
         let nextContent = state.logContent
         let nextOffset = state.logOffset
+        let nextIdentity = state.logIdentity
 
         for (const chunk of buffer.chunks) {
           const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)
@@ -726,12 +989,15 @@ export default function MonitorPage() {
             continue
           }
           nextContent = appendMonitorLogContent(nextContent, chunk.content)
+          if (chunk.logIdentity) {
+            nextIdentity = chunk.logIdentity
+          }
           if (chunkOffset !== null) {
             nextOffset = Math.max(nextOffset, chunkOffset)
           }
         }
 
-        return { logContent: nextContent, logOffset: nextOffset }
+        return { logContent: nextContent, logOffset: nextOffset, logIdentity: nextIdentity }
       })
     }
   }, [])
@@ -747,24 +1013,72 @@ export default function MonitorPage() {
   }, [])
 
   useEffect(() => {
-    const key = `${selectedTaskName ?? ''}::${liveLogName}`
+    const key = `${workspaceKey}::${selectedTaskName ?? ''}::${liveLogName}`
     if (livePollingKeyRef.current === key) {
       return
     }
     livePollingKeyRef.current = key
     livePollInFlightRef.current = false
     wsStreamActiveRef.current = false
-  }, [liveLogName, selectedTaskName])
+  }, [liveLogName, selectedTaskName, workspaceKey])
 
   const handleChunk = useCallback((message: LogStreamMessage) => {
     const activeTaskName = selectedTaskNameRef.current
+    const activeWorkspaceKey = workspaceKeyRef.current
     if (!activeTaskName || message.task_name !== activeTaskName) {
       return
     }
 
-    const activeLog = selectedLogRef.current
+    let activeLog = selectedLogRef.current
     const liveLog = liveLogNameRef.current
     const messageLog = message.log_file_name || liveLog
+    const currentLog = activeLog || liveLog
+    const queueToRunTransition = Boolean(
+      messageLog
+      && messageLog !== currentLog
+      && currentLog === QUEUE_LOG_NAME
+      && RUN_LOG_PATTERN.test(messageLog)
+      && queuedLiveLogTaskRef.current.taskName === activeTaskName
+    )
+
+    if (queueToRunTransition) {
+      if (liveLogFlushTimerRef.current !== null) {
+        window.clearTimeout(liveLogFlushTimerRef.current)
+        liveLogFlushTimerRef.current = null
+      }
+      pendingLiveLogChunkRef.current = { key: '', chunks: [] }
+      queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+      selectedLogRef.current = messageLog
+      liveLogNameRef.current = messageLog
+      logOffsetRef.current = 0
+      logIdentityRef.current = ''
+      activeLog = messageLog
+      useTaskStore.setState(state => ({
+        monitorTasks: state.monitorTasks.map(task => (
+          task.name === activeTaskName && task.status === 'queued'
+            ? { ...task, status: 'running' }
+            : task
+        )),
+      }))
+      selectedTaskSnapshotWorkspaceKeyRef.current = activeWorkspaceKey
+      setSelectedTaskSnapshot(current => (
+        current?.name === activeTaskName && current.status === 'queued'
+          ? { ...current, status: 'running' }
+          : current
+      ))
+      useMonitorStore.setState(state => ({
+        selectedLog: messageLog,
+        logContent: '',
+        logOffset: 0,
+        logIdentity: '',
+        logTailTruncated: false,
+        logTailLimitBytes: 0,
+        availableLogs: state.availableLogs.includes(messageLog)
+          ? state.availableLogs
+          : [messageLog, ...state.availableLogs],
+      }))
+    }
+
     if (messageLog && activeLog && messageLog !== activeLog) {
       return
     }
@@ -773,11 +1087,37 @@ export default function MonitorPage() {
     }
 
     wsStreamActiveRef.current = true
-    const key = `${activeTaskName}::${activeLog || messageLog || liveLog}`
+    if (message.type === 'reset') {
+      if (liveLogFlushTimerRef.current !== null) {
+        window.clearTimeout(liveLogFlushTimerRef.current)
+        liveLogFlushTimerRef.current = null
+      }
+      pendingLiveLogChunkRef.current = { key: '', chunks: [] }
+      const nextOffset = typeof message.offset === 'number' && Number.isFinite(message.offset)
+        ? Math.max(0, Math.trunc(message.offset))
+        : 0
+      const nextIdentity = String(message.log_identity || '')
+      logOffsetRef.current = nextOffset
+      logIdentityRef.current = nextIdentity
+      useMonitorStore.setState(state => (
+        state.workspaceKey === activeWorkspaceKey && state.selectedTaskName === activeTaskName
+          ? {
+              logContent: message.content || '',
+              logOffset: nextOffset,
+              logIdentity: nextIdentity,
+              logTailTruncated: false,
+              logTailLimitBytes: 0,
+            }
+          : state
+      ))
+      return
+    }
+
+    const key = `${activeWorkspaceKey}::${activeTaskName}::${activeLog || messageLog || liveLog}`
     const buffer = pendingLiveLogChunkRef.current
     const chunk: PendingLiveLogChunk = typeof message.offset === 'number' && Number.isFinite(message.offset)
-      ? { content: message.content, offset: message.offset }
-      : { content: message.content }
+      ? { content: message.content, offset: message.offset, logIdentity: message.log_identity }
+      : { content: message.content, logIdentity: message.log_identity }
     if (buffer.key === key) {
       buffer.chunks.push(chunk)
     } else {
@@ -793,13 +1133,21 @@ export default function MonitorPage() {
     wsStreamActiveRef.current = false
   }, [flushLiveLogChunkBuffer])
 
+  const handleLogStreamStatus = useCallback((status: LogStreamStatus) => {
+    wsStreamActiveRef.current = status === 'live'
+    setStreamStatus(status)
+  }, [])
+
   useLogStream({
     taskName: selectedTaskName,
     onChunk: handleChunk,
     onDisconnect: handleLogStreamDisconnect,
+    onStatusChange: handleLogStreamStatus,
     enabled: !loading && isLive && canUseLogStream,
     logFileName: selectedLog || liveLogName || undefined,
     offset: logOffsetRef.current,
+    logIdentity: logIdentityRef.current,
+    generationKey: workspaceKey,
   })
 
   const pollLiveLog = useCallback(async () => {
@@ -810,20 +1158,22 @@ export default function MonitorPage() {
     }
 
     livePollInFlightRef.current = true
+    const requestedWorkspaceKey = workspaceKeyRef.current
     const requestedLog = selectedLogRef.current || liveLog
-    const currentOffset = useMonitorStore.getState().logOffset
+    const monitorState = useMonitorStore.getState()
+    const currentOffset = monitorState.logOffset
+    const currentIdentity = monitorState.logIdentity
     try {
-      const logs = await api.getTaskLogs(activeTaskName, requestedLog === QUEUE_LOG_NAME
-        ? {
-            logFileName: requestedLog,
-            tailLines: monitorScrollback,
-          }
-        : {
-            logFileName: requestedLog,
-            offset: currentOffset,
-            chunkSize: monitorChunkSize,
-          })
-      if (selectedTaskNameRef.current !== activeTaskName) {
+      const logs = await api.getTaskLogs(activeTaskName, {
+        logFileName: requestedLog,
+        offset: currentOffset,
+        logIdentity: currentIdentity,
+        chunkSize: monitorChunkSize,
+      })
+      if (
+        selectedTaskNameRef.current !== activeTaskName
+        || workspaceKeyRef.current !== requestedWorkspaceKey
+      ) {
         return
       }
       const stillViewingLog = selectedLogRef.current || liveLogNameRef.current
@@ -831,32 +1181,41 @@ export default function MonitorPage() {
         return
       }
 
-      const shouldReplaceContent = logs.offset < currentOffset || requestedLog === QUEUE_LOG_NAME
-      useMonitorStore.setState(state => ({
-        logContent: shouldReplaceContent
-          ? logs.content
-          : logs.content
-            ? appendMonitorLogContent(state.logContent, logs.content)
-            : state.logContent,
-        logOffset: logs.offset,
-        availableLogs: logs.available_logs,
-        selectedLog: state.selectedLog || logs.selected_log,
-      }))
+      const nextIdentity = String(logs.log_identity || '')
+      const shouldReplaceContent = Boolean(logs.reset)
+        || logs.offset < currentOffset
+        || Boolean(currentIdentity && nextIdentity && currentIdentity !== nextIdentity)
+      logOffsetRef.current = logs.offset
+      logIdentityRef.current = nextIdentity
+      useMonitorStore.setState(state => (
+        state.workspaceKey === requestedWorkspaceKey && state.selectedTaskName === activeTaskName
+          ? {
+              logContent: shouldReplaceContent
+                ? logs.content
+                : logs.content
+                  ? appendMonitorLogContent(state.logContent, logs.content)
+                  : state.logContent,
+              logOffset: logs.offset,
+              logIdentity: nextIdentity,
+              availableLogs: logs.available_logs,
+              selectedLog: state.selectedLog || logs.selected_log,
+              logTailTruncated: shouldReplaceContent ? false : state.logTailTruncated,
+              logTailLimitBytes: shouldReplaceContent ? 0 : state.logTailLimitBytes,
+            }
+          : state
+      ))
     } catch {
       // Keep the monitor quiet; task polling still refreshes status.
     } finally {
-      livePollInFlightRef.current = false
+      if (workspaceKeyRef.current === requestedWorkspaceKey) {
+        livePollInFlightRef.current = false
+      }
     }
-  }, [canUseLogStream, monitorChunkSize, monitorScrollback])
+  }, [canUseLogStream, monitorChunkSize])
 
-  usePolling(pollLiveLog, 1000, Boolean(isLive), false)
+  usePolling(pollLiveLog, 1500, Boolean(isLive), false)
 
-  const filteredTasks = useMemo(
-    () => sidebarQuery
-      ? monitorTasks.filter(task => matchesTaskQuery(task, sidebarQuery))
-      : monitorTasks,
-    [monitorTasks, sidebarQuery],
-  )
+  const filteredTasks = monitorTasks
   const pinnedTasks = useMemo(
     () => filteredTasks.filter(task => task.pinned),
     [filteredTasks],
@@ -869,6 +1228,9 @@ export default function MonitorPage() {
     () => filteredTasks.length > 0 && filteredTasks.every(task => exportIds.has(task.name)),
     [exportIds, filteredTasks],
   )
+  const selectedTaskOutsideList = Boolean(
+    selectedTask && !filteredTasks.some(task => task.name === selectedTask.name),
+  )
 
   const handleSidebarClick = (task: Task) => {
     if (exportMode) {
@@ -880,9 +1242,12 @@ export default function MonitorPage() {
   }
 
   const handleTaskAction = useCallback(async (action: 'run' | 'cancel') => {
-    if (!selectedTaskName || !selectedTask) return
+    if (!selectedTaskName || !selectedTask || taskActionPending) return
 
     const currentTaskName = selectedTaskName
+    const requestedWorkspaceKey = workspaceKeyRef.current
+    const actionRequestId = ++taskActionRequestRef.current
+    setTaskActionPending(action)
 
     try {
       let task: Task | null = null
@@ -892,16 +1257,22 @@ export default function MonitorPage() {
         task = (await api.cancelTask(currentTaskName)).task
       }
 
-      if (task) {
+      const stillSelected = workspaceKeyRef.current === requestedWorkspaceKey
+        && selectedTaskNameRef.current === currentTaskName
+      if (task && stillSelected) {
         upsertMonitorTask(task)
+        selectedTaskSnapshotWorkspaceKeyRef.current = requestedWorkspaceKey
+        setSelectedTaskSnapshot(task)
       }
 
-      await fetchMonitorTasks()
-
-      const refreshedTasks = useTaskStore.getState().monitorTasks
-      if (refreshedTasks.some(task => task.name === currentTaskName)) {
-        await selectTask(currentTaskName)
+      if (stillSelected) {
+        await selectTask(currentTaskName).catch(err => {
+          notify({ tone: 'error', title: 'Task changed, but its log could not refresh', detail: errorMessage(err) })
+        })
       }
+      await fetchMonitorTasks({ workspaceKey: requestedWorkspaceKey }).catch(() => {
+        // The action response already updated the selected task; polling will retry the sidebar.
+      })
       notify({
         tone: 'success',
         title: action === 'run' ? 'Task started' : 'Cancel requested',
@@ -913,21 +1284,37 @@ export default function MonitorPage() {
         title: action === 'run' ? 'Could not start task' : 'Could not cancel task',
         detail: errorMessage(err),
       })
+    } finally {
+      if (taskActionRequestRef.current === actionRequestId) {
+        setTaskActionPending(null)
+      }
     }
-  }, [selectedTaskName, selectedTask, fetchMonitorTasks, selectTask, upsertMonitorTask, notify])
+  }, [selectedTaskName, selectedTask, taskActionPending, fetchMonitorTasks, selectTask, upsertMonitorTask, notify])
 
   const openDetailTask = useCallback((task: Task) => {
+    const requestedWorkspaceKey = workspaceKeyRef.current
+    detailWorkspaceKeyRef.current = requestedWorkspaceKey
     setDetailTask(task)
     void api.getTask(task.name).then(fullTask => {
-      setDetailTask(current => current?.name === task.name ? fullTask : current)
+      if (workspaceKeyRef.current !== requestedWorkspaceKey) {
+        return
+      }
+      setDetailTask(current => (
+        detailWorkspaceKeyRef.current === requestedWorkspaceKey && current?.name === task.name
+          ? fullTask
+          : current
+      ))
     }).catch(err => {
-      notify({ tone: 'error', title: 'Could not load task details', detail: errorMessage(err) })
+      if (workspaceKeyRef.current === requestedWorkspaceKey) {
+        notify({ tone: 'error', title: 'Could not load task details', detail: errorMessage(err) })
+      }
     })
   }, [notify])
 
   const handleExport = useCallback(async () => {
     const names = [...exportIds]
     if (!names.length) return
+    const requestedWorkspaceKey = workspaceKeyRef.current
     try {
       const blob = await api.exportTasksCsv(names)
       const url = URL.createObjectURL(blob)
@@ -936,8 +1323,10 @@ export default function MonitorPage() {
       anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`
       anchor.click()
       URL.revokeObjectURL(url)
-      setExportMode(false)
-      clearExport()
+      if (workspaceKeyRef.current === requestedWorkspaceKey) {
+        setExportMode(false)
+        clearExport()
+      }
       notify({
         tone: 'success',
         title: 'CSV exported',
@@ -951,21 +1340,33 @@ export default function MonitorPage() {
   const handleSelectLogFile = useCallback((logName: string) => {
     const taskName = selectedTaskNameRef.current
     const liveLog = liveLogNameRef.current
-    manualHistoricalLogRef.current = (
-      taskName
-      && logName
-      && logName !== QUEUE_LOG_NAME
-      && logName !== liveLog
-    )
+    const taskStatus = useTaskStore.getState().monitorTasks.find(task => task.name === taskName)?.status
+      ?? selectedTaskSnapshot?.status
+    const liveChoice = taskStatus === 'queued' ? QUEUE_LOG_NAME : liveLog
+    const selectingHistory = Boolean(taskName && logName && logName !== liveChoice)
+    manualHistoricalLogRef.current = selectingHistory
       ? { taskName, logName }
       : { taskName: null, logName: '' }
+    if (selectingHistory) {
+      queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+    }
     void selectLogFile(logName)
       .catch(err => notify({ tone: 'error', title: 'Could not load log file', detail: errorMessage(err) }))
-  }, [notify, selectLogFile])
+  }, [notify, selectLogFile, selectedTaskSnapshot?.status])
+
+  const handleLoadMoreTasks = useCallback(() => {
+    void fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })
+      .catch(err => notify({
+        tone: 'error',
+        title: 'Could not load more tasks',
+        detail: errorMessage(err),
+      }))
+  }, [fetchMonitorTasks, notify, sidebarQuery, workspaceKey])
 
   return (
     <div ref={monitorShellRef} className={monitorShellClassName}>
       <aside
+        aria-label="Task monitor sidebar"
         className={clsx(
           'flex flex-none flex-col overflow-hidden bg-surface-raised',
           compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle',
@@ -976,16 +1377,68 @@ export default function MonitorPage() {
           <div className="mb-2 flex items-center justify-between">
             <div>
               <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">Monitor</div>
-              <div className="text-sm font-medium text-txt-primary">{filteredTasks.length} task views</div>
+              <div className="text-sm font-medium text-txt-primary">
+                {monitorTotal.toLocaleString()} task{monitorTotal === 1 ? '' : 's'}
+              </div>
             </div>
-            <span className="rounded-md bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary">
-              {hasActive ? 'Live polling' : 'Idle polling'}
+            <span
+              role="status"
+              aria-live="polite"
+              aria-label={taskEventStatus === 'live'
+                ? 'Task list updates live'
+                : taskEventStatus === 'reconnecting'
+                  ? 'Live task updates disconnected; fallback refresh is active'
+                  : 'Connecting live task updates'}
+              title={taskEventStatus === 'live'
+                ? 'Task changes appear automatically'
+                : 'Using fallback refresh while the live connection recovers'}
+              className={clsx(
+                'inline-flex items-center gap-1.5 text-2xs',
+                taskEventStatus === 'live' ? 'text-txt-tertiary' : 'text-amber-700 dark:text-amber-300',
+              )}
+            >
+              {taskEventStatus === 'live'
+                ? <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                : <LoaderCircle aria-hidden="true" className="h-3 w-3 motion-safe:animate-spin" />}
+              {taskEventStatus === 'live'
+                ? 'Live'
+                : taskEventStatus === 'reconnecting'
+                  ? 'Retrying'
+                  : 'Connecting'}
             </span>
           </div>
-          <SearchInput value={sidebarQuery} onChange={setSidebarQuery} placeholder="Filter tasks..." debounceMs={150} />
+          <SearchInput
+            value={sidebarQuery}
+            onChange={setSidebarQuery}
+            placeholder="Search all tasks..."
+            ariaLabel="Search monitor tasks"
+            debounceMs={250}
+          />
+          {monitorError && (
+            <div className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-500/20 bg-rose-500/8 px-2 py-1.5 text-2xs text-rose-700 dark:text-rose-300" role="alert">
+              <WifiOff className="mt-0.5 h-3 w-3 flex-none" />
+              <span className="min-w-0 flex-1">Task updates are delayed. Retrying automatically.</span>
+            </div>
+          )}
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {selectedTaskOutsideList && selectedTask && (
+            <CompactSection
+              title="Current Task"
+              icon={<Rows3 className="h-3.5 w-3.5 text-accent" />}
+              className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
+              bodyClassName="space-y-1 pt-0"
+            >
+              <SidebarItem
+                task={selectedTask}
+                active={!exportMode}
+                exportMode={exportMode}
+                exportSelected={exportIds.has(selectedTask.name)}
+                onClick={() => handleSidebarClick(selectedTask)}
+              />
+            </CompactSection>
+          )}
           {pinnedTasks.length > 0 && (
             <CompactSection
               title="Pinned Tasks"
@@ -1015,7 +1468,9 @@ export default function MonitorPage() {
             bodyClassName="space-y-1 p-1"
           >
             {otherTasks.length === 0 && pinnedTasks.length === 0 ? (
-              <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">No tasks</div>
+              <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">
+                {monitorLoading ? 'Loading tasks…' : sidebarQuery ? 'No matching tasks' : 'No tasks'}
+              </div>
             ) : (
               otherTasks.map(task => (
                 <SidebarItem
@@ -1029,6 +1484,27 @@ export default function MonitorPage() {
               ))
             )}
           </CompactSection>
+
+          {(monitorHasMore || monitorTasks.length > 0) && (
+            <div className="mt-2 space-y-1 px-1 text-center">
+              <div className="text-2xs text-txt-tertiary">
+                Loaded {monitorTasks.length.toLocaleString()} of {monitorTotal.toLocaleString()}
+              </div>
+              {monitorHasMore && (
+                <ActionButton
+                  variant="ghost"
+                  className="w-full border border-border-subtle"
+                  icon={monitorLoading
+                    ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    : <RefreshCw className="h-3.5 w-3.5" />}
+                  disabled={monitorLoading}
+                  onClick={handleLoadMoreTasks}
+                >
+                  Load 200 more
+                </ActionButton>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex-none border-t border-border-subtle px-2.5 py-2">
@@ -1038,6 +1514,7 @@ export default function MonitorPage() {
               variant="primary"
               className="w-full"
               onClick={() => setExportMode(true)}
+              disabled={filteredTasks.length === 0}
             >
               Export
             </ActionButton>
@@ -1049,7 +1526,7 @@ export default function MonitorPage() {
                   onClick={() => (allExportSelected ? clearExport() : selectAllExport(filteredTasks.map(task => task.name)))}
                   className="text-accent transition-colors hover:text-accent-hover"
                 >
-                  {allExportSelected ? 'Deselect All' : 'Select All'}
+                  {allExportSelected ? 'Deselect loaded' : 'Select loaded'}
                 </button>
                 <span className="text-txt-tertiary">{exportIds.size} selected</span>
               </div>
@@ -1081,9 +1558,14 @@ export default function MonitorPage() {
       {!compactMonitorLayout && (
         <button
           type="button"
+          role="separator"
           aria-label="Resize monitor sidebar"
           aria-orientation="vertical"
+          aria-valuemin={MIN_MONITOR_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_MONITOR_SIDEBAR_WIDTH}
+          aria-valuenow={Math.round(monitorSidebarWidthPct)}
           onPointerDown={startMonitorSidebarResize}
+          onKeyDown={resizeMonitorSidebarByKeyboard}
           className={clsx(
             'h-full w-1 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
             resizingMonitorSidebar ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
@@ -1106,9 +1588,25 @@ export default function MonitorPage() {
               </div>
 
               {isLive && (
-                <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-1 text-2xs text-emerald-400">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-                  Live
+                <span
+                  role="status"
+                  aria-live="polite"
+                  title={streamStatus === 'reconnecting' ? 'Live stream disconnected; incremental polling remains active while reconnecting.' : undefined}
+                  className={clsx(
+                    'inline-flex items-center gap-1 rounded-md px-2 py-1 text-2xs font-medium',
+                    streamStatus === 'live'
+                      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+                  )}
+                >
+                  {streamStatus === 'live'
+                    ? <Wifi className="h-3 w-3" />
+                    : <RefreshCw className="h-3 w-3 motion-safe:animate-spin" />}
+                  {streamStatus === 'live'
+                    ? 'Live'
+                    : streamStatus === 'reconnecting'
+                      ? 'Reconnecting'
+                      : 'Connecting'}
                 </span>
               )}
 
@@ -1117,21 +1615,27 @@ export default function MonitorPage() {
                 || selectedTask.status === 'completed'
                 || selectedTask.status === 'cancelled') && (
                 <ActionButton
-                  icon={<Play className="h-3.5 w-3.5" />}
+                  icon={taskActionPending === 'run'
+                    ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    : <Play className="h-3.5 w-3.5" />}
                   variant="success"
                   onClick={() => void handleTaskAction('run')}
+                  disabled={taskActionPending !== null}
                 >
-                  Run
+                  {taskActionPending === 'run' ? 'Starting' : 'Run'}
                 </ActionButton>
               )}
 
               {(selectedTask.status === 'running' || selectedTask.status === 'queued') && (
                 <ActionButton
-                  icon={<Square className="h-3.5 w-3.5" />}
+                  icon={taskActionPending === 'cancel'
+                    ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    : <Square className="h-3.5 w-3.5" />}
                   variant="danger"
                   onClick={() => void handleTaskAction('cancel')}
+                  disabled={taskActionPending !== null}
                 >
-                  Stop
+                  {taskActionPending === 'cancel' ? 'Stopping' : 'Stop'}
                 </ActionButton>
               )}
 
@@ -1145,6 +1649,8 @@ export default function MonitorPage() {
                     value={selectedLog}
                     onChange={event => handleSelectLogFile(event.target.value)}
                     title="Select log file"
+                    aria-label="Select task log file"
+                    disabled={loading}
                     className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2 py-1.5 pr-6 text-2xs text-txt-primary outline-none transition-colors focus:border-border"
                   >
                     {availableLogs.map(log => (
@@ -1160,12 +1666,43 @@ export default function MonitorPage() {
           )}
         </div>
 
-        <div className="relative flex-1 overflow-hidden">
+        {selectedTask?.status === 'queued' && (
+          <GPUWaitPanel wait={selectedTask.gpu_wait ?? null} />
+        )}
+
+        {logTailTruncated && (
+          <div
+            role="status"
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-2xs text-amber-800 dark:text-amber-200"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 flex-none" />
+            <span>
+              Showing the latest {formatBytes(logTailLimitBytes)} of this log to keep the monitor responsive.
+            </span>
+            <span className="text-amber-700/80 dark:text-amber-300/80">New output continues live.</span>
+          </div>
+        )}
+
+        <div className="relative flex-1 overflow-hidden" aria-busy={loading}>
           {selectedTaskName ? (
             <>
-              <div ref={termContainerRef} className="monitor-terminal-shell h-full w-full" />
+              <div
+                ref={termContainerRef}
+                className="monitor-terminal-shell h-full w-full"
+                role="region"
+                aria-label={`Logs for ${selectedTaskName}`}
+              />
+              {loading && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#0A0A0B]/70 text-xs text-[#cbd5e1]" role="status">
+                  <span className="inline-flex items-center gap-2 rounded-md border border-[#303136] bg-[#18181b] px-3 py-2">
+                    <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" />
+                    Loading log…
+                  </span>
+                </div>
+              )}
               {terminalSearchOpen && (
                 <form
+                  role="search"
                   className="absolute right-3 top-3 z-20 flex w-[calc(100%-1.5rem)] max-w-[26rem] items-center gap-1 rounded-md border border-[#454545] bg-[#252526] px-1.5 py-1 text-[#cccccc] shadow-[0_2px_10px_rgba(0,0,0,0.45)]"
                   onSubmit={event => {
                     event.preventDefault()
@@ -1192,6 +1729,9 @@ export default function MonitorPage() {
                     className="min-w-0 flex-1 bg-transparent px-1 py-0.5 text-xs text-[#cccccc] caret-[#cccccc] outline-none selection:bg-[#264f78] selection:text-white placeholder:text-[#6f7787]"
                   />
                   <span
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
                     className={clsx(
                       'min-w-[3.25rem] text-right text-2xs',
                       terminalSearchStatus === 'No match' ? 'text-[#f48771]' : 'text-[#a0a6b1]',
@@ -1219,7 +1759,7 @@ export default function MonitorPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={closeTerminalSearch}
+                    onClick={() => closeTerminalSearch()}
                     className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
                     title="Close search"
                     aria-label="Close terminal search"
@@ -1237,10 +1777,13 @@ export default function MonitorPage() {
         </div>
       </div>
 
-      {detailTask && (
+      {detailTask && detailWorkspaceKeyRef.current === workspaceKey && (
         <TaskDetailPanel
           task={detailTask}
-          onClose={() => setDetailTask(null)}
+          onClose={() => {
+            detailWorkspaceKeyRef.current = ''
+            setDetailTask(null)
+          }}
           onRefresh={() => {
             void fetchMonitorTasks()
           }}
@@ -1248,6 +1791,136 @@ export default function MonitorPage() {
       )}
     </div>
   )
+}
+
+function GPUWaitPanel({ wait }: { wait: GPUWaitStatus | null }) {
+  const requested = Math.max(1, Number(wait?.requested_gpu_count || 1))
+  const eligible = Number.isFinite(Number(wait?.eligible_gpu_count))
+    ? Math.max(0, Number(wait?.eligible_gpu_count))
+    : null
+  const waitedSeconds = Math.max(0, Number(wait?.waited_seconds || 0))
+  const maxWaitSeconds = Math.max(0, Number(wait?.max_wait_seconds || 0))
+  const serverRemainingSeconds = Number(wait?.remaining_seconds)
+  const remainingSeconds = Number.isFinite(serverRemainingSeconds)
+    ? Math.max(0, serverRemainingSeconds)
+    : maxWaitSeconds > 0
+      ? Math.max(0, maxWaitSeconds - waitedSeconds)
+      : null
+  const devices = Array.isArray(wait?.devices) ? wait.devices : []
+
+  return (
+    <section
+      aria-labelledby="gpu-wait-heading"
+      className="border-b border-border-subtle bg-surface-raised px-3 py-2.5"
+    >
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="flex min-w-0 flex-1 basis-[20rem] items-start gap-2.5">
+          <span className="mt-0.5 inline-flex h-8 w-8 flex-none items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
+            <Cpu className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h2 id="gpu-wait-heading" className="text-xs font-semibold text-txt-primary">Waiting for GPU capacity</h2>
+              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-2xs font-medium text-amber-700 dark:text-amber-300">
+                {eligible === null ? 'Checking eligibility' : `${eligible}/${requested} eligible`}
+              </span>
+            </div>
+            <p className="mt-0.5 text-2xs leading-5 text-txt-secondary">
+              {wait?.reason || 'The scheduler is checking memory, utilization, reservations, and the stability window.'}
+            </p>
+          </div>
+        </div>
+
+        <dl className="grid min-w-[15rem] flex-none grid-cols-2 gap-x-4 gap-y-1 text-2xs sm:grid-cols-3">
+          <div>
+            <dt className="text-txt-tertiary">Waited</dt>
+            <dd className="font-medium tabular-nums text-txt-primary">{formatDuration(waitedSeconds)}</dd>
+          </div>
+          <div>
+            <dt className="text-txt-tertiary">Time left</dt>
+            <dd className="font-medium tabular-nums text-txt-primary">
+              {remainingSeconds === null ? 'No limit' : formatDuration(remainingSeconds)}
+            </dd>
+          </div>
+          <div className="col-span-2 sm:col-span-1">
+            <dt className="text-txt-tertiary">Visible GPUs</dt>
+            <dd className="font-medium tabular-nums text-txt-primary">
+              {wait?.total_gpu_count ?? (devices.length || '—')}
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      {devices.length > 0 && (
+        <details className="group mt-2 rounded-md border border-border-subtle bg-surface-overlay/60">
+          <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-2 px-2.5 py-1.5 text-2xs font-medium text-txt-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
+            <span>Why each GPU is waiting</span>
+            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+          </summary>
+          <ul className="grid gap-1 border-t border-border-subtle p-2 sm:grid-cols-2" aria-label="GPU eligibility details">
+            {devices.map(device => (
+              <li key={device.uuid || device.index} className="flex min-w-0 items-start gap-2 rounded-md bg-surface-raised px-2 py-1.5 text-2xs">
+                <span className={clsx(
+                  'mt-1 h-2 w-2 flex-none rounded-full',
+                  device.eligible ? 'bg-emerald-500' : 'bg-amber-500',
+                )} />
+                <span className="min-w-0">
+                  <span className="block truncate font-medium text-txt-primary">
+                    GPU {device.index}{device.name ? ` · ${device.name}` : ''}
+                  </span>
+                  <span className="block truncate text-txt-tertiary" title={device.reason || undefined}>
+                    {device.eligible ? 'Passes current thresholds' : device.reason || 'Waiting for current thresholds'}
+                  </span>
+                  <span className="block truncate text-txt-tertiary/80">
+                    {formatGPUDeviceMetrics(device)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
+  )
+}
+
+function formatGPUDeviceMetrics(device: NonNullable<GPUWaitStatus['devices']>[number]) {
+  const parts: string[] = []
+  if (device.free_memory_gb != null && Number.isFinite(Number(device.free_memory_gb))) {
+    parts.push(`${Number(device.free_memory_gb).toFixed(1)} GiB free`)
+  }
+  if (device.memory_used_pct != null && Number.isFinite(Number(device.memory_used_pct))) {
+    parts.push(`${Math.round(Number(device.memory_used_pct))}% memory`)
+  }
+  if (device.compute_util_pct != null && Number.isFinite(Number(device.compute_util_pct))) {
+    parts.push(`${Math.round(Number(device.compute_util_pct))}% compute`)
+  }
+  return parts.join(' · ') || 'Metrics unavailable'
+}
+
+function formatDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainder = seconds % 60
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${remainder}s`
+  }
+  return `${remainder}s`
+}
+
+function formatBytes(bytes: number) {
+  const value = Math.max(0, Number(bytes || 0))
+  if (value <= 0) {
+    return 'bounded tail'
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(value % (1024 * 1024) === 0 ? 0 : 1)} MB`
+  }
+  return `${Math.max(1, Math.round(value / 1024))} KB`
 }
 
 function SidebarItem({
@@ -1267,14 +1940,18 @@ function SidebarItem({
     <button
       type="button"
       onClick={onClick}
+      aria-current={!exportMode && active ? 'true' : undefined}
+      aria-pressed={exportMode ? exportSelected : undefined}
+      aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}`}
       className={clsx(
-        'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors',
+        'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'
           : 'border-transparent hover:border-border-subtle hover:bg-surface-overlay'
       )}
       title={task.name}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '36px' }}
     >
       {exportMode && <SelectionIndicator selected={exportSelected} />}
       <StatusDot status={task.status as TaskStatus} />
@@ -1284,7 +1961,7 @@ function SidebarItem({
       )}>
         {task.name}
       </span>
-      {task.status === 'running' && <span className="h-1.5 w-1.5 flex-none animate-pulse rounded-full bg-amber-400" />}
+      {task.status === 'running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
     </button>
   )
 }
@@ -1299,29 +1976,5 @@ function StatusDot({ status }: { status: TaskStatus }) {
     cancelled: 'bg-slate-500',
   }
 
-  return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[status])} />
-}
-
-function matchesTaskQuery(task: Task, query: string) {
-  const haystack = [
-    task.name,
-    task.notes,
-    task.preview_text,
-    task.search_text,
-    task.config_text,
-  ]
-    .filter(Boolean)
-    .join('\n')
-    .toLowerCase()
-
-  const terms = query
-    .split(/\r?\n/)
-    .map(item => item.trim().toLowerCase())
-    .filter(Boolean)
-
-  if (terms.length === 0) {
-    return true
-  }
-
-  return terms.every(term => haystack.includes(term))
+  return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[status])} aria-hidden="true" />
 }

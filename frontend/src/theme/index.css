@@ -27,6 +27,7 @@
   --xterm-bg: #1e1e1e;
   --scrollbar-thumb: #ced4da;
   --scrollbar-hover: #adb5bd;
+  color-scheme: light;
 }
 
 /* Dark theme override */
@@ -42,7 +43,7 @@
 
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
+  --text-tertiary: #929aa8;
 
   --card-bg: #141414;
   --card-border: #1f1f1f;
@@ -51,6 +52,7 @@
   --xterm-bg: #0a0a0b;
   --scrollbar-thumb: #27272a;
   --scrollbar-hover: #3a3a3a;
+  color-scheme: dark;
 }
 
 * {
@@ -80,6 +82,39 @@ body {
   overflow: hidden;
   background: var(--surface-base);
   color: var(--text-primary);
+}
+
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid #5e6ad2;
+  outline-offset: 2px;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+.runtime-panel {
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 700px) {
+  .runtime-panel {
+    inset: 8px 8px 8px 72px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* xterm overrides */
@@ -128,7 +163,7 @@ body {
 }
 .code-text-editor .cm-placeholder {
   color: var(--text-tertiary);
-  opacity: 0.5;
+  opacity: 1;
 }
 .code-text-editor .cm-activeLine {
   background: rgba(59, 130, 246, 0.08) !important;
@@ -153,13 +188,18 @@ body {
 .light .text-zinc-100 { color: #212529; }
 .light .text-zinc-200 { color: #343a40; }
 .light .text-zinc-300 { color: #495057; }
-.light .text-zinc-400 { color: #6c757d; }
-.light .text-zinc-500 { color: #868e96; }
-.light .text-zinc-600 { color: #adb5bd; }
-.light .text-zinc-700 { color: #ced4da; }
-.light .bg-black\/40 { background: rgba(0, 0, 0, 0.2); }
-.light .bg-black\/60 { background: rgba(0, 0, 0, 0.3); }
-.light .bg-black\/70 { background: rgba(0, 0, 0, 0.35); }
+.light .text-zinc-400 { color: #4f5965; }
+.light .text-zinc-500 { color: #5c6672; }
+.light .text-zinc-600 { color: #66717d; }
+.light .text-zinc-700 { color: #6b7280; }
+.light .bg-black\/40 { background: rgba(0, 0, 0, 0.35); }
+.light .bg-black\/60 { background: rgba(0, 0, 0, 0.5); }
+.light .bg-black\/70 { background: rgba(0, 0, 0, 0.6); }
+
+/* Legacy zinc utilities remain readable on the navy dark surfaces. */
+.dark .text-zinc-500,
+.dark .text-zinc-600,
+.dark .text-zinc-700 { color: var(--text-tertiary); }
 
 @layer utilities {
   .truncate-2 {

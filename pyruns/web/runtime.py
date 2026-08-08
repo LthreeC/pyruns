@@ -53,7 +53,7 @@ from pyruns.utils.config_utils import (
     validate_config_types_against_template,
 )
 from pyruns.utils.info_io import get_log_options, load_script_info, load_task_info, resolve_log_path
-from pyruns.utils.log_io import read_last_bytes, read_last_lines, safe_read_log
+from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_setting_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
@@ -62,6 +62,7 @@ from pyruns.utils.task_files import build_task_preview_and_search, normalize_tas
 
 
 _DEFAULT_GPU_SCHEDULER_CONFIG = GpuSchedulerConfig.from_settings({})
+MAX_MONITOR_LOG_TAIL_BYTES = 4 * 1024 * 1024
 TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
@@ -306,6 +307,7 @@ class TaskPage:
     offset: int
     limit: int
     has_more: bool
+    status_counts: Dict[str, int]
 
 
 class PyrunsRuntime:
@@ -904,7 +906,19 @@ class PyrunsRuntime:
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh)
-        tasks = filter_tasks(self.task_manager.list_tasks(summary=summary), query, status)
+        all_tasks = self.task_manager.list_tasks(summary=summary)
+        status_counts = {
+            "pending": 0,
+            "queued": 0,
+            "running": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        for task in all_tasks:
+            task_status = str(task.get("status", "pending") or "pending").lower()
+            status_counts[task_status] = status_counts.get(task_status, 0) + 1
+        tasks = filter_tasks(all_tasks, query, status)
         ordered = sort_tasks_for_manager(tasks)
 
         safe_offset = max(0, int(offset))
@@ -914,7 +928,14 @@ class PyrunsRuntime:
             items = _cap_summary_task_payloads(items)
         total = len(ordered)
         has_more = (safe_offset + len(items)) < total
-        return TaskPage(items=items, total=total, offset=safe_offset, limit=safe_limit, has_more=has_more)
+        return TaskPage(
+            items=items,
+            total=total,
+            offset=safe_offset,
+            limit=safe_limit,
+            has_more=has_more,
+            status_counts=status_counts,
+        )
 
     def get_dashboard(self, *, refresh: bool = True, recent_limit: int = 6) -> Dict[str, Any]:
         """Return lightweight dashboard data for the Home page."""
@@ -1159,6 +1180,7 @@ class PyrunsRuntime:
         *,
         log_file_name: str | None = None,
         offset: int | None = None,
+        log_identity: str | None = None,
         tail_bytes: int | None = None,
         tail_lines: int | None = None,
         chunk_size: int | None = None,
@@ -1205,15 +1227,34 @@ class PyrunsRuntime:
                 "available_logs": available_logs,
                 "content": "",
                 "offset": 0,
+                "reset": bool(offset is not None and log_identity),
+                "log_identity": "",
+                "tail_truncated": False,
+                "tail_limit_bytes": MAX_MONITOR_LOG_TAIL_BYTES,
             }
 
+        tail_truncated = False
+        tail_limit_bytes = MAX_MONITOR_LOG_TAIL_BYTES
+        selected_identity = log_file_identity(selected_path)
+        reset = False
         if offset is None:
             if tail_lines is not None:
+                requested_tail_bytes = (
+                    MAX_MONITOR_LOG_TAIL_BYTES
+                    if tail_bytes is None
+                    else max(1, int(tail_bytes))
+                )
+                tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, requested_tail_bytes)
                 content, new_offset = read_last_lines(
                     selected_path,
                     max_lines=max(0, tail_lines),
-                    max_bytes=None if tail_bytes is None else max(1, tail_bytes),
+                    max_bytes=tail_limit_bytes,
                 )
+                if tail_lines > 0:
+                    try:
+                        tail_truncated = os.path.getsize(selected_path) > tail_limit_bytes
+                    except OSError:
+                        tail_truncated = False
             else:
                 byte_limit = tail_bytes
                 if byte_limit is None:
@@ -1222,7 +1263,12 @@ class PyrunsRuntime:
                         "monitor_chunk_size",
                         _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
                     )
-                content, new_offset = read_last_bytes(selected_path, n_bytes=max(1, byte_limit))
+                tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, max(1, int(byte_limit)))
+                content, new_offset = read_last_bytes(selected_path, n_bytes=tail_limit_bytes)
+                try:
+                    tail_truncated = os.path.getsize(selected_path) > tail_limit_bytes
+                except OSError:
+                    tail_truncated = False
         else:
             byte_limit = chunk_size
             if byte_limit is None:
@@ -1231,7 +1277,19 @@ class PyrunsRuntime:
                     "monitor_chunk_size",
                     _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
                 )
-            content, new_offset = safe_read_log(selected_path, max(0, offset), max_bytes=max(1, byte_limit))
+            requested_offset = max(0, offset)
+            try:
+                selected_size = os.path.getsize(selected_path)
+            except OSError:
+                selected_size = 0
+            identity_changed = bool(
+                log_identity
+                and selected_identity
+                and str(log_identity) != selected_identity
+            )
+            reset = identity_changed or requested_offset > selected_size
+            read_offset = 0 if reset else requested_offset
+            content, new_offset = safe_read_log(selected_path, read_offset, max_bytes=max(1, byte_limit))
 
         return {
             "task_name": task_name,
@@ -1239,11 +1297,18 @@ class PyrunsRuntime:
             "available_logs": available_logs,
             "content": content,
             "offset": new_offset,
+            "reset": reset,
+            "log_identity": selected_identity,
+            "tail_truncated": tail_truncated,
+            "tail_limit_bytes": tail_limit_bytes,
         }
 
-    def get_metrics(self) -> Dict[str, Any]:
-        """Return a fresh system metrics snapshot."""
-        return self.metrics_sampler.sample()
+    def get_metrics(self, *, include_processes: bool = False) -> Dict[str, Any]:
+        """Return metrics, optionally including the more expensive GPU process list."""
+        try:
+            return self.metrics_sampler.sample(include_processes=include_processes)
+        except TypeError:
+            return self.metrics_sampler.sample()
 
     def open_shell_workspace(self) -> Dict[str, Any]:
         """Prepare and activate the project-level shell workspace."""

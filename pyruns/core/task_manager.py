@@ -60,7 +60,14 @@ from pyruns.utils.task_files import (
 logger = get_logger(__name__)
 _STOP_TASK_INFO_LOCK_TIMEOUT_SEC = 1.0
 _GPU_SCHEDULE_LOCK_TIMEOUT_SEC = 2.0
+_REACTIVE_DISK_REFRESH_INTERVAL_SEC = 1.0
 _GPU_QUEUE_RUN_RE = re.compile(r"\bRun #(\d+)\b")
+_GPU_WAIT_REASON_NORMALIZERS = (
+    (re.compile(r"\bstabilizing\s+\d+(?:\.\d+)?/(\d+(?:\.\d+)?s)\b"), r"stabilizing /\1"),
+    (re.compile(r"\bmemory\s+\d+(?:\.\d+)?%\s*(>\s*\d+(?:\.\d+)?%)"), r"memory \1"),
+    (re.compile(r"\bfree\s+\d+(?:\.\d+)?\s+GiB\s*(<\s*\d+(?:\.\d+)?\s+GiB)"), r"free \1"),
+    (re.compile(r"\bcompute\s+\d+(?:\.\d+)?%\s*(>\s*\d+(?:\.\d+)?%)"), r"compute \1"),
+)
 
 
 class TaskClaimConflict(RuntimeError):
@@ -99,6 +106,7 @@ class TaskManager:
         self.owns_task_lifecycle = bool(owns_task_lifecycle)
 
         self._observers: List[Callable[[], None]] = []
+        self._reactive_watchers = 0
         self._executor = None
         self._independent_executor = None
         self._independent_executor_mode = None
@@ -147,6 +155,21 @@ class TaskManager:
             if callback in self._observers:
                 self._observers.remove(callback)
 
+    def acquire_reactive_watch(self) -> None:
+        """Request fast disk reconciliation while a live UI is connected."""
+        with self._observer_lock:
+            self._reactive_watchers += 1
+
+    def release_reactive_watch(self) -> None:
+        """Release one live UI disk-reconciliation request."""
+        with self._observer_lock:
+            self._reactive_watchers = max(0, self._reactive_watchers - 1)
+
+    def has_reactive_watchers(self) -> bool:
+        """Return whether any live UI currently needs near-real-time discovery."""
+        with self._observer_lock:
+            return self._reactive_watchers > 0
+
     def _mark_running_locked(self, task_name: str, *, counts_for_batch: bool) -> None:
         if not task_name:
             return
@@ -176,6 +199,97 @@ class TaskManager:
                 callback()
             except Exception as exc:
                 logger.error("Observer callback error: %s", exc)
+
+    @staticmethod
+    def _serialized_gpu_wait(task: Dict[str, Any]) -> Dict[str, Any] | None:
+        if str(task.get("status", "") or "").lower() != "queued":
+            return None
+        raw = task.get("gpu_wait")
+        if not isinstance(raw, dict):
+            return None
+        wait = copy.deepcopy(raw)
+        try:
+            started_at = float(wait.get("started_at", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            started_at = 0.0
+        if started_at > 0:
+            waited = max(0.0, time.time() - started_at)
+            wait["waited_seconds"] = waited
+            try:
+                deadline = float(wait.get("deadline_at", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                deadline = 0.0
+            if deadline <= 0:
+                try:
+                    max_wait = float(wait.get("max_wait_seconds", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    max_wait = 0.0
+                deadline = started_at + max(0.0, max_wait)
+                wait["deadline_at"] = deadline
+            wait["remaining_seconds"] = max(0.0, deadline - time.time())
+        return wait
+
+    _SUMMARY_API_FIELDS = (
+        "dir",
+        "name",
+        "status",
+        "created_at",
+        "config_file",
+        "progress",
+        "env",
+        "pinned",
+        "task_order",
+        "script",
+        "task_kind",
+        "command_mode",
+        "cmd",
+        "workdir",
+        "shell_executable",
+        "shell_kind",
+        "start_times",
+        "finish_times",
+        "pids",
+        "durations",
+        "exit_codes",
+        "source_states",
+        "notes",
+        "run_index",
+        "queued_at",
+        "gpu_wait",
+        "preview_text",
+        "search_text",
+        "_load_error",
+    )
+
+    @classmethod
+    def _snapshot_task_for_api(
+        cls,
+        task: Dict[str, Any] | None,
+        *,
+        summary: bool,
+    ) -> Dict[str, Any] | None:
+        """Capture a stable detached task value while the manager lock is held."""
+        if task is None:
+            return None
+        if not summary:
+            return copy.deepcopy(task)
+        return {
+            key: copy.deepcopy(task[key])
+            for key in cls._SUMMARY_API_FIELDS
+            if key in task
+        }
+
+    @staticmethod
+    def _finalize_full_task_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply derived API fields to an already detached full-task snapshot."""
+        data["dir"] = str(data.get("dir", "")).replace("\\", "/")
+        data.pop("_gpu_wait_persisted_signature", None)
+        gpu_wait = TaskManager._serialized_gpu_wait(data)
+        if gpu_wait is None:
+            data.pop("gpu_wait", None)
+        else:
+            data["gpu_wait"] = gpu_wait
+        return data
 
     @staticmethod
     def serialize_task(task: Dict[str, Any] | None, *, summary: bool = False) -> Dict[str, Any] | None:
@@ -213,29 +327,41 @@ class TaskManager:
                 "tracks": [],
                 "notes": task.get("notes", ""),
                 "run_index": task.get("run_index", 0),
+                "queued_at": task.get("queued_at"),
+                "gpu_wait": TaskManager._serialized_gpu_wait(task),
                 "preview_text": task.get("preview_text", ""),
                 "search_text": task.get("search_text", ""),
                 "_load_error": task.get("_load_error"),
             }
-        data = copy.deepcopy(task)
-        data["dir"] = str(data.get("dir", "")).replace("\\", "/")
-        return data
+        return TaskManager._finalize_full_task_snapshot(copy.deepcopy(task))
 
     def list_tasks(self, *, summary: bool = False) -> List[Dict[str, Any]]:
         """Return detached copies of the current task list."""
         with self._lock:
-            tasks = list(self.tasks)
+            snapshots = [
+                self._snapshot_task_for_api(task, summary=summary)
+                for task in self.tasks
+            ]
         return [
             serialized
-            for serialized in (self.serialize_task(task, summary=summary) for task in tasks)
+            for serialized in (
+                self.serialize_task(snapshot, summary=True)
+                if summary
+                else self._finalize_full_task_snapshot(snapshot)
+                for snapshot in snapshots
+                if snapshot is not None
+            )
             if serialized is not None
         ]
 
     def get_task(self, identifier: str) -> Dict[str, Any] | None:
         """Return a detached task copy by name."""
         with self._lock:
-            task = self._tasks_by_name.get(identifier)
-        return self.serialize_task(task)
+            snapshot = self._snapshot_task_for_api(
+                self._tasks_by_name.get(identifier),
+                summary=False,
+            )
+        return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
 
     def scan_disk_async(self) -> None:
         """Run a full disk scan in the background."""
@@ -535,6 +661,7 @@ class TaskManager:
         if pending_run_index:
             task["run_index"] = int(pending_run_index)
         self._copy_gpu_schedule_info(task, info)
+        self._copy_gpu_wait_info(task, info)
         self._refresh_derived_fields(task)
         return task
 
@@ -672,10 +799,13 @@ class TaskManager:
         for key in (
             "_scheduled_env",
             "_gpu_assignment",
+            "gpu_wait",
+            "queued_at",
             "_gpu_wait_started_at",
             "_gpu_wait_logged_for",
             "_gpu_last_wait_log_at",
             "_gpu_wait_refresh_width",
+            "_gpu_wait_persisted_signature",
             "_queued_independent",
             "_queued_execution_mode",
         ):
@@ -685,6 +815,40 @@ class TaskManager:
     def _clear_gpu_schedule_info(info: Dict[str, Any]) -> None:
         for key in ("_scheduled_env", "_gpu_assignment"):
             info.pop(key, None)
+
+    @staticmethod
+    def _clear_gpu_wait_info(info: Dict[str, Any]) -> None:
+        info.pop("gpu_wait", None)
+        info.pop("queued_at", None)
+        info.pop("_gpu_wait_persisted_signature", None)
+
+    @staticmethod
+    def _copy_gpu_wait_info(task: Dict[str, Any], info: Dict[str, Any]) -> None:
+        if str(info.get("status", "") or "").lower() != "queued":
+            TaskManager._clear_gpu_wait_info(task)
+            return
+
+        task["queued_at"] = info.get("queued_at", task.get("queued_at"))
+        incoming = info.get("gpu_wait")
+        if not isinstance(incoming, dict):
+            task.pop("gpu_wait", None)
+            task.pop("_gpu_wait_persisted_signature", None)
+            return
+        current = task.get("gpu_wait")
+        if isinstance(current, dict):
+            same_wait = (
+                current.get("run_index") == incoming.get("run_index")
+                and current.get("started_at") == incoming.get("started_at")
+            )
+            try:
+                current_updated = float(current.get("updated_at", 0.0) or 0.0)
+                incoming_updated = float(incoming.get("updated_at", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                current_updated = incoming_updated = 0.0
+            if same_wait and current_updated > incoming_updated:
+                return
+        task["gpu_wait"] = copy.deepcopy(incoming)
+        task["_gpu_wait_persisted_signature"] = TaskManager._gpu_wait_semantic_signature(incoming)
 
     @classmethod
     def _copy_gpu_schedule_info(cls, task: Dict[str, Any], info: Dict[str, Any]) -> None:
@@ -826,12 +990,13 @@ class TaskManager:
                 run_index = self._next_run_index(task)
                 self._clear_gpu_schedule_state(task)
                 if gpu_enabled:
+                    wait_state = self._new_gpu_wait_state(run_index, gpu_config)
                     to_sync.append({
                         "name": task["name"],
                         "status": "queued",
                         "run_index": run_index,
                         "expected_status": expected_status,
-                        "gpu_wait_started_at": time.monotonic(),
+                        "gpu_wait": wait_state,
                         "queued_independent": False,
                         "wait_log": True,
                         "submit": False,
@@ -874,6 +1039,7 @@ class TaskManager:
                 run_index=int(item["run_index"]),
                 expected_statuses={str(item["expected_status"])},
                 counts_for_batch=bool(item.get("counts_for_batch", True)),
+                gpu_wait=item.get("gpu_wait"),
             )
             if not synced:
                 continue
@@ -882,8 +1048,7 @@ class TaskManager:
                 current = self._resolve_identifier_locked(task_name)
                 if not current:
                     continue
-                if item.get("gpu_wait_started_at") is not None:
-                    current["_gpu_wait_started_at"] = float(item["gpu_wait_started_at"])
+                if item.get("gpu_wait") is not None:
                     current["_queued_independent"] = bool(item.get("queued_independent"))
                 if item.get("wait_log"):
                     to_wait_log.append((current, int(item["run_index"])))
@@ -902,13 +1067,15 @@ class TaskManager:
         execution_mode: str | None = None,
     ) -> bool:
         """Immediately submit a single task outside the batch queue."""
-        execution_mode = self._validate_execution_mode(execution_mode, self.execution_mode)
+        # Independent runs should not silently inherit the most recent batch mode.
+        # Callers can still request process mode explicitly.
+        execution_mode = self._validate_execution_mode(execution_mode, "thread")
 
         target = None
         run_index = 1
         target_name = ""
         expected_status = ""
-        wait_started_at = 0.0
+        wait_state: Dict[str, Any] | None = None
         gpu_config = self._gpu_scheduler_config()
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
@@ -924,7 +1091,7 @@ class TaskManager:
                 run_index = self._next_run_index(target)
                 self._clear_gpu_schedule_state(target)
                 if gpu_config.enabled:
-                    wait_started_at = time.monotonic()
+                    wait_state = self._new_gpu_wait_state(run_index, gpu_config)
                 self._recompute_processing_flag_locked()
 
         if not target:
@@ -937,12 +1104,12 @@ class TaskManager:
                 run_index=run_index,
                 expected_statuses={expected_status},
                 counts_for_batch=False,
+                gpu_wait=wait_state,
             )
             if synced:
                 with self._lock:
                     current = self._resolve_identifier_locked(target_name)
                     if current:
-                        current["_gpu_wait_started_at"] = wait_started_at
                         current["_queued_independent"] = True
                         current["_queued_execution_mode"] = execution_mode
                         target = current
@@ -971,7 +1138,7 @@ class TaskManager:
         gpu_config = self._gpu_scheduler_config()
         target_name = ""
         expected_status = ""
-        wait_started_at = 0.0
+        wait_state: Dict[str, Any] | None = None
         with self._lock:
             target = self._resolve_identifier_locked(task_id)
             if not target or target["status"] not in ("completed", "failed", "cancelled"):
@@ -985,7 +1152,7 @@ class TaskManager:
             run_index = self._next_run_index(target)
             self._clear_gpu_schedule_state(target)
             if gpu_config.enabled:
-                wait_started_at = time.monotonic()
+                wait_state = self._new_gpu_wait_state(run_index, gpu_config)
             self._recompute_processing_flag_locked()
 
         synced = self._sync_status_to_disk(
@@ -994,6 +1161,7 @@ class TaskManager:
             run_index=run_index,
             expected_statuses={expected_status},
             counts_for_batch=True,
+            gpu_wait=wait_state,
         )
         if not synced:
             self.trigger_update()
@@ -1002,7 +1170,6 @@ class TaskManager:
             with self._lock:
                 current = self._resolve_identifier_locked(target_name)
                 if current:
-                    current["_gpu_wait_started_at"] = wait_started_at
                     current["_queued_independent"] = False
                     target = current
             self._append_gpu_wait_started(target, run_index, gpu_config)
@@ -1498,19 +1665,29 @@ class TaskManager:
         """Submit queued tasks up to max_workers and keep UI state fresh."""
         last_trigger = 0.0
         last_refresh = 0.0
+        last_reactive_refresh = 0.0
         while not self._shutdown_event.is_set():
             try:
-                # Only refresh from disk if we have active tasks or it's been >1s
                 now = time.time()
+                reactive_refresh_due = (
+                    self.has_reactive_watchers()
+                    and now - last_reactive_refresh >= _REACTIVE_DISK_REFRESH_INTERVAL_SEC
+                )
                 should_refresh = (
                     self._running_ids or
                     self.is_processing or
+                    reactive_refresh_due or
                     (now - last_refresh >= 1.0)
                 )
 
                 if should_refresh:
                     last_refresh = now
-                    if self.refresh_from_disk():
+                    if reactive_refresh_due:
+                        last_reactive_refresh = now
+                    if self.refresh_from_disk(
+                        check_all=reactive_refresh_due,
+                        discover=reactive_refresh_due,
+                    ):
                         if now - last_trigger >= 1.0:
                             last_trigger = now
                             self.trigger_update()
@@ -1582,112 +1759,150 @@ class TaskManager:
             self._executor_mode = self.execution_mode
             self._executor_workers = workers
 
+    @staticmethod
+    def _queue_started_at_value(task: Dict[str, Any]) -> float:
+        values = [task.get("queued_at")]
+        gpu_wait = task.get("gpu_wait")
+        if isinstance(gpu_wait, dict):
+            values.append(gpu_wait.get("started_at"))
+        for raw in values:
+            try:
+                value = float(raw or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0 and value == value:
+                return value
+        return -1.0
+
+    def _queued_candidates_locked(
+        self,
+        *,
+        independent_only: bool,
+    ) -> List[Dict[str, Any]]:
+        candidates = [
+            (index, task)
+            for index, task in enumerate(self.tasks)
+            if (
+                task
+                and task.get("status") == "queued"
+                and not self._is_foreign_live_runner(task)
+                and (not independent_only or task.get("_queued_independent"))
+            )
+        ]
+        ordered = sorted(
+            candidates,
+            key=lambda item: (self._queue_started_at_value(item[1]), -item[0]),
+        )
+        return [task for _index, task in ordered]
+
+    def _queued_candidate_locked(self, *, independent_only: bool) -> Dict[str, Any] | None:
+        candidates = self._queued_candidates_locked(independent_only=independent_only)
+        return candidates[0] if candidates else None
+
     def _pick_queued_task(self, *, independent_only: bool = False) -> tuple[Dict[str, Any] | None, int]:
         """Pick the next queued task and mark it running."""
         gpu_config = self._gpu_scheduler_config()
         if not gpu_config.enabled:
             with self._lock:
-                for task in self.tasks:
-                    if (
-                        task
-                        and task["status"] == "queued"
-                        and not self._is_foreign_live_runner(task)
-                        and (not independent_only or task.get("_queued_independent"))
-                    ):
-                        run_index = self._next_run_index(task)
-                        is_independent = bool(task.get("_queued_independent"))
-                        task["status"] = "running"
-                        task["run_index"] = run_index
-                        self._mark_running_locked(task["name"], counts_for_batch=not is_independent)
-                        self._recompute_processing_flag_locked()
-                        return task, run_index
+                task = self._queued_candidate_locked(independent_only=independent_only)
+                if task:
+                    run_index = self._next_run_index(task)
+                    is_independent = bool(task.get("_queued_independent"))
+                    task["status"] = "running"
+                    task["run_index"] = run_index
+                    self._mark_running_locked(task["name"], counts_for_batch=not is_independent)
+                    self._recompute_processing_flag_locked()
+                    return task, run_index
                 self._recompute_processing_flag_locked()
             return None, 1
 
-        now = self.gpu_scheduler.clock()
-        attempted: set[str] = set()
-        while True:
-            with self._lock:
-                candidate = next(
-                    (
-                        task
-                        for task in self.tasks
+        return self._pick_queued_gpu_task(gpu_config, independent_only=independent_only)
+
+    def _pick_queued_gpu_task(
+        self,
+        gpu_config: GpuSchedulerConfig,
+        *,
+        independent_only: bool,
+    ) -> tuple[Dict[str, Any] | None, int]:
+        """Evaluate one GPU queue pass under a single cross-process schedule lock."""
+
+        monotonic_now = self.gpu_scheduler.clock()
+        wall_now = time.time()
+        wait_logs: List[tuple[Dict[str, Any], List[str]]] = []
+        assignment_log: tuple[Dict[str, Any], GpuAssignment] | None = None
+        timeout_log: tuple[Dict[str, Any], int, float, float] | None = None
+        gpu_wait_persists: List[tuple[str, str, Dict[str, Any], tuple[Any, ...]]] = []
+        target: Dict[str, Any] | None = None
+        result_run_index = 1
+
+        # GPU sampling may invoke nvidia-smi; keep it outside the cross-process
+        # admission lock so other schedulers are not blocked on device I/O.
+        self.gpu_scheduler.snapshot(gpu_config, now=monotonic_now)
+        try:
+            with task_info_lock(self.tasks_dir, timeout_sec=_GPU_SCHEDULE_LOCK_TIMEOUT_SEC):
+                self._sync_gpu_reservations_from_running_tasks()
+                with self._lock:
+                    candidate_names = [
+                        str(task.get("name", "") or "")
+                        for task in self._queued_candidates_locked(independent_only=independent_only)
+                    ]
+                for task_name in candidate_names:
+                    with self._lock:
+                        candidate = self._resolve_identifier_locked(task_name)
                         if (
-                            task
-                            and task["status"] == "queued"
-                            and not self._is_foreign_live_runner(task)
-                            and (not independent_only or task.get("_queued_independent"))
-                            and str(task.get("name", "")) not in attempted
+                            not candidate
+                            or candidate.get("status") != "queued"
+                            or self._is_foreign_live_runner(candidate)
+                            or (independent_only and not candidate.get("_queued_independent"))
+                        ):
+                            continue
+                        is_independent = bool(candidate.get("_queued_independent"))
+                        run_index = self._next_run_index(candidate)
+                        wait_state = self._ensure_gpu_wait_state(
+                            candidate,
+                            run_index,
+                            gpu_config,
+                            now=wall_now,
                         )
-                    ),
-                    None,
-                )
-                if not candidate:
-                    self._recompute_processing_flag_locked()
-                    return None, 1
+                        started_at = float(wait_state["started_at"])
+                        deadline_at = float(wait_state["deadline_at"])
+                        waited = max(0.0, wall_now - started_at)
+                        max_wait = max(0.0, deadline_at - started_at)
+                        task_env = dict(candidate.get("env", {}) or {})
 
-                task_name = str(candidate["name"])
-                attempted.add(task_name)
-                is_independent = bool(candidate.get("_queued_independent"))
-                run_index = self._next_run_index(candidate)
-                queued_at = float(candidate.get("_gpu_wait_started_at", now) or now)
-                candidate["_gpu_wait_started_at"] = queued_at
-                waited = max(0.0, now - queued_at)
-                task_env = dict(candidate.get("env", {}) or {})
-                if waited >= gpu_config.max_wait_seconds:
-                    self.gpu_scheduler.release(task_name)
-                    self._recompute_processing_flag_locked()
-                    timed_out = (candidate, run_index, waited)
-                else:
-                    timed_out = None
+                    if wall_now >= deadline_at:
+                        self.gpu_scheduler.release(task_name)
+                        try:
+                            self._mark_failed_on_disk(
+                                candidate,
+                                event="failed",
+                                reason="gpu_wait_timeout",
+                                detail_lines=[
+                                    f"waited={self._format_duration(waited)}",
+                                    f"max_wait={self._format_duration(max_wait)}",
+                                ],
+                                expected_statuses={"queued"},
+                            )
+                        except (TaskClaimConflict, TaskStateConflict) as exc:
+                            logger.info(
+                                "GPU wait timeout skipped for %s because disk state changed: %s",
+                                task_name,
+                                exc,
+                            )
+                            latest = load_task_info(candidate["dir"])
+                            if latest:
+                                self._refresh_memory_task_from_disk_info(task_name, candidate["dir"], latest)
+                        else:
+                            timeout_log = (candidate, run_index, waited, max_wait)
+                        break
 
-            if timed_out:
-                task, run_index, waited = timed_out
-                try:
-                    self._mark_failed_on_disk(
-                        task,
-                        event="failed",
-                        reason="gpu_wait_timeout",
-                        detail_lines=[
-                            f"waited={self._format_duration(waited)}",
-                            f"max_wait={self._format_duration(gpu_config.max_wait_seconds)}",
-                        ],
-                        expected_statuses={"queued"},
-                    )
-                except (TaskClaimConflict, TaskStateConflict) as exc:
-                    logger.info(
-                        "GPU wait timeout skipped for %s because disk state changed: %s",
-                        task_name,
-                        exc,
-                    )
-                    latest = load_task_info(task["dir"])
-                    if latest:
-                        self._refresh_memory_task_from_disk_info(task_name, task["dir"], latest)
-                    self.trigger_update()
-                    return None, 1
-                else:
-                    self._append_gpu_queue_log(
-                        task,
-                        "GPU WAIT TIMEOUT",
-                        [
-                            f"Run #{run_index} GPU wait timed out after {self._format_duration(waited)}",
-                            f"max wait={self._format_duration(gpu_config.max_wait_seconds)}",
-                        ],
-                    )
-                return None, 1
-
-            wait_log: tuple[Dict[str, Any], List[str]] | None = None
-            assignment_log: tuple[Dict[str, Any], GpuAssignment] | None = None
-            target: Dict[str, Any] | None = None
-            try:
-                with task_info_lock(self.tasks_dir, timeout_sec=_GPU_SCHEDULE_LOCK_TIMEOUT_SEC):
-                    self._sync_gpu_reservations_from_running_tasks()
                     decision = self.gpu_scheduler.try_reserve(
                         task_name,
                         run_index,
                         gpu_config,
                         task_env=task_env,
-                        queued_since=queued_at,
+                        queued_since=monotonic_now - waited,
+                        refresh_snapshot=False,
                     )
 
                     with self._lock:
@@ -1697,11 +1912,38 @@ class TaskManager:
                                 self.gpu_scheduler.release(task_name)
                             continue
                         run_index = self._next_run_index(current)
+                        wait_changed = self._update_gpu_wait_state(
+                            current,
+                            run_index,
+                            gpu_config,
+                            decision,
+                            waited=waited,
+                            now=wall_now,
+                        )
 
                         if decision.assignment is None:
-                            lines = self._gpu_wait_decision_lines(current, run_index, gpu_config, decision, waited, now)
+                            if wait_changed:
+                                wait_snapshot = copy.deepcopy(current.get("gpu_wait"))
+                                wait_signature = self._gpu_wait_semantic_signature(wait_snapshot)
+                                if isinstance(wait_snapshot, dict) and wait_signature is not None:
+                                    gpu_wait_persists.append(
+                                        (
+                                            str(current.get("name", "") or ""),
+                                            str(current.get("dir", "") or ""),
+                                            wait_snapshot,
+                                            wait_signature,
+                                        )
+                                    )
+                            lines = self._gpu_wait_decision_lines(
+                                current,
+                                run_index,
+                                gpu_config,
+                                decision,
+                                waited,
+                                monotonic_now,
+                            )
                             if lines:
-                                wait_log = (current, lines)
+                                wait_logs.append((current, lines))
                             self._recompute_processing_flag_locked()
                         else:
                             assignment = dataclasses.replace(decision.assignment, run_index=run_index)
@@ -1713,6 +1955,7 @@ class TaskManager:
                             self._recompute_processing_flag_locked()
                             assignment_log = (current, assignment)
                             target = current
+                            result_run_index = run_index
 
                     if target is not None and self._claim_task_for_run(
                         target,
@@ -1730,18 +1973,46 @@ class TaskManager:
                                 self._clear_running_locked(task_name)
                                 self._clear_gpu_schedule_state(current)
                                 self._recompute_processing_flag_locked()
+                        target = None
+                        assignment_log = None
+                        # A claim race can reveal a newly running foreign task.
+                        # Refresh reservations before evaluating another candidate.
+                        self._sync_gpu_reservations_from_running_tasks()
                         continue
-            except TimeoutError as exc:
-                logger.debug("GPU scheduler lock busy for %s: %s", task_name, exc)
-                return None, 1
+                    if target is not None:
+                        break
+                with self._lock:
+                    self._recompute_processing_flag_locked()
+        except TimeoutError as exc:
+            logger.debug("GPU scheduler lock busy: %s", exc)
+            return None, 1
 
-            if wait_log:
-                self._append_gpu_wait_refresh(wait_log[0], wait_log[1])
-                continue
-            if assignment_log:
-                self._append_gpu_assignment(assignment_log[0], assignment_log[1])
-                return target, run_index
+        for task_name, task_dir, wait_snapshot, wait_signature in gpu_wait_persists:
+            self._persist_gpu_wait_semantics(
+                task_name,
+                task_dir,
+                wait_snapshot,
+                wait_signature,
+            )
 
+        for wait_task, lines in wait_logs:
+            self._append_gpu_wait_refresh(wait_task, lines)
+        if wait_logs:
+            self.trigger_update()
+        if timeout_log:
+            timeout_task, timeout_run_index, waited, max_wait = timeout_log
+            self._append_gpu_queue_log(
+                timeout_task,
+                "GPU WAIT TIMEOUT",
+                [
+                    f"Run #{timeout_run_index} GPU wait timed out after {self._format_duration(waited)}",
+                    f"max wait={self._format_duration(max_wait)}",
+                ],
+            )
+            self.trigger_update()
+        if assignment_log:
+            self._append_gpu_assignment(assignment_log[0], assignment_log[1])
+            return target, result_run_index
         return None, 1
 
     def _submit_task(
@@ -2039,12 +2310,16 @@ class TaskManager:
 
         with self._lock:
             queued = [
-                (str(task.get("name", "") or ""), str(task.get("dir", "") or ""))
+                (
+                    str(task.get("name", "") or ""),
+                    str(task.get("dir", "") or ""),
+                    copy.deepcopy(task.get("gpu_wait")) if isinstance(task.get("gpu_wait"), dict) else None,
+                )
                 for task in self.tasks
                 if task and task.get("status") == "queued" and not self._is_foreign_live_runner(task)
             ]
 
-        for task_name, task_dir in queued:
+        for task_name, task_dir, gpu_wait in queued:
             if not task_name or not task_dir:
                 continue
 
@@ -2054,6 +2329,8 @@ class TaskManager:
                 if self._is_foreign_live_runner(info):
                     raise TaskClaimConflict("queued task already owned by another runner")
                 self._set_runner_lease_fields(info)
+                if isinstance(gpu_wait, dict):
+                    info["gpu_wait"] = copy.deepcopy(gpu_wait)
 
             try:
                 updated = update_task_info(task_dir, _apply, raise_error=True)
@@ -2102,6 +2379,7 @@ class TaskManager:
                 raise TaskStateConflict(f"task is no longer claimable: {status}")
             info["status"] = "running"
             info["run_index"] = run_index
+            self._clear_gpu_wait_info(info)
             scheduled_env = task.get("_scheduled_env")
             if isinstance(scheduled_env, dict) and scheduled_env:
                 info["_scheduled_env"] = {str(k): str(v) for k, v in scheduled_env.items() if str(k)}
@@ -2139,6 +2417,7 @@ class TaskManager:
         *,
         expected_statuses: set[str] | None = None,
         counts_for_batch: bool = True,
+        gpu_wait: Dict[str, Any] | None = None,
     ) -> bool:
         """Persist transient queue/running status changes."""
         with self._lock:
@@ -2167,6 +2446,18 @@ class TaskManager:
             if next_status == "queued":
                 self._trim_run_slots(task_info, self._realized_run_slot_count(task_info))
                 task_info.pop("cancel_requested_at", None)
+                started_at = (
+                    float(gpu_wait.get("started_at", 0.0) or 0.0)
+                    if isinstance(gpu_wait, dict)
+                    else time.time()
+                )
+                task_info["queued_at"] = started_at if started_at > 0 else time.time()
+                if isinstance(gpu_wait, dict):
+                    task_info["gpu_wait"] = copy.deepcopy(gpu_wait)
+                else:
+                    task_info.pop("gpu_wait", None)
+            else:
+                self._clear_gpu_wait_info(task_info)
             if next_status in {"queued", "running"}:
                 self._set_runner_lease_fields(task_info)
             else:
@@ -2217,6 +2508,219 @@ class TaskManager:
         return GpuSchedulerConfig.from_settings(load_settings(self._settings_root()))
 
     @staticmethod
+    def _new_gpu_wait_state(
+        run_index: int,
+        config: GpuSchedulerConfig,
+        *,
+        started_at: float | None = None,
+    ) -> Dict[str, Any]:
+        start = float(time.time() if started_at is None else started_at)
+        max_wait = max(1.0, float(config.max_wait_seconds or 1.0))
+        return {
+            "state": "waiting",
+            "run_index": int(run_index),
+            "started_at": start,
+            "deadline_at": start + max_wait,
+            "waited_seconds": 0.0,
+            "remaining_seconds": max_wait,
+            "max_wait_seconds": max_wait,
+            "requested_gpu_count": config.required_gpu_count,
+            "eligible_gpu_count": 0,
+            "total_gpu_count": 0,
+            "reason": "Waiting for GPU scheduler",
+            "devices": [],
+            "updated_at": start,
+        }
+
+    @staticmethod
+    def _gpu_wait_reason_signature(reason: Any) -> str:
+        normalized = str(reason or "")
+        for pattern, replacement in _GPU_WAIT_REASON_NORMALIZERS:
+            normalized = pattern.sub(replacement, normalized)
+        return normalized
+
+    @staticmethod
+    def _gpu_wait_semantic_signature(wait: Dict[str, Any] | None) -> tuple[Any, ...] | None:
+        """Return the persisted GPU-wait meaning, excluding elapsed clock fields."""
+
+        if not isinstance(wait, dict):
+            return None
+        devices = wait.get("devices")
+        device_signature = tuple(
+            (
+                device.get("index"),
+                device.get("name"),
+                device.get("uuid"),
+                device.get("eligible"),
+                TaskManager._gpu_wait_reason_signature(device.get("reason")),
+            )
+            for device in (devices if isinstance(devices, list) else [])
+            if isinstance(device, dict)
+        )
+        return (
+            wait.get("state"),
+            wait.get("run_index"),
+            wait.get("started_at"),
+            wait.get("deadline_at"),
+            wait.get("max_wait_seconds"),
+            wait.get("requested_gpu_count"),
+            wait.get("eligible_gpu_count"),
+            wait.get("total_gpu_count"),
+            TaskManager._gpu_wait_reason_signature(wait.get("reason")),
+            device_signature,
+        )
+
+    def _persist_gpu_wait_semantics(
+        self,
+        task_name: str,
+        task_dir: str,
+        wait: Dict[str, Any],
+        signature: tuple[Any, ...],
+    ) -> bool:
+        """Persist a changed GPU-wait decision once without extending its lease."""
+
+        if not task_name or not task_dir:
+            return False
+        wait_run_index = wait.get("run_index")
+        wait_started_at = wait.get("started_at")
+
+        def _apply(info: Dict[str, Any]) -> None:
+            if str(info.get("status", "") or "").lower() != "queued":
+                raise TaskStateConflict("task is no longer queued")
+            if self._is_foreign_live_runner(info):
+                raise TaskClaimConflict("queued task already owned by another runner")
+            persisted_wait = info.get("gpu_wait")
+            if isinstance(persisted_wait, dict) and (
+                persisted_wait.get("run_index") != wait_run_index
+                or persisted_wait.get("started_at") != wait_started_at
+            ):
+                raise TaskStateConflict("GPU wait generation changed")
+            info["gpu_wait"] = copy.deepcopy(wait)
+
+        try:
+            update_task_info(task_dir, _apply, raise_error=True)
+        except (FileNotFoundError, OSError, TimeoutError, TaskClaimConflict, TaskStateConflict) as exc:
+            logger.debug("Could not persist GPU wait details for %s yet: %s", task_name, exc)
+            return False
+
+        with self._lock:
+            current = self._resolve_identifier_locked(task_name)
+            if (
+                current
+                and self._same_task_dir(current.get("dir"), task_dir)
+                and current.get("status") == "queued"
+                and self._gpu_wait_semantic_signature(current.get("gpu_wait")) == signature
+            ):
+                current["_gpu_wait_persisted_signature"] = signature
+        return True
+
+    def _ensure_gpu_wait_state(
+        self,
+        task: Dict[str, Any],
+        run_index: int,
+        config: GpuSchedulerConfig,
+        *,
+        now: float,
+    ) -> Dict[str, Any]:
+        legacy_started = task.get("_gpu_wait_started_at")
+        legacy_wall_started = 0.0
+        try:
+            legacy_elapsed = self.gpu_scheduler.clock() - float(legacy_started)
+        except (TypeError, ValueError):
+            legacy_elapsed = -1.0
+        if legacy_elapsed >= 0:
+            legacy_wall_started = max(0.0, now - legacy_elapsed)
+
+        current = task.get("gpu_wait")
+        try:
+            current_run_index = int(current.get("run_index", 0) or 0) if isinstance(current, dict) else 0
+        except (TypeError, ValueError):
+            current_run_index = 0
+        if isinstance(current, dict) and current_run_index == int(run_index):
+            try:
+                started_at = float(current.get("started_at", 0.0) or 0.0)
+                deadline_at = float(current.get("deadline_at", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                started_at = deadline_at = 0.0
+            if started_at > 0:
+                try:
+                    max_wait = max(1.0, float(current.get("max_wait_seconds", config.max_wait_seconds) or 1.0))
+                except (TypeError, ValueError):
+                    max_wait = max(1.0, float(config.max_wait_seconds or 1.0))
+                if legacy_wall_started > 0 and legacy_wall_started < started_at:
+                    started_at = legacy_wall_started
+                    current["started_at"] = started_at
+                    current["deadline_at"] = started_at + max_wait
+                    deadline_at = float(current["deadline_at"])
+                if deadline_at <= 0:
+                    deadline_at = started_at + max_wait
+                    current["deadline_at"] = deadline_at
+                task["queued_at"] = started_at
+                return current
+
+        try:
+            queued_at = float(task.get("queued_at", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            queued_at = 0.0
+        state = self._new_gpu_wait_state(
+            run_index,
+            config,
+            started_at=(legacy_wall_started or queued_at or now),
+        )
+        task["gpu_wait"] = state
+        task["queued_at"] = state["started_at"]
+        return state
+
+    @staticmethod
+    def _update_gpu_wait_state(
+        task: Dict[str, Any],
+        run_index: int,
+        config: GpuSchedulerConfig,
+        decision: GpuDecision,
+        *,
+        waited: float,
+        now: float,
+    ) -> bool:
+        state = task.get("gpu_wait")
+        if not isinstance(state, dict):
+            state = TaskManager._new_gpu_wait_state(run_index, config, started_at=now - waited)
+        try:
+            deadline_at = float(state.get("deadline_at", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            deadline_at = now + max(0.0, float(config.max_wait_seconds or 0.0) - waited)
+        state.update(
+            {
+                "state": "waiting",
+                "run_index": int(run_index),
+                "waited_seconds": max(0.0, float(waited)),
+                "remaining_seconds": max(0.0, deadline_at - now),
+                "requested_gpu_count": config.required_gpu_count,
+                "eligible_gpu_count": int(decision.eligible_gpu_count),
+                "total_gpu_count": int(decision.total_gpu_count),
+                "reason": str(decision.reason or "waiting"),
+                "devices": [
+                    {
+                        "index": device.index,
+                        "name": device.name,
+                        "uuid": device.uuid,
+                        "eligible": device.eligible,
+                        "reason": device.reason,
+                        "memory_used_pct": device.memory_used_pct,
+                        "free_memory_gb": device.free_memory_gb,
+                        "compute_util_pct": device.compute_util_pct,
+                    }
+                    for device in decision.devices
+                ],
+                "updated_at": now,
+            }
+        )
+        task["gpu_wait"] = state
+        return (
+            TaskManager._gpu_wait_semantic_signature(state)
+            != task.get("_gpu_wait_persisted_signature")
+        )
+
+    @staticmethod
     def _format_duration(seconds: float) -> str:
         """Format queue wait durations for compact log messages."""
 
@@ -2265,19 +2769,47 @@ class TaskManager:
         }
 
     def _sync_gpu_reservations_from_running_tasks(self) -> None:
+        with self._lock:
+            known_tasks = {
+                str(task.get("name", "") or ""): {
+                    "dir": str(task.get("dir", "") or ""),
+                    "status": str(task.get("status", "") or "").lower(),
+                    "mtime_ns": int(task.get("_mtime_ns", 0) or 0),
+                    "foreign_live": self._is_foreign_live_runner(task),
+                    "local_live": self._is_current_runner(task) and self._lease_active(task),
+                }
+                for task in self.tasks
+                if task and str(task.get("name", "") or "")
+            }
+
         scan_ok, disk_names = self._scan_task_dir_names()
         if scan_ok:
-            task_refs = [
-                (task_name, os.path.join(self.tasks_dir, task_name))
-                for task_name in disk_names
-            ]
+            task_refs: List[tuple[str, str]] = []
+            for task_name in disk_names:
+                task_dir = os.path.join(self.tasks_dir, task_name)
+                known = known_tasks.get(task_name)
+                if known is None or known["status"] == "running" or bool(known["foreign_live"]):
+                    task_refs.append((task_name, task_dir))
+                    continue
+                if known["status"] == "queued" and bool(known["local_live"]):
+                    # A locally leased queued task cannot be claimed by another
+                    # scheduler, so rereading it here only duplicates refresh I/O.
+                    continue
+                if known["status"] == "queued":
+                    task_refs.append((task_name, task_dir))
+                    continue
+                try:
+                    disk_mtime_ns = os.stat(os.path.join(task_dir, TASK_INFO_FILENAME)).st_mtime_ns
+                except OSError:
+                    continue
+                if disk_mtime_ns != int(known["mtime_ns"] or 0):
+                    task_refs.append((task_name, task_dir))
         else:
-            with self._lock:
-                task_refs = [
-                    (str(task.get("name", "") or ""), str(task.get("dir", "") or ""))
-                    for task in self.tasks
-                    if task and str(task.get("status", "") or "").lower() == "running"
-                ]
+            task_refs = [
+                (task_name, str(task.get("dir", "") or ""))
+                for task_name, task in known_tasks.items()
+                if task["status"] == "running"
+            ]
 
         reservations: Dict[str, List[int]] = {}
         for task_name, task_dir in task_refs:
@@ -2588,6 +3120,7 @@ class TaskManager:
             }
             self._clear_runner_lease_fields(task_info)
             self._clear_gpu_schedule_info(task_info)
+            self._clear_gpu_wait_info(task_info)
 
         update_kwargs = {}
         if lock_timeout_sec is not None:
@@ -2625,6 +3158,7 @@ class TaskManager:
         task_info["progress"] = 0.0
         self._clear_runner_lease_fields(task_info)
         self._clear_gpu_schedule_info(task_info)
+        self._clear_gpu_wait_info(task_info)
         return original_status, should_finalize_slot
 
     def _mark_failed_on_disk(
@@ -2716,6 +3250,8 @@ class TaskManager:
             task.get("runner_id"),
             task.get("runner_host"),
             task.get("lease_until"),
+            task.get("queued_at"),
+            repr(task.get("gpu_wait")),
         )
 
     def _apply_info_to_task(
@@ -2767,6 +3303,7 @@ class TaskManager:
             }
         )
         self._copy_gpu_schedule_info(task, info)
+        self._copy_gpu_wait_info(task, info)
         loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
         task["config"] = loaded_config

@@ -83,6 +83,8 @@ function validationFromResult(result: PathValidationResult): PathValidationState
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const backdropPointerStartedRef = useRef(false)
+  const modalRef = useRef<HTMLDivElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
   const {
     configs, selectedScript, requiresConfigTemplate, configSource, step, loading,
     selectScript, selectConfig, reset: resetLauncher,
@@ -124,7 +126,10 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const openSelectedWorkspace = useCallback(async (historyPath = '', yamlHistoryPath = '') => {
     setError('')
     try {
-      await useLauncherStore.getState().openWorkspace()
+      const opened = await useLauncherStore.getState().openWorkspace()
+      if (!opened) {
+        return false
+      }
       const openedWorkspace = useWorkspaceStore.getState().workspace
       rememberLaunchPath('python', openedWorkspace?.script_path || historyPath)
       rememberLaunchPath('yaml', yamlHistoryPath)
@@ -371,14 +376,58 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   }, [manualShellRootPath, openShellPath])
 
   useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const focusFrame = window.requestAnimationFrame(() => {
+      const firstControl = modalRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )
+      ;(firstControl || modalRef.current)?.focus()
+    })
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault()
         onClose()
+        return
+      }
+      if (event.key !== 'Tab') {
+        return
+      }
+
+      const focusable = Array.from(modalRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ) || []).filter(element => element.offsetParent !== null)
+      if (focusable.length === 0) {
+        event.preventDefault()
+        modalRef.current?.focus()
+        return
+      }
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (event.shiftKey && (active === first || !modalRef.current?.contains(active))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (active === last || !modalRef.current?.contains(active))) {
+        event.preventDefault()
+        first.focus()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.removeEventListener('keydown', handleKeyDown)
+      const previousFocus = previousFocusRef.current
+      if (previousFocus?.isConnected && previousFocus !== document.body) {
+        previousFocus.focus()
+      } else {
+        document.querySelector<HTMLElement>('[data-launcher-trigger="true"]')?.focus()
+      }
+    }
   }, [onClose])
 
   return (
@@ -395,8 +444,13 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       }}
     >
       <div
+        ref={modalRef}
         role="dialog"
         aria-modal="true"
+        aria-busy={loading || undefined}
+        aria-labelledby="launcher-dialog-title"
+        aria-describedby="launcher-dialog-description"
+        tabIndex={-1}
         className="flex max-h-[80vh] w-full max-w-[calc(100vw-1.5rem)] sm:max-w-2xl flex-col overflow-hidden rounded-md border border-border bg-surface-raised shadow-md"
         onPointerDown={() => {
           backdropPointerStartedRef.current = false
@@ -407,8 +461,8 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
         <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 sm:px-6 sm:py-4">
           <Rocket className="w-5 h-5 text-accent" />
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100">Launch Workspace</h2>
-            <p className="text-2xs text-zinc-500 mt-0.5">Choose a workspace type</p>
+            <h2 id="launcher-dialog-title" className="text-sm font-semibold text-zinc-100">Launch Workspace</h2>
+            <p id="launcher-dialog-description" className="text-2xs text-zinc-500 mt-0.5">Choose a workspace type</p>
           </div>
         </div>
 
@@ -422,7 +476,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
           {step === 0 && (
             <div className="space-y-3">
-              <LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange} />
+              <LaunchChoiceTabs launchMode={launchMode} busy={loading} onChange={handleLaunchModeChange} />
 
               {launchMode === 'python' ? (
                 <>
@@ -430,6 +484,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                     launchMode={launchMode}
                     pathValue={manualScriptPath}
                     pathReady={scriptPathReady}
+                    busy={loading}
                     validation={scriptValidation}
                     pickerAvailable={nativePickerAvailable}
                     onPathChange={setManualScriptPath}
@@ -444,6 +499,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   launchMode={launchMode}
                   pathValue={manualShellRootPath}
                   pathReady={shellPathReady}
+                  busy={loading}
                   validation={shellValidation}
                   pickerAvailable={nativePickerAvailable}
                   onPathChange={setManualShellRootPath}
@@ -559,18 +615,21 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
 function LaunchChoiceTabs({
   launchMode,
+  busy,
   onChange,
 }: {
   launchMode: 'python' | 'shell'
+  busy: boolean
   onChange: (mode: 'python' | 'shell') => void
 }) {
   return (
     <div className="grid gap-2 md:grid-cols-2">
       <button
         type="button"
+        disabled={busy}
         onClick={() => onChange('python')}
         className={clsx(
-          'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
+          'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-70',
           launchMode === 'python'
             ? 'bg-accent text-white'
             : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
@@ -581,9 +640,10 @@ function LaunchChoiceTabs({
       </button>
       <button
         type="button"
+        disabled={busy}
         onClick={() => onChange('shell')}
         className={clsx(
-          'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors',
+          'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-70',
           launchMode === 'shell'
             ? 'bg-accent text-white'
             : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
@@ -600,6 +660,7 @@ function ModeActionPanel({
   launchMode,
   pathValue,
   pathReady,
+  busy,
   validation,
   pickerAvailable,
   onPathChange,
@@ -611,6 +672,7 @@ function ModeActionPanel({
   launchMode: 'python' | 'shell'
   pathValue: string
   pathReady: boolean
+  busy: boolean
   validation: PathValidationState
   pickerAvailable: boolean
   onPathChange: (value: string) => void
@@ -629,7 +691,7 @@ function ModeActionPanel({
     <div className="space-y-2">
       <button
         type="button"
-        disabled={!pickerAvailable}
+        disabled={!pickerAvailable || busy}
         onClick={() => void onBrowseOpen()}
         className={clsx(
           'inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
@@ -638,8 +700,8 @@ function ModeActionPanel({
             : 'bg-accent/10 text-accent hover:bg-accent/20',
         )}
       >
-        <Icon className="h-3.5 w-3.5" />
-        {browseLabel}
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+        {busy ? 'Preparing…' : browseLabel}
       </button>
       {!pickerAvailable && (
         <div className="px-1 text-2xs text-zinc-500">
@@ -649,11 +711,12 @@ function ModeActionPanel({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <input
           value={pathValue}
+          disabled={busy}
           onChange={event => onPathChange(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'Enter') {
               event.preventDefault()
-              if (pathReady) {
+              if (pathReady && !busy) {
                 void onManualOpen()
               }
             }
@@ -663,17 +726,18 @@ function ModeActionPanel({
         />
         <button
           type="button"
-          disabled={!pathReady}
+          disabled={!pathReady || busy}
           onClick={() => void onManualOpen()}
           className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
         >
-          {manualLabel}
+          {busy ? 'Preparing...' : manualLabel}
         </button>
       </div>
       <PathValidationHint validation={validation} />
       <RecentPathList
         kind={launchMode}
         paths={recentPaths}
+        busy={busy}
         onOpen={onRecentPathOpen}
       />
     </div>
@@ -683,10 +747,12 @@ function ModeActionPanel({
 function RecentPathList({
   kind,
   paths,
+  busy = false,
   onOpen,
 }: {
   kind: LaunchHistoryKind
   paths: string[]
+  busy?: boolean
   onOpen?: (path: string) => void | Promise<void>
 }) {
   if (!paths.length || !onOpen) {
@@ -710,8 +776,9 @@ function RecentPathList({
           <button
             key={path}
             type="button"
+            disabled={busy}
             onClick={() => void onOpen(path)}
-            className="group flex min-h-10 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25"
+            className="group flex min-h-10 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:cursor-wait disabled:opacity-60"
           >
             <Icon className="h-3.5 w-3.5 flex-none text-zinc-500 transition-colors group-hover:text-accent" />
             <span className="min-w-0 flex-1">

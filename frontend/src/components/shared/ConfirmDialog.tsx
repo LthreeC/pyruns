@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Loader2, X } from 'lucide-react'
 
 interface Props {
@@ -20,6 +20,8 @@ export default function ConfirmDialog({
   const ref = useRef<HTMLDialogElement>(null)
   const backdropPointerStartedRef = useRef(false)
   const [pending, setPending] = useState(false)
+  const titleId = useId()
+  const descriptionId = useId()
   const widthClass = size === 'lg' ? 'max-w-2xl' : 'max-w-md'
 
   useEffect(() => {
@@ -60,8 +62,10 @@ export default function ConfirmDialog({
   return (
     <dialog
       ref={ref}
-      className={`fixed inset-0 z-50 m-auto w-full ${widthClass} rounded-md border border-border-subtle bg-surface-raised p-0 shadow-md backdrop:bg-black/50`}
+      className={`fixed inset-0 z-50 m-auto max-h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] ${widthClass} overflow-hidden rounded-md border border-border-subtle bg-surface-raised p-0 shadow-md backdrop:bg-black/50`}
       aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={description ? descriptionId : undefined}
       onCancel={event => {
         event.preventDefault()
         handleCancel()
@@ -78,14 +82,14 @@ export default function ConfirmDialog({
       aria-busy={pending || undefined}
     >
       <div
-        className="p-6"
+        className="flex max-h-[calc(100dvh-1.5rem)] min-h-0 flex-col"
         onMouseDown={() => {
           backdropPointerStartedRef.current = false
         }}
         onClick={event => event.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
+        <div className="flex flex-none items-center justify-between px-5 pb-3 pt-5 sm:px-6 sm:pt-6">
+          <h3 id={titleId} className="text-sm font-semibold text-txt-primary">{title}</h3>
           <button
             type="button"
             onClick={handleCancel}
@@ -96,9 +100,11 @@ export default function ConfirmDialog({
             <X className="w-4 h-4" />
           </button>
         </div>
-        {description && <p className="mb-4 text-xs text-txt-secondary leading-relaxed">{description}</p>}
-        {children}
-        <div className="flex justify-end gap-2 mt-5">
+        <div className="min-h-0 overflow-y-auto px-5 sm:px-6">
+          {description && <p id={descriptionId} className="mb-4 text-xs text-txt-secondary leading-relaxed">{description}</p>}
+          {children}
+        </div>
+        <div className="mt-4 flex flex-none justify-end gap-2 border-t border-border-subtle px-5 py-4 sm:px-6">
           <button
             type="button"
             onClick={handleCancel}

@@ -26,10 +26,15 @@ import * as api from '@/api'
 
 const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string }[] = [
   { key: 'total', label: 'Total Tasks', icon: Layers, color: 'text-txt-secondary' },
-  { key: 'running', label: 'Running', icon: Activity, color: 'text-amber-400' },
-  { key: 'completed', label: 'Completed', icon: CheckCircle2, color: 'text-emerald-400' },
-  { key: 'failed', label: 'Failed', icon: XCircle, color: 'text-rose-400' },
+  { key: 'running', label: 'Running', icon: Activity, color: 'text-amber-700 dark:text-amber-300' },
+  { key: 'completed', label: 'Completed', icon: CheckCircle2, color: 'text-emerald-700 dark:text-emerald-300' },
+  { key: 'failed', label: 'Failed', icon: XCircle, color: 'text-rose-700 dark:text-rose-300' },
 ]
+
+interface DashboardRefreshResult {
+  dashboardOk: boolean
+  metricsOk: boolean
+}
 
 export default function DashboardPage() {
   const { data, loading, fetch } = useDashboardStore()
@@ -38,23 +43,48 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
   const [metricsError, setMetricsError] = useState('')
-  const [activeGpuKey, setActiveGpuKey] = useState<string | null>(null)
+  const [activeGpu, setActiveGpu] = useState<GPUMetric | null>(null)
+  const [gpuDetailsLoading, setGpuDetailsLoading] = useState(false)
+  const [gpuDetailsError, setGpuDetailsError] = useState('')
+  const gpuDialogTriggerRef = useRef<HTMLElement | null>(null)
+  const gpuDetailsRequestSeqRef = useRef(0)
+  const metricsRefreshSeqRef = useRef(0)
+  const dashboardRefreshPromiseRef = useRef<Promise<DashboardRefreshResult> | null>(null)
   const [manualRefreshing, setManualRefreshing] = useState(false)
   const refreshIntervalRaw = Number(workspace?.settings?.header_refresh_interval ?? 3)
   const refreshIntervalSec = Number.isFinite(refreshIntervalRaw) ? Math.max(1, refreshIntervalRaw) : 3
 
-  const refreshDashboard = useCallback(async () => {
-    await Promise.all([
+  const refreshDashboard = useCallback(() => {
+    if (dashboardRefreshPromiseRef.current) {
+      return dashboardRefreshPromiseRef.current
+    }
+
+    const requestId = ++metricsRefreshSeqRef.current
+    const refreshPromise = Promise.allSettled([
       fetch(),
-      api.getMetrics()
-        .then(nextMetrics => {
+      api.getMetrics(false),
+    ]).then(([dashboardResult, metricsResult]) => {
+      if (requestId === metricsRefreshSeqRef.current) {
+        if (metricsResult.status === 'fulfilled') {
+          const nextMetrics = metricsResult.value
           setMetrics(nextMetrics)
           setMetricsError('')
-        })
-        .catch(err => {
-          setMetricsError(errorMessage(err, 'System metrics unavailable.'))
-        }),
-    ])
+        } else {
+          setMetricsError(errorMessage(metricsResult.reason, 'System metrics unavailable.'))
+        }
+      }
+      return {
+        dashboardOk: dashboardResult.status === 'fulfilled',
+        metricsOk: metricsResult.status === 'fulfilled',
+      }
+    })
+    const trackedPromise: Promise<DashboardRefreshResult> = refreshPromise.finally(() => {
+      if (dashboardRefreshPromiseRef.current === trackedPromise) {
+        dashboardRefreshPromiseRef.current = null
+      }
+    })
+    dashboardRefreshPromiseRef.current = trackedPromise
+    return trackedPromise
   }, [fetch])
 
   const openTaskInMonitor = useCallback((task: Task) => {
@@ -63,15 +93,69 @@ export default function DashboardPage() {
     navigate('/monitor')
   }, [navigate, notify])
 
+  const loadGpuDetails = useCallback(async (gpu: GPUMetric) => {
+    const requestId = ++gpuDetailsRequestSeqRef.current
+    setGpuDetailsLoading(true)
+    setGpuDetailsError('')
+    try {
+      const details = await api.getMetrics(true)
+      const matchingGpu = details.gpus.find(item => gpuKey(item) === gpuKey(gpu))
+      if (!matchingGpu) {
+        throw new Error('This GPU is no longer available.')
+      }
+      if (requestId !== gpuDetailsRequestSeqRef.current) {
+        return
+      }
+      setActiveGpu(matchingGpu)
+    } catch (err) {
+      if (requestId !== gpuDetailsRequestSeqRef.current) {
+        return
+      }
+      setGpuDetailsError(errorMessage(err, 'GPU process details are unavailable.'))
+    } finally {
+      if (requestId === gpuDetailsRequestSeqRef.current) {
+        setGpuDetailsLoading(false)
+      }
+    }
+  }, [])
+
+  const openGpuDetails = useCallback((gpu: GPUMetric, trigger: HTMLElement) => {
+    gpuDialogTriggerRef.current = trigger
+    setActiveGpu(gpu)
+    void loadGpuDetails(gpu)
+  }, [loadGpuDetails])
+
+  const closeGpuDetails = useCallback(() => {
+    gpuDetailsRequestSeqRef.current += 1
+    setActiveGpu(null)
+    setGpuDetailsLoading(false)
+    setGpuDetailsError('')
+    const trigger = gpuDialogTriggerRef.current
+    gpuDialogTriggerRef.current = null
+    window.requestAnimationFrame(() => trigger?.focus())
+  }, [])
+
   const handleManualRefresh = useCallback(async () => {
     setManualRefreshing(true)
     try {
-      await refreshDashboard()
-      notify({
-        tone: 'success',
-        title: 'Dashboard refreshed',
-        detail: 'Task summary and system metrics are up to date.',
-      })
+      const result = await refreshDashboard()
+      if (result.dashboardOk && result.metricsOk) {
+        notify({
+          tone: 'success',
+          title: 'Dashboard refreshed',
+          detail: 'Task summary and system metrics are up to date.',
+        })
+      } else if (result.dashboardOk || result.metricsOk) {
+        notify({
+          tone: 'info',
+          title: 'Dashboard partially refreshed',
+          detail: result.dashboardOk
+            ? 'Task summary is current; system metrics are showing the last available values.'
+            : 'System metrics are current; task summary could not be refreshed.',
+        })
+      } else {
+        notify({ tone: 'error', title: 'Could not refresh dashboard', detail: 'Showing the last available values.' })
+      }
     } catch (err) {
       notify({ tone: 'error', title: 'Could not refresh dashboard', detail: errorMessage(err) })
     } finally {
@@ -79,7 +163,15 @@ export default function DashboardPage() {
     }
   }, [notify, refreshDashboard])
 
-  usePolling(refreshDashboard, refreshIntervalSec * 1000, true, true)
+  usePolling(async () => {
+    await refreshDashboard()
+  }, refreshIntervalSec * 1000, true, true)
+
+  useEffect(() => () => {
+    gpuDetailsRequestSeqRef.current += 1
+    metricsRefreshSeqRef.current += 1
+    dashboardRefreshPromiseRef.current = null
+  }, [])
 
   const summary = data?.summary
   const workspaceReady = workspace?.workspace_ready === true
@@ -89,15 +181,29 @@ export default function DashboardPage() {
     ? (workspace?.script_name || (isShellWorkspace ? '_shell_' : 'Workspace'))
     : 'Choose a workspace to start'
   const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)
-  const activeGpu = metrics?.gpus.find(gpu => gpuKey(gpu) === activeGpuKey) ?? null
   const gpuCount = metrics?.gpus.length ?? 0
-  const gpuProcessCount = metrics?.gpus.reduce((total, gpu) => total + gpu.processes.length, 0) ?? 0
   const averageGpuUtil = gpuCount
     ? (metrics?.gpus.reduce((total, gpu) => total + gpu.util, 0) ?? 0) / gpuCount
     : 0
+  const totalGpuMemory = metrics?.gpus.reduce((total, gpu) => total + Math.max(0, gpu.mem_total), 0) ?? 0
+  const usedGpuMemory = metrics?.gpus.reduce((total, gpu) => total + Math.max(0, gpu.mem_used), 0) ?? 0
+  const gpuMemoryPct = totalGpuMemory > 0 ? (usedGpuMemory / totalGpuMemory) * 100 : 0
+  const gpuSchedulerEnabledRaw = workspace?.settings?.gpu_scheduler_enabled
+  const gpuSchedulerEnabled = gpuSchedulerEnabledRaw === true
+    || ['1', 'true', 'yes', 'on'].includes(String(gpuSchedulerEnabledRaw || '').toLowerCase())
+  const configuredMinFreeGiB = Number(workspace?.settings?.gpu_scheduler_min_free_memory_gb ?? 0)
+  const largestGpuGiB = gpuCount
+    ? Math.max(...(metrics?.gpus.map(gpu => gpu.mem_total / 1024) || [0]))
+    : 0
+  const impossibleGpuRule = gpuSchedulerEnabled
+    && Number.isFinite(configuredMinFreeGiB)
+    && configuredMinFreeGiB > 0
+    && largestGpuGiB > 0
+    && configuredMinFreeGiB > largestGpuGiB
   const queuedCount = summary?.queued ?? 0
+  const runningCount = summary?.running ?? 0
   const pendingCount = summary?.pending ?? 0
-  const activeCount = (summary?.running ?? 0) + queuedCount
+  const activeCount = runningCount + queuedCount
 
   return (
     <>
@@ -144,19 +250,26 @@ export default function DashboardPage() {
             <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-border-subtle px-4 py-3">
               <div>
                 <h2 className="text-sm font-medium text-txt-primary">GPU & System</h2>
-                <p className="mt-1 text-2xs text-txt-tertiary">Auto-refreshes every {refreshIntervalSec}s. Click a GPU for processes.</p>
+                <p className="mt-1 text-2xs text-txt-tertiary">Refreshes every {refreshIntervalSec}s. GPU process details load only when opened.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-2xs">
                 <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>
-                <SummaryPill>{gpuProcessCount} proc{gpuProcessCount === 1 ? '' : 's'}</SummaryPill>
               </div>
             </div>
 
             <div className="shrink-0 border-b border-border-subtle p-3">
               {metrics ? (
                 <>
+                  {impossibleGpuRule && (
+                    <div className="mb-3 flex items-start gap-2 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none" />
+                      <span>
+                        GPU rule needs attention: {configuredMinFreeGiB.toFixed(0)} GiB free exceeds this machine&apos;s {largestGpuGiB.toFixed(1)} GiB physical capacity.
+                      </span>
+                    </div>
+                  )}
                   {metricsError && (
-                    <div className="mb-3 flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-2xs text-amber-400">
+                    <div className="mb-3 flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-2xs text-amber-800 dark:text-amber-300">
                       <AlertTriangle className="h-3.5 w-3.5 flex-none" />
                       <span className="min-w-0 break-words">Metrics refresh failed. Showing last values.</span>
                     </div>
@@ -169,14 +282,14 @@ export default function DashboardPage() {
                       <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} compact />
                     </ResourceTile>
                     <ResourceTile label="GPU Avg" value={`${averageGpuUtil.toFixed(0)}%`} tone="sky" />
-                    <ResourceTile label="GPU Proc" value={String(gpuProcessCount)} tone={gpuProcessCount ? 'emerald' : 'slate'} />
+                    <ResourceTile label="GPU VRAM" value={`${gpuMemoryPct.toFixed(0)}%`} tone={gpuMemoryPct > 85 ? 'amber' : 'slate'} />
                   </div>
                 </>
               ) : (
                 <div
                   className={clsx(
                     'flex items-center gap-2 rounded-md px-3 py-4 text-2xs',
-                    metricsError ? 'bg-amber-500/10 text-amber-400' : 'bg-surface-overlay/50 text-txt-tertiary',
+                    metricsError ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300' : 'bg-surface-overlay/50 text-txt-tertiary',
                   )}
                 >
                   {metricsError && <AlertTriangle className="h-3.5 w-3.5 flex-none" />}
@@ -187,12 +300,16 @@ export default function DashboardPage() {
 
             <div className="p-3">
               {metrics?.gpus?.length ? (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                <div className={clsx(
+                  'grid grid-cols-1 gap-3',
+                  gpuCount > 1 && 'md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4',
+                )}>
                   {metrics.gpus.map(gpu => (
                     <GpuMetricCard
                       key={gpuKey(gpu)}
                       gpu={gpu}
-                      onClick={() => setActiveGpuKey(gpuKey(gpu))}
+                      wide={gpuCount === 1}
+                      onClick={trigger => openGpuDetails(gpu, trigger)}
                     />
                   ))}
                 </div>
@@ -221,7 +338,7 @@ export default function DashboardPage() {
                 {key === 'running' && (
                   <div className="mt-3 flex flex-wrap gap-1.5 text-2xs">
                     <SummaryPill>{queuedCount} queued</SummaryPill>
-                    <SummaryPill>{activeCount} active</SummaryPill>
+                    <SummaryPill>{runningCount} executing</SummaryPill>
                   </div>
                 )}
                 {key === 'total' && (
@@ -264,7 +381,13 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <GpuProcessDialog gpu={activeGpu} onClose={() => setActiveGpuKey(null)} />
+      <GpuProcessDialog
+        gpu={activeGpu}
+        loading={gpuDetailsLoading}
+        error={gpuDetailsError}
+        onRetry={() => activeGpu && void loadGpuDetails(activeGpu)}
+        onClose={closeGpuDetails}
+      />
     </>
   )
 }
@@ -307,12 +430,13 @@ function ResourceTile({
 }: {
   label: string
   value: string
-  tone?: 'emerald' | 'sky' | 'slate'
+  tone?: 'emerald' | 'sky' | 'amber' | 'slate'
   children?: ReactNode
 }) {
   const toneClass = {
-    emerald: 'bg-emerald-500/10 text-emerald-300',
-    sky: 'bg-sky-500/10 text-sky-300',
+    emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    sky: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
+    amber: 'bg-amber-500/10 text-amber-800 dark:text-amber-300',
     slate: 'bg-surface-overlay text-txt-secondary',
   }[tone]
 
@@ -353,17 +477,28 @@ function MetricBar({
   )
 }
 
-function GpuMetricCard({ gpu, onClick }: { gpu: GPUMetric; onClick: () => void }) {
+function GpuMetricCard({
+  gpu,
+  wide,
+  onClick,
+}: {
+  gpu: GPUMetric
+  wide: boolean
+  onClick: (trigger: HTMLElement) => void
+}) {
   const memoryPct = gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total) * 100 : 0
-  const processCount = gpu.processes.length
 
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={event => onClick(event.currentTarget)}
       aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}
-      className="h-[10.5rem] w-full rounded-md border border-border-subtle bg-surface-raised px-4 py-4 text-left transition-colors hover:border-accent/25 hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      className={clsx(
+        'w-full rounded-md border border-border-subtle bg-surface-raised px-4 py-4 text-left transition-colors hover:border-accent/25 hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+        wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]',
+      )}
     >
+      <div className={clsx(wide && 'grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,1.25fr)_auto] sm:items-center sm:gap-6')}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs font-semibold text-txt-primary">GPU {gpu.index}</div>
@@ -375,19 +510,23 @@ function GpuMetricCard({ gpu, onClick }: { gpu: GPUMetric; onClick: () => void }
         </div>
       </div>
 
-      <div className="mt-3 space-y-2">
+      <div className={clsx('space-y-2', wide ? 'mt-3 sm:mt-0' : 'mt-3')}>
         <UsageTrack label="Compute" value={gpu.util} tone="util" />
         <UsageTrack label="VRAM" value={memoryPct} tone="memory" />
       </div>
 
-      <div className="mt-3 flex items-center justify-between gap-3 text-2xs text-txt-secondary">
+      <div className={clsx(
+        'mt-3 flex items-center justify-between gap-3 text-2xs text-txt-secondary',
+        wide && 'sm:mt-0 sm:flex-col sm:items-end sm:justify-center',
+      )}>
         <span className="tabular-nums">
           {formatMemory(gpu.mem_used)} / {formatMemory(gpu.mem_total)}
         </span>
         <span className="inline-flex items-center gap-1 whitespace-nowrap">
-          {processCount} proc{processCount === 1 ? '' : 's'}
+          Details
           <ChevronRight className="h-3 w-3" />
         </span>
+      </div>
       </div>
     </button>
   )
@@ -410,8 +549,22 @@ function UsageTrack({ label, value, tone }: { label: string; value: number; tone
   )
 }
 
-function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: () => void }) {
+function GpuProcessDialog({
+  gpu,
+  loading,
+  error,
+  onRetry,
+  onClose,
+}: {
+  gpu: GPUMetric | null
+  loading: boolean
+  error: string
+  onRetry: () => void
+  onClose: () => void
+}) {
   const backdropPointerStartedRef = useRef(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!gpu) {
@@ -421,11 +574,35 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         onClose()
+        return
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) {
+        return
+      }
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )).filter(element => element.getClientRects().length > 0)
+      if (!focusable.length) {
+        event.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
       }
     }
 
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(focusTimer)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
   }, [gpu, onClose])
 
   if (!gpu) {
@@ -434,9 +611,19 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
 
   const memoryPct = gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total) * 100 : 0
   const memoryFree = Math.max(0, gpu.mem_total - gpu.mem_used)
-  const sortedProcesses = [...gpu.processes].sort((left, right) => right.memory_mb - left.memory_mb)
-  const processMemoryTotal = sortedProcesses.reduce((total, process) => total + Math.max(0, process.memory_mb), 0)
-  const averageProcessMemory = sortedProcesses.length ? processMemoryTotal / sortedProcesses.length : 0
+  const sortedProcesses = [...gpu.processes].sort(
+    (left, right) => (right.memory_mb ?? -1) - (left.memory_mb ?? -1),
+  )
+  const knownMemoryProcesses = sortedProcesses.filter(
+    (process): process is typeof process & { memory_mb: number } => process.memory_mb != null,
+  )
+  const processMemoryTotal = knownMemoryProcesses.reduce(
+    (total, process) => total + Math.max(0, process.memory_mb),
+    0,
+  )
+  const averageProcessMemory = knownMemoryProcesses.length
+    ? processMemoryTotal / knownMemoryProcesses.length
+    : null
 
   return (
     <div
@@ -452,9 +639,12 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="gpu-detail-title"
+        aria-describedby="gpu-detail-description"
+        aria-busy={loading}
         className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
         onPointerDown={() => {
           backdropPointerStartedRef.current = false
@@ -467,9 +657,10 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
             <div id="gpu-detail-title" className="mt-1 truncate text-base font-semibold text-txt-primary">
               GPU {gpu.index} | {gpu.name}
             </div>
-            <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary">{gpu.uuid}</div>
+            <div id="gpu-detail-description" className="mt-1 truncate font-mono text-2xs text-txt-tertiary">{gpu.uuid}</div>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={onClose}
             aria-label="Close GPU details"
@@ -483,15 +674,25 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
           <DetailChip label="Compute" value={`${gpu.util.toFixed(0)}%`} tone="emerald" />
           <DetailChip label="VRAM" value={`${formatMemory(gpu.mem_used)} / ${formatMemory(gpu.mem_total)}`} tone="sky" />
           <DetailChip label="Free VRAM" value={formatMemory(memoryFree)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
-          <DetailChip label="Proc VRAM" value={formatMemory(processMemoryTotal)} tone={processMemoryTotal ? 'sky' : 'slate'} />
-          <DetailChip label="Avg/proc" value={sortedProcesses.length ? formatMemory(averageProcessMemory) : '--'} tone={processMemoryTotal ? 'sky' : 'slate'} />
-          <DetailChip label="Processes" value={String(gpu.processes.length)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
+          <DetailChip label="Proc VRAM" value={knownMemoryProcesses.length ? formatMemory(processMemoryTotal) : '--'} tone={processMemoryTotal ? 'sky' : 'slate'} />
+          <DetailChip label="Avg/proc" value={averageProcessMemory == null ? '--' : formatMemory(averageProcessMemory)} tone={processMemoryTotal ? 'sky' : 'slate'} />
+          <DetailChip label="Processes" value={loading ? '--' : String(gpu.processes.length)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {gpu.processes.length === 0 ? (
+          {error && (
+            <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+              <span>{error}</span>
+              <button type="button" onClick={onRetry} className="flex-none font-medium text-accent hover:text-accent-hover">Retry</button>
+            </div>
+          )}
+          {loading && gpu.processes.length === 0 ? (
+            <div className="flex items-center justify-center gap-2 rounded-md bg-surface-overlay/60 px-4 py-8 text-sm text-txt-tertiary">
+              <RefreshCw className="h-4 w-4 animate-spin" /> Loading GPU processes…
+            </div>
+          ) : gpu.processes.length === 0 ? (
             <div className="rounded-md bg-surface-overlay/60 px-4 py-8 text-center text-sm text-txt-tertiary">
-              No active compute processes reported by NVIDIA for this GPU.
+              No GPU processes are currently reported by NVIDIA for this GPU.
             </div>
           ) : (
             <div className="overflow-x-auto rounded-md border border-border-subtle">
@@ -514,7 +715,11 @@ function GpuProcessDialog({ gpu, onClose }: { gpu: GPUMetric | null; onClose: ()
                     </span>
                     <span className="truncate text-txt-primary" title={process.name}>{process.name}</span>
                     <span className="text-right font-mono text-txt-secondary">{formatMemory(process.memory_mb)}</span>
-                    <span className="text-right font-mono text-txt-tertiary">{formatPercent(gpu.mem_total > 0 ? (process.memory_mb / gpu.mem_total) * 100 : 0)}</span>
+                    <span className="text-right font-mono text-txt-tertiary">
+                      {process.memory_mb == null || gpu.mem_total <= 0
+                        ? '--'
+                        : formatPercent((process.memory_mb / gpu.mem_total) * 100)}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -536,9 +741,9 @@ function DetailChip({
   tone: 'emerald' | 'sky' | 'amber' | 'slate'
 }) {
   const toneClass = {
-    emerald: 'bg-emerald-500/10 text-emerald-300',
-    sky: 'bg-sky-500/10 text-sky-300',
-    amber: 'bg-amber-500/10 text-amber-300',
+    emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    sky: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
+    amber: 'bg-amber-500/10 text-amber-800 dark:text-amber-300',
     slate: 'bg-surface-overlay text-txt-secondary',
   }[tone]
 
@@ -562,8 +767,11 @@ function gpuKey(gpu: GPUMetric): string {
   return gpu.uuid || `${gpu.id}`
 }
 
-function formatMemory(memoryMb: number): string {
-  if (!Number.isFinite(memoryMb) || memoryMb <= 0) {
+function formatMemory(memoryMb: number | null | undefined): string {
+  if (memoryMb == null || !Number.isFinite(memoryMb)) {
+    return 'Unknown'
+  }
+  if (memoryMb <= 0) {
     return '0 MB'
   }
   if (memoryMb >= 1024) {

@@ -30,11 +30,12 @@ def _gpu(
     total: float = 40960.0,
     util: float = 0.0,
     name: str | None = None,
+    uuid: str | None = None,
 ) -> GpuDevice:
     return GpuDevice(
         index=index,
         name=name or f"GPU {index}",
-        uuid=f"GPU-{index}",
+        uuid=uuid or f"GPU-{index}",
         memory_used_mb=used,
         memory_total_mb=total,
         compute_util_pct=util,
@@ -146,27 +147,42 @@ def test_gpu_scheduler_respects_existing_cuda_visible_devices_when_parseable():
     assert decision.assignment.env == {"PYRUNS_ASSIGNED_GPUS": "1,2"}
 
 
-def test_gpu_scheduler_respects_existing_cuda_visible_devices_when_unparseable():
-    provider = SequenceGpuProvider([[]])
-    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: 10.0)
+def test_gpu_scheduler_resolves_uuid_and_mig_masks_before_reserving():
+    now = [10.0]
+    provider = SequenceGpuProvider([[_gpu(0, used=1024, uuid="GPU-uuid-0")]])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
     config = GpuSchedulerConfig(
         enabled=True,
         task_mode="single",
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
         stable_seconds=1,
         respect_cuda_visible_devices=True,
     )
 
-    decision = scheduler.try_reserve(
+    _warm_stable_window(scheduler, now, config)
+    uuid_decision = scheduler.try_reserve(
+        "manual-uuid",
+        1,
+        config,
+        task_env={"CUDA_VISIBLE_DEVICES": "GPU-uuid-0"},
+    )
+    scheduler.release("manual-uuid")
+    mig_decision = scheduler.try_reserve(
         "manual-mig",
         1,
         config,
-        task_env={"CUDA_VISIBLE_DEVICES": "GPU-uuid-0,MIG-GPU-uuid/0/1"},
+        task_env={"CUDA_VISIBLE_DEVICES": "MIG-GPU-uuid-0/0/1"},
     )
 
-    assert decision.assignment is not None
-    assert decision.assignment.gpu_ids == []
-    assert decision.assignment.cuda_visible_devices == "GPU-uuid-0,MIG-GPU-uuid/0/1"
-    assert decision.assignment.env == {"PYRUNS_ASSIGNED_GPUS": "GPU-uuid-0,MIG-GPU-uuid/0/1"}
+    assert uuid_decision.assignment is not None
+    assert uuid_decision.assignment.gpu_ids == [0]
+    assert uuid_decision.assignment.cuda_visible_devices == "GPU-uuid-0"
+    assert mig_decision.assignment is not None
+    assert mig_decision.assignment.gpu_ids == [0]
+    assert mig_decision.assignment.env == {"PYRUNS_ASSIGNED_GPUS": "0"}
+    assert mig_decision.assignment.cuda_visible_devices == "MIG-GPU-uuid-0/0/1"
 
 
 def test_gpu_scheduler_single_mode_skips_blocked_devices_and_prefers_most_free_memory():
@@ -708,7 +724,7 @@ def test_system_gpu_provider_filters_non_dict_metrics_and_non_list_payloads():
     assert [device.index for device in devices] == [0, 2]
 
 
-def test_gpu_scheduler_deduplicates_cuda_visible_devices_and_reports_missing_fixed_gpu():
+def test_gpu_scheduler_rejects_duplicate_cuda_visible_devices_and_reports_missing_fixed_gpu():
     now = [70.0]
     provider = SequenceGpuProvider([
         [_gpu(0, used=1024, util=0)],
@@ -728,10 +744,8 @@ def test_gpu_scheduler_deduplicates_cuda_visible_devices_and_reports_missing_fix
     assigned = scheduler.try_reserve("manual-dup", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "0,0"})
     missing = scheduler.try_reserve("manual-missing", 1, config, task_env={"CUDA_VISIBLE_DEVICES": "3"})
 
-    assert assigned.assignment is not None
-    assert assigned.assignment.gpu_ids == [0]
-    assert assigned.assignment.cuda_visible_devices == "0,0"
-    assert assigned.assignment.env == {"PYRUNS_ASSIGNED_GPUS": "0"}
+    assert assigned.assignment is None
+    assert assigned.reason == "duplicate CUDA_VISIBLE_DEVICES entry '0'"
     assert missing.assignment is None
     assert missing.reason == "GPU 3 unavailable"
 
@@ -935,7 +949,7 @@ def test_gpu_scheduler_ignores_existing_cuda_visible_devices_when_respect_is_dis
     assert decision.assignment.env["PYRUNS_ASSIGNED_GPUS"] == "0"
 
 
-def test_gpu_scheduler_rejects_blank_and_non_numeric_cuda_visible_devices_as_existing_masks():
+def test_gpu_scheduler_rejects_blank_and_invalid_cuda_visible_devices_safely():
     scheduler = GpuResourceScheduler(provider=SequenceGpuProvider([[]]), clock=lambda: 110.0)
     config = GpuSchedulerConfig(enabled=True, task_mode="single", stable_seconds=1)
 
@@ -944,9 +958,98 @@ def test_gpu_scheduler_rejects_blank_and_non_numeric_cuda_visible_devices_as_exi
 
     assert blank.assignment is None
     assert blank.reason == "no NVIDIA GPU metrics available"
-    assert non_numeric.assignment is not None
-    assert non_numeric.assignment.gpu_ids == []
-    assert non_numeric.assignment.env == {"PYRUNS_ASSIGNED_GPUS": "0,gpu"}
+    assert non_numeric.assignment is None
+    assert non_numeric.reason == "invalid CUDA_VISIBLE_DEVICES entry 'gpu'"
+
+
+def test_gpu_decision_exposes_eligible_counts_and_per_device_blocking_reasons():
+    now = [120.0]
+    provider = SequenceGpuProvider([[
+        _gpu(0, used=1024, total=24576, util=0),
+        _gpu(1, used=22000, total=24576, util=80),
+    ]])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        memory_used_pct=50,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+    )
+    _warm_stable_window(scheduler, now, config)
+
+    decision = scheduler.try_reserve("diagnostics", 1, config, task_env={})
+
+    assert decision.assignment is not None
+    assert decision.eligible_gpu_count == 1
+    assert decision.total_gpu_count == 2
+    assert decision.devices[0].eligible is True
+    assert decision.devices[0].reason == ""
+    assert decision.devices[1].eligible is False
+    assert "memory" in decision.devices[1].reason
+
+
+def test_gpu_stable_window_tracks_uuid_when_device_index_changes():
+    now = [130.0]
+    provider = SequenceGpuProvider([
+        [_gpu(0, used=1024, uuid="GPU-stable")],
+        [_gpu(1, used=1024, uuid="GPU-stable")],
+    ])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        memory_used_pct=75,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+    )
+
+    first = scheduler.try_reserve("index-change", 1, config, task_env={})
+    now[0] += 1.0
+    second = scheduler.try_reserve("index-change", 1, config, task_env={})
+
+    assert first.assignment is None
+    assert second.assignment is not None
+    assert second.assignment.gpu_ids == [1]
+
+
+def test_gpu_scheduler_can_reuse_one_snapshot_across_a_queue_pass():
+    now = [140.0]
+    provider = SequenceGpuProvider([[_gpu(0, used=30000, util=90)]])
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(
+        enabled=True,
+        memory_used_pct=40,
+        min_free_memory_gb=8,
+        compute_used_pct=30,
+        stable_seconds=1,
+    )
+
+    scheduler.snapshot(config, now=now[0])
+    first = scheduler.try_reserve("blocked-a", 1, config, task_env={}, refresh_snapshot=False)
+    second = scheduler.try_reserve("blocked-b", 1, config, task_env={}, refresh_snapshot=False)
+
+    assert first.assignment is None
+    assert second.assignment is None
+    assert provider.calls == 1
+
+
+def test_gpu_scheduler_keeps_unmappable_mig_uuid_waiting():
+    scheduler = GpuResourceScheduler(
+        provider=SequenceGpuProvider([[_gpu(0, used=1024, uuid="GPU-parent")]]),
+        clock=lambda: 150.0,
+    )
+    config = GpuSchedulerConfig(enabled=True, stable_seconds=1)
+
+    decision = scheduler.try_reserve(
+        "opaque-mig",
+        1,
+        config,
+        task_env={"CUDA_VISIBLE_DEVICES": "MIG-instance-uuid"},
+    )
+
+    assert decision.assignment is None
+    assert "cannot be mapped" in decision.reason
 
 
 def test_cuda_oom_text_detection_matches_common_framework_errors():

@@ -1,5 +1,5 @@
 import { NavLink, useSearchParams } from 'react-router-dom'
-import { Suspense, lazy, useState } from 'react'
+import { Suspense, lazy, useRef, useState } from 'react'
 import {
   LayoutDashboard, Wand2, ListTodo, Terminal, Rocket,
   Sun, Moon, ChevronsUpDown, FileCode, SlidersHorizontal,
@@ -27,6 +27,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
   const { theme, toggle } = useThemeStore()
   const [searchParams, setSearchParams] = useSearchParams()
   const [runtimeOpen, setRuntimeOpen] = useState(false)
+  const runtimeButtonRef = useRef<HTMLButtonElement>(null)
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
   const workspaceReady = workspace?.workspace_ready === true
   const shellWorkspaceActive = workspaceReady && workspace?.workspace_kind === 'shell'
@@ -66,6 +67,11 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
     nextParams.delete('script')
     nextParams.delete('config')
     setSearchParams(nextParams)
+  }
+
+  const closeRuntime = () => {
+    setRuntimeOpen(false)
+    window.requestAnimationFrame(() => runtimeButtonRef.current?.focus())
   }
 
   return (
@@ -115,6 +121,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           </div>
         )}
         <button
+          data-launcher-trigger="true"
           type="button"
           onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
           aria-label={workspaceLabel}
@@ -149,6 +156,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
         </button>
 
         <button
+          ref={runtimeButtonRef}
           type="button"
           onClick={() => setRuntimeOpen(true)}
           aria-label="Runtime"
@@ -186,7 +194,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
       </div>
       {runtimeOpen && (
         <Suspense fallback={null}>
-          <RuntimePanel open={runtimeOpen} left={width + 8} onClose={() => setRuntimeOpen(false)} />
+          <RuntimePanel open={runtimeOpen} left={width + 8} onClose={closeRuntime} />
         </Suspense>
       )}
     </aside>

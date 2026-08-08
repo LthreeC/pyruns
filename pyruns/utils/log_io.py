@@ -61,6 +61,21 @@ def decode_log_bytes(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def log_file_identity(filepath: str) -> str:
+    """Return a stable, opaque identity for one concrete log file."""
+
+    try:
+        stat_result = os.stat(filepath)
+    except OSError:
+        return ""
+
+    device = int(getattr(stat_result, "st_dev", 0) or 0)
+    inode = int(getattr(stat_result, "st_ino", 0) or 0)
+    if inode <= 0:
+        return ""
+    return f"{device:x}:{inode:x}"
+
+
 def normalize_log_newlines(text: str) -> str:
     """Leave terminal/log text unchanged; xterm handles end-of-line rendering."""
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import re
 import threading
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -66,7 +67,13 @@ class SystemGpuProvider:
         self.monitor = monitor or SystemMonitor(gpu_ttl_sec=_STABLE_SAMPLE_MAX_GAP_SECONDS)
 
     def sample(self) -> List[GpuDevice]:
-        metrics = self.monitor.sample().get("gpus", [])
+        try:
+            snapshot = self.monitor.sample(include_processes=False)
+        except TypeError:
+            # Keep lightweight third-party/test monitors with the original
+            # no-argument sample() contract working.
+            snapshot = self.monitor.sample()
+        metrics = snapshot.get("gpus", [])
         if not isinstance(metrics, list):
             return []
         return [GpuDevice.from_metric(metric) for metric in metrics if isinstance(metric, dict)]
@@ -138,6 +145,23 @@ class GpuDecision:
     assignment: Optional[GpuAssignment]
     reason: str
     snapshot: List[GpuDevice]
+    eligible_gpu_count: int = 0
+    total_gpu_count: int = 0
+    devices: List["GpuDeviceDecision"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GpuDeviceDecision:
+    """One device's eligibility result for UI and diagnostics."""
+
+    index: int
+    name: str
+    uuid: str
+    eligible: bool
+    reason: str
+    memory_used_pct: float
+    free_memory_gb: float
+    compute_util_pct: float
 
 
 class GpuResourceScheduler:
@@ -158,8 +182,8 @@ class GpuResourceScheduler:
         self.clock = clock or time.monotonic
         self._snapshot: List[GpuDevice] = []
         self._snapshot_at: float = -10**12
-        self._eligible_since: Dict[int, float] = {}
-        self._eligible_last_seen: Dict[int, float] = {}
+        self._eligible_since: Dict[str, float] = {}
+        self._eligible_last_seen: Dict[str, float] = {}
         self._reservations: Dict[str, List[int]] = {}
         self._lock = threading.RLock()
 
@@ -201,27 +225,27 @@ class GpuResourceScheduler:
         *,
         task_env: Dict[str, str] | None,
         queued_since: float | None = None,
+        refresh_snapshot: bool = True,
     ) -> GpuDecision:
         with self._lock:
             now = self.clock()
             env = {str(k): str(v) for k, v in (task_env or {}).items() if str(k)}
-            snapshot = self.snapshot(config, now=now)
+            snapshot = self.snapshot(config, now=now) if refresh_snapshot else list(self._snapshot)
+            device_decisions = self._device_decisions(config, now)
             waited = max(0.0, now - queued_since) if queued_since is not None else 0.0
 
             existing_cuda = str(env.get(CUDA_VISIBLE_DEVICES, "") or "").strip()
             if existing_cuda and not any(part.strip() for part in existing_cuda.split(",")):
                 existing_cuda = ""
-            requested_ids = _parse_cuda_visible_devices(existing_cuda) if existing_cuda else None
-            if existing_cuda and config.respect_cuda_visible_devices and requested_ids is None:
-                assignment = GpuAssignment(
-                    task_name=task_name,
-                    run_index=run_index,
-                    gpu_ids=[],
-                    cuda_visible_devices=existing_cuda,
-                    env={PYRUNS_ASSIGNED_GPUS: existing_cuda},
-                    waited_seconds=waited,
-                )
-                return GpuDecision(assignment=assignment, reason="using existing CUDA_VISIBLE_DEVICES", snapshot=snapshot)
+            requested_tokens, parse_error = _parse_cuda_visible_devices(existing_cuda) if existing_cuda else ([], "")
+            if existing_cuda and config.respect_cuda_visible_devices and parse_error:
+                return self._decision(None, parse_error, snapshot, device_decisions)
+
+            requested_ids: List[int] = []
+            if requested_tokens and config.respect_cuda_visible_devices:
+                requested_ids, resolve_error = self._resolve_cuda_visible_devices(requested_tokens)
+                if resolve_error:
+                    return self._decision(None, resolve_error, snapshot, device_decisions)
 
             if requested_ids and config.respect_cuda_visible_devices:
                 required_ids = requested_ids
@@ -230,7 +254,7 @@ class GpuResourceScheduler:
             elif config.uses_specified_devices:
                 required_ids, reason = self._configured_fixed_ids(config)
                 if not required_ids:
-                    return GpuDecision(assignment=None, reason=reason, snapshot=snapshot)
+                    return self._decision(None, reason, snapshot, device_decisions)
                 visible = ",".join(str(gpu_id) for gpu_id in required_ids)
                 inject_cuda = True
             else:
@@ -244,7 +268,7 @@ class GpuResourceScheduler:
                 selected, reason = self._select_available_group(config, now)
 
             if not selected:
-                return GpuDecision(assignment=None, reason=reason, snapshot=snapshot)
+                return self._decision(None, reason, snapshot, device_decisions)
 
             self._reservations[str(task_name)] = selected
             if not visible:
@@ -260,33 +284,50 @@ class GpuResourceScheduler:
                 env=injected_env,
                 waited_seconds=waited,
             )
-            return GpuDecision(assignment=assignment, reason="assigned", snapshot=snapshot)
+            return self._decision(assignment, "assigned", snapshot, device_decisions)
+
+    @staticmethod
+    def _decision(
+        assignment: Optional[GpuAssignment],
+        reason: str,
+        snapshot: List[GpuDevice],
+        devices: List[GpuDeviceDecision],
+    ) -> GpuDecision:
+        return GpuDecision(
+            assignment=assignment,
+            reason=reason,
+            snapshot=list(snapshot),
+            eligible_gpu_count=sum(1 for device in devices if device.eligible),
+            total_gpu_count=len(devices),
+            devices=list(devices),
+        )
 
     def _refresh_eligible_since(self, config: GpuSchedulerConfig, now: float) -> None:
         candidates = self._candidate_devices(config)
-        visible_ids = {gpu.index for gpu in candidates}
+        visible_keys = {_gpu_stability_key(gpu) for gpu in candidates}
         for gpu in candidates:
+            key = _gpu_stability_key(gpu)
             if self._meets_static_limits(gpu, config):
-                last_seen = self._eligible_last_seen.get(gpu.index)
+                last_seen = self._eligible_last_seen.get(key)
                 # A long sampling gap means we did not observe every second in the stable window.
                 if (
                     last_seen is None
                     or now < last_seen
                     or now - last_seen > _STABLE_SAMPLE_MAX_GAP_SECONDS
                 ):
-                    self._eligible_since[gpu.index] = now
+                    self._eligible_since[key] = now
                 else:
-                    self._eligible_since.setdefault(gpu.index, now)
-                self._eligible_last_seen[gpu.index] = now
+                    self._eligible_since.setdefault(key, now)
+                self._eligible_last_seen[key] = now
             else:
-                self._eligible_since.pop(gpu.index, None)
-                self._eligible_last_seen.pop(gpu.index, None)
-        for gpu_id in list(self._eligible_since):
-            if gpu_id not in visible_ids:
-                self._eligible_since.pop(gpu_id, None)
-        for gpu_id in list(self._eligible_last_seen):
-            if gpu_id not in visible_ids:
-                self._eligible_last_seen.pop(gpu_id, None)
+                self._eligible_since.pop(key, None)
+                self._eligible_last_seen.pop(key, None)
+        for key in list(self._eligible_since):
+            if key not in visible_keys:
+                self._eligible_since.pop(key, None)
+        for key in list(self._eligible_last_seen):
+            if key not in visible_keys:
+                self._eligible_last_seen.pop(key, None)
 
     def _candidate_devices(self, config: GpuSchedulerConfig) -> List[GpuDevice]:
         allowed = set(config.device_ids or [])
@@ -370,6 +411,35 @@ class GpuResourceScheduler:
             return [], same_model_reason
         return list(requested_ids), "assigned"
 
+    def _resolve_cuda_visible_devices(self, tokens: List[str]) -> tuple[List[int], str]:
+        """Resolve numeric, GPU UUID, and parent-addressable MIG masks to physical GPUs."""
+
+        resolved: List[int] = []
+        for token in tokens:
+            if token.isdigit():
+                gpu_id = int(token)
+            else:
+                physical_uuid = _physical_uuid_from_cuda_token(token)
+                if not physical_uuid:
+                    return [], f"CUDA_VISIBLE_DEVICES entry {token!r} cannot be mapped to a physical GPU"
+                matches = [
+                    gpu.index
+                    for gpu in self._snapshot
+                    if _uuid_matches(physical_uuid, gpu.uuid)
+                ]
+                if not matches:
+                    return [], f"CUDA_VISIBLE_DEVICES device {token!r} unavailable"
+                if len(matches) > 1:
+                    return [], f"CUDA_VISIBLE_DEVICES device {token!r} is ambiguous"
+                gpu_id = matches[0]
+            if gpu_id in resolved:
+                return [], (
+                    "CUDA_VISIBLE_DEVICES entries map to the same physical "
+                    f"GPU {gpu_id}; distinct reservation cannot be guaranteed"
+                )
+            resolved.append(gpu_id)
+        return resolved, ""
+
     def _same_model_violation(self, devices: List[GpuDevice], config: GpuSchedulerConfig, *, scope: str) -> str:
         if not config.require_same_gpu_model or len(devices) <= 1:
             return ""
@@ -388,11 +458,29 @@ class GpuResourceScheduler:
             return f"GPU {gpu.index} free {gpu.free_memory_gb:.1f} GiB < {config.min_free_memory_gb:g} GiB"
         if gpu.compute_util_pct > config.compute_used_pct:
             return f"GPU {gpu.index} compute {gpu.compute_util_pct:.0f}% > {config.compute_used_pct:g}%"
-        since = self._eligible_since.get(gpu.index)
+        since = self._eligible_since.get(_gpu_stability_key(gpu))
         if since is None or now - since < config.stable_seconds:
             observed = 0.0 if since is None else max(0.0, now - since)
             return f"GPU {gpu.index} stabilizing {observed:.1f}/{config.stable_seconds:g}s"
         return ""
+
+    def _device_decisions(self, config: GpuSchedulerConfig, now: float) -> List[GpuDeviceDecision]:
+        decisions: List[GpuDeviceDecision] = []
+        for gpu in sorted(self._candidate_devices(config), key=lambda item: item.index):
+            reason = self._blocked_reason(gpu, config, now)
+            decisions.append(
+                GpuDeviceDecision(
+                    index=gpu.index,
+                    name=gpu.name,
+                    uuid=gpu.uuid,
+                    eligible=not reason,
+                    reason=reason,
+                    memory_used_pct=gpu.memory_used_pct,
+                    free_memory_gb=gpu.free_memory_gb,
+                    compute_util_pct=gpu.compute_util_pct,
+                )
+            )
+        return decisions
 
     def _meets_static_limits(self, gpu: GpuDevice, config: GpuSchedulerConfig) -> bool:
         return (
@@ -439,20 +527,46 @@ def _gpu_model_name(gpu: GpuDevice) -> str:
     return str(gpu.name or "GPU").strip() or "GPU"
 
 
-def _parse_cuda_visible_devices(value: str) -> Optional[List[int]]:
+def _gpu_stability_key(gpu: GpuDevice) -> str:
+    uuid = str(gpu.uuid or "").strip().lower()
+    return f"uuid:{uuid}" if uuid else f"index:{gpu.index}"
+
+
+_GPU_UUID_RE = re.compile(r"^GPU-[A-Za-z0-9-]+$")
+_MIG_PARENT_RE = re.compile(r"^(MIG-)?(GPU-[A-Za-z0-9-]+)(?:/\d+/\d+)?$")
+_MIG_UUID_RE = re.compile(r"^MIG-[A-Za-z0-9-]+$")
+
+
+def _parse_cuda_visible_devices(value: str) -> tuple[List[str], str]:
     parts = [part.strip() for part in str(value or "").split(",") if part.strip()]
     if not parts:
-        return None
-    parsed: List[int] = []
-    seen: set[int] = set()
+        return [], ""
+    parsed: List[str] = []
+    seen: set[str] = set()
     for part in parts:
-        if not part.isdigit():
-            return None
-        value = int(part)
-        if value not in seen:
-            parsed.append(value)
-            seen.add(value)
-    return parsed
+        if not (part.isdigit() or _GPU_UUID_RE.fullmatch(part) or _MIG_PARENT_RE.fullmatch(part) or _MIG_UUID_RE.fullmatch(part)):
+            return [], f"invalid CUDA_VISIBLE_DEVICES entry {part!r}"
+        normalized = part.lower()
+        if normalized in seen:
+            return [], f"duplicate CUDA_VISIBLE_DEVICES entry {part!r}"
+        parsed.append(part)
+        seen.add(normalized)
+    return parsed, ""
+
+
+def _physical_uuid_from_cuda_token(token: str) -> str:
+    if _GPU_UUID_RE.fullmatch(token):
+        return token
+    match = _MIG_PARENT_RE.fullmatch(token)
+    if match:
+        return match.group(2)
+    return ""
+
+
+def _uuid_matches(requested: str, actual: str) -> bool:
+    requested_key = str(requested or "").strip().lower()
+    actual_key = str(actual or "").strip().lower()
+    return bool(requested_key and actual_key and (actual_key == requested_key or actual_key.startswith(requested_key)))
 
 
 def _coerce_int(value: Any, default: int) -> int:

@@ -6,6 +6,7 @@ import type {
   RuntimeInfo,
   ScriptCandidate,
   Task,
+  TaskStatusCounts,
   TemplateContent,
   WorkspaceInfo,
 } from './types'
@@ -16,11 +17,51 @@ let taskRequestSeq = 0
 let monitorTaskRequestSeq = 0
 let monitorRequestSeq = 0
 let launcherRequestSeq = 0
+let runtimeRequestSeq = 0
+let dashboardRequestSeq = 0
+let generatorTemplateRequestSeq = 0
+let launcherOpenPromise: Promise<boolean> | null = null
+let launcherOpenToken: symbol | null = null
 let toastIdSeq = 0
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
+const MONITOR_TASK_PAGE_SIZE = 200
+const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
+
+function currentWorkspaceKey() {
+  return String(useWorkspaceStore.getState().workspace?.run_root || '')
+}
+
+function resetMonitorWorkspace(nextWorkspaceKey: string) {
+  monitorTaskRequestSeq += 1
+  monitorRequestSeq += 1
+  useTaskStore.setState({
+    monitorWorkspaceKey: nextWorkspaceKey,
+    monitorTasks: [],
+    monitorTotal: 0,
+    monitorHasMore: false,
+    monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE,
+    monitorQuery: '',
+    monitorLoading: false,
+    monitorError: '',
+    monitorStatusCounts: null,
+  })
+  useMonitorStore.setState({
+    workspaceKey: nextWorkspaceKey,
+    selectedTaskName: null,
+    logContent: '',
+    logOffset: 0,
+    logIdentity: '',
+    availableLogs: [],
+    selectedLog: '',
+    logTailTruncated: false,
+    logTailLimitBytes: 0,
+    loading: false,
+    exportIds: new Set(),
+  })
+}
 
 interface ThemeState {
   theme: 'dark' | 'light'
@@ -80,11 +121,16 @@ export function trimMonitorLogContent(content: string, maxLines = currentMonitor
     }
     keptLines += 1
     if (keptLines > lineLimit) {
-      return content.slice(index + 1)
+      const lineTrimmed = content.slice(index + 1)
+      return lineTrimmed.length > MAX_MONITOR_LOG_CHARS
+        ? lineTrimmed.slice(-MAX_MONITOR_LOG_CHARS)
+        : lineTrimmed
     }
   }
 
-  return content
+  return content.length > MAX_MONITOR_LOG_CHARS
+    ? content.slice(-MAX_MONITOR_LOG_CHARS)
+    : content
 }
 
 function comparableLogText(text: string) {
@@ -152,8 +198,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     try {
       const ws = await api.getWorkspace()
       const previousRunRoot = get().workspace?.run_root
-      if (previousRunRoot && ws?.run_root && previousRunRoot !== ws.run_root) {
-        useRuntimeStore.getState().setRuntime(null)
+      if (previousRunRoot !== ws?.run_root) {
+        if (previousRunRoot) {
+          useRuntimeStore.getState().setRuntime(null)
+        }
+        resetMonitorWorkspace(String(ws?.run_root || ''))
       }
       set(state => ({
         workspace: ws,
@@ -165,8 +214,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   setWorkspace(workspace) {
     const previousRunRoot = get().workspace?.run_root
-    if (previousRunRoot && workspace?.run_root && previousRunRoot !== workspace.run_root) {
-      useRuntimeStore.getState().setRuntime(null)
+    if (previousRunRoot !== workspace?.run_root) {
+      if (previousRunRoot) {
+        useRuntimeStore.getState().setRuntime(null)
+      }
+      resetMonitorWorkspace(String(workspace?.run_root || ''))
     }
     set(state => ({
       workspace,
@@ -178,6 +230,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const previousRunRoot = get().workspace?.run_root
     if (previousRunRoot !== ws.run_root) {
       useRuntimeStore.getState().setRuntime(null)
+      resetMonitorWorkspace(String(ws.run_root || ''))
     }
     set(state => ({
       workspace: ws,
@@ -189,6 +242,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const previousRunRoot = get().workspace?.run_root
     if (previousRunRoot !== ws.run_root) {
       useRuntimeStore.getState().setRuntime(null)
+      resetMonitorWorkspace(String(ws.run_root || ''))
     }
     set(state => ({ workspace: ws, lastScriptWorkspace: state.lastScriptWorkspace }))
   },
@@ -202,6 +256,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const previousRunRoot = get().workspace?.run_root
     if (previousRunRoot !== ws.run_root) {
       useRuntimeStore.getState().setRuntime(null)
+      resetMonitorWorkspace(String(ws.run_root || ''))
     }
     set({ workspace: ws, lastScriptWorkspace: ws })
     return ws
@@ -223,26 +278,37 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
   runtime: null,
   loading: false,
   setRuntime(runtime) {
-    set({ runtime })
+    runtimeRequestSeq += 1
+    set({ runtime, loading: false })
   },
   async fetchRuntime() {
+    const requestId = ++runtimeRequestSeq
     set({ loading: true })
     try {
       const runtime = await api.getRuntimeInfo()
-      set({ runtime })
+      if (requestId === runtimeRequestSeq) {
+        set({ runtime })
+      }
       return runtime
     } finally {
-      set({ loading: false })
+      if (requestId === runtimeRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   async updateRuntime(payload, refreshProviders = false) {
+    const requestId = ++runtimeRequestSeq
     set({ loading: true })
     try {
       const runtime = await api.updateRuntimeInfo(payload, refreshProviders)
-      set({ runtime })
+      if (requestId === runtimeRequestSeq) {
+        set({ runtime })
+      }
       return runtime
     } finally {
-      set({ loading: false })
+      if (requestId === runtimeRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
 }))
@@ -290,8 +356,17 @@ function currentMonitorScrollback() {
 
 interface TaskState {
   tasks: Task[]
+  monitorWorkspaceKey: string
   monitorTasks: Task[]
+  monitorTotal: number
+  monitorHasMore: boolean
+  monitorLoadedLimit: number
+  monitorQuery: string
+  monitorLoading: boolean
+  monitorError: string
+  monitorStatusCounts: TaskStatusCounts | null
   total: number
+  statusCounts: TaskStatusCounts | null
   offset: number
   limit: number
   hasMore: boolean
@@ -299,13 +374,20 @@ interface TaskState {
   statusFilter: string
   selectedIds: Set<string>
   loading: boolean
+  error: string | null
   columns: number
   setQuery: (q: string) => void
   setStatusFilter: (s: string) => void
   setOffset: (o: number) => void
   setColumns: (n: number) => void
   fetchTasks: () => Promise<void>
-  fetchMonitorTasks: () => Promise<void>
+  fetchMonitorTasks: (options?: {
+    query?: string
+    loadMore?: boolean
+    refresh?: boolean
+    background?: boolean
+    workspaceKey?: string
+  }) => Promise<void>
   upsertMonitorTask: (task: Task) => void
   toggleSelect: (name: string) => void
   selectAll: () => void
@@ -315,8 +397,17 @@ interface TaskState {
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: [],
+  monitorWorkspaceKey: '',
   monitorTasks: [],
+  monitorTotal: 0,
+  monitorHasMore: false,
+  monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE,
+  monitorQuery: '',
+  monitorLoading: false,
+  monitorError: '',
+  monitorStatusCounts: null,
   total: 0,
+  statusCounts: null,
   offset: 0,
   limit: 50,
   hasMore: false,
@@ -324,10 +415,26 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   statusFilter: 'All',
   selectedIds: new Set(),
   loading: false,
+  error: null,
   columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8),
-  setQuery(q) { set({ query: q, offset: 0 }) },
-  setStatusFilter(s) { set({ statusFilter: s, offset: 0 }) },
-  setOffset(o) { set({ offset: o }) },
+  setQuery(q) {
+    if (q !== get().query) {
+      taskRequestSeq += 1
+      set({ query: q, offset: 0, selectedIds: new Set() })
+    }
+  },
+  setStatusFilter(s) {
+    if (s !== get().statusFilter) {
+      taskRequestSeq += 1
+      set({ statusFilter: s, offset: 0, selectedIds: new Set() })
+    }
+  },
+  setOffset(o) {
+    if (o !== get().offset) {
+      taskRequestSeq += 1
+      set({ offset: o, selectedIds: new Set() })
+    }
+  },
   setColumns(n) {
     const next = clampInteger(n, 5, 1, 8)
     if (typeof window !== 'undefined') {
@@ -338,10 +445,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   async fetchTasks() {
     const requestId = ++taskRequestSeq
     const { query, statusFilter, offset, limit } = get()
-    set({ loading: true })
+    let requestedOffset = offset
+    const isCurrentRequest = () => {
+      const current = get()
+      return requestId === taskRequestSeq
+        && current.query === query
+        && current.statusFilter === statusFilter
+        && current.offset === requestedOffset
+        && current.limit === limit
+    }
+    set({ loading: true, error: null })
     try {
       const page = await api.getTasks({ query, status: statusFilter, offset, limit, summary: true })
-      if (requestId !== taskRequestSeq) {
+      if (!isCurrentRequest()) {
         return
       }
       if (limit > 0 && offset > 0 && page.items.length === 0) {
@@ -349,6 +465,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           ? Math.max(0, Math.floor((page.total - 1) / limit) * limit)
           : 0
         if (nextOffset !== offset && offset >= page.total) {
+          requestedOffset = nextOffset
           set({ offset: nextOffset })
           const retryPage = await api.getTasks({
             query,
@@ -357,36 +474,112 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             limit,
             summary: true,
           })
-          if (requestId !== taskRequestSeq) {
+          if (!isCurrentRequest()) {
             return
           }
           set({
             tasks: retryPage.items,
             total: retryPage.total,
+            statusCounts: retryPage.status_counts ?? null,
             hasMore: retryPage.has_more,
             offset: nextOffset,
+            selectedIds: new Set(),
           })
           return
         }
       }
       if (page.total === 0 && offset !== 0) {
-        set({ tasks: page.items, total: page.total, hasMore: page.has_more, offset: 0 })
+        requestedOffset = 0
+        set({
+          tasks: page.items,
+          total: page.total,
+          statusCounts: page.status_counts ?? null,
+          hasMore: page.has_more,
+          offset: 0,
+          selectedIds: new Set(),
+        })
         return
       }
-      set({ tasks: page.items, total: page.total, hasMore: page.has_more })
+      const visibleNames = new Set(page.items.map(task => task.name))
+      const visibleSelection = new Set(
+        [...get().selectedIds].filter(name => visibleNames.has(name)),
+      )
+      set({
+        tasks: page.items,
+        total: page.total,
+        statusCounts: page.status_counts ?? null,
+        hasMore: page.has_more,
+        selectedIds: visibleSelection,
+      })
+    } catch (err) {
+      if (isCurrentRequest()) {
+        set({ error: err instanceof Error ? err.message : 'Could not load tasks' })
+      }
     } finally {
-      if (requestId === taskRequestSeq) {
+      if (isCurrentRequest()) {
         set({ loading: false })
       }
     }
   },
-  async fetchMonitorTasks() {
+  async fetchMonitorTasks(options = {}) {
     const requestId = ++monitorTaskRequestSeq
-    const page = await api.getTasks({ limit: 0, refresh: true, summary: true })
-    if (requestId !== monitorTaskRequestSeq) {
+    const current = get()
+    const workspaceKey = String(options.workspaceKey ?? currentWorkspaceKey())
+    if (workspaceKey !== currentWorkspaceKey()) {
       return
     }
-    set({ monitorTasks: page.items })
+    const query = String(options.query ?? current.monitorQuery).trim()
+    const queryChanged = query !== current.monitorQuery
+    const background = Boolean(options.background)
+    const baseLimit = queryChanged ? MONITOR_TASK_PAGE_SIZE : current.monitorLoadedLimit
+    const nextLimit = options.loadMore && !queryChanged
+      ? baseLimit + MONITOR_TASK_PAGE_SIZE
+      : baseLimit
+    set(background
+      ? { monitorQuery: query }
+      : { monitorLoading: true, monitorError: '', monitorQuery: query })
+    try {
+      const page = await api.getTasks({
+        query,
+        limit: nextLimit,
+        refresh: options.refresh ?? true,
+        summary: true,
+        compact: true,
+      })
+      if (
+        requestId !== monitorTaskRequestSeq
+        || workspaceKey !== currentWorkspaceKey()
+        || get().monitorWorkspaceKey !== workspaceKey
+      ) {
+        return
+      }
+      set({
+        monitorTasks: page.items,
+        monitorTotal: page.total,
+        monitorHasMore: page.has_more,
+        monitorLoadedLimit: nextLimit,
+        monitorStatusCounts: page.status_counts ?? null,
+        monitorError: '',
+      })
+    } catch (error) {
+      if (
+        requestId !== monitorTaskRequestSeq
+        || workspaceKey !== currentWorkspaceKey()
+        || get().monitorWorkspaceKey !== workspaceKey
+      ) {
+        return
+      }
+      set({ monitorError: error instanceof Error ? error.message : String(error) })
+      throw error
+    } finally {
+      if (!background && (
+        requestId === monitorTaskRequestSeq
+        && workspaceKey === currentWorkspaceKey()
+        && get().monitorWorkspaceKey === workspaceKey
+      )) {
+        set({ monitorLoading: false })
+      }
+    }
   },
   upsertMonitorTask(task) {
     if (!task?.name) {
@@ -397,7 +590,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return {
         monitorTasks: exists
           ? state.monitorTasks.map(item => item.name === task.name ? task : item)
-          : [task, ...state.monitorTasks],
+          : state.monitorQuery
+            ? state.monitorTasks
+            : [task, ...state.monitorTasks],
       }
     })
   },
@@ -423,12 +618,17 @@ export const useDashboardStore = create<DashboardState>((set) => ({
   data: null,
   loading: false,
   async fetch() {
+    const requestId = ++dashboardRequestSeq
     set({ loading: true })
     try {
       const d = await api.getDashboard()
-      set({ data: d })
+      if (requestId === dashboardRequestSeq) {
+        set({ data: d })
+      }
     } finally {
-      set({ loading: false })
+      if (requestId === dashboardRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
 }))
@@ -474,13 +674,17 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     set({ templates: res.items })
   },
   async loadTemplate(value: string) {
+    const requestId = ++generatorTemplateRequestSeq
     if (!value) {
-      set({ selectedTemplate: '', templateContent: null, yamlText: '' })
+      set({ selectedTemplate: '', templateContent: null, yamlText: '', loading: false })
       return
     }
     set({ loading: true, selectedTemplate: value })
     try {
       const content = await api.getTemplateContent(value)
+      if (requestId !== generatorTemplateRequestSeq) {
+        return
+      }
       set({
         templateContent: content,
         yamlText: content.content,
@@ -488,11 +692,14 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         viewMode: content.mode_hint === 'shell' ? 'shell' : get().viewMode === 'shell' ? 'yaml' : get().viewMode,
       })
     } finally {
-      set({ loading: false })
+      if (requestId === generatorTemplateRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   clearTemplate() {
-    set({ selectedTemplate: '', templateContent: null })
+    generatorTemplateRequestSeq += 1
+    set({ selectedTemplate: '', templateContent: null, loading: false })
   },
   setViewMode(m) { set({ viewMode: m }) },
   setYamlText(t) { set({ yamlText: t }) },
@@ -518,11 +725,15 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
 }))
 
 interface MonitorState {
+  workspaceKey: string
   selectedTaskName: string | null
   logContent: string
   logOffset: number
+  logIdentity: string
   availableLogs: string[]
   selectedLog: string
+  logTailTruncated: boolean
+  logTailLimitBytes: number
   loading: boolean
   exportIds: Set<string>
   selectTask: (name: string) => Promise<void>
@@ -535,36 +746,59 @@ interface MonitorState {
 }
 
 export const useMonitorStore = create<MonitorState>((set, get) => ({
+  workspaceKey: '',
   selectedTaskName: null,
   logContent: '',
   logOffset: 0,
+  logIdentity: '',
   availableLogs: [],
   selectedLog: '',
+  logTailTruncated: false,
+  logTailLimitBytes: 0,
   loading: false,
   exportIds: new Set(),
   async selectTask(name: string) {
     const requestId = ++monitorRequestSeq
+    const workspaceKey = currentWorkspaceKey()
+    if (get().workspaceKey !== workspaceKey) {
+      return
+    }
     set({
       selectedTaskName: name,
       logContent: '',
       logOffset: 0,
+      logIdentity: '',
       availableLogs: [],
       selectedLog: '',
+      logTailTruncated: false,
+      logTailLimitBytes: 0,
       loading: true,
     })
     try {
       const logs = await api.getTaskLogs(name, { tailLines: currentMonitorScrollback() })
-      if (requestId !== monitorRequestSeq || get().selectedTaskName !== name) {
+      if (
+        requestId !== monitorRequestSeq
+        || get().selectedTaskName !== name
+        || get().workspaceKey !== workspaceKey
+        || currentWorkspaceKey() !== workspaceKey
+      ) {
         return
       }
       set({
         logContent: logs.content,
         logOffset: logs.offset,
+        logIdentity: String(logs.log_identity || ''),
         availableLogs: logs.available_logs,
         selectedLog: logs.selected_log,
+        logTailTruncated: Boolean(logs.tail_truncated),
+        logTailLimitBytes: Number(logs.tail_limit_bytes || 0),
       })
     } finally {
-      if (requestId === monitorRequestSeq) {
+      if (
+        requestId === monitorRequestSeq
+        && get().workspaceKey === workspaceKey
+        && currentWorkspaceKey() === workspaceKey
+      ) {
         set({ loading: false })
       }
     }
@@ -573,7 +807,19 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     const { selectedTaskName } = get()
     if (!selectedTaskName) return
     const requestId = ++monitorRequestSeq
-    set({ selectedLog: logName, logContent: '', logOffset: 0, loading: true })
+    const workspaceKey = currentWorkspaceKey()
+    if (get().workspaceKey !== workspaceKey) {
+      return
+    }
+    set({
+      selectedLog: logName,
+      logContent: '',
+      logOffset: 0,
+      logIdentity: '',
+      logTailTruncated: false,
+      logTailLimitBytes: 0,
+      loading: true,
+    })
     try {
       const logs = await api.getTaskLogs(selectedTaskName, {
         logFileName: logName,
@@ -583,17 +829,26 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== selectedTaskName
         || get().selectedLog !== logName
+        || get().workspaceKey !== workspaceKey
+        || currentWorkspaceKey() !== workspaceKey
       ) {
         return
       }
       set({
         logContent: logs.content,
         logOffset: logs.offset,
+        logIdentity: String(logs.log_identity || ''),
         availableLogs: logs.available_logs,
         selectedLog: logs.selected_log,
+        logTailTruncated: Boolean(logs.tail_truncated),
+        logTailLimitBytes: Number(logs.tail_limit_bytes || 0),
       })
     } finally {
-      if (requestId === monitorRequestSeq) {
+      if (
+        requestId === monitorRequestSeq
+        && get().workspaceKey === workspaceKey
+        && currentWorkspaceKey() === workspaceKey
+      ) {
         set({ loading: false })
       }
     }
@@ -601,7 +856,9 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   appendLog(text: string) {
     set(s => ({ logContent: appendMonitorLogContent(s.logContent, text) }))
   },
-  clearLog() { set({ logContent: '', logOffset: 0 }) },
+  clearLog() {
+    set({ logContent: '', logOffset: 0, logIdentity: '', logTailTruncated: false, logTailLimitBytes: 0 })
+  },
   toggleExport(name) {
     const ids = new Set(get().exportIds)
     if (ids.has(name)) ids.delete(name); else ids.add(name)
@@ -625,7 +882,7 @@ interface LauncherState {
   fetchScripts: () => Promise<void>
   selectScript: (path: string) => Promise<void>
   selectConfig: (path: string) => void
-  openWorkspace: () => Promise<void>
+  openWorkspace: () => Promise<boolean>
   reset: () => void
 }
 
@@ -685,24 +942,40 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
     launcherRequestSeq += 1
     set({ selectedConfig: path, step: 1 })
   },
-  async openWorkspace() {
+  openWorkspace() {
+    if (launcherOpenPromise) {
+      return launcherOpenPromise
+    }
     const requestId = ++launcherRequestSeq
+    const openToken = Symbol('launcher-open')
+    launcherOpenToken = openToken
     const { selectedScript, selectedConfig } = get()
     set({ loading: true })
-    try {
-      const workspace = await api.openLauncherWorkspace(selectedScript, selectedConfig || undefined)
-      if (requestId !== launcherRequestSeq) {
-        return
+    const pending = (async () => {
+      try {
+        const workspace = await api.openLauncherWorkspace(selectedScript, selectedConfig || undefined)
+        if (requestId !== launcherRequestSeq) {
+          return false
+        }
+        useWorkspaceStore.getState().setWorkspace(workspace)
+        return true
+      } finally {
+        if (requestId === launcherRequestSeq) {
+          set({ loading: false })
+        }
+        if (launcherOpenToken === openToken) {
+          launcherOpenPromise = null
+          launcherOpenToken = null
+        }
       }
-      useWorkspaceStore.getState().setWorkspace(workspace)
-    } finally {
-      if (requestId === launcherRequestSeq) {
-        set({ loading: false })
-      }
-    }
+    })()
+    launcherOpenPromise = pending
+    return pending
   },
   reset() {
     launcherRequestSeq += 1
+    launcherOpenPromise = null
+    launcherOpenToken = null
     set({
       scripts: [],
       configs: [],
@@ -711,6 +984,7 @@ export const useLauncherStore = create<LauncherState>((set, get) => ({
       requiresConfigTemplate: false,
       configSource: '',
       step: 0,
+      loading: false,
     })
   },
 }))

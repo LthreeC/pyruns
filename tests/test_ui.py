@@ -65,7 +65,14 @@ def test_react_task_fetch_ignores_stale_responses():
 
     assert "let taskRequestSeq = 0" in source
     assert "const requestId = ++taskRequestSeq" in source
-    assert "if (requestId !== taskRequestSeq) {" in source
+    assert source.count("taskRequestSeq += 1") >= 3
+    assert "const isCurrentRequest = () => {" in source
+    assert "requestId === taskRequestSeq" in source
+    assert "current.query === query" in source
+    assert "current.statusFilter === statusFilter" in source
+    assert "current.offset === requestedOffset" in source
+    assert "current.limit === limit" in source
+    assert "if (!isCurrentRequest()) {" in source
 
 
 def test_react_task_detail_displays_source_state_in_run_history():
@@ -89,39 +96,42 @@ def test_react_task_detail_displays_source_state_in_run_history():
 def test_react_dashboard_polling_waits_for_network_work():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "const refreshDashboard = useCallback(async () => {" in source
-    assert "await Promise.all([" in source
-    assert "api.getMetrics()" in source
+    assert "const refreshDashboard = useCallback(() => {" in source
+    assert "if (dashboardRefreshPromiseRef.current)" in source
+    assert "const refreshPromise = Promise.allSettled([" in source
+    assert "api.getMetrics(false)" in source
+    assert "api.getMetrics(true)" in source
     assert "setMetricsError('')" in source
-    assert "errorMessage(err, 'System metrics unavailable.')" in source
+    assert "errorMessage(metricsResult.reason, 'System metrics unavailable.')" in source
     assert "Metrics refresh failed. Showing last values." in source
     assert "System metrics unavailable." in source
 
 
-def test_react_app_lazy_loads_route_pages_for_smaller_initial_bundle():
+def test_react_app_lazy_loads_routes_and_runtime_panel():
     source = FRONTEND_APP.read_text(encoding="utf-8")
+    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
 
     assert "lazy," in source
     assert "Suspense," in source
-    assert "const DashboardPage = lazy(() => import('@/components/dashboard/DashboardPage'))" in source
-    assert "const GeneratorPage = lazy(() => import('@/components/generator/GeneratorPage'))" in source
-    assert "const ManagerPage = lazy(() => import('@/components/manager/ManagerPage'))" in source
-    assert "const MonitorPage = lazy(() => import('@/components/monitor/MonitorPage'))" in source
-    assert "const LauncherPage = lazy(() => import('@/components/launcher/LauncherPage'))" in source
+    assert "function lazyWithReload" in source
+    assert "const DashboardPage = lazyWithReload('dashboard'" in source
+    assert "const GeneratorPage = lazyWithReload('generator'" in source
+    assert "const ManagerPage = lazyWithReload('manager'" in source
+    assert "const MonitorPage = lazyWithReload('monitor'" in source
+    assert "const LauncherPage = lazyWithReload('launcher'" in source
+    assert "window.sessionStorage.setItem(storageKey, '1')" in source
+    assert "window.location.reload()" in source
+    assert "class RouteErrorBoundary" in source
+    assert '<RouteErrorBoundary key={`${location.pathname}${location.search}`}>' in source
     assert "<Suspense fallback={<RouteLoadingFallback />}>" in source
     assert "function RouteLoadingFallback()" in source
+    assert "const RuntimePanel = lazy(() => import('./RuntimePanel'))" in sidebar
+    assert "import RuntimePanel from './RuntimePanel'" not in sidebar
+    assert "<Suspense fallback={null}>" in sidebar
+    assert "{runtimeOpen && (" in sidebar
 
 
-def test_react_runtime_panel_is_lazy_loaded_to_keep_editor_out_of_initial_bundle():
-    source = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-
-    assert "const RuntimePanel = lazy(() => import('./RuntimePanel'))" in source
-    assert "import RuntimePanel from './RuntimePanel'" not in source
-    assert "<Suspense fallback={null}>" in source
-    assert "{runtimeOpen && (" in source
-
-
-def test_frontend_index_avoids_external_font_dependencies():
+def test_frontend_entrypoints_use_local_lightweight_assets():
     indexes = [
         FRONTEND_INDEX.read_text(encoding="utf-8"),
         STATIC_INDEX.read_text(encoding="utf-8"),
@@ -130,25 +140,16 @@ def test_frontend_index_avoids_external_font_dependencies():
     for index in indexes:
         assert "fonts.googleapis.com" not in index
         assert "fonts.gstatic.com" not in index
-
-
-def test_frontend_html_uses_only_local_runtime_assets():
-    indexes = [
-        FRONTEND_INDEX.read_text(encoding="utf-8"),
-        STATIC_INDEX.read_text(encoding="utf-8"),
-    ]
-
-    for index in indexes:
         assert 'href="http' not in index
         assert "href='http" not in index
         assert 'src="http' not in index
         assert "src='http" not in index
 
-
-def test_built_index_does_not_preload_codemirror_for_initial_shell():
-    index = STATIC_INDEX.read_text(encoding="utf-8")
-
-    assert "vendor-codemirror" not in index
+    assert "vendor-codemirror" not in indexes[1]
+    icon = FRONTEND_INDEX.parent / "public" / "pyruns.svg"
+    assert '<link rel="icon" type="image/svg+xml" href="/pyruns.svg" />' in indexes[0]
+    assert icon.exists()
+    assert "<svg" in icon.read_text(encoding="utf-8")
 
 
 def test_react_app_supports_direct_launcher_route():
@@ -157,6 +158,7 @@ def test_react_app_supports_direct_launcher_route():
     assert "useLocation" in source
     assert "useNavigate" in source
     assert "location.pathname === '/launcher'" in source
+    assert "setShowLauncher(searchParams.get('launcher') === '1' || location.pathname === '/launcher')" in source
     assert '<Route path="launcher" element={<DashboardPage />} />' in source
     assert "navigate('/', { replace: true })" in source
 
@@ -257,15 +259,6 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "Could not rename task" in task_detail
 
 
-def test_frontend_index_serves_branded_favicon_without_404():
-    index = FRONTEND_INDEX.read_text(encoding="utf-8")
-    icon = FRONTEND_INDEX.parent / "public" / "pyruns.svg"
-
-    assert '<link rel="icon" type="image/svg+xml" href="/pyruns.svg" />' in index
-    assert icon.exists()
-    assert "<svg" in icon.read_text(encoding="utf-8")
-
-
 def test_react_dashboard_uses_full_width_clear_workspace_layout():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
@@ -280,7 +273,7 @@ def test_react_dashboard_uses_full_width_clear_workspace_layout():
     assert "h-full overflow-y-auto bg-surface-base" in source
     assert "flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
     assert '<div className="p-3">' in source
-    assert "h-[10.5rem] w-full rounded-md border border-border-subtle" in source
+    assert "w-full rounded-md border border-border-subtle" in source
     assert "flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
     assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
     assert "Quick status glance." in source
@@ -332,20 +325,22 @@ def test_react_gpu_process_dialog_shows_process_owner():
     assert "<span>User</span>" in dashboard
     assert "process.user || 'unknown'" in dashboard
     assert "<span className=\"text-right\">Share</span>" in dashboard
-    assert "formatPercent(gpu.mem_total > 0 ? (process.memory_mb / gpu.mem_total) * 100 : 0)" in dashboard
+    assert "process.memory_mb == null || gpu.mem_total <= 0" in dashboard
+    assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
 
 
 def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4" in dashboard
+    assert "gpuCount > 1 && 'md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'" in dashboard
+    assert "wide={gpuCount === 1}" in dashboard
     assert "metrics.gpus.map(gpu =>" in dashboard
     assert "key={gpuKey(gpu)}" in dashboard
     assert "aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}" in dashboard
     assert "title={gpu.name}" in dashboard
     assert '<div className="p-3">' in dashboard
-    assert "h-[10.5rem] w-full rounded-md border border-border-subtle" in dashboard
+    assert "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'" in dashboard
 
 
 def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
@@ -378,12 +373,6 @@ def test_react_dashboard_supports_manual_refresh_and_richer_gpu_details():
     assert "formatPercent" in dashboard
 
 
-def test_react_monitor_sidebar_width_is_clamped():
-    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "Math.min(35, Math.max(10, sidebarWidthRaw))" in source
-
-
 def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
@@ -399,29 +388,39 @@ def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
     assert "{!compactMonitorLayout && (" in source
 
 
-def test_react_monitor_uses_unfiltered_full_task_list():
+def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "monitorTasks: Task[]" in store
-    assert "fetchMonitorTasks: () => Promise<void>" in store
+    assert "const MONITOR_TASK_PAGE_SIZE = 200" in store
+    assert "loadMore?: boolean" in store
+    assert "monitorHasMore: boolean" in store
     assert "upsertMonitorTask: (task: Task) => void" in store
-    assert "api.getTasks({ limit: 0, refresh: true, summary: true })" in store
-    assert "const { monitorTasks, fetchMonitorTasks, upsertMonitorTask } = useTaskStore()" in monitor
+    assert "limit: nextLimit" in store
+    assert "compact: true" in store
+    assert "limit: 0" not in store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
+    assert "fetchMonitorTasks({ query: sidebarQuery, refresh: true, workspaceKey })" in monitor
+    assert "fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
-    assert "usePolling(fetchMonitorTasks" in monitor
+    assert "useTaskEvents({" in monitor
+    assert "TASK_EVENT_FALLBACK_POLL_MS = 60_000" in monitor
+    assert "Load 200 more" in monitor
     assert 'title="Pinned Tasks"' in monitor
     assert "count={pinnedTasks.length}" in monitor
     assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
 
 
-def test_react_monitor_preserves_cross_page_selection_until_tasks_load():
+def test_react_monitor_preserves_selection_and_clears_only_after_confirmed_deletion():
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
-    assert "const [monitorTasksLoaded, setMonitorTasksLoaded] = useState(false)" in monitor
-    assert "setMonitorTasksLoaded(true)" in monitor
-    assert "if (!monitorTasksLoaded || !selectedTaskName) return" in monitor
-    assert "[monitorTasks, monitorTasksLoaded, selectedTaskName]" in monitor
+    assert "selectedTaskSnapshot" in monitor
+    assert "selectedTaskFromList" in monitor
+    assert "api.getTask(selectedTaskName, false)" in monitor
+    assert 'title="Current Task"' in monitor
+    assert "if (!selectedTaskName || selectedTaskFromList)" in monitor
+    assert "/not found/i.test(errorMessage(error))" in monitor
+    assert "selectedTaskName: null" in monitor
 
 
 def test_react_monitor_merges_run_action_response_before_next_poll():
@@ -436,21 +435,16 @@ def test_react_monitor_merges_run_action_response_before_next_poll():
     assert ": [task, ...state.monitorTasks]" in store
 
 
-def test_react_components_avoid_large_forced_corner_radius():
-    forbidden = ("rounded-xl", "rounded-2xl", "rounded-3xl")
-    offenders = []
-
-    for path in FRONTEND_COMPONENTS_DIR.rglob("*.tsx"):
-        source = path.read_text(encoding="utf-8")
-        for token in forbidden:
-            if token in source:
-                offenders.append(f"{path.relative_to(FRONTEND_COMPONENTS_DIR)}:{token}")
-
-    assert offenders == []
-
-
-def test_react_components_avoid_pill_borders_and_heavy_shadows():
-    forbidden = ("rounded-full border", "shadow-lg", "shadow-2xl", "linear-gradient")
+def test_react_components_avoid_excessive_rounding_and_shadows():
+    forbidden = (
+        "rounded-xl",
+        "rounded-2xl",
+        "rounded-3xl",
+        "rounded-full border",
+        "shadow-lg",
+        "shadow-2xl",
+        "linear-gradient",
+    )
     offenders = []
 
     for path in FRONTEND_COMPONENTS_DIR.rglob("*.tsx"):
@@ -470,7 +464,7 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     assert "clampSidebarWidth" in shell
     assert "startSidebarResize" in shell
     assert "pointermove" in shell
-    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in shell
+    assert "window.addEventListener('pointercancel', stopResize)" in shell
     assert "window.removeEventListener('pointercancel', stopResize)" in shell
     assert "pendingSidebarWidthRef" in shell
     assert "sidebarResizeFrameRef" in shell
@@ -521,27 +515,60 @@ def test_react_mobile_pages_constrain_empty_states_and_header_actions():
     assert "max-w-full break-words" in empty_state
 
 
-def test_react_manager_uses_single_column_cards_on_narrow_viewports():
+def test_react_manager_responsively_caps_card_columns_without_viewport_state():
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
 
-    assert "function readCompactTaskGrid()" in manager
-    assert "window.matchMedia('(max-width: 700px)')" in manager
-    assert "const effectiveTaskColumns = compactTaskGrid ? 1 : columns" in manager
-    assert "columns={effectiveTaskColumns}" in manager
+    assert "repeat(auto-fill, minmax(min(100%, max(15rem" in manager
+    assert "const renderedColumnCount = grid" in manager
+    assert "window.getComputedStyle(grid).gridTemplateColumns" in manager
+    assert "columns={columns}" in manager
+    assert "const TaskCard = memo(function TaskCard" in manager
+    assert "[content-visibility:auto]" in manager
+
+
+def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_locks():
+    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "status_counts?: TaskStatusCounts" in types
+    assert "statusCounts: TaskStatusCounts | null" in store
+    assert "statusCounts: page.status_counts ?? null" in store
+    assert "selectedIds: new Set()" in store
+    assert "Selection is page-scoped" in manager
+    assert "tasks.filter(task => selectedIds.has(task.name))" in manager
+    assert "pendingTaskActionsRef.current.has(taskName)" in manager
+    assert "const [bulkAction, setBulkAction]" in manager
+    assert "api.runTask(task.name)" in manager
+    assert "api.runTask(task.name, bulkExecutionMode)" not in manager
+    assert "Waiting for GPU capacity" in manager
+    assert "const deleted = new Set(result.deleted || [])" in manager
+    assert "Some tasks could not be deleted" in manager
+    assert "Stop ${activeSelectedCount} active task" in manager
+    assert "hasReorderChanges(allTasks.items, items)" in manager
+    assert "is already in this position" in manager
+    assert "Move ${task.name} earlier" in manager
+    assert "Move ${task.name} later" in manager
+    assert 'role="button"' in manager
+    assert "tabIndex={0}" in manager
+    assert "event.key === 'Enter' || event.key === ' '" in manager
+    assert "aria-pressed={selectMode ? selected : undefined}" in manager
+    assert "ManagerLoadingState" in manager
+    assert 'role="alert"' in manager
 
 
 def test_react_manager_batch_run_sends_worker_count_and_execution_mode():
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
 
-    assert "const [executionMode, setExecutionMode] = useState('thread')" in manager
+    assert "const [bulkExecutionMode, setBulkExecutionMode] = useState('thread')" in manager
     assert "const [maxWorkersInput, setMaxWorkersInput] = useState('2')" in manager
     assert "const normalizeWorkerInput = useCallback((value: string) => {" in manager
     assert "return Math.min(32, Math.max(1, parsed))" in manager
     assert "const maxWorkers = normalizeWorkerInput(maxWorkersInput)" in manager
     assert "setMaxWorkersInput(String(maxWorkers))" in manager
-    assert "await api.batchRunTasks(names, executionMode, maxWorkers)" in manager
-    assert "value={executionMode}" in manager
+    assert "await api.batchRunTasks(names, bulkExecutionMode, maxWorkers)" in manager
+    assert "value={bulkExecutionMode}" in manager
     assert '<option value="thread">Thread</option>' in manager
     assert '<option value="process">Process</option>' in manager
     assert "Workers" in manager
@@ -559,6 +586,29 @@ def test_react_generator_stacks_editor_and_settings_on_narrow_viewports():
     assert "compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1'" in generator
     assert "compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle'" in generator
     assert "style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}" in generator
+
+
+def test_react_generator_keeps_compact_toolbar_and_tree_content_usable():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "flex flex-col gap-2 border-b" in generator
+    assert "min-[701px]:flex-row" in generator
+    assert "w-full min-w-0 min-[701px]:w-auto min-[701px]:min-w-[280px]" in generator
+    assert "const [outlineCollapsed, setOutlineCollapsed] = useState(readCompactGeneratorLayout)" in generator
+    assert "if (query.matches)" in generator
+    assert "setOutlineCollapsed(true)" in generator
+
+
+def test_react_generator_batch_confirmation_uses_the_previewed_payload():
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "interface PreviewSnapshot" in generator
+    assert "const previewRequestSeqRef = useRef(0)" in generator
+    assert "const snapshot: PreviewSnapshot" in generator
+    assert "snapshot.inputKey !== generationInputKeyRef.current" in generator
+    assert "setPreviewSnapshot(snapshot)" in generator
+    assert "doCreate(previewSnapshot?.payload || currentGenerationPayload)" in generator
+    assert "setPreviewSnapshot(current => current?.inputKey === generationInputKey ? current : null)" in generator
 
 
 def test_react_generator_settings_panel_can_be_resized():
@@ -592,9 +642,10 @@ def test_react_icon_only_buttons_have_accessible_names():
     assert 'aria-label="Close task details"' in task_detail
     assert 'aria-label="Close dialog"' in confirm_dialog
     assert "aria-label={task.pinned ? `Unpin ${task.name}` : `Pin ${task.name}`}" in manager
-    assert "aria-label={`${actionBtn.label} ${task.name}`}" in manager
-    assert "aria-label={`View logs for ${task.name}`}" in manager
-    assert "aria-label={`Delete ${task.name}`}" in manager
+    assert "label={`${actionBtn.label} ${task.name}`}" in manager
+    assert "label={`View logs for ${task.name}`}" in manager
+    assert "label={`Delete ${task.name}`}" in manager
+    assert "aria-label={label}" in manager
     assert 'aria-label="Previous page"' in pagination
     assert 'aria-label="Next page"' in pagination
 
@@ -628,24 +679,46 @@ def test_react_task_detail_panel_can_be_resized_from_left_edge():
     assert "useState(() => buildEnvPairs(task))" in source
 
 
-def test_react_task_detail_env_rows_keep_stable_keys_while_editing():
+def test_react_task_detail_guards_async_updates_and_traps_modal_focus():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+
+    assert "const taskRequestSeqRef = useRef(0)" in source
+    assert "const currentTaskNameRef = useRef(task.name)" in source
+    assert "requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName" in source
+    assert 'role="dialog"' in source
+    assert 'aria-labelledby="task-detail-title"' in source
+    assert "window.addEventListener('keydown', handleKeyDown)" in source
+    assert "previousFocusRef" in source
+    assert 'role="tablist"' in source
+    assert 'role="tab"' in source
+    assert 'role="tabpanel"' in source
+
+
+def test_react_confirm_dialog_is_labelled_and_scrolls_on_short_viewports():
+    source = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
+
+    assert "const titleId = useId()" in source
+    assert "aria-labelledby={titleId}" in source
+    assert "aria-describedby={description ? descriptionId : undefined}" in source
+    assert "max-h-[calc(100dvh-1.5rem)]" in source
+    assert "w-[calc(100vw-1.5rem)]" in source
+    assert "w-full max-w-[calc(100vw-1.5rem)]" not in source
+    assert 'className="min-h-0 overflow-y-auto px-5 sm:px-6"' in source
+
+
+def test_react_task_detail_env_editor_handles_edits_feedback_and_errors():
     source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
 
     assert "type EnvPair" in source
     assert "id: string" in source
     assert "key={pair.id}" in source
     assert 'key={`${key}-${index}`}' not in source
-
-
-def test_react_task_detail_env_controls_have_clear_feedback_states():
-    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
-
     assert "type EnvSaveStatus" in source
     assert "function buildEnvPairsFromEnv" in source
     assert "function envSignature" in source
     assert "staleEnvPropSignatureRef" in source
     assert "staleEnvPropSignatureRef.current === envSignature(task.env || {})" in source
-    assert "const response = await api.updateEnv(task.name, env)" in source
+    assert "const response = await api.updateEnv(taskName, env)" in source
     assert "const savedEnv = response.task?.env || env" in source
     assert "setEnvPairs(buildEnvPairsFromEnv(savedEnv))" in source
     assert "getEnvValidationMessage(envPairs)" in source
@@ -657,11 +730,6 @@ def test_react_task_detail_env_controls_have_clear_feedback_states():
     assert "aria-label=\"Add environment variable\"" in source
     assert "setPendingEnvFocusId(pair.id)" in source
     assert "aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}" in source
-
-
-def test_react_task_detail_warns_before_discarding_unsaved_edits():
-    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
-
     assert "function requestClose" in source
     assert "const [discardConfirmOpen, setDiscardConfirmOpen]" in source
     assert "const renameDirty" in source
@@ -670,6 +738,8 @@ def test_react_task_detail_warns_before_discarding_unsaved_edits():
     assert 'title="Discard changes?"' in source
     assert "window.confirm('Discard unsaved changes?')" not in source
     assert "onClick={requestClose}" in source
+    assert "} catch (err) {" in source
+    assert "setEnvSaveError(errorMessage(err))" in source
 
 
 def test_react_manager_keeps_open_task_detail_synced_after_list_refresh():
@@ -699,9 +769,12 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "type DragTarget = 'pinned' | 'tasks'" in source
     assert "const DRAG_START_DISTANCE" in source
     assert "dragCandidateRef" in source
-    assert "suppressCardClickRef" in source
-    assert "function isInteractiveDragTarget" in source
-    assert "onPointerDown" in source
+    assert "suppressCardClickRef" not in source
+    assert "function isInteractiveDragTarget" not in source
+    assert 'data-task-drag-handle="true"' in source
+    assert "onPointerDown={event => onPointerDown(task, event)}" in source
+    article_open = source[source.index("<article"):source.index(">\n      {dropIndicator}")]
+    assert "onPointerDown" not in article_open
     assert "window.addEventListener('pointermove', handleGlobalPointerMove)" in source
     assert "data-task-drop-target=\"pinned\"" in source
     assert "data-task-drop-target=\"tasks\"" in source
@@ -727,8 +800,16 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
 
     assert "summary?: boolean" in api
     assert "sp.set('summary', String(params.summary))" in api
+    assert "sp.set('compact', String(params.compact))" in api
     assert "api.getTasks({ query, status: statusFilter, offset, limit, summary: true })" in store
-    assert "api.getTasks({ limit: 0, refresh: true, summary: true })" in store
+    assert "page.items.length === 0" in store
+    assert "Math.floor((page.total - 1) / limit) * limit" in store
+    assert "retryPage = await api.getTasks" in store
+    monitor_fetch = store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
+    assert "limit: nextLimit" in monitor_fetch
+    assert "summary: true" in monitor_fetch
+    assert "compact: true" in monitor_fetch
+    assert "limit: 0" not in monitor_fetch
     assert "api.getTask(task.name).then(fullTask" in manager
     assert "api.getTask(task.name).then(fullTask" in monitor
     assert "task.search_text || task.preview_text || ''" in manager
@@ -761,7 +842,7 @@ def test_react_theme_uses_more_readable_base_type_and_muted_text():
 
     assert "--text-secondary: #4b5563;" in css
     assert "--text-tertiary: #6b7280;" in css
-    assert "--text-tertiary: #71717a;" in css
+    assert "--text-tertiary: #929aa8;" in css
     assert "font-size: 14px;" in css
     assert "'2xs': ['12px', '16px']" in tailwind
     assert "xs: ['13px', '18px']" in tailwind
@@ -770,6 +851,7 @@ def test_react_theme_uses_more_readable_base_type_and_muted_text():
 def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
+    assert "Math.min(35, Math.max(10, sidebarWidthRaw))" in source
     assert "MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
     assert "clampMonitorSidebarWidth" in source
     assert "startMonitorSidebarResize" in source
@@ -782,6 +864,10 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     assert "window.cancelAnimationFrame(monitorResizeFrameRef.current)" in source
     assert "localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
     assert "aria-label=\"Resize monitor sidebar\"" in source
+    assert "resizeMonitorSidebarByKeyboard" in source
+    assert "aria-valuenow={Math.round(monitorSidebarWidthPct)}" in source
+    assert "event.key === 'Home'" in source
+    assert "event.key === 'End'" in source
     assert "cursor-col-resize" in source
     assert "style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}" in source
 
@@ -799,7 +885,7 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)" in source
     assert "chunkOffset <= nextOffset" in source
     assert "nextContent = appendMonitorLogContent(nextContent, chunk.content)" in source
-    assert "return { logContent: nextContent, logOffset: nextOffset }" in source
+    assert "return { logContent: nextContent, logOffset: nextOffset, logIdentity: nextIdentity }" in source
     assert "buffer.chunks.push(chunk)" in source
     assert "offset?: number" in types
     assert "log_file_name?: string" in types
@@ -815,9 +901,11 @@ def test_react_mobile_task_controls_keep_usable_touch_targets():
     assert "min-h-9 gap-1.5 rounded-md px-3 py-1.5 text-xs" in action_button
     assert "min-h-10" in sidebar
     assert "basis-[12rem]" in monitor
-    assert "'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors'" in monitor
-    assert "'absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay'" in manager
-    assert "'inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors'" in manager
+    assert "flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors" in monitor
+    assert "'absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors" in manager
+    assert "sm:right-2 sm:top-1.5 sm:h-9 sm:w-9" in manager
+    assert "'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors" in manager
+    assert "sm:h-9 sm:w-9" in manager
 
 
 def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
@@ -828,6 +916,9 @@ def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
     assert "const lineLimit = Math.max(0, Math.trunc(maxLines))" in store
     assert "content.charCodeAt(index) !== 10" in store
     assert "if (keptLines > lineLimit)" in store
+    assert "const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024" in store
+    assert "lineTrimmed.slice(-MAX_MONITOR_LOG_CHARS)" in store
+    assert "content.slice(-MAX_MONITOR_LOG_CHARS)" in store
     assert "charCodeAt(index) !== 13" not in store
     assert "function isPyrunsLifecycleChunk" in store
     assert "function comparableLogText" in store
@@ -837,28 +928,41 @@ def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
     assert "appendMonitorLogContent(state.logContent, logs.content)" in monitor
 
 
-def test_react_monitor_live_polls_queued_gpu_queue_log():
+def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reconnect():
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
     log_stream = FRONTEND_LOG_STREAM.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
 
     assert "const QUEUE_LOG_NAME = 'queue.log'" in monitor
     assert "selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName" in monitor
-    assert "selectedTask.status === 'running' || selectedTask.status === 'queued'" in monitor
-    assert "const isQueueLogSelected = selectedLog === QUEUE_LOG_NAME" in monitor
-    assert "&& (isViewingLiveRunLog || isQueueLogSelected)" in monitor
-    assert "const canUseLogStream = selectedTask?.status === 'running' && (!selectedLog || selectedLog === runLogName)" in monitor
+    assert "selectedTask.status === 'queued' && (!selectedLog || selectedLog === QUEUE_LOG_NAME)" in monitor
+    assert "const canUseLogStream = isLive" in monitor
     assert "onDisconnect?: () => void" in log_stream
+    assert "onStatusChange?: (status: LogStreamStatus) => void" in log_stream
+    assert "createLogStream(taskName: string, options:" in api
+    assert "sp.set('log_file_name', options.logFileName)" in api
+    assert "sp.set('offset', String(options.offset))" in api
+    assert "offsetRef.current = offset" in log_stream
+    assert "logIdentity: logIdentityRef.current" in log_stream
+    assert "[taskName, enabled, disconnect, generationKey, logFileName]" in log_stream
     assert "const onDisconnectRef = useRef(onDisconnect)" in log_stream
     assert "ws.onclose = () => {" in log_stream
     assert "onDisconnectRef.current?.()" in log_stream
     assert "ws.onclose = null" in log_stream
+    assert "LOG_STREAM_RECONNECT_BASE_MS" in log_stream
+    assert "window.setTimeout(connect, retryDelay)" in log_stream
     assert "const handleLogStreamDisconnect = useCallback(() => {" in monitor
     assert "flushLiveLogChunkBuffer()" in monitor
     assert "wsStreamActiveRef.current = false" in monitor
     assert "onDisconnect: handleLogStreamDisconnect" in monitor
+    assert "onStatusChange: handleLogStreamStatus" in monitor
     assert "enabled: !loading && isLive && canUseLogStream" in monitor
+    assert "logFileName: selectedLog || liveLogName || undefined" in monitor
+    assert "offset: logOffsetRef.current" in monitor
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
-    assert "usePolling(pollLiveLog, 1000, Boolean(isLive), false)" in monitor
+    assert "offset: currentOffset" in monitor
+    assert "tailLines: monitorScrollback" not in monitor[monitor.index("const pollLiveLog"):monitor.index("const filteredTasks")]
+    assert "usePolling(pollLiveLog, 1500, Boolean(isLive), false)" in monitor
     assert "queuedLiveLogTaskRef" in monitor
     assert "manualHistoricalLogRef" in monitor
     assert "const viewingQueueOrLiveLog = !selectedLog || selectedLog === QUEUE_LOG_NAME" in monitor
@@ -866,16 +970,94 @@ def test_react_monitor_live_polls_queued_gpu_queue_log():
     assert "taskStatus !== 'running'" in monitor
     assert "selectedLog && selectedLog !== QUEUE_LOG_NAME && selectedLog !== runLogName" in monitor
     assert "selectLogFile(runLogName)" in monitor
-    assert "logName !== QUEUE_LOG_NAME" in monitor
+    assert "queueToRunTransition" in monitor
+    assert "RUN_LOG_PATTERN.test(messageLog)" in monitor
 
-def test_react_monitor_memoizes_task_list_derivations_during_log_streaming():
+
+def test_react_monitor_isolates_workspace_and_resets_replaced_log_streams():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    log_stream = FRONTEND_LOG_STREAM.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "function resetMonitorWorkspace(nextWorkspaceKey: string)" in store
+    assert "monitorWorkspaceKey: nextWorkspaceKey" in store
+    assert "workspaceKey: nextWorkspaceKey" in store
+    assert "monitorTasks: []" in store
+    assert "selectedTaskName: null" in store
+    assert "logIdentity: ''" in store
+    assert "exportIds: new Set()" in store
+    assert "workspaceKey !== currentWorkspaceKey()" in store
+    assert "get().monitorWorkspaceKey !== workspaceKey" in store
+    assert "currentWorkspaceKey() !== workspaceKey" in store
+
+    assert "generationKey?: string" in log_stream
+    assert "generationKeyRef.current !== connectedGenerationKey" in log_stream
+    assert "msg.type === 'reset'" in log_stream
+    assert "type: 'chunk' | 'reset'" in types
+    assert "log_identity?: string" in types
+    assert "sp.set('log_identity', options.logIdentity)" in api
+    assert "message.type === 'reset'" in monitor
+    assert "pendingLiveLogChunkRef.current = { key: '', chunks: [] }" in monitor
+    assert "logContent: message.content || ''" in monitor
+    assert "Boolean(logs.reset)" in monitor
+    assert "generationKey: workspaceKey" in monitor
+    assert "detailWorkspaceKeyRef.current === workspaceKey" in monitor
+
+
+def test_react_monitor_uses_realtime_task_events_and_preserves_current_selection_after_actions():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    log_stream = FRONTEND_LOG_STREAM.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
+
+    assert "monitorStatusCounts: TaskStatusCounts | null" in store
+    assert "monitorStatusCounts: page.status_counts ?? null" in store
+    assert "background?: boolean" in store
+    assert "const background = Boolean(options.background)" in store
+    assert "createTaskEventStream" in api
+    assert "/api/tasks/events" in api
+    assert "export interface TaskEventMessage" in types
+    assert "type: 'ready' | 'changed' | 'heartbeat'" in types
+    assert "export function useTaskEvents" in log_stream
+    assert "message.type === 'ready'" in log_stream
+    assert "message.type === 'changed'" in log_stream
+    assert "generationKey: workspaceKey" in monitor
+    assert "TASK_EVENT_DEGRADED_POLL_MS = 5_000" in monitor
+    assert "TASK_EVENT_FALLBACK_POLL_MS = 60_000" in monitor
+    assert "document.addEventListener('visibilitychange', handleVisibilityChange)" in monitor
+    assert "Task list updates live" in monitor
+    assert "Task changes appear automatically" in monitor
+    assert "3s sync" not in monitor
+    assert "10s sync" not in monitor
+    assert "const stillSelected = workspaceKeyRef.current === requestedWorkspaceKey" in monitor
+    assert "&& selectedTaskNameRef.current === currentTaskName" in monitor
+    assert "if (stillSelected) {" in monitor
+    assert "await selectTask(currentTaskName)" in monitor
+
+
+def test_react_monitor_restores_terminal_focus_and_announces_search_count():
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "window.requestAnimationFrame(() => xtermRef.current?.focus())" in monitor
+    assert "closeTerminalSearch(false)" in monitor
+    assert 'aria-live="polite"' in monitor
+    assert 'aria-atomic="true"' in monitor
+    assert "Passes current thresholds" in monitor
+
+def test_react_monitor_memoizes_task_list_derivations_and_coalesces_task_events():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "useMemo" in source
-    assert "const selectedTask = useMemo(" in source
+    assert "const selectedTaskFromList = useMemo(" in source
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in source
-    assert "const hasActive = useMemo(" in source
-    assert "const filteredTasks = useMemo(" in source
+    assert "taskRefreshInFlightRef" in source
+    assert "taskRefreshQueuedRef" in source
+    assert "TASK_EVENT_REFRESH_DEBOUNCE_MS" in source
+    assert "refreshMonitorSnapshotRef.current()" in source
+    assert "const filteredTasks = monitorTasks" in source
     assert "const pinnedTasks = useMemo(" in source
     assert "const otherTasks = useMemo(" in source
     assert "const allExportSelected = useMemo(" in source
@@ -885,8 +1067,12 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "renderedLogRef" in source
-    assert "logContent.startsWith(previous.content)" in source
-    assert "const nextChunk = logContent.slice(previous.content.length)" in source
+    assert "appendedMonitorLogDelta" in source
+    assert "return previous ? null : ''" in source
+    assert "if (previous.endsWith(next))" in source
+    assert "next.startsWith(previous.slice(candidate))" in source
+    assert "const nextChunk = logOffset < previous.offset" in source
+    assert ": appendedMonitorLogDelta(previous.content, logContent)" in source
     assert "term.write(nextChunk)" in source
     assert "normalize_log_newlines" not in source
 
@@ -980,6 +1166,13 @@ def test_react_code_editor_has_no_horizontal_scrollbar():
     assert "white-space: pre-wrap;" not in css
 
 
+def test_react_shell_editor_uses_a_base_tag_before_definition_modifier():
+    editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
+
+    assert "return 'variableName.definition'" in editor
+    assert "return 'definition'" not in editor
+
+
 def test_react_runtime_panel_stays_compact_and_low_chrome():
     runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
     editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
@@ -993,13 +1186,32 @@ def test_react_runtime_panel_stays_compact_and_low_chrome():
     assert "aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}" in editor
 
 
-def test_monitor_clears_stale_selection_when_task_list_becomes_empty():
-    monitor = (FRONTEND_COMPONENTS_DIR / "monitor" / "MonitorPage.tsx").read_text(encoding="utf-8")
+def test_monitor_surfaces_structured_gpu_wait_and_bounded_log_tail_state():
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
-    assert "if (!monitorTasksLoaded || !selectedTaskName) return" in monitor
-    assert "monitorTasks.length === 0 || !selectedTaskName" not in monitor
-    assert "selectedTaskName: null" in monitor
-    assert "logContent: ''" in monitor
+    assert "GPUWaitPanel" in monitor
+    assert "Waiting for GPU capacity" in monitor
+    assert "requested_gpu_count" in monitor
+    assert "eligible_gpu_count" in monitor
+    assert "Why each GPU is waiting" in monitor
+    assert "logTailTruncated" in store
+    assert "tail_truncated?: boolean" in types
+    assert "Showing the latest" in monitor
+    assert "New output continues live." in monitor
+
+
+def test_monitor_prevents_duplicate_task_actions_and_exposes_stream_state():
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "taskActionPending" in monitor
+    assert "if (!selectedTaskName || !selectedTask || taskActionPending) return" in monitor
+    assert "disabled={taskActionPending !== null}" in monitor
+    assert "setTaskActionPending(null)" in monitor
+    assert 'aria-live="polite"' in monitor
+    assert "streamStatus === 'reconnecting'" in monitor
+    assert "incremental polling remains active while reconnecting" in monitor
 
 
 def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
@@ -1037,18 +1249,19 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "type RuntimePage = 'python' | 'env' | 'gpu'" in runtime_panel
-    assert "GPU Scheduler" in runtime_panel
-    assert "Task uses" in runtime_panel
-    assert "{ id: true, label: 'On' }" in runtime_panel
-    assert "Selection" in runtime_panel
+    assert "GPU scheduling" in runtime_panel
+    assert 'role="switch"' in runtime_panel
+    assert "aria-checked={gpuSchedulerEnabled}" in runtime_panel
+    assert "absolute left-[3px] top-[3px]" in runtime_panel
+    assert "gpuSchedulerEnabled ? 'translate-x-5' : 'translate-x-0'" in runtime_panel
+    assert "Advanced scheduling rules" in runtime_panel
     assert "Auto pick" in runtime_panel
-    assert "Specified IDs" in runtime_panel
-    assert "Custom Count" in runtime_panel
-    assert "GPU IDs" in runtime_panel
-    assert "Memory used below" in runtime_panel
-    assert "Free memory at least" in runtime_panel
-    assert "Compute below" in runtime_panel
-    assert "Max wait" in runtime_panel
+    assert "Specific indices" in runtime_panel
+    assert "GPU indices" in runtime_panel
+    assert "Maximum memory use" in runtime_panel
+    assert "Minimum free memory" in runtime_panel
+    assert "Maximum compute use" in runtime_panel
+    assert "Maximum wait" in runtime_panel
     assert "useState('40')" in runtime_panel
     assert "useState('15')" in runtime_panel
     assert "useState(48)" in runtime_panel
@@ -1057,12 +1270,13 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "setGpuSelectionMode(next.gpu_scheduler?.selection_mode === 'specified' ? 'specified' : 'auto')" in runtime_panel
     assert "setGpuRequireSameModel(next.gpu_scheduler?.require_same_gpu_model ?? false)" in runtime_panel
     assert "function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number)" in runtime_panel
-    assert "const chooseGpuTaskMode = (mode: GpuTaskMode) => {" in runtime_panel
     assert "return Array.from(new Set(" in runtime_panel
-    assert "const selectedGpuIds = parseDeviceIds(gpuDeviceIds)" in runtime_panel
-    assert "Specified IDs must contain exactly" in runtime_panel
-    assert "aria-pressed={gpuSchedulerEnabled === item.id}" in runtime_panel
-    assert "aria-pressed={gpuTaskMode === item.id}" in runtime_panel
+    assert "const selectedGpuIds = useMemo(() => parseDeviceIds(gpuDeviceIds)" in runtime_panel
+    assert "gpuValidationIssues" in runtime_panel
+    assert "free is not possible" in runtime_panel
+    assert "loadGpuMetrics" in runtime_panel
+    assert "passingGpuCount" in runtime_panel
+    assert "GPU UUIDs and MIG IDs are validated" in runtime_panel
     assert "aria-pressed={gpuSelectionMode === item.id}" in runtime_panel
     assert "min={1}" in runtime_panel
     assert "selection_mode: gpuSelectionMode" in runtime_panel
@@ -1072,10 +1286,10 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "stable_seconds: numberInputValue(gpuStableSeconds, 15, 1)" in runtime_panel
     assert "max_wait_seconds: gpuMaxWaitHours * 3600" in runtime_panel
     assert "require_same_gpu_model: gpuRequireSameModel" in runtime_panel
-    assert "Require same GPU model for multi-GPU" in runtime_panel
+    assert "Require the same model for multi-GPU tasks" in runtime_panel
     assert "sample_interval_seconds" not in runtime_panel
     assert "gpu_scheduler_sample_interval_seconds" not in runtime_panel
-    assert "disabled={saving}" in runtime_panel
+    assert "disabled={saving || gpuValidationIssues.length > 0}" in runtime_panel
     assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
     assert "GpuSchedulerSettings" in types
@@ -1104,6 +1318,23 @@ def test_react_launcher_modal_and_path_controls_fit_narrow_viewports():
     assert launcher.count("flex flex-col gap-2 sm:flex-row sm:items-center") >= 2
     assert launcher.count("w-full min-w-0 flex-1") >= 2
     assert launcher.count("sm:w-auto sm:flex-none") >= 2
+
+
+def test_react_launcher_modal_owns_focus_and_restores_the_trigger():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+
+    assert "const modalRef = useRef<HTMLDivElement>(null)" in launcher
+    assert "const previousFocusRef = useRef<HTMLElement | null>(null)" in launcher
+    assert "modalRef.current?.querySelectorAll<HTMLElement>" in launcher
+    assert "window.requestAnimationFrame" in launcher
+    assert "previousFocus?.isConnected" in launcher
+    assert "previousFocus !== document.body" in launcher
+    assert "[data-launcher-trigger=\"true\"]" in launcher
+    assert 'data-launcher-trigger="true"' in sidebar
+    assert 'aria-labelledby="launcher-dialog-title"' in launcher
+    assert 'aria-describedby="launcher-dialog-description"' in launcher
+    assert "event.key !== 'Tab'" in launcher
 
 
 def test_react_launcher_disables_browse_when_native_picker_unavailable():
@@ -1161,15 +1392,7 @@ def test_react_launcher_route_parameters_open_selected_workspace():
     assert "selectConfig(configParam)" in launcher
     assert "openSelectedWorkspace(scriptParam, configParam)" in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
-    assert "<LaunchChoiceTabs launchMode={launchMode} onChange={handleLaunchModeChange}" in launcher
-
-
-def test_react_task_env_save_shows_backend_error_detail():
-    detail_panel = FRONTEND_COMPONENTS_DIR / "manager" / "TaskDetailPanel.tsx"
-    source = detail_panel.read_text(encoding="utf-8")
-
-    assert "} catch (err) {" in source
-    assert "setEnvSaveError(errorMessage(err))" in source
+    assert "<LaunchChoiceTabs launchMode={launchMode} busy={loading} onChange={handleLaunchModeChange}" in launcher
 
 
 def test_react_launcher_fetch_does_not_clobber_newer_selection():
@@ -1178,6 +1401,35 @@ def test_react_launcher_fetch_does_not_clobber_newer_selection():
     assert "let launcherRequestSeq = 0" in store
     assert "const requestId = ++launcherRequestSeq" in store
     assert "if (requestId !== launcherRequestSeq)" in store
+
+
+def test_react_shared_stores_ignore_stale_async_responses():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+
+    assert "let runtimeRequestSeq = 0" in store
+    assert "let dashboardRequestSeq = 0" in store
+    assert "let generatorTemplateRequestSeq = 0" in store
+    assert "const requestId = ++runtimeRequestSeq" in store
+    assert "if (requestId === runtimeRequestSeq)" in store
+    assert "const requestId = ++dashboardRequestSeq" in store
+    assert "if (requestId === dashboardRequestSeq)" in store
+    assert "const requestId = ++generatorTemplateRequestSeq" in store
+    assert "if (requestId !== generatorTemplateRequestSeq)" in store
+
+
+def test_react_launcher_deduplicates_open_and_only_closes_after_success():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "let launcherOpenPromise: Promise<boolean> | null = null" in store
+    assert "if (launcherOpenPromise)" in store
+    assert "return launcherOpenPromise" in store
+    assert "return false" in store
+    assert "return true" in store
+    assert "const opened = await useLauncherStore.getState().openWorkspace()" in launcher
+    assert "if (!opened)" in launcher
+    assert "aria-busy={loading || undefined}" in launcher
+    assert "busy={loading}" in launcher
 
 
 def test_react_launcher_prompts_for_yaml_when_load_script_has_workspace_default():
@@ -1281,7 +1533,7 @@ def test_react_generator_has_tree_layout_and_expand_controls():
     assert "<SectionExpandControls onSetAllSections={onSetAllSections} />" in generator
     assert "layoutMode={formLayoutMode}" in generator
     assert "min-w-[280px]" in generator
-    assert "ml-auto flex flex-wrap items-center gap-2" in generator
+    assert "flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto" in generator
 
 
 def test_react_generator_grid_mode_keeps_sibling_fields_on_one_row():

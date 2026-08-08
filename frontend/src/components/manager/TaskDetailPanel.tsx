@@ -4,6 +4,7 @@ import {
   useEffect,
   useRef,
   type ComponentType,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import {
@@ -139,13 +140,19 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [resizingPanel, setResizingPanel] = useState(false)
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false)
   const previousTaskNameRef = useRef(task.name)
+  const currentTaskNameRef = useRef(task.name)
   const envKeyInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const suppressNextCloseRef = useRef(false)
   const backdropPointerStartedRef = useRef(false)
   const pendingPanelWidthRef = useRef(panelWidth)
   const panelResizeFrameRef = useRef<number | null>(null)
   const staleEnvPropSignatureRef = useRef('')
+  const panelRef = useRef<HTMLDivElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+  const taskRequestSeqRef = useRef(0)
   const notify = useToastStore(state => state.notify)
+  currentTaskNameRef.current = task.name
 
   const startPanelResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -159,6 +166,25 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setResizingPanel(true)
   }, [])
 
+  const resizePanelByKeyboard = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    let nextWidth: number | null = null
+    if (event.key === 'ArrowLeft') nextWidth = panelWidth + 16
+    if (event.key === 'ArrowRight') nextWidth = panelWidth - 16
+    if (event.key === 'Home') nextWidth = MIN_PANEL_WIDTH
+    if (event.key === 'End') nextWidth = MAX_PANEL_WIDTH
+    if (nextWidth == null) return
+
+    event.preventDefault()
+    const next = clampPanelWidth(nextWidth)
+    pendingPanelWidthRef.current = next
+    setPanelWidth(next)
+    try {
+      window.localStorage.setItem(TASK_DETAIL_WIDTH_STORAGE_KEY, String(next))
+    } catch {
+      // Keyboard resizing remains usable without persisted preferences.
+    }
+  }, [panelWidth])
+
   useEffect(() => {
     const previousTaskName = previousTaskNameRef.current
     previousTaskNameRef.current = task.name
@@ -171,6 +197,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setNotes(task.notes || '')
     setEnvPairs(buildEnvPairs(task))
     setNewName(task.name)
+    setSaving(false)
     setRenaming(false)
     setNotesDirty(false)
     setEnvDirty(false)
@@ -179,6 +206,10 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setPendingEnvFocusId(null)
     setDiscardConfirmOpen(false)
     staleEnvPropSignatureRef.current = ''
+  }, [task.name])
+
+  useEffect(() => () => {
+    taskRequestSeqRef.current += 1
   }, [task.name])
 
   useEffect(() => {
@@ -286,16 +317,20 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   }, [])
 
   const handleSaveNotes = useCallback(async () => {
+    const requestId = ++taskRequestSeqRef.current
+    const taskName = task.name
     setSaving(true)
     try {
-      await api.updateNotes(task.name, notes)
+      await api.updateNotes(taskName, notes)
+      if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       setNotesDirty(false)
       onRefresh()
-      notify({ tone: 'success', title: 'Notes saved', detail: task.name })
+      notify({ tone: 'success', title: 'Notes saved', detail: taskName })
     } catch (err) {
+      if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       notify({ tone: 'error', title: 'Could not save notes', detail: errorMessage(err) })
     } finally {
-      setSaving(false)
+      if (requestId === taskRequestSeqRef.current) setSaving(false)
     }
   }, [task.name, notes, onRefresh, notify])
 
@@ -307,6 +342,8 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       return
     }
 
+    const requestId = ++taskRequestSeqRef.current
+    const taskName = task.name
     setSaving(true)
     setEnvSaveStatus('idle')
     setEnvSaveError('')
@@ -316,7 +353,8 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
         .map(({ key, value }) => [key.trim(), value])
     )
     try {
-      const response = await api.updateEnv(task.name, env)
+      const response = await api.updateEnv(taskName, env)
+      if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       const savedEnv = response.task?.env || env
       staleEnvPropSignatureRef.current = envSignature(task.env || {})
       setEnvPairs(buildEnvPairsFromEnv(savedEnv))
@@ -324,10 +362,11 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       setEnvSaveStatus('saved')
       onRefresh()
     } catch (err) {
+      if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       setEnvSaveStatus('error')
       setEnvSaveError(errorMessage(err))
     } finally {
-      setSaving(false)
+      if (requestId === taskRequestSeqRef.current) setSaving(false)
     }
   }, [task.name, envPairs, onRefresh])
 
@@ -362,18 +401,24 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       return
     }
 
+    const requestId = ++taskRequestSeqRef.current
+    const taskName = task.name
     setSaving(true)
     try {
-      await api.renameTask(task.name, newName.trim())
+      await api.renameTask(taskName, newName.trim())
+      if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       onRefresh()
       onClose()
       notify({ tone: 'success', title: 'Task renamed', detail: newName.trim() })
     } catch (err) {
+      if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       setNewName(task.name)
       notify({ tone: 'error', title: 'Could not rename task', detail: errorMessage(err) })
     } finally {
-      setSaving(false)
-      setRenaming(false)
+      if (requestId === taskRequestSeqRef.current) {
+        setSaving(false)
+        setRenaming(false)
+      }
     }
   }, [task.name, newName, onRefresh, onClose, notify])
 
@@ -393,6 +438,54 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const renameDirty = renaming && newName.trim() !== '' && newName.trim() !== task.name
   const hasUnsavedChanges = notesDirty || envDirty || renameDirty
 
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus())
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      const previousFocus = previousFocusRef.current
+      if (previousFocus?.isConnected) previousFocus.focus()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (discardConfirmOpen) return
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        if (hasUnsavedChanges) setDiscardConfirmOpen(true)
+        else onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+
+      const focusable = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ) || []).filter(element => element.offsetParent !== null)
+      if (focusable.length === 0) {
+        event.preventDefault()
+        panelRef.current?.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (event.shiftKey && (active === first || !panelRef.current?.contains(active))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (active === last || !panelRef.current?.contains(active))) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [discardConfirmOpen, hasUnsavedChanges, onClose])
+
   return (
     <>
       <div className="fixed inset-0 z-50 flex justify-end">
@@ -409,6 +502,11 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           }}
         />
         <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="task-detail-title"
+          tabIndex={-1}
           className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
           style={{ width: panelWidth }}
           onPointerDown={() => {
@@ -416,11 +514,18 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           }}
           onClick={event => event.stopPropagation()}
         >
+        <span id="task-detail-title" className="sr-only">Task details for {task.name}</span>
         <button
           type="button"
+          role="separator"
+          tabIndex={0}
           aria-label="Resize task detail panel"
           aria-orientation="vertical"
+          aria-valuemin={Math.min(MIN_PANEL_WIDTH, clampPanelWidth(MAX_PANEL_WIDTH))}
+          aria-valuemax={clampPanelWidth(MAX_PANEL_WIDTH)}
+          aria-valuenow={panelWidth}
           onPointerDown={startPanelResize}
+          onKeyDown={resizePanelByKeyboard}
           className={clsx(
             'group absolute left-0 top-0 z-20 h-full w-5 -translate-x-2.5 cursor-col-resize touch-none focus:outline-none focus:ring-2 focus:ring-accent/35',
             resizingPanel ? 'bg-accent/10' : 'bg-transparent',
@@ -493,6 +598,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           </div>
 
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={requestClose}
             className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
@@ -503,12 +609,30 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           </button>
         </div>
 
-        <div className="flex gap-1 border-b border-border-subtle px-3 py-2">
+        <div role="tablist" aria-label="Task detail sections" className="flex gap-1 border-b border-border-subtle px-3 py-2">
           {tabs.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               type="button"
+              id={`task-detail-tab-${key}`}
+              role="tab"
+              aria-selected={tab === key}
+              aria-controls={`task-detail-panel-${key}`}
+              tabIndex={tab === key ? 0 : -1}
               onClick={() => setTab(key)}
+              onKeyDown={event => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                event.preventDefault()
+                const currentIndex = tabs.findIndex(item => item.key === key)
+                const nextIndex = event.key === 'Home'
+                  ? 0
+                  : event.key === 'End'
+                    ? tabs.length - 1
+                    : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+                const nextTab = tabs[nextIndex].key
+                setTab(nextTab)
+                panelRef.current?.querySelector<HTMLElement>(`#task-detail-tab-${nextTab}`)?.focus()
+              }}
               className={clsx(
                 'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
                 tab === key
@@ -522,7 +646,12 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div
+          id={`task-detail-panel-${tab}`}
+          role="tabpanel"
+          aria-labelledby={`task-detail-tab-${tab}`}
+          className="flex-1 overflow-y-auto p-4"
+        >
           {tab === 'info' && <InfoTab task={task} />}
           {tab === 'config' && <ConfigTab task={task} />}
           {tab === 'notes' && (

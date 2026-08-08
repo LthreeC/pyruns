@@ -80,6 +80,7 @@ export const getTasks = (params: {
   limit?: number
   refresh?: boolean
   summary?: boolean
+  compact?: boolean
 } = {}) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
@@ -88,11 +89,17 @@ export const getTasks = (params: {
   if (params.limit != null) sp.set('limit', String(params.limit))
   if (params.refresh != null) sp.set('refresh', String(params.refresh))
   if (params.summary != null) sp.set('summary', String(params.summary))
+  if (params.compact != null) sp.set('compact', String(params.compact))
   return request<TaskPage>(`/api/tasks?${sp}`)
 }
 
 export const getTask = (name: string, refresh = true) =>
   request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}`)
+
+export function createTaskEventStream(): WebSocket {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return new WebSocket(`${proto}//${location.host}/api/tasks/events`)
+}
 
 export const batchRunTasks = (taskNames: string[], executionMode?: string, maxWorkers?: number) =>
   request<{ count: number; items: Task[]; skipped: string[] }>('/api/tasks/batch/run', {
@@ -161,6 +168,7 @@ export const renameTask = (name: string, newName: string) =>
 export const getTaskLogs = (name: string, options: {
   logFileName?: string
   offset?: number
+  logIdentity?: string
   tailBytes?: number
   tailLines?: number
   chunkSize?: number
@@ -168,6 +176,7 @@ export const getTaskLogs = (name: string, options: {
   const sp = new URLSearchParams()
   if (options.logFileName) sp.set('log_file_name', options.logFileName)
   if (options.offset != null) sp.set('offset', String(options.offset))
+  if (options.logIdentity) sp.set('log_identity', options.logIdentity)
   if (options.tailBytes != null) sp.set('tail_bytes', String(options.tailBytes))
   if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
   if (options.chunkSize != null) sp.set('chunk_size', String(options.chunkSize))
@@ -177,16 +186,20 @@ export const getTaskLogs = (name: string, options: {
 export function createLogStream(taskName: string, options: {
   logFileName?: string
   offset?: number
+  logIdentity?: string
 } = {}): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const sp = new URLSearchParams()
   if (options.logFileName) sp.set('log_file_name', options.logFileName)
   if (options.offset != null) sp.set('offset', String(options.offset))
+  if (options.logIdentity) sp.set('log_identity', options.logIdentity)
   const query = sp.toString()
   return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream${query ? `?${query}` : ''}`)
 }
 
-export const getMetrics = () => request<SystemMetrics>('/api/system/metrics')
+export const getMetrics = (includeProcesses = false) => request<SystemMetrics>(
+  `/api/system/metrics?include_processes=${includeProcesses ? 'true' : 'false'}`,
+)
 
 export const getLauncherScripts = () => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts')
 export const getLauncherConfigs = (script: string) =>

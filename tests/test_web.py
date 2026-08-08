@@ -241,6 +241,79 @@ def test_log_websocket_rejects_cross_origin_browser_clients():
     assert exc_info.value.code == 4403
 
 
+def test_task_event_websocket_rejects_cross_origin_browser_clients():
+    client = TestClient(create_app(_RouteRuntime()))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/api/tasks/events",
+            headers={"Origin": "https://attacker.example", "Host": "testserver"},
+        ):
+            pass
+
+    assert exc_info.value.code == 4403
+
+
+def test_task_event_websocket_pushes_invalidations_and_releases_watch(tmp_path):
+    workspace = _make_workspace(tmp_path, "events")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    try:
+        with client.websocket_connect("/api/tasks/events") as websocket:
+            ready = websocket.receive_json()
+            assert ready == {"type": "ready", "revision": 0}
+            assert runtime.task_manager.has_reactive_watchers() is True
+
+            runtime.task_manager.trigger_update()
+            changed = websocket.receive_json()
+            assert changed == {"type": "changed", "revision": 1}
+
+        assert runtime.task_manager.has_reactive_watchers() is False
+    finally:
+        runtime.shutdown()
+
+
+def test_task_event_websocket_closes_when_workspace_changes(tmp_path):
+    workspace_a = _make_workspace(tmp_path, "event-a")
+    workspace_b = _make_workspace(tmp_path, "event-b")
+    _add_task(workspace_a, "alpha")
+    runtime = _build_runtime(workspace_a)
+    client = TestClient(create_app(runtime))
+
+    try:
+        with client.websocket_connect("/api/tasks/events") as websocket:
+            assert websocket.receive_json()["type"] == "ready"
+            old_manager = runtime.task_manager
+            runtime.change_run_root(str(workspace_b))
+            old_manager.trigger_update()
+
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_json()
+            assert exc_info.value.code == 4409
+    finally:
+        runtime.shutdown()
+
+
+def test_reactive_task_watch_discovers_external_task_changes(tmp_path):
+    workspace = _make_workspace(tmp_path, "external-events")
+    manager = TaskManager(tasks_dir=str(workspace / TASKS_DIR), lazy_scan=False)
+    changed = threading.Event()
+    manager.on_change(changed.set)
+    manager.acquire_reactive_watch()
+
+    try:
+        _add_task(workspace, "created-elsewhere")
+
+        assert changed.wait(3)
+        assert manager.get_task("created-elsewhere") is not None
+    finally:
+        manager.release_reactive_watch()
+        manager.off_change(changed.set)
+        manager.shutdown()
+
+
 def test_root_uses_fallback_html_when_static_bundle_is_missing(tmp_path, monkeypatch):
     from pyruns.web import app as web_app
 
@@ -1262,10 +1335,21 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
         "/api/tasks",
         params={"limit": 1, "refresh": True, "summary": True, "query": "tail_key: tail-value"},
     )
+    compact = client.get(
+        "/api/tasks",
+        params={
+            "limit": 1,
+            "refresh": False,
+            "summary": True,
+            "compact": True,
+            "query": "tail_key: tail-value",
+        },
+    )
 
     assert full.status_code == 200
     assert summary.status_code == 200
     assert matched.status_code == 200
+    assert compact.status_code == 200
     full_item = full.json()["items"][0]
     summary_item = summary.json()["items"][0]
     assert full_item["config"]
@@ -1281,6 +1365,89 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
     assert "tail_key:tail-value" in summary_item["search_text"]
     assert matched.json()["total"] == 1
     assert matched.json()["items"][0]["name"] == "alpha"
+    compact_item = compact.json()["items"][0]
+    assert compact_item["name"] == "alpha"
+    assert compact_item["search_text"] == ""
+    assert compact_item["preview_text"] == ""
+    assert compact_item["notes"] == ""
+    assert compact_item["env"] == {}
+    assert compact_item["start_times"] == []
+    assert len(compact.content) * 5 < len(summary.content)
+    assert matched.json()["status_counts"] == {
+        "pending": 0,
+        "queued": 0,
+        "running": 0,
+        "completed": 1,
+        "failed": 0,
+        "cancelled": 0,
+    }
+
+
+def test_tasks_endpoint_status_counts_are_global_before_filters_and_pagination(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed")
+    _add_task(workspace, "beta", status="failed")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get(
+        "/api/tasks",
+        params={"query": "alpha", "status": "Completed", "offset": 0, "limit": 1},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [item["name"] for item in payload["items"]] == ["alpha"]
+    assert payload["status_counts"]["completed"] == 1
+    assert payload["status_counts"]["failed"] == 1
+
+
+def test_tasks_endpoint_exposes_persisted_structured_gpu_wait_state(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "gpu-wait", status="queued")
+    task_dir = workspace / TASKS_DIR / "gpu-wait"
+    started_at = time.time() - 5
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update(
+            {
+                "queued_at": started_at,
+                "gpu_wait": {
+                    "state": "waiting",
+                    "run_index": 1,
+                    "started_at": started_at,
+                    "deadline_at": started_at + 60,
+                    "max_wait_seconds": 60,
+                    "requested_gpu_count": 1,
+                    "eligible_gpu_count": 0,
+                    "total_gpu_count": 1,
+                    "reason": "GPU 0 free 23.0 GiB < 40 GiB",
+                    "devices": [
+                        {
+                            "index": 0,
+                            "uuid": "GPU-0",
+                            "eligible": False,
+                            "reason": "GPU 0 free 23.0 GiB < 40 GiB",
+                        }
+                    ],
+                    "updated_at": started_at,
+                },
+            }
+        ),
+    )
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/tasks", params={"summary": True, "limit": 1})
+
+    assert response.status_code == 200
+    wait = response.json()["items"][0]["gpu_wait"]
+    assert wait["waited_seconds"] >= 4
+    assert wait["remaining_seconds"] > 0
+    assert wait["requested_gpu_count"] == 1
+    assert wait["eligible_gpu_count"] == 0
+    assert wait["devices"][0]["reason"]
 
 
 def test_launcher_endpoints_discover_scripts_configs_and_workspaces(tmp_path, monkeypatch):
@@ -1999,7 +2166,7 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
     assert "line 3" not in content
 
 
-def test_logs_endpoint_tails_requested_lines_without_hidden_byte_cap(tmp_path):
+def test_logs_endpoint_caps_large_initial_tail_by_server_byte_budget(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     log_text = "first\n" + ("x" * 5_000_001) + "\nlast\n"
     _add_task(workspace, "alpha", status="running", log_text=log_text)
@@ -2011,8 +2178,20 @@ def test_logs_endpoint_tails_requested_lines_without_hidden_byte_cap(tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["content"].replace("\r", "") == log_text
+    content = payload["content"].replace("\r", "")
+    assert payload["tail_truncated"] is True
+    assert payload["tail_limit_bytes"] == 4 * 1024 * 1024
+    assert len(payload["content"].encode("utf-8")) <= payload["tail_limit_bytes"]
+    assert content.endswith("\nlast\n")
+    assert not content.startswith("first\n")
     assert payload["offset"] == len(log_text)
+
+    oversized = client.get(
+        "/api/tasks/alpha/logs",
+        params={"tail_lines": 100, "tail_bytes": 50_000_000},
+    ).json()
+    assert oversized["tail_limit_bytes"] == 4 * 1024 * 1024
+    assert len(oversized["content"].encode("utf-8")) <= oversized["tail_limit_bytes"]
 
 
 def test_logs_endpoint_only_caps_tail_lines_when_tail_bytes_is_explicit(tmp_path):
@@ -2029,6 +2208,8 @@ def test_logs_endpoint_only_caps_tail_lines_when_tail_bytes_is_explicit(tmp_path
     payload = response.json()
     assert payload["content"].replace("\r", "") == "B" * 15 + "\n"
     assert payload["offset"] == len(log_text)
+    assert payload["tail_truncated"] is True
+    assert payload["tail_limit_bytes"] == 16
 
 
 def test_logs_endpoint_tails_terminal_rows_without_counting_progress_carriage_returns(tmp_path):
@@ -2059,6 +2240,52 @@ def test_logs_endpoint_caps_incremental_reads_by_chunk_size(tmp_path):
     payload = response.json()
     assert payload["content"].replace("\r", "") == "line 1\n"
     assert payload["offset"] == len(payload["content"].encode("utf-8"))
+
+
+def test_logs_endpoint_resets_incremental_reader_after_truncate_and_rotation(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running", log_text="old output that is deliberately long\n")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    initial = client.get(
+        "/api/tasks/alpha/logs",
+        params={"log_file_name": "run1.log", "tail_lines": 20},
+    ).json()
+    assert initial["log_identity"]
+
+    log_file.write_text("new\n", encoding="utf-8")
+    truncated = client.get(
+        "/api/tasks/alpha/logs",
+        params={
+            "log_file_name": "run1.log",
+            "offset": initial["offset"],
+            "log_identity": initial["log_identity"],
+            "chunk_size": 64 * 1024,
+        },
+    ).json()
+    assert truncated["reset"] is True
+    assert truncated["content"].replace("\r", "") == "new\n"
+    assert truncated["offset"] == log_file.stat().st_size
+
+    rotated_path = log_file.with_suffix(".previous")
+    log_file.replace(rotated_path)
+    replacement_text = "replacement file is longer than the previous offset\n"
+    log_file.write_text(replacement_text, encoding="utf-8")
+    rotated = client.get(
+        "/api/tasks/alpha/logs",
+        params={
+            "log_file_name": "run1.log",
+            "offset": truncated["offset"],
+            "log_identity": truncated["log_identity"],
+            "chunk_size": 64 * 1024,
+        },
+    ).json()
+    assert rotated["reset"] is True
+    assert rotated["log_identity"] != truncated["log_identity"]
+    assert rotated["content"].replace("\r", "") == replacement_text
+    assert rotated["offset"] == log_file.stat().st_size
 
 
 def test_template_content_and_generator_create_endpoints(tmp_path):
@@ -2669,6 +2896,48 @@ def test_logs_websocket_stream_catches_up_from_client_offset(tmp_path):
     assert payload["log_file_name"] == "run1.log"
 
 
+def test_logs_websocket_resets_after_live_log_is_truncated(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    log_file.write_text("existing output that is longer than the replacement\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    initial = client.get(
+        "/api/tasks/alpha/logs",
+        params={"log_file_name": "run1.log", "tail_lines": 20},
+    ).json()
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if (
+            kwargs.get("offset") == initial["offset"]
+            and kwargs.get("log_identity") == initial["log_identity"]
+        ):
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    stream_url = (
+        "/api/tasks/alpha/logs/stream?log_file_name=run1.log"
+        f"&offset={initial['offset']}&log_identity={initial['log_identity']}"
+    )
+    with client.websocket_connect(stream_url) as websocket:
+        assert initialized.wait(2)
+        log_file.write_text("new\n", encoding="utf-8")
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "reset"
+    assert payload["task_name"] == "alpha"
+    assert payload["log_file_name"] == "run1.log"
+    assert payload["log_identity"] == initial["log_identity"]
+    assert payload["content"].replace("\r", "") == "new\n"
+    assert payload["offset"] == log_file.stat().st_size
+
+
 def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -2697,6 +2966,47 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
     assert payload["task_name"] == "alpha"
     assert payload["content"].replace("\r\n", "\n") == "file fallback chunk\n"
     assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_stream_tails_queued_gpu_log_from_client_offset(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("waiting\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    initial = client.get(
+        "/api/tasks/alpha/logs",
+        params={"log_file_name": "queue.log", "tail_lines": 20},
+    )
+    assert initial.status_code == 200
+    offset = initial.json()["offset"]
+
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("log_file_name") == "queue.log" and kwargs.get("offset") == offset:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    with client.websocket_connect(
+        f"/api/tasks/alpha/logs/stream?log_file_name=queue.log&offset={offset}"
+    ) as websocket:
+        assert initialized.wait(2)
+        with queue_log.open("a", encoding="utf-8", newline="") as handle:
+            handle.write("\rstill waiting")
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["task_name"] == "alpha"
+    assert payload["log_file_name"] == "queue.log"
+    assert payload["content"] == "\rstill waiting"
+    assert payload["offset"] == queue_log.stat().st_size
 
 
 def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_path):

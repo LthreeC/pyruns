@@ -2,6 +2,33 @@ export type TaskKind = 'python' | 'shell'
 export type WorkspaceKind = 'script' | 'shell'
 export type GeneratorMode = 'form' | 'yaml' | 'shell'
 
+export interface GPUWaitDeviceStatus {
+  index: number
+  uuid?: string
+  name?: string
+  eligible: boolean
+  reason?: string
+  memory_used_pct?: number | null
+  free_memory_gb?: number | null
+  compute_util_pct?: number | null
+}
+
+export interface GPUWaitStatus {
+  state: 'waiting' | 'assigned' | 'timed_out' | string
+  run_index?: number
+  started_at?: number | string | null
+  deadline_at?: number | string | null
+  waited_seconds?: number
+  remaining_seconds?: number
+  max_wait_seconds?: number
+  requested_gpu_count?: number
+  eligible_gpu_count?: number
+  total_gpu_count?: number
+  reason?: string
+  updated_at?: number | string | null
+  devices?: GPUWaitDeviceStatus[]
+}
+
 export interface Task {
   name: string
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -28,6 +55,7 @@ export interface Task {
   search_text: string
   records: any[]
   tracks: any[]
+  gpu_wait?: GPUWaitStatus | null
   _load_error?: string
 }
 
@@ -37,7 +65,10 @@ export interface TaskPage {
   offset: number
   limit: number
   has_more: boolean
+  status_counts?: TaskStatusCounts
 }
+
+export type TaskStatusCounts = Record<Task['status'], number>
 
 export interface WorkspaceInfo {
   run_root: string
@@ -171,21 +202,31 @@ export interface TaskLogs {
   available_logs: string[]
   content: string
   offset: number
+  reset?: boolean
+  log_identity?: string
+  tail_truncated?: boolean
+  tail_limit_bytes?: number
 }
 
 export interface LogStreamMessage {
-  type: 'chunk'
+  type: 'chunk' | 'reset'
   task_name: string
   content: string
   offset?: number
   log_file_name?: string
+  log_identity?: string
+}
+
+export interface TaskEventMessage {
+  type: 'ready' | 'changed' | 'heartbeat'
+  revision: number
 }
 
 export interface GPUProcessInfo {
   pid: number
   user: string
   name: string
-  memory_mb: number
+  memory_mb: number | null
 }
 
 export interface GPUMetric {

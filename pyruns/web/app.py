@@ -20,8 +20,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pyruns import __version__
-from pyruns._config import DEFAULT_UI_PORT, QUEUE_LOG_FILENAME
+from pyruns._config import DEFAULT_UI_PORT, QUEUE_LOG_FILENAME, RUN_LOGS_DIR
 from pyruns.utils.events import log_emitter
+from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.web.runtime import PyrunsRuntime
 from pyruns.utils import get_logger
@@ -32,12 +33,40 @@ LOG_STREAM_QUEUE_LIMIT = 256
 LOG_STREAM_TAIL_INTERVAL_SEC = 0.5
 LOG_STREAM_TAIL_CHUNK_SIZE = 64 * 1024
 LOG_STREAM_EMITTER_QUIET_SEC = 2.0
+TASK_EVENT_HEARTBEAT_SEC = 15.0
 LOG_STREAM_DROPPED_NOTICE = (
     "[pyruns] Live log stream skipped older buffered output; "
     "open the log file for full history.\n"
 )
 _LOCAL_WEB_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _ASGI_TEST_HOST = "testserver"
+
+
+def _compact_monitor_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Strip detail/search fields after server-side filtering for Monitor polling."""
+
+    item = dict(task)
+    item.update(
+        {
+            "config": {},
+            "config_text": "",
+            "log": "",
+            "env": {},
+            "cmd": None,
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+            "durations": [],
+            "exit_codes": [],
+            "source_states": [],
+            "records": [],
+            "tracks": [],
+            "notes": "",
+            "preview_text": "",
+            "search_text": "",
+        }
+    )
+    return item
 
 
 def _authority_parts(
@@ -530,6 +559,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         limit: int = 50,
         refresh: bool = True,
         summary: bool = False,
+        compact: bool = False,
     ) -> dict[str, Any]:
         page = get_runtime().list_tasks(
             query=query,
@@ -539,12 +569,14 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             refresh=refresh,
             summary=summary,
         )
+        items = [_compact_monitor_task(item) for item in page.items] if compact else page.items
         return {
-            "items": page.items,
+            "items": items,
             "total": page.total,
             "offset": page.offset,
             "limit": page.limit,
             "has_more": page.has_more,
+            "status_counts": page.status_counts,
         }
 
     @app.post("/api/tasks/reorder")
@@ -665,6 +697,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         task_name: str,
         log_file_name: str | None = None,
         offset: int | None = Query(default=None),
+        log_identity: str | None = Query(default=None),
         tail_bytes: int | None = Query(default=None),
         tail_lines: int | None = Query(default=None),
         chunk_size: int | None = Query(default=None),
@@ -674,6 +707,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 task_name,
                 log_file_name=log_file_name,
                 offset=offset,
+                log_identity=log_identity,
                 tail_bytes=tail_bytes,
                 tail_lines=tail_lines,
                 chunk_size=chunk_size,
@@ -681,12 +715,102 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
 
+    @app.websocket("/api/tasks/events")
+    async def stream_task_events(websocket: WebSocket) -> None:
+        """Push task-list invalidations and keep low-frequency polling as a fallback."""
+        host = websocket.headers.get("host", "")
+        origin = websocket.headers.get("origin")
+        allow_test_host = websocket.client is not None and websocket.client.host == "testclient"
+        if not _is_allowed_local_host(host, scheme="http", allow_test_host=allow_test_host) or (
+            origin and not _origin_matches_request(
+                origin,
+                host,
+                scheme="http",
+                allow_test_host=allow_test_host,
+            )
+        ):
+            await websocket.close(code=4403, reason="Forbidden origin")
+            return
+
+        runtime = get_runtime()
+        runtime.ensure_tasks_loaded(full_refresh=False)
+        stream_manager = runtime.task_manager
+        stream_root = os.path.normcase(os.path.abspath(runtime.root_dir))
+        await websocket.accept()
+
+        loop = asyncio.get_running_loop()
+        changes: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
+        disconnected = asyncio.Event()
+
+        def on_change() -> None:
+            def enqueue() -> None:
+                if not disconnected.is_set() and changes.empty():
+                    changes.put_nowait(None)
+
+            try:
+                loop.call_soon_threadsafe(enqueue)
+            except RuntimeError:
+                pass
+
+        async def send_events() -> None:
+            revision = 0
+            await websocket.send_json({"type": "ready", "revision": revision})
+            while not disconnected.is_set():
+                try:
+                    await asyncio.wait_for(changes.get(), timeout=TASK_EVENT_HEARTBEAT_SEC)
+                    revision += 1
+                    payload = {"type": "changed", "revision": revision}
+                except asyncio.TimeoutError:
+                    payload = {"type": "heartbeat", "revision": revision}
+
+                current_root = os.path.normcase(os.path.abspath(runtime.root_dir))
+                if current_root != stream_root or runtime.task_manager is not stream_manager:
+                    await websocket.close(code=4409, reason="Workspace changed")
+                    disconnected.set()
+                    return
+                await websocket.send_json(payload)
+
+        async def receive_client_messages() -> None:
+            try:
+                while True:
+                    await websocket.receive_text()
+            except WebSocketDisconnect:
+                pass
+            finally:
+                disconnected.set()
+
+        stream_manager.acquire_reactive_watch()
+        stream_manager.on_change(on_change)
+        sender = asyncio.create_task(send_events())
+        receiver = asyncio.create_task(receive_client_messages())
+        try:
+            done, pending = await asyncio.wait(
+                {sender, receiver},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done | pending:
+                try:
+                    await task
+                except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
+                    pass
+        finally:
+            disconnected.set()
+            stream_manager.off_change(on_change)
+            stream_manager.release_reactive_watch()
+            try:
+                await websocket.close(code=1000)
+            except RuntimeError:
+                pass
+
     @app.websocket("/api/tasks/{task_name}/logs/stream")
     async def stream_task_logs(
         websocket: WebSocket,
         task_name: str,
         log_file_name: str | None = None,
         offset: int | None = Query(default=None),
+        log_identity: str | None = Query(default=None),
     ) -> None:
         host = websocket.headers.get("host", "")
         origin = websocket.headers.get("origin")
@@ -711,6 +835,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
         requested_log_name = str(log_file_name or "").strip()
         requested_offset = None if offset is None else max(0, int(offset))
+        requested_identity = str(log_identity or "").strip()
         await websocket.accept()
         loop = asyncio.get_running_loop()
         log_emitter.bind_loop(loop)
@@ -719,6 +844,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         dropped_notice_sent = False
         stream_log_name = ""
         stream_offset = 0
+        stream_identity = ""
         stream_offsets: dict[str, int] = {}
         stream_initialized = False
         last_emitter_chunk_at = 0.0
@@ -743,7 +869,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 logger.debug("Dropping live log chunk for %s because websocket queue is full", task_name)
 
         def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
-            nonlocal last_emitter_chunk_at, stream_log_name, stream_offset
+            nonlocal last_emitter_chunk_at, stream_log_name, stream_offset, stream_identity
             if disconnected.is_set():
                 return
             last_emitter_chunk_at = time.monotonic()
@@ -751,6 +877,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             if chunk_log_name and stream_log_name == QUEUE_LOG_FILENAME and chunk_log_name != stream_log_name:
                 stream_log_name = chunk_log_name
                 stream_offset = stream_offsets.get(chunk_log_name, 0)
+                stream_identity = ""
             message = {
                 "type": "chunk",
                 "task_name": task_name,
@@ -758,6 +885,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             }
             if chunk_log_name:
                 message["log_file_name"] = chunk_log_name
+            if stream_identity:
+                message["log_identity"] = stream_identity
             offset = (metadata or {}).get("offset")
             if offset is not None:
                 try:
@@ -775,7 +904,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             enqueue_message(message)
 
         async def tail_log_file() -> None:
-            nonlocal stream_initialized, stream_log_name, stream_offset
+            nonlocal stream_initialized, stream_log_name, stream_offset, stream_identity
             while not disconnected.is_set():
                 try:
                     current_task = runtime.get_task(task_name, refresh=False)
@@ -801,23 +930,60 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 task_name,
                                 log_file_name=requested_log_name or None,
                                 offset=requested_offset,
+                                log_identity=requested_identity or None,
                                 chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
                             )
                         stream_log_name = str(payload.get("selected_log") or "")
                         stream_offset = max(0, int(payload.get("offset") or 0))
+                        stream_identity = str(payload.get("log_identity") or "")
                         if stream_log_name:
                             stream_offsets[stream_log_name] = stream_offset
                         content = str(payload.get("content") or "")
-                        if requested_offset is not None and content:
+                        if requested_offset is not None and (content or payload.get("reset")):
                             enqueue_message({
-                                "type": "chunk",
+                                "type": "reset" if payload.get("reset") else "chunk",
                                 "task_name": task_name,
                                 "content": content,
                                 "offset": stream_offset,
                                 "log_file_name": stream_log_name,
+                                "log_identity": stream_identity,
                             })
                         stream_initialized = True
                     elif stream_log_name:
+                        stream_path = os.path.join(stream_task_dir, RUN_LOGS_DIR, stream_log_name)
+                        current_identity = log_file_identity(stream_path)
+                        try:
+                            current_size = os.path.getsize(stream_path)
+                        except OSError:
+                            current_size = 0
+                        identity_changed = bool(
+                            stream_identity
+                            and current_identity
+                            and current_identity != stream_identity
+                        )
+                        if identity_changed or current_size < stream_offset:
+                            payload = await asyncio.to_thread(
+                                runtime.get_task_logs,
+                                task_name,
+                                log_file_name=stream_log_name,
+                                offset=stream_offset,
+                                log_identity=stream_identity or None,
+                                chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                            )
+                            stream_offset = max(0, int(payload.get("offset") or 0))
+                            stream_identity = str(payload.get("log_identity") or current_identity or "")
+                            stream_offsets[stream_log_name] = stream_offset
+                            enqueue_message({
+                                "type": "reset",
+                                "task_name": task_name,
+                                "content": str(payload.get("content") or ""),
+                                "offset": stream_offset,
+                                "log_file_name": stream_log_name,
+                                "log_identity": stream_identity,
+                            })
+                            continue
+                        if not stream_identity and current_identity:
+                            stream_identity = current_identity
                         emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC
                         if emitter_quiet:
                             switched_log = False
@@ -827,6 +993,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 if selected_log != stream_log_name:
                                     stream_log_name = selected_log
                                     stream_offset = stream_offsets.get(selected_log, 0)
+                                    stream_identity = ""
                                     switched_log = True
                             if not switched_log:
                                 read_offset = stream_offset
@@ -835,17 +1002,33 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                     task_name,
                                     log_file_name=stream_log_name,
                                     offset=read_offset,
+                                    log_identity=stream_identity or None,
                                     chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
                                 )
                                 selected_log = str(payload.get("selected_log") or stream_log_name)
                                 new_offset = max(0, int(payload.get("offset") or read_offset))
+                                new_identity = str(payload.get("log_identity") or stream_identity or "")
                                 if selected_log != stream_log_name:
                                     stream_log_name = selected_log
                                     stream_offset = new_offset
+                                    stream_identity = new_identity
                                     stream_offsets[selected_log] = new_offset
+                                elif payload.get("reset"):
+                                    stream_offset = new_offset
+                                    stream_identity = new_identity
+                                    stream_offsets[stream_log_name] = new_offset
+                                    enqueue_message({
+                                        "type": "reset",
+                                        "task_name": task_name,
+                                        "content": str(payload.get("content") or ""),
+                                        "offset": new_offset,
+                                        "log_file_name": stream_log_name,
+                                        "log_identity": stream_identity,
+                                    })
                                 elif new_offset > stream_offset:
                                     content = str(payload.get("content") or "")
                                     stream_offset = new_offset
+                                    stream_identity = new_identity
                                     stream_offsets[stream_log_name] = new_offset
                                     if content:
                                         enqueue_message({
@@ -854,6 +1037,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                             "content": content,
                                             "offset": new_offset,
                                             "log_file_name": stream_log_name,
+                                            "log_identity": stream_identity,
                                         })
                 except Exception as exc:
                     logger.debug("Log file tail fallback failed for %s: %s", task_name, exc)
@@ -910,8 +1094,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 pass
 
     @app.get("/api/system/metrics")
-    def get_metrics() -> dict[str, Any]:
-        return get_runtime().get_metrics()
+    def get_metrics(include_processes: bool = False) -> dict[str, Any]:
+        return get_runtime().get_metrics(include_processes=include_processes)
 
     if dist_dir is not None:
 
