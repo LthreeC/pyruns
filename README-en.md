@@ -85,7 +85,7 @@ Commands:
 | `init` | initialize a shell or Python script workspace |
 | `exec` | create and run one tracked terminal command or shell script |
 | `add` | add immutable task snapshots from YAML |
-| `run` | run one or more exact task names |
+| `run` | run exact tasks, or create and run them from YAML |
 | `ls` | filter and sort tasks deterministically |
 | `status` | summarize one workspace |
 | `show` | show task metadata and paths |
@@ -147,11 +147,11 @@ Pyruns already sets `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and `PYTHONU
 
 `--env-file` is repeatable; later files override earlier files and command-line `-e` values override all files. Files accept blank lines, whole-line `#` comments, and `KEY=VALUE` only. Values are persisted in task metadata, so do not store secrets there.
 
-Preview an execution with no filesystem or process side effects; add global `--json` for a stable plan object:
+Preview an execution with no filesystem or process side effects; append `--json` for a stable plan object:
 
 ```bash
 pyr exec --dry-run -n report -- python eval.py
-pyr --json exec --dry-run -n report -- python eval.py
+pyr exec --dry-run -n report --json -- python eval.py
 ```
 
 The preview does not create `_pyruns_`, tasks, or settings files, and it does not start the user command.
@@ -171,11 +171,11 @@ Use it for `argparse`, `pyruns.load()`, YAML configuration, batch expansion, and
 pyr init train.py
 pyr -w train add configs/quick.yaml
 pyr -w train run quick
-pyr -w train run --from configs/sweep.yaml -n sweep -j 4
-pyr -w train run --from configs/sweep.yaml -n sweep -j 4 --dry-run
+pyr -w train run --config configs/sweep.yaml -n sweep -j 4
+pyr -w train run --config configs/sweep.yaml -n sweep -j 4 --dry-run
 ```
 
-`run --from ... --dry-run` validates the YAML and lists expanded task candidates without creating or running them.
+`run --config ... --dry-run` validates the YAML and lists expanded task candidates without creating or running them.
 
 ```text
 <project>/_pyruns_/train/tasks/<task>/
@@ -281,30 +281,29 @@ pyr -w train restore baseline-lr1e3
 
 ## JSON and automation
 
-Place global `--json` before the command:
+Append `--json` only to commands that advertise machine output:
 
 ```bash
-pyr --json -w shell ls
-pyr --json -w shell status
-pyr --json -w shell show smoke
-pyr --json -w shell show smoke@2
-pyr --json -w shell show smoke --run 2
-pyr --json -w shell log smoke --path
-pyr --json -w shell log smoke@2 --path
-pyr --json config list
-pyr --json metrics
+pyr -w shell ls --json
+pyr -w shell status --json
+pyr -w shell show smoke --json
+pyr -w shell show smoke@2 --json
+pyr -w shell show smoke --run 2 --json
+pyr -w shell log smoke --path --json
+pyr -w shell log smoke@2 --path --json
+pyr config list --json
+pyr metrics --json
 ```
 
 Logs are raw stdout by default; use `log --path` for a structured reference. Exports go to stdout unless a file is selected:
 
 ```bash
 pyr -w train export -f csv
-pyr -w train export baseline -f json
-pyr --json -w train export baseline
+pyr -w train export baseline --format json
 pyr -w train export -s completed -o results.csv
 ```
 
-Global `--json` makes a stdout export default to JSON; omit it and use `-f csv` when CSV is required.
+Select the export record format only with `--format` (or `-f`); filename extensions do not implicitly change it.
 
 Exit status:
 

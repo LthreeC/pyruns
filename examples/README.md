@@ -17,7 +17,7 @@ Scripts that read task YAML through `pyruns.load()`.
 
 ```bash
 pyr init examples/2_pyruns_config/main1.py --config examples/2_pyruns_config/config1.yaml
-pyr -w main1 run --from examples/2_pyruns_config/config1.yaml -n config1
+pyr -w main1 run --config examples/2_pyruns_config/config1.yaml -n config1
 ```
 
 ## 3_hydra_script
@@ -45,7 +45,7 @@ choices, `count`, and a small `artifacts/runN/summary.json` output.
 
 ```bash
 pyr init examples/4_advanced_argparse/main.py --config examples/4_advanced_argparse/configs/quick.yaml
-pyr -w main run --from examples/4_advanced_argparse/configs/quick.yaml -n quick
+pyr -w main run --config examples/4_advanced_argparse/configs/quick.yaml -n quick
 ```
 
 ## 5_pyruns_load_nested
@@ -57,7 +57,7 @@ and multi-GPU launch controls stay in environment variables.
 
 ```bash
 pyr init examples/5_pyruns_load_nested/train.py --config examples/5_pyruns_load_nested/configs/base.yaml
-pyr -w train run --from examples/5_pyruns_load_nested/configs/base.yaml -n base
+pyr -w train run --config examples/5_pyruns_load_nested/configs/base.yaml -n base
 ```
 
 ## 6_shell_workspace

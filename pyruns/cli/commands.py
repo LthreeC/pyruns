@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 import os
 import shlex
@@ -51,7 +52,6 @@ from pyruns.utils.info_io import (
     resolve_log_path,
     run_slot_count,
     update_task_info,
-    validate_existing_task_name,
     validate_task_name,
 )
 from pyruns.utils.log_io import safe_read_log
@@ -108,6 +108,13 @@ def _json_dump(payload: Any) -> None:
 
 def _normalized_path(path: str) -> str:
     return os.path.abspath(path).replace("\\", "/")
+
+
+def _closest_name(value: str, candidates: list[str]) -> str | None:
+    """Return one display-only suggestion without relaxing exact matching."""
+
+    matches = difflib.get_close_matches(value, candidates, n=1, cutoff=0.75)
+    return matches[0] if matches else None
 
 
 def _find_project_root(start: str | None = None) -> str | None:
@@ -186,7 +193,14 @@ def _resolve_workspace_selector(selector: str, project_root: str | None) -> str:
                 + ", ".join(os.path.basename(item) for item in matches)
             )
 
-    raise CliError(f"workspace not found: {raw}")
+    candidates = ["shell"]
+    if project_root:
+        candidates.extend(_workspace_label(item) for item in _workspace_directories(project_root))
+    suggestion = _closest_name(raw, candidates)
+    message = f"workspace not found: {raw}"
+    if suggestion:
+        message += f"\nDid you mean '{suggestion}'?"
+    raise CliError(message)
 
 
 def resolve_workspace(context: Any) -> str:
@@ -284,6 +298,9 @@ def _resolve_exact_tasks(manager: TaskManager, names: list[str]) -> list[dict[st
     seen: set[str] = set()
     for raw_name in names:
         name = str(raw_name or "")
+        name_error = validate_task_name(name)
+        if name_error:
+            raise CliUsageError(name_error)
         if name in seen:
             continue
         seen.add(name)
@@ -293,7 +310,17 @@ def _resolve_exact_tasks(manager: TaskManager, names: list[str]) -> list[dict[st
         else:
             tasks.append(task)
     if missing:
-        raise CliError("task not found: " + ", ".join(missing))
+        message = "task not found: " + ", ".join(missing)
+        if len(missing) == 1:
+            available_names = [
+                str(task.get("name", "") or "")
+                for task in _refresh_tasks(manager)
+                if str(task.get("name", "") or "")
+            ]
+            suggestion = _closest_name(missing[0], available_names)
+            if suggestion:
+                message += f"\nDid you mean '{suggestion}'?"
+        raise CliError(message)
     return tasks
 
 
@@ -305,7 +332,9 @@ def _parse_task_run_reference(value: str) -> tuple[str, int | None]:
         return reference, None
     task_name, run_text = reference.rsplit("@", 1)
     if not run_text.isdecimal():
-        return reference, None
+        raise CliUsageError(
+            f"invalid task run reference '{reference}'; expected TASK@RUN"
+        )
     if not task_name or int(run_text) <= 0:
         raise CliUsageError(
             f"invalid task run reference '{reference}'; RUN must be a positive integer"
@@ -317,14 +346,9 @@ def _resolve_task_run_reference(
     manager: TaskManager,
     value: str,
 ) -> tuple[dict[str, Any], int | None]:
-    """Resolve an exact task name before interpreting a legacy-compatible ``@RUN`` suffix."""
+    """Resolve one exact task and optional ``@RUN`` reference."""
 
-    reference = str(value or "")
-    exact = manager.load_task_by_name(reference)
-    if exact is not None and str(exact.get("name", "") or "") == reference:
-        return exact, None
-
-    task_name, selected_run = _parse_task_run_reference(reference)
+    task_name, selected_run = _parse_task_run_reference(str(value or ""))
     return _resolve_exact_tasks(manager, [task_name])[0], selected_run
 
 
@@ -740,7 +764,7 @@ def _load_task_config_batch(
     """Read and validate one config batch without creating task directories."""
 
     if _workspace_kind(workspace) != WORKSPACE_KIND_SCRIPT:
-        raise CliUsageError("add and run --from require a Python script workspace")
+        raise CliUsageError("add and run --config require a Python script workspace")
     resolved = _resolve_config(workspace, config_path)
     try:
         config = load_yaml_strict(resolved)
@@ -958,37 +982,37 @@ def cmd_add(context: Any, args: Any, manager: TaskManager, workspace: str) -> in
 
 
 def cmd_run(context: Any, args: Any, manager: TaskManager, workspace: str) -> int:
-    if args.from_config and args.tasks:
-        raise CliUsageError("run accepts either exact TASK names or --from CONFIG, not both")
-    if args.name and not args.from_config:
-        raise CliUsageError("--name is only valid together with --from")
-    if args.from_config:
-        tasks = _create_tasks(manager, workspace, args.from_config, args.name)
+    if args.config and args.tasks:
+        raise CliUsageError("run accepts either exact TASK names or --config CONFIG, not both")
+    if args.name and not args.config:
+        raise CliUsageError("--name is only valid together with --config")
+    if args.config:
+        tasks = _create_tasks(manager, workspace, args.config, args.name)
         _eprint(f"{_program(context)}: created {len(tasks)} task(s)")
     else:
         if not args.tasks:
-            raise CliUsageError("run requires at least one TASK or --from CONFIG")
+            raise CliUsageError("run requires at least one TASK or --config CONFIG")
         tasks = _resolve_exact_tasks(manager, list(args.tasks))
     return _submit_and_wait(
         context,
         manager,
         tasks,
-        mode=args.mode,
-        workers=args.workers,
+        mode=args.backend,
+        workers=args.jobs,
         detach=bool(args.detach),
     )
 
 
 def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
-    """Preview ``run --from`` without initializing a manager or writing files."""
+    """Preview ``run --config`` without initializing a manager or writing files."""
 
-    if not args.from_config:
-        raise CliUsageError("run --dry-run requires --from CONFIG")
+    if not args.config:
+        raise CliUsageError("run --dry-run requires --config CONFIG")
     if args.tasks:
-        raise CliUsageError("run accepts either exact TASK names or --from CONFIG, not both")
+        raise CliUsageError("run accepts either exact TASK names or --config CONFIG, not both")
     resolved, configs, _prefix, requested_names = _load_task_config_batch(
         workspace,
-        args.from_config,
+        args.config,
         args.name,
     )
     tasks_dir = os.path.join(workspace, TASKS_DIR)
@@ -998,21 +1022,21 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
     ]
     payload = {
         "dry_run": True,
-        "operation": "run-from",
+        "operation": "run-config",
         "workspace": _normalized_path(workspace),
         "workspace_exists": os.path.isfile(os.path.join(workspace, SCRIPT_INFO_FILENAME)),
         "creates_workspace": False,
         "config": _normalized_path(resolved),
         "task_count": len(configs),
         "tasks": tasks,
-        "mode": args.mode,
-        "workers": args.workers,
+        "backend": args.backend,
+        "jobs": args.jobs,
         "detach": bool(args.detach),
     }
     if context.json_output:
         _json_dump(payload)
     else:
-        print("Dry run:    run --from")
+        print("Dry run:    run --config")
         print(f"Workspace:  {payload['workspace']}")
         print(f"Config:     {payload['config']}")
         print(f"Tasks:      {payload['task_count']}")
@@ -1021,7 +1045,7 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
                 print(f"  {task['planned_name']}")
             else:
                 print(f"  {task['requested_name']} (a unique suffix will be added)")
-        print(f"Execution:  {args.mode}, {args.workers} worker(s)")
+        print(f"Execution:  {args.backend}, {args.jobs} job(s)")
         print("Result:     nothing was created or run")
     return 0
 
@@ -1310,7 +1334,7 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
     tasks_root = os.path.abspath(manager.tasks_dir)
     for record in selected:
         target_name = str(record["name"])
-        name_error = validate_existing_task_name(target_name)
+        name_error = validate_task_name(target_name)
         if name_error:
             raise CliError(f"cannot restore '{target_name}': {name_error}")
         if target_name in target_names:
@@ -1381,12 +1405,8 @@ def cmd_pin(context: Any, args: Any, manager: TaskManager) -> int:
     return 0
 
 
-def cmd_export(context: Any, args: Any, manager: TaskManager) -> int:
-    export_format = args.format or (
-        "json" if context.json_output and args.output == "-" else "csv"
-    )
-    if context.json_output and args.output == "-" and export_format != "json":
-        raise CliUsageError("--json with stdout export requires '--format json'")
+def cmd_export(args: Any, manager: TaskManager) -> int:
+    export_format = args.format or "csv"
     if args.tasks:
         tasks = _resolve_exact_tasks(manager, list(args.tasks))
     else:
@@ -1408,10 +1428,7 @@ def cmd_export(context: Any, args: Any, manager: TaskManager) -> int:
             handle.write(content)
     except OSError as exc:
         raise CliError(f"cannot write export '{args.output}': {exc}") from exc
-    if context.json_output:
-        _json_dump({"output": _normalized_path(output), "format": export_format, "tasks": len(tasks)})
-    else:
-        print(_normalized_path(output))
+    print(_normalized_path(output))
     return 0
 
 
@@ -1656,8 +1673,26 @@ def dispatch(context: Any, args: Any) -> int:
     handler = str(args.handler)
     if context.workspace and handler in {"init", "config", "metrics", "dev"}:
         raise CliUsageError(f"{handler} does not use -w/--workspace")
-    if context.json_output and handler in {"ui", "dev"}:
-        raise CliUsageError("--json is not supported by ui or dev")
+    if handler == "run":
+        if args.config and args.tasks:
+            raise CliUsageError(
+                "run accepts either exact TASK names or --config CONFIG, not both"
+            )
+        if args.name and not args.config:
+            raise CliUsageError("--name is only valid together with --config")
+        if args.dry_run and not args.config:
+            raise CliUsageError("run --dry-run requires --config CONFIG")
+        if not args.config and not args.tasks:
+            raise CliUsageError("run requires at least one TASK or --config CONFIG")
+    if handler == "log":
+        if args.follow and args.run is not None:
+            raise CliUsageError("--follow cannot be combined with --run")
+        if args.follow and args.path:
+            raise CliUsageError("--follow cannot be combined with --path")
+        if context.json_output and not args.path:
+            raise CliUsageError("log --json requires --path")
+    if handler == "config" and not args.config_action:
+        raise CliUsageError("config requires an action: list, get, set, unset, or path")
     if handler == "init":
         return cmd_init(context, args)
     if handler == "exec":
@@ -1673,12 +1708,6 @@ def dispatch(context: Any, args: Any) -> int:
         if not project_root:
             raise CliError("no Pyruns project found; run 'pyr init' first")
         return cmd_config(context, args, project_root)
-    if handler == "run" and args.dry_run:
-        if not args.from_config:
-            raise CliUsageError("run --dry-run requires --from CONFIG")
-        if args.tasks:
-            raise CliUsageError("run accepts either exact TASK names or --from CONFIG, not both")
-
     workspace = resolve_workspace(context)
 
     if handler == "run" and args.dry_run:
@@ -1711,5 +1740,5 @@ def dispatch(context: Any, args: Any) -> int:
         if handler == "pin":
             return cmd_pin(context, args, manager)
         if handler == "export":
-            return cmd_export(context, args, manager)
+            return cmd_export(args, manager)
     raise CliUsageError(f"unknown command: {handler}")

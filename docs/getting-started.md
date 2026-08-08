@@ -45,7 +45,7 @@ my-project/
 
 ```bash
 pyr exec --dry-run -n smoke -- python -V
-pyr --json exec --dry-run -n smoke -- python -V
+pyr exec --dry-run -n smoke --json -- python -V
 ```
 
 任务结束后查询：
@@ -174,8 +174,8 @@ pyr -w train run quick
 也可以合并为一次操作：
 
 ```bash
-pyr -w train run --from configs/quick.yaml -n quick
-pyr -w train run --from configs/quick.yaml -n quick --dry-run
+pyr -w train run --config configs/quick.yaml -n quick
+pyr -w train run --config configs/quick.yaml -n quick --dry-run
 ```
 
 ## 6. `pyruns.load()` 脚本
@@ -245,22 +245,22 @@ pyr -w ./_pyruns_/train show quick --run 2
 pyr -C D:/work/my-project -w shell status
 ```
 
-全局参数要放在子命令之前。
+`-C`、`-w` 等项目上下文参数放在子命令之前；`--json` 只能放在明确支持它的子命令后。
 
 ## 9. 稳定 JSON 输出
 
 脚本、CI 和 AI agent 应优先读取 JSON，而不是解析表格：
 
 ```bash
-pyr --json -w shell ls
-pyr --json -w shell status
-pyr --json -w shell show smoke
-pyr --json -w shell show smoke@2
-pyr --json -w shell show smoke --run 2
-pyr --json -w shell log smoke --path
-pyr --json -w shell log smoke@2 --path
-pyr --json config list
-pyr --json metrics
+pyr -w shell ls --json
+pyr -w shell status --json
+pyr -w shell show smoke --json
+pyr -w shell show smoke@2 --json
+pyr -w shell show smoke --run 2 --json
+pyr -w shell log smoke --path --json
+pyr -w shell log smoke@2 --path --json
+pyr config list --json
+pyr metrics --json
 ```
 
 `log` 默认原样输出日志，因此只有 `log --path` 支持 `--json`。

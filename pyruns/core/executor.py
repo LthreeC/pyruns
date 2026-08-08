@@ -46,7 +46,7 @@ from pyruns.utils.info_io import (
     update_task_info,
 )
 from pyruns.utils.log_io import normalize_log_newlines
-from pyruns.utils.process_utils import kill_process
+from pyruns.utils.process_utils import hidden_subprocess_kwargs, kill_process
 from pyruns.utils.shell_runtime import (
     get_shell_runtime_for_task,
     quote_windows_cmd_argument,
@@ -654,6 +654,7 @@ def _git_bytes(cwd: str, args: List[str], *, timeout: float = _SOURCE_STATE_GIT_
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

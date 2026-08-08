@@ -284,8 +284,11 @@ def test_frontend_log_stream_passes_resume_options_without_offset_reconnects():
     assert "sp.set('log_file_name', options.logFileName)" in api_source
     assert "sp.set('offset', String(options.offset))" in api_source
     assert "offsetRef.current = offset" in hook_source
-    assert "createLogStream(taskName, { logFileName, offset: offsetRef.current })" in hook_source
-    assert "[taskName, enabled, disconnect, logFileName]" in hook_source
+    assert "const ws = createLogStream(taskName, {" in hook_source
+    assert "logFileName," in hook_source
+    assert "offset: offsetRef.current," in hook_source
+    assert "logIdentity: logIdentityRef.current," in hook_source
+    assert "[taskName, enabled, disconnect, generationKey, logFileName]" in hook_source
     assert "enabled: !loading && isLive && canUseLogStream" in monitor_source
     assert "logFileName: selectedLog || liveLogName || undefined" in monitor_source
     assert "offset: logOffsetRef.current" in monitor_source

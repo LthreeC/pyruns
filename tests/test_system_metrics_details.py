@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from pyruns.core.system_metrics import SystemMonitor
+from pyruns.utils.process_utils import hidden_subprocess_kwargs
 
 
 @patch("pyruns.core.system_metrics.psutil")
@@ -15,6 +16,10 @@ def test_metrics_skip_gpu_process_query_until_details_are_requested(mock_check_o
     metrics = SystemMonitor().sample(include_processes=False)
 
     assert mock_check_output.call_count == 1
+    assert mock_check_output.call_args.kwargs == {
+        "timeout": SystemMonitor._GPU_QUERY_TIMEOUT_SEC,
+        **hidden_subprocess_kwargs(),
+    }
     assert metrics["gpus"][0]["processes"] == []
     mock_psutil.Process.assert_not_called()
 

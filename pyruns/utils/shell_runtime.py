@@ -16,6 +16,7 @@ from pyruns._config import (
     SHELL_CONFIG_FILENAME,
     SHELL_KIND_TO_CONFIG_FILENAME,
 )
+from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import load_settings
 
 try:
@@ -166,6 +167,7 @@ def _probe_windows_posix_script_execution(executable: str) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -213,6 +215,7 @@ def _probe_shell_executable(executable: str, kind: str) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return False

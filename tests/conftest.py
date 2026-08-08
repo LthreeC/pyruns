@@ -3,6 +3,7 @@ Shared fixtures for pyruns tests.
 """
 import os
 import shutil
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -13,11 +14,32 @@ import pytest
 _LOCAL_TMP_ROOT = Path(os.environ.get("PYRUNS_TEST_TMP_ROOT", Path(tempfile.gettempdir()) / "pyruns-tests"))
 
 
+@pytest.fixture(autouse=True)
+def _prevent_windows_test_console_windows(monkeypatch):
+    """Keep every subprocess spawned by tests invisible on Windows."""
+
+    if os.name != "nt":
+        yield
+        return
+
+    original_init = subprocess.Popen.__init__
+
+    def hidden_init(self, *args, **kwargs):
+        creationflags = int(kwargs.get("creationflags", 0))
+        creationflags &= ~subprocess.CREATE_NEW_CONSOLE
+        kwargs["creationflags"] = creationflags | subprocess.CREATE_NO_WINDOW
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", hidden_init)
+    yield
+
+
 @pytest.fixture()
 def tmp_path():
     """Workspace-local replacement for pytest's default tmp_path fixture."""
     root = _LOCAL_TMP_ROOT
     path = root / uuid.uuid4().hex
+    remove_tree = shutil.rmtree
     try:
         root.mkdir(parents=True, exist_ok=True)
         path.mkdir(parents=True, exist_ok=True)
@@ -28,9 +50,9 @@ def tmp_path():
     try:
         yield path
     finally:
-        shutil.rmtree(path, ignore_errors=True)
+        remove_tree(path, ignore_errors=True)
         if root != _LOCAL_TMP_ROOT:
-            shutil.rmtree(root, ignore_errors=True)
+            remove_tree(root, ignore_errors=True)
 
 
 @pytest.fixture()

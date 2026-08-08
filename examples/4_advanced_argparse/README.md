@@ -18,7 +18,7 @@ Start the workspace with:
 
 ```bash
 pyr init main.py --config configs/quick.yaml
-pyr -w main run --from configs/quick.yaml -n quick
+pyr -w main run --config configs/quick.yaml -n quick
 ```
 
 `configs/grid.yaml` is a concrete single-run recipe with larger values. UI

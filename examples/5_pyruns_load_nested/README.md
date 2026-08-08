@@ -9,7 +9,7 @@ Start with:
 
 ```bash
 pyr init train.py --config configs/base.yaml
-pyr -w train run --from configs/base.yaml -n base
+pyr -w train run --config configs/base.yaml -n base
 ```
 
 The equivalent Web UI command is `pyr ui train.py --config configs/base.yaml`.

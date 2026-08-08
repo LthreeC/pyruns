@@ -18,23 +18,24 @@ pyruns COMMAND [OPTIONS]
 pyr -w WORKSPACE COMMAND [OPTIONS]
 ```
 
-Examples in this card use `pyr`, but replacing it with `pyruns` changes nothing. Do not use `pyrun`, long-form legacy commands, command aliases, or an interactive REPL. The formal top-level commands are:
+Examples in this card use `pyr`, but replacing it with `pyruns` changes nothing. Use only the formal commands below; there is no interactive REPL:
 
 ```text
 init exec add run ls status show log wait stop
 rm restore mv pin export config metrics ui dev help
 ```
 
-Global options must precede the command:
+Project context options must precede the command:
 
 ```text
 -C, --directory PATH
 -w, --workspace NAME|PATH|SCRIPT.py
---json
 --no-color
 --debug
 --version
 ```
+
+Machine-readable commands expose their own `--json` option. Put it after the command; there is no global leading form.
 
 Use exact task names. Do not pass task indices or fuzzy names. For `show` and `log`, use `--run RUN` or append the shorter `@RUN` to select one positive historical run number; `@` is reserved and cannot appear in a new task name.
 
@@ -118,7 +119,7 @@ Preview `exec` without creating a workspace or task and without starting the use
 
 ```bash
 pyr exec --dry-run -n smoke -- python -V
-pyr --json exec --dry-run -n smoke -- python -V
+pyr exec --dry-run -n smoke --json -- python -V
 ```
 
 The plan reports workspace creation, task-name availability, working directory, command mode and argv or shell expression, runtime, environment, and detach state. Treat `planned_name: null` as a signal that automatic naming needs a unique suffix. An explicit duplicate `--name` remains an error.
@@ -149,12 +150,12 @@ pyr -w train run ablation_a ablation_b -j 2
 Create and run in one operation:
 
 ```bash
-pyr -w train run --from configs/quick.yaml -n quick
-pyr -w train run --from configs/quick.yaml -n quick --dry-run
-pyr --json -w train run --from configs/quick.yaml -n quick --dry-run
+pyr -w train run --config configs/quick.yaml -n quick
+pyr -w train run --config configs/quick.yaml -n quick --dry-run
+pyr -w train run --config configs/quick.yaml -n quick --dry-run --json
 ```
 
-`run --from ... --dry-run` reads and validates the YAML, reports expanded task candidates, and creates nothing. Dry-run is intentionally rejected for rerunning existing tasks. Normal `run` waits for all requested tasks by default. It exits `1` if any task fails. `--detach` changes only waiting behavior.
+`run --config ... --dry-run` reads and validates the YAML, reports expanded task candidates, and creates nothing. Dry-run is intentionally rejected for rerunning existing tasks. Normal `run` waits for all requested tasks by default. It exits `1` if any task fails. `--detach` changes only waiting behavior.
 
 ## Inspect And Control Tasks
 
@@ -192,17 +193,17 @@ pyr -w shell restore train-lr1e3
 
 ## Machine-Readable Operations
 
-Put global `--json` before the command:
+Put `--json` after commands that explicitly support it:
 
 ```bash
-pyr --json -w shell ls
-pyr --json -w shell status
-pyr --json -w shell show train
-pyr --json -w shell show train@2
-pyr --json -w shell log train --path
-pyr --json -w shell log train@2 --path
-pyr --json config list
-pyr --json metrics
+pyr -w shell ls --json
+pyr -w shell status --json
+pyr -w shell show train --json
+pyr -w shell show train@2 --json
+pyr -w shell log train --path --json
+pyr -w shell log train@2 --path --json
+pyr config list --json
+pyr metrics --json
 ```
 
 `log` prints the raw log by default and intentionally does not wrap it in JSON. Use `log --path` with `--json` when an automation client needs a machine-readable log reference.
@@ -211,12 +212,11 @@ Export records to stdout by default:
 
 ```bash
 pyr -w train export -f csv
-pyr -w train export baseline -f json
-pyr --json -w train export baseline
+pyr -w train export baseline --format json
 pyr -w train export -s completed -o report.csv
 ```
 
-CSV and JSON both emit one record per task run. Global `--json` makes a stdout export default to JSON; explicit `-f csv` still conflicts with that request. Runs without monitor metrics are still included with their lifecycle fields.
+CSV and JSON both emit one record per task run. Select the record format with `--format` (or `-f`); output filename extensions do not infer it. Runs without monitor metrics are still included with their lifecycle fields.
 
 ## Configuration And Metrics
 
@@ -243,7 +243,7 @@ pyr ui shell
 pyr dev train.py
 ```
 
-Pass an exact existing workspace name/path, `shell`, or a Python script path directly after `ui`. Unlike task commands, `ui` and `dev` do not use global `-w` or `--json`. Use `--no-browser` for headless servers.
+Pass an exact existing workspace name/path, `shell`, or a Python script path directly after `ui`. `ui` and `dev` do not accept `-w` or `--json`. Use `--no-browser` for headless servers.
 
 ## Disk Layout
 

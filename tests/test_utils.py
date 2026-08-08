@@ -786,6 +786,7 @@ def test_kill_process_nt(mock_run):
     mock_run.assert_called_with(
         ["taskkill", "/F", "/T", "/PID", "99999"],
         capture_output=True, timeout=5,
+        creationflags=process_utils.subprocess.CREATE_NO_WINDOW,
     )
 
 

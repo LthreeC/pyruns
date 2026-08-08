@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyruns._config import RUN_LOGS_DIR, TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
-from pyruns.cli.app import main
+from pyruns._config import TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
+from pyruns.cli.app import build_parser, main
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.utils.info_io import load_task_info, update_task_info
 
@@ -67,15 +67,23 @@ def _source_env() -> dict[str, str]:
     return env
 
 
-def _run_cli(cwd: Path, *args: str, timeout: float = 20.0) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    cwd: Path,
+    *args: str,
+    timeout: float = 20.0,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = _source_env()
+    env.update(env_overrides or {})
     return subprocess.run(
         _source_cli(*args),
         cwd=cwd,
-        env=_source_env(),
+        env=env,
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=timeout,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
 
@@ -93,6 +101,7 @@ def _run_named_cli(
         capture_output=True,
         text=True,
         timeout=timeout,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
 
@@ -110,10 +119,15 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     monkeypatch.chdir(tmp_path)
     assert main([]) == 0
     output = capsys.readouterr().out
-    assert "Pyruns records reproducible terminal commands" in output
+    assert "Pyruns saves terminal commands and Python experiments as named tasks" in output
     assert "pyr and pyruns are identical" in output
-    assert "Quick start:" in output
+    assert "Model: project -> workspace -> task -> numbered run" in output
+    assert "Quick start -- track one terminal command:" in output
+    assert "pyr run check" in output
+    assert "pyr ui shell" in output
     assert "pyr help -a" in output
+    assert "show command options (for example, ui --port)" in output
+    assert "\n  --json" not in output
     assert "    exec " in output
     assert "    show " in output
     assert "    status " in output
@@ -123,6 +137,19 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     assert "Command forms for exec:" not in output
     assert "Environment values:" not in output
     assert not (tmp_path / "_pyruns_").exists()
+
+
+def test_help_wraps_to_a_narrow_terminal(monkeypatch):
+    monkeypatch.setenv("COLUMNS", "72")
+
+    parser, commands = build_parser("pyr")
+    help_by_topic = {"root": parser.format_help()}
+    help_by_topic.update({name: command.format_help() for name, command in commands.items()})
+
+    for topic, help_text in help_by_topic.items():
+        lines = help_text.splitlines()
+        assert lines, topic
+        assert [line for line in lines if len(line) > 72] == [], topic
 
 
 def test_help_all_lists_advanced_commands_without_workspace(tmp_path):
@@ -212,9 +239,11 @@ def test_help_explains_config_ui_metrics_and_help_workflows(tmp_path):
     assert "Environment variable names and values are validated" in config_set_help.stdout
     assert "does not require a workspace" in metrics_help.stdout
     assert "Do not write '-w shell ui'" in ui_help.stdout
+    assert "-p PORT, --port PORT" in ui_help.stdout
+    assert "Use 'ui --help' to discover --port" in ui_help.stdout
     assert "--no-browser keeps the server headless" in ui_help.stdout
     assert "Use 'ui' for normal use" in dev_help.stdout
-    assert "Help is read-only" in help_help.stdout
+    assert "Help is read-only" in " ".join(help_help.stdout.split())
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -248,6 +277,109 @@ def test_every_command_has_workspace_free_help(command, tmp_path):
     assert result.returncode == 0, result.stderr
     assert f"usage: pyr {command}" in result.stdout
     assert "Examples:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("init", "--json"),
+        ("exec", "--json", "--", "python", "-V"),
+        ("add", "config.yaml", "--json"),
+        ("run", "task", "--json"),
+        ("ls", "--json"),
+        ("status", "--json"),
+        ("show", "task", "--json"),
+        ("log", "task", "--path", "--json"),
+        ("wait", "task", "--json"),
+        ("stop", "task", "--json"),
+        ("rm", "task", "--json"),
+        ("restore", "task", "--json"),
+        ("mv", "task", "new-name", "--json"),
+        ("pin", "task", "--json"),
+        ("config", "list", "--json"),
+        ("config", "get", "manager_max_workers", "--json"),
+        ("config", "set", "manager_max_workers", "4", "--json"),
+        ("config", "unset", "manager_max_workers", "--json"),
+        ("config", "path", "--json"),
+        ("metrics", "--json"),
+    ],
+)
+def test_every_machine_readable_command_accepts_json_in_its_natural_scope(args):
+    parser, _commands = build_parser("pyr", show_all_commands=True)
+
+    parsed = parser.parse_args(args)
+
+    assert parsed.json_output is True
+
+
+def test_json_stays_in_command_scope_and_exec_separator_preserves_child_options():
+    parser, _commands = build_parser("pyr", show_all_commands=True)
+
+    assert parser.parse_args(("config", "list", "--json")).json_output is True
+
+    child_args = parser.parse_args(
+        ("exec", "--", "python", "train.py", "--json")
+    )
+    assert child_args.json_output is False
+    assert child_args.command_argv == ["--", "python", "train.py", "--json"]
+
+
+def test_run_and_export_advertise_one_clear_canonical_option_set():
+    _parser, commands = build_parser("pyr", show_all_commands=True)
+
+    run_help = commands["run"].format_help()
+    assert "--config CONFIG" in run_help
+    assert "-j N, --jobs N" in run_help
+    assert "--backend {thread,process}" in run_help
+    assert "--from" not in run_help
+    assert "--workers" not in run_help
+    assert "--mode" not in run_help
+
+    export_help = commands["export"].format_help()
+    config_help = commands["config"].format_help()
+    log_help = commands["log"].format_help()
+    assert "--format {csv,json}" in export_help
+    assert "--json" not in export_help
+    assert "--json" not in config_help
+    assert "with --path" in log_help
+
+
+def test_removed_run_option_spellings_are_rejected():
+    parser, _commands = build_parser("pyr", show_all_commands=True)
+
+    canonical = parser.parse_args(
+        ("run", "--config", "sweep.yaml", "--jobs", "3", "--backend", "process")
+    )
+    assert canonical.config == "sweep.yaml"
+    assert canonical.jobs == 3
+    assert canonical.backend == "process"
+
+    for removed in (
+        ("run", "--from", "sweep.yaml"),
+        ("run", "task", "--workers", "3"),
+        ("run", "task", "--mode", "process"),
+        ("run", "task", "-m", "process"),
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(removed)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--json", "status"),
+        ("config", "--json", "list"),
+        ("export", "--json"),
+        ("ui", "--json"),
+        ("help", "--json"),
+    ],
+)
+def test_removed_json_scopes_are_rejected(args, tmp_path):
+    result = _run_cli(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert "--json" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(
@@ -327,21 +459,26 @@ def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(
 def test_removed_commands_are_not_accepted(removed, tmp_path):
     result = _run_cli(tmp_path, removed)
     assert result.returncode == 2
-    assert "invalid choice" in result.stderr
+    assert f"unknown command '{removed}'" in result.stderr
+    assert "choose from" not in result.stderr
+    if removed in {"create", "remove", "clis"}:
+        assert "Did you mean" not in result.stderr
     assert result.stdout == ""
 
 
-def test_run_rejects_old_workspace_conflicting_workers_short_flag(tmp_path):
+def test_run_rejects_workspace_flag_after_command(tmp_path):
     result = _run_cli(tmp_path, "run", "-w", "2")
     assert result.returncode == 2
     assert "unrecognized arguments: -w" in result.stderr
 
 
-def test_exec_argv_requires_the_standard_separator(tmp_path):
-    result = _run_cli(tmp_path, "exec", sys.executable, "-V")
+def test_exec_argv_requires_the_standard_separator(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["exec", sys.executable, "-V"]) == 2
+    stderr = capsys.readouterr().err
 
-    assert result.returncode == 2
-    assert "exec argv form requires '--' before COMMAND" in result.stderr
+    assert "usage: pyr exec" in stderr
+    assert "exec argv form requires '--' before COMMAND" in stderr
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -352,8 +489,7 @@ def test_exec_argv_requires_the_standard_separator(tmp_path):
         (("-w", "shell", "config", "list"), "config does not use -w/--workspace"),
         (("-w", "shell", "metrics"), "metrics does not use -w/--workspace"),
         (("-w", "shell", "dev", "train.py"), "dev does not use -w/--workspace"),
-        (("--json", "ui"), "--json is not supported by ui or dev"),
-        (("--json", "dev", "train.py"), "--json is not supported by ui or dev"),
+        (("-w", "shell", "help"), "help does not use -w/--workspace"),
     ],
 )
 def test_commands_reject_global_options_they_do_not_use(tmp_path, args, message):
@@ -361,6 +497,45 @@ def test_commands_reject_global_options_they_do_not_use(tmp_path, args, message)
 
     assert result.returncode == 2
     assert message in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("-w", "shell"), "-w/--workspace requires a command"),
+    ],
+)
+def test_bare_context_options_are_not_silently_ignored(tmp_path, args, message):
+    result = _run_cli(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("run", "task", "--config", "config.yaml"), "either exact TASK names or --config"),
+        (("run", "--name", "named"), "--name is only valid together with --config"),
+        (("run",), "run requires at least one TASK or --config CONFIG"),
+        (("log", "task", "--follow", "--run", "2"), "--follow cannot be combined with --run"),
+        (("log", "task", "--follow", "--path"), "--follow cannot be combined with --path"),
+        (("log", "task", "--json"), "log --json requires --path"),
+        (("config",), "config requires an action"),
+    ],
+)
+def test_invalid_option_combinations_fail_before_workspace_lookup(
+    tmp_path,
+    args,
+    message,
+):
+    result = _run_cli(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert "no Pyruns project found" not in result.stderr
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -372,16 +547,47 @@ def test_unknown_options_fail_with_usage_on_stderr(tmp_path):
     assert result.stdout == ""
 
 
-def test_global_long_options_require_exact_spelling(tmp_path):
+def test_json_is_command_scoped_and_long_options_require_exact_spelling(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
 
     abbreviated = _run_cli(tmp_path, "--js", "status")
     assert abbreviated.returncode == 2
     assert "--js" in abbreviated.stderr
 
-    exact = _run_cli(tmp_path, "--json", "status")
+    exact = _run_cli(tmp_path, "status", "--json")
     assert exact.returncode == 0, exact.stderr
     assert json.loads(exact.stdout)["kind"] == "shell"
+
+
+def test_json_is_available_only_after_supported_commands(tmp_path):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    command_form = _run_cli(tmp_path, "-w", "shell", "status", "--json")
+    assert command_form.returncode == 0, command_form.stderr
+    assert json.loads(command_form.stdout)["kind"] == "shell"
+
+    nested_form = _run_cli(tmp_path, "config", "list", "--json")
+    assert nested_form.returncode == 0, nested_form.stderr
+    assert isinstance(json.loads(nested_form.stdout), dict)
+
+    dry_run = _run_cli(
+        tmp_path,
+        "exec",
+        "--dry-run",
+        "--json",
+        "-n",
+        "natural-json",
+        "--",
+        sys.executable,
+        "-V",
+    )
+    assert dry_run.returncode == 0, dry_run.stderr
+    assert json.loads(dry_run.stdout)["dry_run"] is True
+
+    status_help = _run_cli(tmp_path, "status", "--help")
+    ui_help = _run_cli(tmp_path, "ui", "--help")
+    assert "--json" in status_help.stdout
+    assert "\n  --json" not in ui_help.stdout
 
 
 def test_command_long_options_require_exact_spelling(tmp_path):
@@ -435,12 +641,12 @@ def test_init_config_requires_a_script(tmp_path):
 
 def test_init_shell_outputs_workspace_and_status_is_json(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    assert main(["--json", "init"]) == 0
+    assert main(["init", "--json"]) == 0
     created = json.loads(capsys.readouterr().out)
     assert created["kind"] == "shell"
     assert Path(created["workspace"]).is_dir()
 
-    assert main(["--json", "-w", "shell", "status"]) == 0
+    assert main(["-w", "shell", "status", "--json"]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["kind"] == "shell"
     assert status["total"] == 0
@@ -449,10 +655,10 @@ def test_init_shell_outputs_workspace_and_status_is_json(tmp_path, monkeypatch, 
 def test_exec_with_explicit_shell_selector_bootstraps_fresh_project(tmp_path):
     result = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "exec",
+        "--json",
         "-n",
         "explicit-shell",
         "--",
@@ -469,11 +675,11 @@ def test_exec_with_explicit_shell_selector_bootstraps_fresh_project(tmp_path):
 def test_exec_dry_run_is_stable_json_and_has_no_workspace_side_effect(tmp_path):
     result = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "exec",
         "--dry-run",
+        "--json",
         "-n",
         "planned",
         "--env",
@@ -519,7 +725,7 @@ def test_exec_dry_run_reports_automatic_name_collision_without_writing(tmp_path)
     )
     before = {path.name for path in (workspace / TASKS_DIR).iterdir()}
 
-    result = _run_cli(tmp_path, "--json", "exec", "--dry-run", "--", sys.executable, "-V")
+    result = _run_cli(tmp_path, "exec", "--dry-run", "--json", "--", sys.executable, "-V")
 
     assert result.returncode == 0, result.stdout + result.stderr
     task = json.loads(result.stdout)["task"]
@@ -574,7 +780,7 @@ def test_workspace_discovery_walks_upward(tmp_path, monkeypatch, capsys):
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
-    assert main(["--json", "status"]) == 0
+    assert main(["status", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert Path(payload["workspace"]).name == "_shell_"
 
@@ -590,19 +796,40 @@ def test_multiple_workspaces_require_explicit_selection(tmp_path):
     assert "-w/--workspace" in result.stderr
 
 
-def test_exact_target_names_reject_indices_and_fuzzy_matches(tmp_path):
+def test_typo_suggestions_preserve_exact_command_workspace_and_task_matching(tmp_path):
+    command_typo = _run_cli(tmp_path, "staus")
+    help_topic_typo = _run_cli(tmp_path, "help", "staus")
+    config_action_typo = _run_cli(tmp_path, "config", "gt")
+    assert command_typo.returncode == 2
+    assert "unknown command 'staus'" in command_typo.stderr
+    assert "Did you mean 'status'?" in command_typo.stderr
+    assert "choose from" not in command_typo.stderr
+    assert help_topic_typo.returncode == 2
+    assert "unknown command 'staus'" in help_topic_typo.stderr
+    assert "Did you mean 'status'?" in help_topic_typo.stderr
+    assert config_action_typo.returncode == 2
+    assert "unknown action 'gt'" in config_action_typo.stderr
+    assert "Did you mean 'get'?" in config_action_typo.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
     workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
     from pyruns.core.task_generator import TaskGenerator
 
     TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
-        "alpha-long", "echo ok\n"
+        "train", "echo ok\n"
     )
+    workspace_typo = _run_cli(tmp_path, "-w", "sheel", "status")
     by_index = _run_cli(tmp_path, "-w", "shell", "show", "1")
-    fuzzy = _run_cli(tmp_path, "-w", "shell", "show", "alpha")
+    task_typo = _run_cli(tmp_path, "-w", "shell", "show", "trian")
+
+    assert workspace_typo.returncode == 1
+    assert "workspace not found: sheel" in workspace_typo.stderr
+    assert "Did you mean 'shell'?" in workspace_typo.stderr
     assert by_index.returncode == 1
-    assert fuzzy.returncode == 1
+    assert task_typo.returncode == 1
     assert "task not found" in by_index.stderr
-    assert "task not found" in fuzzy.stderr
+    assert "task not found: trian" in task_typo.stderr
+    assert "Did you mean 'train'?" in task_typo.stderr
 
 
 def test_exec_exact_argv_runs_and_returns_task_result(tmp_path):
@@ -931,7 +1158,7 @@ def test_cmd_exact_argv_round_trip_preserves_batch_metacharacters(tmp_path, monk
         "chcp 65001 >nul\n"
         + commands._render_argument_command(parts, "workspace")
         + "\n",
-        encoding="utf-8-sig",
+        encoding="utf-8",
     )
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -944,6 +1171,7 @@ def test_cmd_exact_argv_round_trip_preserves_batch_metacharacters(tmp_path, monk
         text=True,
         encoding="utf-8",
         timeout=10,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == expected
@@ -991,7 +1219,7 @@ def test_exec_failure_propagates_nonzero(tmp_path):
     assert "[PYRUNS] Exit code: 7" in result.stdout
     assert "[PYRUNS] Duration:" in result.stdout
 
-    shown = _run_cli(tmp_path, "--json", "-w", "shell", "show", "argv-failure@1")
+    shown = _run_cli(tmp_path, "-w", "shell", "show", "argv-failure@1", "--json")
     detail = json.loads(shown.stdout)
     assert detail["exit_codes"] == [7]
     assert detail["durations"] == info["durations"]
@@ -1050,8 +1278,8 @@ def test_exec_environment_is_persisted_and_used(tmp_path):
 def test_exec_accepts_multiple_values_after_one_env_flag(tmp_path, env_flag):
     result = _run_cli(
         tmp_path,
-        "--json",
         "exec",
+        "--json",
         env_flag,
         "PYRUNS_ENV_A=one",
         "PYRUNS_ENV_B=two",
@@ -1080,8 +1308,8 @@ def test_exec_compact_env_stops_at_command_string_option(tmp_path):
     expression = "echo compact-env"
     result = _run_cli(
         tmp_path,
-        "--json",
         "exec",
+        "--json",
         "-e",
         "PYRUNS_ENV_A=one",
         "PYRUNS_ENV_B=two",
@@ -1276,10 +1504,10 @@ def test_add_is_noninteractive_and_run_from_waits_for_all(tmp_path):
 
     created = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "train",
         "add",
+        "--json",
         str(config),
         "--name",
         "created",
@@ -1293,11 +1521,11 @@ def test_add_is_noninteractive_and_run_from_waits_for_all(tmp_path):
 
     run = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "train",
         "run",
-        "--from",
+        "--json",
+        "--config",
         str(config),
         "--name",
         "run",
@@ -1322,15 +1550,15 @@ def test_run_from_dry_run_previews_batch_without_creating_tasks(tmp_path):
 
     result = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "train",
         "run",
-        "--from",
+        "--json",
+        "--config",
         str(config),
         "--name",
         "preview",
-        "--workers",
+        "--jobs",
         "2",
         "--dry-run",
     )
@@ -1338,10 +1566,10 @@ def test_run_from_dry_run_previews_batch_without_creating_tasks(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["dry_run"] is True
-    assert payload["operation"] == "run-from"
+    assert payload["operation"] == "run-config"
     assert payload["task_count"] == 2
-    assert payload["mode"] == "thread"
-    assert payload["workers"] == 2
+    assert payload["backend"] == "thread"
+    assert payload["jobs"] == 2
     assert [task["planned_name"] for task in payload["tasks"]] == [
         "preview_[1-of-2]",
         "preview_[2-of-2]",
@@ -1356,7 +1584,7 @@ def test_run_dry_run_rejects_existing_task_mode_as_usage(tmp_path):
     result = _run_cli(tmp_path, "run", "existing", "--dry-run")
 
     assert result.returncode == 2
-    assert "run --dry-run requires --from CONFIG" in result.stderr
+    assert "run --dry-run requires --config CONFIG" in result.stderr
 
 
 def test_batch_run_waits_and_aggregates_failure(tmp_path):
@@ -1377,13 +1605,13 @@ def test_batch_run_waits_and_aggregates_failure(tmp_path):
         generator.create_shell_task("batch-bad", f"{executable} -c 'exit 5'\n")
     result = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "run",
+        "--json",
         "batch-ok",
         "batch-bad",
-        "--workers",
+        "--jobs",
         "2",
         timeout=30,
     )
@@ -1407,14 +1635,14 @@ def test_ls_show_log_and_status_have_machine_contracts(tmp_path):
     assert completed.returncode == 0
 
     listing = _run_cli(
-        tmp_path, "--json", "-w", "shell", "ls", "--status", "completed"
+        tmp_path, "-w", "shell", "ls", "--status", "completed", "--json"
     )
     assert listing.returncode == 0
     listed = json.loads(listing.stdout)
     assert listed["count"] == 1
     assert listed["tasks"][0]["name"] == "inspect-me"
 
-    shown = _run_cli(tmp_path, "--json", "-w", "shell", "show", "inspect-me")
+    shown = _run_cli(tmp_path, "-w", "shell", "show", "inspect-me", "--json")
     detail = json.loads(shown.stdout)
     assert detail["command"]
     assert detail["latest_log"].endswith("run1.log")
@@ -1440,7 +1668,39 @@ def test_ls_show_log_and_status_have_machine_contracts(tmp_path):
         "1",
     )
     assert conflicting.returncode == 2
-    assert "either --follow or --run" in conflicting.stderr
+    assert "--follow cannot be combined with --run" in conflicting.stderr
+
+
+def test_human_and_json_output_survive_ascii_terminal_encoding(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "unicode-☃",
+        "echo ok\n",
+    )
+    ascii_env = {"PYTHONIOENCODING": "ascii"}
+
+    human = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "ls",
+        env_overrides=ascii_env,
+    )
+    assert human.returncode == 0
+    assert r"unicode-\u2603" in human.stdout
+
+    machine = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "ls",
+        "--json",
+        env_overrides=ascii_env,
+    )
+    assert machine.returncode == 0
+    assert json.loads(machine.stdout)["tasks"][0]["name"] == "unicode-☃"
 
 
 def test_show_and_log_accept_task_run_references(tmp_path):
@@ -1468,19 +1728,19 @@ def test_show_and_log_accept_task_run_references(tmp_path):
 
     path_result = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "log",
         "versioned@1",
         "--path",
+        "--json",
     )
     path_payload = json.loads(path_result.stdout)
     assert path_payload["task"] == "versioned"
     assert path_payload["run"] == 1
     assert path_payload["path"].endswith("run1.log")
 
-    shown = _run_cli(tmp_path, "--json", "-w", "shell", "show", "versioned@1")
+    shown = _run_cli(tmp_path, "-w", "shell", "show", "versioned@1", "--json")
     detail = json.loads(shown.stdout)
     assert detail["run_index"] == 2
     assert detail["selected_run"]["index"] == 1
@@ -1495,13 +1755,13 @@ def test_show_and_log_accept_task_run_references(tmp_path):
 
     shown_with_option = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "show",
         "versioned",
         "--run",
         "1",
+        "--json",
     )
     assert shown_with_option.returncode == 0, shown_with_option.stderr
     assert json.loads(shown_with_option.stdout)["selected_run"] == detail["selected_run"]
@@ -1531,34 +1791,6 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert "cannot be combined" in show_conflict.stderr
     assert missing.returncode == 1
     assert "available runs: 1-2" in missing.stderr
-
-
-def test_show_and_log_prefer_an_exact_legacy_task_name_ending_in_at_number(tmp_path):
-    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
-    from pyruns.core.task_generator import TaskGenerator
-
-    created = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
-        "legacy", "echo legacy\n"
-    )
-    original_dir = Path(created["dir"])
-    legacy_dir = original_dir.with_name("legacy@2")
-    original_dir.rename(legacy_dir)
-    update_task_info(
-        str(legacy_dir),
-        lambda info: info.update({"name": "legacy@2", "status": "completed", "run_index": 1}),
-        raise_error=True,
-    )
-    log_dir = legacy_dir / RUN_LOGS_DIR
-    log_dir.mkdir(exist_ok=True)
-    (log_dir / "run1.log").write_text("legacy exact name\n", encoding="utf-8")
-
-    shown = _run_cli(tmp_path, "--json", "-w", "shell", "show", "legacy@2")
-    logged = _run_cli(tmp_path, "-w", "shell", "log", "legacy@2")
-
-    assert shown.returncode == 0, shown.stderr
-    assert json.loads(shown.stdout)["name"] == "legacy@2"
-    assert logged.returncode == 0, logged.stderr
-    assert "legacy exact name" in logged.stdout
 
 
 def test_task_names_reserve_at_for_run_references(tmp_path):
@@ -1597,6 +1829,158 @@ def test_log_follow_rejects_pending_task_instead_of_waiting_forever(tmp_path):
     assert "cannot follow pending task" in result.stderr
 
 
+def test_wait_aggregates_results_and_timeout_does_not_stop_the_task(tmp_path):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    for name, code in [
+        ("wait-ok", "import time; time.sleep(0.2)"),
+        ("wait-failed", "import time; time.sleep(0.2); raise SystemExit(7)"),
+    ]:
+        submitted = _run_cli(
+            tmp_path,
+            "exec",
+            "--name",
+            name,
+            "--detach",
+            "--",
+            sys.executable,
+            "-c",
+            code,
+        )
+        assert submitted.returncode == 0, submitted.stderr
+
+    successful = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "wait",
+        "--json",
+        "wait-ok",
+        "--timeout",
+        "10",
+        timeout=20,
+    )
+    assert successful.returncode == 0
+    assert json.loads(successful.stdout)["tasks"][0]["status"] == "completed"
+
+    aggregate = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "wait",
+        "--json",
+        "wait-ok",
+        "wait-failed",
+        "--timeout",
+        "10",
+        timeout=20,
+    )
+    assert aggregate.returncode == 1
+    assert {item["status"] for item in json.loads(aggregate.stdout)["tasks"]} == {
+        "completed",
+        "failed",
+    }
+
+    long_task = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        "wait-timeout",
+        "--detach",
+        "--",
+        sys.executable,
+        "-c",
+        "import time; time.sleep(20)",
+    )
+    assert long_task.returncode == 0, long_task.stderr
+
+    timed_out = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "wait",
+        "wait-timeout",
+        "--timeout",
+        "0.05",
+    )
+    assert timed_out.returncode == 1
+    assert "timed out waiting for: wait-timeout" in timed_out.stderr
+    assert _wait_status(
+        tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "wait-timeout",
+        {"queued", "running"},
+    )["status"] in {"queued", "running"}
+
+    stopped = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "stop",
+        "wait-timeout",
+        "--timeout",
+        "10",
+        timeout=15,
+    )
+    assert stopped.returncode == 0, stopped.stderr
+
+
+def test_wait_sigint_returns_130_without_stopping_task(tmp_path):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+    submitted = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        "interrupt-wait",
+        "--detach",
+        "--",
+        sys.executable,
+        "-c",
+        "import time; time.sleep(20)",
+    )
+    assert submitted.returncode == 0, submitted.stderr
+    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "interrupt-wait"
+    _wait_status(task_dir, {"queued", "running"})
+
+    wait_args = ["-w", "shell", "wait", "interrupt-wait", "--timeout", "30"]
+    code = (
+        "import signal, threading\n"
+        "threading.Timer(0.3, lambda: signal.raise_signal(signal.SIGINT)).start()\n"
+        + "from pyruns.cli.app import main\n"
+        + f"raise SystemExit(main({wait_args!r}))\n"
+    )
+    waiter = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=_source_env(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    try:
+        _stdout, stderr = waiter.communicate(timeout=10)
+        assert waiter.returncode == 130
+        assert stderr == ""
+        assert _wait_status(task_dir, {"queued", "running"})["status"] in {
+            "queued",
+            "running",
+        }
+    finally:
+        if waiter.poll() is None:
+            waiter.kill()
+            waiter.communicate(timeout=5)
+        _run_cli(
+            tmp_path,
+            "-w",
+            "shell",
+            "stop",
+            "interrupt-wait",
+            "--timeout",
+            "10",
+            timeout=15,
+        )
+
+
 def test_stop_reaches_detached_runner(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     submitted = _run_cli(
@@ -1616,10 +2000,10 @@ def test_stop_reaches_detached_runner(tmp_path):
 
     cancelled = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "stop",
+        "--json",
         "cancel-me",
         "--timeout",
         "10",
@@ -1670,10 +2054,10 @@ def test_stop_reconciles_tasks_from_expired_foreign_runner(
 
     stopped = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "stop",
+        "--json",
         task["name"],
         "--timeout",
         "0.2",
@@ -1758,17 +2142,17 @@ def test_rm_ls_trash_and_restore(tmp_path):
     assert trash.is_dir()
 
     listing = _run_cli(
-        tmp_path, "--json", "-w", "shell", "ls", "--trash"
+        tmp_path, "-w", "shell", "ls", "--trash", "--json"
     )
     assert json.loads(listing.stdout)["tasks"][0]["name"] == "recoverable"
     filtered = _run_cli(
         tmp_path,
-        "--json",
         "-w",
         "shell",
         "ls",
         "does-not-match",
         "--trash",
+        "--json",
         "--status",
         "failed",
     )
@@ -1867,11 +2251,11 @@ def test_mv_and_pin_use_exact_names(tmp_path):
     renamed = _run_cli(tmp_path, "-w", "shell", "mv", "before", "after")
     assert renamed.returncode == 0
     pinned = _run_cli(
-        tmp_path, "--json", "-w", "shell", "pin", "after"
+        tmp_path, "-w", "shell", "pin", "after", "--json"
     )
     assert json.loads(pinned.stdout)["pinned"] is True
     unpinned = _run_cli(
-        tmp_path, "--json", "-w", "shell", "pin", "after", "--off"
+        tmp_path, "-w", "shell", "pin", "after", "--off", "--json"
     )
     assert json.loads(unpinned.stdout)["pinned"] is False
 
@@ -1913,21 +2297,11 @@ def test_export_defaults_to_stdout_and_can_write_file(tmp_path):
     assert json_rows[0]["name"] == "exportable"
     assert json_rows[0]["run"] == 1
 
-    inferred_json = _run_cli(tmp_path, "--json", "-w", "shell", "export")
-    assert inferred_json.returncode == 0, inferred_json.stderr
-    assert json.loads(inferred_json.stdout)[0]["name"] == "exportable"
-
-    conflicting = _run_cli(
-        tmp_path,
-        "--json",
-        "-w",
-        "shell",
-        "export",
-        "--format",
-        "csv",
+    json_stdout = _run_cli(
+        tmp_path, "-w", "shell", "export", "--format", "json"
     )
-    assert conflicting.returncode == 2
-    assert "requires '--format json'" in conflicting.stderr
+    assert json_stdout.returncode == 0, json_stdout.stderr
+    assert json.loads(json_stdout.stdout)[0]["name"] == "exportable"
 
 
 def test_config_get_set_unset_and_path(tmp_path):
@@ -1935,7 +2309,7 @@ def test_config_get_set_unset_and_path(tmp_path):
     path = _run_cli(tmp_path, "config", "path")
     assert path.returncode == 0
     assert Path(path.stdout.strip()).is_file()
-    json_path = _run_cli(tmp_path, "--json", "config", "path")
+    json_path = _run_cli(tmp_path, "config", "path", "--json")
     assert Path(json.loads(json_path.stdout)["path"]).is_file()
 
     set_result = _run_cli(
@@ -2037,7 +2411,7 @@ def test_project_config_does_not_require_workspace_selection(tmp_path):
 
 
 def test_metrics_does_not_require_workspace(tmp_path):
-    result = _run_cli(tmp_path, "--json", "metrics")
+    result = _run_cli(tmp_path, "metrics", "--json")
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert "cpu_percent" in payload

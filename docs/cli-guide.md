@@ -26,14 +26,14 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 - `--detach` 只改变等待方式，不改变任务语义。
 - `rm` 立即执行且不确认，但只是可恢复的软删除。
 - Web UI 只能由 `pyr ui` / `pyruns ui` 或对应的 `dev` 命令显式启动。
-- Windows 后台 runner 和任务进程不会创建额外控制台窗口。
+- Windows 后台 runner、任务进程和环境探测不会创建额外控制台窗口。
 
 ### 输出属于接口的一部分
 
 - 正常数据写 stdout。
 - 进度提示和错误写 stderr。
 - 用法错误返回 `2`。
-- `--json` 提供稳定机器输出；它必须放在子命令之前。
+- `--json` 提供稳定机器输出，只能放在明确支持它的子命令后。
 - `log` 默认原样输出日志，不混入表格或装饰文本。
 
 ## 2. 全局选项
@@ -41,16 +41,15 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 ```text
 -C, --directory PATH              从 PATH 目录执行
 -w, --workspace NAME|PATH|SCRIPT  精确选择工作区
---json                            输出稳定 JSON
 --no-color                        禁用 ANSI 颜色
 --debug                           内部异常时显示 traceback
 --version                         输出版本并退出
 ```
 
-全局选项放在子命令前：
+项目上下文选项放在子命令前；需要稳定机器输出时，在支持的命令后加 `--json`：
 
 ```bash
-pyr --json -w train ls
+pyr -w train ls --json
 pyr -C D:/work/project -w shell status
 ```
 
@@ -125,7 +124,7 @@ pyr exec --name train -- python train.py --epochs 10 --lr 0.001
 
 ```bash
 pyr exec --dry-run --name smoke -- python -V
-pyr --json exec --dry-run --name smoke -- python -V
+pyr exec --dry-run --name smoke --json -- python -V
 ```
 
 计划会说明目标 workspace 是否需要创建、任务名是否可精确使用、工作目录、argv 或 shell 表达式、解释器、环境变量和 detach 状态。`--dry-run` 不创建 `_pyruns_`、设置文件或任务目录，也不会执行用户命令。显式任务名已存在时仍会像真实执行一样报错；省略 `--name` 且默认名称冲突时，计划会说明真实执行需要生成唯一后缀。
@@ -226,34 +225,34 @@ pyr -w train add configs/sweep.yaml --name ablation
 
 ```bash
 pyr -w train run baseline
-pyr -w train run seed1 seed2 seed3 --workers 3
+pyr -w train run seed1 seed2 seed3 --jobs 3
 ```
 
 执行模式可选 `thread` 或 `process`：
 
 ```bash
-pyr -w train run seed1 seed2 --workers 2 --mode process
+pyr -w train run seed1 seed2 --jobs 2 --backend process
 ```
 
 也可以创建并立即运行：
 
 ```bash
-pyr -w train run --from configs/quick.yaml --name quick
+pyr -w train run --config configs/quick.yaml --name quick
 ```
 
 先预览 YAML 展开后的任务数量、候选名称和并发参数：
 
 ```bash
-pyr -w train run --from configs/quick.yaml --name quick --dry-run
-pyr --json -w train run --from configs/quick.yaml --name quick --dry-run
+pyr -w train run --config configs/quick.yaml --name quick --dry-run
+pyr -w train run --config configs/quick.yaml --name quick --dry-run --json
 ```
 
-这里的 `--dry-run` 只适用于 `run --from CONFIG`；它会读取并验证 YAML，但不会创建或运行任务。`run EXISTING --dry-run` 会作为用法错误拒绝，避免让“预览重跑”产生含糊语义。
+这里的 `--dry-run` 只适用于 `run --config CONFIG`；它会读取并验证 YAML，但不会创建或运行任务。`run EXISTING --dry-run` 会作为用法错误拒绝，避免让“预览重跑”产生含糊语义。
 
 约束如下：
 
-- 不能同时传位置任务名和 `--from`。
-- `--name` 只与 `--from` 一起使用。
+- 不能同时传位置任务名和 `--config`。
+- `--name` 只与 `--config` 一起使用。
 - 默认等待所有任务进入最终状态。
 - 任一任务失败，批量命令返回 `1`。
 - `--detach` 在 runner 接受全部任务后返回。
@@ -275,14 +274,14 @@ pyr -w train ls --trash
 
 ```bash
 pyr -w train status
-pyr --json -w train status
+pyr -w train status --json
 ```
 
 查看一个精确任务：
 
 ```bash
 pyr -w train show baseline
-pyr --json -w train show baseline
+pyr -w train show baseline --json
 pyr -w train show baseline@2
 pyr -w train show baseline --run 2
 ```
@@ -309,8 +308,8 @@ pyr -w train log baseline --follow
 pyr -w train log baseline@2
 pyr -w train log baseline --run 2
 pyr -w train log baseline --path
-pyr --json -w train log baseline@2 --path
-pyr --json -w train log baseline --path
+pyr -w train log baseline@2 --path --json
+pyr -w train log baseline --path --json
 ```
 
 `TASK@RUN` 是 `show` 和 `log` 的历史运行短语法，等价于 `TASK --run RUN`。`RUN` 必须是已有的正整数运行编号；`TASK@RUN` 不能再和 `--run` 组合，历史日志也不能 `--follow`。`@` 因此是保留分隔符，不能用于新任务名。
@@ -363,12 +362,11 @@ pyr -w train export --format csv
 
 ```bash
 pyr -w train export baseline --format json
-pyr --json -w train export baseline
 pyr -w train export --status completed --output reports/results.csv
 pyr -w train export --format json --output -
 ```
 
-这里的 `--output -` 明确表示 stdout。全局 `--json` 会让 stdout 导出默认使用 JSON；如果同时显式指定 `--format csv`，命令会拒绝冲突请求。
+这里的 `--output -` 明确表示 stdout。记录格式只由 `--format` 选择，输出文件名后缀不会隐式改变格式。
 CSV 与 JSON 使用相同语义：每个任务的每次运行各占一条记录，并附加该次运行可用的 monitor 指标；即使任务没有写入 monitor 指标，运行时间、退出码和 PID 等基础记录也仍会导出。
 
 ## 13. 配置：`config`
@@ -389,7 +387,7 @@ pyr config path
 
 ```bash
 pyr metrics
-pyr --json metrics
+pyr metrics --json
 ```
 
 它输出一次 CPU、内存和 GPU 快照并退出，不进入持续刷新的仪表盘。
@@ -412,12 +410,12 @@ pyr dev train.py                        # 热更新开发模式
 推荐自动化调用：
 
 ```bash
-pyr --json -w shell ls
-pyr --json -w shell status
-pyr --json -w shell show smoke
-pyr --json -w shell log smoke --path
-pyr --json config list
-pyr --json metrics
+pyr -w shell ls --json
+pyr -w shell status --json
+pyr -w shell show smoke --json
+pyr -w shell log smoke --path --json
+pyr config list --json
+pyr metrics --json
 ```
 
 JSON 只写 stdout；用户可读错误仍写 stderr，并由退出码表示成功或失败。不要通过解析彩色表格判断状态。
@@ -439,7 +437,7 @@ JSON 只写 stdout；用户可读错误仍写 stderr，并由退出码表示成�
 pyr init
 pyr exec --name env-check -- python -V
 pyr exec --name smoke --detach -- python train.py --epochs 1
-pyr --json -w shell show smoke
+pyr -w shell show smoke --json
 pyr -w shell wait smoke --timeout 600
 pyr -w shell log smoke
 ```

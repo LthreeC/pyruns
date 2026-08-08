@@ -95,8 +95,8 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
         "_parse_args",
         lambda: SimpleNamespace(
             workspace=str(tmp_path),
-            mode="thread",
-            workers=1,
+            backend="thread",
+            jobs=1,
             submission_token="submission-token",
             tasks_json='["lost"]',
             startup_file=str(tmp_path / "startup.json"),
@@ -146,6 +146,8 @@ def test_batch_submission_accepts_queued_handshake_without_run_index(tmp_path, m
     ]
 
     def fake_popen(command, _env):
+        assert command[command.index("--backend") + 1] == "thread"
+        assert command[command.index("--jobs") + 1] == "1"
         submission_token = command[command.index("--submission-token") + 1]
         startup_file = Path(command[command.index("--startup-file") + 1])
         for task in tasks:
@@ -252,73 +254,6 @@ def test_submission_timeout_does_not_kill_a_runner_after_partial_claim(tmp_path,
         startup_timeout=0.05,
     ) is True
     assert killed == []
-
-
-def test_legacy_at_task_can_be_inspected_run_renamed_and_removed(tmp_path):
-    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
-    tasks_dir = workspace / TASKS_DIR
-    task = TaskGenerator(root_dir=str(tasks_dir)).create_shell_task(
-        "legacy-tag",
-        "legacy command\n",
-        command_mode="argv",
-        command_argv=[sys.executable, "-c", "print('legacy-ok')"],
-        workdir=str(tmp_path),
-    )
-    legacy_dir = tasks_dir / "legacy@tag"
-    Path(task["dir"]).rename(legacy_dir)
-    update_task_info(str(legacy_dir), lambda info: info.update({"name": "legacy@tag"}))
-
-    shown = subprocess.run(
-        _source_cli_command("-w", "shell", "show", "legacy@tag"),
-        cwd=tmp_path,
-        env=_source_env(),
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert shown.returncode == 0, shown.stdout + shown.stderr
-    assert "Name:       legacy@tag" in shown.stdout
-
-    run = subprocess.run(
-        _source_cli_command("-w", "shell", "run", "legacy@tag"),
-        cwd=tmp_path,
-        env=_source_env(),
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    assert run.returncode == 0, run.stdout + run.stderr
-
-    log = subprocess.run(
-        _source_cli_command("-w", "shell", "log", "legacy@tag@1"),
-        cwd=tmp_path,
-        env=_source_env(),
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert log.returncode == 0, log.stdout + log.stderr
-    assert "legacy-ok" in log.stdout
-
-    renamed = subprocess.run(
-        _source_cli_command("-w", "shell", "mv", "legacy@tag", "legacy-migrated"),
-        cwd=tmp_path,
-        env=_source_env(),
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert renamed.returncode == 0, renamed.stdout + renamed.stderr
-
-    removed = subprocess.run(
-        _source_cli_command("-w", "shell", "rm", "legacy-migrated"),
-        cwd=tmp_path,
-        env=_source_env(),
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert removed.returncode == 0, removed.stdout + removed.stderr
 
 
 def test_one_shot_run_bootstrap_preserves_existing_default(tmp_path):

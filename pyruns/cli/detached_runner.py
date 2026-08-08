@@ -20,8 +20,8 @@ _ACTIVE_STATUSES = {"queued", "running"}
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--mode", choices=("thread", "process"), default="thread")
-    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--backend", choices=("thread", "process"), default="thread")
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--submission-token", required=True)
     parser.add_argument("--startup-file", required=True)
     parser.add_argument("--tasks-json", required=True)
@@ -50,7 +50,7 @@ def main() -> int:
     startup_reported = False
     try:
         names = _task_names(args.tasks_json)
-        if not names or args.workers <= 0:
+        if not names or args.jobs <= 0:
             _report_startup(args.startup_file, "error", "invalid task submission")
             return 2
 
@@ -75,12 +75,12 @@ def main() -> int:
             return 2
 
         if len(names) == 1:
-            claimed = tm.start_task_now(names[0], execution_mode=args.mode)
+            claimed = tm.start_task_now(names[0], execution_mode=args.backend)
         else:
             claimed_names = tm.start_batch_tasks(
                 names,
-                execution_mode=args.mode,
-                max_workers=args.workers,
+                execution_mode=args.backend,
+                max_workers=args.jobs,
             )
             claimed = set(claimed_names) == set(names)
         if not claimed:

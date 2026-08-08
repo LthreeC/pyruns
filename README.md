@@ -56,7 +56,7 @@ pyr ui shell
 - Shell 命令与 Python 配置实验使用同一套任务生命周期。
 - CLI 一次调用完成一件事，适合人、脚本、CI 和 AI agent。
 - 前台执行返回真实结果；批量任务任一失败，整体退出非零。
-- detached runner 独立于调用终端，Windows 上不会弹出额外控制台窗口。
+- detached runner 独立于调用终端；Windows 上的任务进程和后台探测也不会弹出额外控制台窗口。
 - Web UI 与 CLI 共享磁盘状态，不存在两套数据源。
 
 ![Home](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
@@ -67,18 +67,19 @@ pyr ui shell
 pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
-常用全局参数：
+常用上下文和输出参数：
 
 ```text
 -C, --directory PATH
 -w, --workspace NAME|PATH|SCRIPT.py
---json
 --no-color
 --debug
 --version
 ```
 
-`-w` 只在 `ls`、`run`、`show`、`log` 等任务命令需要消除多 workspace 歧义时使用；项目只有一个 workspace 时可以省略。`exec` 固定使用 shell workspace，Web UI 则直接写成 `pyr ui shell`、`pyr ui train` 或 `pyr ui train.py`。
+`-w` 只在 `ls`、`run`、`show`、`log` 等任务命令需要消除多 workspace 歧义时使用；项目只有一个 workspace 时可以省略。`exec` 固定使用 shell workspace，Web UI 则直接写成 `pyr ui shell`、`pyr ui train` 或 `pyr ui train.py`。需要机器输出时，在支持的命令后加 `--json`，例如 `pyr status --json`。
+
+先记住一条层级即可：`project -> workspace -> task -> run`。项目拥有 `_pyruns_` 数据目录；workspace 收纳一组相关任务；task 是有精确名称的命令或配置；每次执行 task 都产生一个带编号的 run 历史。
 
 正式命令集：
 
@@ -87,7 +88,7 @@ pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 | `init` | 初始化 shell 或 Python script workspace |
 | `exec` | 创建并运行一个受跟踪的终端命令或 Shell 脚本 |
 | `add` | 从 YAML 添加不可变任务快照 |
-| `run` | 运行一个或多个精确任务名 |
+| `run` | 运行精确任务，或从 YAML 创建并立即运行 |
 | `ls` | 稳定过滤和排序任务 |
 | `status` | 查看 workspace 状态汇总 |
 | `show` | 查看任务元数据和路径 |
@@ -177,11 +178,11 @@ pyr exec -n train --env-file .env.train -e SEED=42 -- python train.py
 
 `--env-file` 可重复，后面的文件覆盖前面的文件，命令行 `-e` 最后覆盖所有文件。文件只接受空行、整行 `#` 注释和 `KEY=VALUE`，不会执行 shell 插值。任务环境会明文保存在元数据并由 `show` 显示，因此不要在其中保存密钥。
 
-执行前可做真正无副作用的预览；加入全局 `--json` 可得到稳定计划对象：
+执行前可做真正无副作用的预览；加入 `--json` 可得到稳定计划对象：
 
 ```bash
 pyr exec --dry-run -n report -- python eval.py
-pyr --json exec --dry-run -n report -- python eval.py
+pyr exec --dry-run -n report --json -- python eval.py
 ```
 
 预览不会创建 `_pyruns_`、任务或设置文件，也不会启动用户命令。
@@ -208,11 +209,11 @@ pyr -w train run quick
 创建并立即运行：
 
 ```bash
-pyr -w train run --from configs/sweep.yaml -n sweep -j 4
-pyr -w train run --from configs/sweep.yaml -n sweep -j 4 --dry-run
+pyr -w train run --config configs/sweep.yaml -n sweep -j 4
+pyr -w train run --config configs/sweep.yaml -n sweep -j 4 --dry-run
 ```
 
-`run --from ... --dry-run` 会验证 YAML 并列出展开后的候选任务，但不创建或运行它们。
+`run --config ... --dry-run` 会验证 YAML 并列出展开后的候选任务，但不创建或运行它们。
 
 Script 任务保存在：
 
@@ -324,30 +325,29 @@ pyr -w train restore baseline-lr1e3
 
 ## JSON 与自动化
 
-全局 `--json` 放在子命令之前：
+`--json` 是给脚本、CI 和 agent 使用的机器输出开关，只放在明确支持它的子命令后：
 
 ```bash
-pyr --json -w shell ls
-pyr --json -w shell status
-pyr --json -w shell show smoke
-pyr --json -w shell show smoke@2
-pyr --json -w shell show smoke --run 2
-pyr --json -w shell log smoke --path
-pyr --json -w shell log smoke@2 --path
-pyr --json config list
-pyr --json metrics
+pyr -w shell ls --json
+pyr -w shell status --json
+pyr -w shell show smoke --json
+pyr -w shell show smoke@2 --json
+pyr -w shell show smoke --run 2 --json
+pyr -w shell log smoke --path --json
+pyr -w shell log smoke@2 --path --json
+pyr config list --json
+pyr metrics --json
 ```
 
 日志默认原样写 stdout；需要结构化引用时使用 `log --path`。导出默认写 stdout：
 
 ```bash
 pyr -w train export -f csv
-pyr -w train export baseline -f json
-pyr --json -w train export baseline
+pyr -w train export baseline --format json
 pyr -w train export -s completed -o results.csv
 ```
 
-全局 `--json` 会让 stdout 导出默认使用 JSON；需要 CSV 时不要传全局 `--json`，并使用 `-f csv`。
+导出记录的格式只由 `--format`（或 `-f`）选择；文件名后缀不会隐式改变格式。
 
 退出码：
 

@@ -54,6 +54,7 @@ from pyruns.utils.config_utils import (
 )
 from pyruns.utils.info_io import get_log_options, load_script_info, load_task_info, resolve_log_path
 from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
+from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_setting_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
@@ -565,6 +566,7 @@ class PyrunsRuntime:
                 text=True,
                 timeout=10,
                 check=False,
+                **hidden_subprocess_kwargs(),
             )
             if info_result.returncode == 0:
                 info_data = yaml.safe_load(info_result.stdout) or {}
@@ -580,6 +582,7 @@ class PyrunsRuntime:
                 text=True,
                 timeout=15,
                 check=False,
+                **hidden_subprocess_kwargs(),
             )
         except Exception as exc:
             payload = {

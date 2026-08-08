@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import math
 import os
+import shutil
 import sys
+import textwrap
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -16,7 +19,53 @@ class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
     """Keep examples readable while retaining argparse's option formatting."""
 
     def __init__(self, prog: str) -> None:
-        super().__init__(prog, max_help_position=30, width=100)
+        columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+        super().__init__(prog, max_help_position=30, width=max(40, min(columns, 100)))
+
+    def _fill_text(self, text: str, width: int, indent: str) -> str:
+        """Reflow prose while preserving the indentation of examples and notes."""
+
+        rendered: list[str] = []
+        paragraph: list[str] = []
+
+        def flush_paragraph() -> None:
+            if not paragraph:
+                return
+            rendered.extend(
+                textwrap.wrap(
+                    " ".join(paragraph),
+                    width=width,
+                    initial_indent=indent,
+                    subsequent_indent=indent,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+            )
+            paragraph.clear()
+
+        for line in text.splitlines():
+            if not line.strip():
+                flush_paragraph()
+                rendered.append("")
+            elif line[:1].isspace():
+                flush_paragraph()
+                leading = line[: len(line) - len(line.lstrip())]
+                prefix = indent + leading
+                rendered.extend(
+                    textwrap.wrap(
+                        line.lstrip(),
+                        width=width,
+                        initial_indent=prefix,
+                        subsequent_indent=prefix + "  ",
+                        replace_whitespace=False,
+                        break_long_words=False,
+                        break_on_hyphens=False,
+                    )
+                )
+            else:
+                paragraph.append(line.strip())
+        flush_paragraph()
+        return "\n".join(rendered)
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -30,10 +79,30 @@ class _ArgumentParser(argparse.ArgumentParser):
         self.print_usage(sys.stderr)
         self.exit(2, f"{self.prog}: error: {message}\n")
 
+    def _check_value(self, action: argparse.Action, value: object) -> None:
+        """Keep command typos concise while preserving exact matching."""
+
+        choices = action.choices
+        command_like = isinstance(action, argparse._SubParsersAction) or action.dest == "topic"
+        if command_like and choices is not None and value not in choices:
+            choice_names = [str(choice) for choice in choices]
+            suggestions = difflib.get_close_matches(
+                str(value),
+                choice_names,
+                n=1,
+                cutoff=0.75,
+            )
+            kind = "action" if action.dest.endswith("_action") else "command"
+            message = f"unknown {kind} '{value}'"
+            if suggestions:
+                message += f"\nDid you mean '{suggestions[0]}'?"
+            self.error(message)
+        super()._check_value(action, value)
+
 
 @dataclass(frozen=True)
 class CliContext:
-    """Global CLI options shared by every command."""
+    """Resolved invocation context shared with command handlers."""
 
     directory: str
     workspace: str | None
@@ -51,6 +120,19 @@ def _invoked_program(argv0: str | None = None) -> str:
     if stem.startswith("pyr"):
         return "pyr"
     return "pyr"
+
+
+def _configure_output_streams() -> None:
+    """Keep Unicode output usable on restrictive terminal encodings."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
 
 
 def _example_block(
@@ -142,6 +224,22 @@ def _add_browser_options(parser: argparse.ArgumentParser) -> None:
     browser.add_argument("--no-browser", action="store_true", help="do not open a browser")
 
 
+def _add_json_option(
+    parser: argparse.ArgumentParser,
+    *,
+    help_text: str = "emit stable machine-readable JSON for this command",
+) -> None:
+    """Add machine output only to the command scope that owns it."""
+
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        default=argparse.SUPPRESS,
+        help=help_text,
+    )
+
+
 def build_parser(
     program: str = "pyr",
     *,
@@ -164,30 +262,38 @@ def build_parser(
         prog=program,
         formatter_class=_HelpFormatter,
         description=(
-            "Pyruns records reproducible terminal commands and Python experiments under the\n"
-            "project's _pyruns_ directory, including logs, duration, exit codes, and source state.\n"
+            "Pyruns saves terminal commands and Python experiments as named tasks that you can\n"
+            "inspect and rerun. Logs, duration, exit codes, and source state live under _pyruns_.\n"
             f"{program} and {alternate} are identical; every invocation performs one operation and exits.\n"
             "The Web UI starts only with 'ui'; a bare command prints this help.\n\n"
-            "Quick start:\n"
-            f"  {program} exec -n check -- python -V\n"
-            f"  {program} ls\n"
-            f"  {program} show check\n"
-            f"  {program} log check\n"
-            f"  {program} ui"
+            "Model: project -> workspace -> task -> numbered run\n"
+            "  project    current directory (or -C PATH); owns one _pyruns_ directory\n"
+            "  workspace  'shell' for terminal commands, or one workspace per Python script\n"
+            "  task       a saved command or YAML configuration with an exact name\n"
+            "  run        one execution; rerunning a task keeps numbered history\n\n"
+            "Quick start -- track one terminal command:\n"
+            f"  {program} exec -n check -- python -V   create and run task 'check'\n"
+            f"  {program} ls                            list tasks\n"
+            f"  {program} show check                    inspect command and run history\n"
+            f"  {program} log check                     print its output\n"
+            f"  {program} run check                     rerun the saved task\n"
+            f"  {program} ui shell                      open the shell workspace in the Web UI"
         ),
         epilog=(
             command_overview
             + "Notes:\n"
-            "  Put global options (-C, -w, --json) before COMMAND.\n"
+            "  Put context options (-C, -w, --no-color, --debug) before COMMAND.\n"
+            f"  For automation, append --json where advertised (for example, {program} status --json).\n"
             "  Task names are exact. With several workspaces, select one with -w.\n"
             "  exec creates the shell workspace automatically.\n\n"
             "More help:\n"
             f"  {program} help COMMAND\n"
             f"  {program} help -a        list all commands\n"
-            f"  {program} COMMAND --help\n\n"
+            f"  {program} COMMAND --help    show command options (for example, ui --port)\n\n"
             "Exit status: 0 success, 1 operation failed, 2 invalid usage, 130 interrupted."
         ),
     )
+    parser.set_defaults(json_output=False)
     parser.add_argument(
         "-C",
         "--directory",
@@ -200,12 +306,6 @@ def build_parser(
         "--workspace",
         metavar="NAME|PATH|SCRIPT.py",
         help="select an exact task workspace; use 'shell'; place before COMMAND",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="emit stable JSON for supported commands; place before COMMAND",
     )
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--debug", action="store_true", help="show Python tracebacks for internal failures")
@@ -226,6 +326,7 @@ def build_parser(
         description: str | None = None,
         epilog: str | None = None,
         common: bool = False,
+        json_help: str | None = "emit stable machine-readable JSON for this command",
     ) -> argparse.ArgumentParser:
         visible = show_all_commands or common
         subparser = subparsers.add_parser(
@@ -236,6 +337,8 @@ def build_parser(
             formatter_class=_HelpFormatter,
         )
         subparser.set_defaults(handler=name)
+        if json_help is not None:
+            _add_json_option(subparser, help_text=json_help)
         command_parsers[name] = subparser
         if not visible:
             subparsers._choices_actions = [
@@ -336,7 +439,7 @@ def build_parser(
         epilog=_example_block(
             program,
             "-w train add configs/quick.yaml",
-            "--json -w train add sweep.yaml -n ablation",
+            "-w train add sweep.yaml -n ablation --json",
             notes=(
                 "Select a script workspace with -w when discovery is ambiguous.",
                 "-n is a task-name prefix; expanded batches receive deterministic suffixes.",
@@ -350,24 +453,24 @@ def build_parser(
 
     run = command(
         "run",
-        help_text="run or rerun exact tasks; --from creates them first",
+        help_text="run exact tasks, or create and run tasks from YAML",
         description=(
             "Run or rerun exact task names in the selected shell or script workspace. Alternatively,\n"
-            "--from CONFIG creates script tasks from YAML and immediately runs them. By default Pyruns\n"
+            "--config CONFIG creates script tasks from YAML and immediately runs them. By default Pyruns\n"
             "waits for every requested task and returns non-zero if any task fails."
         ),
         epilog=_example_block(
             program,
             "-w train run baseline",
             "-w train run a b c -j 3",
-            "-w train run --from configs/quick.yaml -n quick",
-            "-w train run --from configs/quick.yaml -n quick --dry-run",
+            "-w train run --config configs/quick.yaml -n quick",
+            "-w train run --config configs/quick.yaml -n quick --dry-run",
             "-w train run baseline --detach",
             notes=(
-                "Use either TASK names or --from CONFIG, never both.",
-                "--name and --dry-run are valid only with --from.",
+                "Use either TASK names or --config CONFIG, never both.",
+                "--name and --dry-run are valid only with --config.",
                 "--dry-run validates and expands YAML but creates and runs nothing.",
-                "-j controls task concurrency; -m selects the thread or process runner backend.",
+                "-j/--jobs controls task concurrency; --backend selects thread or process management.",
                 "By default Pyruns waits for every task and reports aggregate failure.",
                 "--detach changes waiting only; accepted tasks continue under the hidden runner.",
             ),
@@ -375,21 +478,31 @@ def build_parser(
         common=True,
     )
     run.add_argument("tasks", nargs="*", metavar="TASK", help="exact task name")
-    run.add_argument("--from", dest="from_config", metavar="CONFIG", help="create tasks from YAML before running")
-    run.add_argument("-n", "--name", help="name prefix used with --from")
-    run.add_argument("-j", "--workers", type=_positive_int, default=1, help="maximum concurrent tasks")
     run.add_argument(
-        "-m",
-        "--mode",
+        "--config",
+        metavar="CONFIG",
+        help="create tasks from this YAML configuration before running",
+    )
+    run.add_argument("-n", "--name", help="task-name prefix used with --config")
+    run.add_argument(
+        "-j",
+        "--jobs",
+        type=_positive_int,
+        default=1,
+        metavar="N",
+        help="maximum number of tasks to run concurrently",
+    )
+    run.add_argument(
+        "--backend",
         choices=("thread", "process"),
         default="thread",
-        help="runner backend used to manage the requested tasks",
+        help="task-management backend; defaults to thread",
     )
     run.add_argument("-d", "--detach", action="store_true", help="return after the runner accepts all tasks")
     run.add_argument(
         "--dry-run",
         action="store_true",
-        help="preview task creation from --from without creating or running anything",
+        help="preview task creation from --config without creating or running anything",
     )
 
     listing = command(
@@ -405,13 +518,13 @@ def build_parser(
             "ls",
             "-w train ls loss",
             "ls --status failed --limit 20",
-            "--json ls --status running --status queued",
+            "ls --status running --status queued --json",
             "ls --sort name --reverse",
             "ls --trash",
             notes=(
                 "Without -w, Pyruns uses the only workspace discovered from the current directory.",
                 "--status is repeatable; --limit applies after filtering and ordering.",
-                "Global --json must appear before 'ls'.",
+                "Use --json for stable machine-readable task summaries.",
             ),
         ),
         common=True,
@@ -422,7 +535,8 @@ def build_parser(
         "--status",
         action="append",
         choices=("pending", "queued", "running", "completed", "failed", "cancelled"),
-        help="status filter; repeatable",
+        metavar="STATUS",
+        help="filter by pending, queued, running, completed, failed, or cancelled; repeatable",
     )
     listing.add_argument("-n", "--limit", type=_positive_int, help="maximum number of rows")
     listing.add_argument("--sort", choices=("created", "name", "status"), default="created", help="sort key")
@@ -440,10 +554,10 @@ def build_parser(
             program,
             "status",
             "-w shell status",
-            "--json -w train status",
+            "-w train status --json",
             notes=(
                 "Use 'metrics' for host CPU, memory, and GPU data; status reports task state only.",
-                "Global --json and -w must appear before 'status'.",
+                "-w remains a context option before 'status'; --json may follow it.",
             ),
         ),
         common=True,
@@ -461,7 +575,7 @@ def build_parser(
             "show smoke",
             "show smoke@2",
             "show smoke --run 2",
-            "--json -w train show baseline",
+            "-w train show baseline --json",
             notes=(
                 "TASK is an exact name. New task names reserve @ for the TASK@RUN shorthand.",
                 "TASK@RUN and --run RUN select the same historical run.",
@@ -488,15 +602,16 @@ def build_parser(
             "log smoke@2",
             "log smoke --run 2",
             "log smoke --path",
-            "--json log smoke@2 --path",
+            "log smoke@2 --path --json",
             notes=(
                 "TASK@RUN cannot be combined with --run or --follow.",
                 "--follow cannot be combined with --run or --path and rejects a pending task.",
-                "Raw log output is intentionally not JSON; combine global --json with --path instead.",
+                "Raw log output is intentionally not JSON; combine --json with --path instead.",
                 "--follow streams bytes until the task finishes; it is not an interactive terminal.",
             ),
         ),
         common=True,
+        json_help="with --path, emit a JSON object containing the selected log path",
     )
     logs.add_argument("task", metavar="TASK[@RUN]", help="exact task name, optionally at one run number")
     logs.add_argument("-f", "--follow", action="store_true", help="wait for new output until the task finishes")
@@ -645,9 +760,10 @@ def build_parser(
             notes=(
                 "The default format is CSV and the default output '-' means stdout.",
                 "--status is repeatable. Runs without monitor metrics still include lifecycle fields.",
-                "With global --json, stdout defaults to JSON; explicit '--format csv' is rejected.",
+                "Choose CSV or JSON records with --format; output filenames do not select a format.",
             ),
         ),
+        json_help=None,
     )
     export.add_argument("tasks", nargs="*", metavar="TASK", help="exact task names; defaults to all")
     export.add_argument(
@@ -655,7 +771,8 @@ def build_parser(
         "--status",
         action="append",
         choices=("pending", "queued", "running", "completed", "failed", "cancelled"),
-        help="status filter; repeatable",
+        metavar="STATUS",
+        help="filter by pending, queued, running, completed, failed, or cancelled; repeatable",
     )
     export.add_argument("-f", "--format", choices=("csv", "json"), help="output format; defaults to CSV")
     export.add_argument("-o", "--output", default="-", metavar="PATH", help="output path; '-' means stdout")
@@ -684,6 +801,7 @@ def build_parser(
                 "Use 'unset' to restore the built-in default rather than writing a guessed value.",
             ),
         ),
+        json_help=None,
     )
     config_subparsers = config.add_subparsers(
         dest="config_action",
@@ -695,10 +813,11 @@ def build_parser(
         "list",
         help="list effective settings",
         description="Print every effective project setting after defaults and saved values are merged.",
-        epilog=_example_block(program, "config list", "--json config list"),
+        epilog=_example_block(program, "config list", "config list --json"),
         formatter_class=_HelpFormatter,
     )
     config_list.set_defaults(config_action="list")
+    _add_json_option(config_list)
     config_get = config_subparsers.add_parser(
         "get",
         help="print one effective setting",
@@ -707,6 +826,7 @@ def build_parser(
         formatter_class=_HelpFormatter,
     )
     config_get.add_argument("key", metavar="KEY", help="known project setting name")
+    _add_json_option(config_get)
     config_set = config_subparsers.add_parser(
         "set",
         help="set one project setting",
@@ -728,6 +848,7 @@ def build_parser(
     )
     config_set.add_argument("key", metavar="KEY", help="known project setting name")
     config_set.add_argument("value", metavar="VALUE", help="YAML scalar, list, or mapping")
+    _add_json_option(config_set)
     config_unset = config_subparsers.add_parser(
         "unset",
         help="restore one setting to its default",
@@ -736,13 +857,15 @@ def build_parser(
         formatter_class=_HelpFormatter,
     )
     config_unset.add_argument("key", metavar="KEY", help="known project setting name")
-    config_subparsers.add_parser(
+    _add_json_option(config_unset)
+    config_path = config_subparsers.add_parser(
         "path",
         help="print the project settings path",
         description="Print the normalized path of this project's settings YAML file.",
         epilog=_example_block(program, "config path"),
         formatter_class=_HelpFormatter,
     )
+    _add_json_option(config_path)
 
     command(
         "metrics",
@@ -754,10 +877,10 @@ def build_parser(
         epilog=_example_block(
             program,
             "metrics",
-            "--json metrics",
+            "metrics --json",
             notes=(
                 "Use Web UI Monitor for a continuously updated view.",
-                "Global --json must appear before 'metrics'.",
+                "Use --json for a stable machine-readable snapshot.",
             ),
         ),
     )
@@ -768,7 +891,7 @@ def build_parser(
         description=(
             "Start the Web UI workspace launcher, open an exact existing WORKSPACE, or\n"
             "initialize and open SCRIPT.py. Use 'ui shell' for the project shell workspace.\n"
-            "Global -w/--workspace and --json do not apply to UI commands."
+            "UI commands do not accept -w/--workspace or --json."
         ),
         epilog=_example_block(
             program,
@@ -781,11 +904,13 @@ def build_parser(
             notes=(
                 "With no target, ui opens the workspace launcher and does not guess a workspace.",
                 "Pass shell, an existing workspace name/path, or a Python script directly after ui.",
-                "Do not write '-w shell ui'; -w and --json are task-command global options.",
+                "Do not write '-w shell ui'; pass the workspace directly after 'ui'.",
+                "Use 'ui --help' to discover --port, --browser, and --no-browser.",
                 "--no-browser keeps the server headless; stop it with Ctrl+C or the service manager.",
             ),
         ),
         common=True,
+        json_help=None,
     )
     ui.add_argument(
         "target",
@@ -802,8 +927,9 @@ def build_parser(
         description=(
             "Initialize and open SCRIPT.py with Web UI hot reload.\n"
             "This is a development server, not the normal production UI entry. Global\n"
-            "-w/--workspace and --json do not apply to UI commands."
+            "UI commands do not accept -w/--workspace or --json."
         ),
+        json_help=None,
         epilog=_example_block(
             program,
             "dev train.py",
@@ -826,6 +952,7 @@ def build_parser(
             "Show the concise top-level guide, the complete command index, or detailed help for one\n"
             "command. Help is read-only and never creates a workspace or starts the Web UI."
         ),
+        json_help=None,
         epilog=_example_block(
             program,
             "help",
@@ -853,6 +980,7 @@ def build_parser(
 def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     """Parse and execute one Pyruns command."""
 
+    _configure_output_streams()
     program = prog or (_invoked_program() if argv is None else "pyr")
     parser, command_parsers = build_parser(program)
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -867,10 +995,14 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
         os.chdir(directory)
 
         if args.command is None:
+            if args.workspace:
+                parser.error("-w/--workspace requires a command")
             parser.print_help()
             return 0
 
         if args.command == "help":
+            if args.workspace:
+                command_parsers["help"].error("help does not use -w/--workspace")
             if args.all_commands and args.topic:
                 command_parsers["help"].error("--all cannot be combined with COMMAND")
             if args.topic:
@@ -896,9 +1028,12 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
-        from pyruns.cli.commands import CliError
+        from pyruns.cli.commands import CliError, CliUsageError
 
         if isinstance(exc, CliError):
+            if isinstance(exc, CliUsageError):
+                handler = str(getattr(args, "handler", "") or "")
+                command_parsers.get(handler, parser).print_usage(sys.stderr)
             print(f"{parser.prog}: error: {exc}", file=sys.stderr)
             return exc.exit_code
         if bool(getattr(args, "debug", False)):

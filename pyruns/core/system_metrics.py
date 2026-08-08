@@ -9,6 +9,8 @@ from typing import Any, Dict, List
 
 import psutil
 
+from pyruns.utils.process_utils import hidden_subprocess_kwargs
+
 
 class SystemMonitor:
     """Collect CPU, RAM, and optional GPU utilization metrics."""
@@ -105,6 +107,7 @@ class SystemMonitor:
                 "--format=csv,noheader,nounits",
             ],
             timeout=self._GPU_QUERY_TIMEOUT_SEC,
+            **hidden_subprocess_kwargs(),
         ).decode("utf-8", errors="replace").strip()
 
     def _get_gpu_processes(self) -> Dict[str, List[Dict[str, Any]]]:

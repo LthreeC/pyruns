@@ -2296,6 +2296,7 @@ def test_git_bytes_disables_optional_git_locks(monkeypatch):
     def fake_run(command, **kwargs):
         captured["command"] = command
         captured["env"] = kwargs.get("env")
+        captured["kwargs"] = kwargs
         return Result()
 
     monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
@@ -2304,6 +2305,8 @@ def test_git_bytes_disables_optional_git_locks(monkeypatch):
     assert executor._git_bytes("/repo", ["status", "--porcelain=v1"]) == b"ok"
     assert captured["command"] == ["git", "status", "--porcelain=v1"]
     assert captured["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+    for key, value in executor.hidden_subprocess_kwargs().items():
+        assert captured["kwargs"][key] == value
     assert os.environ["GIT_OPTIONAL_LOCKS"] == "1"
 
 

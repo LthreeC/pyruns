@@ -2,6 +2,7 @@
 Cross-platform process utilities — check if a PID is alive, kill a process.
 """
 import os
+import subprocess
 import time
 from typing import Any
 
@@ -10,6 +11,15 @@ from pyruns.utils import get_logger
 logger = get_logger(__name__)
 _POSIX_KILL_GRACE_SEC = 1.5
 _POSIX_KILL_POLL_SEC = 0.05
+
+
+def hidden_subprocess_kwargs() -> dict[str, int]:
+    """Return flags that prevent console windows for background child processes."""
+
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
 
 # Import psutil at module level so tests can mock it via
 # @patch("pyruns.utils.process_utils.psutil")
@@ -81,10 +91,10 @@ def kill_process(pid: int) -> None:
     """Terminate the process tree rooted at *pid* (cross-platform)."""
     try:
         if os.name == "nt":
-            import subprocess as _sp
-            _sp.run(
+            subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, timeout=5,
+                **hidden_subprocess_kwargs(),
             )
         else:
             import signal

@@ -43,7 +43,6 @@ from pyruns.utils.info_io import (
     run_slot_count,
     task_info_lock,
     update_task_info,
-    validate_existing_task_name,
     validate_task_name,
 )
 from pyruns.utils.process_utils import is_pid_running, kill_process
@@ -596,6 +595,8 @@ class TaskManager:
 
     def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
         """Load one task folder into the normalized task dict shape."""
+        if validate_task_name(dir_name) is not None:
+            return None
         task_dir = os.path.join(self.tasks_dir, dir_name)
         info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
         if not os.path.exists(info_path):
@@ -738,7 +739,7 @@ class TaskManager:
     def load_task_by_name(self, name: str) -> Dict[str, Any] | None:
         """Load one exact task folder without scanning the whole workspace."""
         task_name = str(name or "").strip()
-        if validate_existing_task_name(task_name) is not None:
+        if validate_task_name(task_name) is not None:
             return None
 
         task = self._load_task_dir(task_name)
