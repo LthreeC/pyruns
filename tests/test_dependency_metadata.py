@@ -271,32 +271,3 @@ def test_frontend_static_checker_allows_text_line_ending_differences(tmp_path, m
     monkeypatch.setattr(checker.subprocess, "run", fake_run)
 
     assert checker.check_frontend_static(root=tmp_path) == []
-
-
-def test_frontend_log_stream_passes_resume_options_without_offset_reconnects():
-    api_source = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
-    hook_source = (ROOT / "frontend" / "src" / "hooks" / "useWebSocket.ts").read_text(encoding="utf-8")
-    monitor_source = (ROOT / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx").read_text(
-        encoding="utf-8"
-    )
-
-    assert "createLogStream(taskName: string, options:" in api_source
-    assert "sp.set('log_file_name', options.logFileName)" in api_source
-    assert "sp.set('offset', String(options.offset))" in api_source
-    assert "offsetRef.current = offset" in hook_source
-    assert "const ws = createLogStream(taskName, {" in hook_source
-    assert "logFileName," in hook_source
-    assert "offset: offsetRef.current," in hook_source
-    assert "logIdentity: logIdentityRef.current," in hook_source
-    assert "[taskName, enabled, disconnect, generationKey, logFileName]" in hook_source
-    assert "enabled: !loading && isLive && canUseLogStream" in monitor_source
-    assert "logFileName: selectedLog || liveLogName || undefined" in monitor_source
-    assert "offset: logOffsetRef.current" in monitor_source
-
-
-def test_frontend_task_store_retries_last_valid_page_after_empty_page():
-    store_source = (ROOT / "frontend" / "src" / "store.ts").read_text(encoding="utf-8")
-
-    assert "page.items.length === 0" in store_source
-    assert "Math.floor((page.total - 1) / limit) * limit" in store_source
-    assert "retryPage = await api.getTasks" in store_source

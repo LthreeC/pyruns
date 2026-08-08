@@ -371,55 +371,6 @@ def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkey
     assert empty_preview == "(empty shell script)"
 
 
-def test_append_read_log(tmp_path):
-    log_file = str(tmp_path / "test.log")
-    
-    # Read non-existent
-    assert read_log(log_file) == ""
-    
-    # Append creates file
-    append_log(log_file, "Line 1\n")
-    assert read_log(log_file).replace("\r", "") == "Line 1\n"
-    
-    # Append adds
-    append_log(log_file, "Line 2\n")
-    assert read_log(log_file).replace("\r", "") == "Line 1\nLine 2\n"
-
-
-def test_read_log_chunk(tmp_path):
-    log_file = str(tmp_path / "test.log")
-    
-    # Non existent
-    assert read_log_chunk(log_file, 0) == ("", 0)
-    
-    # Write some data
-    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
-        f.write("A" * 10)
-    
-    # Read chunk from offset 0
-    text1, off1 = read_log_chunk(log_file, 0)
-    assert text1.replace("\r", "") == "A" * 10
-    assert off1 == 10
-    
-    # Append more data
-    with open(log_file, "a", encoding="utf-8", newline="\n") as f:
-        f.write("B" * 5)
-    
-    # Read from previous offset
-    text2, off2 = read_log_chunk(log_file, off1)
-    assert text2.replace("\r", "") == "B" * 5
-    assert off2 == 15
-    
-    # Truncate file simulating log rotation/overwrite
-    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
-        f.write("C" * 3)
-        
-    # Read from offset 15 -> should reset to 0 because size is now 3
-    text3, off3 = read_log_chunk(log_file, off2)
-    assert text3.replace("\r", "") == "C" * 3
-    assert off3 == 3
-
-
 def test_normalize_log_newlines_leaves_terminal_stream_unchanged():
     text = "progress 1/3\rprogress 2/3\nfinished\n"
 
@@ -427,26 +378,6 @@ def test_normalize_log_newlines_leaves_terminal_stream_unchanged():
 
     assert normalized == text
     assert "progress 1/3\r\nprogress 2/3" not in normalized
-
-
-def test_read_last_bytes(tmp_path):
-    log_file = str(tmp_path / "test.log")
-    
-    assert read_last_bytes(log_file) == ("", 0)
-    
-    content = "Hello\nWorld\n" * 100 # len=1200
-    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
-        f.write(content)
-        
-    text, offset = read_last_bytes(log_file, 12)
-    assert len(text.replace("\r", "")) == 12
-    assert "World\n" in text.replace("\r", "")
-    assert offset == len(content)
-    
-    # Ask for more than available
-    text2, offset2 = read_last_bytes(log_file, 2000)
-    assert text2.replace("\r", "") == content
-    assert offset2 == len(content)
 
 
 def test_read_last_lines(tmp_path):
@@ -501,31 +432,6 @@ def test_read_last_lines_respects_max_bytes(tmp_path):
 
     assert text.replace("\r", "") == "B" * 15 + "\n"
     assert offset == len(content)
-
-
-def test_safe_read_log(tmp_path):
-    log_file = str(tmp_path / "test.log")
-    assert safe_read_log(log_file, 0) == ("", 0)
-    
-    # safe_read_log reads max_bytes and falls back to last newline
-    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
-        f.write("Line 1\nLine 2\nLine 3 no newline yet")
-        
-    text, off = safe_read_log(log_file, 0, max_bytes=100)
-    # If the file doesn't exceed max_bytes, it just returns all of it
-    assert text.replace("\r", "") == "Line 1\nLine 2\nLine 3 no newline yet"
-    assert off == 35
-    
-    # Now write a long string to trigger fallback
-    with open(log_file, "w", encoding="utf-8", newline="\n") as f:
-        f.write("A" * 100 + "\n" + "B" * 100)
-        
-    text2, off2 = safe_read_log(log_file, 0, max_bytes=150)
-    # It reads 150 bytes, which lands in the B's.
-    # Because there is a newline at index 100, it should fallback to there.
-    # Return string will be up to the newline.
-    assert text2.replace("\r", "") == "A" * 100 + "\n"
-    assert off2 == 101 # exactly after the newline
 
 
 def test_decode_log_bytes_falls_back_to_gbk_for_windows_logs(monkeypatch):
@@ -1190,39 +1096,33 @@ class TestLoadSaveTaskInfo:
         assert not lock_path.exists()
 
 
-class TestLoadRecordData:
-    def test_with_records(self, tmp_path):
-        task_dir = str(tmp_path)
-        info = {RECORDS_KEY: [{"loss": 0.5}, {"loss": 0.1}]}
-        save_task_info(task_dir, info)
-        data = load_record_data(task_dir)
-        assert len(data) == 2
-        assert data[0]["loss"] == 0.5
+def test_load_record_data_handles_records_empty_payloads_and_missing_files(tmp_path):
+    missing_dir = tmp_path / "missing"
+    assert load_record_data(str(missing_dir)) == []
 
-    def test_without_records(self, tmp_path):
-        task_dir = str(tmp_path)
-        save_task_info(task_dir, {"name": "test"})
-        assert load_record_data(task_dir) == []
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    save_task_info(str(empty_dir), {"name": "test"})
+    assert load_record_data(str(empty_dir)) == []
 
-    def test_missing_file(self, tmp_path):
-        assert load_record_data(str(tmp_path)) == []
+    records_dir = tmp_path / "records"
+    records_dir.mkdir()
+    save_task_info(str(records_dir), {RECORDS_KEY: [{"loss": 0.5}, {"loss": 0.1}]})
+    assert load_record_data(str(records_dir)) == [{"loss": 0.5}, {"loss": 0.1}]
 
 
-class TestGetLogOptions:
-    def test_run_logs(self, tmp_path):
-        task_dir = str(tmp_path)
-        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
-        os.makedirs(log_dir)
-        for name in ["run1.log", "run2.log", "run10.log"]:
-            open(os.path.join(log_dir, name), "w").close()
+def test_get_log_options_handles_empty_and_naturally_sorted_run_logs(tmp_path):
+    task_dir = str(tmp_path)
+    assert get_log_options(task_dir) == {}
 
-        opts = get_log_options(task_dir)
-        keys = list(opts.keys())
-        assert keys == ["run1.log", "run2.log", "run10.log"]
-        assert all(os.path.isfile(p) for p in opts.values())
+    log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
+    os.makedirs(log_dir)
+    for name in ["run1.log", "run2.log", "run10.log"]:
+        Path(log_dir, name).touch()
 
-    def test_no_logs(self, tmp_path):
-        assert get_log_options(str(tmp_path)) == {}
+    options = get_log_options(task_dir)
+    assert list(options) == ["run1.log", "run2.log", "run10.log"]
+    assert all(os.path.isfile(path) for path in options.values())
 
 
 class TestResolveLogPath:
@@ -1353,22 +1253,22 @@ def test_parse_value_preserves_expected_scalar_and_collection_types():
 # ═══════════════════════════════════════════════════════════════
 
 class TestFlattenUnflatten:
-    def test_flat_dict(self):
-        d = {"a": 1, "b": 2}
-        assert flatten_dict(d) == {"a": 1, "b": 2}
+    def test_flatten_unflatten_handles_flat_nested_and_roundtrip_data(self):
+        assert flatten_dict({"a": 1, "b": 2}) == {"a": 1, "b": 2}
 
-    def test_nested(self):
-        d = {"model": {"name": "resnet", "layers": 50}, "lr": 0.01}
-        flat = flatten_dict(d)
-        assert flat == {"model.name": "resnet", "model.layers": 50, "lr": 0.01}
+        nested = {"model": {"name": "resnet", "layers": 50}, "lr": 0.01}
+        assert flatten_dict(nested) == {
+            "model.name": "resnet",
+            "model.layers": 50,
+            "lr": 0.01,
+        }
 
-    def test_roundtrip(self):
         original = {"a": {"b": {"c": 1}}, "x": 2}
         assert unflatten_dict(flatten_dict(original)) == original
-
-    def test_unflatten_simple(self):
-        flat = {"a.b": 1, "a.c": 2, "d": 3}
-        assert unflatten_dict(flat) == {"a": {"b": 1, "c": 2}, "d": 3}
+        assert unflatten_dict({"a.b": 1, "a.c": 2, "d": 3}) == {
+            "a": {"b": 1, "c": 2},
+            "d": 3,
+        }
 
     def test_get_nested(self):
         from pyruns.utils.config_utils import get_nested
@@ -1530,25 +1430,17 @@ class TestListTemplateFiles:
 #  preview_config_line
 # ═══════════════════════════════════════════════════════════════
 
-class TestPreviewConfigLine:
-    def test_basic(self):
-        cfg = {"lr": 0.01, "bs": 32, "opt": "adam"}
-        line = preview_config_line(cfg)
-        assert "lr=0.01" in line
-        assert "bs=32" in line
+def test_preview_config_line_formats_scalars_and_applies_display_limits():
+    line = preview_config_line({"lr": 0.01, "bs": 32, "opt": "adam"})
+    assert "lr=0.01" in line
+    assert "bs=32" in line
 
-    def test_skips_dicts(self):
-        cfg = {"lr": 0.01, "model": {"name": "resnet"}}
-        line = preview_config_line(cfg)
-        assert "model" not in line
+    nested = preview_config_line({"lr": 0.01, "model": {"name": "resnet"}})
+    assert "model" not in nested
 
-    def test_max_items(self):
-        cfg = {f"k{i}": i for i in range(10)}
-        line = preview_config_line(cfg, max_items=2)
-        assert line.count("=") == 2
-
-    def test_non_dict_input(self):
-        assert preview_config_line("not a dict") == ""
+    limited = preview_config_line({f"k{i}": i for i in range(10)}, max_items=2)
+    assert limited.count("=") == 2
+    assert preview_config_line("not a dict") == ""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1676,13 +1568,14 @@ class TestGenerateBatchConfigs:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCountBatchConfigs:
-    def test_no_pipes(self, sample_config):
+    def test_counts_plain_product_zip_range_and_mismatch_configs(
+        self,
+        sample_config,
+        sample_config_with_pipes,
+    ):
         assert count_batch_configs(sample_config) == 1
-
-    def test_product_only(self, sample_config_with_pipes):
         assert count_batch_configs(sample_config_with_pipes) == 6  # 3 × 2
 
-    def test_zip_range_and_mismatch_counts(self):
         cases = [
             ({"a": "(1 | 2 | 3)", "b": "(x | y | z)"}, 3),
             ({"a": "(1 | 2 | 3)", "b": "(x | y)"}, 0),
@@ -1709,27 +1602,16 @@ class TestCountBatchConfigs:
 # ═══════════════════════════════════════════════════════════════
 
 class TestStripBatchPipes:
-    def test_keeps_first_product_value(self):
-        cfg = {"lr": "0.001 | 0.01 | 0.1", "bs": "32 | 64"}
-        result = strip_batch_pipes(cfg)
-        assert result["lr"] == 0.001
-        assert result["bs"] == 32
+    def test_keeps_first_batch_values_and_preserves_plain_nested_data(self, sample_config):
+        product = strip_batch_pipes({"lr": "0.001 | 0.01 | 0.1", "bs": "32 | 64"})
+        assert product == {"lr": 0.001, "bs": 32}
 
-    def test_keeps_first_zip_value(self):
-        cfg = {"seed": "(1 | 2 | 3)", "tag": "(a | b | c)"}
-        result = strip_batch_pipes(cfg)
-        assert result["seed"] == 1
-        assert result["tag"] == "a"
+        zipped = strip_batch_pipes({"seed": "(1 | 2 | 3)", "tag": "(a | b | c)"})
+        assert zipped == {"seed": 1, "tag": "a"}
 
-    def test_no_pipes_unchanged(self, sample_config):
-        result = strip_batch_pipes(sample_config)
-        assert result == sample_config
-
-    def test_nested_pipes(self):
-        cfg = {"model": {"name": "resnet | vgg"}, "lr": 0.01}
-        result = strip_batch_pipes(cfg)
-        assert result["model"]["name"] == "resnet"
-        assert result["lr"] == 0.01
+        assert strip_batch_pipes(sample_config) == sample_config
+        nested = strip_batch_pipes({"model": {"name": "resnet | vgg"}, "lr": 0.01})
+        assert nested == {"model": {"name": "resnet"}, "lr": 0.01}
 
 
 
@@ -1853,6 +1735,7 @@ def test_decode_log_bytes_chooses_best_replacement_fallback(monkeypatch):
 def test_append_and_read_log_ignore_io_errors(tmp_path, monkeypatch):
     log_path = tmp_path / "run.log"
 
+    assert read_log(str(log_path)) == ""
     append_log(str(log_path), "hello\n")
     append_log(str(log_path), "world\n")
     assert read_log(str(log_path)).replace("\r", "") == "hello\nworld\n"
@@ -1885,6 +1768,7 @@ def test_read_last_bytes_empty_and_tail(tmp_path):
     assert read_last_bytes(str(log_path), 5) == ("", 0)
     log_path.write_text("abcdefghij", encoding="utf-8")
     assert read_last_bytes(str(log_path), 4) == ("ghij", 10)
+    assert read_last_bytes(str(log_path), 20) == ("abcdefghij", 10)
 
 
 def test_safe_read_log_handles_missing_complete_and_partial_lines(tmp_path):
@@ -1893,7 +1777,7 @@ def test_safe_read_log_handles_missing_complete_and_partial_lines(tmp_path):
     assert safe_read_log(str(log_path), 5) == ("", 5)
     log_path.write_bytes(b"line1\nline2\npartial")
 
-    text, offset = safe_read_log(str(log_path), 0, max_bytes=12)
+    text, offset = safe_read_log(str(log_path), 0, max_bytes=13)
     assert text == "line1\nline2\n"
     assert offset == 12
 

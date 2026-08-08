@@ -777,7 +777,7 @@ def test_prepare_env_reuses_isolated_pyruns_root_for_same_package_fingerprint(tm
     assert env1["PYTHONPATH"].split(os.pathsep)[:2] == env2["PYTHONPATH"].split(os.pathsep)[:2]
 
 
-def test_config_node_init():
+def test_config_node_nested_access_export_and_repr():
     data = {
         "lr": 0.01,
         "optimizer": {
@@ -785,10 +785,11 @@ def test_config_node_init():
             "beta": 0.9
         },
         "layers": [64, 128, {"dropout": 0.5}],
-        "_private": "hidden"
+        "label": "train",
+        "_private": "hidden",
     }
     node = ConfigNode(data)
-    
+
     assert node.lr == 0.01
     assert node.optimizer.name == "adam"
     assert node.optimizer.beta == 0.9
@@ -796,116 +797,85 @@ def test_config_node_init():
     assert node.layers[0] == 64
     assert node.layers[2].dropout == 0.5
     assert getattr(node, "_private") == "hidden"
-
-
-def test_config_node_to_dict():
-    data = {
-        "lr": 0.01,
-        "optimizer": {
-            "name": "adam",
-            "beta": 0.9
-        },
-        "layers": [64, {"dropout": 0.5}],
-        "_private": "should be ignored"
-    }
-    node = ConfigNode(data)
     d = node.to_dict()
-    
     assert "lr" in d
     assert "optimizer" in d
     assert isinstance(d["optimizer"], dict)
     assert d["optimizer"]["name"] == "adam"
     assert isinstance(d["layers"], list)
-    assert isinstance(d["layers"][1], dict)
-    assert d["layers"][1]["dropout"] == 0.5
+    assert isinstance(d["layers"][2], dict)
+    assert d["layers"][2]["dropout"] == 0.5
     assert "_private" not in d
-
-
-def test_config_node_repr():
-    node = ConfigNode({"a": 1, "b": "str"})
     r = repr(node)
     assert "ConfigNode(" in r
-    assert "a=1" in r
-    assert "b='str'" in r
+    assert "lr=0.01" in r
+    assert "label='train'" in r
 
 
-def test_config_manager_not_loaded():
+def test_config_manager_rejects_unloaded_missing_unsupported_and_invalid(
+    tmp_path,
+    monkeypatch,
+):
     cm = ConfigManager()
     with pytest.raises(RuntimeError, match="not loaded"):
         cm.load()
 
-
-def test_config_manager_file_not_found():
     cm = ConfigManager()
     with pytest.raises(FileNotFoundError):
         cm.read("does_not_exist_at_all.yaml")
 
-
-def test_config_manager_read_yaml(tmp_path):
-    p = tmp_path / "cfg.yaml"
-    p.write_text("a: 1\nb: 2", encoding="utf-8")
-    
-    cm = ConfigManager()
-    cm.read(str(p))
-    node = cm.load()
-    assert node.a == 1
-    assert node.b == 2
-
-
-def test_config_manager_read_json(tmp_path):
-    p = tmp_path / "cfg.json"
-    p.write_text('{"a": 1, "b": {"c": 3}}', encoding="utf-8")
-    
-    cm = ConfigManager()
-    cm.read(str(p))
-    node = cm.load()
-    assert node.a == 1
-    assert node.b.c == 3
-
-
-def test_config_manager_unsupported_format(tmp_path):
     p = tmp_path / "cfg.txt"
     p.write_text("Hello", encoding="utf-8")
-    
     cm = ConfigManager()
     with pytest.raises(RuntimeError, match="Unsupported format"):
         cm.read(str(p))
 
+    class MockLogger:
+        def __init__(self):
+            self.logs = []
 
-def test_config_manager_read_list(tmp_path):
-    p = tmp_path / "cfg.yaml"
-    p.write_text("- a: 1\n- b: 2", encoding="utf-8")
-    
+        def info(self, msg, *args):
+            self.logs.append(("INFO", msg % args))
+
+        def error(self, msg, *args):
+            self.logs.append(("ERROR", msg % args))
+
+    logger = MockLogger()
+    monkeypatch.setattr("pyruns.core.config_manager.logger", logger)
+    p = tmp_path / "bad.yaml"
+    p.write_text("a: \n  - b:\n c: [invalid yaml", encoding="utf-8")
     cm = ConfigManager()
-    cm.read(str(p))
-    nodes = cm.load()
+    with pytest.raises(RuntimeError, match="Failed to parse config"):
+        cm.read(str(p))
+    assert any("Failed to parse config" in msg for level, msg in logger.logs if level == "ERROR")
+
+
+def test_config_manager_reads_yaml_json_and_list(tmp_path):
+    yaml_path = tmp_path / "cfg.yaml"
+    yaml_path.write_text("a: 1\nb: 2", encoding="utf-8")
+    yaml_manager = ConfigManager()
+    yaml_manager.read(str(yaml_path))
+    yaml_node = yaml_manager.load()
+    assert yaml_node.a == 1
+    assert yaml_node.b == 2
+
+    json_path = tmp_path / "cfg.json"
+    json_path.write_text('{"a": 1, "b": {"c": 3}}', encoding="utf-8")
+    json_manager = ConfigManager()
+    json_manager.read(str(json_path))
+    json_node = json_manager.load()
+    assert json_node.a == 1
+    assert json_node.b.c == 3
+
+    list_path = tmp_path / "list.yaml"
+    list_path.write_text("- a: 1\n- b: 2", encoding="utf-8")
+    list_manager = ConfigManager()
+    list_manager.read(str(list_path))
+    nodes = list_manager.load()
     assert isinstance(nodes, list)
     assert len(nodes) == 2
     assert nodes[0].a == 1
     assert nodes[1].b == 2
-
-
-@pytest.fixture
-def mock_logger(monkeypatch):
-    class MockLogger:
-        logs = []
-        def info(self, msg, *args):
-            self.logs.append(("INFO", msg % args))
-        def error(self, msg, *args):
-            self.logs.append(("ERROR", msg % args))
-    logger = MockLogger()
-    monkeypatch.setattr("pyruns.core.config_manager.logger", logger)
-    return logger
-
-def test_config_manager_parse_error(tmp_path, mock_logger):
-    p = tmp_path / "bad.yaml"
-    p.write_text("a: \n  - b:\n c: [invalid yaml", encoding="utf-8")
-    
-    cm = ConfigManager()
-    with pytest.raises(RuntimeError, match="Failed to parse config"):
-        cm.read(str(p))
-    
-    assert any("Failed to parse config" in msg for lvl, msg in mock_logger.logs if lvl == "ERROR")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1100,27 +1070,20 @@ def test_system_monitor_retries_after_gpu_disable_cooldown(mock_subprocess, mock
 # ═══════════════════════════════════════════════════════════════
 
 
-def test_prepare_env():
-    env1 = _prepare_env(extra_env={"CUDA_VISIBLE_DEVICES": "1"})
-    assert env1["PYTHONIOENCODING"] == "utf-8"
-    assert env1["CUDA_VISIBLE_DEVICES"] == "1"
-    
-    env2 = _prepare_env(task_dir="/fake/dir")
-    assert env2[ENV_KEY_CONFIG] == os.path.join("/fake/dir", CONFIG_FILENAME)
-
-    env3 = _prepare_env(task_dir="/fake/dir", task_kind=TASK_KIND_SHELL, config_file=SHELL_CONFIG_FILENAME)
-    assert ENV_KEY_CONFIG not in env3
-
-
 def test_prepare_env_prefers_current_python_executable_on_path(monkeypatch):
     stale_path = os.pathsep.join(["/not/current/python", "/another/bin"])
     monkeypatch.setenv("PATH", stale_path)
 
-    env = _prepare_env(task_dir="/fake/dir", task_kind=TASK_KIND_SHELL)
+    env = _prepare_env(
+        task_dir="/fake/dir",
+        task_kind=TASK_KIND_SHELL,
+        config_file=SHELL_CONFIG_FILENAME,
+    )
 
     path_entries = env["PATH"].split(os.pathsep)
     assert path_entries[0] == os.path.dirname(sys.executable)
     assert "/not/current/python" in path_entries
+    assert ENV_KEY_CONFIG not in env
 
 
 def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrides(monkeypatch):
@@ -1139,6 +1102,7 @@ def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrid
     assert env["CONDA_DEFAULT_ENV"] == "exp"
     assert env["CUDA_VISIBLE_DEVICES"] == "2"
     assert env["PYRUNS_EXAMPLE_ENV"] == "task-value"
+    assert env["PYTHONIOENCODING"] == "utf-8"
     assert "/parent/pythonpath" in env["PYTHONPATH"]
     assert env[ENV_KEY_CONFIG] == os.path.join("/fake/task", CONFIG_FILENAME)
 
@@ -1767,22 +1731,18 @@ def test_shell_runtime_config_filename_tracks_custom_shell_kind(tmp_path):
     assert get_shell_config_filename_for_workspace(str(workspace)) == POWERSHELL_CONFIG_FILENAME
 
 
-def test_shell_workspace_root_uses_project_root_when_given_pyruns_root(tmp_path):
+def test_shell_workspace_root_resolves_project_and_script_roots(tmp_path):
     project_root = tmp_path / DEFAULT_ROOT_NAME
     project_root.mkdir(parents=True)
+    assert shell_workspace_root_for_run_root(str(project_root)) == str(
+        project_root / SHELL_WORKSPACE_NAME
+    ).replace("\\", "/")
 
-    shell_root = shell_workspace_root_for_run_root(str(project_root))
-
-    assert shell_root == str(project_root / SHELL_WORKSPACE_NAME).replace("\\", "/")
-
-
-def test_shell_workspace_root_uses_parent_pyruns_root_when_given_script_workspace(tmp_path):
-    script_root = tmp_path / DEFAULT_ROOT_NAME / "main"
+    script_root = project_root / "main"
     script_root.mkdir(parents=True)
-
-    shell_root = shell_workspace_root_for_run_root(str(script_root))
-
-    assert shell_root == str(tmp_path / DEFAULT_ROOT_NAME / SHELL_WORKSPACE_NAME).replace("\\", "/")
+    assert shell_workspace_root_for_run_root(str(script_root)) == str(
+        project_root / SHELL_WORKSPACE_NAME
+    ).replace("\\", "/")
 
 
 def test_shell_named_python_script_uses_reserved_safe_workspace_dir(tmp_path):
@@ -1830,17 +1790,14 @@ def test_bootstrap_shell_workspace_records_project_root(tmp_path):
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
-def test_build_command_hydra_requires_shell_workspace(mock_detect):
-    mock_detect.return_value = ("hydra", None)
-    with pytest.raises(RuntimeError, match="shell workspace/task"):
-        _build_command(None, "train.py", None, {})
-
-
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-def test_build_command_unknown_requires_shell_workspace(mock_detect):
-    mock_detect.return_value = ("unknown", None)
-    with pytest.raises(RuntimeError, match="configuration style"):
-        _build_command(None, "train.py", None, {})
+def test_build_command_non_argparse_styles_require_shell_workspace(mock_detect):
+    for style, message in [
+        ("hydra", "shell workspace/task"),
+        ("unknown", "configuration style"),
+    ]:
+        mock_detect.return_value = (style, None)
+        with pytest.raises(RuntimeError, match=message):
+            _build_command(None, "train.py", None, {})
 
 
 def test_executor_runtime_path_and_shell_resolution_edges(tmp_path, monkeypatch):
@@ -3200,6 +3157,26 @@ def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     refreshed = manager.get_task(task["name"])
     assert refreshed["status"] == "running"
     assert refreshed["run_index"] == 1
+
+
+def test_task_manager_independent_run_does_not_inherit_batch_execution_mode(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("independent-mode", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager.execution_mode = "process"
+    submitted_modes: list[str | None] = []
+    monkeypatch.setattr(
+        manager,
+        "_submit_task",
+        lambda target, run_index, *, independent, execution_mode=None: submitted_modes.append(execution_mode),
+    )
+
+    assert manager.start_task_now(task["name"]) is True
+    assert submitted_modes == ["thread"]
 
 
 def test_task_manager_plain_queued_pick_computes_next_run_from_history(tmp_path):
@@ -4862,10 +4839,14 @@ def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
             "dir": r"C:\tmp\task",
             "name": "alpha",
             "status": "running",
+            "config": {"lr": 0.1},
             "env": {"A": "1"},
-            "durations": [1.25],
-            "exit_codes": [0],
-            "source_states": ["git abc | clean | script abc"],
+            "start_times": ("s1",),
+            "finish_times": ("f1",),
+            "pids": (123,),
+            "durations": (1.25,),
+            "exit_codes": (0,),
+            "source_states": ("git abc | clean | script abc",),
             "records": [{"loss": 0.1}],
             "tracks": [{"step": 1}],
         },
@@ -4875,8 +4856,75 @@ def test_task_manager_observers_serialization_and_missing_root_scan(tmp_path):
     assert summary["durations"] == [1.25]
     assert summary["exit_codes"] == [0]
     assert summary["source_states"] == ["git abc | clean | script abc"]
+    assert summary["config"] == {}
     assert summary["records"] == []
+    assert summary["tracks"] == []
     assert summary["env"] == {"A": "1"}
+
+
+def test_task_manager_api_snapshots_stay_consistent_during_locked_gpu_updates(tmp_path, monkeypatch):
+    manager = TaskManager(
+        tasks_dir=str(tmp_path),
+        lazy_scan=None,
+        owns_task_lifecycle=False,
+    )
+    live_task = {
+        "dir": str(tmp_path / "snapshot-race"),
+        "name": "snapshot-race",
+        "status": "queued",
+        "progress": 0,
+        "gpu_wait": {"generation": 0, "started_at": 0.0},
+    }
+    with manager._lock:
+        manager.tasks = [live_task]
+        manager._rebuild_indexes_locked()
+
+    original_serialize_wait = TaskManager._serialized_gpu_wait
+    sync: dict[str, threading.Event] = {}
+
+    def pause_before_gpu_wait_copy(task):
+        sync["entered"].set()
+        if not sync["updated"].wait(2):
+            raise AssertionError("GPU update did not complete while the API snapshot was serialized")
+        return original_serialize_wait(task)
+
+    monkeypatch.setattr(
+        TaskManager,
+        "_serialized_gpu_wait",
+        staticmethod(pause_before_gpu_wait_copy),
+    )
+
+    def capture(call):
+        with manager._lock:
+            live_task["progress"] = 0
+            live_task["gpu_wait"] = {"generation": 0, "started_at": 0.0}
+
+        sync["entered"] = threading.Event()
+        sync["updated"] = threading.Event()
+        writer_errors: list[str] = []
+
+        def update_gpu_wait():
+            if not sync["entered"].wait(2):
+                writer_errors.append("API serialization did not reach the GPU wait field")
+                sync["updated"].set()
+                return
+            with manager._lock:
+                live_task["progress"] = 1
+                live_task["gpu_wait"] = {"generation": 1, "started_at": 0.0}
+            sync["updated"].set()
+
+        writer = threading.Thread(target=update_gpu_wait)
+        writer.start()
+        snapshot = call()
+        writer.join(timeout=2)
+
+        assert not writer.is_alive()
+        assert writer_errors == []
+        assert snapshot["progress"] == 0
+        assert snapshot["gpu_wait"]["generation"] == 0
+
+    capture(lambda: manager.list_tasks(summary=True)[0])
+    capture(lambda: manager.get_task("snapshot-race"))
 
 
 def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
@@ -5539,7 +5587,7 @@ def test_task_manager_scan_async_and_disk_discovery_edge_paths(tmp_path, monkeyp
     assert manager.list_tasks() == []
 
 
-def test_task_manager_default_root_serialization_and_lease_edges(tmp_path, monkeypatch):
+def test_task_manager_default_root_and_lease_edges(tmp_path, monkeypatch):
     custom_root = tmp_path / "run-root"
     tasks_dir = custom_root / TASKS_DIR
     tasks_dir.mkdir(parents=True)
@@ -5551,33 +5599,6 @@ def test_task_manager_default_root_serialization_and_lease_edges(tmp_path, monke
     assert manager.tasks_dir == str(tasks_dir)
     assert manager._disk_scan_complete is False
     assert manager.list_tasks() == []
-
-    assert TaskManager.serialize_task(None) is None
-    summary = TaskManager.serialize_task(
-        {
-            "dir": "C:\\workspace\\tasks\\alpha",
-            "name": "alpha",
-            "status": "completed",
-            "config": {"lr": 0.1},
-            "env": {"A": "1"},
-            "start_times": ("s1",),
-            "finish_times": ("f1",),
-            "pids": (123,),
-            "durations": (1.25,),
-            "exit_codes": (0,),
-            "source_states": ("git clean",),
-            "records": [{"loss": 1}],
-            "tracks": [{"name": "loss"}],
-        },
-        summary=True,
-    )
-    assert summary["dir"] == "C:/workspace/tasks/alpha"
-    assert summary["config"] == {}
-    assert summary["records"] == []
-    assert summary["tracks"] == []
-    assert summary["durations"] == [1.25]
-    assert summary["exit_codes"] == [0]
-    assert summary["env"] == {"A": "1"}
 
     assert TaskManager._lease_until_value({"lease_until": "bad"}) == 0.0
 

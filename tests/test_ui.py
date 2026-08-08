@@ -943,6 +943,9 @@ def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reco
     assert "sp.set('log_file_name', options.logFileName)" in api
     assert "sp.set('offset', String(options.offset))" in api
     assert "offsetRef.current = offset" in log_stream
+    assert "const ws = createLogStream(taskName, {" in log_stream
+    assert "logFileName," in log_stream
+    assert "offset: offsetRef.current," in log_stream
     assert "logIdentity: logIdentityRef.current" in log_stream
     assert "[taskName, enabled, disconnect, generationKey, logFileName]" in log_stream
     assert "const onDisconnectRef = useRef(onDisconnect)" in log_stream
