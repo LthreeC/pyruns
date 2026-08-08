@@ -27,7 +27,7 @@ from pyruns._config import (
     TASKS_DIR,
     TRASH_DIR,
 )
-from pyruns.core.executor import run_task_worker
+from pyruns.core.executor import _load_workspace_global_env, run_task_worker
 from pyruns.core.gpu_scheduler import (
     GpuAssignment,
     GpuDecision,
@@ -1834,6 +1834,7 @@ class TaskManager:
         gpu_wait_persists: List[tuple[str, str, Dict[str, Any], tuple[Any, ...]]] = []
         target: Dict[str, Any] | None = None
         result_run_index = 1
+        workspace_env: Dict[str, str] | None = None
 
         # GPU sampling may invoke nvidia-smi; keep it outside the cross-process
         # admission lock so other schedulers are not blocked on device I/O.
@@ -1868,7 +1869,12 @@ class TaskManager:
                         deadline_at = float(wait_state["deadline_at"])
                         waited = max(0.0, wall_now - started_at)
                         max_wait = max(0.0, deadline_at - started_at)
-                        task_env = dict(candidate.get("env", {}) or {})
+                        # Match executor._prepare_env so admission checks see
+                        # the same visibility mask as the eventual worker.
+                        if workspace_env is None:
+                            workspace_env = _load_workspace_global_env(candidate.get("dir"))
+                        task_env = dict(workspace_env)
+                        task_env.update(candidate.get("env", {}) or {})
 
                     if wall_now >= deadline_at:
                         self.gpu_scheduler.release(task_name)

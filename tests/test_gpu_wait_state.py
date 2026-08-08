@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
+from pyruns._config import DEFAULT_ROOT_NAME, ENV_KEY_CLI_TERMINAL_RUNTIME
 from pyruns.core.gpu_scheduler import GpuDevice, GpuResourceScheduler, GpuSchedulerConfig
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
@@ -42,6 +45,67 @@ def _create_manager_with_task(tmp_path, monkeypatch, *, config: GpuSchedulerConf
     )
     monkeypatch.setattr(manager, "_gpu_scheduler_config", lambda: config)
     return manager, task, tasks_dir
+
+
+@pytest.mark.parametrize(
+    ("workspace_device", "task_device", "expected_device"),
+    [
+        ("1", None, 1),
+        ("0", "1", 1),
+    ],
+)
+def test_gpu_scheduler_respects_workspace_and_task_cuda_visible_devices(
+    tmp_path,
+    monkeypatch,
+    workspace_device,
+    task_device,
+    expected_device,
+):
+    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
+    tasks_dir = workspace / "tasks"
+    tasks_dir.mkdir(parents=True)
+    (workspace.parent / "_pyruns_settings.yaml").write_text(
+        f"global_env:\n  CUDA_VISIBLE_DEVICES: '{workspace_device}'\n",
+        encoding="utf-8",
+    )
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("env-gpu", {"lr": 0.1})
+    manager = TaskManager(
+        tasks_dir=str(tasks_dir),
+        lazy_scan=False,
+        runner_token="env-test",
+        owns_task_lifecycle=False,
+    )
+    config = _config()
+    monkeypatch.setattr(manager, "_gpu_scheduler_config", lambda: config)
+    if task_device is not None:
+        ok, saved_env = manager.update_task_env(
+            task["name"],
+            {"CUDA_VISIBLE_DEVICES": task_device},
+        )
+        assert ok is True
+        assert saved_env == {"CUDA_VISIBLE_DEVICES": task_device}
+
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=StaticGpuProvider(
+            [
+                GpuDevice(0, "GPU 0", "GPU-0", 1024, 24576, 0),
+                GpuDevice(1, "GPU 1", "GPU-1", 2048, 24576, 0),
+            ]
+        ),
+        clock=lambda: now[0],
+    )
+    assert manager.start_task_now(task["name"]) is True
+    manager.gpu_scheduler.snapshot(config, now=now[0])
+    now[0] += 1.0
+
+    target, run_index = manager._pick_queued_task()
+
+    assert target is not None
+    assert run_index == 1
+    assert target["_gpu_assignment"]["gpu_ids"] == [expected_device]
+    assert target["_scheduled_env"] == {"PYRUNS_ASSIGNED_GPUS": str(expected_device)}
 
 
 def test_gpu_wait_state_is_persisted_and_timeout_survives_manager_restart(tmp_path, monkeypatch):
