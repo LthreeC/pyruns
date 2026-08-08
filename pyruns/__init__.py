@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import sys
 import time
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Dict, Optional
+from threading import Lock
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from ._config import (
     ARTIFACTS_DIR,
@@ -17,8 +19,34 @@ from ._config import (
     ROOT_DIR,
     TRACKS_KEY,
 )
-from .core.config_manager import ConfigManager
-from .utils.info_io import ensure_run_slot, load_task_info, run_slot_count, update_task_info
+
+__all__ = [
+    "ARTIFACTS_DIR",
+    "CONFIG_DEFAULT_FILENAME",
+    "ConfigManager",
+    "ENV_KEY_CONFIG",
+    "ENV_KEY_RUN_INDEX",
+    "RECORDS_KEY",
+    "ROOT_DIR",
+    "TRACKS_KEY",
+    "__version__",
+    "artifact_dir",
+    "ensure_config_default",
+    "ensure_run_slot",
+    "get_artifact_dir",
+    "get_run_index",
+    "get_task_dir",
+    "load",
+    "load_task_info",
+    "read",
+    "record",
+    "run_slot_count",
+    "track",
+    "update_task_info",
+]
+
+if TYPE_CHECKING:
+    from .core.config_manager import ConfigManager
 
 try:
     __version__ = version("pyruns")
@@ -26,7 +54,50 @@ except PackageNotFoundError:
     __version__ = "0.0.0-dev"
 
 
-_global_config_manager_ = ConfigManager()
+_LAZY_EXPORTS = {
+    "ConfigManager": (".core.config_manager", "ConfigManager"),
+    "ensure_run_slot": (".utils.info_io", "ensure_run_slot"),
+    "load_task_info": (".utils.info_io", "load_task_info"),
+    "run_slot_count": (".utils.info_io", "run_slot_count"),
+    "update_task_info": (".utils.info_io", "update_task_info"),
+}
+
+_global_config_manager_: Optional["ConfigManager"] = None
+_config_manager_lock = Lock()
+
+
+def __getattr__(name: str) -> Any:
+    """Load compatibility exports only when callers request them."""
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module_name, attribute = target
+    value = getattr(import_module(module_name, __name__), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
+
+
+def _lazy_export(name: str) -> Any:
+    """Resolve a lazy export while honoring callers that monkeypatch it."""
+    try:
+        return globals()[name]
+    except KeyError:
+        return __getattr__(name)
+
+
+def _get_config_manager() -> "ConfigManager":
+    global _global_config_manager_
+    if _global_config_manager_ is None:
+        with _config_manager_lock:
+            if _global_config_manager_ is None:
+                manager_type = _lazy_export("ConfigManager")
+                _global_config_manager_ = manager_type()
+    return _global_config_manager_
 
 
 def _get_default_config_path() -> str:
@@ -41,9 +112,10 @@ def _get_default_config_path() -> str:
 
 def read(file_path: str = None):
     """Read a config file into the global config manager."""
+    config_manager = _get_config_manager()
     pyr_config = os.environ.get(ENV_KEY_CONFIG)
     if pyr_config:
-        return _global_config_manager_.read(pyr_config)
+        return config_manager.read(pyr_config)
 
     if not file_path:
         file_path = _get_default_config_path()
@@ -60,19 +132,20 @@ def read(file_path: str = None):
             f"  2. Or import one with: `pyr init {script_name} --config your_config.yaml`\n"
         )
 
-    return _global_config_manager_.read(file_path)
+    return config_manager.read(file_path)
 
 
 def load():
     """Return the loaded config, auto-reading it when needed."""
-    if _global_config_manager_._root is None:
+    config_manager = _get_config_manager()
+    if config_manager._root is None:
         pyr_config = os.environ.get(ENV_KEY_CONFIG)
         if pyr_config:
-            _global_config_manager_.read(pyr_config)
+            config_manager.read(pyr_config)
         else:
             default_path = _get_default_config_path()
             if os.path.exists(default_path):
-                _global_config_manager_.read(default_path)
+                config_manager.read(default_path)
             else:
                 from ._config import DEFAULT_ROOT_NAME
 
@@ -85,7 +158,7 @@ def load():
                     f"  2. Or import one with: `pyr init {script_name} --config your_config.yaml`\n"
                 )
 
-    return _global_config_manager_.load()
+    return config_manager.load()
 
 
 def ensure_config_default(root_dir: str = None):
@@ -132,14 +205,14 @@ def record(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         try:
             run_index = _get_env_run_index()
             if run_index is None:
-                info = load_task_info(task_dir, raise_error=True)
-                run_index = max(1, run_slot_count(info))
+                info = _lazy_export("load_task_info")(task_dir, raise_error=True)
+                run_index = max(1, _lazy_export("run_slot_count")(info))
 
             def _apply(info: Dict[str, Any]) -> None:
-                slot = ensure_run_slot(info, run_index)
+                slot = _lazy_export("ensure_run_slot")(info, run_index)
                 info[RECORDS_KEY][slot].update(update_data)
 
-            update_task_info(task_dir, _apply, raise_error=True)
+            _lazy_export("update_task_info")(task_dir, _apply, raise_error=True)
             return
         except (IOError, OSError):
             time.sleep(0.05)
@@ -163,16 +236,16 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
         try:
             run_index = _get_env_run_index()
             if run_index is None:
-                info = load_task_info(task_dir, raise_error=True)
-                run_index = max(1, run_slot_count(info))
+                info = _lazy_export("load_task_info")(task_dir, raise_error=True)
+                run_index = max(1, _lazy_export("run_slot_count")(info))
 
             def _apply(info: Dict[str, Any]) -> None:
-                slot = ensure_run_slot(info, run_index)
+                slot = _lazy_export("ensure_run_slot")(info, run_index)
                 current_tracks = info[TRACKS_KEY][slot]
                 for item_key, item_value in update_data.items():
                     current_tracks.setdefault(item_key, []).append(item_value)
 
-            update_task_info(task_dir, _apply, raise_error=True)
+            _lazy_export("update_task_info")(task_dir, _apply, raise_error=True)
             return
         except (IOError, OSError):
             time.sleep(0.05)
@@ -194,8 +267,8 @@ def get_run_index() -> Optional[int]:
     env_run_index = _get_env_run_index()
     if env_run_index is not None:
         return env_run_index
-    info = load_task_info(os.path.dirname(pyr_config), raise_error=True)
-    return run_slot_count(info)
+    info = _lazy_export("load_task_info")(os.path.dirname(pyr_config), raise_error=True)
+    return _lazy_export("run_slot_count")(info)
 
 
 def get_artifact_dir() -> str:
