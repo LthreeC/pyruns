@@ -34,11 +34,18 @@ from pyruns.core.task_manager import TaskManager
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
-from pyruns.web.app import create_app
+from pyruns.web.app import create_app as _create_app
 from pyruns.web.runtime import PyrunsRuntime, parse_global_env_text
 
 WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
 WEB_RUNTIME = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "runtime.py"
+
+
+def create_app(runtime=None, **kwargs):
+    """Create an app with the ASGI test-client bypass enabled explicitly."""
+
+    kwargs.setdefault("allow_test_client_bypass", True)
+    return _create_app(runtime, **kwargs)
 
 
 def test_pyruns_runtime_declares_single_constructor():
@@ -145,7 +152,11 @@ def _add_task(workspace: Path, name: str, status: str = "pending", log_text: str
         (log_dir / "run1.log").write_text(log_text, encoding="utf-8")
 
 
-def _build_runtime(workspace: Path) -> PyrunsRuntime:
+def _build_runtime(
+    workspace: Path,
+    *,
+    owns_task_lifecycle: bool = True,
+) -> PyrunsRuntime:
     def mark_existing_running_tasks_owned(tasks_dir: str, manager: TaskManager) -> None:
         for task_dir in Path(tasks_dir).iterdir():
             if not task_dir.is_dir():
@@ -167,8 +178,13 @@ def _build_runtime(workspace: Path) -> PyrunsRuntime:
 
     def make_task_manager(tasks_dir: str) -> TaskManager:
         with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-            manager = TaskManager(tasks_dir=tasks_dir, lazy_scan=None)
-            mark_existing_running_tasks_owned(tasks_dir, manager)
+            manager = TaskManager(
+                tasks_dir=tasks_dir,
+                lazy_scan=None,
+                owns_task_lifecycle=owns_task_lifecycle,
+            )
+            if owns_task_lifecycle:
+                mark_existing_running_tasks_owned(tasks_dir, manager)
             manager.scan_disk()
             return manager
 
@@ -226,6 +242,134 @@ def test_local_server_rejects_cross_origin_and_dns_rebinding_requests():
     assert malformed_host.status_code == 403
     assert preflight.status_code == 403
     assert "access-control-allow-origin" not in cross_origin.headers
+    for response in (allowed, cross_origin, rebound, malformed_host, preflight):
+        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_local_api_requires_random_session_token_outside_test_bypass():
+    app = create_app(
+        _RouteRuntime(),
+        access_token="correct-horse-battery-staple",
+        allow_test_client_bypass=False,
+    )
+    client = TestClient(app)
+
+    unauthenticated = client.get("/api/workspace")
+    wrong_token = client.get("/launcher?token=wrong", follow_redirects=False)
+    bootstrap = client.get(
+        "/launcher?token=correct-horse-battery-staple",
+        follow_redirects=False,
+    )
+    authenticated = client.get("/api/workspace")
+
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers["www-authenticate"] == "PyrunsToken"
+    assert wrong_token.status_code == 401
+    assert bootstrap.status_code == 303
+    assert bootstrap.headers["location"] == "/launcher"
+    assert "HttpOnly" in bootstrap.headers["set-cookie"]
+    assert "SameSite=strict" in bootstrap.headers["set-cookie"]
+    assert authenticated.status_code == 200
+    assert "token=" not in str(authenticated.url)
+
+
+def test_local_websocket_requires_session_token_outside_test_bypass():
+    app = create_app(
+        _RouteRuntime(),
+        access_token="websocket-secret",
+        allow_test_client_bypass=False,
+    )
+    client = TestClient(app)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/api/tasks/events"):
+            pass
+
+    assert exc_info.value.code == 4401
+
+
+def test_forwarded_testclient_headers_cannot_bypass_http_authentication():
+    client = TestClient(
+        _create_app(_RouteRuntime(), access_token="http-secret")
+    )
+
+    response = client.get(
+        "/api/workspace",
+        headers={
+            "Host": "127.0.0.1:8099",
+            "X-Forwarded-For": "testclient",
+            "X-Forwarded-Host": "testserver",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_forwarded_testclient_headers_cannot_bypass_websocket_authentication():
+    client = TestClient(
+        _create_app(_RouteRuntime(), access_token="websocket-secret")
+    )
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/api/tasks/events",
+            headers={
+                "Host": "127.0.0.1:8099",
+                "X-Forwarded-For": "testclient",
+                "X-Forwarded-Host": "testserver",
+            },
+        ):
+            pass
+
+    assert exc_info.value.code == 4401
+
+
+def test_api_rejects_oversized_and_unbounded_requests(monkeypatch):
+    from pyruns.web import app as web_app
+
+    monkeypatch.setattr(web_app, "MAX_API_REQUEST_BYTES", 64)
+    client = TestClient(create_app(_RouteRuntime()))
+
+    oversized = client.post(
+        "/api/workspace/run-root",
+        content=json.dumps({"path": "x" * 100}),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert oversized.status_code == 413
+    assert "64 bytes" in oversized.json()["detail"]
+
+
+def test_api_rejects_unknown_fields_and_resource_limit_overrides(monkeypatch):
+    from pyruns.web import app as web_app
+
+    monkeypatch.setattr(web_app, "MAX_TASK_BATCH_ITEMS", 1)
+    monkeypatch.setattr(web_app, "MAX_ENVIRONMENT_ITEMS", 1)
+    client = TestClient(create_app(_RouteRuntime()))
+
+    unknown = client.post("/api/workspace/run-root", json={"path": ".", "typo": True})
+    too_many_workers = client.post(
+        "/api/tasks/batch/run",
+        json={"task_names": ["alpha"], "max_workers": 33},
+    )
+    unbounded_page = client.get("/api/tasks", params={"limit": 0})
+    oversized_batch = client.post(
+        "/api/tasks/batch/delete",
+        json={"task_names": ["alpha", "beta"]},
+    )
+    oversized_env = client.patch(
+        "/api/tasks/alpha/env",
+        json={"env": {"A": "1", "B": "2"}},
+    )
+
+    assert unknown.status_code == 422
+    assert too_many_workers.status_code == 422
+    assert unbounded_page.status_code == 422
+    assert oversized_batch.status_code == 400
+    assert oversized_env.status_code == 400
 
 
 def test_log_websocket_rejects_cross_origin_browser_clients():
@@ -292,6 +436,8 @@ def test_task_event_websocket_closes_when_workspace_changes(tmp_path):
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 websocket.receive_json()
             assert exc_info.value.code == 4409
+        assert old_manager.has_reactive_watchers() is False
+        assert old_manager not in runtime._task_managers.values()
     finally:
         runtime.shutdown()
 
@@ -399,19 +545,28 @@ def test_parse_main_options_handles_browser_flags_and_invalid_ports(capsys):
 
     app_web_options = web_app._parse_main_options(["--port", "8123", "--no-browser"])
     assert app_web_options == (8123, False)
-    assert web_app._parse_main_options(["--port=8124", "--open-browser"]) == (8124, True)
+    assert web_app._parse_main_options(["--port=8124", "--browser"]) == (8124, True)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as missing_port:
         web_app._parse_main_options(["--port"])
-    assert "Missing value for --port" in capsys.readouterr().out
+    assert missing_port.value.code == 2
+    assert "expected one argument" in capsys.readouterr().err
 
-    with pytest.raises(SystemExit):
-        web_app._parse_port_value("not-a-port")
-    assert "Invalid port" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as invalid_port:
+        web_app._parse_main_options(["--port", "not-a-port"])
+    assert invalid_port.value.code == 2
+    assert "invalid port" in capsys.readouterr().err
 
-    with pytest.raises(SystemExit):
-        web_app._parse_port_value("70000")
-    assert "Port must be between" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as out_of_range:
+        web_app._parse_main_options(["--port", "70000"])
+    assert out_of_range.value.code == 2
+    assert "port must be between" in capsys.readouterr().err
+
+    for removed_or_unknown in ("--open-browser", "--broser"):
+        with pytest.raises(SystemExit) as unknown:
+            web_app._parse_main_options([removed_or_unknown])
+        assert unknown.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -427,6 +582,7 @@ def test_parse_main_options_handles_browser_flags_and_invalid_ports(capsys):
         ("get", "/api/launcher/configs", None, {"script": "missing.py"}, {"get_launcher_config_info": FileNotFoundError("script missing")}, 400, "script missing"),
         ("get", "/api/launcher/workspaces", None, {"script": "missing.py"}, {"list_launcher_workspaces": FileNotFoundError("script missing")}, 400, "script missing"),
         ("post", "/api/launcher/open", {"script_path": "missing.py"}, None, {"open_launcher_workspace": FileNotFoundError("script missing")}, 400, "script missing"),
+        ("post", "/api/launcher/open", {"script_path": "train.py", "config_path": "bad.yaml"}, None, {"open_launcher_workspace": ValueError("bad launcher config")}, 400, "bad launcher config"),
         ("post", "/api/launcher/pick-script", None, None, {"pick_and_open_launcher_workspace": ValueError("cancelled")}, 400, "cancelled"),
         ("post", "/api/launcher/pick-script-path", None, None, {"pick_launcher_script_path": FileNotFoundError("picker unavailable")}, 400, "picker unavailable"),
         ("post", "/api/launcher/pick-config-path", {"script_path": "train.py"}, None, {"pick_launcher_config_path": ValueError("no config")}, 400, "no config"),
@@ -512,10 +668,17 @@ def test_main_uses_resolved_dynamic_port_for_server_and_browser(monkeypatch):
     monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
     monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
 
-    web_app.main(open_browser=True, start_path="/generator?launcher=1")
+    web_app.main(
+        open_browser=True,
+        start_path="/generator?launcher=1",
+        access_token="test-token",
+    )
 
     assert captured["port"] == 8101
-    assert captured["browser_url"] == "http://127.0.0.1:8101/generator?launcher=1"
+    assert captured["proxy_headers"] is False
+    assert captured["browser_url"] == (
+        "http://127.0.0.1:8101/generator?launcher=1&token=test-token"
+    )
 
 
 def test_main_explicit_port_overrides_workspace_setting(monkeypatch):
@@ -526,9 +689,10 @@ def test_main_explicit_port_overrides_workspace_setting(monkeypatch):
     class DummyRuntime:
         settings = {"ui_port": 8099}
 
-    def fake_find_available_port(port, host="127.0.0.1"):
+    def fake_find_available_port(port, host="127.0.0.1", max_attempts=100):
         captured["requested_port"] = port
         captured["host"] = host
+        captured["max_attempts"] = max_attempts
         return port
 
     monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
@@ -536,11 +700,67 @@ def test_main_explicit_port_overrides_workspace_setting(monkeypatch):
     monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
     monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
 
-    web_app.main(open_browser=True, port=9022)
+    web_app.main(open_browser=True, port=9022, access_token="test-token")
 
     assert captured["requested_port"] == 9022
+    assert captured["max_attempts"] == 0
     assert captured["port"] == 9022
-    assert captured["browser_url"] == "http://127.0.0.1:9022/"
+    assert captured["browser_url"] == "http://127.0.0.1:9022/?token=test-token"
+
+
+def test_main_flushes_private_url_before_blocking_server_run(monkeypatch):
+    from pyruns.web import app as web_app
+
+    printed = []
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
+    monkeypatch.setattr(
+        web_app,
+        "print",
+        lambda *args, **kwargs: printed.append((args, kwargs)),
+        raising=False,
+    )
+    monkeypatch.setattr(web_app.uvicorn, "run", lambda *_args, **_kwargs: None)
+
+    web_app.main(open_browser=False, access_token="test-token")
+
+    assert printed
+    assert all(kwargs.get("flush") is True for _args, kwargs in printed)
+    assert any("token=test-token" in str(args[0]) for args, _kwargs in printed)
+
+
+def test_main_explicit_busy_port_fails_instead_of_silently_incrementing(monkeypatch):
+    from pyruns.web import app as web_app
+
+    events = []
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+        def shutdown(self):
+            events.append("shutdown")
+
+    def reject_port(port, host="127.0.0.1", max_attempts=100):
+        assert port == 9022
+        assert host == "127.0.0.1"
+        assert max_attempts == 0
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
+    monkeypatch.setattr(web_app, "find_available_port", reject_port)
+
+    with pytest.raises(RuntimeError, match="already in use; choose another with --port"):
+        web_app.main(open_browser=False, port=9022)
+
+    assert events == ["shutdown"]
 
 
 def test_main_does_not_auto_open_browser_in_tmux(monkeypatch):
@@ -555,7 +775,11 @@ def test_main_does_not_auto_open_browser_in_tmux(monkeypatch):
     monkeypatch.delenv("PYRUNS_OPEN_BROWSER", raising=False)
     monkeypatch.delenv("PYRUNS_NO_BROWSER", raising=False)
     monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
-    monkeypatch.setattr(web_app, "find_available_port", lambda port, host="127.0.0.1": port)
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
     monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
     monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
 
@@ -579,9 +803,9 @@ def test_main_explicit_browser_overrides_tmux_default(monkeypatch):
     monkeypatch.setattr(web_app, "_schedule_browser_open", lambda url: captured.update(browser_url=url))
     monkeypatch.setattr(web_app.uvicorn, "run", lambda app_target, **kwargs: captured.update(kwargs))
 
-    web_app.main(open_browser=True)
+    web_app.main(open_browser=True, access_token="test-token")
 
-    assert captured["browser_url"] == "http://127.0.0.1:8099/"
+    assert captured["browser_url"] == "http://127.0.0.1:8099/?token=test-token"
 
 
 def test_workspace_endpoint_returns_metadata(tmp_path):
@@ -1126,7 +1350,7 @@ def test_runtime_get_task_logs_includes_missing_active_run_log_for_running_task(
     _add_task(workspace, "running_gpu", status="running", log_text="first run\n")
     task_dir = workspace / TASKS_DIR / "running_gpu"
     update_task_info(str(task_dir), lambda info: info.update({"status": "running", "run_index": 2}))
-    runtime = _build_runtime(workspace)
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
 
     payload = runtime.get_task_logs("running_gpu", log_file_name="run2.log", tail_lines=20)
 
@@ -1141,7 +1365,7 @@ def test_runtime_get_task_logs_does_not_invent_missing_non_active_run_log(tmp_pa
     _add_task(workspace, "running_gpu", status="running", log_text="first run\n")
     task_dir = workspace / TASKS_DIR / "running_gpu"
     update_task_info(str(task_dir), lambda info: info.update({"status": "running", "run_index": 2}))
-    runtime = _build_runtime(workspace)
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
 
     payload = runtime.get_task_logs("running_gpu", log_file_name="run3.log", tail_lines=20)
 
@@ -1210,6 +1434,31 @@ def test_runtime_update_rejects_invalid_global_env_text(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "expected KEY=value" in response.json()["detail"]
+
+
+def test_runtime_update_validates_whole_payload_before_atomic_save(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    })
+    client = TestClient(create_app(runtime))
+    settings_path = workspace.parent / "_pyruns_settings.yaml"
+    before = settings_path.read_bytes()
+
+    response = client.patch(
+        "/api/runtime",
+        json={
+            "python_executable": "python-before-validation",
+            "global_env_text": "BAD LINE WITHOUT EQUALS",
+        },
+    )
+
+    assert response.status_code == 400
+    assert settings_path.read_bytes() == before
 
 
 def test_parse_global_env_text_handles_shell_assignment_edges():
@@ -1773,6 +2022,418 @@ def test_run_root_switch_endpoint_reloads_workspace(tmp_path):
     assert tasks["items"][0]["name"] == "task-b"
 
 
+def test_workspace_switch_waits_for_in_flight_task_start(tmp_path, monkeypatch):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    _add_task(workspace_a, "same-name")
+    _add_task(workspace_b, "same-name")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    started_in: list[str] = []
+    errors: list[BaseException] = []
+    original_require_task = runtime.require_task
+
+    def blocked_require_task(task_name, *, refresh=True):
+        task = original_require_task(task_name, refresh=refresh)
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("task start test did not release")
+        return task
+
+    def record_start(manager, task_name, execution_mode=None):
+        started_in.append(str(Path(manager.tasks_dir).parent))
+        return True
+
+    def start_task():
+        try:
+            runtime.start_task("same-name")
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(runtime, "require_task", blocked_require_task)
+    monkeypatch.setattr(TaskManager, "start_task_now", record_start)
+    start_thread = threading.Thread(target=start_task)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        start_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert not switched.wait(0.5), "workspace changed while task start was in flight"
+    finally:
+        release.set()
+        start_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not start_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+    assert started_in == [str(workspace_a)]
+
+
+def test_workspace_switch_waits_for_in_flight_runtime_update(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_module
+
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    saved_batches: list[tuple[str, dict[str, object]]] = []
+    errors: list[BaseException] = []
+
+    def blocked_save(root, values):
+        saved_batches.append((str(Path(root)), dict(values)))
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("runtime update test did not release")
+
+    def update_runtime():
+        try:
+            runtime.update_runtime_settings({
+                "python_executable": "python-a",
+                "conda_env": "env-a",
+            })
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(runtime_module, "save_settings_for_root", blocked_save)
+    monkeypatch.setattr(runtime_module, "load_settings", lambda root: {})
+    monkeypatch.setattr(runtime, "get_runtime_info", lambda refresh_providers=False: {"ok": True})
+    update_thread = threading.Thread(target=update_runtime)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        update_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert not switched.wait(0.5), "workspace changed while runtime settings were being saved"
+    finally:
+        release.set()
+        update_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not update_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+    assert saved_batches == [(
+        str(workspace_a),
+        {"python_executable": "python-a", "conda_env": "env-a"},
+    )]
+
+
+def test_workspace_switch_waits_for_in_flight_task_creation(tmp_path, monkeypatch):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    generator = runtime.task_generator
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    added_in: list[str] = []
+    errors: list[BaseException] = []
+
+    def blocked_create(configs, name_prefix, *, task_kind=TASK_KIND_CONFIG):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("task creation test did not release")
+        return [{
+            "name": name_prefix,
+            "dir": str(workspace_a / TASKS_DIR / name_prefix),
+            "status": "pending",
+            "config": configs[0],
+            "task_kind": task_kind,
+        }]
+
+    def record_add(manager, tasks):
+        added_in.append(str(Path(manager.tasks_dir).parent))
+
+    def create_task():
+        try:
+            runtime.create_tasks_from_template(
+                name_prefix="created",
+                mode="yaml",
+                yaml_text="lr: 0.1\n",
+                append_timestamp=False,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(generator, "create_tasks", blocked_create)
+    monkeypatch.setattr(TaskManager, "add_tasks", record_add)
+    create_thread = threading.Thread(target=create_task)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        create_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert not switched.wait(0.5), "workspace changed while tasks were being created"
+    finally:
+        release.set()
+        create_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not create_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+    assert added_in == [str(workspace_a)]
+
+
+def test_workspace_switch_waits_for_in_flight_workspace_read(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_module
+
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    responses: list[dict] = []
+    errors: list[BaseException] = []
+    original_load_script_info = runtime_module.load_script_info
+    call_count = 0
+
+    def blocked_load_script_info(root):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("workspace read test did not release")
+        return original_load_script_info(root)
+
+    def read_workspace():
+        try:
+            responses.append(runtime.get_workspace_info())
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(runtime_module, "load_script_info", blocked_load_script_info)
+    read_thread = threading.Thread(target=read_workspace)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        read_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert not switched.wait(0.5), "workspace changed while metadata was being assembled"
+    finally:
+        release.set()
+        read_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not read_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+    assert Path(responses[0]["run_root"]) == workspace_a
+    assert responses[0]["script_name"] == "main"
+
+
+def test_workspace_switch_waits_for_in_flight_log_read(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_module
+
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    _add_task(workspace_a, "same-name", status="completed", log_text="workspace-a\n")
+    _add_task(workspace_b, "same-name", status="completed", log_text="workspace-b\n")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    responses: list[dict] = []
+    errors: list[BaseException] = []
+    original_get_log_options = runtime_module.get_log_options
+
+    def blocked_get_log_options(task_dir):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("log read test did not release")
+        return original_get_log_options(task_dir)
+
+    def read_log():
+        try:
+            responses.append(runtime.get_task_logs("same-name", tail_lines=20))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(runtime_module, "get_log_options", blocked_get_log_options)
+    read_thread = threading.Thread(target=read_log)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        read_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert not switched.wait(0.5), "workspace changed while a log response was being assembled"
+    finally:
+        release.set()
+        read_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not read_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+    assert responses[0]["content"].splitlines() == ["workspace-a"]
+
+
+def test_runtime_provider_refresh_uses_snapshot_without_blocking_workspace_switch(tmp_path, monkeypatch):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    runtime.settings.update({
+        "python_executable": "python-a",
+        "conda_executable": "conda-a",
+    })
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    responses: list[dict] = []
+    errors: list[BaseException] = []
+
+    def blocked_provider(settings, *, workspace_epoch, refresh, cached):
+        assert refresh is True
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("provider snapshot test did not release")
+        return {
+            "available": False,
+            "executable": settings.get("conda_executable", "conda"),
+            "envs": [],
+            "error": "not installed",
+        }
+
+    def read_runtime():
+        try:
+            responses.append(runtime.get_runtime_info(refresh_providers=True))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(runtime, "_list_conda_envs_for_snapshot", blocked_provider)
+    read_thread = threading.Thread(target=read_runtime)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        read_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert switched.wait(2), "provider discovery held the workspace lock"
+    finally:
+        release.set()
+        read_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not read_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+    assert responses[0]["python_executable"] == "python-a"
+    assert responses[0]["conda"]["executable"] == "conda-a"
+
+
+def test_generator_picker_does_not_block_switch_and_rejects_stale_workspace(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_module
+
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    shell_file = workspace_a / "seed.sh"
+    shell_file.write_text("echo from-a\n", encoding="utf-8")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
+    entered = threading.Event()
+    release = threading.Event()
+    switched = threading.Event()
+    errors: list[BaseException] = []
+
+    def blocked_picker(initial_dir):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("picker test did not release")
+        return str(shell_file)
+
+    def pick_file():
+        try:
+            runtime.pick_generator_shell_file()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def switch_workspace():
+        try:
+            runtime.change_run_root(str(workspace_b))
+        finally:
+            switched.set()
+
+    monkeypatch.setattr(runtime_module, "native_picker_available", lambda: True)
+    monkeypatch.setattr(runtime_module, "choose_shell_file", blocked_picker)
+    picker_thread = threading.Thread(target=pick_file)
+    switch_thread = threading.Thread(target=switch_workspace)
+    try:
+        picker_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert switched.wait(2), "native picker held the workspace lock"
+    finally:
+        release.set()
+        picker_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not picker_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ValueError)
+    assert "Workspace changed" in str(errors[0])
+
+
 def test_runtime_reload_reclaims_idle_workspace_managers(tmp_path):
     workspace_a = _make_workspace(tmp_path, "main")
     workspace_b = _make_workspace(tmp_path, "alt")
@@ -1897,7 +2558,11 @@ def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
             events.append("shutdown")
 
     monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
-    monkeypatch.setattr(web_app, "find_available_port", lambda port, host="127.0.0.1": port)
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
     monkeypatch.setattr(web_app.uvicorn, "run", lambda *args, **kwargs: events.append("run"))
 
     web_app.main(open_browser=False, port=8123)
@@ -2093,11 +2758,11 @@ def test_tasks_endpoint_discovers_external_task_dirs_on_refresh(tmp_path):
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    assert client.get("/api/tasks", params={"limit": 0}).json()["total"] == 1
+    assert client.get("/api/tasks", params={"limit": 10_000}).json()["total"] == 1
 
     _add_task(workspace, "beta")
     runtime.invalidate_cache()
-    response = client.get("/api/tasks", params={"limit": 0, "refresh": True, "summary": True})
+    response = client.get("/api/tasks", params={"limit": 10_000, "refresh": True, "summary": True})
 
     assert response.status_code == 200
     names = {task["name"] for task in response.json()["items"]}
@@ -2109,7 +2774,7 @@ def test_task_endpoint_lazy_loads_external_task_by_name(tmp_path):
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    assert client.get("/api/tasks", params={"limit": 0}).json()["total"] == 0
+    assert client.get("/api/tasks", params={"limit": 10_000}).json()["total"] == 0
 
     _add_task(workspace, "external")
     response = client.get("/api/tasks/external")
@@ -2189,9 +2854,12 @@ def test_logs_endpoint_caps_large_initial_tail_by_server_byte_budget(tmp_path):
     oversized = client.get(
         "/api/tasks/alpha/logs",
         params={"tail_lines": 100, "tail_bytes": 50_000_000},
-    ).json()
-    assert oversized["tail_limit_bytes"] == 4 * 1024 * 1024
-    assert len(oversized["content"].encode("utf-8")) <= oversized["tail_limit_bytes"]
+    )
+    assert oversized.status_code == 422
+    assert any(
+        item["loc"][-1] == "tail_bytes" and item["type"] == "less_than_equal"
+        for item in oversized.json()["detail"]
+    )
 
 
 def test_logs_endpoint_only_caps_tail_lines_when_tail_bytes_is_explicit(tmp_path):
@@ -2316,6 +2984,75 @@ def test_template_content_and_generator_create_endpoints(tmp_path):
     assert payload["recent_tasks"]
     assert payload["recent_tasks"][0]["config"] == {}
     assert payload["recent_tasks"][0]["records"] == []
+
+
+def test_template_content_rejects_paths_outside_workspace_boundary(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    outside = tmp_path / "secret.yaml"
+    outside.write_text("token: do-not-read\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    with pytest.raises(ValueError, match="outside the allowed workspace"):
+        runtime.get_template_content(str(outside))
+    with pytest.raises(ValueError, match="outside the allowed workspace"):
+        runtime.get_template_content("../../secret.yaml")
+    response = client.get("/api/templates/content", params={"value": str(outside)})
+    assert response.status_code == 400
+    assert "outside the allowed workspace" in response.json()["detail"]
+    preview = client.post(
+        "/api/generator/preview",
+        json={"mode": "form", "yaml_text": "lr: 1", "template_value": str(outside)},
+    )
+    assert preview.status_code == 400
+
+
+def test_template_content_rejects_symlink_escape(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    outside = tmp_path / "secret.yaml"
+    outside.write_text("token: do-not-read\n", encoding="utf-8")
+    link = workspace / "linked.yaml"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    runtime = _build_runtime(workspace)
+    with pytest.raises(ValueError, match="outside the allowed workspace"):
+        runtime.get_template_content("linked.yaml")
+
+
+def test_shell_template_boundary_does_not_trust_project_root_metadata(tmp_path):
+    workspace = _make_workspace(tmp_path, SHELL_WORKSPACE_NAME)
+    outside_root = tmp_path.parent
+    outside = outside_root / f"pyruns-outside-template-{tmp_path.name}.sh"
+    outside.write_text("echo secret\n", encoding="utf-8")
+    (workspace / SCRIPT_INFO_FILENAME).write_text(
+        json.dumps({"workspace_kind": WORKSPACE_KIND_SHELL, "project_root": str(outside_root)}),
+        encoding="utf-8",
+    )
+    runtime = _build_runtime(workspace)
+
+    try:
+        with pytest.raises(ValueError, match="outside the allowed workspace"):
+            runtime.get_template_content(str(outside))
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_template_and_generator_inputs_have_hard_size_limits(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    oversized = workspace / "oversized.yaml"
+    oversized.write_text("value: 123456789\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime_mod, "MAX_TASK_PAYLOAD_BYTES", 8)
+
+    with pytest.raises(ValueError, match="too large"):
+        runtime.get_template_content("oversized.yaml")
+    with pytest.raises(ValueError, match="too large"):
+        runtime.preview_tasks_from_template(mode="yaml", yaml_text="value: 123456789")
 
 
 def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
@@ -2755,7 +3492,7 @@ def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
             ]
         },
     )
-    listed = client.get("/api/tasks", params={"limit": 0, "refresh": True}).json()["items"]
+    listed = client.get("/api/tasks", params={"limit": 10_000, "refresh": True}).json()["items"]
     gamma_info = json.loads(
         (workspace / TASKS_DIR / "gamma" / "task_info.json").read_text(encoding="utf-8")
     )
@@ -2804,7 +3541,7 @@ def test_tasks_endpoint_keeps_active_and_new_tasks_ahead_of_old_manual_order(tmp
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    response = client.get("/api/tasks", params={"limit": 0, "refresh": True})
+    response = client.get("/api/tasks", params={"limit": 10_000, "refresh": True})
 
     assert response.status_code == 200
     names = [item["name"] for item in response.json()["items"]]
@@ -3483,7 +4220,7 @@ def test_runtime_log_selection_and_launcher_picker_edges(tmp_path, monkeypatch):
     config_info = runtime.get_template_content(CONFIG_DEFAULT_FILENAME)
     assert config_info["mode_hint"] == "yaml"
     assert config_info["parsed_config"]["lr"] == 0.01
-    shell_template = tmp_path / "run.sh"
+    shell_template = workspace / "run.sh"
     shell_template.write_text("echo hi\n", encoding="utf-8")
     shell_info = runtime.get_template_content(str(shell_template))
     assert shell_info["mode_hint"] == "shell"

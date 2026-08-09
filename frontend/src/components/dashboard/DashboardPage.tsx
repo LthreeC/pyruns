@@ -37,7 +37,7 @@ interface DashboardRefreshResult {
 }
 
 export default function DashboardPage() {
-  const { data, loading, fetch } = useDashboardStore()
+  const { data, loading, error: dashboardError, fetch } = useDashboardStore()
   const workspace = useWorkspaceStore(s => s.workspace)
   const notify = useToastStore(state => state.notify)
   const navigate = useNavigate()
@@ -154,7 +154,7 @@ export default function DashboardPage() {
             : 'System metrics are current; task summary could not be refreshed.',
         })
       } else {
-        notify({ tone: 'error', title: 'Could not refresh dashboard', detail: 'Showing the last available values.' })
+        notify({ tone: 'error', title: 'Could not refresh dashboard', detail: 'Task summary and system metrics are unavailable.' })
       }
     } catch (err) {
       notify({ tone: 'error', title: 'Could not refresh dashboard', detail: errorMessage(err) })
@@ -172,6 +172,18 @@ export default function DashboardPage() {
     metricsRefreshSeqRef.current += 1
     dashboardRefreshPromiseRef.current = null
   }, [])
+
+  useEffect(() => {
+    metricsRefreshSeqRef.current += 1
+    gpuDetailsRequestSeqRef.current += 1
+    dashboardRefreshPromiseRef.current = null
+    setMetrics(null)
+    setMetricsError('')
+    setActiveGpu(null)
+    setGpuDetailsLoading(false)
+    setGpuDetailsError('')
+    void refreshDashboard()
+  }, [refreshDashboard, workspace?.run_root])
 
   const summary = data?.summary
   const workspaceReady = workspace?.workspace_ready === true
@@ -245,6 +257,17 @@ export default function DashboardPage() {
               </button>
             </div>
           </header>
+
+          {dashboardError && (
+            <div role="alert" className="flex shrink-0 items-start gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-800 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
+              <div className="min-w-0">
+                <div className="font-semibold">{data ? 'Task summary refresh failed' : 'Task summary unavailable'}</div>
+                <div className="mt-0.5 break-words">{dashboardError}</div>
+                {data && <div className="mt-0.5">Showing the last successful values.</div>}
+              </div>
+            </div>
+          )}
 
           <section className="flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised">
             <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-border-subtle px-4 py-3">
@@ -330,7 +353,7 @@ export default function DashboardPage() {
                   </div>
                   <div>
                     <div className="text-lg font-semibold tabular-nums text-txt-primary">
-                      {loading ? '--' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
+                      {loading && !data ? '--' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
                     </div>
                     <div className="text-2xs text-txt-tertiary">{label}</div>
                   </div>
@@ -369,7 +392,9 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto">
-              {!data?.recent_tasks?.length ? (
+              {dashboardError && !data ? (
+                <div className="py-8 text-center text-xs text-rose-700 dark:text-rose-300">Recent tasks could not be loaded.</div>
+              ) : !data?.recent_tasks?.length ? (
                 <div className="py-8 text-center text-xs text-txt-tertiary">No tasks yet</div>
               ) : (
                 data.recent_tasks.map(task => (
@@ -645,7 +670,7 @@ function GpuProcessDialog({
         aria-labelledby="gpu-detail-title"
         aria-describedby="gpu-detail-description"
         aria-busy={loading}
-        className="flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
+        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
         onPointerDown={() => {
           backdropPointerStartedRef.current = false
         }}

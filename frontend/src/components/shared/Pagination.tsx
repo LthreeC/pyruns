@@ -15,14 +15,14 @@ export default function Pagination({ total, offset, limit, onOffsetChange }: Pro
   const totalPages = Math.ceil(total / limit)
 
   return (
-    <div className="flex items-center gap-2 text-xs text-zinc-400">
+    <div className="flex flex-wrap items-center gap-2 text-xs text-txt-tertiary">
       <button
         type="button"
         disabled={offset === 0}
         onClick={() => onOffsetChange(Math.max(0, offset - limit))}
         aria-label="Previous page"
         className={clsx(
-          'p-1 rounded hover:bg-surface-overlay transition-colors',
+          'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
           offset === 0 && 'opacity-30 cursor-not-allowed'
         )}
       >
@@ -37,13 +37,13 @@ export default function Pagination({ total, offset, limit, onOffsetChange }: Pro
         onClick={() => onOffsetChange(offset + limit)}
         aria-label="Next page"
         className={clsx(
-          'p-1 rounded hover:bg-surface-overlay transition-colors',
+          'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
           offset + limit >= total && 'opacity-30 cursor-not-allowed'
         )}
       >
         <ChevronRight className="w-3.5 h-3.5" />
       </button>
-      <span className="text-zinc-600 ml-1">{total} total</span>
+      <span className="ml-1 text-txt-tertiary">{total} total</span>
     </div>
   )
 }

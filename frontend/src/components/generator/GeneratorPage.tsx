@@ -1,6 +1,9 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -30,7 +33,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml'
-import { useGeneratorStore, useThemeStore, useWorkspaceStore } from '@/store'
+import { requestConfirmation, useGeneratorStore, useThemeStore, useWorkspaceStore } from '@/store'
 import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
@@ -52,6 +55,7 @@ const MAX_TREE_OUTLINE_WIDTH = 380
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
 type FormLayoutMode = 'grid' | 'tree'
 type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'
+const GeneratorDraftEditContext = createContext<() => void>(() => undefined)
 
 interface CreatedTaskResult {
   count: number
@@ -215,8 +219,11 @@ function TemplatePicker({
 }: TemplatePickerProps) {
   const [open, setOpen] = useState(false)
   const [templateFilter, setTemplateFilter] = useState('')
+  const [activeIndex, setActiveIndex] = useState(0)
   const pickerRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const listboxId = useId()
   const selectedOption = options.find(option => option.value === value)
   const buttonLabel = selectedOption?.label || placeholder
   const normalizedFilter = templateFilter.trim().toLowerCase()
@@ -225,17 +232,31 @@ function TemplatePicker({
     return options.filter(option => `${option.label} ${option.value}`.toLowerCase().includes(normalizedFilter))
   }, [normalizedFilter, options])
   const emptyOptionVisible = allowEmpty && (!normalizedFilter || placeholder.toLowerCase().includes(normalizedFilter))
+  const visibleOptions = useMemo(() => [
+    ...(emptyOptionVisible ? [{ value: '', label: placeholder }] : []),
+    ...filteredOptions,
+  ], [emptyOptionVisible, filteredOptions, placeholder])
   const disabled = options.length === 0 && !allowEmpty
+
+  const closePicker = useCallback((restoreFocus = false) => {
+    setOpen(false)
+    setTemplateFilter('')
+    if (restoreFocus) {
+      window.setTimeout(() => triggerRef.current?.focus(), 0)
+    }
+  }, [])
 
   useEffect(() => {
     if (!open) return
 
     setTemplateFilter('')
+    const selectedIndex = visibleOptions.findIndex(option => option.value === value)
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0)
     const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0)
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null
       if (target && !pickerRef.current?.contains(target)) {
-        setOpen(false)
+        closePicker(false)
       }
     }
 
@@ -244,31 +265,68 @@ function TemplatePicker({
       window.clearTimeout(focusTimer)
       document.removeEventListener('mousedown', handlePointerDown)
     }
-  }, [open])
+  }, [closePicker, open])
+
+  useEffect(() => {
+    if (open) {
+      setActiveIndex(0)
+    }
+  }, [open, templateFilter])
 
   const selectValue = useCallback((nextValue: string) => {
     onChange(nextValue)
-    setOpen(false)
-    setTemplateFilter('')
-  }, [onChange])
+    closePicker(true)
+  }, [closePicker, onChange])
 
   return (
     <div
       ref={pickerRef}
       className="relative w-full min-w-0 min-[701px]:w-auto min-[701px]:min-w-[280px]"
+      onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          closePicker(false)
+        }
+      }}
       onKeyDown={event => {
         if (event.key === 'Escape') {
-          setOpen(false)
+          event.preventDefault()
+          closePicker(true)
+          return
+        }
+        if (event.target !== inputRef.current || !open || visibleOptions.length === 0) {
+          return
+        }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault()
+          const direction = event.key === 'ArrowDown' ? 1 : -1
+          setActiveIndex(current => (current + direction + visibleOptions.length) % visibleOptions.length)
+        } else if (event.key === 'Home') {
+          event.preventDefault()
+          setActiveIndex(0)
+        } else if (event.key === 'End') {
+          event.preventDefault()
+          setActiveIndex(visibleOptions.length - 1)
+        } else if (event.key === 'Enter') {
+          event.preventDefault()
+          const safeIndex = Math.min(activeIndex, visibleOptions.length - 1)
+          selectValue(visibleOptions[safeIndex]?.value || '')
         }
       }}
     >
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         title={buttonLabel}
         onClick={() => setOpen(current => !current)}
+        onKeyDown={event => {
+          if (!open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault()
+            setOpen(true)
+          }
+        }}
         className="flex h-8 w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 text-left text-xs text-txt-primary outline-none transition-colors hover:border-border focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="min-w-0 flex-1 truncate">{buttonLabel}</span>
@@ -285,36 +343,30 @@ function TemplatePicker({
               onChange={event => setTemplateFilter(event.target.value)}
               placeholder={searchPlaceholder}
               aria-label={searchPlaceholder}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls={listboxId}
+              aria-expanded={open}
+              aria-activedescendant={visibleOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined}
               className="h-7 w-full rounded-md border border-border-subtle bg-surface-overlay px-2 pl-7 text-xs text-txt-primary outline-none transition-colors placeholder:text-txt-tertiary focus:border-accent focus:ring-2 focus:ring-accent/15"
             />
           </div>
-          <div role="listbox" className="max-h-[min(18rem,50vh)] overflow-y-auto py-1">
-            {emptyOptionVisible && (
-              <button
-                type="button"
-                role="option"
-                aria-selected={!value}
-                onClick={() => selectValue('')}
-                className={clsx(
-                  'block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-overlay',
-                  !value ? 'bg-accent/10 text-accent' : 'text-txt-secondary',
-                )}
-              >
-                {placeholder}
-              </button>
-            )}
-            {filteredOptions.length > 0 ? (
-              filteredOptions.map(option => (
+          <div id={listboxId} role="listbox" className="max-h-[min(18rem,50vh)] overflow-y-auto py-1">
+            {visibleOptions.length > 0 ? (
+              visibleOptions.map((option, index) => (
                 <button
-                  key={option.value}
+                  key={option.value || '__empty__'}
+                  id={`${listboxId}-option-${index}`}
                   type="button"
                   role="option"
                   aria-selected={option.value === value}
                   title={option.value}
                   onClick={() => selectValue(option.value)}
+                  onMouseEnter={() => setActiveIndex(index)}
                   className={clsx(
                     'block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-overlay',
-                    option.value === value ? 'bg-accent/10 text-accent' : 'text-txt-primary',
+                    index === activeIndex && 'bg-surface-overlay',
+                    option.value === value ? 'text-accent' : 'text-txt-primary',
                   )}
                 >
                   <span className="block truncate">{option.label}</span>
@@ -532,6 +584,7 @@ function collectParamRows(
 export default function GeneratorPage() {
   const navigate = useNavigate()
   const workspace = useWorkspaceStore(state => state.workspace)
+  const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
   const theme = useThemeStore(state => state.theme)
   const {
     templates,
@@ -544,6 +597,7 @@ export default function GeneratorPage() {
     appendTimestamp,
     columns,
     pinnedParams,
+    dirty,
     loading,
     fetchTemplates,
     loadTemplate,
@@ -553,6 +607,7 @@ export default function GeneratorPage() {
     setShellText,
     setNamePrefix,
     setAppendTimestamp,
+    setDirty,
     setColumns,
     togglePin,
   } = useGeneratorStore()
@@ -574,9 +629,51 @@ export default function GeneratorPage() {
   const pendingGeneratorSettingsWidthRef = useRef(generatorSettingsWidth)
   const generatorSettingsResizeFrameRef = useRef<number | null>(null)
   const previewRequestSeqRef = useRef(0)
+  const createRequestSeqRef = useRef(0)
   const generationInputKeyRef = useRef('')
+  const generationDraftRevisionRef = useRef(0)
   const lastWorkspaceDefaultKeyRef = useRef('')
   const lastShellRootRef = useRef('')
+
+  const refreshTemplatesWithFeedback = useCallback(() => {
+    void fetchTemplates().catch((err: any) => {
+      setError(err?.message || 'Could not load templates')
+    })
+  }, [fetchTemplates])
+
+  const confirmTemplateReplacement = useCallback(async () => {
+    if (!useGeneratorStore.getState().dirty) {
+      return true
+    }
+    return requestConfirmation({
+      title: 'Discard generator draft?',
+      description: 'Discard the current generator draft and load another template?',
+      confirmLabel: 'Discard and Load',
+      confirmVariant: 'danger',
+    })
+  }, [])
+
+  const loadTemplateWithFeedback = useCallback(async (value: string) => {
+    if (!(await confirmTemplateReplacement())) {
+      return false
+    }
+    setError('')
+    try {
+      await loadTemplate(value)
+      return true
+    } catch (err: any) {
+      setError(err?.message || 'Could not load template')
+      return false
+    }
+  }, [confirmTemplateReplacement, loadTemplate])
+
+  const clearTemplateWithConfirmation = useCallback(async () => {
+    if (!(await confirmTemplateReplacement())) {
+      return false
+    }
+    clearTemplate()
+    return true
+  }, [clearTemplate, confirmTemplateReplacement])
 
   const isShellWorkspace = workspace?.workspace_kind === 'shell'
   const shellRuntime = workspace?.shell_runtime
@@ -628,7 +725,7 @@ export default function GeneratorPage() {
       if (shellRoot && lastShellRootRef.current !== shellRoot) {
         lastShellRootRef.current = shellRoot
         clearTemplate()
-        void fetchTemplates()
+        refreshTemplatesWithFeedback()
       }
       if (viewMode !== 'shell') {
         setViewMode('shell')
@@ -643,7 +740,7 @@ export default function GeneratorPage() {
     if (viewMode === 'shell') {
       setViewMode('form')
     }
-  }, [clearTemplate, fetchTemplates, isShellWorkspace, setShellText, setViewMode, shellText, viewMode, workspace?.run_root])
+  }, [clearTemplate, isShellWorkspace, refreshTemplatesWithFeedback, setShellText, setViewMode, shellText, viewMode, workspace?.run_root])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -720,10 +817,10 @@ export default function GeneratorPage() {
     if (!workspace?.run_root || isShellWorkspace) {
       return
     }
-    void fetchTemplates()
+    refreshTemplatesWithFeedback()
   }, [
-    fetchTemplates,
     isShellWorkspace,
+    refreshTemplatesWithFeedback,
     workspace?.config_default_source,
     workspace?.config_default_source_name,
     workspace?.run_root,
@@ -735,7 +832,7 @@ export default function GeneratorPage() {
     }
 
     if (templates.length === 0) {
-      if (selectedTemplate) {
+      if (selectedTemplate && !dirty) {
         clearTemplate()
       }
       return
@@ -749,23 +846,27 @@ export default function GeneratorPage() {
       workspace?.config_default_source_name || '',
     ].join('|')
     const workspaceDefaultChanged = workspaceDefaultKey !== lastWorkspaceDefaultKeyRef.current
+    if (workspaceDefaultChanged && dirty) {
+      return
+    }
     if (workspaceDefaultChanged) {
       lastWorkspaceDefaultKeyRef.current = workspaceDefaultKey
     }
 
     if (workspaceDefaultChanged && defaultTemplateValue && selectedTemplate !== defaultTemplateValue) {
-      void loadTemplate(defaultTemplateValue)
+      void loadTemplateWithFeedback(defaultTemplateValue)
       return
     }
 
     const selectedStillExists = templates.some(template => template.value === selectedTemplate)
-    if (!selectedStillExists) {
-      void loadTemplate(defaultTemplateValue)
+    if (!selectedStillExists && !dirty) {
+      void loadTemplateWithFeedback(defaultTemplateValue)
     }
   }, [
     clearTemplate,
+    dirty,
     isShellWorkspace,
-    loadTemplate,
+    loadTemplateWithFeedback,
     selectedTemplate,
     templates,
     workspace?.config_default_source,
@@ -838,7 +939,14 @@ export default function GeneratorPage() {
     () => JSON.stringify(currentGenerationPayload),
     [currentGenerationPayload],
   )
-  generationInputKeyRef.current = generationInputKey
+  if (generationInputKeyRef.current !== generationInputKey) {
+    generationInputKeyRef.current = generationInputKey
+    generationDraftRevisionRef.current += 1
+  }
+  const markGeneratorDraftEdited = useCallback(() => {
+    generationDraftRevisionRef.current += 1
+    setDirty(true)
+  }, [setDirty])
   const configDefaultSourceName = workspace?.config_default_source_name || ''
   const configDefaultSourcePath = workspace?.config_default_source || ''
   const showImportedConfigSource = Boolean(
@@ -854,7 +962,15 @@ export default function GeneratorPage() {
     setPreviewData(null)
     setPreviewSnapshot(current => current?.inputKey === generationInputKey ? current : null)
     setGenerationStatus(current => current === 'previewing' ? 'idle' : current)
-  }, [generationInputKey])
+  }, [generationInputKey, workspaceEpoch])
+
+  useEffect(() => {
+    createRequestSeqRef.current += 1
+    setGenerating(false)
+    setGenerationStatus('idle')
+    setCreatedSummary(null)
+    setError('')
+  }, [workspaceEpoch])
   const setAllTreeSections = useCallback((open: boolean) => {
     setTreeOpenValue(open)
     setTreeOpenSignal(signal => signal + 1)
@@ -875,20 +991,40 @@ export default function GeneratorPage() {
     setError('')
     try {
       const content = await api.pickGeneratorShellFile()
-      await loadTemplate(content.value)
+      const loaded = await loadTemplateWithFeedback(content.value)
+      if (!loaded) {
+        return
+      }
       await fetchTemplates()
     } catch (err: any) {
       setError(err?.message || 'Failed to load shell script')
     }
-  }, [fetchTemplates, loadTemplate])
+  }, [fetchTemplates, loadTemplateWithFeedback])
 
   const doCreate = useCallback(async (payload: GenerationPayload = currentGenerationPayload) => {
+    const requestId = ++createRequestSeqRef.current
+    const workspaceKey = workspace?.run_root || ''
+    const requestInputKey = generationInputKeyRef.current
+    const requestDraftRevision = generationDraftRevisionRef.current
+    const requestIsCurrent = () => (
+      requestId === createRequestSeqRef.current
+      && workspaceKey === (useWorkspaceStore.getState().workspace?.run_root || '')
+    )
     setGenerating(true)
     setGenerationStatus('creating')
     setCreatedSummary(null)
     setError('')
     try {
       const result = await api.createTasks(payload)
+      if (!requestIsCurrent()) {
+        return
+      }
+      if (
+        generationInputKeyRef.current === requestInputKey
+        && generationDraftRevisionRef.current === requestDraftRevision
+      ) {
+        setDirty(false)
+      }
       setPreviewOpen(false)
       setPreviewData(null)
       setPreviewSnapshot(null)
@@ -899,6 +1035,10 @@ export default function GeneratorPage() {
         // Creation succeeded; template refresh can be retried on the next render.
       }
 
+      if (!requestIsCurrent()) {
+        return
+      }
+
       setCreatedSummary({
         count: result.count,
         taskKind: result.task_kind === 'shell' ? 'shell task' : 'python task',
@@ -906,12 +1046,17 @@ export default function GeneratorPage() {
       })
       setGenerationStatus('created')
     } catch (err: any) {
+      if (!requestIsCurrent()) {
+        return
+      }
       setGenerationStatus('error')
       setError(err.message)
     } finally {
-      setGenerating(false)
+      if (requestIsCurrent()) {
+        setGenerating(false)
+      }
     }
-  }, [currentGenerationPayload, fetchTemplates])
+  }, [currentGenerationPayload, fetchTemplates, setDirty, workspace?.run_root])
 
   const handleGenerate = useCallback(async () => {
     setError('')
@@ -963,7 +1108,7 @@ export default function GeneratorPage() {
               options={templates}
               placeholder="Select template"
               searchPlaceholder="Search templates"
-              onChange={value => void loadTemplate(value)}
+              onChange={value => { void loadTemplateWithFeedback(value) }}
             />
           ) : (
             <>
@@ -976,9 +1121,9 @@ export default function GeneratorPage() {
                 allowEmpty
                 onChange={value => {
                   if (value) {
-                    void loadTemplate(value)
+                    void loadTemplateWithFeedback(value)
                   } else {
-                    clearTemplate()
+                    void clearTemplateWithConfirmation()
                   }
                 }}
               />
@@ -994,9 +1139,15 @@ export default function GeneratorPage() {
           )}
 
           {!isShellWorkspace && templateContent?.read_only && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-2xs text-amber-400">
+            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-2xs text-amber-800 dark:text-amber-300">
               <AlertTriangle className="h-3 w-3" />
               <span>Read-only</span>
+            </span>
+          )}
+
+          {dirty && (
+            <span className="inline-flex items-center rounded-md bg-amber-500/10 px-2 py-1 text-2xs font-medium text-amber-700 dark:text-amber-300">
+              Unsaved
             </span>
           )}
 
@@ -1024,7 +1175,7 @@ export default function GeneratorPage() {
         </div>
 
         <div className="flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto">
-          <div className="inline-flex w-full overflow-hidden rounded-md border border-border-subtle bg-surface-overlay min-[701px]:w-auto">
+          <div aria-label="Editor view" className="inline-flex w-full overflow-hidden rounded-md border border-border-subtle bg-surface-overlay min-[701px]:w-auto">
             {(isShellWorkspace ? ['shell'] : ['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]).map(mode => {
               const active = mode === 'shell'
                 ? editorMode === 'shell'
@@ -1057,6 +1208,7 @@ export default function GeneratorPage() {
           {editorMode === 'form' && formLayoutMode === 'grid' && (
             <div className="relative">
               <select
+                aria-label="Form columns per row"
                 value={columns}
                 onChange={event => setColumns(Number(event.target.value))}
                 title="Columns per row"
@@ -1080,19 +1232,21 @@ export default function GeneratorPage() {
               <div className="animate-pulse text-xs text-txt-tertiary">Loading template...</div>
             </div>
           ) : editorMode === 'form' ? (
-            <FormEditor
-              config={parsedConfig}
-              columns={columns}
-              layoutMode={formLayoutMode}
-              openSignalValue={treeOpenValue}
-              openSignalVersion={treeOpenSignal}
-              declaredTypeMap={declaredTypeMap}
-              pinnedParams={pinnedParams}
-              batchParams={batchParams}
-              onTogglePin={togglePin}
-              onSetAllSections={setAllTreeSections}
-              onChange={data => setYamlText(yamlStringify(data))}
-            />
+            <GeneratorDraftEditContext.Provider value={markGeneratorDraftEdited}>
+              <FormEditor
+                config={parsedConfig}
+                columns={columns}
+                layoutMode={formLayoutMode}
+                openSignalValue={treeOpenValue}
+                openSignalVersion={treeOpenSignal}
+                declaredTypeMap={declaredTypeMap}
+                pinnedParams={pinnedParams}
+                batchParams={batchParams}
+                onTogglePin={togglePin}
+                onSetAllSections={setAllTreeSections}
+                onChange={data => setYamlText(yamlStringify(data))}
+              />
+            </GeneratorDraftEditContext.Provider>
           ) : editorMode === 'yaml' ? (
             <div className="h-full p-3">
               <CodeTextEditor
@@ -1102,6 +1256,7 @@ export default function GeneratorPage() {
                 theme={codeMirrorTheme}
                 className="generator-code-editor"
                 wrapStorageKey="pyruns.generator.yaml.wrap"
+                ariaLabel="Task YAML editor"
               />
             </div>
           ) : (
@@ -1113,6 +1268,7 @@ export default function GeneratorPage() {
                 theme={codeMirrorTheme}
                 className="generator-code-editor"
                 wrapStorageKey="pyruns.generator.shell.wrap"
+                ariaLabel="Task shell editor"
               />
             </div>
           )}
@@ -1209,7 +1365,7 @@ export default function GeneratorPage() {
                 Batch syntax is disabled here. Switch to <span className="text-txt-primary">Grid</span> or <span className="text-txt-primary">Tree</span> for batch expansion and parameter pinning.
               </div>
               {yamlContainsBatchSyntax && (
-                <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-2xs text-amber-400">
+                <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-2xs text-amber-800 dark:text-amber-300">
                   Batch syntax was detected in YAML mode, but YAML mode only creates one task. Use Grid or Tree mode if you want batch generation.
                 </div>
               )}
@@ -1222,7 +1378,7 @@ export default function GeneratorPage() {
 
           {error && (
             <CompactSection title="Status" bodyClassName="space-y-1.5 p-2">
-              <div role="alert" className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400" title={error}>
+              <div role="alert" className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" title={error}>
                 {error}
               </div>
             </CompactSection>
@@ -1279,6 +1435,15 @@ export default function GeneratorPage() {
           setPreviewSnapshot(null)
         }}
       >
+        {error && (
+          <div
+            role="alert"
+            className="flex items-start gap-2 rounded-md border border-rose-500/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none" />
+            <span className="min-w-0 break-words">{error}</span>
+          </div>
+        )}
         <BatchPreviewContent preview={previewData} triggers={batchTriggerDetails} />
       </ConfirmDialog>
     </div>
@@ -1546,7 +1711,7 @@ function SectionExpandControls({
         title="Expand all sections"
         aria-label="Expand all sections"
         onClick={() => onSetAllSections(true)}
-        className="inline-flex h-7 w-7 items-center justify-center text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
+        className="inline-flex h-11 w-11 items-center justify-center text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
       >
         <UnfoldVertical className="h-3.5 w-3.5" />
       </button>
@@ -1555,7 +1720,7 @@ function SectionExpandControls({
         title="Collapse all sections"
         aria-label="Collapse all sections"
         onClick={() => onSetAllSections(false)}
-        className="inline-flex h-7 w-7 items-center justify-center border-l border-border-subtle text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25"
+        className="inline-flex h-11 w-11 items-center justify-center border-l border-border-subtle text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
       >
         <FoldVertical className="h-3.5 w-3.5" />
       </button>
@@ -2415,6 +2580,7 @@ function ParamRow({
 }) {
   const originalType = declaredType || inferParamType(value)
   const treeParamRow = layoutMode === 'tree'
+  const markDraftEdited = useContext(GeneratorDraftEditContext)
 
   const [localValue, setLocalValue] = useState(stringifyEditable(value))
 
@@ -2423,6 +2589,11 @@ function ParamRow({
   }, [value])
 
   const hasBatch = localValue.includes('|') || /^\s*-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?\s*$/.test(localValue.trim())
+
+  const handleLocalValueChange = (nextValue: string) => {
+    setLocalValue(nextValue)
+    markDraftEdited()
+  }
 
   const commitValue = () => {
     const next = localValue.trim()
@@ -2496,13 +2667,13 @@ function ParamRow({
           </span>
 
           {pinned && (
-            <span className="rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
+            <span className="rounded-md bg-accent/10 px-1.5 py-0.5 text-2xs font-semibold uppercase text-accent">
               Pin
             </span>
           )}
 
           {(hasBatch || batchActive) && (
-            <span className="rounded-md bg-amber-500/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-amber-500">
+            <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-2xs font-semibold uppercase text-amber-800 dark:text-amber-300">
               Batch
             </span>
           )}
@@ -2521,6 +2692,9 @@ function ParamRow({
                 type="button"
                 onClick={() => onChange(!value)}
                 title={`Toggle ${name}`}
+                role="switch"
+                aria-checked={Boolean(value)}
+                aria-label={name}
                 className={clsx(
                   'relative h-4.5 w-9 flex-none rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
                   value ? 'bg-accent' : 'bg-zinc-600'
@@ -2537,8 +2711,9 @@ function ParamRow({
           ) : (
             <input
               type="text"
+              aria-label={`${name} parameter value`}
               value={localValue}
-              onChange={event => setLocalValue(event.target.value)}
+              onChange={event => handleLocalValueChange(event.target.value)}
               onBlur={commitValue}
               onKeyDown={event => {
                 if (event.key === 'Enter') {
@@ -2562,7 +2737,7 @@ function ParamRow({
   return (
     <div
       className={clsx(
-        'grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)] min-w-0 items-center gap-2 rounded-md border border-border bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20',
+        'grid min-h-10 grid-cols-[24px_minmax(0,1fr)] min-w-0 items-center gap-2 rounded-md border border-border bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20 sm:grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]',
         pinned && 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.04]',
         (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.04]',
       )}
@@ -2589,13 +2764,13 @@ function ParamRow({
         </span>
 
         {pinned && (
-          <span className="flex-none rounded-md bg-accent/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-accent">
+          <span className="flex-none rounded-md bg-accent/10 px-1.5 py-0.5 text-2xs font-semibold uppercase text-accent">
             Pinned
           </span>
         )}
 
         {(hasBatch || batchActive) && (
-          <span className="flex-none rounded-md bg-amber-500/10 px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider text-amber-500">
+          <span className="flex-none rounded-md bg-amber-500/10 px-1.5 py-0.5 text-2xs font-semibold uppercase text-amber-800 dark:text-amber-300">
             Batch
           </span>
         )}
@@ -2611,7 +2786,7 @@ function ParamRow({
       {originalType === 'bool' && !hasBatch ? (
         <div
           className={clsx(
-            'flex min-w-0 items-center gap-1.5',
+            'col-start-2 flex min-w-0 items-center gap-1.5 sm:col-start-auto',
             treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end',
           )}
         >
@@ -2619,6 +2794,9 @@ function ParamRow({
             type="button"
             onClick={() => onChange(!value)}
             title={`Toggle ${name}`}
+            role="switch"
+            aria-checked={Boolean(value)}
+            aria-label={name}
             className={clsx(
               'relative h-4.5 w-9 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
               value ? 'bg-accent' : 'bg-zinc-600'
@@ -2636,8 +2814,9 @@ function ParamRow({
       ) : (
         <input
           type="text"
+          aria-label={`${name} parameter value`}
           value={localValue}
-          onChange={event => setLocalValue(event.target.value)}
+          onChange={event => handleLocalValueChange(event.target.value)}
           onBlur={commitValue}
           onKeyDown={event => {
             if (event.key === 'Enter') {
@@ -2649,7 +2828,7 @@ function ParamRow({
           title={localValue}
           className={clsx(
             'rounded-md border bg-[var(--input-bg)] px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
-            treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1',
+            treeParamRow ? 'col-start-2 min-w-0 w-full sm:col-start-auto' : 'ml-auto min-w-0 flex-1',
             hasBatch || batchActive ? 'border-amber-500/40' : 'border-border',
           )}
         />

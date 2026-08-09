@@ -76,6 +76,11 @@ class _ArgumentParser(argparse.ArgumentParser):
         super().__init__(*args, **kwargs)
 
     def error(self, message: str) -> None:
+        if message == "unrecognized arguments: --json":
+            message = (
+                "--json is command-specific; append it only to a command "
+                "that advertises --json in its help"
+            )
         self.print_usage(sys.stderr)
         self.exit(2, f"{self.prog}: error: {message}\n")
 
@@ -183,7 +188,8 @@ def _exec_help_epilog(program: str) -> str:
         f"  {program} -w shell log train -f                     follow the active log\n"
         f"  {program} -w shell wait train                        wait for the final result\n"
         f"  {program} -w shell run train                         rerun the saved task\n"
-        "  Foreground exec follows the log and returns the task result; -d changes waiting only."
+        "  Foreground exec follows the log and returns the task result; -d changes waiting only.\n"
+        "  --dry-run and -d/--detach are mutually exclusive."
     )
 
 
@@ -227,7 +233,7 @@ def _add_browser_options(parser: argparse.ArgumentParser) -> None:
 def _add_json_option(
     parser: argparse.ArgumentParser,
     *,
-    help_text: str = "emit stable machine-readable JSON for this command",
+    help_text: str = "emit strict versioned JSON for this command",
 ) -> None:
     """Add machine output only to the command scope that owns it."""
 
@@ -238,6 +244,52 @@ def _add_json_option(
         default=argparse.SUPPRESS,
         help=help_text,
     )
+
+
+def _validate_leading_option_scope(
+    argv: Sequence[str],
+    parser: argparse.ArgumentParser,
+    command_names: set[str],
+) -> None:
+    """Reject command options placed before COMMAND with an actionable error."""
+
+    index = 0
+    while index < len(argv):
+        token = str(argv[index])
+        if token in command_names:
+            return
+        if token in {"-h", "--help", "--debug", "--version"}:
+            index += 1
+            continue
+        if token in {"-C", "--directory", "-w", "--workspace"}:
+            index += 2
+            continue
+        if token.startswith(("--directory=", "--workspace=")):
+            index += 1
+            continue
+        if (token.startswith("-C") or token.startswith("-w")) and len(token) > 2:
+            index += 1
+            continue
+        if token == "--json":
+            parser.error(
+                "--json is command-specific; place it after a command that advertises --json"
+            )
+        if token in {"-p", "--port"} or token.startswith(("-p", "--port=")):
+            parser.error(
+                f"-p/--port belongs to ui and dev; use '{parser.prog} ui --port PORT'"
+            )
+        if token in {"--browser", "--no-browser"}:
+            parser.error(
+                f"{token} belongs to ui and dev; place it after the command"
+            )
+        if token == "--":
+            parser.error("COMMAND must appear before '--'")
+        if token.startswith("-"):
+            parser.error(
+                f"unrecognized global option: {token}\n"
+                "Put command-specific options after COMMAND"
+            )
+        return
 
 
 def build_parser(
@@ -282,8 +334,8 @@ def build_parser(
         epilog=(
             command_overview
             + "Notes:\n"
-            "  Put context options (-C, -w, --no-color, --debug) before COMMAND.\n"
-            f"  For automation, append --json where advertised (for example, {program} status --json).\n"
+            "  Put context options (-C, -w, --debug) before COMMAND.\n"
+            f"  For automation, append --json where advertised; output includes schema_version 1.\n"
             "  Task names are exact. With several workspaces, select one with -w.\n"
             "  exec creates the shell workspace automatically.\n\n"
             "More help:\n"
@@ -307,7 +359,6 @@ def build_parser(
         metavar="NAME|PATH|SCRIPT.py",
         help="select an exact task workspace; use 'shell'; place before COMMAND",
     )
-    parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--debug", action="store_true", help="show Python tracebacks for internal failures")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -326,7 +377,7 @@ def build_parser(
         description: str | None = None,
         epilog: str | None = None,
         common: bool = False,
-        json_help: str | None = "emit stable machine-readable JSON for this command",
+        json_help: str | None = "emit strict versioned JSON for this command",
     ) -> argparse.ArgumentParser:
         visible = show_all_commands or common
         subparser = subparsers.add_parser(
@@ -470,9 +521,11 @@ def build_parser(
                 "Use either TASK names or --config CONFIG, never both.",
                 "--name and --dry-run are valid only with --config.",
                 "--dry-run validates and expands YAML but creates and runs nothing.",
+                "--dry-run and -d/--detach are mutually exclusive.",
                 "-j/--jobs controls task concurrency; --backend selects thread or process management.",
                 "By default Pyruns waits for every task and reports aggregate failure.",
                 "--detach changes waiting only; accepted tasks continue under the hidden runner.",
+                "A partial runner acceptance is reported with claimed and unclaimed names and exits 1.",
             ),
         ),
         common=True,
@@ -511,7 +564,7 @@ def build_parser(
         description=(
             "List task summaries from one workspace. QUERY performs a case-insensitive text search;\n"
             "repeat --status to include several states. Use --trash to inspect recoverable deleted\n"
-            "tasks instead of the active task list."
+            "tasks instead of the active task list. Pinned active tasks always remain first."
         ),
         epilog=_example_block(
             program,
@@ -524,7 +577,8 @@ def build_parser(
             notes=(
                 "Without -w, Pyruns uses the only workspace discovered from the current directory.",
                 "--status is repeatable; --limit applies after filtering and ordering.",
-                "Use --json for stable machine-readable task summaries.",
+                "--reverse reverses each pinned/unpinned group; pinned tasks still remain first.",
+                "Use --json for strict, versioned machine-readable task summaries.",
             ),
         ),
         common=True,
@@ -540,7 +594,11 @@ def build_parser(
     )
     listing.add_argument("-n", "--limit", type=_positive_int, help="maximum number of rows")
     listing.add_argument("--sort", choices=("created", "name", "status"), default="created", help="sort key")
-    listing.add_argument("--reverse", action="store_true", help="reverse the selected ordering")
+    listing.add_argument(
+        "--reverse",
+        action="store_true",
+        help="reverse ordering within pinned and unpinned groups",
+    )
     listing.add_argument("--trash", action="store_true", help="list soft-deleted tasks")
 
     command(
@@ -567,7 +625,7 @@ def build_parser(
         "show",
         help_text="show one task's metadata, command, and paths",
         description=(
-            "Show one exact task's status, payload, command, working directory, environment, runtime\n"
+            "Show one exact task's status, pin, payload, command, working directory, environment, runtime\n"
             "history, and log paths. Use --run RUN or append @RUN to select one historical run."
         ),
         epilog=_example_block(
@@ -661,7 +719,12 @@ def build_parser(
         common=True,
     )
     cancel.add_argument("tasks", nargs="+", metavar="TASK", help="exact active task name")
-    cancel.add_argument("--timeout", type=_non_negative_float, default=15.0, help="seconds to wait for cancellation")
+    cancel.add_argument(
+        "--timeout",
+        type=_non_negative_float,
+        default=15.0,
+        help="seconds to wait for cancellation; zero means forever",
+    )
 
     remove = command(
         "rm",
@@ -788,10 +851,10 @@ def build_parser(
         epilog=_example_block(
             program,
             "config list",
-            "config get manager_max_workers",
-            "config set manager_max_workers 4",
+            "config get monitor_scrollback",
+            "config set monitor_scrollback 200000",
             "config set global_env '{CUDA_VISIBLE_DEVICES: 0, SEED: 42}'",
-            "config unset manager_max_workers",
+            "config unset monitor_scrollback",
             "config path",
             notes=(
                 "Settings are project-wide; -w is unnecessary and does not change their scope.",
@@ -822,7 +885,7 @@ def build_parser(
         "get",
         help="print one effective setting",
         description="Print one known setting after defaults and saved values are merged.",
-        epilog=_example_block(program, "config get manager_max_workers"),
+        epilog=_example_block(program, "config get monitor_scrollback"),
         formatter_class=_HelpFormatter,
     )
     config_get.add_argument("key", metavar="KEY", help="known project setting name")
@@ -836,7 +899,7 @@ def build_parser(
         ),
         epilog=_example_block(
             program,
-            "config set manager_max_workers 4",
+            "config set monitor_scrollback 200000",
             "config set gpu_scheduler_device_ids '[0, 1]'",
             "config set global_env '{CUDA_VISIBLE_DEVICES: 0, SEED: 42}'",
             notes=(
@@ -852,8 +915,8 @@ def build_parser(
     config_unset = config_subparsers.add_parser(
         "unset",
         help="restore one setting to its default",
-        description="Replace one saved setting with its built-in default value.",
-        epilog=_example_block(program, "config unset manager_max_workers"),
+        description="Remove one saved override so its built-in default becomes effective.",
+        epilog=_example_block(program, "config unset monitor_scrollback"),
         formatter_class=_HelpFormatter,
     )
     config_unset.add_argument("key", metavar="KEY", help="known project setting name")
@@ -880,7 +943,7 @@ def build_parser(
             "metrics --json",
             notes=(
                 "Use Web UI Monitor for a continuously updated view.",
-                "Use --json for a stable machine-readable snapshot.",
+                "Use --json for a strict, versioned machine-readable snapshot.",
             ),
         ),
     )
@@ -906,6 +969,7 @@ def build_parser(
                 "Pass shell, an existing workspace name/path, or a Python script directly after ui.",
                 "Do not write '-w shell ui'; pass the workspace directly after 'ui'.",
                 "Use 'ui --help' to discover --port, --browser, and --no-browser.",
+                "Startup prints a private tokenized loopback URL; do not share it.",
                 "--no-browser keeps the server headless; stop it with Ctrl+C or the service manager.",
             ),
         ),
@@ -977,16 +1041,15 @@ def build_parser(
     return parser, command_parsers
 
 
-def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
+def _main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     """Parse and execute one Pyruns command."""
 
     _configure_output_streams()
     program = prog or (_invoked_program() if argv is None else "pyr")
     parser, command_parsers = build_parser(program)
-    args = parser.parse_args(list(argv) if argv is not None else None)
-
-    if args.no_color:
-        os.environ["NO_COLOR"] = "1"
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    _validate_leading_option_scope(raw_argv, parser, set(command_parsers))
+    args = parser.parse_args(raw_argv)
 
     try:
         directory = os.path.abspath(os.path.expanduser(os.path.expandvars(args.directory)))
@@ -1025,6 +1088,8 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
         from pyruns.cli.commands import CliError, dispatch
 
         return int(dispatch(context, args) or 0)
+    except BrokenPipeError:
+        raise
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
@@ -1041,6 +1106,32 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
         print(f"{parser.prog}: internal error: {exc}", file=sys.stderr)
         print("Run again with --debug to show the traceback.", file=sys.stderr)
         return 1
+
+
+def _silence_broken_pipe() -> None:
+    """Prevent a second BrokenPipeError while Python flushes stdout at exit."""
+
+    try:
+        stdout_fd = sys.stdout.fileno()
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    except (AttributeError, OSError, ValueError):
+        return
+    try:
+        os.dup2(devnull_fd, stdout_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(devnull_fd)
+
+
+def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
+    """Parse and execute one Pyruns command without leaking pipe tracebacks."""
+
+    try:
+        return _main(argv, prog=prog)
+    except BrokenPipeError:
+        _silence_broken_pipe()
+        return 0
 
 
 if __name__ == "__main__":

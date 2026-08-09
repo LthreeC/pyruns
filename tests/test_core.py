@@ -105,6 +105,7 @@ def _mark_task_owned_by_manager(
         info["status"] = "running"
         info["run_index"] = 1
         info["pids"] = list(pids or [12345])
+        info["pid_create_times"] = [1000.0 for _pid in info["pids"]]
         info["runner_id"] = manager.runner_id
         info["runner_host"] = manager.runner_host
         info["lease_heartbeat"] = time.time()
@@ -777,6 +778,54 @@ def test_prepare_env_reuses_isolated_pyruns_root_for_same_package_fingerprint(tm
     assert env1["PYTHONPATH"].split(os.pathsep)[:2] == env2["PYTHONPATH"].split(os.pathsep)[:2]
 
 
+def test_executor_support_code_uses_unpredictable_private_temp_roots(tmp_path, monkeypatch):
+    launcher_root = tmp_path / "launcher"
+    package_dir = launcher_root / "pyruns"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("SAFE = True\n", encoding="utf-8")
+
+    fingerprint = executor._pyruns_package_fingerprint(str(package_dir))
+    old_import_digest = executor.hashlib.sha1(
+        f"{fingerprint}:{os.getpid()}".encode("utf-8")
+    ).hexdigest()[:16]
+    old_import_root = tmp_path / f"pyruns-import-{old_import_digest}"
+    (old_import_root / "pyruns").mkdir(parents=True)
+    (old_import_root / "pyruns" / "__init__.py").write_text(
+        "raise RuntimeError('attacker controlled')\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executor.tempfile, "gettempdir", lambda: str(tmp_path))
+    executor._ISOLATED_IMPORT_ROOT_CACHE.clear()
+    executor._SITE_GUARD_ROOT_CACHE.clear()
+
+    import_root = Path(executor._isolated_pyruns_import_root(str(package_dir)))
+    assert import_root != old_import_root
+    assert (import_root / "pyruns" / "__init__.py").read_text(encoding="utf-8") == "SAFE = True\n"
+    if os.name != "nt":
+        assert import_root.stat().st_mode & 0o077 == 0
+
+    old_guard_digest = executor.hashlib.sha1(
+        f"{import_root}:{os.getpid()}".encode("utf-8")
+    ).hexdigest()[:16]
+    old_guard_root = tmp_path / f"pyruns-guard-{old_guard_digest}"
+    old_guard_root.mkdir()
+    (old_guard_root / "sitecustomize.py").write_text(
+        "raise RuntimeError('attacker controlled')\n",
+        encoding="utf-8",
+    )
+
+    guard_root = Path(executor._pyruns_sitecustomize_guard_root(str(import_root)))
+    assert guard_root != old_guard_root
+    assert "_PyrunsImportGuard" in (guard_root / "sitecustomize.py").read_text(encoding="utf-8")
+    if os.name != "nt":
+        assert guard_root.stat().st_mode & 0o077 == 0
+
+    executor._ISOLATED_IMPORT_ROOT_CACHE.clear()
+    second_import_root = Path(executor._isolated_pyruns_import_root(str(package_dir)))
+    assert second_import_root != import_root
+
+
 def test_config_node_nested_access_export_and_repr():
     data = {
         "lr": 0.01,
@@ -1104,7 +1153,9 @@ def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrid
     assert env["PYRUNS_EXAMPLE_ENV"] == "task-value"
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert "/parent/pythonpath" in env["PYTHONPATH"]
-    assert env[ENV_KEY_CONFIG] == os.path.join("/fake/task", CONFIG_FILENAME)
+    assert env[ENV_KEY_CONFIG] == os.path.abspath(
+        os.path.join("/fake/task", CONFIG_FILENAME)
+    )
 
 
 def test_resolve_python_runtime_from_task_env_python_executable(tmp_path):
@@ -2182,6 +2233,21 @@ def test_build_shell_command_requires_existing_script(tmp_path):
         executor._build_shell_command(str(tmp_path), SHELL_CONFIG_FILENAME)
 
 
+def test_executor_rejects_task_payload_paths_outside_task_directory(tmp_path):
+    import pyruns.core.executor as executor
+
+    task_dir = tmp_path / DEFAULT_ROOT_NAME / "train" / TASKS_DIR / "safe"
+    task_dir.mkdir(parents=True)
+    outside = tmp_path / DEFAULT_ROOT_NAME / "train" / "outside.sh"
+    outside.write_text("echo unsafe\n", encoding="utf-8")
+    escaped = os.path.join("..", "..", "outside.sh")
+
+    with pytest.raises(ValueError, match="outside the task directory"):
+        executor._build_shell_command(str(task_dir), escaped)
+    with pytest.raises(ValueError, match="outside the task directory"):
+        executor._prepare_env(task_dir=str(task_dir), config_file=escaped)
+
+
 def test_build_run_source_state_records_file_hashes_without_config_hash(tmp_path, monkeypatch):
     from pyruns.core import executor
 
@@ -2557,6 +2623,7 @@ def test_run_task_worker_prelaunch_error_is_written_to_selected_run_log(tmp_path
     )
 
     assert result["status"] == "failed"
+    assert load_task_info(task_dir)["run_statuses"] == ["failed"]
     run_log = Path(task_dir, RUN_LOGS_DIR, "run1.log")
     assert run_log.is_file()
     assert "invalid environment variable name" in run_log.read_text(encoding="utf-8")
@@ -2593,6 +2660,7 @@ def test_run_task_worker_separates_finish_banner_after_output_without_newline(
         )
 
     assert result["status"] == "completed"
+    assert load_task_info(task_dir)["run_statuses"] == ["completed"]
     log_path = os.path.join(task_dir, RUN_LOGS_DIR, "run1.log")
     content = Path(log_path).read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
     assert "last output without newline\n[PYRUNS] ==================== FINISH" in content
@@ -2757,7 +2825,7 @@ def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, mo
 
     mock_proc = MagicMock()
     mock_proc.pid = 9876
-    mock_proc.poll.return_value = None
+    mock_proc.poll.side_effect = [None, 0]
     mock_proc.stdout.read1 = MagicMock(side_effect=[b""])
     monkeypatch.setattr(executor.subprocess, "Popen", lambda *args, **kwargs: mock_proc)
     monkeypatch.setattr(
@@ -2777,7 +2845,12 @@ def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, mo
 
     killed = []
     monkeypatch.setattr(executor, "update_task_info", flaky_update)
-    monkeypatch.setattr(executor, "kill_process", lambda pid: killed.append(pid))
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: 1000.0)
+    monkeypatch.setattr(
+        executor,
+        "kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
 
     result = executor.run_task_worker(
         task_dir=str(task_dir),
@@ -2877,7 +2950,7 @@ def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist
 
     mock_proc = MagicMock()
     mock_proc.pid = 9877
-    mock_proc.poll.return_value = None
+    mock_proc.poll.side_effect = [None, 0]
     mock_proc.stdout.read1 = MagicMock(side_effect=[b""])
 
     def fake_popen(*args, **kwargs):
@@ -2896,7 +2969,12 @@ def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist
 
     killed = []
     monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(executor, "kill_process", lambda pid: killed.append(pid))
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: 1000.0)
+    monkeypatch.setattr(
+        executor,
+        "kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
 
     result = executor.run_task_worker(
         task_dir=str(task_dir),
@@ -3062,7 +3140,10 @@ def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path,
 
     killed: list[int] = []
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
@@ -4260,7 +4341,7 @@ def test_run_task_worker_marks_cuda_oom_failures_in_error_log(tmp_path):
     assert "cuda_visible_devices=0" in text
 
 
-def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
+def test_task_manager_cancel_task_persists_reason_before_verified_termination(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task_dir = tasks_dir / "runner"
@@ -4295,20 +4376,24 @@ def test_task_manager_cancel_task_writes_cancel_reason(tmp_path, monkeypatch):
         events.append("persist")
         return original_persist(*args, **kwargs)
 
-    monkeypatch.setattr(manager, "_latest_pid_from_disk", lambda task: 12345)
     monkeypatch.setattr(manager, "_persist_pending_stop_summary", record_persist)
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: events.append(("kill", pid)))
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: events.append(
+            ("kill", pid, expected_create_time)
+        ) or True,
+    )
 
     assert manager.cancel_task("runner") is True
 
     info = json.loads((task_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
-    assert info["status"] == "cancelled"
+    assert info["status"] == "running"
     assert info["_pending_stop_summary"]["reason"] == "cancelled_by_user"
     assert info["_pending_stop_summary"]["detail_lines"] == ["previous_status=running"]
-    assert events == ["persist", ("kill", 12345)]
+    assert events == ["persist", ("kill", 12345, 1000.0)]
 
 
-def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch):
+def test_task_manager_cancel_task_fails_closed_when_task_info_is_busy(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task_dir = tasks_dir / "runner"
@@ -4336,13 +4421,17 @@ def test_task_manager_cancel_task_tolerates_busy_task_info(tmp_path, monkeypatch
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
-    monkeypatch.setattr(manager, "_latest_pid_from_disk", lambda task: 12345)
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
+    killed = []
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append((pid, expected_create_time)) or True,
+    )
 
     with patch("pyruns.core.task_manager.update_task_info", side_effect=TimeoutError("busy")):
-        assert manager.cancel_task("runner") is True
+        assert manager.cancel_task("runner") is False
 
-    assert manager.get_task("runner")["status"] == "cancelled"
+    assert manager.get_task("runner")["status"] == "running"
+    assert killed == []
 
 
 def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatch):
@@ -4373,7 +4462,10 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: True,
+    )
     timeout_values = []
 
     def record_timeout(task_dir, updater, **kwargs):
@@ -4381,9 +4473,65 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
         raise TimeoutError("busy")
 
     with patch("pyruns.core.task_manager.update_task_info", side_effect=record_timeout):
-        assert manager.cancel_task("runner") is True
+        assert manager.cancel_task("runner") is False
 
     assert timeout_values == [task_manager_module._STOP_TASK_INFO_LOCK_TIMEOUT_SEC]
+
+
+def test_task_manager_cancel_task_does_not_finalize_or_kill_a_reused_pid(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "reused"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "reused",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "pid_create_times": [1000.0],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "reused", task_dir)
+
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda _pid, expected_create_time=None: False,
+    )
+
+    assert manager.cancel_task("reused") is False
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "running"
+    assert "_pending_stop_summary" not in info
+
+
+def test_kill_process_rejects_mismatched_creation_time_without_signalling(monkeypatch):
+    from pyruns.utils import process_utils
+
+    monkeypatch.setattr(
+        process_utils,
+        "process_identity_matches",
+        lambda pid, expected_create_time: False,
+    )
+    monkeypatch.setattr(
+        process_utils.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("a reused PID must not be signalled"),
+    )
+
+    assert process_utils.kill_process(12345, expected_create_time=1000.0) is False
 
 
 def test_task_manager_cancel_task_refreshes_completed_disk_state(tmp_path):
@@ -4479,6 +4627,10 @@ def test_task_manager_shutdown_does_not_recreate_deleted_owned_task(
     task_dir = tasks_dir / "owned"
     task_dir.mkdir()
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda _pid: True)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.process_identity_matches",
+        lambda _pid, _created_at: True,
+    )
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=None)
@@ -4495,6 +4647,7 @@ def test_task_manager_shutdown_does_not_recreate_deleted_owned_task(
             "start_times": ["2026-03-20_00-00-01"],
             "finish_times": [""],
             "pids": [task_pid],
+            "pid_create_times": [1000.0],
             "records": [],
             "tracks": [],
             "runner_id": manager.runner_id,
@@ -4507,7 +4660,10 @@ def test_task_manager_shutdown_does_not_recreate_deleted_owned_task(
     manager.scan_disk()
     shutil.rmtree(task_dir)
     killed = []
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", killed.append)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
 
     manager.shutdown()
 
@@ -4545,11 +4701,19 @@ def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypat
 
     lock_checks = []
 
-    def fake_kill(pid):
+    def fake_kill(pid, expected_create_time=None):
         acquired = manager._lock.acquire(blocking=False)
         lock_checks.append(acquired)
         if acquired:
             manager._lock.release()
+        assert expected_create_time == 1000.0
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update({"status": "cancelled"}),
+        )
+        with manager._lock:
+            manager._clear_running_locked("runner")
+        return True
 
     monkeypatch.setattr("pyruns.core.task_manager.kill_process", fake_kill)
 
@@ -4557,7 +4721,45 @@ def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypat
     assert lock_checks == [True]
 
 
-def test_task_manager_delete_active_task_tolerates_busy_task_info(tmp_path, monkeypatch):
+def test_task_manager_delete_running_task_stays_put_when_process_survives(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "pid_create_times": [1000.0],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda _pid, expected_create_time=None: False,
+    )
+
+    assert manager.delete_tasks(["runner"]) == []
+    assert task_dir.exists()
+    assert not (tasks_dir / TRASH_DIR / "runner").exists()
+    assert load_task_info(str(task_dir))["status"] == "running"
+
+
+def test_task_manager_delete_active_task_fails_closed_when_task_info_is_busy(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task_dir = tasks_dir / "queued"
@@ -4585,8 +4787,10 @@ def test_task_manager_delete_active_task_tolerates_busy_task_info(tmp_path, monk
 
     monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("busy")))
 
-    assert manager.delete_tasks(["queued"]) == ["queued"]
-    assert manager.get_task("queued") is None
+    assert manager.delete_tasks(["queued"]) == []
+    assert manager.get_task("queued") is not None
+    assert task_dir.exists()
+    assert not (tasks_dir / TRASH_DIR / "queued").exists()
 
 
 def test_task_manager_delete_completed_disk_state_does_not_mark_failed(tmp_path):
@@ -4719,7 +4923,10 @@ def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_pa
 
     killed: list[int] = []
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
     _mark_task_owned_by_manager(manager, "runner", running_dir, pids=[111, 222])
@@ -4942,10 +5149,16 @@ def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
     empty_dir.mkdir()
     (empty_dir / TASK_INFO_FILENAME).write_text("{}", encoding="utf-8")
     with patch("pyruns.core.task_manager.load_task_info", return_value={}):
-        assert manager._load_task_dir("empty-info") is None
+        empty_task = manager._load_task_dir("empty-info")
+    assert empty_task is not None
+    assert empty_task["status"] == "failed"
+    assert "metadata is empty" in empty_task["_load_error"].lower()
 
     with patch("pyruns.core.task_manager.load_task_info", side_effect=RuntimeError("bad info")):
-        assert manager._load_task_dir("empty-info") is None
+        broken_task = manager._load_task_dir("empty-info")
+    assert broken_task is not None
+    assert broken_task["status"] == "failed"
+    assert "bad info" in broken_task["_load_error"]
 
     statless_dir = tasks_dir / "statless"
     statless_dir.mkdir()
@@ -5150,17 +5363,29 @@ def test_task_manager_delete_active_task_preserves_folder_when_trash_move_fails(
     trash_conflict.mkdir(parents=True)
 
     killed = []
-    removed = []
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
     monkeypatch.setattr("pyruns.core.task_manager.get_now_str", lambda: "2026-03-20_00-00-02")
-    monkeypatch.setattr("pyruns.core.task_manager.shutil.move", lambda src, dst: (_ for _ in ()).throw(OSError("move failed")))
-    monkeypatch.setattr("pyruns.core.task_manager.shutil.rmtree", lambda path: removed.append(path))
+    monkeypatch.setattr("pyruns.core.task_manager.os.rename", lambda src, dst: (_ for _ in ()).throw(OSError("move failed")))
     monkeypatch.setattr("pyruns.core.task_manager.time.sleep", lambda delay: None)
 
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
+
+    def settle(*_args, **_kwargs):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update({"status": "cancelled"}),
+        )
+        with manager._lock:
+            manager._clear_running_locked("runner")
+        return load_task_info(str(task_dir))
+
+    monkeypatch.setattr(manager, "_wait_for_task_settle", settle)
 
     manager.delete_tasks(["missing"])
     assert manager.get_task("runner") is not None
@@ -5169,9 +5394,8 @@ def test_task_manager_delete_active_task_preserves_folder_when_trash_move_fails(
 
     assert killed == [12345]
     assert deleted == []
-    assert removed == []
     assert task_dir.exists()
-    assert manager.get_task("runner")["status"] == "failed"
+    assert manager.get_task("runner")["status"] == "cancelled"
 
 
 def test_task_manager_keeps_live_foreign_runner_running(tmp_path, monkeypatch):
@@ -5520,8 +5744,11 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
     }
     monkeypatch.setattr("pyruns.core.task_manager.load_task_info", lambda task_dir: foreign_info if str(task_dir).endswith("remote") else local_info)
     killed = []
-    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: killed.append(pid))
-    monkeypatch.setattr(manager, "_latest_pid", lambda info: 4321)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
+    monkeypatch.setattr(manager, "_current_process_identity", lambda info: (4321, 1000.0))
     monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: task.update(cleaned=kwargs))
 
     manager._cleanup_on_shutdown()
@@ -5585,6 +5812,98 @@ def test_task_manager_scan_async_and_disk_discovery_edge_paths(tmp_path, monkeyp
     shutil.rmtree(tasks_dir)
     assert manager.sync_task_dirs_from_disk() is True
     assert manager.list_tasks() == []
+
+
+def test_task_manager_rejects_symlinked_tasks_root(tmp_path):
+    outside = tmp_path / "outside-tasks"
+    outside.mkdir()
+    tasks_link = tmp_path / "tasks"
+    try:
+        tasks_link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="Tasks directory must not be"):
+        TaskManager(tasks_dir=str(tasks_link), lazy_scan=None)
+
+
+def test_log_writers_reject_symlinked_run_logs_directory(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    task_dir = tasks_dir / "safe"
+    task_dir.mkdir(parents=True)
+    outside_logs = tmp_path / "outside-logs"
+    outside_logs.mkdir()
+    victim = outside_logs / "run1.log"
+    victim.write_text("keep\n", encoding="utf-8")
+    run_logs = task_dir / RUN_LOGS_DIR
+    try:
+        run_logs.symlink_to(outside_logs, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="Run logs directory must not be"):
+        executor._get_log_path(str(task_dir), 1)
+    with pytest.raises(ValueError, match="Run logs directory must not be"):
+        executor._append_error_summary(
+            str(task_dir),
+            run_index=1,
+            title="blocked",
+            detail_lines=["do not write outside"],
+        )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    try:
+        task = {"name": "safe", "dir": str(task_dir), "run_index": 1}
+        manager._append_gpu_queue_log(task, "Queued", ["waiting"])
+        manager._append_error_summary(
+            str(task_dir),
+            title="blocked",
+            detail_lines=["do not write outside"],
+        )
+    finally:
+        manager.shutdown()
+
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+    assert not (outside_logs / "queue.log").exists()
+    assert not (outside_logs / ERROR_LOG_FILENAME).exists()
+
+
+def test_executor_rejects_symlinked_run_log_file(tmp_path):
+    task_dir = tmp_path / "tasks" / "safe"
+    run_logs = task_dir / RUN_LOGS_DIR
+    run_logs.mkdir(parents=True)
+    victim = tmp_path / "victim.log"
+    victim.write_text("keep\n", encoding="utf-8")
+    linked_log = run_logs / "run1.log"
+    try:
+        linked_log.symlink_to(victim)
+    except OSError as exc:
+        pytest.skip(f"file symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="Log file must not be"):
+        executor._get_log_path(str(task_dir), 1)
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_executor_rejects_simulated_reparse_run_logs_directory(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    task_dir = tmp_path / "tasks" / "safe"
+    run_logs = task_dir / RUN_LOGS_DIR
+    run_logs.mkdir(parents=True)
+    real_check = info_io._path_is_link_or_reparse
+
+    def fake_reparse(path):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(run_logs)):
+            return True
+        return real_check(path)
+
+    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+
+    with pytest.raises(ValueError, match="Run logs directory must not be"):
+        executor._get_log_path(str(task_dir), 1)
+    assert list(run_logs.iterdir()) == []
 
 
 def test_task_manager_default_root_and_lease_edges(tmp_path, monkeypatch):
@@ -6493,6 +6812,32 @@ class TestBuildExportCSV:
         # Priority columns should come first
         assert cols[:4] == ["name", "status", "run", "start_time"]
 
+    def test_monitor_fields_cannot_override_lifecycle_columns(self, tmp_path):
+        task = _make_task(
+            tmp_path,
+            "safe-name",
+            records=[{"name": "spoofed", "status": "running", "run": 999, "loss": 0.5}],
+        )
+        task["exit_codes"] = [0]
+
+        row = next(csv.DictReader(io.StringIO(build_export_csv([task]))))
+
+        assert row["name"] == "safe-name"
+        assert row["status"] == "completed"
+        assert row["run"] == "1"
+        assert row["loss"] == "0.5"
+
+    def test_formula_like_values_are_neutralized_for_spreadsheets(self, tmp_path):
+        task = _make_task(tmp_path, "formula", records=[{"note": "+cmd", "=dangerous-header": "value"}])
+        task["name"] = "=HYPERLINK(\"https://example.invalid\")"
+        task["exit_codes"] = [0]
+
+        row = next(csv.DictReader(io.StringIO(build_export_csv([task]))))
+
+        assert row["name"].startswith("'=")
+        assert row["note"] == "'+cmd"
+        assert "'=dangerous-header" in row
+
 
 def test_run_history_normalization_aligns_process_and_source_metadata():
     meta = {
@@ -6547,5 +6892,39 @@ class TestBuildExportJSON:
         assert len(result) == 1
         assert result[0]["name"] == "j2"
         assert result[0]["run"] == 1
+
+    def test_never_run_task_does_not_fabricate_run_one(self, tmp_path):
+        task_dir = tmp_path / "never-run"
+        task_dir.mkdir()
+        save_task_info(str(task_dir), {"name": "never-run", "status": "pending"})
+        task = {"name": "never-run", "status": "pending", "dir": str(task_dir)}
+
+        assert json.loads(build_export_json([task])) == []
+
+    def test_historical_status_is_derived_per_run(self, tmp_path):
+        task = _make_task(
+            tmp_path,
+            "rerun",
+            records=[{}, {}],
+            starts=["first", "second"],
+            finishes=["first-done", "second-done"],
+            pids=[111, 222],
+        )
+        task["status"] = "completed"
+        task["exit_codes"] = [7, 0]
+        task["run_statuses"] = ["cancelled", "completed"]
+
+        rows = json.loads(build_export_json([task]))
+
+        assert [row["status"] for row in rows] == ["cancelled", "completed"]
+        completed_only = json.loads(build_export_json([task], statuses={"completed"}))
+        assert [row["run"] for row in completed_only] == [2]
+
+    def test_rejects_non_finite_json_metrics(self, tmp_path):
+        task = _make_task(tmp_path, "nan", records=[{"loss": float("nan")}])
+        task["exit_codes"] = [0]
+
+        with pytest.raises(ValueError, match="JSON"):
+            build_export_json([task])
 
 

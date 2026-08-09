@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -11,20 +13,26 @@ import time
 import webbrowser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pyruns import __version__
-from pyruns._config import DEFAULT_UI_PORT, QUEUE_LOG_FILENAME, RUN_LOGS_DIR
+from pyruns._config import (
+    DEFAULT_UI_PORT,
+    MAX_MONITOR_CHUNK_SIZE,
+    MAX_MONITOR_SCROLLBACK,
+    QUEUE_LOG_FILENAME,
+    RUN_LOGS_DIR,
+)
 from pyruns.utils.events import log_emitter
 from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
-from pyruns.web.runtime import PyrunsRuntime
+from pyruns.web.runtime import PyrunsRuntime, WorkspaceChangedError
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -34,6 +42,18 @@ LOG_STREAM_TAIL_INTERVAL_SEC = 0.5
 LOG_STREAM_TAIL_CHUNK_SIZE = 64 * 1024
 LOG_STREAM_EMITTER_QUIET_SEC = 2.0
 TASK_EVENT_HEARTBEAT_SEC = 15.0
+MAX_API_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_TASK_BATCH_ITEMS = 10_000
+MAX_TASK_PAGE_SIZE = 10_000
+MAX_TASK_NOTES_CHARS = 1_000_000
+MAX_ENVIRONMENT_ITEMS = 1_024
+MAX_UI_WORKERS = 32
+MAX_QUERY_CHARS = 2_048
+MAX_PATH_CHARS = 32_768
+MAX_LOG_TAIL_LINES = MAX_MONITOR_SCROLLBACK
+MAX_LOG_RESPONSE_BYTES = MAX_MONITOR_CHUNK_SIZE
+_UI_SESSION_COOKIE = "pyruns_session"
+_UI_TOKEN_ENV = "PYRUNS_UI_TOKEN"
 LOG_STREAM_DROPPED_NOTICE = (
     "[pyruns] Live log stream skipped older buffered output; "
     "open the log file for full history.\n"
@@ -128,117 +148,127 @@ def _origin_matches_request(
     return origin_parts is not None and origin_parts == request_parts
 
 
-class RunRootRequest(BaseModel):
+class RequestModel(BaseModel):
+    """Reject misspelled fields instead of silently accepting a bad request."""
+
+    if hasattr(BaseModel, "model_validate"):
+        model_config = {"extra": "forbid"}
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class RunRootRequest(RequestModel):
     """Workspace switch request payload."""
 
-    path: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
 
 
-class TaskActionRequest(BaseModel):
+class TaskActionRequest(RequestModel):
     """Task action request payload."""
 
-    execution_mode: str | None = None
+    execution_mode: str | None = Field(default=None, max_length=16)
 
 
-class TaskBatchActionRequest(BaseModel):
+class TaskBatchActionRequest(RequestModel):
     """Batch task action request payload."""
 
     task_names: list[str] = Field(default_factory=list)
-    execution_mode: str | None = None
-    max_workers: int | None = None
+    execution_mode: str | None = Field(default=None, max_length=16)
+    max_workers: int | None = Field(default=None, ge=1, le=MAX_UI_WORKERS)
 
 
-class TaskBatchDeleteRequest(BaseModel):
+class TaskBatchDeleteRequest(RequestModel):
     """Batch delete payload."""
 
     task_names: list[str] = Field(default_factory=list)
 
 
-class TaskPinRequest(BaseModel):
+class TaskPinRequest(RequestModel):
     """Pin or unpin one task."""
 
     pinned: bool | None = None
 
 
-class TaskReorderItem(BaseModel):
+class TaskReorderItem(RequestModel):
     """One task position in a manual card order request."""
 
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
     pinned: bool | None = None
 
 
-class TaskReorderRequest(BaseModel):
+class TaskReorderRequest(RequestModel):
     """Manual task card order payload."""
 
     items: list[TaskReorderItem] = Field(default_factory=list)
 
 
-class TaskNotesRequest(BaseModel):
+class TaskNotesRequest(RequestModel):
     """Notes update payload."""
 
-    notes: str = ""
+    notes: str = Field(default="", max_length=MAX_TASK_NOTES_CHARS)
 
 
-class TaskEnvRequest(BaseModel):
+class TaskEnvRequest(RequestModel):
     """Env update payload."""
 
     env: dict[str, Any] = Field(default_factory=dict)
 
 
-class RuntimeUpdateRequest(BaseModel):
+class RuntimeUpdateRequest(RequestModel):
     """Workspace runtime settings update payload."""
 
-    python_executable: str | None = None
-    conda_env: str | None = None
-    conda_executable: str | None = None
+    python_executable: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
+    conda_env: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
+    conda_executable: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
     global_env: dict[str, Any] | None = None
-    global_env_text: str | None = None
+    global_env_text: str | None = Field(default=None, max_length=MAX_API_REQUEST_BYTES)
     gpu_scheduler: dict[str, Any] | None = None
 
 
-class TaskRenameRequest(BaseModel):
+class TaskRenameRequest(RequestModel):
     """Rename payload."""
 
-    new_name: str = Field(min_length=1)
+    new_name: str = Field(min_length=1, max_length=200)
 
 
-class LauncherOpenRequest(BaseModel):
+class LauncherOpenRequest(RequestModel):
     """Launcher selection payload."""
 
-    script_path: str = Field(min_length=1)
-    config_path: str | None = None
+    script_path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
+    config_path: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
 
 
-class LauncherConfigPickRequest(BaseModel):
+class LauncherConfigPickRequest(RequestModel):
     """Native config picker payload."""
 
-    script_path: str = Field(min_length=1)
+    script_path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
 
 
-class ShellRootOpenRequest(BaseModel):
+class ShellRootOpenRequest(RequestModel):
     """Manual shell workspace folder selection payload."""
 
-    path: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
 
 
-class GeneratorCreateRequest(BaseModel):
+class GeneratorCreateRequest(RequestModel):
     """Task generation payload for the React generator workspace."""
 
-    name_prefix: str = Field(min_length=1)
-    mode: str = Field(default="form", min_length=1)
-    yaml_text: str = ""
-    shell_text: str = ""
-    template_value: str = ""
+    name_prefix: str = Field(min_length=1, max_length=200)
+    mode: str = Field(default="form", min_length=1, max_length=16)
+    yaml_text: str = Field(default="", max_length=MAX_API_REQUEST_BYTES)
+    shell_text: str = Field(default="", max_length=MAX_API_REQUEST_BYTES)
+    template_value: str = Field(default="", max_length=MAX_PATH_CHARS)
     append_timestamp: bool = True
 
 
-class GeneratorPreviewRequest(BaseModel):
+class GeneratorPreviewRequest(RequestModel):
     """Task preview payload for the React generator workspace."""
 
-    mode: str = Field(default="form", min_length=1)
-    yaml_text: str = ""
-    shell_text: str = ""
-    template_value: str = ""
+    mode: str = Field(default="form", min_length=1, max_length=16)
+    yaml_text: str = Field(default="", max_length=MAX_API_REQUEST_BYTES)
+    shell_text: str = Field(default="", max_length=MAX_API_REQUEST_BYTES)
+    template_value: str = Field(default="", max_length=MAX_PATH_CHARS)
 
 
 def _frontend_candidates() -> list[Path]:
@@ -364,19 +394,62 @@ def find_available_port(start_port: int, *, host: str = "127.0.0.1", max_attempt
     raise RuntimeError(f"No available UI port found from {start} to {stop}")
 
 
-def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
+def _url_with_access_token(url: str, token: str) -> str:
+    """Add the one-time UI bootstrap token without corrupting an existing query."""
+
+    parsed = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "token"]
+    query.append(("token", token))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def _clean_bootstrap_target(request: Request) -> str:
+    query = [
+        (key, value)
+        for key, value in request.query_params.multi_items()
+        if key != "token"
+    ]
+    suffix = f"?{urlencode(query)}" if query else ""
+    return f"{request.url.path}{suffix}"
+
+
+def create_app(
+    runtime: PyrunsRuntime | None = None,
+    *,
+    access_token: str | None = None,
+    allow_test_client_bypass: bool = False,
+) -> FastAPI:
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
     app = FastAPI(title="Pyruns API", version=__version__)
     app.state.runtime = runtime or PyrunsRuntime()
+    app.state.access_token = str(access_token or os.getenv(_UI_TOKEN_ENV) or secrets.token_urlsafe(32))
+    app.state.allow_test_client_bypass = bool(allow_test_client_bypass)
 
     @app.middleware("http")
     async def protect_local_server(request: Request, call_next):
+        def protect_response(response: Response) -> Response:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
+                "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "font-src 'self' data:; connect-src 'self' ws: wss:"
+            )
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+            if request.url.path == "/api" or request.url.path.startswith("/api/"):
+                response.headers["Cache-Control"] = "no-store"
+            return response
+
+        def json_error(status_code: int, detail: str) -> Response:
+            return protect_response(JSONResponse({"detail": detail}, status_code=status_code))
+
         scheme = str(request.url.scheme or "http").lower()
         host = request.headers.get("host", "")
         allow_test_host = request.client is not None and request.client.host == "testclient"
         if not _is_allowed_local_host(host, scheme=scheme, allow_test_host=allow_test_host):
-            return Response('{"detail":"Forbidden host"}', status_code=403, media_type="application/json")
+            return json_error(403, "Forbidden host")
         origin = request.headers.get("origin")
         if origin and not _origin_matches_request(
             origin,
@@ -384,13 +457,63 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             scheme=scheme,
             allow_test_host=allow_test_host,
         ):
-            return Response('{"detail":"Forbidden origin"}', status_code=403, media_type="application/json")
-        return await call_next(request)
+            return json_error(403, "Forbidden origin")
+
+        bootstrap_token = request.query_params.get("token")
+        if bootstrap_token is not None and not request.url.path.startswith("/api"):
+            if request.method != "GET" or not secrets.compare_digest(
+                str(bootstrap_token), app.state.access_token
+            ):
+                return json_error(401, "Invalid UI access token")
+            response = RedirectResponse(_clean_bootstrap_target(request), status_code=303)
+            response.set_cookie(
+                _UI_SESSION_COOKIE,
+                app.state.access_token,
+                httponly=True,
+                samesite="strict",
+                secure=scheme == "https",
+                path="/",
+            )
+            return protect_response(response)
+
+        is_api = request.url.path == "/api" or request.url.path.startswith("/api/")
+        test_client_bypass = (
+            app.state.allow_test_client_bypass
+            and request.client is not None
+            and request.client.host == "testclient"
+        )
+        session_token = request.cookies.get(_UI_SESSION_COOKIE, "")
+        if is_api and not test_client_bypass and not secrets.compare_digest(
+            str(session_token), app.state.access_token
+        ):
+            response = json_error(401, "UI authentication required")
+            response.headers["WWW-Authenticate"] = "PyrunsToken"
+            return response
+
+        if request.method in {"POST", "PUT", "PATCH"}:
+            raw_length = request.headers.get("content-length")
+            if raw_length:
+                try:
+                    content_length = int(raw_length)
+                except ValueError:
+                    return json_error(400, "Invalid Content-Length")
+                if content_length < 0:
+                    return json_error(400, "Invalid Content-Length")
+                if content_length > MAX_API_REQUEST_BYTES:
+                    return json_error(413, f"Request body exceeds {MAX_API_REQUEST_BYTES} bytes")
+
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_API_REQUEST_BYTES:
+                    return json_error(413, f"Request body exceeds {MAX_API_REQUEST_BYTES} bytes")
+            request._body = bytes(body)
+        return protect_response(await call_next(request))
 
     dist_dir = _frontend_dist_dir()
-    
+
     logger.info(f"Frontend dist directory: {dist_dir}")
-    
+
     if dist_dir is not None:
         assets_dir = dist_dir / "assets"
         if assets_dir.exists():
@@ -398,6 +521,42 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
     def get_runtime() -> PyrunsRuntime:
         return app.state.runtime
+
+    def require_item_limit(items: list[Any], *, label: str) -> None:
+        if len(items) > MAX_TASK_BATCH_ITEMS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label} accepts at most {MAX_TASK_BATCH_ITEMS} items",
+            )
+
+    def require_environment_limit(values: dict[str, Any] | None) -> None:
+        if values is not None and len(values) > MAX_ENVIRONMENT_ITEMS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Environment accepts at most {MAX_ENVIRONMENT_ITEMS} variables",
+            )
+
+    def websocket_rejection(websocket: WebSocket) -> tuple[int, str] | None:
+        host = websocket.headers.get("host", "")
+        origin = websocket.headers.get("origin")
+        allow_test_host = websocket.client is not None and websocket.client.host == "testclient"
+        if not _is_allowed_local_host(host, scheme="http", allow_test_host=allow_test_host) or (
+            origin
+            and not _origin_matches_request(
+                origin,
+                host,
+                scheme="http",
+                allow_test_host=allow_test_host,
+            )
+        ):
+            return 4403, "Forbidden origin"
+        test_client_bypass = app.state.allow_test_client_bypass and allow_test_host
+        session_token = websocket.cookies.get(_UI_SESSION_COOKIE, "")
+        if not test_client_bypass and not secrets.compare_digest(
+            str(session_token), app.state.access_token
+        ):
+            return 4401, "UI authentication required"
+        return None
 
     @app.get("/api/workspace")
     def get_workspace() -> dict[str, Any]:
@@ -428,6 +587,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         try:
             data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
+            require_environment_limit(data.get("global_env"))
             return get_runtime().update_runtime_settings(data, refresh_providers=refresh_providers)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -437,11 +597,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         return {"items": get_runtime().list_templates()}
 
     @app.get("/api/templates/content")
-    def get_template_content(value: str) -> dict[str, Any]:
+    def get_template_content(value: str = Query(min_length=1, max_length=MAX_PATH_CHARS)) -> dict[str, Any]:
         try:
             return get_runtime().get_template_content(value)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/generator/create")
     def create_tasks_from_generator(payload: GeneratorCreateRequest) -> dict[str, Any]:
@@ -477,7 +639,10 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/dashboard")
-    def get_dashboard(refresh: bool = True, recent_limit: int = 6) -> dict[str, Any]:
+    def get_dashboard(
+        refresh: bool = True,
+        recent_limit: int = Query(default=6, ge=1, le=50),
+    ) -> dict[str, Any]:
         return get_runtime().get_dashboard(refresh=refresh, recent_limit=recent_limit)
 
     @app.get("/api/launcher/scripts")
@@ -485,14 +650,17 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         return {"items": get_runtime().list_launcher_scripts()}
 
     @app.get("/api/launcher/configs")
-    def get_launcher_configs(script: str) -> dict[str, Any]:
+    def get_launcher_configs(script: str = Query(min_length=1, max_length=MAX_PATH_CHARS)) -> dict[str, Any]:
         try:
             return get_runtime().get_launcher_config_info(script)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/launcher/workspaces")
-    def get_launcher_workspaces(script: str, config: str | None = None) -> dict[str, Any]:
+    def get_launcher_workspaces(
+        script: str = Query(min_length=1, max_length=MAX_PATH_CHARS),
+        config: str | None = Query(default=None, max_length=MAX_PATH_CHARS),
+    ) -> dict[str, Any]:
         try:
             return {"items": get_runtime().list_launcher_workspaces(script, config)}
         except FileNotFoundError as exc:
@@ -500,9 +668,9 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
     @app.get("/api/launcher/validate-path")
     def validate_launcher_path(
-        kind: str = Query(min_length=1),
-        path: str = Query(min_length=1),
-        script: str | None = None,
+        kind: str = Query(min_length=1, max_length=32),
+        path: str = Query(min_length=1, max_length=MAX_PATH_CHARS),
+        script: str | None = Query(default=None, max_length=MAX_PATH_CHARS),
     ) -> dict[str, Any]:
         return get_runtime().validate_launcher_path(kind, path, script)
 
@@ -513,7 +681,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 payload.script_path,
                 payload.config_path,
             )
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/launcher/pick-script")
@@ -553,10 +721,10 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
 
     @app.get("/api/tasks")
     def get_tasks(
-        query: str = "",
-        status: str = "All",
-        offset: int = 0,
-        limit: int = 50,
+        query: str = Query(default="", max_length=MAX_QUERY_CHARS),
+        status: str = Query(default="All", max_length=32),
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=MAX_TASK_PAGE_SIZE),
         refresh: bool = True,
         summary: bool = False,
         compact: bool = False,
@@ -582,6 +750,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.post("/api/tasks/reorder")
     def reorder_tasks(payload: TaskReorderRequest) -> dict[str, Any]:
         try:
+            require_item_limit(payload.items, label="Task reorder")
             items = [
                 item.model_dump() if hasattr(item, "model_dump") else item.dict()
                 for item in payload.items
@@ -602,6 +771,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.post("/api/tasks/batch/run")
     def run_tasks_batch(payload: TaskBatchActionRequest) -> dict[str, Any]:
         try:
+            require_item_limit(payload.task_names, label="Batch run")
             return get_runtime().start_tasks_batch(
                 payload.task_names,
                 execution_mode=payload.execution_mode,
@@ -615,6 +785,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.post("/api/tasks/batch/delete")
     def delete_tasks_batch(payload: TaskBatchDeleteRequest) -> dict[str, Any]:
         try:
+            require_item_limit(payload.task_names, label="Batch delete")
             return get_runtime().delete_tasks_batch(payload.task_names)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
@@ -624,6 +795,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.post("/api/tasks/export/csv")
     def export_tasks_csv(payload: TaskBatchDeleteRequest) -> Response:
         try:
+            require_item_limit(payload.task_names, label="Task export")
             csv_text = get_runtime().export_tasks_csv(payload.task_names)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
@@ -675,6 +847,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.patch("/api/tasks/{task_name}/env")
     def update_task_env(task_name: str, payload: TaskEnvRequest) -> dict[str, Any]:
         try:
+            require_environment_limit(payload.env)
             task = get_runtime().update_task_env(task_name, payload.env)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
@@ -695,12 +868,12 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.get("/api/tasks/{task_name}/logs")
     def get_task_logs(
         task_name: str,
-        log_file_name: str | None = None,
-        offset: int | None = Query(default=None),
-        log_identity: str | None = Query(default=None),
-        tail_bytes: int | None = Query(default=None),
-        tail_lines: int | None = Query(default=None),
-        chunk_size: int | None = Query(default=None),
+        log_file_name: str | None = Query(default=None, max_length=255),
+        offset: int | None = Query(default=None, ge=0),
+        log_identity: str | None = Query(default=None, max_length=512),
+        tail_bytes: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
+        tail_lines: int | None = Query(default=None, ge=1, le=MAX_LOG_TAIL_LINES),
+        chunk_size: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
     ) -> dict[str, Any]:
         try:
             return get_runtime().get_task_logs(
@@ -718,25 +891,14 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     @app.websocket("/api/tasks/events")
     async def stream_task_events(websocket: WebSocket) -> None:
         """Push task-list invalidations and keep low-frequency polling as a fallback."""
-        host = websocket.headers.get("host", "")
-        origin = websocket.headers.get("origin")
-        allow_test_host = websocket.client is not None and websocket.client.host == "testclient"
-        if not _is_allowed_local_host(host, scheme="http", allow_test_host=allow_test_host) or (
-            origin and not _origin_matches_request(
-                origin,
-                host,
-                scheme="http",
-                allow_test_host=allow_test_host,
-            )
-        ):
-            await websocket.close(code=4403, reason="Forbidden origin")
+        rejection = websocket_rejection(websocket)
+        if rejection is not None:
+            await websocket.close(code=rejection[0], reason=rejection[1])
             return
 
         runtime = get_runtime()
-        runtime.ensure_tasks_loaded(full_refresh=False)
-        stream_manager = runtime.task_manager
-        stream_root = os.path.normcase(os.path.abspath(runtime.root_dir))
         await websocket.accept()
+        stream_root, stream_manager = runtime.get_task_event_stream_context()
 
         loop = asyncio.get_running_loop()
         changes: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
@@ -763,8 +925,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                 except asyncio.TimeoutError:
                     payload = {"type": "heartbeat", "revision": revision}
 
-                current_root = os.path.normcase(os.path.abspath(runtime.root_dir))
-                if current_root != stream_root or runtime.task_manager is not stream_manager:
+                if not runtime.workspace_stream_is_current(stream_root, stream_manager):
                     await websocket.close(code=4409, reason="Workspace changed")
                     disconnected.set()
                     return
@@ -779,7 +940,6 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             finally:
                 disconnected.set()
 
-        stream_manager.acquire_reactive_watch()
         stream_manager.on_change(on_change)
         sender = asyncio.create_task(send_events())
         receiver = asyncio.create_task(receive_client_messages())
@@ -798,7 +958,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
         finally:
             disconnected.set()
             stream_manager.off_change(on_change)
-            stream_manager.release_reactive_watch()
+            runtime.release_task_event_stream_context(stream_root, stream_manager)
             try:
                 await websocket.close(code=1000)
             except RuntimeError:
@@ -808,27 +968,19 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
     async def stream_task_logs(
         websocket: WebSocket,
         task_name: str,
-        log_file_name: str | None = None,
-        offset: int | None = Query(default=None),
-        log_identity: str | None = Query(default=None),
+        log_file_name: str | None = Query(default=None, max_length=255),
+        offset: int | None = Query(default=None, ge=0),
+        log_identity: str | None = Query(default=None, max_length=512),
     ) -> None:
-        host = websocket.headers.get("host", "")
-        origin = websocket.headers.get("origin")
-        allow_test_host = websocket.client is not None and websocket.client.host == "testclient"
-        if not _is_allowed_local_host(host, scheme="http", allow_test_host=allow_test_host) or (
-            origin and not _origin_matches_request(
-                origin,
-                host,
-                scheme="http",
-                allow_test_host=allow_test_host,
-            )
-        ):
-            await websocket.close(code=4403, reason="Forbidden origin")
+        rejection = websocket_rejection(websocket)
+        if rejection is not None:
+            await websocket.close(code=rejection[0], reason=rejection[1])
             return
 
         runtime = get_runtime()
-        stream_task = runtime.get_task(task_name, refresh=False)
-        if stream_task is None:
+        try:
+            stream_root, stream_task = runtime.get_task_log_stream_context(task_name)
+        except KeyError:
             await websocket.close(code=4404, reason="Task not found")
             return
         stream_task_dir = os.path.normcase(os.path.abspath(str(stream_task["dir"])))
@@ -907,13 +1059,7 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
             nonlocal stream_initialized, stream_log_name, stream_offset, stream_identity
             while not disconnected.is_set():
                 try:
-                    current_task = runtime.get_task(task_name, refresh=False)
-                    current_task_dir = (
-                        os.path.normcase(os.path.abspath(str(current_task["dir"])))
-                        if current_task is not None
-                        else ""
-                    )
-                    if current_task_dir != stream_task_dir:
+                    if not runtime.workspace_stream_is_current(stream_root):
                         disconnected.set()
                         break
                     if not stream_initialized:
@@ -923,6 +1069,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 task_name,
                                 log_file_name=requested_log_name or None,
                                 tail_lines=0,
+                                expected_workspace_root=stream_root,
+                                expected_task_dir=stream_task_dir,
                             )
                         else:
                             payload = await asyncio.to_thread(
@@ -932,6 +1080,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 offset=requested_offset,
                                 log_identity=requested_identity or None,
                                 chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                                expected_workspace_root=stream_root,
+                                expected_task_dir=stream_task_dir,
                             )
                         stream_log_name = str(payload.get("selected_log") or "")
                         stream_offset = max(0, int(payload.get("offset") or 0))
@@ -969,6 +1119,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                 offset=stream_offset,
                                 log_identity=stream_identity or None,
                                 chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                                expected_workspace_root=stream_root,
+                                expected_task_dir=stream_task_dir,
                             )
                             stream_offset = max(0, int(payload.get("offset") or 0))
                             stream_identity = str(payload.get("log_identity") or current_identity or "")
@@ -988,7 +1140,13 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                         if emitter_quiet:
                             switched_log = False
                             if stream_log_name == QUEUE_LOG_FILENAME:
-                                queue_payload = await asyncio.to_thread(runtime.get_task_logs, task_name, tail_lines=0)
+                                queue_payload = await asyncio.to_thread(
+                                    runtime.get_task_logs,
+                                    task_name,
+                                    tail_lines=0,
+                                    expected_workspace_root=stream_root,
+                                    expected_task_dir=stream_task_dir,
+                                )
                                 selected_log = str(queue_payload.get("selected_log") or stream_log_name)
                                 if selected_log != stream_log_name:
                                     stream_log_name = selected_log
@@ -1004,6 +1162,8 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                     offset=read_offset,
                                     log_identity=stream_identity or None,
                                     chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                                    expected_workspace_root=stream_root,
+                                    expected_task_dir=stream_task_dir,
                                 )
                                 selected_log = str(payload.get("selected_log") or stream_log_name)
                                 new_offset = max(0, int(payload.get("offset") or read_offset))
@@ -1039,6 +1199,9 @@ def create_app(runtime: PyrunsRuntime | None = None) -> FastAPI:
                                             "log_file_name": stream_log_name,
                                             "log_identity": stream_identity,
                                         })
+                except WorkspaceChangedError:
+                    disconnected.set()
+                    break
                 except Exception as exc:
                     logger.debug("Log file tail fallback failed for %s: %s", task_name, exc)
 
@@ -1142,80 +1305,96 @@ def main(
     open_browser: bool | None = None,
     start_path: str = "/",
     port: int | None = None,
+    access_token: str | None = None,
 ) -> None:
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
-    host = "127.0.0.1"
-    configured_port = int(port if port is not None else runtime.settings.get("ui_port", DEFAULT_UI_PORT))
-    port = find_available_port(configured_port, host=host)
-    if port != configured_port:
-        print(f"[pyruns] Port {configured_port} is busy; using {port} instead.")
-    url = f"http://{host}:{port}{start_path}"
-    print(f"[pyruns] UI: {url}")
-    should_open_browser = (not reload and _can_open_browser_from_environment()) if open_browser is None else open_browser
-    if should_open_browser:
-        _schedule_browser_open(url)
-    else:
-        print("[pyruns] Browser auto-open disabled; open the URL manually.")
+    token = str(access_token or secrets.token_urlsafe(32))
+    previous_token = os.environ.get(_UI_TOKEN_ENV)
+    os.environ[_UI_TOKEN_ENV] = token
     try:
+        host = "127.0.0.1"
+        explicit_port = port is not None
+        configured_port = int(port if explicit_port else runtime.settings.get("ui_port", DEFAULT_UI_PORT))
+        try:
+            port = (
+                find_available_port(configured_port, host=host, max_attempts=0)
+                if explicit_port
+                else find_available_port(configured_port, host=host)
+            )
+        except RuntimeError as exc:
+            if explicit_port:
+                raise RuntimeError(
+                    f"UI port {configured_port} is already in use; choose another with --port"
+                ) from exc
+            raise
+        if port != configured_port:
+            print(
+                f"[pyruns] Port {configured_port} is busy; using {port} instead.",
+                flush=True,
+            )
+        url = f"http://{host}:{port}{start_path}"
+        authenticated_url = _url_with_access_token(url, token)
+        print(f"[pyruns] UI: {authenticated_url}", flush=True)
+        should_open_browser = (
+            not reload and _can_open_browser_from_environment()
+            if open_browser is None
+            else open_browser
+        )
+        if should_open_browser:
+            _schedule_browser_open(authenticated_url)
+        else:
+            print(
+                "[pyruns] Browser auto-open disabled; open the URL manually.",
+                flush=True,
+            )
         uvicorn.run(
-            "pyruns.web.app:create_app" if reload else create_app(runtime),
+            "pyruns.web.app:create_app" if reload else create_app(runtime, access_token=token),
             host=host,
             port=port,
             reload=reload,
             factory=reload,
+            proxy_headers=False,
             access_log=False,
             log_level="warning",
         )
     finally:
+        if previous_token is None:
+            os.environ.pop(_UI_TOKEN_ENV, None)
+        else:
+            os.environ[_UI_TOKEN_ENV] = previous_token
         shutdown = getattr(runtime, "shutdown", None)
         if callable(shutdown):
             shutdown()
 
 
 def _parse_main_options(args: list[str]) -> tuple[int | None, bool | None]:
-    """Parse minimal UI launch options for ``python -m pyruns.web.app``."""
+    """Parse UI launch options for ``python -m pyruns.web.app``."""
 
-    index = 0
-    selected_port: int | None = None
-    open_browser: bool | None = None
-    while index < len(args):
-        arg = args[index]
-        if arg == "-p" or arg == "--port":
-            if index + 1 >= len(args):
-                print(f"Missing value for {arg}.")
-                sys.exit(1)
-            selected_port = _parse_port_value(args[index + 1])
-            index += 2
-            continue
-        if arg.startswith("--port="):
-            selected_port = _parse_port_value(arg.split("=", 1)[1])
-            index += 1
-            continue
-        if arg == "--no-browser":
-            open_browser = False
-            index += 1
-            continue
-        if arg in {"--browser", "--open-browser"}:
-            open_browser = True
-            index += 1
-            continue
-        index += 1
-    return selected_port, open_browser
+    parser = argparse.ArgumentParser(prog="python -m pyruns.web.app")
+    parser.add_argument("-p", "--port", type=_parse_port_value)
+    browser = parser.add_mutually_exclusive_group()
+    browser.add_argument("--browser", dest="open_browser", action="store_true")
+    browser.add_argument("--no-browser", dest="open_browser", action="store_false")
+    parser.set_defaults(open_browser=None)
+    options = parser.parse_args(args)
+    return options.port, options.open_browser
 
 
 def _parse_port_value(raw: str) -> int:
     try:
         value = int(str(raw).strip())
-    except (TypeError, ValueError):
-        print(f"Invalid port: {raw}")
-        sys.exit(1)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"invalid port: {raw}") from exc
     if value < 1 or value > 65535:
-        print("Port must be between 1 and 65535.")
-        sys.exit(1)
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return value
 
 
 if __name__ == "__main__":
     main_port, main_open_browser = _parse_main_options(sys.argv[1:])
-    main(reload=True, port=main_port, open_browser=main_open_browser)
+    try:
+        main(reload=True, port=main_port, open_browser=main_open_browser)
+    except RuntimeError as exc:
+        print(f"pyruns: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None

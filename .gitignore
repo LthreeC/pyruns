@@ -27,5 +27,7 @@ docs/.vitepress/.temp/
 .tmp/
 .tmp-server-*.log
 frontend/.vite-dev-server*.log
+frontend/playwright-report/
+frontend/test-results/
 
 .npm-cache/

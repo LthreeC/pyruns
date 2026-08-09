@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import time
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from ._config import (
     ARTIFACTS_DIR,
@@ -64,6 +65,67 @@ _LAZY_EXPORTS = {
 
 _global_config_manager_: Optional["ConfigManager"] = None
 _config_manager_lock = Lock()
+_metric_warning_keys: set[tuple[str, str]] = set()
+_metric_warning_lock = Lock()
+
+
+def _warn_metric_write_failure(
+    operation: str,
+    error: Exception,
+    *,
+    attempts: Optional[int] = None,
+) -> None:
+    """Warn once per metric operation and failure type without breaking a run."""
+    warning_key = (operation, type(error).__name__)
+    with _metric_warning_lock:
+        if warning_key in _metric_warning_keys:
+            return
+        _metric_warning_keys.add(warning_key)
+
+    retry_detail = f" after {attempts} attempts" if attempts is not None else ""
+    try:
+        print(
+            f"[pyruns] warning: {operation}() could not save metrics{retry_detail} "
+            f"({type(error).__name__}: {error}); the experiment will continue.",
+            file=sys.stderr,
+        )
+    except Exception:
+        # Metrics and their diagnostics must never terminate the user experiment.
+        pass
+
+
+def _write_metrics(
+    operation: str,
+    task_dir: str,
+    apply_update: Callable[[Dict[str, Any], int], None],
+) -> None:
+    """Persist metrics with bounded I/O retries and best-effort diagnostics."""
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            run_index = _get_env_run_index()
+            if run_index is None:
+                info = _lazy_export("load_task_info")(task_dir, raise_error=True)
+                run_index = max(1, _lazy_export("run_slot_count")(info))
+
+            def _apply(info: Dict[str, Any]) -> None:
+                slot = _lazy_export("ensure_run_slot")(info, run_index)
+                apply_update(info, slot)
+
+            _lazy_export("update_task_info")(task_dir, _apply, raise_error=True)
+            return
+        except (IOError, OSError) as error:
+            if attempt == max_attempts:
+                _warn_metric_write_failure(
+                    operation,
+                    error,
+                    attempts=max_attempts,
+                )
+                return
+            time.sleep(0.05)
+        except Exception as error:
+            _warn_metric_write_failure(operation, error)
+            return
 
 
 def __getattr__(name: str) -> Any:
@@ -166,11 +228,46 @@ def ensure_config_default(root_dir: str = None):
     if root_dir is None:
         root_dir = ROOT_DIR
     path = os.path.join(root_dir, CONFIG_DEFAULT_FILENAME)
-    if not os.path.exists(path):
-        os.makedirs(root_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("# task config here")
-    return path
+    from .utils.info_io import _path_is_link_or_reparse, validate_workspace_directory
+
+    validate_workspace_directory(root_dir)
+    os.makedirs(root_dir, exist_ok=True)
+    validate_workspace_directory(root_dir)
+    if os.path.lexists(path):
+        if _path_is_link_or_reparse(path) or not os.path.isfile(path):
+            raise ValueError(
+                f"{CONFIG_DEFAULT_FILENAME} must be a regular file, not a link or directory: {path}"
+            )
+        return path
+
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{CONFIG_DEFAULT_FILENAME}.",
+        suffix=".tmp",
+        dir=root_dir,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("# task config here")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp_path, path)
+        except FileExistsError:
+            pass
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    if os.path.lexists(path):
+        if _path_is_link_or_reparse(path) or not os.path.isfile(path):
+            raise ValueError(
+                f"{CONFIG_DEFAULT_FILENAME} must be a regular file, not a link or directory: {path}"
+            )
+        return path
+    raise OSError(f"Could not create {CONFIG_DEFAULT_FILENAME}: {path}")
 
 
 def _get_env_run_index() -> Optional[int]:
@@ -200,22 +297,10 @@ def record(data: Optional[Dict[str, Any]] = None, **kwargs) -> None:
     if not update_data:
         return
 
-    task_dir = os.path.dirname(pyr_config)
-    for _attempt in range(5):
-        try:
-            run_index = _get_env_run_index()
-            if run_index is None:
-                info = _lazy_export("load_task_info")(task_dir, raise_error=True)
-                run_index = max(1, _lazy_export("run_slot_count")(info))
+    def _apply_record(info: Dict[str, Any], slot: int) -> None:
+        info[RECORDS_KEY][slot].update(update_data)
 
-            def _apply(info: Dict[str, Any]) -> None:
-                slot = _lazy_export("ensure_run_slot")(info, run_index)
-                info[RECORDS_KEY][slot].update(update_data)
-
-            _lazy_export("update_task_info")(task_dir, _apply, raise_error=True)
-            return
-        except (IOError, OSError):
-            time.sleep(0.05)
+    _write_metrics("record", os.path.dirname(pyr_config), _apply_record)
 
 
 def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
@@ -231,24 +316,12 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
     if not update_data:
         return
 
-    task_dir = os.path.dirname(pyr_config)
-    for _attempt in range(5):
-        try:
-            run_index = _get_env_run_index()
-            if run_index is None:
-                info = _lazy_export("load_task_info")(task_dir, raise_error=True)
-                run_index = max(1, _lazy_export("run_slot_count")(info))
+    def _apply_track(info: Dict[str, Any], slot: int) -> None:
+        current_tracks = info[TRACKS_KEY][slot]
+        for item_key, item_value in update_data.items():
+            current_tracks.setdefault(item_key, []).append(item_value)
 
-            def _apply(info: Dict[str, Any]) -> None:
-                slot = _lazy_export("ensure_run_slot")(info, run_index)
-                current_tracks = info[TRACKS_KEY][slot]
-                for item_key, item_value in update_data.items():
-                    current_tracks.setdefault(item_key, []).append(item_value)
-
-            _lazy_export("update_task_info")(task_dir, _apply, raise_error=True)
-            return
-        except (IOError, OSError):
-            time.sleep(0.05)
+    _write_metrics("track", os.path.dirname(pyr_config), _apply_track)
 
 
 def get_task_dir() -> Optional[str]:
@@ -277,8 +350,19 @@ def get_artifact_dir() -> str:
     base_dir = task_dir if task_dir else os.getcwd()
 
     run_index = get_run_index() or _get_env_run_index() or 1
-    artifact_dir = os.path.join(base_dir, ARTIFACTS_DIR, f"run{run_index}")
+    artifacts_root = os.path.join(base_dir, ARTIFACTS_DIR)
+    artifact_dir = os.path.join(artifacts_root, f"run{run_index}")
+    if task_dir:
+        from .utils.info_io import validate_task_directory, validate_workspace_directory
+
+        validate_task_directory(task_dir)
+        validate_workspace_directory(artifacts_root)
+        validate_workspace_directory(artifact_dir)
     os.makedirs(artifact_dir, exist_ok=True)
+    if task_dir:
+        validate_task_directory(task_dir)
+        validate_workspace_directory(artifacts_root)
+        validate_workspace_directory(artifact_dir)
     return artifact_dir
 
 

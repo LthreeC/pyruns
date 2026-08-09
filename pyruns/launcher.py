@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -23,7 +23,14 @@ from pyruns._config import (
     WORKSPACE_KIND_SCRIPT,
     WORKSPACE_KIND_SHELL,
 )
-from pyruns.utils.info_io import load_script_info
+from pyruns.utils.info_io import (
+    load_script_info,
+    save_script_info,
+    validate_tasks_root,
+    validate_workspace_directory,
+    validate_workspace_file,
+)
+from pyruns.utils.config_utils import load_yaml_strict
 from pyruns.utils.parse_utils import (
     detect_config_source_fast,
     extract_argparse_params,
@@ -102,10 +109,7 @@ def shell_project_root_for_workspace(shell_root: str) -> str:
 
 
 def _read_script_info(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return load_script_info(str(path.parent))
 
 
 def _is_shell_workspace_info(info: dict[str, Any], workspace_name: str) -> bool:
@@ -133,10 +137,8 @@ def resolve_workspace_for_script(script_path: str) -> str | None:
         script_info_path = os.path.join(workspace, SCRIPT_INFO_FILENAME)
         if not os.path.isfile(script_info_path):
             continue
-        try:
-            with open(script_info_path, "r", encoding="utf-8") as handle:
-                info = json.load(handle)
-        except Exception:
+        info = load_script_info(workspace)
+        if not info:
             continue
         if _is_shell_workspace_info(info, entry):
             continue
@@ -363,18 +365,108 @@ def list_workspace_candidates(script_path: str, config_path: str | None = None) 
 
 
 def _write_script_info(workspace_path: str, payload: dict[str, Any]) -> None:
-    script_info_path = os.path.join(workspace_path, SCRIPT_INFO_FILENAME)
-    with open(script_info_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    save_script_info(workspace_path, payload)
+    _fsync_parent_directory(os.path.join(workspace_path, SCRIPT_INFO_FILENAME))
+
+
+def _fsync_parent_directory(path: str) -> None:
+    """Persist a replaced directory entry where the platform supports it."""
+
+    flags = os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0))
+    try:
+        fd = os.open(os.path.dirname(os.path.abspath(path)), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _atomic_write_text(path: str, value: str) -> None:
+    """Atomically replace one small text file without exposing truncated content."""
+
+    parent = os.path.dirname(os.path.abspath(path))
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+        dir=parent,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, path)
+                break
+            except PermissionError:
+                if attempt >= 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+        _fsync_parent_directory(path)
+    finally:
+        if os.path.lexists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _atomic_copy_file(source: str, destination: str) -> None:
+    """Copy one file without ever opening the destination through a link."""
+
+    parent = os.path.dirname(os.path.abspath(destination))
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(destination)}.",
+        suffix=".tmp",
+        dir=parent,
+    )
+    os.close(fd)
+    try:
+        shutil.copyfile(source, temp_path)
+        with open(temp_path, "r+b") as handle:
+            os.fsync(handle.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, destination)
+                break
+            except PermissionError:
+                if attempt >= 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+        _fsync_parent_directory(destination)
+    finally:
+        if os.path.lexists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def mark_workspace_active(workspace_path: str) -> str:
     """Record the workspace most recently selected in its project root."""
 
     normalized = normalize_path(workspace_path)
-    marker_path = os.path.join(os.path.dirname(normalized), ACTIVE_WORKSPACE_FILENAME)
-    with open(marker_path, "w", encoding="utf-8") as handle:
-        handle.write(os.path.basename(normalized))
+    workspace_parent = os.path.dirname(normalized)
+    validate_workspace_directory(normalized)
+    validate_workspace_directory(workspace_parent)
+    marker_path = os.path.join(workspace_parent, ACTIVE_WORKSPACE_FILENAME)
+    validate_workspace_file(
+        marker_path,
+        workspace_parent,
+        label=ACTIVE_WORKSPACE_FILENAME,
+    )
+    _atomic_write_text(marker_path, os.path.basename(normalized))
+    validate_workspace_file(
+        marker_path,
+        workspace_parent,
+        label=ACTIVE_WORKSPACE_FILENAME,
+    )
     return normalized
 
 
@@ -392,8 +484,13 @@ def bootstrap_workspace(
     pyruns_dir = workspace_root_parent_for_script(filepath)
     script_dir = workspace_root_for_script(filepath)
 
+    validate_workspace_directory(script_dir)
     os.makedirs(script_dir, exist_ok=True)
-    os.makedirs(os.path.join(script_dir, TASKS_DIR), exist_ok=True)
+    validate_workspace_directory(script_dir)
+    tasks_dir = os.path.join(script_dir, TASKS_DIR)
+    validate_tasks_root(tasks_dir)
+    os.makedirs(tasks_dir, exist_ok=True)
+    validate_tasks_root(tasks_dir)
     ensure_settings_file(pyruns_dir)
 
     script_info = {
@@ -407,6 +504,11 @@ def bootstrap_workspace(
         script_info["last_used_template"] = existing["last_used_template"]
 
     config_default_path = normalize_path(os.path.join(script_dir, CONFIG_DEFAULT_FILENAME))
+    validate_workspace_file(
+        config_default_path,
+        script_dir,
+        label=CONFIG_DEFAULT_FILENAME,
+    )
     mode, _ = detect_config_source_fast(filepath)
     resolved_custom_yaml = ""
 
@@ -415,12 +517,13 @@ def bootstrap_workspace(
         if not yaml_path or not os.path.exists(yaml_path):
             raise FileNotFoundError(f"Custom config '{custom_yaml}' not found.")
         resolved_custom_yaml = normalize_path(yaml_path)
+        load_yaml_strict(resolved_custom_yaml)
         if resolved_custom_yaml == config_default_path:
             resolved_custom_yaml = ""
 
     keep_existing_default = preserve_default and os.path.exists(config_default_path)
     if resolved_custom_yaml and not keep_existing_default:
-        shutil.copy2(resolved_custom_yaml, config_default_path)
+        _atomic_copy_file(resolved_custom_yaml, config_default_path)
         script_info["config_default_source"] = resolved_custom_yaml
         script_info["config_default_source_name"] = os.path.basename(resolved_custom_yaml)
     elif mode == "argparse" and not keep_existing_default:
@@ -455,8 +558,13 @@ def bootstrap_shell_workspace(run_root: str) -> str:
     parent_root = os.path.dirname(shell_root)
     project_root = shell_project_root_for_workspace(shell_root)
 
+    validate_workspace_directory(shell_root)
     os.makedirs(shell_root, exist_ok=True)
-    os.makedirs(os.path.join(shell_root, TASKS_DIR), exist_ok=True)
+    validate_workspace_directory(shell_root)
+    tasks_dir = os.path.join(shell_root, TASKS_DIR)
+    validate_tasks_root(tasks_dir)
+    os.makedirs(tasks_dir, exist_ok=True)
+    validate_tasks_root(tasks_dir)
     ensure_settings_file(parent_root)
 
     existing = load_script_info(shell_root)

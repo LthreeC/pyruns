@@ -29,6 +29,7 @@ interface CodeTextEditorProps {
   defaultWrap?: boolean
   placeholder?: string
   compactToolbar?: boolean
+  ariaLabel?: string
 }
 
 const YAML_EXTENSION = yamlLanguage()
@@ -186,11 +187,18 @@ function buildEditorExtensions(
   theme: CodeEditorTheme,
   wrap: boolean,
   placeholderText?: string,
+  ariaLabel?: string,
 ): Extension[] {
   const baseTheme = theme === 'dark' ? DARK_EDITOR_THEME : [LIGHT_EDITOR_THEME]
   const highlighting = theme === 'dark' ? DARK_EDITOR_HIGHLIGHT : LIGHT_EDITOR_HIGHLIGHT
   const languageExtension = language === 'yaml' ? YAML_EXTENSION : SHELL_LANGUAGE
-  const extras = placeholderText ? [editorPlaceholder(placeholderText)] : []
+  const extras: Extension[] = []
+  if (placeholderText) {
+    extras.push(editorPlaceholder(placeholderText))
+  }
+  if (ariaLabel) {
+    extras.push(EditorView.contentAttributes.of({ 'aria-label': ariaLabel }))
+  }
   return wrap
     ? [...baseTheme, languageExtension, highlighting, EditorView.lineWrapping, ...extras]
     : [...baseTheme, languageExtension, highlighting, ...extras]
@@ -206,12 +214,13 @@ export default function CodeTextEditor({
   defaultWrap = true,
   placeholder,
   compactToolbar = false,
+  ariaLabel,
 }: CodeTextEditorProps) {
   const [wrap, setWrap] = useState(() => getStoredWrap(wrapStorageKey, defaultWrap))
   const editorViewRef = useRef<EditorView | null>(null)
   const extensions = useMemo(
-    () => buildEditorExtensions(language, theme, wrap, placeholder),
-    [language, placeholder, theme, wrap],
+    () => buildEditorExtensions(language, theme, wrap, placeholder, ariaLabel),
+    [ariaLabel, language, placeholder, theme, wrap],
   )
 
   useEffect(() => {

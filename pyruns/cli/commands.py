@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import difflib
 import json
 import os
@@ -12,6 +11,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import date, datetime, time as datetime_time
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -22,8 +22,10 @@ from pyruns._config import (
     DEFAULT_ROOT_NAME,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
     ENV_KEY_ROOT,
+    MAX_MONITOR_CHUNK_SIZE,
+    MAX_MONITOR_LINE_HEIGHT,
+    MAX_MONITOR_SCROLLBACK,
     QUEUE_LOG_FILENAME,
-    RUN_LOGS_DIR,
     SCRIPT_INFO_FILENAME,
     SHELL_WORKSPACE_NAME,
     TASKS_DIR,
@@ -31,7 +33,7 @@ from pyruns._config import (
     WORKSPACE_KIND_SCRIPT,
     WORKSPACE_KIND_SHELL,
 )
-from pyruns.cli.runner import submit_cli_tasks
+from pyruns.cli.runner import SubmissionResult, submit_cli_tasks
 from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
@@ -51,11 +53,17 @@ from pyruns.utils.info_io import (
     load_task_info,
     resolve_log_path,
     run_slot_count,
-    update_task_info,
+    task_info_lock,
+    validate_task_directory,
+    validate_task_log_path,
     validate_task_name,
+    validate_tasks_root,
+    validate_workspace_directory,
 )
 from pyruns.utils.log_io import safe_read_log
+from pyruns.utils.log_utils import configure_project_root_logger
 from pyruns.utils.parse_utils import resolve_config_path
+from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import (
     SETTINGS_DEFAULTS,
     _settings_path,
@@ -64,6 +72,7 @@ from pyruns.utils.settings import (
     reload_settings,
     save_setting_for_root,
     setting_numbers_are_finite,
+    unset_setting_for_root,
 )
 from pyruns.utils.shell_runtime import (
     build_script_file_argv,
@@ -75,8 +84,10 @@ from pyruns.utils.task_files import resolve_task_config_file
 _ACTIVE_STATUSES = {"queued", "running"}
 _FINAL_STATUSES = {"completed", "failed", "cancelled"}
 _VALID_STATUSES = {"pending", "queued", "running", "completed", "failed", "cancelled"}
+_INTERRUPT_CANCEL_TIMEOUT_SEC = 15.0
 _CMD_META_CHARS = frozenset("&|<>^()%!")
 _SHELL_SCRIPT_EXTENSIONS = frozenset({".sh", ".ps1", ".cmd", ".bat"})
+CLI_JSON_SCHEMA_VERSION = 1
 
 
 class CliError(RuntimeError):
@@ -102,8 +113,29 @@ def _program(context: Any) -> str:
     return str(getattr(context, "program", "pyr") or "pyr")
 
 
+def _json_default(value: Any) -> str:
+    if isinstance(value, (datetime, date, datetime_time)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _json_dump(payload: Any) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False))
+    if not isinstance(payload, dict):
+        raise CliError("JSON output must be an object")
+    document = {"schema_version": CLI_JSON_SCHEMA_VERSION, **payload}
+    document["schema_version"] = CLI_JSON_SCHEMA_VERSION
+    try:
+        encoded = json.dumps(
+            document,
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=False,
+            allow_nan=False,
+            default=_json_default,
+        )
+    except (TypeError, ValueError) as exc:
+        raise CliError(f"cannot encode strict JSON output: {exc}") from exc
+    print(encoded)
 
 
 def _normalized_path(path: str) -> str:
@@ -266,11 +298,19 @@ def _workspace_kind(workspace: str) -> str:
 @contextmanager
 def _task_manager(workspace: str, *, lazy_scan: bool | None = False) -> Iterator[TaskManager]:
     tasks_dir = os.path.join(workspace, TASKS_DIR)
-    os.makedirs(tasks_dir, exist_ok=True)
+    try:
+        validate_workspace_directory(workspace)
+        validate_tasks_root(tasks_dir)
+        os.makedirs(tasks_dir, exist_ok=True)
+        validate_workspace_directory(workspace)
+        validate_tasks_root(tasks_dir)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"unsafe workspace path: {exc}") from exc
     os.environ[ENV_KEY_ROOT] = workspace
     os.environ[ENV_KEY_CLI_TERMINAL_RUNTIME] = "1"
     ensure_settings_file(workspace)
     load_settings(workspace)
+    configure_project_root_logger(force=True)
     manager = TaskManager(
         tasks_dir=tasks_dir,
         lazy_scan=lazy_scan,
@@ -401,12 +441,24 @@ def _log_path(task: dict[str, Any], *, run_index: int | None = None) -> str:
     task_dir = str(task.get("dir", "") or "")
     info = load_task_info(task_dir) or task
     status = str(info.get("status", task.get("status", "")) or "").lower()
-    if run_index is None and status == "queued":
-        return os.path.join(task_dir, RUN_LOGS_DIR, QUEUE_LOG_FILENAME)
     selected_run = run_index or _latest_run_index(task, info)
     if selected_run <= 0:
         selected_run = 1
-    run_path = os.path.join(task_dir, RUN_LOGS_DIR, f"run{selected_run}.log")
+    filename = (
+        QUEUE_LOG_FILENAME
+        if run_index is None and status == "queued"
+        else f"run{selected_run}.log"
+    )
+    try:
+        run_path = validate_task_log_path(task_dir, filename)
+    except ValueError as exc:
+        raise CliError(
+            f"unsafe log path for task '{task.get('name', '')}': {exc}"
+        ) from exc
+    if run_index is not None:
+        return run_path
+    if filename == QUEUE_LOG_FILENAME:
+        return run_path
     if os.path.isfile(run_path):
         return run_path
     if selected_run == _latest_run_index(task, info):
@@ -437,24 +489,28 @@ def _task_record(
         "name": str(task.get("name", "") or os.path.basename(task_dir)),
         "status": status,
         "kind": kind,
+        "pinned": bool(info.get("pinned", task.get("pinned", False))),
         "created_at": info.get("created_at", task.get("created_at", "")),
         "run_index": run_index,
         "pid": latest_pid,
         "directory": _normalized_path(task_dir),
         "payload": _normalized_path(payload_path) if payload_path else None,
         "latest_log": _normalized_path(latest_log) if latest_log and os.path.isfile(latest_log) else None,
+        "load_error": task.get("_load_error"),
     }
     if detailed:
         command_argv = info.get("cmd", task.get("cmd"))
         command_text = (
-            shlex.join(str(part) for part in command_argv)
+            _render_argument_command(
+                [str(part) for part in command_argv],
+                os.path.dirname(os.path.dirname(task_dir)),
+            )
             if isinstance(command_argv, list)
             else str(task.get("config_text", "") or "").strip()
         )
         record.update(
             {
                 "progress": info.get("progress", task.get("progress", 0.0)),
-                "pinned": bool(info.get("pinned", task.get("pinned", False))),
                 "start_times": info.get("start_times", task.get("start_times", [])) or [],
                 "finish_times": info.get("finish_times", task.get("finish_times", [])) or [],
                 "pids": pids,
@@ -471,7 +527,6 @@ def _task_record(
                 "command_argv": command_argv if isinstance(command_argv, list) else None,
                 "workdir": info.get("workdir", task.get("workdir")),
                 "shell_kind": info.get("shell_kind", task.get("shell_kind")),
-                "load_error": task.get("_load_error"),
             }
         )
         if selected_run is not None:
@@ -485,21 +540,30 @@ def _print_human_task_table(records: list[dict[str, Any]]) -> None:
         return
     status_width = max(6, max(len(str(item["status"])) for item in records))
     name_width = max(4, min(48, max(len(str(item["name"])) for item in records)))
-    print(f"{'STATUS':<{status_width}}  {'NAME':<{name_width}}  CREATED")
+    print(f"PIN  {'STATUS':<{status_width}}  {'NAME':<{name_width}}  CREATED")
     for item in records:
+        name = str(item["name"])
+        if len(name) > name_width:
+            name = name[: name_width - 3] + "..."
         print(
+            f"{'*' if item.get('pinned') else '':<3}  "
             f"{str(item['status']):<{status_width}}  "
-            f"{str(item['name']):<{name_width}}  "
+            f"{name:<{name_width}}  "
             f"{str(item.get('created_at', ''))}"
         )
 
 
 def _print_task_result(context: Any, records: list[dict[str, Any]]) -> None:
-    if context.json_output:
-        _json_dump({"tasks": records})
-        return
-    for record in records:
-        print(f"{record['status']}\t{record['name']}")
+    try:
+        if context.json_output:
+            _json_dump({"tasks": records})
+            return
+        for record in records:
+            print(f"{record['status']}\t{record['name']}")
+    except BrokenPipeError:
+        from pyruns.cli.app import _silence_broken_pipe
+
+        _silence_broken_pipe()
 
 
 def _parse_env(items: list[str]) -> dict[str, str]:
@@ -597,6 +661,7 @@ def _cmd_quote(value: str) -> str:
     value = value.replace("%", "%%")
     return _windows_argv_quote(value, force=any(char in _CMD_META_CHARS for char in value))
 
+
 def _render_argument_command(parts: list[str], workspace: str) -> str:
     runtime = get_shell_runtime_for_workspace(workspace)
     kind = str(runtime.get("terminal_kind", "") or "").lower()
@@ -666,24 +731,39 @@ def _write_available_log(path: str, offset: int) -> int:
         if not content or next_offset == offset:
             return offset
         try:
-            sys.stdout.write(content)
-        except UnicodeEncodeError:
-            encoding = str(getattr(sys.stdout, "encoding", "") or "utf-8")
-            safe_content = content.encode(encoding, errors="replace").decode(encoding)
-            sys.stdout.write(safe_content)
-        sys.stdout.flush()
+            try:
+                sys.stdout.write(content)
+            except UnicodeEncodeError:
+                encoding = str(getattr(sys.stdout, "encoding", "") or "utf-8")
+                safe_content = content.encode(encoding, errors="replace").decode(encoding)
+                sys.stdout.write(safe_content)
+            sys.stdout.flush()
+        except BrokenPipeError:
+            from pyruns.cli.app import _silence_broken_pipe
+
+            _silence_broken_pipe()
         offset = next_offset
 
 
-def _follow_task(task: dict[str, Any]) -> dict[str, Any]:
-    current_path = _log_path(task)
+def _follow_task(
+    task: dict[str, Any],
+    *,
+    expected_run: int | None = None,
+    initial_queue_offset: int = 0,
+) -> dict[str, Any]:
+    current_path = ""
     offset = 0
     while True:
         latest_record = _task_record(task)
-        next_path = _log_path(task)
+        if expected_run is not None and latest_record["status"] != "queued":
+            next_path = _log_path(task, run_index=expected_run)
+            next_offset = 0
+        else:
+            next_path = _log_path(task)
+            next_offset = initial_queue_offset if expected_run is not None else 0
         if next_path != current_path:
             current_path = next_path
-            offset = 0
+            offset = next_offset
         offset = _write_available_log(current_path, offset)
         if latest_record["status"] in _FINAL_STATUSES:
             stable_reads = 0
@@ -698,6 +778,61 @@ def _follow_task(task: dict[str, Any]) -> dict[str, Any]:
                     stable_reads = 0
             return latest_record
         time.sleep(0.1)
+
+
+def _cancel_submitted_tasks_after_interrupt(
+    context: Any,
+    manager: TaskManager,
+    tasks: list[dict[str, Any]],
+) -> None:
+    """Cancel the foreground submission while preserving Ctrl+C's exit status."""
+
+    names = [str(task["name"]) for task in tasks]
+    _eprint(
+        f"{_program(context)}: interrupted; stopping submitted task"
+        f"{'s' if len(names) != 1 else ''}: {', '.join(names)}"
+    )
+    failed_requests: list[str] = []
+    wait_tasks: list[dict[str, Any]] = []
+    for task in tasks:
+        name = str(task["name"])
+        try:
+            requested = manager.request_task_cancel(name)
+        except Exception:
+            requested = False
+        if not requested:
+            try:
+                current_status = str(_task_record(task)["status"])
+            except Exception:
+                current_status = ""
+            if current_status in _ACTIVE_STATUSES:
+                failed_requests.append(name)
+                wait_tasks.append(task)
+        else:
+            wait_tasks.append(task)
+
+    records: list[dict[str, Any]] = []
+    if wait_tasks:
+        try:
+            records = _wait_for_task_records(
+                wait_tasks,
+                timeout=_INTERRUPT_CANCEL_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            _eprint(f"{_program(context)}: warning: cancellation did not settle: {exc}")
+            return
+
+    unfinished = [
+        str(record["name"])
+        for record in records
+        if str(record.get("status", "")) not in _FINAL_STATUSES
+    ]
+    unresolved = list(dict.fromkeys([*failed_requests, *unfinished]))
+    if unresolved:
+        _eprint(
+            f"{_program(context)}: warning: cancellation was not confirmed for: "
+            + ", ".join(unresolved)
+        )
 
 
 def _submit_and_wait(
@@ -719,31 +854,85 @@ def _submit_and_wait(
         )
 
     names = [str(task["name"]) for task in tasks]
-    if not submit_cli_tasks(
-        manager,
-        names,
-        execution_mode=mode,
-        max_workers=max(1, workers),
-    ):
-        raise CliError("runner did not accept all requested tasks")
+    expected_runs: dict[str, int] = {}
+    queue_offsets: dict[str, int] = {}
+    for task in tasks:
+        name = str(task["name"])
+        info = load_task_info(str(task.get("dir", "") or "")) or task
+        expected_runs[name] = _latest_run_index(task, info) + 1
+        try:
+            queue_path = validate_task_log_path(
+                str(task.get("dir", "") or ""),
+                QUEUE_LOG_FILENAME,
+            )
+            queue_offsets[name] = os.path.getsize(queue_path) if os.path.isfile(queue_path) else 0
+        except OSError:
+            queue_offsets[name] = 0
+        except ValueError as exc:
+            raise CliError(f"unsafe log path for task '{name}': {exc}") from exc
+    try:
+        submission: SubmissionResult = submit_cli_tasks(
+            manager,
+            names,
+            execution_mode=mode,
+            max_workers=min(max(1, workers), len(tasks)),
+        )
+    except KeyboardInterrupt:
+        if not detach:
+            _cancel_submitted_tasks_after_interrupt(context, manager, tasks)
+        raise
+    if submission.status != "accepted":
+        payload = {
+            "submission_status": submission.status,
+            "claimed": list(submission.claimed),
+            "unclaimed": list(submission.unclaimed),
+        }
+        if context.json_output:
+            _json_dump(payload)
+        else:
+            _eprint(
+                f"{_program(context)}: runner submission {submission.status}; "
+                f"claimed {len(submission.claimed)} of {len(names)} tasks"
+            )
+            if submission.claimed:
+                _eprint("Claimed: " + ", ".join(submission.claimed))
+            if submission.unclaimed:
+                _eprint("Unclaimed: " + ", ".join(submission.unclaimed))
+        return 1
 
     if detach:
         records = [_task_record(task) for task in tasks]
         if context.json_output:
-            _json_dump({"submitted": True, "tasks": records})
+            _json_dump(
+                {
+                    "submission_status": "accepted",
+                    "claimed": names,
+                    "unclaimed": [],
+                    "tasks": records,
+                }
+            )
         else:
             for name in names:
                 print(name)
         return 0
 
-    if len(tasks) == 1 and not context.json_output:
-        record = _follow_task(tasks[0])
-        _eprint(f"{_program(context)}: {record['name']} {record['status']}")
-        return 0 if record["status"] == "completed" else 1
+    try:
+        if len(tasks) == 1 and not context.json_output:
+            name = names[0]
+            record = _follow_task(
+                tasks[0],
+                expected_run=expected_runs[name],
+                initial_queue_offset=queue_offsets[name],
+            )
+            _eprint(f"{_program(context)}: {record['name']} {record['status']}")
+            return 0 if record["status"] == "completed" else 1
 
-    records = _wait_for_task_records(tasks, require_started=True)
-    _print_task_result(context, records)
-    return 0 if all(record["status"] == "completed" for record in records) else 1
+        records = _wait_for_task_records(tasks, require_started=True)
+        _print_task_result(context, records)
+        return 0 if all(record["status"] == "completed" for record in records) else 1
+    except KeyboardInterrupt:
+        _cancel_submitted_tasks_after_interrupt(context, manager, tasks)
+        raise
 
 
 def _resolve_config(workspace: str, value: str) -> str:
@@ -831,7 +1020,6 @@ def cmd_init(context: Any, args: Any) -> int:
             raise CliError(str(exc)) from exc
     else:
         project_root = _normalized_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
-        os.makedirs(project_root, exist_ok=True)
         workspace = bootstrap_shell_workspace(project_root)
     summary = {
         "workspace": _normalized_path(workspace),
@@ -948,6 +1136,7 @@ def cmd_exec(context: Any, args: Any) -> int:
             task = generator.create_shell_task(
                 requested_name,
                 command_text.rstrip() + "\n",
+                exact_name=args.name is not None,
                 command_mode="shell" if uses_shell_command else "argv",
                 command_argv=command_argv,
                 workdir=context.directory,
@@ -1052,11 +1241,20 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
 
 def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
     trash_dir = Path(manager.tasks_dir) / TRASH_DIR
+    try:
+        validate_tasks_root(manager.tasks_dir)
+        validate_tasks_root(str(trash_dir))
+    except ValueError as exc:
+        raise CliError(f"unsafe workspace trash: {exc}") from exc
     if not trash_dir.is_dir():
         return []
     records: list[dict[str, Any]] = []
     for path in sorted(trash_dir.iterdir(), key=lambda item: item.name.lower()):
-        if not path.is_dir():
+        try:
+            validate_task_directory(str(path))
+        except ValueError:
+            continue
+        if not path.is_dir() or path.is_symlink():
             continue
         info = load_task_info(str(path)) or {}
         records.append(
@@ -1124,6 +1322,9 @@ def cmd_ls(context: Any, args: Any, manager: TaskManager) -> int:
             tasks.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
         if args.reverse:
             tasks.reverse()
+        tasks = [task for task in tasks if bool(task.get("pinned"))] + [
+            task for task in tasks if not bool(task.get("pinned"))
+        ]
         records = [_task_record(task) for task in tasks]
 
     if args.limit is not None:
@@ -1185,6 +1386,7 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
     print(f"Name:       {record['name']}")
     print(f"Status:     {record['status']}")
     print(f"Kind:       {record['kind']}")
+    print(f"Pinned:     {'yes' if record['pinned'] else 'no'}")
     print(f"Created:    {record['created_at']}")
     print(f"Directory:  {record['directory']}")
     print(f"Payload:    {record['payload'] or '-'}")
@@ -1239,6 +1441,8 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
     if args.follow and str(task.get("status", "pending")) == "pending":
         raise CliError(f"cannot follow pending task: {task['name']}")
     path = _log_path(task, run_index=selected_run)
+    if not os.path.isfile(path):
+        raise CliError(f"log does not exist: {_normalized_path(path)}")
     if args.path:
         payload = {
             "task": task["name"],
@@ -1252,8 +1456,6 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
         return 0
 
     if not args.follow:
-        if not os.path.isfile(path):
-            raise CliError(f"log does not exist: {_normalized_path(path)}")
         _write_available_log(path, 0)
         return 0
 
@@ -1329,9 +1531,10 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
             seen_trash_names.add(trash_name)
             selected.append(record)
 
-    restore_plan: list[tuple[dict[str, Any], str, str]] = []
+    restore_plan: list[dict[str, Any]] = []
     target_names: set[str] = set()
     tasks_root = os.path.abspath(manager.tasks_dir)
+    trash_dir = os.path.join(tasks_root, TRASH_DIR)
     for record in selected:
         target_name = str(record["name"])
         name_error = validate_task_name(target_name)
@@ -1348,25 +1551,134 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
             inside_tasks_root = False
         if not inside_tasks_root or os.path.dirname(destination) != tasks_root:
             raise CliError(f"cannot restore '{target_name}': invalid task destination")
+        try:
+            validate_tasks_root(os.path.dirname(source))
+            validate_task_directory(source)
+        except ValueError as exc:
+            raise CliError(f"cannot restore '{target_name}': unsafe trash entry: {exc}") from exc
         if not os.path.isdir(source):
             raise CliError(f"cannot restore '{target_name}': trash entry no longer exists")
-        if os.path.exists(destination):
+        if os.path.lexists(destination):
             raise CliError(f"cannot restore '{target_name}': an active task has that name")
-        restore_plan.append((record, source, destination))
+        restore_plan.append({
+            "record": record,
+            "name": target_name,
+            "source": source,
+            "destination": destination,
+        })
 
+    generator = TaskGenerator(root_dir=tasks_root)
+    reservations: list[tuple[str, tuple[str, int, tuple[int, int]]]] = []
+    moved: list[dict[str, Any]] = []
+    rollback_errors: list[str] = []
     restored: list[str] = []
-    for record, source, destination in restore_plan:
-        target_name = str(record["name"])
-        try:
-            shutil.move(source, destination)
-            update_task_info(
-                destination,
-                lambda info, target_name=target_name: info.update({"name": target_name}),
-                raise_error=True,
-            )
-        except Exception as exc:
-            raise CliError(f"could not restore '{target_name}': {exc}") from exc
-        restored.append(target_name)
+    try:
+        # Serialize the trash namespace with delete, and keep every exact task
+        # name reserved until the complete batch either commits or rolls back.
+        with task_info_lock(trash_dir, create_dir=False):
+            try:
+                validate_tasks_root(tasks_root)
+                validate_tasks_root(trash_dir)
+
+                for item in restore_plan:
+                    target_name = str(item["name"])
+                    source = str(item["source"])
+                    validate_task_directory(source)
+                    source_identity = generator.task_directory_identity(source)
+                    if source_identity is None or not os.path.isdir(source):
+                        raise CliError(
+                            f"cannot restore '{target_name}': trash entry no longer exists"
+                        )
+                    try:
+                        info = load_task_info(source, raise_error=True)
+                    except Exception as exc:
+                        raise CliError(
+                            f"cannot restore '{target_name}': invalid task metadata: {exc}"
+                        ) from exc
+                    stored_name = str(info.get("name", "") or "")
+                    if stored_name != target_name:
+                        raise CliError(
+                            f"cannot restore '{target_name}': task metadata name changed to "
+                            f"'{stored_name or '<empty>'}'"
+                        )
+                    item["identity"] = source_identity
+
+                for item in restore_plan:
+                    target_name = str(item["name"])
+                    reservation = generator.reserve_exact_task_name(target_name)
+                    if reservation is None:
+                        if os.path.lexists(str(item["destination"])):
+                            raise CliError(
+                                f"cannot restore '{target_name}': an active task has that name"
+                            )
+                        raise CliError(
+                            f"cannot restore '{target_name}': the task name is being created or restored"
+                        )
+                    reservations.append((target_name, reservation))
+
+                reservation_by_name = dict(reservations)
+                for item in restore_plan:
+                    target_name = str(item["name"])
+                    source = str(item["source"])
+                    destination = str(item["destination"])
+                    reservation = reservation_by_name[target_name]
+                    validate_tasks_root(tasks_root)
+                    validate_tasks_root(trash_dir)
+                    validate_task_directory(source)
+                    if not generator.owns_task_name_reservation(reservation):
+                        raise CliError(
+                            f"cannot restore '{target_name}': task-name reservation was replaced"
+                        )
+                    if generator.task_directory_identity(source) != item["identity"]:
+                        raise CliError(
+                            f"cannot restore '{target_name}': trash entry identity changed"
+                        )
+                    if os.path.lexists(destination):
+                        raise CliError(
+                            f"cannot restore '{target_name}': an active task has that name"
+                        )
+
+                    os.rename(source, destination)
+                    moved.append(item)
+                    if generator.task_directory_identity(destination) != item["identity"]:
+                        raise OSError(
+                            f"restored task identity changed after rename: {target_name}"
+                        )
+                    restored.append(target_name)
+            except BaseException:
+                for item in reversed(moved):
+                    target_name = str(item["name"])
+                    source = str(item["source"])
+                    destination = str(item["destination"])
+                    try:
+                        validate_tasks_root(tasks_root)
+                        validate_tasks_root(trash_dir)
+                        validate_task_directory(destination)
+                        if generator.task_directory_identity(destination) != item["identity"]:
+                            raise OSError("restored task identity changed before rollback")
+                        if os.path.lexists(source):
+                            raise FileExistsError("original trash path is occupied")
+                        os.rename(destination, source)
+                        if generator.task_directory_identity(source) != item["identity"]:
+                            raise OSError("trash entry identity changed after rollback")
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"{target_name}: {rollback_exc}")
+                raise
+            finally:
+                for _target_name, reservation in reversed(reservations):
+                    generator.release_task_name_reservation(reservation)
+    except BaseException as exc:
+        manager.scan_disk()
+        if rollback_errors:
+            raise CliError(
+                f"restore failed ({exc}); rollback incomplete: {'; '.join(rollback_errors)}"
+            ) from exc
+        if isinstance(exc, CliError):
+            raise
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        raise CliError(f"restore failed: {exc}") from exc
+
     manager.scan_disk()
     if context.json_output:
         _json_dump({"restored": restored})
@@ -1412,9 +1724,11 @@ def cmd_export(args: Any, manager: TaskManager) -> int:
     else:
         tasks = _refresh_tasks(manager)
     statuses = set(args.status or [])
-    if statuses:
-        tasks = [task for task in tasks if str(task.get("status", "pending")) in statuses]
-    content = build_export_json(tasks) if export_format == "json" else build_export_csv(tasks)
+    content = (
+        build_export_json(tasks, statuses=statuses or None)
+        if export_format == "json"
+        else build_export_csv(tasks, statuses=statuses or None)
+    )
     if not content:
         content = "[]" if export_format == "json" else ""
     if args.output == "-":
@@ -1433,8 +1747,6 @@ def cmd_export(args: Any, manager: TaskManager) -> int:
 
 
 _SETTING_CHOICES: dict[str, set[str]] = {
-    "generator_mode": {"form", "yaml"},
-    "manager_execution_mode": {"thread", "process"},
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
     "shell_mode": {"follow", "custom"},
     "gpu_scheduler_task_mode": {"single", "multi"},
@@ -1442,19 +1754,21 @@ _SETTING_CHOICES: dict[str, set[str]] = {
 }
 _SETTING_MINIMUMS: dict[str, float] = {
     "header_refresh_interval": 1,
-    "generator_form_columns": 1,
-    "manager_columns": 1,
-    "manager_max_workers": 1,
-    "ui_page_size": 0,
     "monitor_chunk_size": 1,
     "monitor_scrollback": 0,
     "monitor_line_height": 1e-12,
     "monitor_sidebar_width_pct": 1,
     "gpu_scheduler_gpus_per_task": 1,
     "gpu_scheduler_min_free_memory_gb": 0,
-    "gpu_scheduler_stable_seconds": 0,
-    "gpu_scheduler_max_wait_seconds": 0,
+    "gpu_scheduler_stable_seconds": 1,
+    "gpu_scheduler_max_wait_seconds": 1,
     "gpu_scheduler_max_tasks_per_gpu": 1,
+}
+_SETTING_MAXIMUMS: dict[str, float] = {
+    "monitor_chunk_size": MAX_MONITOR_CHUNK_SIZE,
+    "monitor_scrollback": MAX_MONITOR_SCROLLBACK,
+    "monitor_line_height": MAX_MONITOR_LINE_HEIGHT,
+    "monitor_sidebar_width_pct": 100,
 }
 _SETTING_PERCENTAGES = {
     "gpu_scheduler_memory_used_pct",
@@ -1500,10 +1814,11 @@ def _validate_setting_value(key: str, value: Any) -> Any:
         minimum = _SETTING_MINIMUMS[key]
         comparison = "greater than zero" if minimum > 0 else "zero or greater"
         raise CliUsageError(f"{key} must be {comparison}")
+    if key in _SETTING_MAXIMUMS and value > _SETTING_MAXIMUMS[key]:
+        maximum = _SETTING_MAXIMUMS[key]
+        raise CliUsageError(f"{key} must be {maximum:g} or less")
     if key in _SETTING_PERCENTAGES and not 0 <= value <= 100:
         raise CliUsageError(f"{key} must be between 0 and 100")
-    if key == "monitor_sidebar_width_pct" and value > 100:
-        raise CliUsageError("monitor_sidebar_width_pct must be between 1 and 100")
     return value
 
 
@@ -1545,10 +1860,16 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
             raise CliUsageError(f"invalid YAML value: {exc}") from exc
         value = _validate_setting_value(args.key, value)
     elif action == "unset":
-        value = copy.deepcopy(SETTINGS_DEFAULTS[args.key])
+        value = SETTINGS_DEFAULTS[args.key]
     else:
         raise CliUsageError(f"unknown config action: {action}")
-    save_setting_for_root(workspace, args.key, value)
+    try:
+        if action == "unset":
+            unset_setting_for_root(workspace, args.key)
+        else:
+            save_setting_for_root(workspace, args.key, value)
+    except (KeyError, OSError, TimeoutError, ValueError, yaml.YAMLError) as exc:
+        raise CliError(f"cannot save setting '{args.key}': {exc}") from exc
     saved = reload_settings(workspace).get(args.key)
     if saved != value:
         raise CliError(f"setting was not persisted: {args.key}")
@@ -1605,7 +1926,10 @@ def _launch_ui(*, start_path: str, port: int | None, open_browser: bool | None) 
     from pyruns.web.app import main as web_main
 
     sys.argv = [sys.argv[0]]
-    web_main(start_path=start_path, port=port, open_browser=open_browser)
+    try:
+        web_main(start_path=start_path, port=port, open_browser=open_browser)
+    except RuntimeError as exc:
+        raise CliError(str(exc)) from exc
     return 0
 
 
@@ -1644,7 +1968,13 @@ def cmd_ui(context: Any, args: Any) -> int:
         mark_workspace_active(workspace)
         return _launch_ui(start_path="/", port=args.port, open_browser=open_browser)
 
-    os.makedirs(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME), exist_ok=True)
+    project_root = os.path.join(os.getcwd(), DEFAULT_ROOT_NAME)
+    try:
+        validate_workspace_directory(project_root)
+        os.makedirs(project_root, exist_ok=True)
+        validate_workspace_directory(project_root)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"unsafe project path: {exc}") from exc
     return _launch_ui(
         start_path=launcher_query(),
         port=args.port,
@@ -1664,7 +1994,11 @@ def cmd_dev(context: Any, args: Any) -> int:
         command.append("--no-browser")
     elif args.browser:
         command.append("--browser")
-    return subprocess.run(command, check=False).returncode
+    return subprocess.run(
+        command,
+        check=False,
+        **hidden_subprocess_kwargs(),
+    ).returncode
 
 
 def dispatch(context: Any, args: Any) -> int:
@@ -1673,6 +2007,8 @@ def dispatch(context: Any, args: Any) -> int:
     handler = str(args.handler)
     if context.workspace and handler in {"init", "config", "metrics", "dev"}:
         raise CliUsageError(f"{handler} does not use -w/--workspace")
+    if handler == "exec" and args.dry_run and args.detach:
+        raise CliUsageError("exec accepts either --dry-run or --detach, not both")
     if handler == "run":
         if args.config and args.tasks:
             raise CliUsageError(
@@ -1682,6 +2018,8 @@ def dispatch(context: Any, args: Any) -> int:
             raise CliUsageError("--name is only valid together with --config")
         if args.dry_run and not args.config:
             raise CliUsageError("run --dry-run requires --config CONFIG")
+        if args.dry_run and args.detach:
+            raise CliUsageError("run accepts either --dry-run or --detach, not both")
         if not args.config and not args.tasks:
             raise CliUsageError("run requires at least one TASK or --config CONFIG")
     if handler == "log":

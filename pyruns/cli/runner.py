@@ -8,17 +8,43 @@ import subprocess
 import sys
 import time
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from pyruns._config import ENV_KEY_CLI_SHELL_EXECUTABLE
 from pyruns.utils.info_io import load_task_info
-from pyruns.utils.process_utils import kill_process
+from pyruns.utils.process_utils import get_process_create_time, kill_process
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 
 
 _ACTIVE_STATUSES = {"queued", "running"}
 _FINAL_STATUSES = {"completed", "failed", "cancelled"}
 DEFAULT_STARTUP_TIMEOUT_SEC = 15.0
+
+
+@dataclass(frozen=True)
+class SubmissionResult:
+    """Exact detached-runner ownership outcome for one submitted batch."""
+
+    status: Literal["accepted", "partial", "rejected"]
+    claimed: tuple[str, ...]
+    unclaimed: tuple[str, ...]
+
+
+def _submission_result(
+    names: list[str],
+    claimed: list[str] | tuple[str, ...] = (),
+) -> SubmissionResult:
+    claimed_set = set(claimed)
+    accepted = tuple(name for name in names if name in claimed_set)
+    unclaimed = tuple(name for name in names if name not in claimed_set)
+    if accepted and not unclaimed:
+        status: Literal["accepted", "partial", "rejected"] = "accepted"
+    elif accepted:
+        status = "partial"
+    else:
+        status = "rejected"
+    return SubmissionResult(status=status, claimed=accepted, unclaimed=unclaimed)
 
 
 def _run_index(info: dict[str, Any]) -> int:
@@ -61,12 +87,12 @@ def submit_cli_tasks(
     execution_mode: str = "thread",
     max_workers: int = 1,
     startup_timeout: float | None = None,
-) -> bool:
+) -> SubmissionResult:
     """Start a detached runner and wait until it reports that all tasks were claimed."""
 
     names = [str(name) for name in task_names if str(name)]
     if not names:
-        return False
+        return _submission_result(names)
 
     task_dirs = {
         str(task.get("name")): str(task.get("dir"))
@@ -74,7 +100,7 @@ def submit_cli_tasks(
         if task and str(task.get("name", "")) in names
     }
     if len(task_dirs) != len(set(names)):
-        return False
+        return _submission_result(names)
 
     before = {name: _run_index(load_task_info(task_dirs[name]) or {}) for name in names}
     workspace = os.path.dirname(os.path.abspath(str(tm.tasks_dir)))
@@ -110,7 +136,8 @@ def submit_cli_tasks(
     try:
         process = _detached_popen(command, env)
     except OSError:
-        return False
+        return _submission_result(names)
+    process_create_time = get_process_create_time(process.pid)
     timeout_seconds = DEFAULT_STARTUP_TIMEOUT_SEC if startup_timeout is None else float(startup_timeout)
     deadline = time.monotonic() + max(0.05, timeout_seconds)
     try:
@@ -122,34 +149,37 @@ def submit_cli_tasks(
                 startup = {}
             startup_status = str(startup.get("status", "") or "").lower()
             if startup_status == "ready":
-                return True
-            if startup_status == "error":
-                return False
+                return _submission_result(names, names)
 
             exit_code = process.poll()
-            owned_active = 0
-            all_final = True
+            claimed: list[str] = []
             for name in names:
                 info = load_task_info(task_dirs[name]) or {}
                 status = str(info.get("status", "") or "").lower()
                 started_new_run = _run_index(info) > before[name]
                 if status in _ACTIVE_STATUSES and _runner_token(info) == submission_token:
-                    owned_active += 1
-                if not (status in _FINAL_STATUSES and started_new_run):
-                    all_final = False
+                    claimed.append(name)
+                elif status in _FINAL_STATUSES and started_new_run:
+                    claimed.append(name)
+            result = _submission_result(names, claimed)
+            if startup_status == "error":
+                return result
             if exit_code is not None:
-                return bool(all_final and exit_code in {0, 1})
+                return result
 
             if time.monotonic() >= deadline:
-                if owned_active:
+                if result.claimed:
                     # A partially claimed batch must be left with its owning runner;
                     # killing it here can strand task state or terminate real work.
-                    return True
+                    return result
                 try:
-                    kill_process(process.pid)
+                    kill_process(
+                        process.pid,
+                        expected_create_time=process_create_time,
+                    )
                 except Exception:
                     pass
-                return False
+                return result
             time.sleep(0.05)
     finally:
         try:

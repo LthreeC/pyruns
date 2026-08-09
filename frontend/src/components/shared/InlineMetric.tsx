@@ -10,9 +10,9 @@ interface Props {
 
 const TONE_STYLES: Record<InlineMetricTone, string> = {
   neutral: 'bg-surface-overlay text-txt-secondary',
-  amber: 'bg-amber-500/10 text-amber-400',
-  emerald: 'bg-emerald-500/10 text-emerald-400',
-  rose: 'bg-rose-500/10 text-rose-400',
+  amber: 'bg-amber-500/10 text-amber-800 dark:text-amber-300',
+  emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  rose: 'bg-rose-500/10 text-rose-700 dark:text-rose-300',
   accent: 'bg-accent/8 text-accent',
 }
 

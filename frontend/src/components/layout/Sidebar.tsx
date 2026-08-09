@@ -76,14 +76,14 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
 
   return (
     <aside
-      className="flex h-screen flex-none flex-col border-r border-border-subtle bg-surface-raised"
+      className="flex h-full flex-none flex-col border-r border-border-subtle bg-surface-raised"
       style={{ width }}
     >
       <div className={clsx('flex h-12 items-center border-b border-border-subtle', compact ? 'justify-center px-0' : 'gap-2 px-4')}>
         <Rocket className="h-4 w-4 text-accent" />
         {!compact && (
           <div className="min-w-0">
-            <div className="text-sm font-semibold tracking-tight text-txt-primary">Pyruns</div>
+            <div className="text-sm font-semibold text-txt-primary">Pyruns</div>
             <div className="text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
               {!workspaceReady ? 'workspace needed' : shellWorkspaceActive ? 'shell workspace' : 'script workspace'}
             </div>
@@ -101,7 +101,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
             aria-label={label}
             title={label}
             className={({ isActive }) => clsx(
-              'flex min-h-10 items-center gap-2.5 rounded-md py-2 text-sm transition-colors',
+              'flex min-h-11 items-center gap-2.5 rounded-md py-2 text-sm transition-colors sm:min-h-10',
               compact ? 'justify-center px-0' : 'pl-2.5 pr-3',
               isActive
                 ? 'border-l-2 border-accent bg-accent/10 text-accent'
@@ -114,7 +114,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
         ))}
       </nav>
 
-      <div className="border-t border-border-subtle p-2.5">
+      <div className={clsx('border-t border-border-subtle', compact ? 'p-2' : 'p-2.5')}>
         {!compact && (
           <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-txt-tertiary">
             Workspace
@@ -126,7 +126,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
           aria-label={workspaceLabel}
           title={workspacePathHint}
-          className="min-h-10 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25"
+          className="min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
         >
           <div className={clsx('flex items-center gap-2', compact && 'justify-center')}>
             <FileCode className="h-4 w-4 flex-none text-txt-tertiary" />
@@ -161,7 +161,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           onClick={() => setRuntimeOpen(true)}
           aria-label="Runtime"
           title="Runtime"
-          className="mt-1 min-h-10 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25"
+          className="mt-1 min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
         >
           <div className={clsx('flex items-center gap-2', compact && 'justify-center')}>
             <SlidersHorizontal className="h-4 w-4 flex-none text-txt-tertiary" />
@@ -184,7 +184,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           aria-label={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
           title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
           className={clsx(
-            'mt-2 flex min-h-10 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary',
+            'mt-2 flex min-h-11 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:min-h-10',
             compact && 'justify-center px-0',
           )}
         >

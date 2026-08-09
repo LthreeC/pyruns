@@ -9,18 +9,46 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
-from pyruns._config import TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
+from pyruns._config import RUN_LOGS_DIR, TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
 from pyruns.cli.app import build_parser, main
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.utils.info_io import load_task_info, update_task_info
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_cli_log_path_rejects_simulated_reparse_file(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+    from pyruns.cli import commands
+
+    task_dir = tmp_path / TASKS_DIR / "safe"
+    log_dir = task_dir / RUN_LOGS_DIR
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "run1.log"
+    log_path.write_text("do not read\n", encoding="utf-8")
+    (task_dir / TASK_INFO_FILENAME).write_text(
+        json.dumps({"name": "safe", "status": "completed", "run_index": 1}),
+        encoding="utf-8",
+    )
+    real_check = info_io._path_is_link_or_reparse
+
+    def fake_reparse(path):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(log_path)):
+            return True
+        return real_check(path)
+
+    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+
+    with pytest.raises(commands.CliError, match="unsafe log path"):
+        commands._log_path({"name": "safe", "dir": str(task_dir)})
 
 
 def _source_cli(*args: str) -> list[str]:
@@ -128,6 +156,7 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     assert "pyr help -a" in output
     assert "show command options (for example, ui --port)" in output
     assert "\n  --json" not in output
+    assert "--no-color" not in output
     assert "    exec " in output
     assert "    show " in output
     assert "    status " in output
@@ -297,9 +326,9 @@ def test_every_command_has_workspace_free_help(command, tmp_path):
         ("mv", "task", "new-name", "--json"),
         ("pin", "task", "--json"),
         ("config", "list", "--json"),
-        ("config", "get", "manager_max_workers", "--json"),
-        ("config", "set", "manager_max_workers", "4", "--json"),
-        ("config", "unset", "manager_max_workers", "--json"),
+        ("config", "get", "monitor_scrollback", "--json"),
+        ("config", "set", "monitor_scrollback", "200000", "--json"),
+        ("config", "unset", "monitor_scrollback", "--json"),
         ("config", "path", "--json"),
         ("metrics", "--json"),
     ],
@@ -322,6 +351,34 @@ def test_json_stays_in_command_scope_and_exec_separator_preserves_child_options(
     )
     assert child_args.json_output is False
     assert child_args.command_argv == ["--", "python", "train.py", "--json"]
+
+
+def test_json_output_is_strict_and_versioned(capsys):
+    from pyruns.cli.commands import CliError, _json_dump
+
+    _json_dump({"value": 1})
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "value": 1}
+
+    with pytest.raises(CliError, match="strict JSON"):
+        _json_dump({"value": float("nan")})
+    assert capsys.readouterr().out == ""
+
+
+def test_broken_pipe_exits_cleanly_without_internal_error(tmp_path, monkeypatch, capsys):
+    from pyruns.cli import app, commands
+
+    monkeypatch.chdir(tmp_path)
+    silenced = []
+    monkeypatch.setattr(
+        commands,
+        "dispatch",
+        lambda *_args: (_ for _ in ()).throw(BrokenPipeError()),
+    )
+    monkeypatch.setattr(app, "_silence_broken_pipe", lambda: silenced.append(True))
+
+    assert app.main(["status"]) == 0
+    assert silenced == [True]
+    assert "internal error" not in capsys.readouterr().err
 
 
 def test_run_and_export_advertise_one_clear_canonical_option_set():
@@ -379,6 +436,24 @@ def test_removed_json_scopes_are_rejected(args, tmp_path):
 
     assert result.returncode == 2
     assert "--json" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("-p", "8099", "ui"), "-p/--port belongs to ui and dev"),
+        (("--port=8099", "ui"), "-p/--port belongs to ui and dev"),
+        (("--browser", "ui"), "--browser belongs to ui and dev"),
+        (("--no-browser", "ui"), "--no-browser belongs to ui and dev"),
+        (("-n", "5", "ls"), "unrecognized global option: -n"),
+    ],
+)
+def test_command_options_before_command_have_actionable_errors(args, message, tmp_path):
+    result = _run_cli(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert message in result.stderr
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -520,6 +595,8 @@ def test_bare_context_options_are_not_silently_ignored(tmp_path, args, message):
         (("run", "task", "--config", "config.yaml"), "either exact TASK names or --config"),
         (("run", "--name", "named"), "--name is only valid together with --config"),
         (("run",), "run requires at least one TASK or --config CONFIG"),
+        (("exec", "--dry-run", "--detach", "--", "python", "-V"), "either --dry-run or --detach"),
+        (("run", "--config", "config.yaml", "--dry-run", "--detach"), "either --dry-run or --detach"),
         (("log", "task", "--follow", "--run", "2"), "--follow cannot be combined with --run"),
         (("log", "task", "--follow", "--path"), "--follow cannot be combined with --path"),
         (("log", "task", "--json"), "log --json requires --path"),
@@ -549,6 +626,10 @@ def test_unknown_options_fail_with_usage_on_stderr(tmp_path):
 
 def test_json_is_command_scoped_and_long_options_require_exact_spelling(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    misplaced = _run_cli(tmp_path, "--json", "status")
+    assert misplaced.returncode == 2
+    assert "--json is command-specific" in misplaced.stderr
 
     abbreviated = _run_cli(tmp_path, "--js", "status")
     assert abbreviated.returncode == 2
@@ -643,11 +724,13 @@ def test_init_shell_outputs_workspace_and_status_is_json(tmp_path, monkeypatch, 
     monkeypatch.chdir(tmp_path)
     assert main(["init", "--json"]) == 0
     created = json.loads(capsys.readouterr().out)
+    assert created["schema_version"] == 1
     assert created["kind"] == "shell"
     assert Path(created["workspace"]).is_dir()
 
     assert main(["-w", "shell", "status", "--json"]) == 0
     status = json.loads(capsys.readouterr().out)
+    assert status["schema_version"] == 1
     assert status["kind"] == "shell"
     assert status["total"] == 0
 
@@ -692,6 +775,7 @@ def test_exec_dry_run_is_stable_json_and_has_no_workspace_side_effect(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload == {
+        "schema_version": 1,
         "dry_run": True,
         "operation": "exec",
         "workspace": str(tmp_path / "_pyruns_" / "_shell_").replace("\\", "/"),
@@ -773,6 +857,62 @@ def test_follow_task_retries_final_log_until_size_is_stable(monkeypatch):
 
     assert commands._follow_task({"name": "fast"})["status"] == "completed"
     assert calls == [0, 0, 7, 7, 7]
+
+
+def test_follow_task_reads_only_new_queue_bytes_and_expected_run(monkeypatch):
+    from pyruns.cli import commands
+
+    records = iter([
+        {"status": "queued"},
+        {"status": "running"},
+        {"status": "completed"},
+    ])
+    reads = []
+
+    monkeypatch.setattr(commands, "_task_record", lambda _task: next(records))
+    monkeypatch.setattr(
+        commands,
+        "_log_path",
+        lambda _task, run_index=None: "queue.log" if run_index is None else f"run{run_index}.log",
+    )
+
+    def read_log(path, offset):
+        reads.append((path, offset))
+        return offset
+
+    monkeypatch.setattr(commands, "_write_available_log", read_log)
+    monkeypatch.setattr(commands.time, "sleep", lambda _seconds: None)
+
+    result = commands._follow_task(
+        {"name": "rerun"},
+        expected_run=2,
+        initial_queue_offset=41,
+    )
+
+    assert result["status"] == "completed"
+    assert reads[0] == ("queue.log", 41)
+    assert all(path != "run1.log" for path, _offset in reads)
+    assert any(path == "run2.log" and offset == 0 for path, offset in reads)
+
+
+def test_explicit_run_log_never_falls_back_to_an_older_log(tmp_path):
+    from pyruns.cli import commands
+
+    task_dir = tmp_path / TASKS_DIR / "exact-log"
+    log_dir = task_dir / RUN_LOGS_DIR
+    log_dir.mkdir(parents=True)
+    (task_dir / TASK_INFO_FILENAME).write_text(
+        json.dumps({"name": "exact-log", "status": "running", "run_index": 2}),
+        encoding="utf-8",
+    )
+    (log_dir / "run1.log").write_text("old run\n", encoding="utf-8")
+
+    path = commands._log_path(
+        {"name": "exact-log", "dir": str(task_dir)},
+        run_index=2,
+    )
+
+    assert path == str(log_dir / "run2.log")
 
 
 def test_workspace_discovery_walks_upward(tmp_path, monkeypatch, capsys):
@@ -1671,6 +1811,121 @@ def test_ls_show_log_and_status_have_machine_contracts(tmp_path):
     assert "--follow cannot be combined with --run" in conflicting.stderr
 
 
+def test_log_path_rejects_a_pending_task_without_a_log(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "pending-log",
+        "echo later\n",
+    )
+
+    result = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "log",
+        "pending-log",
+        "--path",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "log does not exist" in result.stderr
+
+
+def test_pinned_tasks_are_visible_and_stay_first_when_reversed(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    generator = TaskGenerator(root_dir=str(workspace / TASKS_DIR))
+    pinned = generator.create_shell_task("alpha-pinned", "echo pinned\n")
+    generator.create_shell_task("zulu-normal", "echo normal\n")
+    update_task_info(pinned["dir"], lambda info: info.update({"pinned": True}))
+
+    listing = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "ls",
+        "--sort",
+        "name",
+        "--reverse",
+        "--json",
+    )
+
+    assert listing.returncode == 0, listing.stderr
+    records = json.loads(listing.stdout)["tasks"]
+    assert [record["name"] for record in records] == ["alpha-pinned", "zulu-normal"]
+    assert [record["pinned"] for record in records] == [True, False]
+
+    human = _run_cli(tmp_path, "-w", "shell", "ls", "--sort", "name", "--reverse")
+    assert human.returncode == 0, human.stderr
+    lines = human.stdout.splitlines()
+    assert lines[0].startswith("PIN  STATUS")
+    assert lines[1].startswith("*    pending")
+    assert "alpha-pinned" in lines[1]
+
+    shown = _run_cli(tmp_path, "-w", "shell", "show", "alpha-pinned")
+    assert shown.returncode == 0, shown.stderr
+    assert "Pinned:     yes" in shown.stdout
+
+
+def test_show_json_encodes_yaml_dates_as_iso_8601(tmp_path):
+    script = tmp_path / "dated.py"
+    script.write_text("print('dated')\n", encoding="utf-8")
+    workspace = Path(bootstrap_workspace(str(script)))
+    from pyruns.core.task_generator import TaskGenerator
+
+    TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_task(
+        "dated-config",
+        {
+            "day": date(2026, 1, 2),
+            "started": datetime(2026, 1, 2, 3, 4, 5),
+        },
+    )
+
+    result = _run_cli(tmp_path, "-w", "dated", "show", "dated-config", "--json")
+
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)["config"]
+    assert config["day"] == "2026-01-02"
+    assert config["started"] == "2026-01-02T03:04:05"
+
+
+def test_human_task_table_truncates_long_names_without_changing_json(capsys):
+    from pyruns.cli.commands import _print_human_task_table
+
+    long_name = "experiment-" + "x" * 80
+    _print_human_task_table([
+        {"name": long_name, "status": "completed", "created_at": "2026-08-09"},
+    ])
+
+    lines = capsys.readouterr().out.splitlines()
+    assert long_name not in lines[1]
+    assert "...  2026-08-09" in lines[1]
+    assert len(lines[1].split("  2026", 1)[0]) <= 64
+
+
+def test_corrupt_task_metadata_remains_visible_and_cannot_run(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    task_dir = workspace / TASKS_DIR / "broken-metadata"
+    task_dir.mkdir()
+    (task_dir / TASK_INFO_FILENAME).write_text("{not-json", encoding="utf-8")
+
+    listing = _run_cli(tmp_path, "-w", "shell", "ls", "--json")
+    assert listing.returncode == 0, listing.stderr
+    record = json.loads(listing.stdout)["tasks"][0]
+    assert record["name"] == "broken-metadata"
+    assert record["status"] == "failed"
+    assert "Could not load task metadata" in record["load_error"]
+
+    run = _run_cli(tmp_path, "-w", "shell", "run", "broken-metadata")
+    assert run.returncode == 1
+    assert "Could not load task metadata" in run.stderr
+
+
 def test_human_and_json_output_survive_ascii_terminal_encoding(tmp_path):
     workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
     from pyruns.core.task_generator import TaskGenerator
@@ -2316,35 +2571,61 @@ def test_config_get_set_unset_and_path(tmp_path):
         tmp_path,
         "config",
         "set",
-        "manager_max_workers",
-        "7",
+        "monitor_scrollback",
+        "200000",
     )
     assert set_result.returncode == 0
     get_result = _run_cli(
         tmp_path,
         "config",
         "get",
-        "manager_max_workers",
+        "monitor_scrollback",
     )
-    assert get_result.stdout.strip() == "7"
+    assert get_result.stdout.strip() == "200000"
     unset_result = _run_cli(
         tmp_path,
         "config",
         "unset",
-        "manager_max_workers",
+        "monitor_scrollback",
     )
     assert unset_result.returncode == 0
-    assert unset_result.stdout.strip() != "7"
+    assert unset_result.stdout.strip() != "200000"
+    settings_data = yaml.safe_load(
+        (tmp_path / "_pyruns_" / "_pyruns_settings.yaml").read_text(encoding="utf-8")
+    )
+    assert "monitor_scrollback" not in settings_data
+
+    listed = _run_cli(tmp_path, "config", "list", "--json")
+    values = json.loads(listed.stdout)
+    assert values["schema_version"] == 1
+    for removed_key in (
+        "generator_form_columns",
+        "generator_auto_timestamp",
+        "generator_mode",
+        "manager_columns",
+        "manager_max_workers",
+        "manager_execution_mode",
+        "ui_page_size",
+        "pinned_params",
+    ):
+        assert removed_key not in values
+
+    enabled_logs = _run_cli(tmp_path, "config", "set", "log_enabled", "true")
+    assert enabled_logs.returncode == 0, enabled_logs.stderr
+    logged_json = _run_cli(tmp_path, "-w", "shell", "ls", "--json")
+    assert logged_json.returncode == 0, logged_json.stderr
+    assert json.loads(logged_json.stdout)["schema_version"] == 1
+    assert "TaskManager initialised" in logged_json.stderr
 
 
 def test_config_rejects_unknown_keys_and_wrong_types(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    unknown = _run_cli(tmp_path, "config", "get", "unknown")
+    unknown = _run_cli(tmp_path, "config", "get", "manager_max_workers")
     wrong_type = _run_cli(
         tmp_path,
         "config",
         "set",
-        "manager_max_workers",
+        "monitor_scrollback",
         "text",
     )
     assert unknown.returncode == 1
@@ -2386,9 +2667,14 @@ def test_config_rejects_non_finite_numbers(tmp_path, key, value):
     ("key", "value"),
     [
         ("ui_port", "70000"),
-        ("manager_max_workers", "-3"),
+        ("monitor_chunk_size", "-3"),
+        ("monitor_chunk_size", str(4 * 1024 * 1024 + 1)),
+        ("monitor_scrollback", "1000001"),
+        ("monitor_line_height", "2.5001"),
         ("shell_mode", "nonsense"),
         ("gpu_scheduler_memory_used_pct", "101"),
+        ("gpu_scheduler_stable_seconds", "0"),
+        ("gpu_scheduler_max_wait_seconds", "0"),
     ],
 )
 def test_config_rejects_out_of_range_and_unknown_choice_values(tmp_path, key, value):
@@ -2408,6 +2694,29 @@ def test_project_config_does_not_require_workspace_selection(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert Path(result.stdout.strip()) == tmp_path / "_pyruns_" / "_pyruns_settings.yaml"
+
+
+def test_directory_context_uses_target_project_logging_settings(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    bootstrap_shell_workspace(str(source / "_pyruns_"))
+    bootstrap_shell_workspace(str(target / "_pyruns_"))
+    (source / "_pyruns_" / "_pyruns_settings.yaml").write_text(
+        "log_enabled: true\nlog_level: INFO\n",
+        encoding="utf-8",
+    )
+    (target / "_pyruns_" / "_pyruns_settings.yaml").write_text(
+        "log_enabled: false\nlog_level: INFO\n",
+        encoding="utf-8",
+    )
+
+    result = _run_cli(source, "-C", str(target), "-w", "shell", "ls", "--json")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["schema_version"] == 1
+    assert "TaskManager initialised" not in result.stderr
 
 
 def test_metrics_does_not_require_workspace(tmp_path):

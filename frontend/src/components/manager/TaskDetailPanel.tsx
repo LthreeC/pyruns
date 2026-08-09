@@ -14,7 +14,7 @@ import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
-import { useToastStore } from '@/store'
+import { useTaskDetailDraftStore, useToastStore } from '@/store'
 import type { Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
@@ -44,7 +44,7 @@ function clampPanelWidth(value: number) {
   }
   const viewportMax = typeof window === 'undefined'
     ? MAX_PANEL_WIDTH
-    : Math.max(320, window.innerWidth - 8)
+    : Math.max(0, window.innerWidth - 8)
   const viewportMin = Math.min(MIN_PANEL_WIDTH, viewportMax)
   return Math.min(Math.min(MAX_PANEL_WIDTH, viewportMax), Math.max(viewportMin, value))
 }
@@ -151,7 +151,11 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const taskRequestSeqRef = useRef(0)
+  const notesDraftRevisionRef = useRef(0)
+  const envDraftRevisionRef = useRef(0)
   const notify = useToastStore(state => state.notify)
+  const setTaskDetailDraftDirty = useTaskDetailDraftStore(state => state.setDirty)
+  const clearTaskDetailDraft = useTaskDetailDraftStore(state => state.clear)
   currentTaskNameRef.current = task.name
 
   const startPanelResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -193,6 +197,8 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       return
     }
 
+    notesDraftRevisionRef.current += 1
+    envDraftRevisionRef.current += 1
     setTab('info')
     setNotes(task.notes || '')
     setEnvPairs(buildEnvPairs(task))
@@ -311,6 +317,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   }, [resizingPanel])
 
   const markEnvDirty = useCallback(() => {
+    envDraftRevisionRef.current += 1
     setEnvDirty(true)
     setEnvSaveStatus('idle')
     setEnvSaveError('')
@@ -319,11 +326,14 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const handleSaveNotes = useCallback(async () => {
     const requestId = ++taskRequestSeqRef.current
     const taskName = task.name
+    const draftRevision = notesDraftRevisionRef.current
     setSaving(true)
     try {
       await api.updateNotes(taskName, notes)
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
-      setNotesDirty(false)
+      if (notesDraftRevisionRef.current === draftRevision) {
+        setNotesDirty(false)
+      }
       onRefresh()
       notify({ tone: 'success', title: 'Notes saved', detail: taskName })
     } catch (err) {
@@ -344,6 +354,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
     const requestId = ++taskRequestSeqRef.current
     const taskName = task.name
+    const draftRevision = envDraftRevisionRef.current
     setSaving(true)
     setEnvSaveStatus('idle')
     setEnvSaveError('')
@@ -355,14 +366,17 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     try {
       const response = await api.updateEnv(taskName, env)
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
-      const savedEnv = response.task?.env || env
-      staleEnvPropSignatureRef.current = envSignature(task.env || {})
-      setEnvPairs(buildEnvPairsFromEnv(savedEnv))
-      setEnvDirty(false)
-      setEnvSaveStatus('saved')
+      if (envDraftRevisionRef.current === draftRevision) {
+        const savedEnv = response.task?.env || env
+        staleEnvPropSignatureRef.current = envSignature(task.env || {})
+        setEnvPairs(buildEnvPairsFromEnv(savedEnv))
+        setEnvDirty(false)
+        setEnvSaveStatus('saved')
+      }
       onRefresh()
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+      if (envDraftRevisionRef.current !== draftRevision) return
       setEnvSaveStatus('error')
       setEnvSaveError(errorMessage(err))
     } finally {
@@ -376,6 +390,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       return
     }
 
+    clearTaskDetailDraft(task.name)
     onClose()
   }
 
@@ -400,6 +415,14 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       setRenaming(false)
       return
     }
+    if (notesDirty || envDirty) {
+      notify({
+        tone: 'info',
+        title: 'Save task details before renaming',
+        detail: 'Save or discard the Notes and Env changes first.',
+      })
+      return
+    }
 
     const requestId = ++taskRequestSeqRef.current
     const taskName = task.name
@@ -408,6 +431,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       await api.renameTask(taskName, newName.trim())
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       onRefresh()
+      clearTaskDetailDraft(taskName)
       onClose()
       notify({ tone: 'success', title: 'Task renamed', detail: newName.trim() })
     } catch (err) {
@@ -420,7 +444,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
         setRenaming(false)
       }
     }
-  }, [task.name, newName, onRefresh, onClose, notify])
+  }, [clearTaskDetailDraft, envDirty, task.name, newName, notesDirty, onRefresh, onClose, notify])
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
@@ -439,6 +463,14 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const hasUnsavedChanges = notesDirty || envDirty || renameDirty
 
   useEffect(() => {
+    setTaskDetailDraftDirty(task.name, hasUnsavedChanges)
+  }, [hasUnsavedChanges, setTaskDetailDraftDirty, task.name])
+
+  useEffect(() => () => {
+    clearTaskDetailDraft(task.name)
+  }, [clearTaskDetailDraft, task.name])
+
+  useEffect(() => {
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null
@@ -454,10 +486,17 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     if (discardConfirmOpen) return
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) {
+        return
+      }
       if (event.key === 'Escape') {
         event.preventDefault()
-        if (hasUnsavedChanges) setDiscardConfirmOpen(true)
-        else onClose()
+        if (hasUnsavedChanges) {
+          setDiscardConfirmOpen(true)
+        } else {
+          clearTaskDetailDraft(task.name)
+          onClose()
+        }
         return
       }
       if (event.key !== 'Tab') return
@@ -484,7 +523,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [discardConfirmOpen, hasUnsavedChanges, onClose])
+  }, [clearTaskDetailDraft, discardConfirmOpen, hasUnsavedChanges, onClose, task.name])
 
   return (
     <>
@@ -507,7 +546,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           aria-modal="true"
           aria-labelledby="task-detail-title"
           tabIndex={-1}
-          className="animate-slide-in relative flex h-full min-w-[360px] max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
+          className="animate-slide-in relative flex h-full min-w-0 max-w-[calc(100vw-8px)] flex-col border-l border-border-subtle bg-surface-raised"
           style={{ width: panelWidth }}
           onPointerDown={() => {
             backdropPointerStartedRef.current = false
@@ -659,6 +698,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
               <textarea
                 value={notes}
                 onChange={event => {
+                  notesDraftRevisionRef.current += 1
                   setNotes(event.target.value)
                   setNotesDirty(true)
                 }}
@@ -813,6 +853,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
         confirmVariant="danger"
         onConfirm={() => {
           setDiscardConfirmOpen(false)
+          clearTaskDetailDraft(task.name)
           onClose()
         }}
         onCancel={() => setDiscardConfirmOpen(false)}

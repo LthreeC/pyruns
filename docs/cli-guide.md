@@ -23,7 +23,7 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 - 裸 `pyr` 或 `pyruns` 都只打印包含常用命令和快速示例的精简帮助；`pyr help -a` 才展开完整命令索引。
 - `run` 默认等待全部任务结束。
 - 批量任务中任意一个失败，命令退出码就是 `1`。
-- `--detach` 只改变等待方式，不改变任务语义。
+- `--detach` 只改变等待方式，不改变任务语义；它不能和 `--dry-run` 同时使用。
 - `rm` 立即执行且不确认，但只是可恢复的软删除。
 - Web UI 只能由 `pyr ui` / `pyruns ui` 或对应的 `dev` 命令显式启动。
 - Windows 后台 runner、任务进程和环境探测不会创建额外控制台窗口。
@@ -33,7 +33,7 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 - 正常数据写 stdout。
 - 进度提示和错误写 stderr。
 - 用法错误返回 `2`。
-- `--json` 提供稳定机器输出，只能放在明确支持它的子命令后。
+- `--json` 提供严格、版本化的机器输出，只能放在明确支持它的子命令后；顶层包含 `schema_version: 1`。
 - `log` 默认原样输出日志，不混入表格或装饰文本。
 
 ## 2. 全局选项
@@ -41,7 +41,6 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 ```text
 -C, --directory PATH              从 PATH 目录执行
 -w, --workspace NAME|PATH|SCRIPT  精确选择工作区
---no-color                        禁用 ANSI 颜色
 --debug                           内部异常时显示 traceback
 --version                         输出版本并退出
 ```
@@ -127,7 +126,7 @@ pyr exec --dry-run --name smoke -- python -V
 pyr exec --dry-run --name smoke --json -- python -V
 ```
 
-计划会说明目标 workspace 是否需要创建、任务名是否可精确使用、工作目录、argv 或 shell 表达式、解释器、环境变量和 detach 状态。`--dry-run` 不创建 `_pyruns_`、设置文件或任务目录，也不会执行用户命令。显式任务名已存在时仍会像真实执行一样报错；省略 `--name` 且默认名称冲突时，计划会说明真实执行需要生成唯一后缀。
+计划会说明目标 workspace 是否需要创建、任务名是否可精确使用、工作目录、argv 或 shell 表达式、解释器和环境变量。`--dry-run` 不创建 `_pyruns_`、设置文件或任务目录，也不会执行用户命令。它与 `--detach` 互斥，因为预览不会产生可供后台接管的任务。显式任务名已存在时仍会像真实执行一样报错；省略 `--name` 且默认名称冲突时，计划会说明真实执行需要生成唯一后缀。
 
 ### 直接运行 Shell 脚本文件
 
@@ -169,7 +168,7 @@ pyr exec --name pipeline -c "python preprocess.py && python train.py | tee train
 
 ### 环境变量
 
-少量变量用 `-e` / `--env` 后接一个或多个 `KEY=VALUE`。`--` 是明确边界，所以多个变量不会吞掉目标命令；该选项仍可重复，旧命令保持兼容：
+少量变量用 `-e` / `--env` 后接一个或多个 `KEY=VALUE`。`--` 是明确边界，所以多个变量不会吞掉目标命令；`-e` 也可以按变量组重复使用：
 
 ```bash
 pyr exec --name gpu0 -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
@@ -256,6 +255,8 @@ pyr -w train run --config configs/quick.yaml --name quick --dry-run --json
 - 默认等待所有任务进入最终状态。
 - 任一任务失败，批量命令返回 `1`。
 - `--detach` 在 runner 接受全部任务后返回。
+- `-j/--jobs` 不会超过实际选择的任务数量。
+- runner 只接收部分任务时会列出 `claimed` / `unclaimed` 名称并返回 `1`，不会伪报整批成功。
 
 ## 8. 查询：`ls`、`status`、`show`
 
@@ -269,6 +270,8 @@ pyr -w train ls --status running --status queued
 pyr -w train ls --sort name --reverse
 pyr -w train ls --trash
 ```
+
+正常任务列表会显示 `PIN` 标记，并在 JSON 摘要中提供 `pinned` 布尔值。置顶任务在所有排序方式下始终位于普通任务之前；`--reverse` 只反转置顶组和普通组各自内部的顺序。
 
 查看工作区汇总：
 
@@ -286,7 +289,7 @@ pyr -w train show baseline@2
 pyr -w train show baseline --run 2
 ```
 
-`show` 包含任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`show --json` 还提供对齐的运行时长、退出码、源码状态、record 和 track 历史。`TASK@RUN` 与 `TASK --run RUN` 都可选择一个历史运行，并显示该次运行的开始时间、结束时间、时长、原始退出码、PID、源码状态、record、track 和日志路径。
+`show` 包含置顶状态、任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`show --json` 还提供对齐的运行时长、退出码、源码状态、record 和 track 历史。`TASK@RUN` 与 `TASK --run RUN` 都可选择一个历史运行，并显示该次运行的开始时间、结束时间、时长、原始退出码、PID、源码状态、record、track 和日志路径。
 
 ## 9. 日志：`log`
 
@@ -314,7 +317,7 @@ pyr -w train log baseline --path --json
 
 `TASK@RUN` 是 `show` 和 `log` 的历史运行短语法，等价于 `TASK --run RUN`。`RUN` 必须是已有的正整数运行编号；`TASK@RUN` 不能再和 `--run` 组合，历史日志也不能 `--follow`。`@` 因此是保留分隔符，不能用于新任务名。
 
-`log` 没有全屏交互查看器。`log -f` 只是持续向 stdout 输出字节，并不是交互终端。原始日志模式不能与 `--json` 混用；需要机器可读数据时先取 `--path`。
+`log` 没有全屏交互查看器。`log -f` 只是持续向 stdout 输出字节，并不是交互终端。原始日志模式不能与 `--json` 混用；需要机器可读数据时先取 `--path`。日志尚不存在时 `log --path` 也返回失败，不会输出一个虚构的未来文件路径。
 
 ## 10. 等待和停止：`wait`、`stop`
 
@@ -334,7 +337,7 @@ pyr -w train stop baseline
 pyr -w train stop seed1 seed2 --timeout 15
 ```
 
-取消请求写入任务元数据，拥有任务的 runner 读取请求并终止对应任务，而不是让另一个 CLI 进程假装拥有它。成功停止后的终态是 `cancelled`，不会再与真正的执行失败 `failed` 混在一起；取消后的任务仍可用 `run TASK` 重跑。
+取消请求写入任务元数据，拥有任务的 runner 读取请求并终止对应任务，而不是让另一个 CLI 进程假装拥有它。成功停止后的终态是 `cancelled`，不会再与真正的执行失败 `failed` 混在一起；取消后的任务仍可用 `run TASK` 重跑。`stop --timeout 0` 表示无限等待。
 
 ## 11. 生命周期：`rm`、`restore`、`mv`、`pin`
 
@@ -373,13 +376,14 @@ CSV 与 JSON 使用相同语义：每个任务的每次运行各占一条记录�
 
 ```bash
 pyr config list
-pyr config get manager_max_workers
-pyr config set manager_max_workers 4
-pyr config unset manager_max_workers
+pyr config get monitor_scrollback
+pyr config set monitor_scrollback 200000
+pyr config unset monitor_scrollback
 pyr config path
 ```
 
 `config set` 将值解析为 YAML，并根据已知配置项的类型验证。未知 key 或类型错误不会静默写入。
+批量运行的并发数与后端不是项目配置；每次用 `run -j/--jobs --backend` 显式指定。
 
 ## 14. 系统快照：`metrics`
 
@@ -403,6 +407,10 @@ pyr ui shell --no-browser               # headless server
 pyr dev train.py                        # 热更新开发模式
 ```
 
+UI 只监听本机回环地址，并为每次启动生成新的随机访问令牌。自动打开浏览器时会完成
+令牌到 `HttpOnly` 会话 cookie 的交换；使用 `--no-browser` 时必须复制终端打印的完整 URL。
+不要共享该 URL；Web UI 不是远程多用户服务。
+
 `ui` 和 `dev` 才负责启动 Web 服务。裸 `pyr` 与 `pyruns` 永远只显示帮助。UI 的目标直接写在 `ui` 后面；`-w` 只用于 `ls`、`run`、`show` 等任务工作区命令。长时间运行的 UI 命令不接受 `--json`。
 
 ## 16. JSON 契约
@@ -418,7 +426,7 @@ pyr config list --json
 pyr metrics --json
 ```
 
-JSON 只写 stdout；用户可读错误仍写 stderr，并由退出码表示成功或失败。不要通过解析彩色表格判断状态。
+JSON 只写 stdout；用户可读错误仍写 stderr，并由退出码表示成功或失败。YAML 日期和时间戳转换为 ISO 8601 字符串；不支持的对象、NaN 和 Infinity 会明确失败，不会被任意字符串化。不要通过解析彩色表格判断状态。
 
 ## 17. 退出码
 

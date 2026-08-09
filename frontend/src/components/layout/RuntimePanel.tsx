@@ -12,8 +12,9 @@ import {
 import clsx from 'clsx'
 import * as api from '@/api'
 import type { GPUMetric, RuntimeInfo, SystemMetrics } from '@/types'
-import { useRuntimeStore, useThemeStore, useToastStore, useWorkspaceStore } from '@/store'
+import { requestConfirmation, useRuntimeStore, useThemeStore, useToastStore, useWorkspaceStore } from '@/store'
 import { errorMessage } from '@/utils/errors'
+import ConfirmDialog from '@/components/shared/ConfirmDialog'
 
 const CodeTextEditor = lazy(() => import('@/components/shared/CodeTextEditor'))
 
@@ -24,6 +25,9 @@ interface RuntimePanelProps {
 }
 
 type RuntimePage = 'python' | 'env' | 'gpu'
+type RuntimeDirtyPages = Record<RuntimePage, boolean>
+type RuntimePageRevisions = Record<RuntimePage, number>
+const RUNTIME_PAGES: RuntimePage[] = ['python', 'env', 'gpu']
 type PythonRuntimeMode = 'follow' | 'conda' | 'python'
 type GpuTaskMode = 'single' | 'multi'
 type GpuSelectionMode = 'auto' | 'specified'
@@ -163,6 +167,14 @@ function isInsidePanel(panel: HTMLDivElement | null, target: EventTarget | null)
   return Boolean(panel && target instanceof Node && panel.contains(target))
 }
 
+function cleanRuntimeDirtyPages(): RuntimeDirtyPages {
+  return { python: false, env: false, gpu: false }
+}
+
+function initialRuntimePageRevisions(): RuntimePageRevisions {
+  return { python: 0, env: 0, gpu: 0 }
+}
+
 function gpuKey(gpu: GPUMetric) {
   return gpu.uuid || String(gpu.id)
 }
@@ -207,10 +219,12 @@ function gpuRuleReasons(
 export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps) {
   const refreshWorkspace = useWorkspaceStore(s => s.fetch)
   const workspaceSettings = useWorkspaceStore(s => s.workspace?.settings)
+  const workspaceRunRoot = useWorkspaceStore(s => s.workspace?.run_root)
   const cachedRuntime = useRuntimeStore(s => s.runtime)
   const runtimeLoading = useRuntimeStore(s => s.loading)
   const fetchRuntime = useRuntimeStore(s => s.fetchRuntime)
   const updateRuntime = useRuntimeStore(s => s.updateRuntime)
+  const setRuntimeDirty = useRuntimeStore(s => s.setDirty)
   const theme = useThemeStore(s => s.theme)
   const panelRef = useRef<HTMLDivElement>(null)
   const closeGestureRef = useRef<{
@@ -221,7 +235,10 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     dragged: boolean
   } | null>(null)
   const runtimeLoadSeqRef = useRef(0)
+  const runtimeSaveSeqRef = useRef(0)
   const gpuMetricsLoadSeqRef = useRef(0)
+  const runtimeDirtyPagesRef = useRef<RuntimeDirtyPages>(cleanRuntimeDirtyPages())
+  const runtimePageRevisionsRef = useRef<RuntimePageRevisions>(initialRuntimePageRevisions())
   const notify = useToastStore(state => state.notify)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(cachedRuntime)
   const [envText, setEnvText] = useState('')
@@ -251,6 +268,33 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [runtimeDirtyPages, setRuntimeDirtyPages] = useState<RuntimeDirtyPages>(cleanRuntimeDirtyPages)
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false)
+
+  const runtimeDirty = Object.values(runtimeDirtyPages).some(Boolean)
+  const markRuntimeDirty = (page: RuntimePage) => {
+    runtimeLoadSeqRef.current += 1
+    setLoading(false)
+    runtimePageRevisionsRef.current[page] += 1
+    runtimeDirtyPagesRef.current = { ...runtimeDirtyPagesRef.current, [page]: true }
+    setRuntimeDirtyPages(current => current[page] ? current : { ...current, [page]: true })
+  }
+  const clearRuntimeDirtyPage = (page: RuntimePage) => {
+    runtimeDirtyPagesRef.current = { ...runtimeDirtyPagesRef.current, [page]: false }
+    setRuntimeDirtyPages(current => current[page] ? { ...current, [page]: false } : current)
+  }
+  const clearAllRuntimeDirty = () => {
+    const clean = cleanRuntimeDirtyPages()
+    runtimeDirtyPagesRef.current = clean
+    setRuntimeDirtyPages(clean)
+  }
+  const requestClose = () => {
+    if (runtimeDirty) {
+      setDiscardConfirmOpen(true)
+      return
+    }
+    onClose()
+  }
 
   const condaAvailable = !!runtime?.conda.available
   const envCount = Object.keys(runtime?.global_env || {}).length
@@ -386,13 +430,18 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     && !!gpuMetrics
     && passingGpuCount < requestedGpuCount
 
-  const applyRuntimeState = (next: RuntimeInfo) => {
-    setRuntime(next)
-    setEnvText(formatEnv(next.global_env))
+  const applyPythonRuntimeState = (next: RuntimeInfo) => {
     setPythonPath(next.python_executable)
     setCondaEnv(next.conda_env)
     setCondaExecutable(next.conda_executable || 'conda')
     setRuntimeMode(modeFromRuntime(next))
+  }
+
+  const applyEnvRuntimeState = (next: RuntimeInfo) => {
+    setEnvText(formatEnv(next.global_env))
+  }
+
+  const applyGpuRuntimeState = (next: RuntimeInfo) => {
     setGpuSchedulerEnabled(next.gpu_scheduler?.enabled ?? false)
     setGpuTaskMode(next.gpu_scheduler?.task_mode === 'multi' ? 'multi' : 'single')
     setGpuSelectionMode(next.gpu_scheduler?.selection_mode === 'specified' ? 'specified' : 'auto')
@@ -406,6 +455,24 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setGpuMaxTasksPerGpu(String(next.gpu_scheduler?.max_tasks_per_gpu ?? 1))
     setGpuRespectCudaVisibleDevices(next.gpu_scheduler?.respect_cuda_visible_devices ?? true)
     setGpuRequireSameModel(next.gpu_scheduler?.require_same_gpu_model ?? false)
+  }
+
+  const applyRuntimePageState = (next: RuntimeInfo, page: RuntimePage) => {
+    if (page === 'python') {
+      applyPythonRuntimeState(next)
+    } else if (page === 'env') {
+      applyEnvRuntimeState(next)
+    } else {
+      applyGpuRuntimeState(next)
+    }
+  }
+
+  const applyRuntimeState = (next: RuntimeInfo) => {
+    setRuntime(next)
+    applyPythonRuntimeState(next)
+    applyEnvRuntimeState(next)
+    applyGpuRuntimeState(next)
+    clearAllRuntimeDirty()
   }
 
   const applyWorkspaceRuntimeSettings = (settings?: Record<string, any>) => {
@@ -428,6 +495,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setGpuMaxTasksPerGpu(String(settingNumber(settings?.gpu_scheduler_max_tasks_per_gpu, 1, 1)))
     setGpuRespectCudaVisibleDevices(settingBool(settings?.gpu_scheduler_respect_cuda_visible_devices, true))
     setGpuRequireSameModel(settingBool(settings?.gpu_scheduler_require_same_gpu_model, false))
+    clearAllRuntimeDirty()
   }
 
   const loadRuntime = async (showFeedback = false) => {
@@ -483,6 +551,8 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
   useEffect(() => {
     if (open) {
+      runtimeSaveSeqRef.current += 1
+      setSaving(false)
       if (cachedRuntime) {
         applyRuntimeState(cachedRuntime)
       } else {
@@ -490,7 +560,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       }
       void loadRuntime()
     }
-  }, [open])
+  }, [open, workspaceRunRoot])
 
   useEffect(() => {
     if (!open || activePage !== 'gpu') {
@@ -498,6 +568,23 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     }
     void loadGpuMetrics()
   }, [activePage, open])
+
+  useEffect(() => {
+    setRuntimeDirty(open && runtimeDirty)
+    return () => setRuntimeDirty(false)
+  }, [open, runtimeDirty, setRuntimeDirty])
+
+  useEffect(() => {
+    if (!open || !runtimeDirty) {
+      return
+    }
+    const guardUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', guardUnload)
+    return () => window.removeEventListener('beforeunload', guardUnload)
+  }, [open, runtimeDirty])
 
   useEffect(() => {
     if (!open) {
@@ -535,7 +622,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       if (gesture.startedInside || gesture.dragged || isInsidePanel(panelRef.current, event.target)) {
         return
       }
-      onClose()
+      requestClose()
     }
     const handleDocumentPointerCancel = (event: PointerEvent) => {
       if (closeGestureRef.current?.pointerId !== event.pointerId) {
@@ -545,7 +632,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onClose()
+        requestClose()
         return
       }
       if (event.key !== 'Tab' || !panelRef.current) {
@@ -588,7 +675,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       document.removeEventListener('pointercancel', handleDocumentPointerCancel)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [open, onClose])
+  }, [open, onClose, runtimeDirty])
 
   const refreshWorkspaceInBackground = () => {
     void refreshWorkspace().catch(err => {
@@ -601,22 +688,43 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }
 
   const saveRuntime = async (
+    page: RuntimePage,
     payload: Parameters<typeof api.updateRuntimeInfo>[0],
     successTitle = 'Runtime saved',
   ) => {
     runtimeLoadSeqRef.current += 1
+    const saveSeq = ++runtimeSaveSeqRef.current
+    const pageRevision = runtimePageRevisionsRef.current[page]
+    const workspaceKey = String(workspaceRunRoot || '')
+    const requestIsCurrent = () => (
+      saveSeq === runtimeSaveSeqRef.current
+      && workspaceKey === String(useWorkspaceStore.getState().workspace?.run_root || '')
+    )
     setSaving(true)
     setError('')
     try {
-      applyRuntimeState(await updateRuntime(payload, false))
+      const next = await updateRuntime(payload, false)
+      if (!requestIsCurrent()) {
+        return
+      }
+      setRuntime(next)
+      if (pageRevision === runtimePageRevisionsRef.current[page]) {
+        applyRuntimePageState(next, page)
+        clearRuntimeDirtyPage(page)
+      }
       notify({ tone: 'success', title: successTitle })
       refreshWorkspaceInBackground()
     } catch (err) {
+      if (!requestIsCurrent()) {
+        return
+      }
       const message = errorMessage(err, 'Could not save runtime settings.')
       setError(message)
       notify({ tone: 'error', title: 'Could not save runtime', detail: message })
     } finally {
-      setSaving(false)
+      if (requestIsCurrent()) {
+        setSaving(false)
+      }
     }
   }
 
@@ -628,7 +736,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         notify({ tone: 'error', title: 'Conda environment required', detail: message })
         return
       }
-      void saveRuntime({
+      void saveRuntime('python', {
         conda_env: condaEnv,
         conda_executable: condaExecutable,
         python_executable: '',
@@ -636,20 +744,24 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       return
     }
     if (runtimeMode === 'python') {
-      void saveRuntime({
+      void saveRuntime('python', {
         python_executable: pythonPath,
         conda_env: '',
       }, 'Python runtime saved')
       return
     }
-    void saveRuntime({
+    void saveRuntime('python', {
       conda_env: '',
       python_executable: '',
     }, 'Python runtime saved')
   }
 
   const chooseRuntimeMode = (mode: PythonRuntimeMode) => {
+    if (mode === runtimeMode) {
+      return
+    }
     setRuntimeMode(mode)
+    markRuntimeDirty('python')
     setError('')
     if (mode === 'conda' && !condaEnv) {
       const activeConda = runtime?.conda.envs.find(env => env.active)?.name
@@ -665,7 +777,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       return
     }
 
-    void saveRuntime({
+    void saveRuntime('gpu', {
       gpu_scheduler: {
         enabled: gpuSchedulerEnabled,
         task_mode: gpuTaskMode,
@@ -688,13 +800,34 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setError('')
     setExpandedGpuKey(null)
     if (runtime) {
-      applyRuntimeState(runtime)
+      applyGpuRuntimeState(runtime)
     } else {
-      applyWorkspaceRuntimeSettings(workspaceSettings)
+      setGpuSchedulerEnabled(settingBool(workspaceSettings?.gpu_scheduler_enabled, false))
+      setGpuTaskMode(cleanSettingText(workspaceSettings?.gpu_scheduler_task_mode) === 'multi' ? 'multi' : 'single')
+      setGpuSelectionMode(cleanSettingText(workspaceSettings?.gpu_scheduler_selection_mode) === 'specified' ? 'specified' : 'auto')
+      setGpuCount(String(settingNumber(workspaceSettings?.gpu_scheduler_gpus_per_task, 1, 1)))
+      setGpuDeviceIds(formatDeviceIdsSetting(workspaceSettings?.gpu_scheduler_device_ids))
+      setGpuMemoryUsedPct(String(settingNumber(workspaceSettings?.gpu_scheduler_memory_used_pct, 40, 0, 100)))
+      setGpuMinFreeMemoryGb(String(settingNumber(workspaceSettings?.gpu_scheduler_min_free_memory_gb, 40, 0)))
+      setGpuComputeUsedPct(String(settingNumber(workspaceSettings?.gpu_scheduler_compute_used_pct, 30, 0, 100)))
+      setGpuStableSeconds(String(settingNumber(workspaceSettings?.gpu_scheduler_stable_seconds, 15, 1)))
+      setGpuMaxWaitHours(Math.max(1, Math.round(settingNumber(workspaceSettings?.gpu_scheduler_max_wait_seconds, 172800, 1) / 3600)))
+      setGpuMaxTasksPerGpu(String(settingNumber(workspaceSettings?.gpu_scheduler_max_tasks_per_gpu, 1, 1)))
+      setGpuRespectCudaVisibleDevices(settingBool(workspaceSettings?.gpu_scheduler_respect_cuda_visible_devices, true))
+      setGpuRequireSameModel(settingBool(workspaceSettings?.gpu_scheduler_require_same_gpu_model, false))
     }
+    clearRuntimeDirtyPage('gpu')
   }
 
-  const refreshPanel = () => {
+  const refreshPanel = async () => {
+    if (runtimeDirty && !(await requestConfirmation({
+      title: 'Discard runtime changes?',
+      description: 'Discard unsaved runtime changes and reload settings?',
+      confirmLabel: 'Discard and Reload',
+      confirmVariant: 'danger',
+    }))) {
+      return
+    }
     void loadRuntime(true)
     if (activePage === 'gpu') {
       void loadGpuMetrics(true)
@@ -729,7 +862,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       role="dialog"
       aria-modal="true"
       aria-label="Runtime settings"
-      className="runtime-panel fixed bottom-3 z-50 flex max-h-[calc(100vh-24px)] w-[620px] flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-xl"
+      className="runtime-panel fixed bottom-3 z-50 flex max-h-[calc(100dvh-24px)] w-[620px] flex-col overflow-hidden rounded-lg border border-border bg-surface-raised shadow-xl"
       style={{ left, maxWidth: `calc(100vw - ${left + 12}px)` }}
       onClick={event => event.stopPropagation()}
     >
@@ -741,7 +874,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
           </div>
         </div>
         <div role="tablist" aria-label="Runtime sections" className="inline-flex rounded-md bg-surface-overlay p-0.5">
-          {(['python', 'env', 'gpu'] as RuntimePage[]).map(page => (
+          {RUNTIME_PAGES.map((page, pageIndex) => (
             <button
               key={page}
               type="button"
@@ -749,32 +882,54 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               aria-pressed={activePage === page}
               role="tab"
               aria-selected={activePage === page}
+              aria-controls={`runtime-panel-${page}`}
+              id={`runtime-tab-${page}`}
+              tabIndex={activePage === page ? 0 : -1}
               data-runtime-initial-focus={activePage === page ? 'true' : undefined}
+              onKeyDown={event => {
+                let nextIndex: number | null = null
+                if (event.key === 'ArrowRight') nextIndex = (pageIndex + 1) % RUNTIME_PAGES.length
+                if (event.key === 'ArrowLeft') nextIndex = (pageIndex - 1 + RUNTIME_PAGES.length) % RUNTIME_PAGES.length
+                if (event.key === 'Home') nextIndex = 0
+                if (event.key === 'End') nextIndex = RUNTIME_PAGES.length - 1
+                if (nextIndex == null) return
+                event.preventDefault()
+                const nextPage = RUNTIME_PAGES[nextIndex]
+                setActivePage(nextPage)
+                window.requestAnimationFrame(() => document.getElementById(`runtime-tab-${nextPage}`)?.focus())
+              }}
               className={clsx(
-                'inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors sm:h-7 sm:px-2.5',
+                'inline-flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors sm:h-7 sm:min-w-0 sm:px-2.5',
                 activePage === page
                   ? 'bg-surface-raised text-accent shadow-sm'
                   : 'text-txt-secondary hover:text-txt-primary'
               )}
             >
               {page === 'python' ? 'Python' : page === 'env' ? 'Env' : 'GPU'}
-              {page === 'env' && envCount > 0 && <span className="h-1.5 w-1.5 rounded-full bg-status-completed" />}
+              {runtimeDirtyPages[page] ? (
+                <>
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+                  <span className="sr-only"> (unsaved changes)</span>
+                </>
+              ) : page === 'env' && envCount > 0 ? (
+                <span className="h-1.5 w-1.5 rounded-full bg-status-completed" aria-hidden="true" />
+              ) : null}
             </button>
           ))}
         </div>
         <button
           type="button"
-          onClick={refreshPanel}
+          onClick={() => { void refreshPanel() }}
           disabled={loading || runtimeLoading || gpuMetricsLoading || saving}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50 sm:h-8 sm:w-8"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50 sm:h-8 sm:w-8"
           aria-label="Reload runtime"
         >
           {loading || runtimeLoading || gpuMetricsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         </button>
         <button
           type="button"
-          onClick={onClose}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
+          onClick={requestClose}
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
           aria-label="Close runtime panel"
         >
           <X className="h-4 w-4" />
@@ -789,7 +944,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         )}
 
         {activePage === 'python' && (
-          <section className="space-y-3">
+          <section id="runtime-panel-python" role="tabpanel" aria-labelledby="runtime-tab-python" className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
                 {modeItems.map(item => (
@@ -798,11 +953,12 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                     type="button"
                     onClick={() => chooseRuntimeMode(item.id)}
                     className={clsx(
-                      'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                      'h-11 rounded-md px-3 text-xs font-medium transition-colors sm:h-auto sm:py-1.5',
                       runtimeMode === item.id
                         ? 'bg-surface-raised text-accent shadow-sm'
                         : 'text-txt-secondary hover:text-txt-primary'
                     )}
+                    aria-pressed={runtimeMode === item.id}
                   >
                     {item.title}
                   </button>
@@ -811,8 +967,8 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               <button
                 type="button"
                 onClick={savePythonRuntime}
-                disabled={saving}
-                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                disabled={saving || !runtimeDirtyPages.python}
+                className="inline-flex h-11 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50 sm:h-8"
               >
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                 Save
@@ -833,10 +989,11 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 <div>
                   <label className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Conda</label>
                   <select
+                    aria-label="Conda environment"
                     value={condaEnv}
                     disabled={saving}
-                    onChange={event => setCondaEnv(event.target.value)}
-                    className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-50"
+                    onChange={event => { setCondaEnv(event.target.value); markRuntimeDirty('python') }}
+                    className="h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-50 sm:h-9"
                   >
                     <option value="">Choose environment</option>
                     {runtime?.process.conda_env && !runtime.conda.envs.some(env => env.name === runtime.process.conda_env) && (
@@ -879,9 +1036,10 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 </button>
                 {showCondaAdvanced && (
                   <input
+                    aria-label="Conda executable"
                     value={condaExecutable}
-                    onChange={event => setCondaExecutable(event.target.value)}
-                    className="h-8 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-xs text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                    onChange={event => { setCondaExecutable(event.target.value); markRuntimeDirty('python') }}
+                    className="h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-xs text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 sm:h-8"
                     placeholder="conda"
                   />
                 )}
@@ -892,9 +1050,10 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               <div>
                 <label className="mb-1 block text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Python path</label>
                 <input
+                  aria-label="Python executable path"
                   value={pythonPath}
-                  onChange={event => setPythonPath(event.target.value)}
-                  className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                  onChange={event => { setPythonPath(event.target.value); markRuntimeDirty('python') }}
+                  className="h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 sm:h-9"
                   placeholder={runtime?.process.python_executable || 'python path'}
                 />
               </div>
@@ -903,7 +1062,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         )}
 
         {activePage === 'env' && (
-          <section className="space-y-3">
+          <section id="runtime-panel-env" role="tabpanel" aria-labelledby="runtime-tab-env" className="space-y-3">
             <Suspense fallback={(
               <div role="status" className="runtime-env-editor flex items-center justify-center rounded-md border border-border-subtle bg-surface-overlay text-xs text-txt-tertiary">
                 Loading environment editor…
@@ -912,7 +1071,8 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               <CodeTextEditor
                 language="shell"
                 value={envText}
-                onChange={setEnvText}
+                onChange={value => { setEnvText(value); markRuntimeDirty('env') }}
+                ariaLabel="Workspace environment variables editor"
                 theme={codeMirrorTheme}
                 className="runtime-env-editor"
                 wrapStorageKey="pyruns.runtime.env.wrap"
@@ -923,9 +1083,9 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
             <div className="flex items-center justify-end">
               <button
                 type="button"
-                onClick={() => saveRuntime({ global_env_text: envText }, 'Workspace env saved')}
-                disabled={saving}
-                className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                onClick={() => saveRuntime('env', { global_env_text: envText }, 'Workspace env saved')}
+                disabled={saving || !runtimeDirtyPages.env}
+                className="inline-flex h-11 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50 sm:h-8"
               >
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                 Save
@@ -935,7 +1095,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         )}
 
         {activePage === 'gpu' && (
-          <section className="space-y-4" aria-labelledby="gpu-scheduler-title">
+          <section id="runtime-panel-gpu" role="tabpanel" aria-labelledby="runtime-tab-gpu" className="space-y-4">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <h2 id="gpu-scheduler-title" className="text-sm font-semibold text-txt-primary">GPU scheduling</h2>
@@ -946,7 +1106,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 role="switch"
                 aria-checked={gpuSchedulerEnabled}
                 aria-label="GPU scheduling"
-                onClick={() => setGpuSchedulerEnabled(value => !value)}
+                onClick={() => { setGpuSchedulerEnabled(value => !value); markRuntimeDirty('gpu') }}
                 className={clsx(
                   'relative h-6 w-11 flex-none border rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30',
                   gpuSchedulerEnabled ? 'border-accent bg-accent' : 'border-border-strong bg-surface-overlay',
@@ -1016,14 +1176,15 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                     const value = event.target.value
                     setGpuCount(value)
                     setGpuTaskMode(Number(value) > 1 ? 'multi' : 'single')
+                    markRuntimeDirty('gpu')
                   }}
-                  className="h-9 w-full rounded-md border border-border-subtle bg-surface-raised px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="h-11 w-full rounded-md border border-border-subtle bg-surface-raised px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9"
                 />
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-txt-secondary">Minimum free memory</span>
                 <div className={clsx(
-                  'flex h-9 overflow-hidden rounded-md border bg-surface-raised focus-within:ring-2',
+                  'flex h-11 overflow-hidden rounded-md border bg-surface-raised focus-within:ring-2 sm:h-9',
                   gpuValidationIssues.some(issue => issue.includes('free is not possible') || issue.includes('Minimum free memory'))
                     ? 'border-rose-500 focus-within:border-rose-500 focus-within:ring-rose-500/15'
                     : 'border-border-subtle focus-within:border-accent focus-within:ring-accent/15',
@@ -1033,7 +1194,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                     min={0}
                     value={gpuMinFreeMemoryGb}
                     disabled={!gpuSchedulerEnabled}
-                    onChange={event => setGpuMinFreeMemoryGb(event.target.value)}
+                    onChange={event => { setGpuMinFreeMemoryGb(event.target.value); markRuntimeDirty('gpu') }}
                     aria-invalid={gpuValidationIssues.some(issue => issue.includes('free is not possible') || issue.includes('Minimum free memory'))}
                     className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
                   />
@@ -1042,13 +1203,13 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               </label>
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-txt-secondary">Maximum wait</span>
-                <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-raised focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+                <div className="flex h-11 overflow-hidden rounded-md border border-border-subtle bg-surface-raised focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15 sm:h-9">
                   <input
                     type="number"
                     min={1}
                     value={gpuMaxWaitHours}
                     disabled={!gpuSchedulerEnabled}
-                    onChange={event => setGpuMaxWaitHours(numberInputValue(event.target.value, 48, 1))}
+                    onChange={event => { setGpuMaxWaitHours(numberInputValue(event.target.value, 48, 1)); markRuntimeDirty('gpu') }}
                     className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
                   />
                   <span className="flex w-11 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">hr</span>
@@ -1138,10 +1299,10 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                       <button
                         key={item.id}
                         type="button"
-                        onClick={() => setGpuSelectionMode(item.id)}
+                        onClick={() => { setGpuSelectionMode(item.id); markRuntimeDirty('gpu') }}
                         aria-pressed={gpuSelectionMode === item.id}
                         className={clsx(
-                          'h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
+                          'h-11 rounded-md px-2.5 text-xs font-medium transition-colors sm:h-7',
                           gpuSelectionMode === item.id
                             ? 'bg-surface-raised text-accent shadow-sm'
                             : 'text-txt-secondary hover:text-txt-primary',
@@ -1158,18 +1319,18 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                     <span className="mb-1 block text-xs font-medium text-txt-secondary">GPU indices</span>
                     <input
                       value={gpuDeviceIds}
-                      onChange={event => setGpuDeviceIds(event.target.value)}
-                      className="h-9 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15"
+                      onChange={event => { setGpuDeviceIds(event.target.value); markRuntimeDirty('gpu') }}
+                      className="h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 sm:h-9"
                       placeholder="0,1"
                     />
                   </label>
                 )}
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <CompactNumberField label="Maximum memory use" value={gpuMemoryUsedPct} suffix="%" min={0} max={100} onChange={setGpuMemoryUsedPct} />
-                  <CompactNumberField label="Maximum compute use" value={gpuComputeUsedPct} suffix="%" min={0} max={100} onChange={setGpuComputeUsedPct} />
-                  <CompactNumberField label="Stable for" value={gpuStableSeconds} suffix="sec" min={1} onChange={setGpuStableSeconds} />
-                  <CompactNumberField label="Tasks per GPU" value={gpuMaxTasksPerGpu} suffix="max" min={1} onChange={setGpuMaxTasksPerGpu} />
+                  <CompactNumberField label="Maximum memory use" value={gpuMemoryUsedPct} suffix="%" min={0} max={100} onChange={value => { setGpuMemoryUsedPct(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label="Maximum compute use" value={gpuComputeUsedPct} suffix="%" min={0} max={100} onChange={value => { setGpuComputeUsedPct(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label="Stable for" value={gpuStableSeconds} suffix="sec" min={1} onChange={value => { setGpuStableSeconds(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label="Tasks per GPU" value={gpuMaxTasksPerGpu} suffix="max" min={1} onChange={value => { setGpuMaxTasksPerGpu(value); markRuntimeDirty('gpu') }} />
                 </div>
 
                 <p className="text-2xs leading-5 text-txt-tertiary">
@@ -1180,7 +1341,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                   <input
                     type="checkbox"
                     checked={gpuRespectCudaVisibleDevices}
-                    onChange={event => setGpuRespectCudaVisibleDevices(event.target.checked)}
+                    onChange={event => { setGpuRespectCudaVisibleDevices(event.target.checked); markRuntimeDirty('gpu') }}
                     className="mt-0.5 h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
                   />
                   <span>
@@ -1195,7 +1356,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                   <input
                     type="checkbox"
                     checked={gpuRequireSameModel}
-                    onChange={event => setGpuRequireSameModel(event.target.checked)}
+                    onChange={event => { setGpuRequireSameModel(event.target.checked); markRuntimeDirty('gpu') }}
                     className="h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
                   />
                   <span>Require the same model for multi-GPU tasks</span>
@@ -1208,7 +1369,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 type="button"
                 onClick={resetGpuScheduler}
                 disabled={saving}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50"
+                className="inline-flex h-11 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50 sm:h-8"
               >
                 <RotateCcw className="h-3.5 w-3.5" /> Reset
               </button>
@@ -1216,8 +1377,8 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 <button
                   type="button"
                   onClick={saveGpuScheduler}
-                  disabled={saving || gpuValidationIssues.length > 0}
-                  className="inline-flex h-8 min-w-20 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-txt-tertiary"
+                  disabled={saving || !runtimeDirtyPages.gpu || gpuValidationIssues.length > 0}
+                  className="inline-flex h-11 min-w-20 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-txt-tertiary sm:h-8"
                 >
                   {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                   Save
@@ -1230,6 +1391,20 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
           </section>
         )}
       </div>
+      <ConfirmDialog
+        open={discardConfirmOpen}
+        title="Discard unsaved runtime changes?"
+        description="Your runtime edits have not been saved. Closing this panel will discard them."
+        confirmLabel="Discard"
+        confirmVariant="danger"
+        onConfirm={() => {
+          setDiscardConfirmOpen(false)
+          clearAllRuntimeDirty()
+          setRuntimeDirty(false)
+          onClose()
+        }}
+        onCancel={() => setDiscardConfirmOpen(false)}
+      />
     </div>
   )
 }
@@ -1252,7 +1427,7 @@ function CompactNumberField({
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-txt-secondary">{label}</span>
-      <div className="flex h-9 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
+      <div className="flex h-11 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15 sm:h-9">
         <input
           type="number"
           min={min}

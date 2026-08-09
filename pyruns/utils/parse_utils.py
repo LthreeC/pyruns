@@ -2,10 +2,16 @@ import ast
 import functools
 import os
 import shlex
+import tempfile
 import yaml
 from typing import Dict, Any, List, Optional, Tuple
 
-from .._config import CONFIG_DEFAULT_FILENAME
+from .._config import CONFIG_DEFAULT_FILENAME, MAX_CONFIG_FILE_BYTES
+from .info_io import (
+    _replace_with_retry,
+    validate_workspace_directory,
+    validate_workspace_file,
+)
 
 
 def _cache_key(filepath: str) -> Tuple[str, int, int]:
@@ -236,22 +242,45 @@ def resolve_config_path(config_path: str, script_dir: str) -> Optional[str]:
 
 def generate_config_file(pyruns_dir: str, filepath: str, params: Dict[str, Dict[str, Any]]) -> str:
     """Auto-generate ``config_default.yaml`` from argparse params. Returns the _pyruns_ directory."""
+    validate_workspace_directory(pyruns_dir)
     os.makedirs(pyruns_dir, exist_ok=True)
+    validate_workspace_directory(pyruns_dir)
 
     config_file = os.path.join(pyruns_dir, CONFIG_DEFAULT_FILENAME)
-    
-    with open(config_file, "w", encoding="utf-8") as f:
-        f.write(f"# Auto-generated for {os.path.basename(filepath)}\n\n")
+    validate_workspace_file(config_file, pyruns_dir, label=CONFIG_DEFAULT_FILENAME)
 
-        for key, info in params.items():
-            default = info.get("default")
-            help_text = info.get("help", "")
-            
-            line = yaml.safe_dump({key: default}, sort_keys=False).strip()
-            
-            if help_text:
-                f.write(f"{line}  # {help_text}\n")
-            else:
-                f.write(f"{line}\n")
+    lines = [f"# Auto-generated for {os.path.basename(filepath)}\n\n"]
+    for key, info in params.items():
+        default = info.get("default")
+        help_text = info.get("help", "")
+        line = yaml.safe_dump({key: default}, sort_keys=False).strip()
+        lines.append(f"{line}  # {help_text}\n" if help_text else f"{line}\n")
+
+    content = "".join(lines)
+    if len(content.encode("utf-8")) > MAX_CONFIG_FILE_BYTES:
+        raise ValueError(
+            f"Generated config is too large (max {MAX_CONFIG_FILE_BYTES} bytes): {config_file}"
+        )
+
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{CONFIG_DEFAULT_FILENAME}.",
+        suffix=".tmp",
+        dir=pyruns_dir,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        validate_workspace_file(config_file, pyruns_dir, label=CONFIG_DEFAULT_FILENAME)
+        _replace_with_retry(temp_path, config_file)
+        temp_path = ""
+    finally:
+        if temp_path and os.path.lexists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
     
     return pyruns_dir

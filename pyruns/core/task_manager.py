@@ -8,7 +8,6 @@ import dataclasses
 import os
 import re
 import socket
-import shutil
 import threading
 import time
 import uuid
@@ -40,12 +39,19 @@ from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.info_io import (
     ensure_run_slot,
     load_task_info,
+    prepare_task_log_path,
     run_slot_count,
     task_info_lock,
     update_task_info,
+    validate_task_directory,
     validate_task_name,
+    validate_tasks_root,
 )
-from pyruns.utils.process_utils import is_pid_running, kill_process
+from pyruns.utils.process_utils import (
+    is_pid_running,
+    kill_process,
+    process_identity_matches,
+)
 from pyruns.utils.settings import load_settings
 from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.events import event_sys
@@ -58,6 +64,7 @@ from pyruns.utils.task_files import (
 
 logger = get_logger(__name__)
 _STOP_TASK_INFO_LOCK_TIMEOUT_SEC = 1.0
+_ACTIVE_DELETE_SETTLE_TIMEOUT_SEC = 15.0
 _GPU_SCHEDULE_LOCK_TIMEOUT_SEC = 2.0
 _REACTIVE_DISK_REFRESH_INTERVAL_SEC = 1.0
 _GPU_QUEUE_RUN_RE = re.compile(r"\bRun #(\d+)\b")
@@ -93,6 +100,7 @@ class TaskManager:
 
             tasks_dir = os.path.join(ROOT_DIR, TASKS_DIR)
 
+        validate_tasks_root(tasks_dir)
         self.tasks_dir = tasks_dir
         self.tasks: List[Dict[str, Any]] = []
         self._tasks_by_name: Dict[str, Dict[str, Any]] = {}
@@ -248,6 +256,8 @@ class TaskManager:
         "start_times",
         "finish_times",
         "pids",
+        "pid_create_times",
+        "run_statuses",
         "durations",
         "exit_codes",
         "source_states",
@@ -319,6 +329,8 @@ class TaskManager:
                 "start_times": list(task.get("start_times", []) or []),
                 "finish_times": list(task.get("finish_times", []) or []),
                 "pids": list(task.get("pids", []) or []),
+                "pid_create_times": list(task.get("pid_create_times", []) or []),
+                "run_statuses": list(task.get("run_statuses", []) or []),
                 "durations": list(task.get("durations", []) or []),
                 "exit_codes": list(task.get("exit_codes", []) or []),
                 "source_states": list(task.get("source_states", []) or []),
@@ -419,10 +431,21 @@ class TaskManager:
             return True, []
 
         try:
+            validate_tasks_root(self.tasks_dir)
             entries = []
             with os.scandir(self.tasks_dir) as it:
                 for entry in it:
-                    if entry.is_dir() and entry.name != TRASH_DIR:
+                    # Task names cannot start with '.', so hidden directories are
+                    # always Pyruns internals (for example transactional staging)
+                    # or foreign metadata. Never surface them as corrupt tasks.
+                    if not entry.name.startswith(".") and entry.name != TRASH_DIR:
+                        try:
+                            validate_task_directory(entry.path)
+                        except ValueError as exc:
+                            logger.warning("Ignoring unsafe task directory %s: %s", entry.path, exc)
+                            continue
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
                         try:
                             mtime_ns = entry.stat().st_mtime_ns
                         except OSError:
@@ -430,7 +453,7 @@ class TaskManager:
                         entries.append((entry.name, mtime_ns))
             entries.sort(key=lambda x: x[1], reverse=True)
             return True, [name for name, _ in entries]
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             logger.debug("Could not list task directories under %s: %s", self.tasks_dir, exc)
             return False, []
 
@@ -535,9 +558,17 @@ class TaskManager:
         return self._is_current_runner(info)
 
     def _running_info_has_live_owner(self, info: Dict[str, Any]) -> bool:
-        pid = self._latest_pid(info)
+        pid, created_at = self._current_process_identity(info)
         foreign_runner_live = self._is_foreign_live_runner(info)
-        current_runner_live = self._is_current_runner(info) and bool(pid) and is_pid_running(pid)
+        current_runner_live = bool(
+            self._is_current_runner(info)
+            and pid
+            and (
+                process_identity_matches(pid, created_at)
+                if created_at is not None
+                else is_pid_running(pid)
+            )
+        )
         return bool(foreign_runner_live or current_runner_live)
 
     def _fail_unowned_running_info_if_needed(
@@ -574,6 +605,16 @@ class TaskManager:
             return False
         return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
+    @staticmethod
+    def _directory_identity(path: str) -> tuple[int, int] | None:
+        """Return the identity of one directory without following a link."""
+
+        try:
+            value = os.lstat(path)
+        except OSError:
+            return None
+        return int(value.st_dev), int(value.st_ino)
+
     def _refresh_memory_task_from_disk_info(
         self,
         task_name: str,
@@ -602,19 +643,26 @@ class TaskManager:
         if not os.path.exists(info_path):
             return None
 
+        metadata_error = ""
         try:
-            info = load_task_info(task_dir)
+            info = load_task_info(task_dir, raise_error=True)
             if not info:
-                return None
+                metadata_error = "Task metadata is empty"
         except Exception as exc:
+            metadata_error = f"Could not load task metadata: {exc}"
             logger.error("Error loading info for %s: %s", dir_name, exc)
-            return None
-        info = self._strip_queued_placeholder_run(info)
+            info = {}
+        if info:
+            info = self._strip_queued_placeholder_run(info)
 
-        task_kind, config_data, config_text, load_error = read_task_payload(task_dir, info)
+        task_kind, config_data, config_text, payload_error = read_task_payload(task_dir, info)
+        load_error = "; ".join(
+            message for message in (metadata_error, payload_error) if message
+        )
 
         task_name = dir_name
-        info, _ = self._fail_unowned_running_info_if_needed(task_name, task_dir, info)
+        if info:
+            info, _ = self._fail_unowned_running_info_if_needed(task_name, task_dir, info)
 
         try:
             mtime_ns = os.stat(info_path).st_mtime_ns
@@ -624,7 +672,7 @@ class TaskManager:
         task = {
             "dir": task_dir.replace("\\", "/"),
             "name": task_name,
-            "status": info.get("status", "pending"),
+            "status": info.get("status", "failed" if metadata_error else "pending"),
             "created_at": info.get("created_at"),
             "config": config_data,
             "config_text": config_text,
@@ -644,6 +692,8 @@ class TaskManager:
             "start_times": info.get("start_times", []),
             "finish_times": info.get("finish_times", []),
             "pids": info.get("pids", []),
+            "pid_create_times": info.get("pid_create_times", []),
+            "run_statuses": info.get("run_statuses", []),
             "durations": info.get("durations", []),
             "exit_codes": info.get("exit_codes", []),
             "source_states": info.get("source_states", []),
@@ -894,6 +944,8 @@ class TaskManager:
             "start_times",
             "finish_times",
             "pids",
+            "pid_create_times",
+            "run_statuses",
             "durations",
             "exit_codes",
             "source_states",
@@ -928,6 +980,8 @@ class TaskManager:
             "start_times",
             "finish_times",
             "pids",
+            "pid_create_times",
+            "run_statuses",
             "durations",
             "exit_codes",
             "source_states",
@@ -1483,7 +1537,7 @@ class TaskManager:
         action_task["run_index"] = int(disk_info.get("run_index", run_slot_count(disk_info)) or 0)
 
         if was_running:
-            pid = self._latest_pid(disk_info) if disk_info else None
+            pid, created_at = self._current_process_identity(disk_info)
             try:
                 self._persist_pending_stop_summary(
                     action_task,
@@ -1495,15 +1549,50 @@ class TaskManager:
                     require_current_runner=True,
                 )
             except TimeoutError as exc:
-                logger.warning("Could not persist cancel summary for %s yet: %s", target_name, exc)
+                logger.warning("Could not lock task state to cancel %s: %s", target_name, exc)
+                return False
             except (TaskClaimConflict, TaskStateConflict) as exc:
                 logger.info("Cancel skipped for %s because disk state changed: %s", target_name, exc)
                 latest = load_task_info(target_ref["dir"]) or disk_info
                 self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], latest)
                 self.trigger_update()
                 return False
-            if pid and self._should_kill_task_process(disk_info or {}):
-                kill_process(int(pid))
+            if pid:
+                if created_at is None:
+                    logger.warning(
+                        "Refusing to stop %s because PID %s has no recorded creation time",
+                        target_name,
+                        pid,
+                    )
+                    self._clear_pending_stop_request(
+                        target_ref["dir"],
+                        run_index=action_task["run_index"],
+                    )
+                    return False
+                if not self._should_kill_task_process(disk_info or {}):
+                    self._clear_pending_stop_request(
+                        target_ref["dir"],
+                        run_index=action_task["run_index"],
+                    )
+                    return False
+                if not kill_process(int(pid), expected_create_time=created_at):
+                    logger.warning(
+                        "Could not verify termination of PID %s for %s",
+                        pid,
+                        target_name,
+                    )
+                    self._clear_pending_stop_request(
+                        target_ref["dir"],
+                        run_index=action_task["run_index"],
+                    )
+                    latest = load_task_info(target_ref["dir"]) or disk_info
+                    self._refresh_memory_task_from_disk_info(
+                        target_name,
+                        target_ref["dir"],
+                        latest,
+                    )
+                    self.trigger_update()
+                    return False
         else:
             try:
                 self._mark_failed_on_disk(
@@ -1516,7 +1605,8 @@ class TaskManager:
                     final_status="cancelled",
                 )
             except TimeoutError as exc:
-                logger.warning("Could not persist queued cancel state for %s yet: %s", target_name, exc)
+                logger.warning("Could not lock queued task state to cancel %s: %s", target_name, exc)
+                return False
             except TaskStateConflict as exc:
                 logger.info("Cancel skipped for %s because disk state changed: %s", target_name, exc)
                 latest = load_task_info(target_ref["dir"]) or disk_info
@@ -1527,12 +1617,19 @@ class TaskManager:
         with self._lock:
             current = self._tasks_by_name.get(target_name)
             if current and self._same_task_dir(str(current.get("dir", "") or ""), target_ref["dir"]):
-                current["status"] = "cancelled"
                 if was_running:
-                    self._clear_running_locked(target_name)
-                self.gpu_scheduler.release(target_name)
+                    latest = load_task_info(target_ref["dir"])
+                    if latest:
+                        self._apply_info_to_task(current, latest)
+                else:
+                    current["status"] = "cancelled"
+                    self.gpu_scheduler.release(target_name)
             self._recompute_processing_flag_locked()
-            logger.info("Cancelled task %s", target_name)
+            logger.info(
+                "%s task %s",
+                "Cancellation requested for" if was_running else "Cancelled",
+                target_name,
+            )
         self.trigger_update()
         return True
 
@@ -1559,6 +1656,13 @@ class TaskManager:
         if not candidates:
             return []
 
+        # Validate trash before stopping or otherwise mutating any selected task.
+        trash_dir = os.path.join(self.tasks_dir, TRASH_DIR)
+        validate_tasks_root(self.tasks_dir)
+        validate_tasks_root(trash_dir)
+        os.makedirs(trash_dir, exist_ok=True)
+        validate_tasks_root(trash_dir)
+
         targets: list[Dict[str, Any]] = []
         for candidate in candidates:
             disk_info = load_task_info(candidate["dir"])
@@ -1579,71 +1683,172 @@ class TaskManager:
 
             if disk_status in {"queued", "running"}:
                 previous_status = disk_status
-                marked_failed = False
-                pid = None
                 if disk_status == "running":
-                    pid = self._latest_pid(disk_info) if disk_info else None
-                    expected_statuses = {"running"}
-                    require_current_runner = True
-                else:
-                    expected_statuses = {"queued"}
-                    require_current_runner = False
-                try:
-                    self._mark_failed_on_disk(
-                        action_task,
-                        event="stopped",
-                        reason="deleted_while_active",
-                        detail_lines=[f"previous_status={previous_status}"],
-                        lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
-                        expected_statuses=expected_statuses,
-                        require_current_runner=require_current_runner,
+                    pid, created_at = self._current_process_identity(disk_info or {})
+                    try:
+                        self._persist_pending_stop_summary(
+                            action_task,
+                            event="stopped",
+                            reason="deleted_while_active",
+                            detail_lines=[f"previous_status={previous_status}"],
+                            lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                            expected_statuses={"running"},
+                            require_current_runner=True,
+                        )
+                    except TimeoutError as exc:
+                        logger.warning(
+                            "Delete skipped for %s because task state is busy: %s",
+                            candidate["name"],
+                            exc,
+                        )
+                        continue
+                    except (TaskClaimConflict, TaskStateConflict) as exc:
+                        logger.info(
+                            "Delete skipped for %s because disk state changed: %s",
+                            candidate["name"],
+                            exc,
+                        )
+                        latest = load_task_info(candidate["dir"])
+                        if latest:
+                            self._refresh_memory_task_from_disk_info(
+                                candidate["name"],
+                                candidate["dir"],
+                                latest,
+                            )
+                        continue
+
+                    if pid:
+                        terminated = bool(
+                            created_at is not None
+                            and self._should_kill_task_process(disk_info or {})
+                            and kill_process(int(pid), expected_create_time=created_at)
+                        )
+                        if not terminated:
+                            self._clear_pending_stop_request(
+                                candidate["dir"],
+                                run_index=action_task["run_index"],
+                            )
+                            logger.warning(
+                                "Delete skipped for %s because process termination was not verified",
+                                candidate["name"],
+                            )
+                            continue
+
+                    settled = self._wait_for_task_settle(
+                        candidate["name"],
+                        candidate["dir"],
                     )
-                    marked_failed = True
-                except TimeoutError as exc:
-                    logger.warning("Could not persist delete state for %s yet: %s", candidate["name"], exc)
-                    marked_failed = True
-                except (TaskClaimConflict, TaskStateConflict) as exc:
-                    logger.info("Delete skipped for %s because disk state changed: %s", candidate["name"], exc)
-                    latest = load_task_info(candidate["dir"])
-                    if latest:
-                        self._refresh_memory_task_from_disk_info(candidate["name"], candidate["dir"], latest)
-                    continue
-                if marked_failed:
+                    if settled is None:
+                        logger.warning(
+                            "Delete skipped for %s because its worker did not settle",
+                            candidate["name"],
+                        )
+                        continue
                     with self._lock:
                         current = self._tasks_by_name.get(candidate["name"])
                         if current and self._same_task_dir(str(current.get("dir", "") or ""), candidate["dir"]):
-                            current["status"] = "failed"
+                            self._apply_info_to_task(current, settled)
                             self._clear_running_locked(candidate["name"])
                             self.gpu_scheduler.release(candidate["name"])
                             self._recompute_processing_flag_locked()
-                if disk_status == "running" and pid and self._should_kill_task_process(disk_info or {}):
-                    kill_process(int(pid))
+                else:
+                    try:
+                        self._mark_failed_on_disk(
+                            action_task,
+                            event="stopped",
+                            reason="deleted_while_active",
+                            detail_lines=[f"previous_status={previous_status}"],
+                            lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                            expected_statuses={"queued"},
+                        )
+                    except TimeoutError as exc:
+                        logger.warning(
+                            "Delete skipped for %s because task state is busy: %s",
+                            candidate["name"],
+                            exc,
+                        )
+                        continue
+                    except TaskStateConflict as exc:
+                        logger.info(
+                            "Delete skipped for %s because disk state changed: %s",
+                            candidate["name"],
+                            exc,
+                        )
+                        latest = load_task_info(candidate["dir"])
+                        if latest:
+                            self._refresh_memory_task_from_disk_info(
+                                candidate["name"],
+                                candidate["dir"],
+                                latest,
+                            )
+                        continue
+                    with self._lock:
+                        current = self._tasks_by_name.get(candidate["name"])
+                        if current and self._same_task_dir(
+                            str(current.get("dir", "") or ""),
+                            candidate["dir"],
+                        ):
+                            current["status"] = "failed"
+                            self.gpu_scheduler.release(candidate["name"])
+                            self._recompute_processing_flag_locked()
 
-            targets.append({"name": candidate["name"], "dir": candidate["dir"]})
+            try:
+                validate_task_directory(candidate["dir"])
+                source_identity = self._directory_identity(candidate["dir"])
+            except ValueError as exc:
+                logger.warning("Delete skipped for %s: %s", candidate["name"], exc)
+                continue
+            if source_identity is None or not os.path.isdir(candidate["dir"]):
+                logger.warning(
+                    "Delete skipped for %s because its task directory disappeared",
+                    candidate["name"],
+                )
+                continue
+
+            targets.append({
+                "name": candidate["name"],
+                "dir": candidate["dir"],
+                "identity": source_identity,
+            })
 
         self.trigger_update()
-
-        trash_dir = os.path.join(self.tasks_dir, TRASH_DIR)
-        os.makedirs(trash_dir, exist_ok=True)
 
         deleted_names: list[str] = []
         for target in targets:
             folder = os.path.basename(target["dir"])
-            destination = os.path.join(trash_dir, folder)
-            if os.path.exists(destination):
-                destination = os.path.join(trash_dir, f"{folder}_{get_now_str()}")
-
             moved = False
-            for attempt in range(3):
-                try:
-                    shutil.move(target["dir"], destination)
-                    moved = True
-                    break
-                except Exception as exc:
-                    if attempt < 2:
-                        time.sleep(0.2)
-                    else:
-                        logger.error("Error moving task to trash after retries: %s", exc)
+            try:
+                # One shared namespace lock coordinates delete with restore.  The
+                # destination stays on the same filesystem and os.rename never
+                # interprets an existing directory as a container.
+                with task_info_lock(trash_dir):
+                    validate_tasks_root(self.tasks_dir)
+                    validate_tasks_root(trash_dir)
+                    validate_task_directory(target["dir"])
+                    if self._directory_identity(target["dir"]) != target["identity"]:
+                        raise OSError("task directory identity changed before delete")
+
+                    for attempt in range(3):
+                        destination = os.path.join(trash_dir, folder)
+                        if os.path.lexists(destination):
+                            destination = os.path.join(
+                                trash_dir,
+                                f"{folder}_{get_now_str()}_{uuid.uuid4().hex[:8]}",
+                            )
+                        if os.path.lexists(destination):
+                            continue
+                        try:
+                            os.rename(target["dir"], destination)
+                            moved = True
+                            break
+                        except FileExistsError:
+                            continue
+                        except PermissionError:
+                            if attempt >= 2:
+                                raise
+                            time.sleep(0.2)
+            except Exception as exc:
+                logger.error("Error moving task to trash safely: %s", exc)
             if moved:
                 deleted_names.append(str(target["name"]))
 
@@ -2185,8 +2390,8 @@ class TaskManager:
             disk_info = load_task_info(task["dir"])
             if not disk_info and not os.path.isdir(task["dir"]):
                 if status == "running":
-                    pid = self._latest_pid(task)
-                    if pid and self._should_kill_task_process(task):
+                    pid, created_at = self._current_process_identity(task)
+                    if pid and created_at is not None and self._should_kill_task_process(task):
                         try:
                             pid_value = int(pid)
                             if pid_value != os.getpid():
@@ -2195,7 +2400,10 @@ class TaskManager:
                                     pid_value,
                                     task_name,
                                 )
-                                kill_process(pid_value)
+                                kill_process(
+                                    pid_value,
+                                    expected_create_time=created_at,
+                                )
                         except Exception as exc:
                             logger.warning("Failed to kill pid %s on shutdown cleanup: %s", pid, exc)
                 with self._lock:
@@ -2211,8 +2419,9 @@ class TaskManager:
                 continue
             if disk_info and self._is_foreign_live_runner(disk_info):
                 continue
-            if status == "running":
-                pid = self._latest_pid(disk_info) if disk_info else None
+            termination_verified = True
+            if disk_status == "running":
+                pid, created_at = self._current_process_identity(disk_info or {})
                 if pid and self._should_kill_task_process(disk_info or {}):
                     try:
                         logger.info(
@@ -2220,9 +2429,22 @@ class TaskManager:
                             pid,
                             task_name,
                         )
-                        kill_process(int(pid))
+                        termination_verified = bool(
+                            created_at is not None
+                            and kill_process(
+                                int(pid),
+                                expected_create_time=created_at,
+                            )
+                        )
                     except Exception as exc:
+                        termination_verified = False
                         logger.warning("Failed to kill pid %s on shutdown cleanup: %s", pid, exc)
+            if not termination_verified:
+                logger.warning(
+                    "Shutdown cleanup left %s running because process termination was not verified",
+                    task_name,
+                )
+                continue
 
             try:
                 self._mark_failed_on_disk(
@@ -2234,6 +2456,7 @@ class TaskManager:
                 )
             except TimeoutError as exc:
                 logger.warning("Could not persist shutdown state for %s yet: %s", task_name, exc)
+                continue
 
             with self._lock:
                 current = self._resolve_identifier_locked(task_name)
@@ -2294,6 +2517,40 @@ class TaskManager:
             if pid:
                 return pid
         return None
+
+    @staticmethod
+    def _current_process_identity(
+        info: Dict[str, Any],
+    ) -> tuple[int | None, float | None]:
+        """Return the PID identity for the current run slot, never an older run."""
+
+        try:
+            run_index = int(info.get("run_index", 0) or 0)
+        except (TypeError, ValueError):
+            return None, None
+        if run_index <= 0:
+            return None, None
+
+        pids = list(info.get("pids", []) or [])
+        if run_index > len(pids):
+            return None, None
+        try:
+            pid = int(pids[run_index - 1])
+        except (TypeError, ValueError):
+            return None, None
+        if pid <= 0:
+            return None, None
+
+        create_times = list(info.get("pid_create_times", []) or [])
+        if run_index > len(create_times):
+            return pid, None
+        try:
+            created_at = float(create_times[run_index - 1])
+        except (TypeError, ValueError):
+            return pid, None
+        if created_at <= 0 or created_at != created_at:
+            return pid, None
+        return pid, created_at
 
     def _latest_pid_from_disk(self, task: Dict[str, Any]) -> Any:
         task_info = load_task_info(task["dir"])
@@ -2867,15 +3124,13 @@ class TaskManager:
         return "\n" if last_byte == b"\n" else "\n\n"
 
     def _append_gpu_queue_log(self, task: Dict[str, Any], title: str, lines: List[str]) -> None:
-        log_dir = os.path.join(str(task.get("dir", "")), RUN_LOGS_DIR)
-        os.makedirs(log_dir, exist_ok=True)
-        queue_log = os.path.join(log_dir, QUEUE_LOG_FILENAME)
         updated_at = get_now_str()
         status_summary = str(lines[0] if lines else title).strip()
         run_index = self._gpu_queue_run_index(lines)
         run_context = [f"Run log: run{run_index}.log"] if run_index is not None else []
         detail_lines = [status_summary, f"Updated at {updated_at}", *run_context, *lines[1:]]
         try:
+            queue_log = prepare_task_log_path(str(task.get("dir", "")), QUEUE_LOG_FILENAME)
             prefix = ""
             last_run_index = None
             if os.path.exists(queue_log) and os.path.getsize(queue_log) > 0:
@@ -2895,15 +3150,13 @@ class TaskManager:
             logger.error("Failed to write GPU queue log for %s: %s", task.get("name"), exc)
 
     def _append_gpu_wait_refresh(self, task: Dict[str, Any], lines: List[str]) -> None:
-        log_dir = os.path.join(str(task.get("dir", "")), RUN_LOGS_DIR)
-        os.makedirs(log_dir, exist_ok=True)
-        queue_log = os.path.join(log_dir, QUEUE_LOG_FILENAME)
         run_index = self._gpu_queue_run_index(lines)
         status_line = self._gpu_wait_refresh_line(lines)
         if not status_line:
             return
 
         try:
+            queue_log = prepare_task_log_path(str(task.get("dir", "")), QUEUE_LOG_FILENAME)
             prefix = ""
             last_run_index = None
             if os.path.exists(queue_log) and os.path.getsize(queue_log) > 0:
@@ -3073,9 +3326,6 @@ class TaskManager:
     ) -> None:
         """Append a structured failure/cancel summary block into error.log."""
 
-        log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
-        os.makedirs(log_dir, exist_ok=True)
-        error_log = os.path.join(log_dir, ERROR_LOG_FILENAME)
         block = (
             f"\n\n{'=' * 70}\n"
             f"[PYRUNS] {title}\n"
@@ -3083,10 +3333,69 @@ class TaskManager:
             + f"\n{'=' * 70}\n"
         )
         try:
+            error_log = prepare_task_log_path(task_dir, ERROR_LOG_FILENAME)
             with open(error_log, "a", encoding="utf-8") as handle:
                 handle.write(block)
         except Exception as exc:
             logger.error("Failed to write error.log for %s: %s", task_dir, exc)
+
+    def _clear_pending_stop_request(
+        self,
+        task_dir: str,
+        *,
+        run_index: int,
+    ) -> bool:
+        """Roll back a stop marker after identity verification or termination fails."""
+
+        def _apply(info: Dict[str, Any]) -> None:
+            if str(info.get("status", "") or "").lower() != "running":
+                return
+            if not self._is_current_runner(info):
+                return
+            summary = info.get("_pending_stop_summary")
+            if isinstance(summary, dict):
+                try:
+                    summary_run = int(summary.get("run_index", 0) or 0)
+                except (TypeError, ValueError):
+                    summary_run = 0
+                if summary_run == int(run_index):
+                    info.pop("_pending_stop_summary", None)
+            info.pop("cancel_requested_at", None)
+
+        try:
+            update_task_info(
+                task_dir,
+                _apply,
+                raise_error=True,
+                timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+            )
+            return True
+        except (OSError, TimeoutError, TypeError, ValueError):
+            return False
+
+    def _wait_for_task_settle(
+        self,
+        task_name: str,
+        task_dir: str,
+        *,
+        timeout: float = _ACTIVE_DELETE_SETTLE_TIMEOUT_SEC,
+    ) -> Dict[str, Any] | None:
+        """Wait until disk is terminal and the local worker released the task."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            try:
+                info = load_task_info(task_dir) or {}
+            except (OSError, TypeError, ValueError):
+                return None
+            status = str(info.get("status", "") or "").lower()
+            with self._lock:
+                locally_running = task_name in self._running_ids
+            if status not in {"queued", "running"} and not locally_running:
+                return info
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
 
     def _persist_pending_stop_summary(
         self,
@@ -3099,7 +3408,7 @@ class TaskManager:
         expected_statuses: set[str] | None = None,
         require_current_runner: bool = False,
     ) -> None:
-        """Store a stop summary on the active run so the worker can flush one final block."""
+        """Store a stop request without publishing a terminal state prematurely."""
 
         task_dir = task["dir"]
         finish_now = get_now_str()
@@ -3111,23 +3420,14 @@ class TaskManager:
                 raise TaskStateConflict(f"expected {sorted(expected_statuses)}, found {original_status!r}")
             if require_current_runner and not self._is_current_runner(task_info):
                 raise TaskClaimConflict("task already owned by another runner")
-            slot_count = run_slot_count(task_info)
-            target_index = max(run_index, slot_count)
-            if target_index > 0:
-                slot = ensure_run_slot(task_info, target_index)
-                if not task_info["finish_times"][slot]:
-                    task_info["finish_times"][slot] = finish_now
-            task_info["status"] = "cancelled"
-            task_info["progress"] = 0.0
+            target_index = max(run_index, run_slot_count(task_info), 1)
+            task_info.setdefault("cancel_requested_at", finish_now)
             task_info["_pending_stop_summary"] = {
-                "run_index": max(target_index, 1),
+                "run_index": target_index,
                 "event": event,
                 "reason": reason,
                 "detail_lines": list(detail_lines or []),
             }
-            self._clear_runner_lease_fields(task_info)
-            self._clear_gpu_schedule_info(task_info)
-            self._clear_gpu_wait_info(task_info)
 
         update_kwargs = {}
         if lock_timeout_sec is not None:
@@ -3135,7 +3435,6 @@ class TaskManager:
         updated = update_task_info(task_dir, _apply, **update_kwargs)
         if "status" in task:
             self._apply_info_to_task(task, updated)
-            task["status"] = "cancelled"
 
     def _apply_terminal_status_to_info(
         self,
@@ -3161,6 +3460,7 @@ class TaskManager:
             slot = ensure_run_slot(task_info, target_index)
             if not task_info["finish_times"][slot]:
                 task_info["finish_times"][slot] = finish_now
+            task_info["run_statuses"][slot] = final_status
         task_info["status"] = final_status
         task_info["progress"] = 0.0
         self._clear_runner_lease_fields(task_info)
@@ -3239,6 +3539,8 @@ class TaskManager:
             tuple(task.get("start_times", [])),
             tuple(task.get("finish_times", [])),
             tuple(task.get("pids", [])),
+            tuple(task.get("pid_create_times", [])),
+            tuple(task.get("run_statuses", [])),
             tuple(task.get("durations", [])),
             tuple(task.get("exit_codes", [])),
             tuple(task.get("source_states", [])),
@@ -3296,6 +3598,8 @@ class TaskManager:
                 "start_times": info.get("start_times", []),
                 "finish_times": info.get("finish_times", []),
                 "pids": info.get("pids", []),
+                "pid_create_times": info.get("pid_create_times", []),
+                "run_statuses": info.get("run_statuses", []),
                 "durations": info.get("durations", []),
                 "exit_codes": info.get("exit_codes", []),
                 "source_states": info.get("source_states", []),

@@ -2,15 +2,34 @@ import {
   Component,
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useState,
   type ComponentType,
   type ReactNode,
 } from 'react'
-import { Routes, Route, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import {
+  Routes,
+  Route,
+  type BlockerFunction,
+  useBlocker,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom'
 import AppShell from '@/components/layout/AppShell'
+import ConfirmDialog from '@/components/shared/ConfirmDialog'
+import ConfirmationHost from '@/components/shared/ConfirmationHost'
 import ToastHost from '@/components/shared/ToastHost'
-import { applyThemeClass, useWorkspaceStore, useThemeStore } from '@/store'
+import {
+  applyThemeClass,
+  useGeneratorStore,
+  useLauncherStore,
+  useRuntimeStore,
+  useTaskDetailDraftStore,
+  useWorkspaceStore,
+  useThemeStore,
+} from '@/store'
 
 function lazyWithReload<T extends ComponentType<any>>(
   key: string,
@@ -64,7 +83,7 @@ class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: bo
       return this.props.children
     }
     return (
-      <div role="alert" className="flex min-h-screen items-center justify-center bg-surface-base p-6">
+      <div role="alert" className="flex min-h-dvh items-center justify-center bg-surface-base p-6">
         <div className="w-full max-w-md rounded-lg border border-border-default bg-surface-raised p-6 text-center shadow-lg">
           <h1 className="text-base font-semibold text-txt-primary">Reconnect to the interface</h1>
           <p className="mt-2 text-sm leading-6 text-txt-secondary">
@@ -91,6 +110,37 @@ function RouteLoadingFallback() {
   )
 }
 
+const ROUTE_TITLES: Record<string, string> = {
+  '/': 'Dashboard',
+  '/launcher': 'Choose Workspace',
+  '/generator': 'Generator',
+  '/manager': 'Task Manager',
+  '/monitor': 'Monitor',
+}
+
+const LAUNCHER_SEARCH_PARAMS = ['launcher', 'mode', 'script', 'config']
+
+function searchWithoutLauncherState(search: string) {
+  const params = new URLSearchParams(search)
+  LAUNCHER_SEARCH_PARAMS.forEach(key => params.delete(key))
+  return params.toString()
+}
+
+function NotFoundPage() {
+  const navigate = useNavigate()
+  return (
+    <div className="flex h-full min-h-[20rem] items-center justify-center bg-surface-base p-6 text-center">
+      <div>
+        <h1 className="text-lg font-semibold text-txt-primary">Page not found</h1>
+        <p className="mt-2 text-sm text-txt-secondary">This Pyruns page does not exist.</p>
+        <button type="button" onClick={() => navigate('/')} className="mt-4 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white">
+          Go to Dashboard
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -98,6 +148,28 @@ export default function App() {
   const [showLauncher, setShowLauncher] = useState(false)
   const fetchWorkspace = useWorkspaceStore(s => s.fetch)
   const theme = useThemeStore(s => s.theme)
+  const runtimeDirty = useRuntimeStore(s => s.dirty)
+  const generatorDirty = useGeneratorStore(s => s.dirty)
+  const launcherLoading = useLauncherStore(s => s.loading)
+  const taskDetailDirty = useTaskDetailDraftStore(s => s.dirty)
+  const shouldWarnBeforeUnload = runtimeDirty || generatorDirty || taskDetailDirty || launcherLoading
+  const shouldBlockNavigation = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) => {
+      if (useLauncherStore.getState().loading) {
+        return true
+      }
+      if (!useTaskDetailDraftStore.getState().dirty) {
+        return false
+      }
+      if (currentLocation.pathname !== nextLocation.pathname) {
+        return true
+      }
+      return searchWithoutLauncherState(currentLocation.search)
+        !== searchWithoutLauncherState(nextLocation.search)
+    },
+    [],
+  )
+  const navigationBlocker = useBlocker(shouldBlockNavigation)
 
   useEffect(() => {
     applyThemeClass(theme)
@@ -108,8 +180,35 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!shouldWarnBeforeUnload) {
+      return
+    }
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [shouldWarnBeforeUnload])
+
+  useEffect(() => {
+    if (navigationBlocker.state === 'blocked' && !launcherLoading && !taskDetailDirty) {
+      navigationBlocker.reset()
+    }
+  }, [launcherLoading, navigationBlocker, taskDetailDirty])
+
+  useEffect(() => {
     setShowLauncher(searchParams.get('launcher') === '1' || location.pathname === '/launcher')
   }, [location.pathname, searchParams])
+
+  useEffect(() => {
+    const pageTitle = ROUTE_TITLES[location.pathname] || 'Page not found'
+    document.title = `${pageTitle} · Pyruns`
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById('route-heading')?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [location.pathname])
 
   const closeLauncher = () => {
     setShowLauncher(false)
@@ -127,7 +226,7 @@ export default function App() {
 
   return (
     <>
-      <RouteErrorBoundary key={`${location.pathname}${location.search}`}>
+      <RouteErrorBoundary key={location.pathname}>
         <Suspense fallback={<RouteLoadingFallback />}>
           <Routes>
             <Route element={<AppShell />}>
@@ -136,11 +235,30 @@ export default function App() {
               <Route path="generator" element={<GeneratorPage />} />
               <Route path="manager" element={<ManagerPage />} />
               <Route path="monitor" element={<MonitorPage />} />
+              <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
           {showLauncher && <LauncherPage onClose={closeLauncher} />}
         </Suspense>
       </RouteErrorBoundary>
+      <ConfirmDialog
+        open={navigationBlocker.state === 'blocked' && !launcherLoading && taskDetailDirty}
+        title="Discard unsaved task details?"
+        description="Your Notes, Env, or rename draft will be lost when you leave this page."
+        confirmLabel="Discard and Leave"
+        confirmVariant="danger"
+        onConfirm={() => {
+          if (navigationBlocker.state === 'blocked') {
+            navigationBlocker.proceed()
+          }
+        }}
+        onCancel={() => {
+          if (navigationBlocker.state === 'blocked') {
+            navigationBlocker.reset()
+          }
+        }}
+      />
+      <ConfirmationHost />
       <ToastHost />
     </>
   )

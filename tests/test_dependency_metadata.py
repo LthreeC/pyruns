@@ -230,6 +230,17 @@ def test_wheel_static_checker_rejects_stale_assets(tmp_path):
 
     assert any("stale static assets" in error for error in checker.check_wheel_static(stale_wheel, root=tmp_path))
 
+    changed_wheel = tmp_path / "changed.whl"
+    with zipfile.ZipFile(changed_wheel, "w") as wheel:
+        wheel.write(source_static / "index.html", "pyruns/web/static/index.html")
+        wheel.writestr("pyruns/web/static/assets/index-current.js", "console.log('stale')\n")
+        wheel.write(source_assets / "index-current.css", "pyruns/web/static/assets/index-current.css")
+
+    assert any(
+        "does not match source: assets/index-current.js" in error
+        for error in checker.check_wheel_static(changed_wheel, root=tmp_path)
+    )
+
 
 def test_frontend_static_checker_rejects_stale_assets(tmp_path, monkeypatch):
     frontend_dir = tmp_path / "frontend"

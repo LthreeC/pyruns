@@ -116,7 +116,7 @@ pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log
 pyr exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
 ```
 
-`-e` / `--env` 仍可重复，因此旧命令完全兼容。Pyruns 已自动为子进程设置 `PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1`。
+`-e` / `--env` 可以按变量组重复使用。Pyruns 已自动为子进程设置 `PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1`。
 
 变量较多时写入 UTF-8 env 文件：
 
@@ -249,6 +249,9 @@ pyr -C D:/work/my-project -w shell status
 
 ## 9. 稳定 JSON 输出
 
+所有 `--json` 结果都是严格 JSON 对象，顶层带有 `"schema_version": 1`。
+非有限数字不会被输出为非标准的 NaN 或 Infinity。
+
 脚本、CI 和 AI agent 应优先读取 JSON，而不是解析表格：
 
 ```bash
@@ -301,11 +304,14 @@ pyr -w train export -s completed -o results.csv
 
 ```bash
 pyr config list
-pyr config get manager_max_workers
-pyr config set manager_max_workers 4
-pyr config unset manager_max_workers
+pyr config get monitor_scrollback
+pyr config set monitor_scrollback 200000
+pyr config unset monitor_scrollback
 pyr config path
 ```
+
+批量运行的并发数与后端在每次 `run` 时通过 `-j/--jobs` 和 `--backend` 明确选择，
+不会藏在项目配置里。
 
 ## 12. 显式打开 Web UI
 
@@ -319,6 +325,10 @@ pyr ui shell                            # shell workspace
 pyr ui shell --no-browser               # headless server
 pyr dev train.py                        # 开发热更新
 ```
+
+每次 UI 启动都会打印一个带随机访问令牌的本机 URL。浏览器首次打开后会改用
+`HttpOnly` 会话 cookie，并从地址栏移除令牌；`--no-browser` 场景需要复制完整 URL，
+且不要分享给其他用户。UI 只面向本机使用，不是远程多用户服务。
 
 Web UI 与 CLI 共用 `_pyruns_` 状态。可以用 CLI 提交，再在 UI 中观察，或者反过来查询和取消。
 

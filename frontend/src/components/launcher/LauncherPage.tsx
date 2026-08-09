@@ -5,7 +5,11 @@ import {
   CheckCircle2, AlertTriangle, Loader2, History,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useLauncherStore, useWorkspaceStore } from '@/store'
+import {
+  confirmDiscardWorkspaceChanges,
+  useLauncherStore,
+  useWorkspaceStore,
+} from '@/store'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import type { ConfigCandidate, PathValidationResult } from '@/types'
 import * as api from '@/api'
@@ -56,7 +60,11 @@ function writeLaunchHistory(kind: LaunchHistoryKind, path: string): string[] {
     ...readLaunchHistory(kind).filter(item => item !== normalized),
   ].slice(0, LAUNCH_HISTORY_LIMIT)
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(LAUNCH_HISTORY_STORAGE_KEYS[kind], JSON.stringify(next))
+    try {
+      window.localStorage.setItem(LAUNCH_HISTORY_STORAGE_KEYS[kind], JSON.stringify(next))
+    } catch {
+      // Opening a workspace must not fail just because recent-path storage is unavailable.
+    }
   }
   return next
 }
@@ -65,24 +73,29 @@ type PathValidationState = {
   status: 'idle' | 'checking' | 'valid' | 'invalid'
   message: string
   normalizedPath: string
+  validatedPath: string
 }
 
 const emptyValidation: PathValidationState = {
   status: 'idle',
   message: '',
   normalizedPath: '',
+  validatedPath: '',
 }
 
-function validationFromResult(result: PathValidationResult): PathValidationState {
+function validationFromResult(result: PathValidationResult, validatedPath: string): PathValidationState {
   return {
     status: result.ok ? 'valid' : 'invalid',
     message: result.message,
     normalizedPath: result.normalized_path,
+    validatedPath,
   }
 }
 
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const backdropPointerStartedRef = useRef(false)
+  const launcherActionInFlightRef = useRef(false)
+  const launcherMountedRef = useRef(true)
   const modalRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const {
@@ -109,11 +122,32 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const debouncedScriptPath = useDebouncedValue(manualScriptPath.trim(), 300)
   const debouncedConfigPath = useDebouncedValue(manualConfigPath.trim(), 300)
   const debouncedShellRootPath = useDebouncedValue(manualShellRootPath.trim(), 300)
-  const scriptPathReady = manualScriptPath.trim().length > 0 && scriptValidation.status === 'valid'
-  const configPathReady = manualConfigPath.trim().length > 0 && configValidation.status === 'valid'
-  const shellPathReady = manualShellRootPath.trim().length > 0 && shellValidation.status === 'valid'
+  const scriptPathReady = manualScriptPath.trim().length > 0
+    && scriptValidation.status === 'valid'
+    && scriptValidation.validatedPath === manualScriptPath.trim()
+  const configPathReady = manualConfigPath.trim().length > 0
+    && configValidation.status === 'valid'
+    && configValidation.validatedPath === manualConfigPath.trim()
+  const shellPathReady = manualShellRootPath.trim().length > 0
+    && shellValidation.status === 'valid'
+    && shellValidation.validatedPath === manualShellRootPath.trim()
   const nativePickerAvailable = workspace?.native_file_picker === true
   const mustChooseConfig = requiresConfigTemplate || configSource === 'pyruns_load'
+
+  const requestClose = useCallback(() => {
+    if (launcherActionInFlightRef.current || useLauncherStore.getState().loading) {
+      return
+    }
+    onClose()
+  }, [onClose])
+
+  useEffect(() => {
+    launcherMountedRef.current = true
+    return () => {
+      launcherMountedRef.current = false
+      useLauncherStore.getState().reset()
+    }
+  }, [])
 
   const rememberLaunchPath = useCallback((kind: LaunchHistoryKind, path: string) => {
     const nextHistory = writeLaunchHistory(kind, path)
@@ -124,10 +158,13 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   }, [])
 
   const openSelectedWorkspace = useCallback(async (historyPath = '', yamlHistoryPath = '') => {
+    if (!(await confirmDiscardWorkspaceChanges())) {
+      return false
+    }
     setError('')
     try {
       const opened = await useLauncherStore.getState().openWorkspace()
-      if (!opened) {
+      if (!opened || !launcherMountedRef.current) {
         return false
       }
       const openedWorkspace = useWorkspaceStore.getState().workspace
@@ -137,6 +174,9 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       navigate('/')
       return true
     } catch (err: any) {
+      if (!launcherMountedRef.current) {
+        return false
+      }
       if (useLauncherStore.getState().step === 2) {
         useLauncherStore.setState({ step: 1 })
       }
@@ -156,11 +196,16 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     setError('')
     try {
       await selectScript(scriptPath)
+      if (!launcherMountedRef.current) {
+        return
+      }
       if (useLauncherStore.getState().step === 2) {
         await openSelectedWorkspace(scriptPath)
       }
     } catch (err: any) {
-      setError(err.message)
+      if (launcherMountedRef.current) {
+        setError(err.message)
+      }
     }
   }, [openSelectedWorkspace, selectScript])
 
@@ -170,17 +215,37 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       setError('Enter a folder path.')
       return
     }
+    if (!(await confirmDiscardWorkspaceChanges())) {
+      return
+    }
+    if (launcherActionInFlightRef.current) {
+      return
+    }
 
+    launcherActionInFlightRef.current = true
+    useLauncherStore.setState({ loading: true })
     setManualShellRootPath(shellPath)
     setError('')
     try {
       const workspace = await api.openLauncherShellRoot(shellPath)
+      if (!launcherMountedRef.current) {
+        return
+      }
+      launcherActionInFlightRef.current = false
+      useLauncherStore.setState({ loading: false })
       setWorkspace(workspace)
       rememberLaunchPath('shell', workspace.working_root || shellPath)
       onClose()
       navigate('/generator')
     } catch (err: any) {
-      setError(err.message)
+      if (launcherMountedRef.current) {
+        setError(err.message)
+      }
+    } finally {
+      launcherActionInFlightRef.current = false
+      if (launcherMountedRef.current) {
+        useLauncherStore.setState({ loading: false })
+      }
     }
   }, [navigate, onClose, rememberLaunchPath, setWorkspace])
 
@@ -199,20 +264,10 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       setError('')
     }
     if (scriptParam) {
+      resetLauncher()
       setManualScriptPath(scriptParam)
-      if (configParam) {
-        setManualConfigPath(configParam)
-      }
-      void selectScript(scriptParam).then(() => {
-        if (configParam) {
-          selectConfig(configParam)
-          void openSelectedWorkspace(scriptParam, configParam)
-          return
-        }
-        if (useLauncherStore.getState().step === 2) {
-          void openSelectedWorkspace(scriptParam)
-        }
-      })
+      setManualConfigPath(configParam || '')
+      setError('Review the prefilled path, then choose Open to switch workspaces.')
     }
   }, [])
 
@@ -223,16 +278,16 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       return () => { cancelled = true }
     }
 
-    setScriptValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '' })
+    setScriptValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: debouncedScriptPath })
     api.validateLauncherPath('python', debouncedScriptPath)
       .then(result => {
         if (!cancelled) {
-          setScriptValidation(validationFromResult(result))
+          setScriptValidation(validationFromResult(result, debouncedScriptPath))
         }
       })
       .catch((err: any) => {
         if (!cancelled) {
-          setScriptValidation({ status: 'invalid', message: err.message, normalizedPath: '' })
+          setScriptValidation({ status: 'invalid', message: err.message, normalizedPath: '', validatedPath: debouncedScriptPath })
         }
       })
     return () => { cancelled = true }
@@ -245,16 +300,16 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       return () => { cancelled = true }
     }
 
-    setConfigValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '' })
+    setConfigValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: debouncedConfigPath })
     api.validateLauncherPath('config', debouncedConfigPath, selectedScript)
       .then(result => {
         if (!cancelled) {
-          setConfigValidation(validationFromResult(result))
+          setConfigValidation(validationFromResult(result, debouncedConfigPath))
         }
       })
       .catch((err: any) => {
         if (!cancelled) {
-          setConfigValidation({ status: 'invalid', message: err.message, normalizedPath: '' })
+          setConfigValidation({ status: 'invalid', message: err.message, normalizedPath: '', validatedPath: debouncedConfigPath })
         }
       })
     return () => { cancelled = true }
@@ -267,16 +322,16 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       return () => { cancelled = true }
     }
 
-    setShellValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '' })
+    setShellValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: debouncedShellRootPath })
     api.validateLauncherPath('shell', debouncedShellRootPath)
       .then(result => {
         if (!cancelled) {
-          setShellValidation(validationFromResult(result))
+          setShellValidation(validationFromResult(result, debouncedShellRootPath))
         }
       })
       .catch((err: any) => {
         if (!cancelled) {
-          setShellValidation({ status: 'invalid', message: err.message, normalizedPath: '' })
+          setShellValidation({ status: 'invalid', message: err.message, normalizedPath: '', validatedPath: debouncedShellRootPath })
         }
       })
     return () => { cancelled = true }
@@ -332,13 +387,28 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   }, [handleSkipConfig, manualConfigPath, mustChooseConfig, openSelectedConfig])
 
   const handlePickScript = useCallback(async () => {
+    if (launcherActionInFlightRef.current) {
+      return
+    }
+    launcherActionInFlightRef.current = true
+    useLauncherStore.setState({ loading: true })
     setError('')
     try {
       const selection = await api.pickLauncherScriptPath()
+      if (!launcherMountedRef.current) {
+        return
+      }
       setManualScriptPath(selection.script_path)
       await openPythonPath(selection.script_path)
     } catch (err: any) {
-      setError(err.message)
+      if (launcherMountedRef.current) {
+        setError(err.message)
+      }
+    } finally {
+      launcherActionInFlightRef.current = false
+      if (launcherMountedRef.current) {
+        useLauncherStore.setState({ loading: false })
+      }
     }
   }, [openPythonPath])
 
@@ -347,27 +417,62 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       setError('Choose a Python script first.')
       return
     }
+    if (launcherActionInFlightRef.current) {
+      return
+    }
 
+    launcherActionInFlightRef.current = true
+    useLauncherStore.setState({ loading: true })
     setError('')
     try {
       const selection = await api.pickLauncherConfigPath(selectedScript)
+      if (!launcherMountedRef.current) {
+        return
+      }
       setManualConfigPath(selection.path)
       await openSelectedConfig(selection.path)
     } catch (err: any) {
-      setError(err.message)
+      if (launcherMountedRef.current) {
+        setError(err.message)
+      }
+    } finally {
+      launcherActionInFlightRef.current = false
+      if (launcherMountedRef.current) {
+        useLauncherStore.setState({ loading: false })
+      }
     }
   }, [openSelectedConfig, selectedScript])
 
   const handlePickShellRoot = useCallback(async () => {
+    if (!(await confirmDiscardWorkspaceChanges())) {
+      return
+    }
+    if (launcherActionInFlightRef.current) {
+      return
+    }
+    launcherActionInFlightRef.current = true
+    useLauncherStore.setState({ loading: true })
     setError('')
     try {
       const workspace = await api.pickLauncherShellRoot()
+      if (!launcherMountedRef.current) {
+        return
+      }
+      launcherActionInFlightRef.current = false
+      useLauncherStore.setState({ loading: false })
       setWorkspace(workspace)
       rememberLaunchPath('shell', workspace.working_root || workspace.project_root || '')
       onClose()
       navigate('/generator')
     } catch (err: any) {
-      setError(err.message)
+      if (launcherMountedRef.current) {
+        setError(err.message)
+      }
+    } finally {
+      launcherActionInFlightRef.current = false
+      if (launcherMountedRef.current) {
+        useLauncherStore.setState({ loading: false })
+      }
     }
   }, [navigate, onClose, rememberLaunchPath, setWorkspace])
 
@@ -389,7 +494,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        requestClose()
         return
       }
       if (event.key !== 'Tab') {
@@ -428,7 +533,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
         document.querySelector<HTMLElement>('[data-launcher-trigger="true"]')?.focus()
       }
     }
-  }, [onClose])
+  }, [requestClose])
 
   return (
     <div
@@ -438,7 +543,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       }}
       onClick={event => {
         if (backdropPointerStartedRef.current && event.target === event.currentTarget) {
-          onClose()
+          requestClose()
         }
         backdropPointerStartedRef.current = false
       }}
@@ -461,15 +566,15 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
         <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 sm:px-6 sm:py-4">
           <Rocket className="w-5 h-5 text-accent" />
           <div>
-            <h2 id="launcher-dialog-title" className="text-sm font-semibold text-zinc-100">Launch Workspace</h2>
-            <p id="launcher-dialog-description" className="text-2xs text-zinc-500 mt-0.5">Choose a workspace type</p>
+            <h2 id="launcher-dialog-title" className="text-sm font-semibold text-txt-primary">Launch Workspace</h2>
+            <p id="launcher-dialog-description" className="mt-0.5 text-2xs text-txt-tertiary">Choose a workspace type</p>
           </div>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-3 sm:p-4">
           {error && (
-            <div className="mb-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+            <div role="alert" className="mb-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
               {error}
             </div>
           )}
@@ -514,19 +619,19 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
 
           {loading && step !== 0 && (
             <div className="flex items-center justify-center py-12">
-              <div className="text-xs text-zinc-500 animate-pulse">Loading...</div>
+              <div role="status" className="animate-pulse text-xs text-txt-tertiary">Loading...</div>
             </div>
           )}
 
           {!loading && step === 1 && (
             <div className="space-y-1">
               <div className="mb-3 space-y-1">
-                <div className="text-xs font-semibold text-zinc-300">
+                <div className="text-xs font-semibold text-txt-secondary">
                   {mustChooseConfig ? 'Choose a YAML config' : 'Select a config'}
                   {' '}
                   for <span className="font-mono">{pathName(selectedScript)}</span>
                 </div>
-                <p className="text-2xs leading-relaxed text-zinc-500">
+                <p className="text-2xs leading-relaxed text-txt-tertiary">
                   {mustChooseConfig
                     ? configSource === 'pyruns_load'
                       ? 'pyruns.load() reads the selected YAML for this workspace. Choose one below or enter a path; pyruns will save it as config_default.yaml for later runs.'
@@ -548,7 +653,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
               />
               {configs.length === 0 ? (
                 <div className="text-center py-6">
-                  <p className="text-xs text-zinc-600 mb-3">
+                  <p className="mb-3 text-xs text-txt-tertiary">
                     {mustChooseConfig
                       ? 'No YAML configs were found near this script. Enter a config path below.'
                       : 'No config files found'}
@@ -565,10 +670,10 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
               ) : (
                 <div className="pt-2">
                   <div className="flex items-center justify-between border-b border-border-subtle px-1 py-2">
-                    <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-zinc-500">
+                    <span className="text-2xs font-semibold uppercase tracking-[0.16em] text-txt-tertiary">
                       Nearby YAML
                     </span>
-                    <span className="text-2xs text-zinc-600">{configs.length} found</span>
+                    <span className="text-2xs text-txt-tertiary">{configs.length} found</span>
                   </div>
                   {configs.map(config => (
                     <ConfigItem
@@ -580,7 +685,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   {!mustChooseConfig && (
                     <button
                       onClick={handleSkipConfig}
-                      className="w-full px-3 py-2 text-left text-2xs text-zinc-600 transition-colors hover:text-zinc-400"
+                      className="w-full px-3 py-2 text-left text-2xs text-txt-tertiary transition-colors hover:text-txt-secondary"
                     >
                       Open without config
                     </button>
@@ -595,15 +700,19 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between px-6 py-3 border-t border-border-subtle">
           {step > 0 ? (
             <button
+              type="button"
+              disabled={loading}
               onClick={() => useLauncherStore.setState({ step: step - 1 })}
-              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              className="text-xs text-txt-tertiary transition-colors hover:text-txt-secondary disabled:cursor-wait disabled:opacity-50"
             >
               ← Back
             </button>
           ) : <div />}
           <button
-            onClick={onClose}
-            className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+            type="button"
+            disabled={loading}
+            onClick={requestClose}
+            className="text-xs text-txt-tertiary transition-colors hover:text-txt-secondary disabled:cursor-wait disabled:opacity-50"
           >
             Cancel
           </button>
@@ -623,16 +732,17 @@ function LaunchChoiceTabs({
   onChange: (mode: 'python' | 'shell') => void
 }) {
   return (
-    <div className="grid gap-2 md:grid-cols-2">
+    <div className="grid gap-2 md:grid-cols-2" role="group" aria-label="Workspace type">
       <button
         type="button"
+        aria-pressed={launchMode === 'python'}
         disabled={busy}
         onClick={() => onChange('python')}
         className={clsx(
           'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-70',
           launchMode === 'python'
             ? 'bg-accent text-white'
-            : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
+            : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
         )}
       >
         <FileSearch className="h-4 w-4" />
@@ -640,13 +750,14 @@ function LaunchChoiceTabs({
       </button>
       <button
         type="button"
+        aria-pressed={launchMode === 'shell'}
         disabled={busy}
         onClick={() => onChange('shell')}
         className={clsx(
           'flex min-h-12 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-wait disabled:opacity-70',
           launchMode === 'shell'
             ? 'bg-accent text-white'
-            : 'text-zinc-400 hover:bg-surface-overlay hover:text-zinc-100',
+            : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
         )}
       >
         <FolderPlus className="h-4 w-4" />
@@ -686,6 +797,8 @@ function ModeActionPanel({
   const browseLabel = pickerAvailable ? (isPython ? 'Browse Script' : 'Browse & Open Folder') : 'Browse Unavailable'
   const manualLabel = isPython ? 'Select Script Path' : 'Open Folder Path'
   const placeholder = isPython ? 'Absolute or relative path to train.py' : 'Path to shell project folder'
+  const inputId = isPython ? 'launcher-python-path' : 'launcher-shell-path'
+  const validationId = `${inputId}-validation`
 
   return (
     <div className="space-y-2">
@@ -704,14 +817,18 @@ function ModeActionPanel({
         {busy ? 'Preparing…' : browseLabel}
       </button>
       {!pickerAvailable && (
-        <div className="px-1 text-2xs text-zinc-500">
+        <div className="px-1 text-2xs text-txt-tertiary">
           Native picker unavailable on this server; enter the path manually.
         </div>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <label htmlFor={inputId} className="sr-only">{isPython ? 'Python script path' : 'Shell workspace folder path'}</label>
         <input
+          id={inputId}
           value={pathValue}
           disabled={busy}
+          aria-describedby={validationId}
+          aria-invalid={validation.validatedPath === pathValue.trim() && validation.status === 'invalid' ? true : undefined}
           onChange={event => onPathChange(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'Enter') {
@@ -722,18 +839,18 @@ function ModeActionPanel({
             }
           }}
           placeholder={placeholder}
-          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 font-mono text-xs text-txt-primary outline-none transition-colors focus:border-border"
         />
         <button
           type="button"
           disabled={!pathReady || busy}
           onClick={() => void onManualOpen()}
-          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
+          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
         >
           {busy ? 'Preparing...' : manualLabel}
         </button>
       </div>
-      <PathValidationHint validation={validation} />
+      <PathValidationHint id={validationId} validation={validation} pathValue={pathValue} />
       <RecentPathList
         kind={launchMode}
         paths={recentPaths}
@@ -765,11 +882,11 @@ function RecentPathList({
   return (
     <div className="space-y-1 pt-1">
       <div className="flex items-center justify-between px-1">
-        <span className="inline-flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-[0.14em] text-zinc-500">
+        <span className="inline-flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-[0.14em] text-txt-tertiary">
           <History className="h-3 w-3" />
           {label}
         </span>
-        <span className="text-2xs text-zinc-600">{paths.length}</span>
+        <span className="text-2xs text-txt-tertiary">{paths.length}</span>
       </div>
       <div className="max-h-60 space-y-1 overflow-y-auto pr-1">
         {paths.map(path => (
@@ -780,14 +897,14 @@ function RecentPathList({
             onClick={() => void onOpen(path)}
             className="group flex min-h-10 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:cursor-wait disabled:opacity-60"
           >
-            <Icon className="h-3.5 w-3.5 flex-none text-zinc-500 transition-colors group-hover:text-accent" />
+            <Icon className="h-3.5 w-3.5 flex-none text-txt-tertiary transition-colors group-hover:text-accent" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs text-zinc-300">{pathName(path)}</span>
-              <span className="block truncate font-mono text-2xs text-zinc-600" title={path}>
+              <span className="block truncate text-xs text-txt-secondary">{pathName(path)}</span>
+              <span className="block truncate font-mono text-2xs text-txt-tertiary" title={path}>
                 {path}
               </span>
             </span>
-            <ChevronRight className="h-3.5 w-3.5 flex-none text-zinc-600 transition-colors group-hover:text-zinc-400" />
+            <ChevronRight className="h-3.5 w-3.5 flex-none text-txt-tertiary transition-colors group-hover:text-txt-secondary" />
           </button>
         ))}
       </div>
@@ -818,6 +935,8 @@ function ConfigActionPanel({
   recentPaths?: string[]
   onRecentPathOpen?: (path: string) => void | Promise<void>
 }) {
+  const inputId = 'launcher-config-path'
+  const validationId = `${inputId}-validation`
   return (
     <div className="space-y-2">
       <button
@@ -830,13 +949,17 @@ function ConfigActionPanel({
         Browse Config
       </button>
       {!pickerAvailable && (
-        <div className="px-1 text-2xs text-zinc-500">
+        <div className="px-1 text-2xs text-txt-tertiary">
           Native picker unavailable on this server; enter the YAML path manually.
         </div>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <label htmlFor={inputId} className="sr-only">YAML config path</label>
         <input
+          id={inputId}
           value={pathValue}
+          aria-describedby={validationId}
+          aria-invalid={validation.validatedPath === pathValue.trim() && validation.status === 'invalid' ? true : undefined}
           onChange={event => onPathChange(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'Enter') {
@@ -847,18 +970,18 @@ function ConfigActionPanel({
             }
           }}
           placeholder={mustChooseConfig ? 'Path to YAML config' : 'Optional path to YAML config'}
-          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 text-xs font-mono text-zinc-200 outline-none transition-colors focus:border-border"
+          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 font-mono text-xs text-txt-primary outline-none transition-colors focus:border-border"
         />
         <button
           type="button"
           disabled={!pathReady}
           onClick={() => void onManualOpen()}
-          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
+          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
         >
           Open Config Path
         </button>
       </div>
-      <PathValidationHint validation={validation} />
+      <PathValidationHint id={validationId} validation={validation} pathValue={pathValue} />
       <RecentPathList
         kind="yaml"
         paths={recentPaths}
@@ -868,21 +991,38 @@ function ConfigActionPanel({
   )
 }
 
-function PathValidationHint({ validation }: { validation: PathValidationState }) {
-  if (validation.status === 'idle') {
+function PathValidationHint({
+  id,
+  validation,
+  pathValue,
+}: {
+  id: string
+  validation: PathValidationState
+  pathValue: string
+}) {
+  const currentPath = pathValue.trim()
+  if (!currentPath) {
     return null
   }
 
-  const valid = validation.status === 'valid'
-  const checking = validation.status === 'checking'
+  const waitingForCurrentPath = validation.validatedPath !== currentPath
+  const valid = !waitingForCurrentPath && validation.status === 'valid'
+  const checking = waitingForCurrentPath || validation.status === 'checking' || validation.status === 'idle'
   const Icon = valid ? CheckCircle2 : checking ? Loader2 : AlertTriangle
-  const text = valid && validation.normalizedPath ? validation.normalizedPath : validation.message
+  const text = waitingForCurrentPath
+    ? 'Waiting to check path...'
+    : valid && validation.normalizedPath
+      ? validation.normalizedPath
+      : validation.message
 
   return (
     <div
+      id={id}
+      role="status"
+      aria-live="polite"
       className={clsx(
         'flex items-center gap-1.5 truncate px-1 text-2xs font-mono',
-        valid ? 'text-emerald-300' : checking ? 'text-zinc-500' : 'text-amber-300',
+        valid ? 'text-emerald-700 dark:text-emerald-300' : checking ? 'text-txt-tertiary' : 'text-amber-700 dark:text-amber-300',
       )}
       title={text}
     >
@@ -898,14 +1038,14 @@ function ConfigItem({ config, onClick }: { config: ConfigCandidate; onClick: () 
       onClick={onClick}
       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md hover:bg-surface-overlay transition-colors text-left group"
     >
-      <FileCode className="w-4 h-4 text-zinc-500 group-hover:text-accent transition-colors flex-none" />
+      <FileCode className="h-4 w-4 flex-none text-txt-tertiary transition-colors group-hover:text-accent" />
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-zinc-200">{config.label}</div>
+        <div className="text-sm text-txt-primary">{config.label}</div>
       </div>
       {config.kind === 'workspace_default' && (
-        <span className="text-2xs text-zinc-600 flex-none">default</span>
+        <span className="flex-none text-2xs text-txt-tertiary">default</span>
       )}
-      <ChevronRight className="w-3.5 h-3.5 text-zinc-600 group-hover:text-zinc-400 flex-none" />
+      <ChevronRight className="h-3.5 w-3.5 flex-none text-txt-tertiary transition-colors group-hover:text-txt-secondary" />
     </button>
   )
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import codecs
 import hashlib
 import json
@@ -42,11 +43,17 @@ from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import (
     ensure_run_slot,
+    load_script_info,
     load_task_info,
+    prepare_task_log_path,
     update_task_info,
 )
 from pyruns.utils.log_io import normalize_log_newlines
-from pyruns.utils.process_utils import hidden_subprocess_kwargs, kill_process
+from pyruns.utils.process_utils import (
+    get_process_create_time,
+    hidden_subprocess_kwargs,
+    kill_process,
+)
 from pyruns.utils.shell_runtime import (
     get_shell_runtime_for_task,
     quote_windows_cmd_argument,
@@ -55,12 +62,18 @@ from pyruns.utils.shell_runtime import (
 )
 from pyruns.utils.settings import load_settings
 from pyruns.utils.env_utils import normalize_environment
-from pyruns.utils.task_files import normalize_task_kind, resolve_task_config_file
+from pyruns.utils.task_files import (
+    normalize_task_kind,
+    resolve_task_config_file,
+    resolve_task_payload_path,
+)
 
 logger = get_logger(__name__)
 _ISOLATED_IMPORT_ROOT_LOCK = threading.Lock()
 _ISOLATED_IMPORT_ROOT_CACHE: Dict[str, str] = {}
 _SITE_GUARD_ROOT_CACHE: Dict[str, str] = {}
+_PRIVATE_RUNTIME_ROOTS: set[str] = set()
+_PRIVATE_RUNTIME_ROOT_OWNER_PID = os.getpid()
 _SOURCE_STATE_GIT_TIMEOUT_SEC = 1.0
 _SOURCE_STATE_DIGEST_LEN = 12
 _CUDA_OOM_MARKERS = (
@@ -206,6 +219,35 @@ def _copy_dist_info(package_parent: str, import_root: str) -> None:
             logger.debug("Skipping pyruns dist-info copy for %s", source, exc_info=True)
 
 
+def _new_private_runtime_root(prefix: str) -> str:
+    """Create an unpredictable process-private directory for executable support code."""
+
+    root = tempfile.mkdtemp(prefix=prefix)
+    try:
+        if os.name != "nt":
+            os.chmod(root, 0o700)
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+    _PRIVATE_RUNTIME_ROOTS.add(root)
+    return root
+
+
+def _cleanup_private_runtime_roots() -> None:
+    """Remove only temporary roots created by this process, never inherited fork state."""
+
+    if os.getpid() != _PRIVATE_RUNTIME_ROOT_OWNER_PID:
+        return
+    with _ISOLATED_IMPORT_ROOT_LOCK:
+        roots = list(_PRIVATE_RUNTIME_ROOTS)
+        _PRIVATE_RUNTIME_ROOTS.clear()
+    for root in roots:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+atexit.register(_cleanup_private_runtime_roots)
+
+
 def _pyruns_package_fingerprint(package_dir: str) -> str:
     """Fingerprint Python-loadable package files while ignoring bulky static assets."""
 
@@ -241,22 +283,19 @@ def _isolated_pyruns_import_root(package_dir: str) -> str:
     package_dir = os.path.abspath(package_dir)
     package_parent = os.path.dirname(package_dir)
     fingerprint = _pyruns_package_fingerprint(package_dir)
-    digest = hashlib.sha1(f"{fingerprint}:{os.getpid()}".encode("utf-8")).hexdigest()[:16]
-    import_root = os.path.join(tempfile.gettempdir(), f"pyruns-import-{digest}")
-    target_package = os.path.join(import_root, "pyruns")
 
     with _ISOLATED_IMPORT_ROOT_LOCK:
         cached_root = _ISOLATED_IMPORT_ROOT_CACHE.get(fingerprint)
         if cached_root and os.path.isdir(os.path.join(cached_root, "pyruns")):
             return cached_root
-        if os.path.isdir(target_package):
-            _ISOLATED_IMPORT_ROOT_CACHE[fingerprint] = import_root
-            return import_root
+        import_root = _new_private_runtime_root("pyruns-import-")
+        target_package = os.path.join(import_root, "pyruns")
         try:
-            os.makedirs(import_root, exist_ok=True)
             shutil.copytree(package_dir, target_package, ignore=_copy_ignore)
             _copy_dist_info(package_parent, import_root)
         except Exception as exc:
+            _PRIVATE_RUNTIME_ROOTS.discard(import_root)
+            shutil.rmtree(import_root, ignore_errors=True)
             raise RuntimeError("Unable to isolate the current pyruns package for child tasks.") from exc
         _ISOLATED_IMPORT_ROOT_CACHE[fingerprint] = import_root
     return import_root
@@ -328,25 +367,26 @@ def _pyruns_sitecustomize_guard_root(import_root: str) -> str:
     """Create a startup guard that preloads pyruns before project-local shadows."""
 
     import_root = os.path.abspath(import_root)
-    digest = hashlib.sha1(f"{import_root}:{os.getpid()}".encode("utf-8")).hexdigest()[:16]
-    guard_root = os.path.join(tempfile.gettempdir(), f"pyruns-guard-{digest}")
-    guard_path = os.path.join(guard_root, "sitecustomize.py")
     content = _sitecustomize_guard_content(import_root)
 
     with _ISOLATED_IMPORT_ROOT_LOCK:
         cached_root = _SITE_GUARD_ROOT_CACHE.get(import_root)
-        if cached_root and os.path.exists(os.path.join(cached_root, "sitecustomize.py")):
-            return cached_root
-        os.makedirs(guard_root, exist_ok=True)
+        if cached_root:
+            cached_path = os.path.join(cached_root, "sitecustomize.py")
+            try:
+                with open(cached_path, "r", encoding="utf-8") as handle:
+                    if handle.read() == content:
+                        return cached_root
+            except OSError:
+                pass
+        guard_root = _new_private_runtime_root("pyruns-guard-")
+        guard_path = os.path.join(guard_root, "sitecustomize.py")
         try:
-            existing = ""
-            if os.path.exists(guard_path):
-                with open(guard_path, "r", encoding="utf-8") as handle:
-                    existing = handle.read()
-            if existing != content:
-                with open(guard_path, "w", encoding="utf-8") as handle:
-                    handle.write(content)
+            with open(guard_path, "x", encoding="utf-8") as handle:
+                handle.write(content)
         except OSError as exc:
+            _PRIVATE_RUNTIME_ROOTS.discard(guard_root)
+            shutil.rmtree(guard_root, ignore_errors=True)
             raise RuntimeError("Unable to prepare pyruns import guard for child tasks.") from exc
         _SITE_GUARD_ROOT_CACHE[import_root] = guard_root
     return guard_root
@@ -606,7 +646,10 @@ def _prepare_env(
     env["PYTHONUTF8"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     if task_dir and normalize_task_kind(task_kind) == TASK_KIND_CONFIG:
-        env[ENV_KEY_CONFIG] = os.path.join(task_dir, config_file or CONFIG_FILENAME)
+        env[ENV_KEY_CONFIG] = resolve_task_payload_path(
+            task_dir,
+            config_file or CONFIG_FILENAME,
+        )
     else:
         env.pop(ENV_KEY_CONFIG, None)
     env.update(_load_workspace_global_env(task_dir))
@@ -622,9 +665,7 @@ def _prepare_env(
 def _get_log_path(task_dir: str, run_index: int) -> str:
     """Return ``run_logs/runN.log`` and create the directory when needed."""
 
-    log_dir = os.path.join(task_dir, RUN_LOGS_DIR)
-    os.makedirs(log_dir, exist_ok=True)
-    return os.path.join(log_dir, f"run{run_index}.log")
+    return prepare_task_log_path(task_dir, f"run{run_index}.log")
 
 
 def _file_sha256(path: str | None) -> str:
@@ -754,6 +795,7 @@ def _persist_run_source_state(
 
     line = f"[PYRUNS] Source {source_state}\n"
     try:
+        log_path = _get_log_path(task_dir, run_index)
         payload = _append_run_log_text(log_path, line, clean_boundary=True)
         log_emitter.emit(
             task_name,
@@ -867,17 +909,15 @@ def _resolve_shell_workdir(task_dir: str) -> str:
 
     workspace_dir = os.path.dirname(os.path.dirname(task_dir))
     script_info_path = os.path.join(workspace_dir, SCRIPT_INFO_FILENAME)
-    if os.path.exists(script_info_path):
-        try:
-            with open(script_info_path, "r", encoding="utf-8") as handle:
-                info = json.load(handle)
-            project_root = str(info.get("project_root", "") or "").strip()
-            if project_root:
-                resolved = _normalize_execution_path(project_root)
-                if os.path.isdir(resolved):
-                    return resolved
-        except Exception as exc:
-            logger.warning("Failed to read shell workspace project root from %s: %s", script_info_path, exc)
+    try:
+        info = load_script_info(workspace_dir)
+        project_root = str(info.get("project_root", "") or "").strip()
+        if project_root:
+            resolved = _normalize_execution_path(project_root)
+            if os.path.isdir(resolved):
+                return resolved
+    except Exception as exc:
+        logger.warning("Failed to read shell workspace project root from %s: %s", script_info_path, exc)
 
     parent_root = os.path.dirname(workspace_dir)
     if os.path.basename(workspace_dir) == SHELL_WORKSPACE_NAME and os.path.basename(parent_root) == DEFAULT_ROOT_NAME:
@@ -993,7 +1033,10 @@ def _build_shell_command(
     config_file: str,
     shell_executable: str | None = None,
 ) -> Tuple[List[str], str, List[str]]:
-    script_path = os.path.join(task_dir, config_file or SHELL_CONFIG_FILENAME)
+    script_path = resolve_task_payload_path(
+        task_dir,
+        config_file or SHELL_CONFIG_FILENAME,
+    )
     if not os.path.exists(script_path):
         raise FileNotFoundError(script_path)
     shell_path = str(shell_executable or '').strip()
@@ -1216,8 +1259,7 @@ def _append_error_summary(
 ) -> None:
     """Append one failure/error summary block into ``error.log``."""
 
-    err_log_path = os.path.join(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME)
-    os.makedirs(os.path.dirname(err_log_path), exist_ok=True)
+    err_log_path = prepare_task_log_path(task_dir, ERROR_LOG_FILENAME)
     block = (
         f"\n\n{'=' * 70}\n"
         f"[PYRUNS] {title}\n"
@@ -1266,12 +1308,18 @@ def _terminate_started_process(proc: Any, *, task_name: str, run_index: int) -> 
     try:
         if proc.poll() is not None:
             return False
-        kill_process(int(proc.pid))
+        created_at = get_process_create_time(int(proc.pid))
+        terminated = kill_process(
+            int(proc.pid),
+            expected_create_time=created_at,
+        )
+        if not terminated:
+            return False
         try:
             proc.wait(timeout=1)
         except Exception:
             pass
-        return True
+        return proc.poll() is not None
     except Exception as exc:
         logger.warning("Failed to terminate child process for %s run #%d: %s", task_name, run_index, exc)
         return False
@@ -1303,10 +1351,9 @@ def run_task_worker(
 
     workspace_dir = os.path.dirname(os.path.dirname(task_dir))
     script_info_path = os.path.join(workspace_dir, "script_info.json")
-    if task_kind == TASK_KIND_CONFIG and os.path.exists(script_info_path):
+    if task_kind == TASK_KIND_CONFIG:
         try:
-            with open(script_info_path, "r", encoding="utf-8") as handle:
-                s_info = __import__("json").load(handle)
+            s_info = load_script_info(workspace_dir)
             info_script = s_info.get("script_path")
             if info_script and os.path.exists(info_script):
                 script_path = info_script
@@ -1335,6 +1382,7 @@ def run_task_worker(
     duration_seconds: float | None = None
     exit_code: int | None = None
     process_started_at: float | None = None
+    process_create_time: float | None = None
     stop_summary: Dict[str, Any] | None = None
     heartbeat_stop = threading.Event()
     heartbeat_thread: threading.Thread | None = None
@@ -1404,6 +1452,16 @@ def run_task_worker(
         info["durations"][slot] = duration_seconds
         info["exit_codes"][slot] = exit_code
 
+    def _store_process_identity(info: Dict[str, Any], slot: int) -> None:
+        if proc is None:
+            return
+        info["pids"][slot] = proc.pid
+        create_times = list(info.get("pid_create_times", []) or [])
+        while len(create_times) <= slot:
+            create_times.append(None)
+        create_times[slot] = process_create_time
+        info["pid_create_times"] = create_times
+
     def _finish_stopped_run(
         summary: Dict[str, Any],
         *,
@@ -1420,11 +1478,11 @@ def run_task_worker(
             slot = ensure_run_slot(info, run_index)
             info["status"] = status
             info["progress"] = progress
+            info["run_statuses"][slot] = status
             if start_str and not info["start_times"][slot]:
                 info["start_times"][slot] = start_str
             info["finish_times"][slot] = end_str
-            if proc is not None:
-                info["pids"][slot] = proc.pid
+            _store_process_identity(info, slot)
             _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
@@ -1520,6 +1578,7 @@ def run_task_worker(
             **_popen_process_group_kwargs(),
         )
         process_started_at = time.monotonic()
+        process_create_time = get_process_create_time(proc.pid)
 
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
@@ -1532,6 +1591,7 @@ def run_task_worker(
         start_str = get_now_str()
         start_log = _lifecycle_banner("start", name, start_str)
         start_payload = start_log + _gpu_assignment_log(env, run_index=run_index)
+        log_path = _get_log_path(task_dir, run_index)
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(start_payload)
             start_offset = handle.tell()
@@ -1547,8 +1607,9 @@ def run_task_worker(
             slot = ensure_run_slot(info, run_index)
             info["status"] = "running"
             info["progress"] = 0.0
+            info["run_statuses"][slot] = "running"
             info["start_times"][slot] = start_str
-            info["pids"][slot] = proc.pid
+            _store_process_identity(info, slot)
             _set_runner_lease(
                 info,
                 runner_id=runner_id,
@@ -1567,7 +1628,8 @@ def run_task_worker(
 
         def _tee_output() -> None:
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            with open(log_path, "ab") as handle:
+            current_log_path = _get_log_path(task_dir, run_index)
+            with open(current_log_path, "ab") as handle:
                 for chunk in iter(lambda: proc.stdout.read1(4096), b""):
                     if not chunk:
                         break
@@ -1619,6 +1681,7 @@ def run_task_worker(
             + f"[PYRUNS] Exit code: {exit_code}\n"
             + f"[PYRUNS] Duration: {duration_seconds:.3f}s\n"
         )
+        log_path = _get_log_path(task_dir, run_index)
         finish_payload = _append_run_log_text(log_path, finish_log, clean_boundary=True)
         log_emitter.emit(
             name,
@@ -1650,11 +1713,11 @@ def run_task_worker(
             slot = ensure_run_slot(info, run_index)
             info["status"] = status
             info["progress"] = progress
+            info["run_statuses"][slot] = status
             if start_str and not info["start_times"][slot]:
                 info["start_times"][slot] = start_str
             info["finish_times"][slot] = end_str
-            if proc is not None:
-                info["pids"][slot] = proc.pid
+            _store_process_identity(info, slot)
             _store_process_metrics(info, slot)
             if RECORDS_KEY not in info:
                 info[RECORDS_KEY] = []
@@ -1666,6 +1729,7 @@ def run_task_worker(
 
         if status == "cancelled":
             final_status_payload = "[PYRUNS] Final status: cancelled\n"
+            log_path = _get_log_path(task_dir, run_index)
             with open(log_path, "a", encoding="utf-8") as handle:
                 handle.write(final_status_payload)
             log_emitter.emit(
@@ -1728,12 +1792,12 @@ def run_task_worker(
             slot = ensure_run_slot(info, run_index)
             info["status"] = "failed"
             info["progress"] = 0.0
+            info["run_statuses"][slot] = "failed"
             if start_str and not info["start_times"][slot]:
                 info["start_times"][slot] = start_str
             if end_str:
                 info["finish_times"][slot] = end_str
-            if proc is not None:
-                info["pids"][slot] = proc.pid
+            _store_process_identity(info, slot)
             _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
@@ -1761,6 +1825,7 @@ def run_task_worker(
             + f"\n{'=' * 70}\n"
         )
         try:
+            log_path = _get_log_path(task_dir, run_index)
             run_payload = _append_run_log_text(log_path, block, clean_boundary=True)
             log_emitter.emit(
                 name,

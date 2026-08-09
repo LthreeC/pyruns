@@ -135,10 +135,10 @@ summary::-webkit-details-marker {
 }
 .generator-code-editor {
   height: 100%;
-  min-height: max(32rem, calc(100vh - 15rem));
+  min-height: max(32rem, calc(100dvh - 15rem));
 }
 .runtime-env-editor {
-  height: min(12rem, calc(100vh - 18rem));
+  height: min(12rem, calc(100dvh - 18rem));
   min-height: 7rem;
 }
 .code-text-editor .cm-editor {
@@ -200,6 +200,10 @@ summary::-webkit-details-marker {
 .dark .text-zinc-500,
 .dark .text-zinc-600,
 .dark .text-zinc-700 { color: var(--text-tertiary); }
+
+/* Keep small accent labels readable on dark surfaces without changing filled controls. */
+.dark .text-accent,
+.dark .hover\:text-accent:hover { color: #818cf8; }
 
 @layer utilities {
   .truncate-2 {

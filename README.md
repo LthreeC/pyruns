@@ -72,7 +72,6 @@ pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```text
 -C, --directory PATH
 -w, --workspace NAME|PATH|SCRIPT.py
---no-color
 --debug
 --version
 ```
@@ -158,7 +157,7 @@ pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log
 pyr exec -n train -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
 ```
 
-`-e` / `--env` 本身仍可重复，旧命令保持兼容。
+`-e` / `--env` 是可重复选项，也可以按变量组分开书写。
 
 Pyruns 已自动为子进程设置 `PYTHONUNBUFFERED=1`、`PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1`，通常不需要重复传入。
 
@@ -185,7 +184,7 @@ pyr exec --dry-run -n report -- python eval.py
 pyr exec --dry-run -n report --json -- python eval.py
 ```
 
-预览不会创建 `_pyruns_`、任务或设置文件，也不会启动用户命令。
+预览不会创建 `_pyruns_`、任务或设置文件，也不会启动用户命令；`--dry-run` 与 `--detach` 互斥。
 
 Shell 任务保存在：
 
@@ -321,11 +320,14 @@ pyr -w train ls --trash
 pyr -w train restore baseline-lr1e3
 ```
 
+`ls` 会用 `PIN` 标记置顶任务并始终将其排在普通任务之前；`--reverse` 只反转两组各自内部的顺序。JSON 列表和 `show` 都包含明确的 `pinned` 字段。
+
 `rm` 会立即执行，不询问确认，但它只是可恢复的软删除。
 
 ## JSON 与自动化
 
-`--json` 是给脚本、CI 和 agent 使用的机器输出开关，只放在明确支持它的子命令后：
+`--json` 是给脚本、CI 和 agent 使用的机器输出开关，只放在明确支持它的子命令后。
+每个结果都是严格 JSON 对象，顶层包含 `"schema_version": 1`；YAML 日期和时间戳会转换为 ISO 8601 字符串，NaN、Infinity 和不支持的对象会被拒绝，不会生成标准解析器无法读取的伪 JSON：
 
 ```bash
 pyr -w shell ls --json
@@ -370,6 +372,11 @@ pyr ui shell
 pyr ui shell --no-browser
 pyr dev train.py
 ```
+
+UI 只监听本机回环地址。每次启动都会生成新的随机访问令牌；启动 URL 首次打开后，
+令牌会换成 `HttpOnly` 会话 cookie，并从地址栏移除。使用 `--no-browser` 时请复制终端
+打印的完整 URL，不要把它分享给其他用户。这个机制用于隔离同机其他进程，不是远程
+多用户部署的身份系统。
 
 - Generator：编辑脚本配置或 shell payload，并创建任务。
 - Manager：搜索、筛选、运行、取消、重命名、置顶和删除任务。

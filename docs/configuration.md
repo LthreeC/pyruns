@@ -181,15 +181,6 @@ tasks/<task_name>/
 ui_port: 8099
 header_refresh_interval: 3
 
-generator_form_columns: 4
-generator_auto_timestamp: true
-generator_mode: form
-
-manager_columns: 5
-manager_max_workers: 1
-manager_execution_mode: thread
-ui_page_size: 50
-
 monitor_chunk_size: 50000      # bytes per incremental log response
 monitor_scrollback: 100000     # initial LF-tail records and xterm terminal scrollback rows
 monitor_sidebar_width_pct: 14
@@ -225,12 +216,9 @@ global_env: {}
 - 默认值现在是 `14`
 - 不再额外做最小值 / 最大值限制
 
-### `manager_execution_mode`
-
-- `thread`
-- `process`
-
-主要影响批量运行时的调度方式。
+Manager 的并发数和调度后端不是持久设置。CLI 在每次批量运行时用
+`run -j/--jobs` 与 `--backend` 明确选择；Web UI 则在当次批量运行面板中选择。
+这样配置文件不会保留一个与实际操作不一致的隐式执行策略。
 
 ### `shell_mode`
 

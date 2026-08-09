@@ -86,11 +86,12 @@ def check_wheel_static(wheel_path: Path, *, root: Path = ROOT) -> list[str]:
         errors.append("wheel is missing pyruns/web/static/index.html")
         return errors
 
-    source_index = (root / "pyruns" / "web" / "static" / "index.html").read_bytes()
-    wheel_index = _wheel_bytes(wheel_path, "index.html")
-    if wheel_index != source_index:
-        errors.append("wheel index.html does not match source static index.html")
+    source_static = root / "pyruns" / "web" / "static"
+    for name in sorted(source_files & wheel_files):
+        if _wheel_bytes(wheel_path, name) != (source_static / name).read_bytes():
+            errors.append(f"wheel static file does not match source: {name}")
 
+    wheel_index = _wheel_bytes(wheel_path, "index.html")
     for ref in _asset_refs(wheel_index.decode("utf-8")):
         if ref not in wheel_files:
             errors.append(f"wheel index.html references missing asset: {ref}")

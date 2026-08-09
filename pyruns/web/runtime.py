@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any, Callable, Dict, List
 
 import yaml
@@ -48,22 +49,34 @@ from pyruns.utils.env_utils import is_valid_environment_name, normalize_environm
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import (
     list_template_files,
-    load_yaml_strict,
     preview_config_line,
     validate_config_types_against_template,
 )
-from pyruns.utils.info_io import get_log_options, load_script_info, load_task_info, resolve_log_path
+from pyruns.utils.info_io import (
+    get_log_options,
+    load_script_info,
+    load_task_info,
+    resolve_log_path,
+    validate_task_name,
+    validate_tasks_root,
+    validate_workspace_directory,
+)
 from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
-from pyruns.utils.settings import ensure_settings_file, load_settings, save_setting_for_root
+from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
-from pyruns.utils.info_io import validate_task_name
-from pyruns.utils.task_files import build_task_preview_and_search, normalize_task_kind, normalize_workspace_kind
+from pyruns.utils.task_files import (
+    MAX_TASK_PAYLOAD_BYTES,
+    build_task_preview_and_search,
+    normalize_task_kind,
+    normalize_workspace_kind,
+    resolve_task_payload_path,
+)
 
 
 _DEFAULT_GPU_SCHEDULER_CONFIG = GpuSchedulerConfig.from_settings({})
-MAX_MONITOR_LOG_TAIL_BYTES = 4 * 1024 * 1024
+MAX_MONITOR_LOG_TAIL_BYTES = _cfg.MAX_MONITOR_CHUNK_SIZE
 TaskManagerFactory = Callable[[str], TaskManager]
 TaskGeneratorFactory = Callable[[str], TaskGenerator]
 MetricsFactory = Callable[[], SystemMonitor]
@@ -83,6 +96,21 @@ _GPU_SCHEDULER_PAYLOAD_KEYS = {
     "respect_cuda_visible_devices": "gpu_scheduler_respect_cuda_visible_devices",
     "require_same_gpu_model": "gpu_scheduler_require_same_gpu_model",
 }
+
+
+class WorkspaceChangedError(RuntimeError):
+    """Raised when a workspace-bound stream outlives its source workspace."""
+
+
+def _with_stable_workspace(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Keep one workspace active for the full runtime operation."""
+
+    @wraps(method)
+    def wrapped(self: "PyrunsRuntime", *args: Any, **kwargs: Any) -> Any:
+        with self._workspace_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 def _strip_unquoted_comment(value: str) -> str:
@@ -285,6 +313,13 @@ def _clip_text_middle(text: str, max_chars: int) -> str:
     return f"{text[:head_len]}{marker}{text[-tail_len:]}"
 
 
+def _require_bounded_editor_text(value: str, *, label: str) -> str:
+    text = str(value or "")
+    if len(text.encode("utf-8")) > MAX_TASK_PAYLOAD_BYTES:
+        raise ValueError(f"{label} is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes)")
+    return text
+
+
 def _cap_summary_task_payloads(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     max_chars = max(0, int(_cfg.DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS))
     capped: List[Dict[str, Any]] = []
@@ -334,6 +369,8 @@ class PyrunsRuntime:
         )
         self._metrics_factory = metrics_factory if metrics_factory is not None else SystemMonitor
 
+        self._workspace_lock = threading.RLock()
+        self._workspace_epoch = 0
         self._lock = threading.RLock()
         self.root_dir = ""
         self.tasks_dir = ""
@@ -360,6 +397,7 @@ class PyrunsRuntime:
         has_script = os.path.exists(os.path.join(path, SCRIPT_INFO_FILENAME))
         return has_tasks or has_config or has_script
 
+    @_with_stable_workspace
     def reload(self, root_dir: str | None = None) -> None:
         """Activate a workspace without interrupting tasks owned in other workspaces."""
         resolved_root = self._normalize_path(
@@ -367,13 +405,18 @@ class PyrunsRuntime:
         )
         tasks_dir = self._normalize_path(os.path.join(resolved_root, TASKS_DIR))
 
+        validate_workspace_directory(resolved_root)
+        validate_tasks_root(tasks_dir)
         _cfg.ROOT_DIR = resolved_root
         os.environ[_cfg.ENV_KEY_ROOT] = resolved_root
         os.makedirs(tasks_dir, exist_ok=True)
+        validate_workspace_directory(resolved_root)
+        validate_tasks_root(tasks_dir)
         ensure_settings_file(resolved_root)
 
         manager_key = os.path.normcase(os.path.abspath(tasks_dir))
         with self._lock:
+            self._workspace_epoch += 1
             self.root_dir = resolved_root
             self.tasks_dir = tasks_dir
             self.settings = load_settings(resolved_root)
@@ -395,6 +438,8 @@ class PyrunsRuntime:
         """Conservatively report whether a manager still owns queued or running work."""
 
         if bool(getattr(task_manager, "is_processing", False)):
+            return True
+        if hasattr(task_manager, "has_reactive_watchers") and task_manager.has_reactive_watchers():
             return True
         tasks = list(getattr(task_manager, "tasks", []) or [])
         return any(
@@ -457,6 +502,7 @@ class PyrunsRuntime:
         for task_manager in task_managers:
             task_manager.shutdown()
 
+    @_with_stable_workspace
     def change_run_root(self, new_root: str) -> Dict[str, Any]:
         """Switch the active workspace after validation."""
         resolved_root = self._normalize_path(new_root)
@@ -467,6 +513,7 @@ class PyrunsRuntime:
         self.reload(resolved_root)
         return self.get_workspace_info()
 
+    @_with_stable_workspace
     def get_workspace_info(self) -> Dict[str, Any]:
         """Return current workspace metadata for the frontend."""
         script_info = load_script_info(self.root_dir)
@@ -527,8 +574,9 @@ class PyrunsRuntime:
         leaf = os.path.basename(normalized)
         return leaf or normalized
 
-    def _conda_executable_for_runtime(self) -> str:
-        configured = self._clean_setting_text(self.settings.get("conda_executable"))
+    def _conda_executable_for_runtime(self, settings: Dict[str, Any] | None = None) -> str:
+        source = self.settings if settings is None else settings
+        configured = self._clean_setting_text(source.get("conda_executable"))
         if configured and configured != "conda":
             return configured
         return self._clean_setting_text(os.getenv("CONDA_EXE")) or configured or "conda"
@@ -536,17 +584,47 @@ class PyrunsRuntime:
     def list_conda_envs(self, *, refresh: bool = True) -> Dict[str, Any]:
         """Return conda environments discoverable from the current server process."""
 
-        if not refresh and self._conda_envs_cache is not None:
-            return dict(self._conda_envs_cache)
+        with self._workspace_lock:
+            workspace_epoch = self._workspace_epoch
+            settings = dict(self.settings)
+            cached = dict(self._conda_envs_cache) if self._conda_envs_cache is not None else None
+        return self._list_conda_envs_for_snapshot(
+            settings,
+            workspace_epoch=workspace_epoch,
+            refresh=refresh,
+            cached=cached,
+        )
+
+    def _cache_conda_envs_for_snapshot(
+        self,
+        workspace_epoch: int,
+        payload: Dict[str, Any],
+    ) -> None:
+        with self._workspace_lock:
+            if workspace_epoch == self._workspace_epoch:
+                self._conda_envs_cache = dict(payload)
+
+    def _list_conda_envs_for_snapshot(
+        self,
+        settings: Dict[str, Any],
+        *,
+        workspace_epoch: int,
+        refresh: bool,
+        cached: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        """Discover providers for one immutable workspace settings snapshot."""
+
+        if not refresh and cached is not None:
+            return dict(cached)
         if not refresh:
             return {
                 "available": False,
-                "executable": self._conda_executable_for_runtime(),
+                "executable": self._conda_executable_for_runtime(settings),
                 "envs": [],
                 "error": "Conda providers have not been refreshed yet.",
             }
 
-        conda_executable = self._conda_executable_for_runtime()
+        conda_executable = self._conda_executable_for_runtime(settings)
         resolved_conda = self._resolve_executable(conda_executable)
         if not resolved_conda:
             payload = {
@@ -555,7 +633,7 @@ class PyrunsRuntime:
                 "envs": [],
                 "error": f"conda executable not found: {conda_executable}",
             }
-            self._conda_envs_cache = dict(payload)
+            self._cache_conda_envs_for_snapshot(workspace_epoch, payload)
             return payload
 
         root_prefix = ""
@@ -591,7 +669,7 @@ class PyrunsRuntime:
                 "envs": [],
                 "error": str(exc),
             }
-            self._conda_envs_cache = dict(payload)
+            self._cache_conda_envs_for_snapshot(workspace_epoch, payload)
             return payload
 
         if result.returncode != 0:
@@ -601,7 +679,7 @@ class PyrunsRuntime:
                 "envs": [],
                 "error": result.stderr.strip() or result.stdout.strip() or "conda env list failed",
             }
-            self._conda_envs_cache = dict(payload)
+            self._cache_conda_envs_for_snapshot(workspace_epoch, payload)
             return payload
 
         data = yaml.safe_load(result.stdout) or {}
@@ -627,14 +705,32 @@ class PyrunsRuntime:
             "envs": envs,
             "error": "",
         }
-        self._conda_envs_cache = dict(payload)
+        self._cache_conda_envs_for_snapshot(workspace_epoch, payload)
         return payload
 
     def get_runtime_info(self, *, refresh_providers: bool = True) -> Dict[str, Any]:
         """Return runtime settings and environment providers for the current workspace."""
 
-        settings = dict(self.settings)
-        conda = self.list_conda_envs(refresh=refresh_providers)
+        with self._workspace_lock:
+            workspace_epoch = self._workspace_epoch
+            settings = dict(self.settings)
+            cached_conda = (
+                dict(self._conda_envs_cache)
+                if self._conda_envs_cache is not None
+                else None
+            )
+
+        provider_reader = self.list_conda_envs
+        if getattr(provider_reader, "__func__", None) is PyrunsRuntime.list_conda_envs:
+            conda = self._list_conda_envs_for_snapshot(
+                settings,
+                workspace_epoch=workspace_epoch,
+                refresh=refresh_providers,
+                cached=cached_conda,
+            )
+        else:
+            # Preserve deliberate test/subclass provider overrides.
+            conda = provider_reader(refresh=refresh_providers)
         global_env = settings.get("global_env", {})
         if not isinstance(global_env, dict):
             global_env = {}
@@ -671,12 +767,16 @@ class PyrunsRuntime:
         }
         return runtime
 
+    @_with_stable_workspace
     def update_runtime_settings(self, payload: Dict[str, Any], *, refresh_providers: bool = False) -> Dict[str, Any]:
         """Persist runtime settings and return the refreshed runtime info."""
 
         allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text", "gpu_scheduler"}
         current_conda_executable = self._clean_setting_text(self.settings.get("conda_executable")) or "conda"
         provider_settings_changed = False
+        updates: Dict[str, Any] = {}
+        if "global_env" in payload and "global_env_text" in payload:
+            raise ValueError("global_env and global_env_text cannot be updated together")
         for key, value in payload.items():
             if key not in allowed:
                 continue
@@ -685,21 +785,23 @@ class PyrunsRuntime:
             if key == "gpu_scheduler":
                 if not isinstance(value, dict):
                     raise ValueError("gpu_scheduler must be an object")
-                for setting_key, clean_value in _clean_gpu_scheduler_payload(value).items():
-                    save_setting_for_root(self.root_dir, setting_key, clean_value)
+                updates.update(_clean_gpu_scheduler_payload(value))
             elif key == "global_env_text":
-                save_setting_for_root(self.root_dir, "global_env", parse_global_env_text(str(value or "")))
+                updates["global_env"] = parse_global_env_text(str(value or ""))
             elif key == "global_env":
                 clean_env = normalize_environment(value, drop_none_values=True)
-                save_setting_for_root(self.root_dir, key, clean_env)
+                updates[key] = clean_env
             else:
-                save_setting_for_root(self.root_dir, key, self._clean_setting_text(value))
+                updates[key] = self._clean_setting_text(value)
+
+        save_settings_for_root(self.root_dir, updates)
 
         self.settings = load_settings(self.root_dir)
         if provider_settings_changed:
             self._conda_envs_cache = None
         return self.get_runtime_info(refresh_providers=refresh_providers)
 
+    @_with_stable_workspace
     def list_templates(self) -> List[Dict[str, str]]:
         """Return loadable template options for the Generator page."""
         script_info = load_script_info(self.root_dir)
@@ -715,6 +817,7 @@ class PyrunsRuntime:
             result.append({"value": value, "label": display_label})
         return result
 
+    @_with_stable_workspace
     def list_shell_templates(self, script_info: Dict[str, Any] | None = None) -> List[Dict[str, str]]:
         """Return existing shell task payloads that can seed shell-mode tasks."""
 
@@ -737,13 +840,17 @@ class PyrunsRuntime:
                 candidates = [configured_file] if configured_file else []
                 candidates.extend(name for name in _cfg.SHELL_CONFIG_FILENAMES if name not in candidates)
 
-                payload_name = next(
-                    (
-                        name for name in candidates
-                        if name and os.path.exists(os.path.join(task_dir, name))
-                    ),
-                    "",
-                )
+                payload_name = ""
+                for name in candidates:
+                    if not name:
+                        continue
+                    try:
+                        payload_path = resolve_task_payload_path(task_dir, name)
+                    except ValueError:
+                        continue
+                    if os.path.isfile(payload_path):
+                        payload_name = os.path.relpath(payload_path, task_dir)
+                        break
                 if not payload_name:
                     continue
 
@@ -783,9 +890,7 @@ class PyrunsRuntime:
 
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
-            project_root = str(script_info.get("project_root", "") or "")
-            if not project_root:
-                project_root = shell_project_root_for_workspace(self.root_dir)
+            project_root = shell_project_root_for_workspace(self.root_dir)
             project_root = self._normalize_path(project_root)
             try:
                 common_root = self._normalize_path(os.path.commonpath([path, project_root]))
@@ -796,8 +901,9 @@ class PyrunsRuntime:
 
         return os.path.basename(path)
 
+    @_with_stable_workspace
     def resolve_template_path(self, template_value: str) -> str:
-        """Resolve one template entry from workspace-relative or absolute value."""
+        """Resolve one template without allowing reads outside workspace-owned roots."""
 
         value = str(template_value or "").strip()
         if not value:
@@ -808,17 +914,35 @@ class PyrunsRuntime:
         else:
             path = os.path.join(self.root_dir, value)
 
-        normalized = self._normalize_path(path)
-        if not os.path.exists(normalized):
+        resolved = os.path.realpath(self._normalize_path(path))
+        if not os.path.isfile(resolved):
             raise FileNotFoundError(f"Template not found: {template_value}")
-        return normalized
 
+        allowed_roots = [os.path.realpath(self._normalize_path(self.root_dir))]
+        script_info = load_script_info(self.root_dir)
+        if normalize_workspace_kind(script_info.get("workspace_kind")) == _cfg.WORKSPACE_KIND_SHELL:
+            project_root = shell_project_root_for_workspace(self.root_dir)
+            if project_root:
+                allowed_roots.append(os.path.realpath(self._normalize_path(project_root)))
+
+        contained = False
+        for root in allowed_roots:
+            try:
+                if os.path.normcase(os.path.commonpath([resolved, root])) == os.path.normcase(root):
+                    contained = True
+                    break
+            except (OSError, ValueError):
+                continue
+        if not contained:
+            raise ValueError(f"Template resolves outside the allowed workspace: {template_value}")
+        return self._normalize_path(resolved)
+
+    @_with_stable_workspace
     def get_template_content(self, template_value: str) -> Dict[str, Any]:
         """Return the raw template text and metadata for one template."""
 
         path = self.resolve_template_path(template_value)
-        with open(path, "r", encoding="utf-8") as handle:
-            content = handle.read()
+        content = self._read_template_text(path, template_value)
 
         script_info = load_script_info(self.root_dir)
         label = next(
@@ -849,6 +973,30 @@ class PyrunsRuntime:
             "parsed_config": data if isinstance(data, dict) else None,
         }
 
+    @staticmethod
+    def _read_template_text(path: str, template_value: str) -> str:
+        with open(path, "rb") as handle:
+            raw = handle.read(MAX_TASK_PAYLOAD_BYTES + 1)
+        if len(raw) > MAX_TASK_PAYLOAD_BYTES:
+            raise ValueError(
+                f"Template is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes): {template_value}"
+            )
+        return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+    def _load_generator_template_config(self, template_value: str) -> Dict[str, Any]:
+        try:
+            path = self.resolve_template_path(template_value)
+            parsed = yaml.safe_load(self._read_template_text(path, template_value))
+            if parsed is None:
+                return {}
+            if not isinstance(parsed, dict):
+                raise ValueError(f"YAML root must be a mapping: {path}")
+            return parsed
+        except ValueError:
+            raise
+        except (OSError, yaml.YAMLError) as exc:
+            raise ValueError(f"Could not load template '{template_value}': {exc}") from exc
+
     @property
     def task_generator(self) -> TaskGenerator:
         with self._lock:
@@ -877,6 +1025,7 @@ class PyrunsRuntime:
         with self._lock:
             self._last_full_refresh_time = 0.0
 
+    @_with_stable_workspace
     def ensure_tasks_loaded(self, *, full_refresh: bool = False) -> None:
         """Load task metadata on demand for faster startup."""
         manager = self.task_manager
@@ -897,6 +1046,47 @@ class PyrunsRuntime:
                 with self._lock:
                     self._last_full_refresh_time = now
 
+    @_with_stable_workspace
+    def get_task_event_stream_context(self) -> tuple[str, TaskManager]:
+        """Capture one atomic workspace/manager pair for a task event stream."""
+        self.ensure_tasks_loaded(full_refresh=False)
+        manager = self.task_manager
+        manager.acquire_reactive_watch()
+        return os.path.normcase(os.path.abspath(self.root_dir)), manager
+
+    @_with_stable_workspace
+    def release_task_event_stream_context(
+        self,
+        expected_root: str,
+        manager: TaskManager,
+    ) -> None:
+        """Release and promptly reclaim a task event stream's manager."""
+        manager.release_reactive_watch()
+        manager_key = os.path.normcase(os.path.abspath(manager.tasks_dir))
+        if not self.workspace_stream_is_current(expected_root, manager):
+            self._retire_task_manager_if_idle(manager_key, manager)
+
+    @_with_stable_workspace
+    def workspace_stream_is_current(
+        self,
+        expected_root: str,
+        expected_manager: TaskManager | None = None,
+    ) -> bool:
+        """Return whether a long-lived stream still belongs to the active workspace."""
+        current_root = os.path.normcase(os.path.abspath(self.root_dir))
+        if current_root != os.path.normcase(os.path.abspath(expected_root)):
+            return False
+        return expected_manager is None or self._task_manager is expected_manager
+
+    @_with_stable_workspace
+    def get_task_log_stream_context(self, task_name: str) -> tuple[str, Dict[str, Any]]:
+        """Capture one atomic workspace/task pair for a log stream."""
+        task = self.get_task(task_name, refresh=False)
+        if task is None:
+            raise KeyError(task_name)
+        return os.path.normcase(os.path.abspath(self.root_dir)), task
+
+    @_with_stable_workspace
     def list_tasks(
         self,
         *,
@@ -940,6 +1130,7 @@ class PyrunsRuntime:
             status_counts=status_counts,
         )
 
+    @_with_stable_workspace
     def get_dashboard(self, *, refresh: bool = True, recent_limit: int = 6) -> Dict[str, Any]:
         """Return lightweight dashboard data for the Home page."""
 
@@ -974,6 +1165,7 @@ class PyrunsRuntime:
             "active_task": active_task,
         }
 
+    @_with_stable_workspace
     def get_task(self, task_name: str, *, refresh: bool = True) -> Dict[str, Any] | None:
         """Return one task snapshot."""
         self.ensure_tasks_loaded(full_refresh=False)
@@ -992,6 +1184,7 @@ class PyrunsRuntime:
             raise KeyError(task_name)
         return task
 
+    @_with_stable_workspace
     def start_task(self, task_name: str, execution_mode: str | None = None) -> Dict[str, Any]:
         """Start one task and return the updated snapshot."""
         task = self.require_task(task_name)
@@ -1003,6 +1196,7 @@ class PyrunsRuntime:
             raise ValueError(f"Task '{task_name}' could not be started")
         return self.get_task(task_name) or task
 
+    @_with_stable_workspace
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
         """Request cancellation from the runner that owns the task."""
         task = self.require_task(task_name)
@@ -1012,6 +1206,7 @@ class PyrunsRuntime:
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
         return self.get_task(task_name) or task
 
+    @_with_stable_workspace
     def start_tasks_batch(
         self,
         task_names: List[str],
@@ -1054,6 +1249,7 @@ class PyrunsRuntime:
             "skipped": [task_name for task_name in normalized_names if task_name not in claimed],
         }
 
+    @_with_stable_workspace
     def delete_tasks_batch(self, task_names: List[str]) -> Dict[str, Any]:
         """Soft-delete multiple tasks."""
         normalized_names: List[str] = []
@@ -1078,6 +1274,7 @@ class PyrunsRuntime:
             "deleted": deleted_names,
         }
 
+    @_with_stable_workspace
     def export_tasks_csv(self, task_names: List[str]) -> str:
         """Build a CSV export for the selected tasks."""
 
@@ -1101,6 +1298,7 @@ class PyrunsRuntime:
             raise ValueError("No monitor data available to export.")
         return csv_text
 
+    @_with_stable_workspace
     def set_task_pin(self, task_name: str, pinned: bool | None = None) -> Dict[str, Any]:
         """Toggle or set one task's pinned state."""
         self.require_task(task_name, refresh=False)
@@ -1112,6 +1310,7 @@ class PyrunsRuntime:
             raise ValueError(str(result))
         return self.require_task(task_name, refresh=True)
 
+    @_with_stable_workspace
     def reorder_tasks(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Persist manual card order for the Manager page."""
         self.ensure_tasks_loaded(full_refresh=False)
@@ -1133,15 +1332,22 @@ class PyrunsRuntime:
         if not native_picker_available():
             raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
 
-        workspace = self.get_workspace_info()
+        with self._workspace_lock:
+            workspace_root = os.path.normcase(os.path.abspath(self.root_dir))
+            workspace = self.get_workspace_info()
         initial_dir = str(workspace.get("working_root", "") or workspace.get("project_root", "") or os.getcwd())
         shell_path = choose_shell_file(initial_dir)
         if not shell_path:
             raise ValueError("No shell script selected.")
         if not os.path.isfile(shell_path):
             raise FileNotFoundError(f"Shell script not found: {shell_path}")
-        return self.get_template_content(shell_path)
+        with self._workspace_lock:
+            current_root = os.path.normcase(os.path.abspath(self.root_dir))
+            if current_root != workspace_root:
+                raise ValueError("Workspace changed while the file picker was open. Select the script again.")
+            return self.get_template_content(shell_path)
 
+    @_with_stable_workspace
     def update_task_notes(self, task_name: str, notes: str) -> Dict[str, Any]:
         """Persist notes for one task."""
         self.require_task(task_name, refresh=False)
@@ -1153,6 +1359,7 @@ class PyrunsRuntime:
             raise ValueError(str(result))
         return self.require_task(task_name, refresh=True)
 
+    @_with_stable_workspace
     def update_task_env(self, task_name: str, env: Dict[str, Any]) -> Dict[str, Any]:
         """Persist env vars for one task."""
         self.require_task(task_name, refresh=False)
@@ -1164,6 +1371,7 @@ class PyrunsRuntime:
             raise ValueError(str(result))
         return self.require_task(task_name, refresh=True)
 
+    @_with_stable_workspace
     def rename_task(self, task_name: str, new_name: str) -> Dict[str, Any]:
         """Rename one task."""
         self.require_task(task_name, refresh=False)
@@ -1177,6 +1385,7 @@ class PyrunsRuntime:
         renamed = str(result)
         return self.require_task(renamed, refresh=True)
 
+    @_with_stable_workspace
     def get_task_logs(
         self,
         task_name: str,
@@ -1187,13 +1396,25 @@ class PyrunsRuntime:
         tail_bytes: int | None = None,
         tail_lines: int | None = None,
         chunk_size: int | None = None,
+        expected_workspace_root: str | None = None,
+        expected_task_dir: str | None = None,
     ) -> Dict[str, Any]:
         """Load a historical log chunk for the monitor page."""
+        if expected_workspace_root is not None:
+            current_root = os.path.normcase(os.path.abspath(self.root_dir))
+            expected_root = os.path.normcase(os.path.abspath(expected_workspace_root))
+            if current_root != expected_root:
+                raise WorkspaceChangedError("Workspace changed")
         task = self.get_task(task_name, refresh=False)
         if task is None:
             raise KeyError(task_name)
 
         task_dir = str(task["dir"])
+        if expected_task_dir is not None:
+            current_task_dir = os.path.normcase(os.path.abspath(task_dir))
+            expected_dir = os.path.normcase(os.path.abspath(expected_task_dir))
+            if current_task_dir != expected_dir:
+                raise WorkspaceChangedError("Workspace changed")
         log_options = get_log_options(task_dir)
         available_logs = list(log_options.keys())
         selected_name = str(log_file_name or "").strip()
@@ -1313,6 +1534,7 @@ class PyrunsRuntime:
         except TypeError:
             return self.metrics_sampler.sample()
 
+    @_with_stable_workspace
     def open_shell_workspace(self) -> Dict[str, Any]:
         """Prepare and activate the project-level shell workspace."""
 
@@ -1321,6 +1543,7 @@ class PyrunsRuntime:
         self.reload(shell_root)
         return self.get_workspace_info()
 
+    @_with_stable_workspace
     def create_tasks_from_template(
         self,
         *,
@@ -1347,7 +1570,7 @@ class PyrunsRuntime:
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
             if editor_mode != "shell":
                 raise ValueError("Shell workspace only supports shell mode.")
-            content = str(shell_text or "")
+            content = _require_bounded_editor_text(shell_text, label="Shell content")
             if not content.strip():
                 raise ValueError("Shell mode requires non-empty script content.")
             task = self.task_generator.create_shell_task(normalized_prefix, content)
@@ -1365,7 +1588,7 @@ class PyrunsRuntime:
             raise ValueError(f"Unsupported generator mode: {mode}")
 
         try:
-            parsed = yaml.safe_load(str(yaml_text or ""))
+            parsed = yaml.safe_load(_require_bounded_editor_text(yaml_text, label="YAML content"))
         except yaml.YAMLError as exc:
             raise ValueError(f"Invalid YAML: {exc}") from exc
 
@@ -1377,10 +1600,7 @@ class PyrunsRuntime:
             raise ValueError("YAML content must be a mapping at the root.")
 
         if template_value:
-            try:
-                orig_config = load_yaml_strict(self.resolve_template_path(template_value))
-            except Exception:
-                orig_config = {}
+            orig_config = self._load_generator_template_config(template_value)
         else:
             orig_config = {}
 
@@ -1414,6 +1634,7 @@ class PyrunsRuntime:
             "task_kind": TASK_KIND_CONFIG,
         }
 
+    @_with_stable_workspace
     def preview_tasks_from_template(
         self,
         *,
@@ -1430,7 +1651,7 @@ class PyrunsRuntime:
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
             if editor_mode != "shell":
                 raise ValueError("Shell workspace only supports shell mode.")
-            content = str(shell_text or "")
+            content = _require_bounded_editor_text(shell_text, label="Shell content")
             if not content.strip():
                 raise ValueError("Shell mode requires non-empty script content.")
             preview_text, _ = build_task_preview_and_search(
@@ -1453,7 +1674,7 @@ class PyrunsRuntime:
             raise ValueError(f"Unsupported generator mode: {mode}")
 
         try:
-            parsed = yaml.safe_load(str(yaml_text or ""))
+            parsed = yaml.safe_load(_require_bounded_editor_text(yaml_text, label="YAML content"))
         except yaml.YAMLError as exc:
             raise ValueError(f"Invalid YAML: {exc}") from exc
 
@@ -1465,10 +1686,7 @@ class PyrunsRuntime:
             raise ValueError("YAML content must be a mapping at the root.")
 
         if template_value:
-            try:
-                orig_config = load_yaml_strict(self.resolve_template_path(template_value))
-            except Exception:
-                orig_config = {}
+            orig_config = self._load_generator_template_config(template_value)
         else:
             orig_config = {}
 
@@ -1531,6 +1749,7 @@ class PyrunsRuntime:
 
         return list_workspace_candidates(script_path, config_path)
 
+    @_with_stable_workspace
     def open_launcher_workspace(
         self,
         script_path: str,
@@ -1654,9 +1873,7 @@ class PyrunsRuntime:
         script_path = choose_script_file(initial_dir)
         if not script_path:
             raise ValueError("No script selected.")
-        workspace = bootstrap_workspace(script_path)
-        self.reload(workspace)
-        return self.get_workspace_info()
+        return self.open_launcher_workspace(script_path)
 
     def pick_and_open_shell_workspace(self) -> Dict[str, Any]:
         """Open a native folder picker and activate that directory's shell workspace."""
@@ -1674,11 +1891,9 @@ class PyrunsRuntime:
         if not selected_dir:
             raise ValueError("No directory selected.")
 
-        project_root = normalize_path(os.path.join(selected_dir, _cfg.DEFAULT_ROOT_NAME))
-        workspace = bootstrap_shell_workspace(project_root)
-        self.reload(workspace)
-        return self.get_workspace_info()
+        return self.open_shell_workspace_at(selected_dir)
 
+    @_with_stable_workspace
     def open_shell_workspace_at(self, project_dir: str) -> Dict[str, Any]:
         """Activate a shell workspace for a user-entered project directory."""
 

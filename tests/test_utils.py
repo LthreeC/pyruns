@@ -4,6 +4,7 @@ settings, info_io, config_utils, batch_utils, and validation.
 """
 import builtins
 import codecs
+import io
 import importlib
 import json
 import logging
@@ -17,6 +18,7 @@ import yaml
 from unittest.mock import patch
 
 import pyruns.utils.batch_utils as batch_utils
+import pyruns.utils.config_utils as config_utils
 import pyruns.utils.log_io as log_io
 import pyruns.utils.process_utils as process_utils
 import pyruns.utils.settings as settings
@@ -24,6 +26,7 @@ from pyruns._config import (
     DEFAULT_ROOT_NAME, CONFIG_DEFAULT_FILENAME,
     SETTINGS_FILENAME, SCRIPT_INFO_FILENAME, TASK_INFO_FILENAME, RUN_LOGS_DIR, RECORDS_KEY,
     BATCH_ESCAPE,
+    MAX_CONFIG_FILE_BYTES,
     CONFIG_FILENAME, POWERSHELL_CONFIG_FILENAME, SHELL_CONFIG_FILENAME,
     TASK_KIND_CONFIG, TASK_KIND_SHELL, WORKSPACE_KIND_SCRIPT, WORKSPACE_KIND_SHELL,
 )
@@ -49,6 +52,7 @@ from pyruns.utils.sort_utils import task_sort_key, filter_tasks, sort_tasks_for_
 from pyruns.utils.info_io import (
     load_task_info, save_task_info, update_task_info, load_record_data,
     get_log_options, resolve_log_path, validate_task_name, task_info_lock,
+    MAX_RUN_HISTORY_SLOTS, MAX_TASK_INFO_BYTES,
 )
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
@@ -367,6 +371,143 @@ def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkey
     assert preview.endswith("...")
     assert len(preview) == 120
     assert "shell-task" in search
+
+
+def test_task_payload_rejects_config_file_escape(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    task_dir = tasks_dir / "safe"
+    task_dir.mkdir(parents=True)
+    outside = tasks_dir / "secret.yaml"
+    outside.write_text("token: do-not-read\n", encoding="utf-8")
+
+    kind, config, text, error = read_task_payload(
+        str(task_dir),
+        {"task_kind": TASK_KIND_CONFIG, "config_file": "../secret.yaml"},
+    )
+
+    assert kind == TASK_KIND_CONFIG
+    assert config == {}
+    assert text == ""
+    assert "outside the task directory" in error
+
+
+def test_task_info_rejects_symlinked_task_directory_escape(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    outside = tmp_path / "outside-task"
+    outside.mkdir()
+    (outside / TASK_INFO_FILENAME).write_text('{"name":"outside"}', encoding="utf-8")
+    link = tasks_dir / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    assert load_task_info(str(link)) == {}
+    with pytest.raises(ValueError, match="outside the tasks directory"):
+        load_task_info(str(link), raise_error=True)
+
+
+def test_task_info_rejects_symlinked_tasks_root(tmp_path):
+    outside = tmp_path / "outside-tasks"
+    task_dir = outside / "safe"
+    task_dir.mkdir(parents=True)
+    (task_dir / TASK_INFO_FILENAME).write_text('{"name":"outside"}', encoding="utf-8")
+    tasks_link = tmp_path / "tasks"
+    try:
+        tasks_link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    linked_task = tasks_link / "safe"
+    assert load_task_info(str(linked_task)) == {}
+    with pytest.raises(ValueError, match="Tasks directory must not be"):
+        load_task_info(str(linked_task), raise_error=True)
+
+
+def test_task_info_rejects_symlinked_workspace_ancestor(tmp_path):
+    import pyruns.utils.info_io as info_io
+
+    managed_root = tmp_path / DEFAULT_ROOT_NAME
+    managed_root.mkdir()
+    outside_workspace = tmp_path / "outside-workspace"
+    task_dir = outside_workspace / "tasks" / "safe"
+    task_dir.mkdir(parents=True)
+    (task_dir / TASK_INFO_FILENAME).write_text('{"name":"outside"}', encoding="utf-8")
+    workspace_link = managed_root / "train"
+    try:
+        workspace_link.symlink_to(outside_workspace, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+
+    linked_task = workspace_link / "tasks" / "safe"
+    with pytest.raises(ValueError, match="Managed workspace path must not contain"):
+        info_io.validate_task_directory(str(linked_task))
+    assert load_task_info(str(linked_task)) == {}
+
+
+def test_task_info_rejects_simulated_reparse_workspace_ancestor(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
+    task_dir = workspace / "tasks" / "safe"
+    task_dir.mkdir(parents=True)
+    (task_dir / TASK_INFO_FILENAME).write_text('{"name":"safe"}', encoding="utf-8")
+    real_check = info_io._path_is_link_or_reparse
+
+    def fake_reparse(path):
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(workspace)):
+            return True
+        return real_check(path)
+
+    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+
+    with pytest.raises(ValueError, match="Managed workspace path must not contain"):
+        info_io.validate_task_directory(str(task_dir))
+
+
+def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    tasks_dir = tmp_path / "tasks"
+    task_dir = tasks_dir / "safe"
+    task_dir.mkdir(parents=True)
+    (task_dir / TASK_INFO_FILENAME).write_text('{"name":"safe"}', encoding="utf-8")
+
+    class ReparseStat:
+        st_file_attributes = 0x400
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(info_io.os.path, "islink", lambda _path: False)
+        if hasattr(info_io.os.path, "isjunction"):
+            patcher.setattr(info_io.os.path, "isjunction", lambda _path: False)
+        patcher.setattr(info_io.os, "lstat", lambda _path: ReparseStat())
+
+        assert info_io._path_is_link_or_reparse(str(tasks_dir)) is True
+        with pytest.raises(ValueError, match="reparse point"):
+            load_task_info(str(task_dir), raise_error=True)
+
+
+def test_task_info_and_logs_reject_nested_symlink_escapes(tmp_path):
+    task_dir = tmp_path / "tasks" / "safe"
+    task_dir.mkdir(parents=True)
+    outside_info = tmp_path / "outside-info.json"
+    outside_info.write_text('{"name":"outside"}', encoding="utf-8")
+    info_link = task_dir / TASK_INFO_FILENAME
+    outside_logs = tmp_path / "outside-logs"
+    outside_logs.mkdir()
+    (outside_logs / "run1.log").write_text("secret\n", encoding="utf-8")
+    logs_link = task_dir / RUN_LOGS_DIR
+    try:
+        info_link.symlink_to(outside_info)
+        logs_link.symlink_to(outside_logs, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    assert load_task_info(str(task_dir)) == {}
+    with pytest.raises(ValueError, match="workspace boundary"):
+        load_task_info(str(task_dir), raise_error=True)
+    assert get_log_options(str(task_dir)) == {}
     empty_preview, _ = build_task_preview_and_search(task_kind=TASK_KIND_SHELL, config_text="# only comments\n")
     assert empty_preview == "(empty shell script)"
 
@@ -758,13 +899,13 @@ def test_kill_process_posix_without_killpg_escalates_live_process(monkeypatch):
     monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: alive_checks.append(pid) or True)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
 
-    kill_process(333)
+    assert kill_process(333) is False
 
     assert calls == [
         (333, signal.SIGTERM),
         (333, getattr(signal, "SIGKILL", signal.SIGTERM)),
     ]
-    assert alive_checks == [333]
+    assert alive_checks == [333, 333]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -936,6 +1077,80 @@ def test_ensure_settings_file(tmp_path):
         assert f.read() == "custom_key: 123"
 
 
+def test_ensure_settings_file_publishes_only_complete_content(tmp_path, monkeypatch):
+    path = tmp_path / SETTINGS_FILENAME
+    real_link = os.link
+    observed = []
+
+    def inspect_atomic_publish(source, destination):
+        assert Path(destination) == path
+        assert not path.exists()
+        assert Path(source).read_text(encoding="utf-8") == settings.SETTINGS_TEMPLATE
+        observed.append(Path(source))
+        return real_link(source, destination)
+
+    monkeypatch.setattr(settings.os, "link", inspect_atomic_publish)
+
+    assert settings.ensure_settings_file(str(tmp_path)) == str(path)
+    assert observed
+    assert path.read_text(encoding="utf-8") == settings.SETTINGS_TEMPLATE
+    assert not list(tmp_path.glob(f".{SETTINGS_FILENAME}.*.tmp"))
+
+
+def test_ensure_settings_file_preserves_concurrent_winner(tmp_path, monkeypatch):
+    path = tmp_path / SETTINGS_FILENAME
+    winner = "ui_port: 9001\n"
+
+    def publish_competing_file(_source, destination):
+        Path(destination).write_text(winner, encoding="utf-8")
+        raise FileExistsError(destination)
+
+    monkeypatch.setattr(settings.os, "link", publish_competing_file)
+
+    assert settings.ensure_settings_file(str(tmp_path)) == str(path)
+    assert path.read_text(encoding="utf-8") == winner
+    assert not list(tmp_path.glob(f".{SETTINGS_FILENAME}.*.tmp"))
+
+
+def test_ensure_config_default_publishes_only_complete_content(tmp_path, monkeypatch):
+    import pyruns
+
+    path = tmp_path / CONFIG_DEFAULT_FILENAME
+    real_link = os.link
+    observed = []
+
+    def inspect_atomic_publish(source, destination):
+        assert Path(destination) == path
+        assert not path.exists()
+        assert Path(source).read_text(encoding="utf-8") == "# task config here"
+        observed.append(Path(source))
+        return real_link(source, destination)
+
+    monkeypatch.setattr(pyruns.os, "link", inspect_atomic_publish)
+
+    assert pyruns.ensure_config_default(str(tmp_path)) == str(path)
+    assert observed
+    assert path.read_text(encoding="utf-8") == "# task config here"
+    assert not list(tmp_path.glob(f".{CONFIG_DEFAULT_FILENAME}.*.tmp"))
+
+
+def test_ensure_config_default_cleans_up_when_sync_fails(tmp_path, monkeypatch):
+    import pyruns
+
+    path = tmp_path / CONFIG_DEFAULT_FILENAME
+    monkeypatch.setattr(
+        pyruns.os,
+        "fsync",
+        lambda _fd: (_ for _ in ()).throw(OSError("sync failed")),
+    )
+
+    with pytest.raises(OSError, match="sync failed"):
+        pyruns.ensure_config_default(str(tmp_path))
+
+    assert not path.exists()
+    assert not list(tmp_path.glob(f".{CONFIG_DEFAULT_FILENAME}.*.tmp"))
+
+
 def test_load_settings(tmp_path):
     root_dir = str(tmp_path)
     file_path = os.path.join(root_dir, SETTINGS_FILENAME)
@@ -951,9 +1166,9 @@ def test_load_settings(tmp_path):
         
     cfg2 = settings.load_settings(root_dir)
     assert cfg2["ui_port"] == 9999
-    assert cfg2["new_key"] == "abc"
+    assert "new_key" not in cfg2
     # Defaults still present
-    assert cfg2["manager_columns"] == settings.SETTINGS_DEFAULTS["manager_columns"]
+    assert cfg2["header_refresh_interval"] == settings.SETTINGS_DEFAULTS["header_refresh_interval"]
 
 
 def test_get():
@@ -991,22 +1206,22 @@ def test_save_setting(tmp_path):
             assert "7777" not in text
             
         # 3. List serialization
-        settings.save_setting("pinned_params", ["a", "b"])
+        settings.save_setting("gpu_scheduler_device_ids", [0, 1])
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
             # Accept both formats: YAML dump may use "key:\n- val" or "key: \n- val"
-            assert "pinned_params" in text
-            assert "- a\n- b" in text
+            assert "gpu_scheduler_device_ids" in text
+            assert "- 0\n- 1" in text
 
-        assert settings._cached["pinned_params"] == ["a", "b"]
+        assert settings._cached["gpu_scheduler_device_ids"] == [0, 1]
 
         # 4. Update the list again
-        settings.save_setting("pinned_params", ["c"])
+        settings.save_setting("gpu_scheduler_device_ids", [2])
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-            assert "pinned_params" in text
-            assert "- c" in text
-            assert "- a" not in text
+            assert "gpu_scheduler_device_ids" in text
+            assert "- 2" in text
+            assert "- 0" not in text
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1041,6 +1256,10 @@ class TestLoadSaveTaskInfo:
     def test_load_missing_file(self, tmp_path):
         assert load_task_info(str(tmp_path)) == {}
 
+    def test_load_missing_file_raises_when_requested(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match=TASK_INFO_FILENAME):
+            load_task_info(str(tmp_path), raise_error=True)
+
     def test_load_corrupt_json(self, tmp_path):
         path = os.path.join(str(tmp_path), TASK_INFO_FILENAME)
         with open(path, "w") as f:
@@ -1061,6 +1280,24 @@ class TestLoadSaveTaskInfo:
         loaded = load_task_info(task_dir)
         assert loaded["name"] == info["name"]
         assert loaded["description"] == info["description"]
+
+    def test_rejects_run_index_that_would_expand_history_without_bound(self, tmp_path):
+        path = tmp_path / TASK_INFO_FILENAME
+        path.write_text(json.dumps({"name": "bomb", "run_index": MAX_RUN_HISTORY_SLOTS + 1}), encoding="utf-8")
+
+        assert path.stat().st_size < 128
+        assert MAX_RUN_HISTORY_SLOTS <= 1_000
+        assert load_task_info(str(tmp_path)) == {}
+        with pytest.raises(ValueError, match="run history"):
+            load_task_info(str(tmp_path), raise_error=True)
+
+    def test_rejects_oversized_task_info_before_json_decode(self, tmp_path, monkeypatch):
+        path = tmp_path / TASK_INFO_FILENAME
+        path.write_bytes(b" " * (MAX_TASK_INFO_BYTES + 1))
+        monkeypatch.setattr(json, "loads", lambda _value: (_ for _ in ()).throw(AssertionError("must not decode")))
+
+        with pytest.raises(ValueError, match="too large"):
+            load_task_info(str(tmp_path), raise_error=True)
 
     def test_update_retries_transient_replace_permission_error(self, tmp_path):
         task_dir = str(tmp_path)
@@ -1332,6 +1569,33 @@ class TestYamlIO:
             f.write("a: [1, 2\n")
         with pytest.raises(Exception):
             load_yaml_strict(path)
+
+    def test_yaml_io_rejects_oversized_documents_before_parse_or_publish(self, tmp_path):
+        oversized = tmp_path / "oversized.yaml"
+        oversized.write_bytes(b"x" * (MAX_CONFIG_FILE_BYTES + 1))
+        assert load_yaml(str(oversized)) == {}
+        with pytest.raises(ValueError, match="too large"):
+            load_yaml_strict(str(oversized))
+
+        output = tmp_path / "output.yaml"
+        with pytest.raises(ValueError, match="too large"):
+            save_yaml(str(output), {"value": "x" * MAX_CONFIG_FILE_BYTES})
+        assert not output.exists()
+
+    def test_save_yaml_is_atomic_when_replace_fails(self, tmp_path, monkeypatch):
+        path = tmp_path / "config.yaml"
+        path.write_text("value: old\n", encoding="utf-8")
+        monkeypatch.setattr(
+            config_utils,
+            "_replace_with_retry",
+            lambda *_args: (_ for _ in ()).throw(OSError("replace failed")),
+        )
+
+        with pytest.raises(OSError, match="replace failed"):
+            save_yaml(str(path), {"value": "new"})
+
+        assert path.read_text(encoding="utf-8") == "value: old\n"
+        assert not list(tmp_path.glob(".config.yaml.*.tmp"))
 
     def test_list_yaml_files(self, tmp_path):
         for name in ["a.yaml", "b.yml", "c.txt"]:
@@ -1639,6 +1903,26 @@ class TestValidateTaskName:
         for name in ['a<b', 'a>b', 'a:b', 'a"b', 'a/b', 'a\\b', 'a|b', 'a?b', 'a*b']:
             assert validate_task_name(name) is not None, name
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "-dangerous-option",
+            "trailing.",
+            "trailing ",
+            "CON",
+            "con.txt",
+            "PRN",
+            "AUX.log",
+            "NUL",
+            "COM1",
+            "com9.json",
+            "LPT1",
+            "lpt9.txt",
+        ],
+    )
+    def test_rejects_cross_platform_unsafe_names(self, name):
+        assert validate_task_name(name) is not None
+
 
 # ═══════════════════════════════════════════════════════════════
 #  Type Validation, Multiline Search, Pipe Escaping
@@ -1827,6 +2111,38 @@ def test_logger_configuration_can_disable_or_attach_file_handler(tmp_path, monke
         log_utils._LIBRARY_ROOT_LOGGER = original_library_logger
 
 
+def test_console_logger_ignores_only_an_already_closed_output_stream(capsys):
+    from pyruns.utils import log_utils
+
+    stream = io.StringIO()
+    handler = log_utils._CloseAwareStreamHandler(stream)
+    logger = logging.Logger("pyruns.closed-stream-test")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    logger.info("visible before close")
+    assert stream.getvalue() == "visible before close\n"
+
+    stream.close()
+    logger.error("cannot be written")
+
+    assert capsys.readouterr().err == ""
+
+
+def test_console_logger_uses_ansi_only_for_tty_streams():
+    from pyruns.utils import log_utils
+
+    configured = log_utils._LOG_CONFIG["console"]["format"]
+    redirected = io.StringIO()
+
+    class TtyStream(io.StringIO):
+        def isatty(self):
+            return True
+
+    assert "\x1b[" not in log_utils._console_format_for_stream(redirected, configured)
+    assert "\x1b[" in log_utils._console_format_for_stream(TtyStream(), configured)
+
+
 def test_info_io_lock_helpers_handle_invalid_stale_and_failed_cleanup(tmp_path, monkeypatch):
     import pyruns.utils.info_io as info_io
 
@@ -1849,6 +2165,30 @@ def test_info_io_lock_helpers_handle_invalid_stale_and_failed_cleanup(tmp_path, 
 
     monkeypatch.setattr(info_io.os, "remove", lambda path: (_ for _ in ()).throw(FileNotFoundError(path)))
     assert info_io._remove_stale_lock_file(str(lock_path)) is True
+
+
+def test_stale_lock_cleanup_does_not_remove_replaced_live_lock(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    lock_path = tmp_path / info_io._LOCK_FILENAME
+    stale_owner = "999999"
+    live_owner = str(os.getpid())
+    lock_path.write_text(stale_owner, encoding="utf-8")
+    monkeypatch.setattr(info_io, "is_pid_running", lambda pid: pid == os.getpid())
+    real_replace = os.replace
+    replaced = False
+
+    def replace_after_race(src, dst):
+        nonlocal replaced
+        if Path(src) == lock_path and not replaced:
+            replaced = True
+            lock_path.write_text(live_owner, encoding="utf-8")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(info_io.os, "replace", replace_after_race)
+
+    assert info_io._remove_stale_lock_file(str(lock_path)) is False
+    assert lock_path.read_text(encoding="utf-8") == live_owner
 
 
 def test_task_info_lock_times_out_when_live_lock_persists(tmp_path, monkeypatch):
@@ -1920,14 +2260,15 @@ def test_settings_load_get_and_scalar_text_edges(tmp_path, monkeypatch):
     settings_path = Path(settings._settings_path(str(root)))
     settings_path.write_text("ui_port: [unterminated", encoding="utf-8")
 
-    loaded = settings.load_settings(str(root))
-    assert loaded["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
-    assert settings.reload_settings(str(root))["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
+    with pytest.raises(ValueError, match="Could not parse settings file"):
+        settings.load_settings(str(root))
+    with pytest.raises(ValueError, match="Could not parse settings file"):
+        settings.reload_settings(str(root))
 
     monkeypatch.setattr(settings, "_cached", {})
     monkeypatch.setattr(settings, "load_settings", lambda root_dir=settings.ROOT_DIR: (_ for _ in ()).throw(RuntimeError("boom")))
-    assert settings.get("ui_port") == settings.SETTINGS_DEFAULTS["ui_port"]
-    assert settings.get("unknown", "fallback") == "fallback"
+    with pytest.raises(RuntimeError, match="boom"):
+        settings.get("ui_port")
 
     assert settings._yaml_scalar_to_text(True) == "true"
     assert settings._yaml_scalar_to_text(False) == "false"
@@ -1936,6 +2277,78 @@ def test_settings_load_get_and_scalar_text_edges(tmp_path, monkeypatch):
     assert settings._yaml_scalar_to_text({}) == "{}"
     assert "\n- a" in settings._yaml_scalar_to_text(["a"])
     assert "\na: 1" in settings._yaml_scalar_to_text({"a": 1})
+    injected = settings._yaml_scalar_to_text("safe\nunknown_key: injected")
+    assert yaml.safe_load(f"value: {injected}\n") == {"value": "safe\nunknown_key: injected"}
+
+
+def test_load_settings_rejects_empty_non_mapping_and_unreadable_files(tmp_path, monkeypatch):
+    path = tmp_path / SETTINGS_FILENAME
+
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="Settings file is empty"):
+        settings.load_settings(str(tmp_path))
+
+    path.write_text("- not\n- a mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="root must be a mapping"):
+        settings.load_settings(str(tmp_path))
+
+    path.write_text("ui_port: 8099\n", encoding="utf-8")
+    real_open = builtins.open
+
+    def deny_settings_read(candidate, *args, **kwargs):
+        if os.path.abspath(os.fspath(candidate)) == os.path.abspath(path):
+            raise PermissionError("access denied")
+        return real_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", deny_settings_read)
+    with pytest.raises(ValueError, match="Could not read settings file"):
+        settings.load_settings(str(tmp_path))
+
+
+def test_settings_reject_simulated_reparse_file_before_read_or_write(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    root = tmp_path / DEFAULT_ROOT_NAME
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    path.write_text("ui_port: 8099\n", encoding="utf-8")
+    real_check = info_io._path_is_link_or_reparse
+
+    def fake_reparse(candidate):
+        if os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(str(path)):
+            return True
+        return real_check(candidate)
+
+    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+
+    for operation in (
+        lambda: settings.ensure_settings_file(str(root)),
+        lambda: settings.load_settings(str(root)),
+        lambda: settings.save_setting_for_root(str(root), "ui_port", 8123),
+        lambda: settings.unset_setting_for_root(str(root), "ui_port"),
+    ):
+        with pytest.raises(ValueError, match="Settings file must not be"):
+            operation()
+    assert path.read_text(encoding="utf-8") == "ui_port: 8099\n"
+
+
+def test_settings_reject_simulated_reparse_managed_root(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    root = tmp_path / DEFAULT_ROOT_NAME
+    root.mkdir()
+    (root / SETTINGS_FILENAME).write_text("ui_port: 8099\n", encoding="utf-8")
+    real_check = info_io._path_is_link_or_reparse
+
+    def fake_reparse(candidate):
+        if os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(str(root)):
+            return True
+        return real_check(candidate)
+
+    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+
+    with pytest.raises(ValueError, match="Managed workspace path must not contain"):
+        settings.load_settings(str(root))
 
 
 def test_save_setting_for_root_preserves_or_appends_structured_values(tmp_path, monkeypatch):
@@ -1948,24 +2361,198 @@ def test_save_setting_for_root_preserves_or_appends_structured_values(tmp_path, 
     assert yaml.safe_load(path.read_text(encoding="utf-8"))["global_env"] == {"NEW": "2"}
 
     path.write_text("[]\n", encoding="utf-8")
-    settings.save_setting_for_root(str(root), "pinned_params", ["lr"])
-    assert "pinned_params:" in path.read_text(encoding="utf-8")
+    settings.save_setting_for_root(str(root), "gpu_scheduler_device_ids", [0])
+    assert "gpu_scheduler_device_ids:" in path.read_text(encoding="utf-8")
 
-    path.write_text("pinned_params: []\n", encoding="utf-8")
+    path.write_text("gpu_scheduler_device_ids: []\n", encoding="utf-8")
     monkeypatch.setattr(settings.yaml, "safe_load", lambda text: (_ for _ in ()).throw(yaml.YAMLError("bad yaml")))
-    settings.save_setting_for_root(str(root), "pinned_params", ["batch_size"])
-    assert "- batch_size" in path.read_text(encoding="utf-8")
+    with pytest.raises(yaml.YAMLError, match="bad yaml"):
+        settings.save_setting_for_root(str(root), "gpu_scheduler_device_ids", [1])
+    assert path.read_text(encoding="utf-8") == "gpu_scheduler_device_ids: []\n"
+    assert not Path(f"{path}.lock").exists()
 
 
-def test_save_setting_for_root_creates_file_and_swallows_write_errors(tmp_path, monkeypatch):
+def test_save_and_unset_empty_structured_setting_remove_unindented_yaml_items(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    original = "gpu_scheduler_device_ids:\n- 0\n- 1\nui_port: 8099\n"
+
+    path.write_text(original, encoding="utf-8")
+    settings.save_setting_for_root(str(root), "gpu_scheduler_device_ids", [])
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["gpu_scheduler_device_ids"] == []
+    assert saved["ui_port"] == 8099
+
+    path.write_text(original, encoding="utf-8")
+    settings.unset_setting_for_root(str(root), "gpu_scheduler_device_ids")
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "gpu_scheduler_device_ids" not in saved
+    assert saved["ui_port"] == 8099
+
+
+def test_save_settings_for_root_commits_batch_with_one_file_replace(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    path.write_text("ui_port: 8099\nconda_env: ''\n", encoding="utf-8")
+    real_replace = settings.os.replace
+    settings_replaces = []
+
+    def track_replace(source, destination):
+        if Path(destination) == path:
+            settings_replaces.append((source, destination))
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(settings.os, "replace", track_replace)
+    settings.save_settings_for_root(
+        str(root),
+        {"ui_port": 8123, "conda_env": "training", "log_enabled": True},
+    )
+
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["ui_port"] == 8123
+    assert saved["conda_env"] == "training"
+    assert saved["log_enabled"] is True
+    assert len(settings_replaces) == 1
+
+
+def test_save_settings_for_root_validates_complete_batch_before_writing(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    original = "ui_port: 8099\n"
+    path.write_text(original, encoding="utf-8")
+
+    with pytest.raises(KeyError, match="Unknown setting"):
+        settings.save_settings_for_root(
+            str(root),
+            {"ui_port": 8123, "removed_setting": True},
+        )
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not Path(f"{path}.lock").exists()
+
+
+def test_settings_writes_remove_unknown_keys_and_unset_removes_override(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    path.write_text(
+        "ui_port: 8099\nmanager_max_workers: 8\nmonitor_scrollback: 12345\n",
+        encoding="utf-8",
+    )
+
+    settings.save_setting_for_root(str(root), "ui_port", 8123)
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["ui_port"] == 8123
+    assert "manager_max_workers" not in saved
+
+    settings.unset_setting_for_root(str(root), "monitor_scrollback")
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "monitor_scrollback" not in saved
+    assert settings.reload_settings(str(root))["monitor_scrollback"] == settings.SETTINGS_DEFAULTS["monitor_scrollback"]
+
+
+def test_unset_setting_for_root_is_atomic_when_replace_fails(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    original = "ui_port: 8099\n"
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        settings.os,
+        "replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    with pytest.raises(OSError, match="replace failed"):
+        settings.unset_setting_for_root(str(root), "ui_port")
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not Path(f"{path}.lock").exists()
+
+
+def test_save_setting_for_root_creates_file_and_reports_write_errors(tmp_path, monkeypatch):
     root = tmp_path / "new-root"
     settings.save_setting_for_root(str(root), "ui_port", 8123)
     assert "ui_port: 8123" in (root / SETTINGS_FILENAME).read_text(encoding="utf-8")
 
     broken_root = tmp_path / "broken-root"
     monkeypatch.setattr(settings.os, "makedirs", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("readonly")))
-    settings.save_setting_for_root(str(broken_root), "ui_port", 9999)
+    with pytest.raises(OSError, match="readonly"):
+        settings.save_setting_for_root(str(broken_root), "ui_port", 9999)
     assert not (broken_root / SETTINGS_FILENAME).exists()
+
+
+def test_save_setting_for_root_is_atomic_when_replace_fails(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    path.write_text("ui_port: 8099\n", encoding="utf-8")
+    monkeypatch.setattr(
+        settings.os,
+        "replace",
+        lambda *_args: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    with pytest.raises(OSError, match="replace failed"):
+        settings.save_setting_for_root(str(root), "ui_port", 9000)
+
+    assert path.read_text(encoding="utf-8") == "ui_port: 8099\n"
+    assert not Path(f"{path}.lock").exists()
+
+
+def test_settings_lock_recovers_dead_owner_without_touching_live_owner(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    path = root / SETTINGS_FILENAME
+    path.write_text("ui_port: 8099\n", encoding="utf-8")
+    lock_path = Path(f"{path}.lock")
+
+    dead_owner = json.loads(settings._settings_lock_owner_bytes().decode("utf-8"))
+    dead_owner["pid"] = 999_999_999
+    dead_owner["process_create_time"] = 1.0
+    lock_path.write_text(json.dumps(dead_owner), encoding="utf-8")
+    monkeypatch.setattr(settings, "is_pid_running", lambda pid: pid != dead_owner["pid"])
+
+    settings.save_setting_for_root(str(root), "ui_port", 8123)
+
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["ui_port"] == 8123
+    assert not lock_path.exists()
+
+    live_owner = settings._settings_lock_owner_bytes()
+    lock_path.write_bytes(live_owner)
+    with pytest.raises(TimeoutError, match="locked by another process"):
+        settings._open_settings_lock(str(path), timeout_sec=0)
+    assert lock_path.read_bytes() == live_owner
+
+
+def test_settings_stale_lock_cleanup_restores_racing_live_lock(tmp_path, monkeypatch):
+    path = tmp_path / SETTINGS_FILENAME
+    lock_path = Path(f"{path}.lock")
+    stale_owner = json.loads(settings._settings_lock_owner_bytes().decode("utf-8"))
+    stale_owner["pid"] = 999_999_999
+    stale_owner["process_create_time"] = 1.0
+    lock_path.write_text(json.dumps(stale_owner), encoding="utf-8")
+    live_owner = settings._settings_lock_owner_bytes()
+
+    real_replace = settings.os.replace
+    replaced = False
+
+    def replace_after_live_owner_arrives(src, dst):
+        nonlocal replaced
+        if Path(src) == lock_path and not replaced:
+            replaced = True
+            lock_path.unlink()
+            lock_path.write_bytes(live_owner)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(settings, "is_pid_running", lambda pid: pid != stale_owner["pid"])
+    monkeypatch.setattr(settings.os, "replace", replace_after_live_owner_arrives)
+
+    assert settings._remove_stale_settings_lock(str(lock_path)) is False
+    assert lock_path.read_bytes() == live_owner
 
 
 def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatch):

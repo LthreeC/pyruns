@@ -4,26 +4,28 @@ Workspace settings loader/saver for Pyruns.
 Settings are persisted to ``_pyruns_settings.yaml`` under the workspace root.
 """
 
+import json
 import math
 import os
 import re
+import secrets
+import socket
+import tempfile
+import threading
+import time
 from typing import Any, Dict
 
 import yaml
+
+from pyruns.utils.process_utils import get_process_create_time, is_pid_running
+from pyruns.utils.info_io import validate_workspace_file
 
 from pyruns._config import (
     SETTINGS_FILENAME,
     ROOT_DIR,
     DEFAULT_ROOT_NAME,
     DEFAULT_UI_PORT,
-    DEFAULT_UI_PAGE_SIZE,
     DEFAULT_HEADER_REFRESH_INTERVAL,
-    DEFAULT_GENERATOR_FORM_COLUMNS,
-    DEFAULT_GENERATOR_AUTO_TIMESTAMP,
-    DEFAULT_GENERATOR_MODE,
-    DEFAULT_MANAGER_COLUMNS,
-    DEFAULT_MANAGER_MAX_WORKERS,
-    DEFAULT_MANAGER_EXECUTION_MODE,
     DEFAULT_MONITOR_CHUNK_SIZE,
     DEFAULT_MONITOR_LINE_HEIGHT,
     DEFAULT_MONITOR_SCROLLBACK,
@@ -37,15 +39,6 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "ui_port": DEFAULT_UI_PORT,
     # Header
     "header_refresh_interval": DEFAULT_HEADER_REFRESH_INTERVAL,
-    # Generator
-    "generator_form_columns": DEFAULT_GENERATOR_FORM_COLUMNS,
-    "generator_auto_timestamp": DEFAULT_GENERATOR_AUTO_TIMESTAMP,
-    "generator_mode": DEFAULT_GENERATOR_MODE,  # script workspace only: form | yaml
-    # Manager
-    "manager_columns": DEFAULT_MANAGER_COLUMNS,
-    "manager_max_workers": DEFAULT_MANAGER_MAX_WORKERS,
-    "manager_execution_mode": DEFAULT_MANAGER_EXECUTION_MODE,
-    "ui_page_size": DEFAULT_UI_PAGE_SIZE,
     # Monitor
     "monitor_chunk_size": DEFAULT_MONITOR_CHUNK_SIZE,
     "monitor_scrollback": DEFAULT_MONITOR_SCROLLBACK,
@@ -76,8 +69,6 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
     "gpu_scheduler_max_tasks_per_gpu": 1,
     "gpu_scheduler_respect_cuda_visible_devices": True,
     "gpu_scheduler_require_same_gpu_model": False,
-    # Persisted UI state
-    "pinned_params": [],
 }
 
 
@@ -91,17 +82,6 @@ ui_port: {SETTINGS_DEFAULTS.get("ui_port")}                    # preferred start
 
 # Header
 header_refresh_interval: {SETTINGS_DEFAULTS.get("header_refresh_interval")}
-
-# Generator
-generator_form_columns: {SETTINGS_DEFAULTS.get("generator_form_columns")}          # parameter editor columns (1-9)
-generator_auto_timestamp: {SETTINGS_DEFAULTS.get("generator_auto_timestamp")}
-generator_mode: {SETTINGS_DEFAULTS.get("generator_mode")}               # script workspace only: form | yaml
-
-# Manager
-manager_columns: {SETTINGS_DEFAULTS.get("manager_columns")}
-manager_max_workers: {SETTINGS_DEFAULTS.get("manager_max_workers")}
-manager_execution_mode: {SETTINGS_DEFAULTS.get("manager_execution_mode")}     # thread | process
-ui_page_size: {SETTINGS_DEFAULTS.get("ui_page_size")}                   # cards per page (0 = show all)
 
 # Monitor
 monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
@@ -142,6 +122,221 @@ gpu_scheduler_require_same_gpu_model: {SETTINGS_DEFAULTS.get("gpu_scheduler_requ
 
 
 _cached: Dict[str, Any] = {}
+_SETTINGS_FILE_LOCKS: Dict[str, threading.RLock] = {}
+_SETTINGS_FILE_LOCKS_GUARD = threading.Lock()
+_SETTINGS_LOCK_TIMEOUT_SEC = 5.0
+_SETTINGS_LOCK_POLL_SEC = 0.05
+_SETTINGS_LOCK_OWNER_HOST = socket.gethostname().lower()
+
+
+def _thread_lock_for(path: str) -> threading.RLock:
+    key = os.path.normcase(os.path.abspath(path))
+    with _SETTINGS_FILE_LOCKS_GUARD:
+        lock = _SETTINGS_FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _SETTINGS_FILE_LOCKS[key] = lock
+        return lock
+
+
+def _settings_lock_snapshot(path: str) -> tuple[tuple[int, int, int, int], bytes] | None:
+    try:
+        with open(path, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            content = handle.read(4096)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size), content
+
+
+def _settings_lock_owner_bytes() -> bytes:
+    owner = {
+        "pid": os.getpid(),
+        "process_create_time": get_process_create_time(os.getpid()),
+        "host": _SETTINGS_LOCK_OWNER_HOST,
+        "token": secrets.token_hex(16),
+    }
+    return json.dumps(owner, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _settings_lock_owner(content: bytes) -> Dict[str, Any] | None:
+    try:
+        owner = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(owner, dict):
+        return None
+    pid = owner.get("pid")
+    host = owner.get("host")
+    token = owner.get("token")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    if not isinstance(host, str) or not host or not isinstance(token, str) or not token:
+        return None
+    return owner
+
+
+def _settings_lock_is_stale(snapshot: tuple[tuple[int, int, int, int], bytes]) -> bool:
+    owner = _settings_lock_owner(snapshot[1])
+    if owner is None or owner["host"].lower() != _SETTINGS_LOCK_OWNER_HOST:
+        return False
+
+    pid = owner["pid"]
+    if not is_pid_running(pid):
+        return True
+
+    expected = owner.get("process_create_time")
+    if expected is None:
+        return False
+    try:
+        expected_value = float(expected)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    actual = get_process_create_time(pid)
+    if actual is None:
+        return False
+    return abs(actual - expected_value) > 0.01
+
+
+def _quarantine_settings_lock(
+    lock_path: str,
+    expected: tuple[tuple[int, int, int, int], bytes],
+) -> bool:
+    if _settings_lock_snapshot(lock_path) != expected:
+        return False
+    quarantine_path = (
+        f"{lock_path}.stale-{os.getpid()}-{threading.get_ident()}-{secrets.token_hex(8)}"
+    )
+    try:
+        os.replace(lock_path, quarantine_path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+    if _settings_lock_snapshot(quarantine_path) != expected:
+        try:
+            if not os.path.exists(lock_path):
+                os.replace(quarantine_path, lock_path)
+        except OSError:
+            pass
+        return False
+    try:
+        os.remove(quarantine_path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        try:
+            if not os.path.exists(lock_path):
+                os.replace(quarantine_path, lock_path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _remove_stale_settings_lock(lock_path: str) -> bool:
+    snapshot = _settings_lock_snapshot(lock_path)
+    return bool(
+        snapshot is not None
+        and _settings_lock_is_stale(snapshot)
+        and _quarantine_settings_lock(lock_path, snapshot)
+    )
+
+
+def _release_settings_lock(lock_path: str, owner: bytes) -> None:
+    snapshot = _settings_lock_snapshot(lock_path)
+    if snapshot is not None and snapshot[1] == owner:
+        if _quarantine_settings_lock(lock_path, snapshot):
+            return
+        if _settings_lock_snapshot(lock_path) == snapshot:
+            try:
+                os.remove(lock_path)
+            except OSError:
+                pass
+
+
+def _open_settings_lock(
+    path: str,
+    timeout_sec: float = _SETTINGS_LOCK_TIMEOUT_SEC,
+) -> tuple[int, str, bytes]:
+    lock_path = f"{path}.lock"
+    lock_dir = os.path.dirname(path) or "."
+    validate_workspace_file(lock_path, lock_dir, label="Settings lock file")
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            validate_workspace_file(lock_path, lock_dir, label="Settings lock file")
+            if _remove_stale_settings_lock(lock_path):
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Settings are locked by another process: {lock_path}"
+                ) from exc
+            time.sleep(_SETTINGS_LOCK_POLL_SEC)
+            continue
+
+        owner = _settings_lock_owner_bytes()
+        try:
+            written = os.write(fd, owner)
+            if written != len(owner):
+                raise OSError("Could not write the complete settings lock owner")
+            os.fsync(fd)
+            return fd, lock_path, owner
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            snapshot = _settings_lock_snapshot(lock_path)
+            if snapshot is not None:
+                _quarantine_settings_lock(lock_path, snapshot)
+            raise
+
+
+def _write_settings_lock(fd: int, text: str) -> None:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _atomic_create_text_file(path: str, text: str) -> bool:
+    """Publish a complete new file without replacing an existing target."""
+
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+        dir=directory,
+        text=True,
+    )
+    try:
+        _write_settings_lock(fd, text)
+        try:
+            os.link(tmp_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def _parse_settings_mapping(text: str, path: str) -> Dict[str, Any]:
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Could not parse settings file '{path}': {exc}") from exc
+    if data is None:
+        raise ValueError(f"Settings file is empty: {path}")
+    if not isinstance(data, dict):
+        raise ValueError(f"Settings file root must be a mapping: {path}")
+    return data
 
 
 def setting_numbers_are_finite(value: Any) -> bool:
@@ -174,10 +369,25 @@ def _settings_path(root_dir: str = ROOT_DIR) -> str:
 def ensure_settings_file(root_dir: str = ROOT_DIR) -> str:
     """Create settings file with defaults if it does not exist."""
     path = _settings_path(root_dir)
-    if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(SETTINGS_TEMPLATE)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
+    if os.path.lexists(path):
+        return path
+    _atomic_create_text_file(path, SETTINGS_TEMPLATE)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
     return path
 
 
@@ -186,19 +396,24 @@ def load_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
     global _cached
     path = _settings_path(root_dir)
     merged = dict(SETTINGS_DEFAULTS)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
 
-    if os.path.exists(path):
+    if os.path.lexists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            if isinstance(data, dict):
-                merged.update(
-                    (key, value)
-                    for key, value in data.items()
-                    if setting_numbers_are_finite(key) and setting_numbers_are_finite(value)
-                )
-        except Exception:
-            pass
+                text = f.read()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"Could not read settings file '{path}': {exc}") from exc
+        data = _parse_settings_mapping(text, path)
+        merged.update(
+            (key, value)
+            for key, value in data.items()
+            if key in SETTINGS_DEFAULTS and setting_numbers_are_finite(value)
+        )
 
     _cached = merged
     return merged
@@ -212,10 +427,7 @@ def reload_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
 def get(key: str, default: Any = None) -> Any:
     """Get one setting value from cache (lazy-loading if needed)."""
     if not _cached:
-        try:
-            load_settings(ROOT_DIR)
-        except Exception:
-            pass
+        load_settings(ROOT_DIR)
 
     if not _cached:
         return SETTINGS_DEFAULTS.get(key, default)
@@ -240,60 +452,195 @@ def _yaml_scalar_to_text(value: Any) -> str:
         if not value:
             return "{}"
         return "\n" + yaml.dump(value, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip("\n")
+    if isinstance(value, str):
+        rendered = yaml.safe_dump(
+            value,
+            default_flow_style=True,
+            allow_unicode=True,
+            width=10_000,
+        ).rstrip("\n")
+        if rendered.endswith("\n..."):
+            rendered = rendered[:-4]
+        return rendered
     return str(value)
 
 
-def save_setting_for_root(root_dir: str, key: str, value: Any) -> None:
-    """Persist one key while preserving most comments/formatting."""
+def _setting_block_pattern(key: str) -> re.Pattern[str]:
+    """Match one top-level setting and its indented YAML value."""
+
+    return re.compile(
+        rf"^{re.escape(key)}\s*:.*(?:\n[ \t]+(?:-[ \t]+.*|[^:\n]+:.*))*",
+        re.MULTILINE,
+    )
+
+
+def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
+    """Persist known settings together with one exclusive, atomic replace."""
+
+    updates = dict(values)
+    if not updates:
+        return
+
     path = _settings_path(root_dir)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
+    for key, value in updates.items():
+        if key not in SETTINGS_DEFAULTS:
+            raise KeyError(f"Unknown setting: {key}")
+        if not setting_numbers_are_finite(value):
+            raise ValueError(f"Setting {key} must contain only finite numbers")
 
-    try:
-        val_text = _yaml_scalar_to_text(value)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
+    with _thread_lock_for(path):
+        lock_fd, lock_path, lock_owner = _open_settings_lock(path)
+        tmp_path = ""
+        try:
+            text = ""
+            loaded: Dict[str, Any] = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read()
 
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
+                loaded = yaml.safe_load(text) or {}
+                if not isinstance(loaded, dict):
+                    raise ValueError(f"Settings file root must be a mapping: {path}")
 
-            # Match the key line and simple continuation lines (YAML list/dict items).
-            pattern = re.compile(
-                rf"^{re.escape(key)}\s*:.*(?:\n[ \t]+(?:-[ \t]+.*|[^:\n]+:.*))*",
-                re.MULTILINE,
-            )
+            has_unknown_keys = any(item_key not in SETTINGS_DEFAULTS for item_key in loaded)
+            loaded = {
+                item_key: item_value
+                for item_key, item_value in loaded.items()
+                if item_key in SETTINGS_DEFAULTS
+            }
 
-            if isinstance(value, (dict, list)) and value:
-                # For non-empty lists, use full YAML reload-and-dump to avoid
-                # regex substitution issues with multi-line structured values.
-                try:
-                    data = yaml.safe_load(text) or {}
-                    if isinstance(data, dict):
-                        data[key] = value
-                        # Re-dump the entire file to ensure correct formatting
-                        new_text = yaml.dump(
-                            data, default_flow_style=False,
-                            allow_unicode=True, sort_keys=False,
-                        )
-                    else:
-                        new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
-                except Exception:
-                    # Fallback to regex approach
-                    if pattern.search(text):
-                        new_text = pattern.sub(lambda _: f"{key}: {val_text}", text)
-                    else:
-                        new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
+            # Scalars use surgical replacements to preserve template comments.
+            # Mapping/list values use one canonical dump, matching the prior
+            # single-setting behavior while still committing the whole batch once.
+            if has_unknown_keys or any(
+                isinstance(value, (dict, list)) for value in updates.values()
+            ):
+                loaded.update(updates)
+                new_text = yaml.safe_dump(
+                    loaded,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
             else:
-                if pattern.search(text):
-                    new_text = pattern.sub(lambda _: f"{key}: {val_text}", text)
-                else:
-                    new_text = text.rstrip("\n") + f"\n{key}: {val_text}\n"
+                new_text = text
+                for key, value in updates.items():
+                    val_text = _yaml_scalar_to_text(value)
+                    pattern = _setting_block_pattern(key)
+                    if pattern.search(new_text):
+                        new_text = pattern.sub(lambda _: f"{key}: {val_text}", new_text)
+                    else:
+                        separator = "" if not new_text or new_text.endswith("\n") else "\n"
+                        new_text = f"{new_text}{separator}{key}: {val_text}\n"
 
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_text)
-        else:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(f"{key}: {val_text}\n")
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{os.path.basename(path)}.",
+                suffix=".tmp",
+                dir=os.path.dirname(path) or ".",
+                text=True,
+            )
+            _write_settings_lock(fd, new_text)
+            os.replace(tmp_path, path)
+            tmp_path = ""
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+            _release_settings_lock(lock_path, lock_owner)
 
-        _cached[key] = value
-    except Exception:
-        # Best effort: do not break UI on settings write failure.
-        pass
+        _cached.update(updates)
+
+
+def save_setting_for_root(root_dir: str, key: str, value: Any) -> None:
+    """Persist one known key with an exclusive, atomic replace."""
+
+    save_settings_for_root(root_dir, {key: value})
+
+
+def unset_setting_for_root(root_dir: str, key: str) -> None:
+    """Remove one saved override so the built-in default becomes effective."""
+
+    path = _settings_path(root_dir)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
+    if key not in SETTINGS_DEFAULTS:
+        raise KeyError(f"Unknown setting: {key}")
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    validate_workspace_file(
+        path,
+        os.path.dirname(path) or ".",
+        label="Settings file",
+    )
+    with _thread_lock_for(path):
+        lock_fd, lock_path, lock_owner = _open_settings_lock(path)
+        tmp_path = ""
+        try:
+            text = ""
+            loaded: Dict[str, Any] = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                loaded = yaml.safe_load(text) or {}
+                if not isinstance(loaded, dict):
+                    raise ValueError(f"Settings file root must be a mapping: {path}")
+
+            has_unknown_keys = any(item_key not in SETTINGS_DEFAULTS for item_key in loaded)
+            known = {
+                item_key: item_value
+                for item_key, item_value in loaded.items()
+                if item_key in SETTINGS_DEFAULTS and item_key != key
+            }
+            if has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
+                new_text = yaml.safe_dump(
+                    known,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            else:
+                new_text = _setting_block_pattern(key).sub("", text)
+                new_text = re.sub(r"\n{3,}", "\n\n", new_text).lstrip("\n")
+
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{os.path.basename(path)}.",
+                suffix=".tmp",
+                dir=os.path.dirname(path) or ".",
+                text=True,
+            )
+            _write_settings_lock(fd, new_text)
+            os.replace(tmp_path, path)
+            tmp_path = ""
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+            _release_settings_lock(lock_path, lock_owner)
+
+        _cached[key] = SETTINGS_DEFAULTS[key]

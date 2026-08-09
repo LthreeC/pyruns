@@ -13,6 +13,10 @@ pyr ui shell
 pyr ui shell --no-browser
 ```
 
+服务只监听本机回环地址。启动时会生成新的随机访问令牌；浏览器首次打开完整 URL 后，
+服务器写入 `HttpOnly`、`SameSite=Strict` 会话 cookie，并重定向到不含令牌的干净地址。
+`--no-browser` 会在终端打印完整访问 URL，请勿共享。Pyruns UI 不是面向公网或多用户的服务。
+
 ## 页面整体气质
 
 这一版 UI 的收口方向很明确：

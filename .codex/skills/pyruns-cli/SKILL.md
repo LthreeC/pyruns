@@ -30,7 +30,6 @@ Project context options must precede the command:
 ```text
 -C, --directory PATH
 -w, --workspace NAME|PATH|SCRIPT.py
---no-color
 --debug
 --version
 ```
@@ -122,7 +121,7 @@ pyr exec --dry-run -n smoke -- python -V
 pyr exec --dry-run -n smoke --json -- python -V
 ```
 
-The plan reports workspace creation, task-name availability, working directory, command mode and argv or shell expression, runtime, environment, and detach state. Treat `planned_name: null` as a signal that automatic naming needs a unique suffix. An explicit duplicate `--name` remains an error.
+The plan reports workspace creation, task-name availability, working directory, command mode and argv or shell expression, runtime, and environment. Treat `planned_name: null` as a signal that automatic naming needs a unique suffix. An explicit duplicate `--name` remains an error. Preview and detached execution are different operations, so `--dry-run` and `--detach` are rejected together.
 
 ## Use A Python Script Workspace
 
@@ -155,7 +154,7 @@ pyr -w train run --config configs/quick.yaml -n quick --dry-run
 pyr -w train run --config configs/quick.yaml -n quick --dry-run --json
 ```
 
-`run --config ... --dry-run` reads and validates the YAML, reports expanded task candidates, and creates nothing. Dry-run is intentionally rejected for rerunning existing tasks. Normal `run` waits for all requested tasks by default. It exits `1` if any task fails. `--detach` changes only waiting behavior.
+`run --config ... --dry-run` reads and validates the YAML, reports expanded task candidates, and creates nothing. Dry-run is intentionally rejected for rerunning existing tasks and cannot be combined with `--detach`. Normal `run` waits for all requested tasks by default. It exits `1` if any task fails. `--detach` changes only waiting behavior. `-j/--jobs` is capped at the number of selected tasks. If a runner accepts only part of a batch, Pyruns reports exact `claimed` and `unclaimed` names and exits `1`.
 
 ## Inspect And Control Tasks
 
@@ -178,6 +177,7 @@ pyr -w shell stop train
 pyr -w shell mv train train-lr1e3
 pyr -w shell pin train-lr1e3
 pyr -w shell pin train-lr1e3 --off
+pyr -w shell ls --sort name --reverse
 pyr -w shell rm train-lr1e3
 pyr -w shell ls --trash
 pyr -w shell restore train-lr1e3
@@ -185,7 +185,9 @@ pyr -w shell restore train-lr1e3
 
 `rm` is immediate and non-interactive, but recoverable: it moves tasks into workspace trash. There is no confirmation prompt and no `--yes` option.
 
-`stop` asks the owning runner to terminate active work. A successful stop ends in `cancelled`, distinct from an execution failure, and the task remains rerunnable.
+`stop` asks the owning runner to terminate active work. A successful stop ends in `cancelled`, distinct from an execution failure, and the task remains rerunnable. `stop --timeout 0` waits indefinitely.
+
+Pinned tasks show a `PIN` marker in human listings and a `pinned` boolean in JSON. They remain first for every active-task sort; `--reverse` changes order inside the pinned and unpinned groups without moving pinned tasks below normal tasks.
 
 `log -f` streams bytes to stdout until the task finishes. It is not a prompt, REPL, full-screen viewer, or other interactive terminal mode.
 
@@ -206,7 +208,9 @@ pyr config list --json
 pyr metrics --json
 ```
 
-`log` prints the raw log by default and intentionally does not wrap it in JSON. Use `log --path` with `--json` when an automation client needs a machine-readable log reference.
+`log` prints the raw log by default and intentionally does not wrap it in JSON. Use `log --path` with `--json` when an automation client needs a machine-readable log reference. A task without an existing log is an operation error; Pyruns never returns a fabricated future path.
+
+Strict JSON preserves YAML dates and timestamps as ISO 8601 strings. Unsupported objects, NaN, and Infinity remain errors instead of being stringified silently.
 
 Export records to stdout by default:
 
@@ -222,14 +226,16 @@ CSV and JSON both emit one record per task run. Select the record format with `-
 
 ```bash
 pyr config list
-pyr config get manager_max_workers
-pyr config set manager_max_workers 4
-pyr config unset manager_max_workers
+pyr config get monitor_scrollback
+pyr config set monitor_scrollback 200000
+pyr config unset monitor_scrollback
 pyr config path
 pyr metrics
 ```
 
 `config` edits project-level settings shared by the project's workspaces, so it does not require `-w`. Values passed to `config set` are parsed as YAML scalars, lists, or mappings and validated against known settings.
+
+Concurrency and the task-management backend are per-run choices, not project settings. Select them explicitly with `run -j/--jobs` and `run --backend`.
 
 ## Start The Web UI Explicitly
 
@@ -244,6 +250,8 @@ pyr dev train.py
 ```
 
 Pass an exact existing workspace name/path, `shell`, or a Python script path directly after `ui`. `ui` and `dev` do not accept `-w` or `--json`. Use `--no-browser` for headless servers.
+
+The UI listens on loopback and prints a fresh tokenized URL on every start. The first browser request exchanges that token for an HttpOnly, SameSite session cookie and redirects to a clean URL. With `--no-browser`, open the complete printed URL and do not share it; this is a local UI, not a remote multi-user service.
 
 ## Disk Layout
 

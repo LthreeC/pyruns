@@ -1,13 +1,14 @@
 import ast
 import os
 import re
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME
-from pyruns.utils.info_io import load_task_info
+from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
+from pyruns.utils.info_io import _replace_with_retry, load_task_info
 from pyruns.utils.sort_utils import sort_tasks_for_manager
 
 # Fix PyYAML parsing of scientific notation without a dot (e.g. 5e-3)
@@ -79,19 +80,27 @@ def list_yaml_files(config_dir: str) -> List[str]:
 def load_yaml(path: str) -> Dict[str, Any]:
     """Load a YAML file into a dict."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        data = yaml.safe_load(_read_yaml_text_limited(path))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _read_yaml_text_limited(path: str) -> str:
+    with open(path, "rb") as handle:
+        raw = handle.read(MAX_CONFIG_FILE_BYTES + 1)
+    if len(raw) > MAX_CONFIG_FILE_BYTES:
+        raise ValueError(
+            f"YAML file is too large (max {MAX_CONFIG_FILE_BYTES} bytes): {path}"
+        )
+    return raw.decode("utf-8-sig")
 
 
 def load_yaml_strict(path: str) -> Dict[str, Any]:
     """Load a YAML file into a dict or raise a descriptive error."""
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    data = yaml.safe_load(_read_yaml_text_limited(path))
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -102,19 +111,41 @@ def load_yaml_strict(path: str) -> Dict[str, Any]:
 def save_yaml(path: str, data: Dict[str, Any]) -> None:
     """Save a dict to a YAML file."""
     if not data:
-        # Write an empty YAML comment instead of truncating to 0 bytes
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("# empty config\n")
-        return
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(
+        text = "# empty config\n"
+    else:
+        text = yaml.dump(
             data,
-            f,
             Dumper=_PrettyDumper,
             sort_keys=False,
             allow_unicode=True,
             default_flow_style=False,
         )
+    encoded = text.encode("utf-8")
+    if len(encoded) > MAX_CONFIG_FILE_BYTES:
+        raise ValueError(
+            f"YAML file is too large (max {MAX_CONFIG_FILE_BYTES} bytes): {path}"
+        )
+
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.",
+        suffix=".tmp",
+        dir=parent,
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_with_retry(temp_path, path)
+        temp_path = ""
+    finally:
+        if temp_path and os.path.lexists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def parse_value(val_str: Any) -> Any:

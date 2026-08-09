@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Tuple
 
+import yaml
+
 from pyruns._config import (
     CONFIG_FILENAME,
     SHELL_CONFIG_FILENAMES,
@@ -17,9 +19,14 @@ from pyruns._config import (
 )
 from pyruns.utils.config_utils import (
     build_config_preview_and_search_text,
-    load_yaml_strict,
     save_yaml,
 )
+from pyruns.utils.info_io import (
+    validate_task_directory,
+    validate_workspace_file,
+)
+
+MAX_TASK_PAYLOAD_BYTES = 4 * 1024 * 1024
 
 TASK_KIND_ALIASES = {
     "config": TASK_KIND_CONFIG,
@@ -60,25 +67,61 @@ def resolve_task_config_file(
     return TASK_KIND_TO_CONFIG_FILENAME.get(normalized_kind, CONFIG_FILENAME)
 
 
+def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
+    validate_task_directory(task_dir)
+    base = os.path.abspath(task_dir)
+    lexical_parent = os.path.abspath(os.path.dirname(base))
+    try:
+        if os.path.normcase(os.path.commonpath([base, lexical_parent])) != os.path.normcase(lexical_parent):
+            raise ValueError("Task directory resolves outside the tasks directory")
+    except (OSError, ValueError) as exc:
+        raise ValueError("Task directory resolves outside the tasks directory") from exc
+
+    candidate = os.path.abspath(os.path.join(task_dir, config_file))
+    try:
+        contained = os.path.normcase(os.path.commonpath([candidate, base])) == os.path.normcase(base)
+    except (OSError, ValueError):
+        contained = False
+    if not contained or candidate == base:
+        raise ValueError(f"Config file resolves outside the task directory: {config_file}")
+    validate_workspace_file(candidate, base, label="Task payload")
+    return candidate
+
+
+def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) -> str:
+    with open(path, "rb") as handle:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"Task payload is too large (max {max_bytes} bytes): {path}")
+    return raw.decode("utf-8")
+
+
 def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str, str]:
     """Return ``(task_kind, config, config_text, load_error)`` for one task."""
 
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
     config_file = resolve_task_config_file(info, task_kind, task_dir)
-    config_path = os.path.join(task_dir, config_file)
+    try:
+        config_path = resolve_task_payload_path(task_dir, config_file)
+    except ValueError as exc:
+        return task_kind, {}, "", str(exc)
 
     if not os.path.exists(config_path):
         return task_kind, {}, "", f"{config_file} is missing"
 
     if task_kind == TASK_KIND_SHELL:
         try:
-            with open(config_path, "r", encoding="utf-8") as handle:
-                return task_kind, {}, handle.read(), ""
+            return task_kind, {}, _read_text_limited(config_path), ""
         except Exception as exc:
             return task_kind, {}, "", str(exc)
 
     try:
-        return task_kind, load_yaml_strict(config_path), "", ""
+        parsed = yaml.safe_load(_read_text_limited(config_path))
+        if parsed is None:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            raise ValueError(f"YAML root must be a mapping: {config_path}")
+        return task_kind, parsed, "", ""
     except Exception as exc:
         return task_kind, {}, "", str(exc)
 
@@ -93,9 +136,16 @@ def write_task_payload(
 ) -> None:
     """Persist the task payload using the appropriate on-disk representation."""
 
+    validate_task_directory(task_dir)
     os.makedirs(task_dir, exist_ok=True)
-    payload_path = os.path.join(task_dir, config_file)
+    validate_task_directory(task_dir)
+    payload_path = resolve_task_payload_path(task_dir, config_file)
     if normalize_task_kind(task_kind) == TASK_KIND_SHELL:
+        encoded = str(config_text or "").encode("utf-8")
+        if len(encoded) > MAX_TASK_PAYLOAD_BYTES:
+            raise ValueError(
+                f"Task payload is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes): {payload_path}"
+            )
         with open(payload_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(str(config_text or ""))
         return

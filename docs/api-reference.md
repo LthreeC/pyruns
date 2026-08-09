@@ -65,6 +65,7 @@ pyruns.record(loss=0.31, acc=91.2)
 
 - 同一次运行会合并到当前 run slot
 - 在非 Pyruns 环境下会静默返回
+- 持久化失败会在任务日志中输出一次去重 warning，但不会终止用户实验
 
 ### `pyruns.track(key=None, value=None, **kwargs)`
 
@@ -110,6 +111,11 @@ with open(metrics_path, "w", encoding="utf-8") as f:
 ```
 
 ## Web API 概览
+
+这些接口是本机 Web UI 的内部控制面，不是公开远程 API。服务只监听 loopback；每次
+`pyr ui` 启动会生成随机令牌，首个 tokenized URL 请求将其交换为 `HttpOnly`、
+`SameSite=Strict` 会话 cookie。所有 `/api` HTTP 与 WebSocket 请求都必须携带该会话。
+请求体、分页、批量任务数、环境变量数和日志读取量都有硬上限。
 
 主入口：
 

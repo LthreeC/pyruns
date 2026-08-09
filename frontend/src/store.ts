@@ -20,9 +20,13 @@ let launcherRequestSeq = 0
 let runtimeRequestSeq = 0
 let dashboardRequestSeq = 0
 let generatorTemplateRequestSeq = 0
+let generatorDraftVersion = 0
+let workspaceRequestSeq = 0
 let launcherOpenPromise: Promise<boolean> | null = null
 let launcherOpenToken: symbol | null = null
 let toastIdSeq = 0
+let confirmationIdSeq = 0
+let confirmationResolver: ((confirmed: boolean) => void) | null = null
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
@@ -30,14 +34,77 @@ const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
 const MONITOR_TASK_PAGE_SIZE = 200
 const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
 
+function readLocalStorage(key: string) {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeLocalStorage(key: string, value: string) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // Preferences remain active for this session when browser storage is unavailable.
+  }
+}
+
+interface TaskDetailDraftState {
+  dirty: boolean
+  taskName: string
+  setDirty: (taskName: string, dirty: boolean) => void
+  clear: (taskName?: string) => void
+}
+
+export const useTaskDetailDraftStore = create<TaskDetailDraftState>((set, get) => ({
+  dirty: false,
+  taskName: '',
+  setDirty(taskName, dirty) {
+    if (dirty) {
+      set({ dirty: true, taskName })
+      return
+    }
+    if (!get().taskName || get().taskName === taskName) {
+      set({ dirty: false, taskName: '' })
+    }
+  },
+  clear(taskName) {
+    if (!taskName || !get().taskName || get().taskName === taskName) {
+      set({ dirty: false, taskName: '' })
+    }
+  },
+}))
+
 function currentWorkspaceKey() {
   return String(useWorkspaceStore.getState().workspace?.run_root || '')
 }
 
-function resetMonitorWorkspace(nextWorkspaceKey: string) {
+function resetWorkspaceScopedState(nextWorkspaceKey: string) {
+  taskRequestSeq += 1
   monitorTaskRequestSeq += 1
   monitorRequestSeq += 1
+  runtimeRequestSeq += 1
+  dashboardRequestSeq += 1
+  generatorTemplateRequestSeq += 1
+  generatorDraftVersion += 1
   useTaskStore.setState({
+    tasks: [],
+    total: 0,
+    statusCounts: null,
+    offset: 0,
+    hasMore: false,
+    query: '',
+    statusFilter: 'All',
+    selectedIds: new Set(),
+    loading: false,
+    error: null,
     monitorWorkspaceKey: nextWorkspaceKey,
     monitorTasks: [],
     monitorTotal: 0,
@@ -61,6 +128,21 @@ function resetMonitorWorkspace(nextWorkspaceKey: string) {
     loading: false,
     exportIds: new Set(),
   })
+  useDashboardStore.setState({ data: null, loading: false, error: null })
+  useGeneratorStore.setState({
+    templates: [],
+    selectedTemplate: '',
+    templateContent: null,
+    viewMode: 'form',
+    yamlText: '',
+    shellText: '',
+    namePrefix: 'task',
+    appendTimestamp: true,
+    dirty: false,
+    loading: false,
+  })
+  useTaskDetailDraftStore.setState({ dirty: false, taskName: '' })
+  useRuntimeStore.setState({ runtime: null, loading: false, dirty: false })
 }
 
 interface ThemeState {
@@ -69,10 +151,7 @@ interface ThemeState {
 }
 
 function resolveInitialTheme(): 'dark' | 'light' {
-  if (typeof window === 'undefined') {
-    return 'light'
-  }
-  return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
+  return readLocalStorage(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
 }
 
 function clampInteger(value: number, fallback: number, min: number, max: number) {
@@ -81,10 +160,7 @@ function clampInteger(value: number, fallback: number, min: number, max: number)
 }
 
 function readStoredNumber(key: string, fallback: number, min: number, max: number) {
-  if (typeof window === 'undefined') {
-    return fallback
-  }
-  const raw = window.localStorage.getItem(key)
+  const raw = readLocalStorage(key)
   if (!raw) {
     return fallback
   }
@@ -97,7 +173,7 @@ function readStoredStringArray(key: string) {
     return [] as string[]
   }
   try {
-    const raw = window.localStorage.getItem(key)
+    const raw = readLocalStorage(key)
     if (!raw) {
       return []
     }
@@ -170,9 +246,7 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   theme: initialTheme,
   toggle() {
     const next = get().theme === 'dark' ? 'light' : 'dark'
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(THEME_STORAGE_KEY, next)
-    }
+    writeLocalStorage(THEME_STORAGE_KEY, next)
     applyThemeClass(next)
     set({ theme: next })
   },
@@ -180,6 +254,7 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
 
 interface WorkspaceState {
   workspace: WorkspaceInfo | null
+  workspaceEpoch: number
   lastScriptWorkspace: WorkspaceInfo | null
   loading: boolean
   fetch: () => Promise<void>
@@ -191,60 +266,76 @@ interface WorkspaceState {
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspace: null,
+  workspaceEpoch: 0,
   lastScriptWorkspace: null,
   loading: false,
   async fetch() {
+    const requestId = ++workspaceRequestSeq
     set({ loading: true })
     try {
       const ws = await api.getWorkspace()
-      const previousRunRoot = get().workspace?.run_root
-      if (previousRunRoot !== ws?.run_root) {
-        if (previousRunRoot) {
-          useRuntimeStore.getState().setRuntime(null)
-        }
-        resetMonitorWorkspace(String(ws?.run_root || ''))
+      if (requestId !== workspaceRequestSeq) {
+        return
       }
+      const previousRunRoot = get().workspace?.run_root
       set(state => ({
         workspace: ws,
+        workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== ws?.run_root ? 1 : 0),
         lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
       }))
+      if (previousRunRoot !== ws?.run_root) {
+        resetWorkspaceScopedState(String(ws?.run_root || ''))
+      }
     } finally {
-      set({ loading: false })
+      if (requestId === workspaceRequestSeq) {
+        set({ loading: false })
+      }
     }
   },
   setWorkspace(workspace) {
+    workspaceRequestSeq += 1
     const previousRunRoot = get().workspace?.run_root
-    if (previousRunRoot !== workspace?.run_root) {
-      if (previousRunRoot) {
-        useRuntimeStore.getState().setRuntime(null)
-      }
-      resetMonitorWorkspace(String(workspace?.run_root || ''))
-    }
     set(state => ({
       workspace,
+      loading: false,
+      workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== workspace?.run_root ? 1 : 0),
       lastScriptWorkspace: workspace?.workspace_kind === 'script' ? workspace : state.lastScriptWorkspace,
     }))
+    if (previousRunRoot !== workspace?.run_root) {
+      resetWorkspaceScopedState(String(workspace?.run_root || ''))
+    }
   },
   async setRunRoot(path: string) {
+    const requestId = ++workspaceRequestSeq
     const ws = await api.setRunRoot(path)
-    const previousRunRoot = get().workspace?.run_root
-    if (previousRunRoot !== ws.run_root) {
-      useRuntimeStore.getState().setRuntime(null)
-      resetMonitorWorkspace(String(ws.run_root || ''))
+    if (requestId !== workspaceRequestSeq) {
+      return
     }
+    const previousRunRoot = get().workspace?.run_root
     set(state => ({
       workspace: ws,
+      workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== ws.run_root ? 1 : 0),
       lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
     }))
+    if (previousRunRoot !== ws.run_root) {
+      resetWorkspaceScopedState(String(ws.run_root || ''))
+    }
   },
   async openShellWorkspace() {
+    const requestId = ++workspaceRequestSeq
     const ws = await api.openShellWorkspace()
-    const previousRunRoot = get().workspace?.run_root
-    if (previousRunRoot !== ws.run_root) {
-      useRuntimeStore.getState().setRuntime(null)
-      resetMonitorWorkspace(String(ws.run_root || ''))
+    if (requestId !== workspaceRequestSeq) {
+      return
     }
-    set(state => ({ workspace: ws, lastScriptWorkspace: state.lastScriptWorkspace }))
+    const previousRunRoot = get().workspace?.run_root
+    set(state => ({
+      workspace: ws,
+      workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== ws.run_root ? 1 : 0),
+      lastScriptWorkspace: state.lastScriptWorkspace,
+    }))
+    if (previousRunRoot !== ws.run_root) {
+      resetWorkspaceScopedState(String(ws.run_root || ''))
+    }
   },
   async exitShellWorkspace() {
     const nextWorkspace = get().lastScriptWorkspace
@@ -252,13 +343,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return null
     }
 
+    const requestId = ++workspaceRequestSeq
     const ws = await api.setRunRoot(nextWorkspace.run_root)
-    const previousRunRoot = get().workspace?.run_root
-    if (previousRunRoot !== ws.run_root) {
-      useRuntimeStore.getState().setRuntime(null)
-      resetMonitorWorkspace(String(ws.run_root || ''))
+    if (requestId !== workspaceRequestSeq) {
+      return null
     }
-    set({ workspace: ws, lastScriptWorkspace: ws })
+    const previousRunRoot = get().workspace?.run_root
+    set(state => ({
+      workspace: ws,
+      workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== ws.run_root ? 1 : 0),
+      lastScriptWorkspace: ws,
+    }))
+    if (previousRunRoot !== ws.run_root) {
+      resetWorkspaceScopedState(String(ws.run_root || ''))
+    }
     return ws
   },
 }))
@@ -266,7 +364,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 interface RuntimeState {
   runtime: RuntimeInfo | null
   loading: boolean
+  dirty: boolean
   setRuntime: (runtime: RuntimeInfo | null) => void
+  setDirty: (dirty: boolean) => void
   fetchRuntime: () => Promise<RuntimeInfo>
   updateRuntime: (
     payload: Parameters<typeof api.updateRuntimeInfo>[0],
@@ -277,36 +377,40 @@ interface RuntimeState {
 export const useRuntimeStore = create<RuntimeState>((set) => ({
   runtime: null,
   loading: false,
+  dirty: false,
   setRuntime(runtime) {
     runtimeRequestSeq += 1
-    set({ runtime, loading: false })
+    set({ runtime, loading: false, dirty: false })
   },
+  setDirty(dirty) { set({ dirty }) },
   async fetchRuntime() {
     const requestId = ++runtimeRequestSeq
+    const workspaceKey = currentWorkspaceKey()
     set({ loading: true })
     try {
       const runtime = await api.getRuntimeInfo()
-      if (requestId === runtimeRequestSeq) {
+      if (requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ runtime })
       }
       return runtime
     } finally {
-      if (requestId === runtimeRequestSeq) {
+      if (requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ loading: false })
       }
     }
   },
   async updateRuntime(payload, refreshProviders = false) {
     const requestId = ++runtimeRequestSeq
+    const workspaceKey = currentWorkspaceKey()
     set({ loading: true })
     try {
       const runtime = await api.updateRuntimeInfo(payload, refreshProviders)
-      if (requestId === runtimeRequestSeq) {
+      if (requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ runtime })
       }
       return runtime
     } finally {
-      if (requestId === runtimeRequestSeq) {
+      if (requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ loading: false })
       }
     }
@@ -349,6 +453,45 @@ export const useToastStore = create<ToastState>((set) => ({
     set({ toasts: [] })
   },
 }))
+
+export interface ConfirmationOptions {
+  title: string
+  description?: string
+  confirmLabel?: string
+  confirmVariant?: 'danger' | 'primary'
+}
+
+export interface ConfirmationRequest extends ConfirmationOptions {
+  id: number
+}
+
+interface ConfirmationState {
+  request: ConfirmationRequest | null
+  ask: (options: ConfirmationOptions) => Promise<boolean>
+  respond: (confirmed: boolean) => void
+}
+
+export const useConfirmationStore = create<ConfirmationState>((set) => ({
+  request: null,
+  ask(options) {
+    confirmationResolver?.(false)
+    confirmationIdSeq += 1
+    return new Promise<boolean>(resolve => {
+      confirmationResolver = resolve
+      set({ request: { id: confirmationIdSeq, ...options } })
+    })
+  },
+  respond(confirmed) {
+    const resolve = confirmationResolver
+    confirmationResolver = null
+    set({ request: null })
+    resolve?.(confirmed)
+  },
+}))
+
+export function requestConfirmation(options: ConfirmationOptions) {
+  return useConfirmationStore.getState().ask(options)
+}
 
 function currentMonitorScrollback() {
   return resolveMonitorScrollback(useWorkspaceStore.getState().workspace?.settings)
@@ -437,18 +580,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
   setColumns(n) {
     const next = clampInteger(n, 5, 1, 8)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MANAGER_COLS_STORAGE_KEY, String(next))
-    }
+    writeLocalStorage(MANAGER_COLS_STORAGE_KEY, String(next))
     set({ columns: next })
   },
   async fetchTasks() {
     const requestId = ++taskRequestSeq
+    const workspaceKey = currentWorkspaceKey()
     const { query, statusFilter, offset, limit } = get()
     let requestedOffset = offset
     const isCurrentRequest = () => {
       const current = get()
       return requestId === taskRequestSeq
+        && workspaceKey === currentWorkspaceKey()
         && current.query === query
         && current.statusFilter === statusFilter
         && current.offset === requestedOffset
@@ -611,22 +754,30 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 interface DashboardState {
   data: Dashboard | null
   loading: boolean
+  error: string | null
   fetch: () => Promise<void>
 }
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   data: null,
   loading: false,
+  error: null,
   async fetch() {
     const requestId = ++dashboardRequestSeq
-    set({ loading: true })
+    const workspaceKey = currentWorkspaceKey()
+    set({ loading: true, error: null })
     try {
       const d = await api.getDashboard()
-      if (requestId === dashboardRequestSeq) {
-        set({ data: d })
+      if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
+        set({ data: d, error: null })
       }
+    } catch (err) {
+      if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
+        set({ error: err instanceof Error ? err.message : 'Could not load dashboard' })
+      }
+      throw err
     } finally {
-      if (requestId === dashboardRequestSeq) {
+      if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ loading: false })
       }
     }
@@ -644,6 +795,7 @@ interface GeneratorState {
   appendTimestamp: boolean
   columns: number
   pinnedParams: string[]
+  dirty: boolean
   loading: boolean
   fetchTemplates: () => Promise<void>
   loadTemplate: (value: string) => Promise<void>
@@ -653,6 +805,7 @@ interface GeneratorState {
   setShellText: (t: string) => void
   setNamePrefix: (n: string) => void
   setAppendTimestamp: (b: boolean) => void
+  setDirty: (dirty: boolean) => void
   setColumns: (n: number) => void
   togglePin: (key: string) => void
 }
@@ -668,61 +821,112 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   appendTimestamp: true,
   columns: readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8),
   pinnedParams: readStoredStringArray(PINNED_PARAMS_STORAGE_KEY),
+  dirty: false,
   loading: false,
   async fetchTemplates() {
+    const requestId = ++generatorTemplateRequestSeq
+    const workspaceKey = currentWorkspaceKey()
     const res = await api.getTemplates()
-    set({ templates: res.items })
+    if (requestId === generatorTemplateRequestSeq && workspaceKey === currentWorkspaceKey()) {
+      set({ templates: res.items })
+    }
   },
   async loadTemplate(value: string) {
     const requestId = ++generatorTemplateRequestSeq
+    const draftVersion = generatorDraftVersion
+    const workspaceKey = currentWorkspaceKey()
     if (!value) {
-      set({ selectedTemplate: '', templateContent: null, yamlText: '', loading: false })
+      set({ selectedTemplate: '', templateContent: null, yamlText: '', shellText: '', dirty: false, loading: false })
       return
     }
-    set({ loading: true, selectedTemplate: value })
+    set({ loading: true })
     try {
       const content = await api.getTemplateContent(value)
-      if (requestId !== generatorTemplateRequestSeq) {
+      if (
+        requestId !== generatorTemplateRequestSeq
+        || draftVersion !== generatorDraftVersion
+        || workspaceKey !== currentWorkspaceKey()
+      ) {
         return
       }
       set({
+        selectedTemplate: value,
         templateContent: content,
         yamlText: content.content,
         shellText: content.mode_hint === 'shell' ? content.content : get().shellText,
         viewMode: content.mode_hint === 'shell' ? 'shell' : get().viewMode === 'shell' ? 'yaml' : get().viewMode,
+        dirty: false,
       })
     } finally {
-      if (requestId === generatorTemplateRequestSeq) {
+      if (requestId === generatorTemplateRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ loading: false })
       }
     }
   },
   clearTemplate() {
     generatorTemplateRequestSeq += 1
-    set({ selectedTemplate: '', templateContent: null, loading: false })
+    generatorDraftVersion += 1
+    set({ selectedTemplate: '', templateContent: null, yamlText: '', shellText: '', dirty: false, loading: false })
   },
   setViewMode(m) { set({ viewMode: m }) },
-  setYamlText(t) { set({ yamlText: t }) },
-  setShellText(t) { set({ shellText: t }) },
-  setNamePrefix(n) { set({ namePrefix: n }) },
-  setAppendTimestamp(b) { set({ appendTimestamp: b }) },
+  setYamlText(t) {
+    if (t === get().yamlText) return
+    generatorDraftVersion += 1
+    set({ yamlText: t, dirty: true })
+  },
+  setShellText(t) {
+    if (t === get().shellText) return
+    generatorDraftVersion += 1
+    set({ shellText: t, dirty: true })
+  },
+  setNamePrefix(n) {
+    if (n === get().namePrefix) return
+    generatorDraftVersion += 1
+    set({ namePrefix: n, dirty: true })
+  },
+  setAppendTimestamp(b) {
+    if (b === get().appendTimestamp) return
+    generatorDraftVersion += 1
+    set({ appendTimestamp: b, dirty: true })
+  },
+  setDirty(dirty) { set({ dirty }) },
   setColumns(n) {
     const next = clampInteger(n, 5, 2, 8)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(GENERATOR_COLS_STORAGE_KEY, String(next))
-    }
+    writeLocalStorage(GENERATOR_COLS_STORAGE_KEY, String(next))
     set({ columns: next })
   },
   togglePin(key) {
     const pins = [...get().pinnedParams]
     const idx = pins.indexOf(key)
     if (idx >= 0) pins.splice(idx, 1); else pins.push(key)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(PINNED_PARAMS_STORAGE_KEY, JSON.stringify(pins))
-    }
+    writeLocalStorage(PINNED_PARAMS_STORAGE_KEY, JSON.stringify(pins))
     set({ pinnedParams: pins })
   },
 }))
+
+export function getUnsavedWorkspaceChangeLabels() {
+  const labels: string[] = []
+  if (useRuntimeStore.getState().dirty) labels.push('runtime settings')
+  if (useGeneratorStore.getState().dirty) labels.push('generator draft')
+  if (useTaskDetailDraftStore.getState().dirty) labels.push('task details')
+  return labels
+}
+
+export async function confirmDiscardWorkspaceChanges() {
+  const labels = getUnsavedWorkspaceChangeLabels()
+  if (labels.length === 0) {
+    return true
+  }
+  const description = labels.length === 1
+    ? labels[0]
+    : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
+  return requestConfirmation({
+    title: 'Discard unsaved changes?',
+    description: `Discard unsaved ${description} before switching workspaces?`,
+    confirmLabel: 'Discard and Switch',
+    confirmVariant: 'danger',
+  })
+}
 
 interface MonitorState {
   workspaceKey: string

@@ -122,7 +122,7 @@ def test_react_app_lazy_loads_routes_and_runtime_panel():
     assert "window.sessionStorage.setItem(storageKey, '1')" in source
     assert "window.location.reload()" in source
     assert "class RouteErrorBoundary" in source
-    assert '<RouteErrorBoundary key={`${location.pathname}${location.search}`}>' in source
+    assert '<RouteErrorBoundary key={location.pathname}>' in source
     assert "<Suspense fallback={<RouteLoadingFallback />}>" in source
     assert "function RouteLoadingFallback()" in source
     assert "const RuntimePanel = lazy(() => import('./RuntimePanel'))" in sidebar
@@ -240,6 +240,8 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "flex-col-reverse" in toast_host
     assert "pointer-events-auto flex w-[min(380px,calc(100vw-2rem))]" in toast_host
     assert "focus-visible:ring-2 focus-visible:ring-accent/35" in toast_host
+    assert "text-emerald-700 dark:text-emerald-300" in toast_host
+    assert "text-rose-700 dark:text-rose-300" in toast_host
     assert "role={toast.tone === 'error' ? 'alert' : 'status'}" in toast_host
     assert "TOAST_TIMEOUT_MS" in toast_host
     assert "Tasks queued" in manager
@@ -346,7 +348,7 @@ def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
 def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "max-h-[calc(100vh-2rem)]" in dashboard
+    assert "max-h-[calc(100dvh-2rem)]" in dashboard
     assert "flex-col overflow-hidden rounded-md" in dashboard
     assert "min-h-0 flex-1 overflow-y-auto px-5 py-4" in dashboard
     assert "overflow-x-auto rounded-md border border-border-subtle" in dashboard
@@ -497,7 +499,7 @@ def test_react_app_shell_allows_pages_to_scroll_without_horizontal_growth():
     shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
 
     assert "w-screen max-w-full" in shell
-    assert '<main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">' in shell
+    assert 'className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none"' in shell
 
 
 def test_react_mobile_pages_constrain_empty_states_and_header_actions():
@@ -655,6 +657,8 @@ def test_react_task_detail_panel_can_be_resized_from_left_edge():
 
     assert "TASK_DETAIL_WIDTH_STORAGE_KEY" in source
     assert "clampPanelWidth" in source
+    assert "Math.max(0, window.innerWidth - 8)" in source
+    assert "min-w-0 max-w-[calc(100vw-8px)]" in source
     assert "startPanelResize" in source
     assert "pointermove" in source
     assert "window.addEventListener('pointercancel', stopResize, { once: true })" in source
@@ -781,7 +785,10 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "function getPointerDropIntent" in source
     assert "type DragPlacement = 'before' | 'after'" in source
     assert "api.reorderTasks" in source
-    assert "api.getTasks({ limit: 0, refresh: false, summary: true })" in source
+    assert "const REORDER_TASK_LIMIT = 10_000" in source
+    assert "api.getTasks({ limit: REORDER_TASK_LIMIT, refresh: false, compact: true })" in source
+    assert "const visibleSectionTasks = tasks.filter" in source
+    assert "already first among the visible tasks" in source
     assert "buildReorderedItems" in source
     assert "dragFrameRef" in source
     assert "pendingDragPointRef" in source
@@ -897,15 +904,22 @@ def test_react_mobile_task_controls_keep_usable_touch_targets():
     sidebar = (FRONTEND_COMPONENTS_DIR / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
+    pagination = FRONTEND_PAGINATION.read_text(encoding="utf-8")
+    toast_host = FRONTEND_TOAST_HOST.read_text(encoding="utf-8")
 
     assert "min-h-9 gap-1.5 rounded-md px-3 py-1.5 text-xs" in action_button
     assert "min-h-10" in sidebar
     assert "basis-[12rem]" in monitor
-    assert "flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors" in monitor
+    assert "flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition-colors" in monitor
     assert "'absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors" in manager
     assert "sm:right-2 sm:top-1.5 sm:h-9 sm:w-9" in manager
     assert "'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors" in manager
     assert "sm:h-9 sm:w-9" in manager
+    assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in confirm_dialog
+    assert "min-h-11" in confirm_dialog
+    assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in pagination
+    assert "inline-flex h-11 w-11 flex-none items-center justify-center rounded-md" in toast_host
 
 
 def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
@@ -984,7 +998,7 @@ def test_react_monitor_isolates_workspace_and_resets_replaced_log_streams():
     api = FRONTEND_API.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
-    assert "function resetMonitorWorkspace(nextWorkspaceKey: string)" in store
+    assert "function resetWorkspaceScopedState(nextWorkspaceKey: string)" in store
     assert "monitorWorkspaceKey: nextWorkspaceKey" in store
     assert "workspaceKey: nextWorkspaceKey" in store
     assert "monitorTasks: []" in store
@@ -1125,7 +1139,8 @@ def test_react_search_input_clear_button_is_accessible():
     assert "aria-label={ariaLabel}" in source
     assert 'aria-label="Clear search"' in source
     assert 'title="Clear search"' in source
-    assert "inline-flex h-7 w-7 items-center justify-center" in source
+    assert "inline-flex h-11 w-11 items-center justify-center" in source
+    assert "sm:h-7 sm:w-7" in source
     assert "focus:ring-2 focus:ring-accent/25" in source
 
 
@@ -1228,7 +1243,10 @@ def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     assert "const next = await fetchRuntime()" in runtime_panel
     assert "applyRuntimeState(next)" in runtime_panel
     assert "refresh_providers=${refreshProviders}" in api
-    assert "applyRuntimeState(await updateRuntime(payload, false))" in runtime_panel
+    assert "const next = await updateRuntime(payload, false)" in runtime_panel
+    assert "applyRuntimePageState(next, page)" in runtime_panel
+    assert "pageRevision === runtimePageRevisionsRef.current[page]" in runtime_panel
+    assert "clearRuntimeDirtyPage(page)" in runtime_panel
     assert "runtimeLoadSeqRef" in runtime_panel
     assert "refreshWorkspaceInBackground" in runtime_panel
     assert "void refreshWorkspace().catch" in runtime_panel
@@ -1292,7 +1310,7 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "Require the same model for multi-GPU tasks" in runtime_panel
     assert "sample_interval_seconds" not in runtime_panel
     assert "gpu_scheduler_sample_interval_seconds" not in runtime_panel
-    assert "disabled={saving || gpuValidationIssues.length > 0}" in runtime_panel
+    assert "disabled={saving || !runtimeDirtyPages.gpu || gpuValidationIssues.length > 0}" in runtime_panel
     assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
     assert "GpuSchedulerSettings" in types
@@ -1387,13 +1405,14 @@ def test_react_launcher_manual_path_buttons_are_clear_and_disabled_when_empty():
     assert "Open Folder Path" in launcher
 
 
-def test_react_launcher_route_parameters_open_selected_workspace():
+def test_react_launcher_route_parameters_prefill_without_opening_workspace():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "const configParam = searchParams.get('config')" in launcher
-    assert "selectConfig(configParam)" in launcher
-    assert "openSelectedWorkspace(scriptParam, configParam)" in launcher
+    assert "setManualScriptPath(scriptParam)" in launcher
+    assert "setManualConfigPath(configParam || '')" in launcher
+    assert "openSelectedWorkspace(scriptParam, configParam)" not in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
     assert "<LaunchChoiceTabs launchMode={launchMode} busy={loading} onChange={handleLaunchModeChange}" in launcher
 
@@ -1413,11 +1432,13 @@ def test_react_shared_stores_ignore_stale_async_responses():
     assert "let dashboardRequestSeq = 0" in store
     assert "let generatorTemplateRequestSeq = 0" in store
     assert "const requestId = ++runtimeRequestSeq" in store
-    assert "if (requestId === runtimeRequestSeq)" in store
+    assert "requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()" in store
     assert "const requestId = ++dashboardRequestSeq" in store
-    assert "if (requestId === dashboardRequestSeq)" in store
+    assert "requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()" in store
     assert "const requestId = ++generatorTemplateRequestSeq" in store
-    assert "if (requestId !== generatorTemplateRequestSeq)" in store
+    assert "requestId !== generatorTemplateRequestSeq" in store
+    assert "draftVersion !== generatorDraftVersion" in store
+    assert "|| workspaceKey !== currentWorkspaceKey()" in store
 
 
 def test_react_launcher_deduplicates_open_and_only_closes_after_success():
@@ -1430,7 +1451,7 @@ def test_react_launcher_deduplicates_open_and_only_closes_after_success():
     assert "return false" in store
     assert "return true" in store
     assert "const opened = await useLauncherStore.getState().openWorkspace()" in launcher
-    assert "if (!opened)" in launcher
+    assert "if (!opened || !launcherMountedRef.current)" in launcher
     assert "aria-busy={loading || undefined}" in launcher
     assert "busy={loading}" in launcher
 
@@ -1493,7 +1514,24 @@ def test_react_launcher_config_step_uses_path_picker_panel():
     assert "configPathReady" in launcher
     assert "api.validateLauncherPath('config', debouncedConfigPath, selectedScript)" in launcher
     assert "validation={configValidation}" in launcher
-    assert "PathValidationHint validation={validation}" in launcher
+    assert "PathValidationHint id={validationId} validation={validation} pathValue={pathValue}" in launcher
+
+
+def test_react_launcher_validation_is_bound_to_the_current_labelled_path():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "validatedPath: string" in launcher
+    assert "scriptValidation.validatedPath === manualScriptPath.trim()" in launcher
+    assert "configValidation.validatedPath === manualConfigPath.trim()" in launcher
+    assert "shellValidation.validatedPath === manualShellRootPath.trim()" in launcher
+    assert "validation.validatedPath !== currentPath" in launcher
+    assert 'role="status"' in launcher
+    assert 'aria-live="polite"' in launcher
+    assert 'aria-pressed={launchMode === \'python\'}' in launcher
+    assert 'aria-pressed={launchMode === \'shell\'}' in launcher
+    assert "Python script path" in launcher
+    assert "Shell workspace folder path" in launcher
+    assert "YAML config path" in launcher
 
 
 def test_react_generator_nested_form_uses_tree_depth_guides():
@@ -1593,11 +1631,14 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "layoutMode?: FormLayoutMode" in generator
     assert "const treeParamRow = layoutMode === 'tree'" in generator
     assert "treeParamRow" in generator
-    assert "grid min-h-10 grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]" in generator
+    assert "grid min-h-10 grid-cols-[24px_minmax(0,1fr)]" in generator
+    assert "sm:grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]" in generator
     assert "border-border bg-surface-raised" in generator
     assert "treeParamRow ? 'min-w-0' : 'flex-1'" in generator
     assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
-    assert "treeParamRow ? 'min-w-0 w-full' : 'ml-auto min-w-0 flex-1'" in generator
+    assert "treeParamRow ? 'col-start-2 min-w-0 w-full sm:col-start-auto' : 'ml-auto min-w-0 flex-1'" in generator
+    assert 'aria-label={`${name} parameter value`}' in generator
+    assert 'aria-checked={Boolean(value)}' in generator
     assert "if (!treeParamRow)" in generator
     assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
@@ -1656,7 +1697,7 @@ def test_react_generator_reloads_default_when_imported_yaml_changes():
     assert "defaultTemplate = templates.find(template => pathLeaf(template.value) === 'config_default.yaml')" in generator
     assert "workspace?.config_default_source" in generator
     assert "workspace?.config_default_source_name" in generator
-    assert "void loadTemplate(defaultTemplateValue)" in generator
+    assert "loadTemplateWithFeedback(defaultTemplateValue)" in generator
 
 
 def test_react_generator_keeps_workspace_default_selected_after_create():
@@ -1729,3 +1770,113 @@ def test_react_launcher_config_step_explains_required_yaml_selection():
     assert "pyruns will save it as config_default.yaml" in launcher
     assert "Choose or enter a YAML config path first." in launcher
     assert "Path to YAML config" in launcher
+
+
+def test_react_workspace_switch_invalidates_all_scoped_state():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+
+    assert "workspaceEpoch" in store
+    assert "function resetWorkspaceScopedState" in store
+    assert "dashboardRequestSeq += 1" in store
+    assert "generatorTemplateRequestSeq += 1" in store
+    assert "tasks: []" in store
+    assert "data: null" in store
+    assert "selectedTemplate: ''" in store
+    assert "workspaceKey === currentWorkspaceKey()" in store
+
+
+def test_react_workspace_refresh_failures_preserve_the_last_successful_snapshot():
+    store = FRONTEND_STORE.read_text(encoding="utf-8")
+    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
+
+    assert "error: string | null" in store
+    assert "set({ error: err instanceof Error ? err.message : 'Could not load dashboard' })" in store
+    assert "set({ error: err instanceof Error ? err.message : 'Could not load tasks' })" in store
+    assert "loading && !data ? '--'" in dashboard
+    assert "dashboardError && !data" in dashboard
+    assert "Task summary refresh failed" in dashboard
+    assert "Task summary unavailable" in dashboard
+    assert 'role="alert"' in dashboard
+
+
+def test_react_launcher_url_paths_require_explicit_open():
+    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "setManualScriptPath(scriptParam)" in launcher
+    assert "setManualConfigPath(configParam || '')" in launcher
+    assert "openSelectedWorkspace(scriptParam" not in launcher
+    assert "selectScript(scriptParam)" not in launcher
+
+
+def test_react_runtime_guards_unsaved_changes_and_generator_editor_is_named():
+    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "runtimeDirty" in runtime_panel
+    assert "Discard unsaved runtime changes?" in runtime_panel
+    assert "beforeunload" in runtime_panel
+    assert 'ariaLabel="Task YAML editor"' in generator
+    assert 'ariaLabel="Task shell editor"' in generator
+
+
+def test_react_generator_keeps_edits_made_while_tasks_are_created():
+    source = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+
+    assert "const generationDraftRevisionRef = useRef(0)" in source
+    assert "const requestDraftRevision = generationDraftRevisionRef.current" in source
+    assert "generationDraftRevisionRef.current === requestDraftRevision" in source
+    assert "const markDraftEdited = useContext(GeneratorDraftEditContext)" in source
+    assert source.count("onChange={event => handleLocalValueChange(event.target.value)}") == 2
+
+    dialog_start = source.index("<ConfirmDialog\n        open={previewOpen}")
+    dialog_end = source.index("</ConfirmDialog>", dialog_start)
+    batch_dialog = source[dialog_start:dialog_end]
+    assert 'role="alert"' in batch_dialog
+    assert "{error}" in batch_dialog
+
+
+def test_react_task_detail_save_responses_only_confirm_the_submitted_draft():
+    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
+    notes_start = source.index("const handleSaveNotes")
+    env_start = source.index("const handleSaveEnv", notes_start)
+    close_start = source.index("function requestClose", env_start)
+    notes_save = source[notes_start:env_start]
+    env_save = source[env_start:close_start]
+
+    assert "const notesDraftRevisionRef = useRef(0)" in source
+    assert "const envDraftRevisionRef = useRef(0)" in source
+    assert "const draftRevision = notesDraftRevisionRef.current" in notes_save
+    assert "notesDraftRevisionRef.current === draftRevision" in notes_save
+    assert "notesDraftRevisionRef.current += 1" in source
+    assert "const draftRevision = envDraftRevisionRef.current" in env_save
+    assert "if (envDraftRevisionRef.current === draftRevision)" in env_save
+    assert "setEnvPairs(buildEnvPairsFromEnv(savedEnv))" in env_save
+    assert "if (envDraftRevisionRef.current !== draftRevision) return" in env_save
+
+
+def test_react_runtime_reload_preserves_dirty_draft_until_success():
+    source = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    refresh_start = source.index("const refreshPanel")
+    refresh_end = source.index("if (!open)", refresh_start)
+    refresh_panel = source[refresh_start:refresh_end]
+
+    assert "clearAllRuntimeDirty()" not in refresh_panel
+    assert "void loadRuntime(true)" in refresh_panel
+    assert "runtimeLoadSeqRef.current += 1" in source
+    assert "if (loadSeq === runtimeLoadSeqRef.current)" in source
+
+
+def test_react_terminal_log_enables_screen_reader_mode():
+    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+
+    assert "screenReaderMode: true" in monitor
+    assert 'aria-label={`Read-only logs for ${selectedTaskName}`}' in monitor
+
+
+def test_react_routes_have_titles_focus_and_not_found_page():
+    app = FRONTEND_APP.read_text(encoding="utf-8")
+
+    assert "document.title" in app
+    assert "route-heading" in app
+    assert 'path="*"' in app
+    assert "Page not found" in app

@@ -44,7 +44,7 @@ export default function SearchInput({
         onChange={e => setLocal(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel}
-        className="min-h-[34px] w-full resize-none overflow-y-auto rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-8 text-xs leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised"
+        className="min-h-11 w-full resize-none overflow-y-auto rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-11 text-xs leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised sm:min-h-[34px] sm:pr-8"
       />
       {local && (
         <button
@@ -52,7 +52,7 @@ export default function SearchInput({
           onClick={() => { setLocal(''); onChange('') }}
           aria-label="Clear search"
           title="Clear search"
-          className="absolute right-1 top-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25"
+          className="absolute right-0 top-0 inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25 sm:right-1 sm:top-1 sm:h-7 sm:w-7"
         >
           <X className="h-3.5 w-3.5" />
         </button>

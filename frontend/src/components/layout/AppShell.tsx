@@ -166,7 +166,7 @@ export default function AppShell() {
   }, [resizing])
 
   return (
-    <div className="flex h-screen w-screen max-w-full overflow-hidden bg-surface-base">
+    <div className="flex h-dvh w-screen max-w-full overflow-hidden bg-surface-base">
       <Sidebar width={effectiveSidebarWidth} compact={compactSidebar} />
       {!compactSidebar && (
         <button
@@ -191,12 +191,12 @@ export default function AppShell() {
           }}
           title="Resize navigation. Use Left/Right arrow keys; double-click to reset."
           className={clsx(
-            'h-screen w-2 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
+            'h-full w-2 flex-none cursor-col-resize touch-none transition-colors focus:outline-none focus:ring-2 focus:ring-accent/35',
             resizing ? 'bg-accent/45' : 'bg-transparent hover:bg-accent/25',
           )}
         />
       )}
-      <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+      <main id="route-heading" tabIndex={-1} className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none">
         <Outlet />
       </main>
     </div>

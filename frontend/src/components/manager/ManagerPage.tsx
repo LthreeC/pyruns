@@ -14,7 +14,7 @@ import {
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useMonitorStore, useTaskStore, useToastStore } from '@/store'
+import { useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
@@ -35,6 +35,7 @@ type DragPlacement = 'before' | 'after'
 type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
 type ManagerMetricTone = 'neutral' | 'amber' | 'emerald' | 'rose'
 const DRAG_START_DISTANCE = 8
+const REORDER_TASK_LIMIT = 10_000
 
 function isOrderMutation(action: PendingTaskAction) {
   return action === 'pin' || action === 'move'
@@ -191,6 +192,7 @@ export default function ManagerPage() {
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [deleteTask, setDeleteTask] = useState<Task | null>(null)
+  const [cancelTask, setCancelTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
   const [draggedTaskName, setDraggedTaskName] = useState('')
@@ -207,10 +209,23 @@ export default function ManagerPage() {
   const dragFrameRef = useRef<number | null>(null)
   const pendingTaskActionsRef = useRef<Map<string, PendingTaskAction>>(new Map())
   const bulkActionRef = useRef<'run' | 'delete' | null>(null)
+  const detailRequestSeqRef = useRef(0)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const focusTaskName = searchParams.get('task')
   const notify = useToastStore(state => state.notify)
+  const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
+  const rejectIncompleteReorder = useCallback((page: { has_more: boolean; total: number }) => {
+    if (!page.has_more) {
+      return false
+    }
+    notify({
+      tone: 'error',
+      title: 'Too many tasks to reorder safely',
+      detail: `This workspace has ${page.total.toLocaleString()} tasks. Reordering is disabled when the complete order cannot be loaded.`,
+    })
+    return true
+  }, [notify])
 
   const hasActive = statusCounts
     ? statusCounts.running + statusCounts.queued > 0
@@ -219,7 +234,21 @@ export default function ManagerPage() {
 
   useEffect(() => {
     void fetchTasks()
-  }, [query, statusFilter, offset, fetchTasks])
+  }, [query, statusFilter, offset, fetchTasks, workspaceEpoch])
+
+  useEffect(() => {
+    detailRequestSeqRef.current += 1
+    setDeleteConfirm(false)
+    setDeleteTask(null)
+    setCancelTask(null)
+    setDetailTask(null)
+    setSelectMode(false)
+    setTaskActionMessage('')
+    pendingTaskActionsRef.current = new Map()
+    setPendingTaskActions(new Map())
+    bulkActionRef.current = null
+    setBulkAction(null)
+  }, [workspaceEpoch])
 
   useEffect(() => {
     if (!focusTaskName) {
@@ -227,12 +256,17 @@ export default function ManagerPage() {
     }
 
     let cancelled = false
+    const requestWorkspaceEpoch = workspaceEpoch
+    const requestIsCurrent = () => (
+      !cancelled
+      && requestWorkspaceEpoch === useWorkspaceStore.getState().workspaceEpoch
+    )
     void api.getTask(focusTaskName).then(task => {
-      if (!cancelled) {
+      if (requestIsCurrent()) {
         setDetailTask(task)
       }
     }).catch(() => {
-      if (!cancelled) {
+      if (requestIsCurrent()) {
         const next = new URLSearchParams(searchParams)
         next.delete('task')
         setSearchParams(next, { replace: true })
@@ -242,7 +276,7 @@ export default function ManagerPage() {
     return () => {
       cancelled = true
     }
-  }, [focusTaskName, searchParams, setSearchParams])
+  }, [focusTaskName, searchParams, setSearchParams, workspaceEpoch])
 
   const visibleSelectedCount = tasks.reduce(
     (count, task) => count + (selectedIds.has(task.name) ? 1 : 0),
@@ -466,6 +500,14 @@ export default function ManagerPage() {
     }
   }, [beginTaskAction, fetchTasks, notify, finishTaskAction])
 
+  const requestTaskAction = useCallback((task: Task, action: 'run' | 'cancel' | 'rerun') => {
+    if (action === 'cancel') {
+      setCancelTask(task)
+      return
+    }
+    void handleTaskAction(task, action)
+  }, [handleTaskAction])
+
   const openTaskLogs = useCallback((task: Task) => {
     void useMonitorStore.getState().selectTask(task.name)
       .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
@@ -527,7 +569,10 @@ export default function ManagerPage() {
     }
 
     try {
-      const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
+      const allTasks = await api.getTasks({ limit: REORDER_TASK_LIMIT, refresh: false, compact: true })
+      if (rejectIncompleteReorder(allTasks)) {
+        return
+      }
       const items = buildReorderedItems(allTasks.items, task.name, intent)
       const movedItem = items.find(item => item.name === task.name)
       if (!items.length || !movedItem) {
@@ -550,21 +595,25 @@ export default function ManagerPage() {
     } finally {
       finishTaskAction(task.name)
     }
-  }, [beginTaskAction, fetchTasks, notify, tasks, finishTaskAction])
+  }, [beginTaskAction, fetchTasks, notify, rejectIncompleteReorder, tasks, finishTaskAction])
 
   const handleMoveTask = useCallback(async (task: Task, direction: -1 | 1) => {
     if (!beginTaskAction(task.name, 'move')) return
     try {
-      const allTasks = await api.getTasks({ limit: 0, refresh: false, summary: true })
-      const sectionTasks = allTasks.items.filter(item => Boolean(item.pinned) === Boolean(task.pinned))
-      const currentIndex = sectionTasks.findIndex(item => item.name === task.name)
-      const targetTask = sectionTasks[currentIndex + direction]
+      const visibleSectionTasks = tasks.filter(item => Boolean(item.pinned) === Boolean(task.pinned))
+      const currentIndex = visibleSectionTasks.findIndex(item => item.name === task.name)
+      const targetTask = visibleSectionTasks[currentIndex + direction]
       if (currentIndex < 0 || !targetTask) {
         setTaskActionMessage(
           direction < 0
-            ? `${task.name} is already first in this section.`
-            : `${task.name} is already last in this section.`,
+            ? `${task.name} is already first among the visible tasks.`
+            : `${task.name} is already last among the visible tasks.`,
         )
+        return
+      }
+
+      const allTasks = await api.getTasks({ limit: REORDER_TASK_LIMIT, refresh: false, compact: true })
+      if (rejectIncompleteReorder(allTasks)) {
         return
       }
 
@@ -586,7 +635,7 @@ export default function ManagerPage() {
     } finally {
       finishTaskAction(task.name)
     }
-  }, [beginTaskAction, fetchTasks, notify, finishTaskAction])
+  }, [beginTaskAction, fetchTasks, notify, rejectIncompleteReorder, tasks, finishTaskAction])
 
   useEffect(() => {
     const applyDropIntent = (intent: DropIntent | null) => {
@@ -722,14 +771,25 @@ export default function ManagerPage() {
       return
     }
     setDetailTask(task)
+    const requestId = ++detailRequestSeqRef.current
+    const requestWorkspaceEpoch = workspaceEpoch
+    const requestIsCurrent = () => (
+      requestId === detailRequestSeqRef.current
+      && requestWorkspaceEpoch === useWorkspaceStore.getState().workspaceEpoch
+    )
     void api.getTask(task.name).then(fullTask => {
-      setDetailTask(current => current?.name === task.name ? fullTask : current)
+      if (requestIsCurrent()) {
+        setDetailTask(current => current?.name === task.name ? fullTask : current)
+      }
     }).catch(err => {
-      notify({ tone: 'error', title: 'Could not load task details', detail: errorMessage(err) })
+      if (requestIsCurrent()) {
+        notify({ tone: 'error', title: 'Could not load task details', detail: errorMessage(err) })
+      }
     })
-  }, [selectMode, toggleSelect, notify])
+  }, [selectMode, toggleSelect, notify, workspaceEpoch])
 
   const closeDetailPanel = useCallback(() => {
+    detailRequestSeqRef.current += 1
     setDetailTask(null)
     if (!searchParams.get('task')) {
       return
@@ -996,7 +1056,7 @@ export default function ManagerPage() {
                       orderMutationPending={orderMutationPending}
                       pendingTaskActions={pendingTaskActions}
                       onCardClick={handleCardClick}
-                      onTaskAction={handleTaskAction}
+                      onTaskAction={requestTaskAction}
                       onPin={handlePin}
                       onMove={handleMoveTask}
                       onDelete={setDeleteTask}
@@ -1032,7 +1092,7 @@ export default function ManagerPage() {
                 orderMutationPending={orderMutationPending}
                 pendingTaskActions={pendingTaskActions}
                 onCardClick={handleCardClick}
-                onTaskAction={handleTaskAction}
+                onTaskAction={requestTaskAction}
                 onPin={handlePin}
                 onMove={handleMoveTask}
                 onDelete={setDeleteTask}
@@ -1078,6 +1138,24 @@ export default function ManagerPage() {
         confirmVariant="danger"
         onConfirm={handleDeleteTask}
         onCancel={() => setDeleteTask(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(cancelTask)}
+        title="Stop active task?"
+        description={cancelTask ? `Request cancellation for '${cancelTask.name}'? Its process tree will be stopped.` : ''}
+        confirmLabel="Stop Task"
+        confirmVariant="danger"
+        onConfirm={async () => {
+          if (!cancelTask) return
+          const target = cancelTask
+          try {
+            await handleTaskAction(target, 'cancel')
+          } finally {
+            setCancelTask(null)
+          }
+        }}
+        onCancel={() => setCancelTask(null)}
       />
 
       {detailTask && (

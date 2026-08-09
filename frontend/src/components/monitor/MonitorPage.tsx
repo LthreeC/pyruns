@@ -43,6 +43,7 @@ import StatusBadge from '@/components/shared/StatusBadge'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
+import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import type { GPUWaitStatus, LogStreamMessage, Task } from '@/types'
@@ -56,6 +57,7 @@ import {
   resolveMonitorLineHeight,
   resolveMonitorScrollback,
 } from '@/utils/monitorSettings'
+import { configureReadOnlyTerminalInput } from '@/utils/monitorAccessibility'
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
@@ -172,6 +174,7 @@ export default function MonitorPage() {
   const [streamStatus, setStreamStatus] = useState<LogStreamStatus>('idle')
   const [taskEventStatus, setTaskEventStatus] = useState<TaskEventStreamStatus>('idle')
   const [taskActionPending, setTaskActionPending] = useState<'run' | 'cancel' | null>(null)
+  const [stopConfirmTask, setStopConfirmTask] = useState('')
   const monitorShellRef = useRef<HTMLDivElement>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
@@ -366,6 +369,10 @@ export default function MonitorPage() {
       taskRefreshTimerRef.current = null
     }
     taskRefreshQueuedRef.current = false
+  }, [workspaceKey])
+  useEffect(() => {
+    setStopConfirmTask('')
+    setTaskActionPending(null)
   }, [workspaceKey])
   terminalSearchQueryRef.current = terminalSearchQuery
 
@@ -586,6 +593,7 @@ export default function MonitorPage() {
       convertEol: true,
       cursorBlink: false,
       disableStdin: true,
+      screenReaderMode: true,
       scrollback: DEFAULT_MONITOR_SCROLLBACK,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
@@ -711,6 +719,7 @@ export default function MonitorPage() {
     } else if (term.element.parentElement !== container) {
       container.appendChild(term.element)
     }
+    configureReadOnlyTerminalInput(term.textarea)
 
     const fitTerminal = () => {
       try {
@@ -1632,7 +1641,7 @@ export default function MonitorPage() {
                     ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
                     : <Square className="h-3.5 w-3.5" />}
                   variant="danger"
-                  onClick={() => void handleTaskAction('cancel')}
+                  onClick={() => setStopConfirmTask(selectedTask.name)}
                   disabled={taskActionPending !== null}
                 >
                   {taskActionPending === 'cancel' ? 'Stopping' : 'Stop'}
@@ -1690,7 +1699,7 @@ export default function MonitorPage() {
                 ref={termContainerRef}
                 className="monitor-terminal-shell h-full w-full"
                 role="region"
-                aria-label={`Logs for ${selectedTaskName}`}
+                aria-label={`Read-only logs for ${selectedTaskName}`}
               />
               {loading && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#0A0A0B]/70 text-xs text-[#cbd5e1]" role="status">
@@ -1789,6 +1798,25 @@ export default function MonitorPage() {
           }}
         />
       )}
+      <ConfirmDialog
+        open={Boolean(stopConfirmTask)}
+        title="Stop active task?"
+        description={stopConfirmTask ? `Request cancellation for '${stopConfirmTask}'? Its process tree will be stopped.` : ''}
+        confirmLabel="Stop Task"
+        confirmVariant="danger"
+        onConfirm={async () => {
+          if (!stopConfirmTask || selectedTaskName !== stopConfirmTask) {
+            setStopConfirmTask('')
+            return
+          }
+          try {
+            await handleTaskAction('cancel')
+          } finally {
+            setStopConfirmTask('')
+          }
+        }}
+        onCancel={() => setStopConfirmTask('')}
+      />
     </div>
   )
 }
@@ -1944,19 +1972,19 @@ function SidebarItem({
       aria-pressed={exportMode ? exportSelected : undefined}
       aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}`}
       className={clsx(
-        'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
+        'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'
           : 'border-transparent hover:border-border-subtle hover:bg-surface-overlay'
       )}
       title={task.name}
-      style={{ contentVisibility: 'auto', containIntrinsicSize: '36px' }}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '44px' }}
     >
       {exportMode && <SelectionIndicator selected={exportSelected} />}
       <StatusDot status={task.status as TaskStatus} />
       <span className={clsx(
-        'flex-1 truncate text-xs',
+        'min-w-0 flex-1 break-all text-xs leading-4 truncate-2',
         active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
       )}>
         {task.name}

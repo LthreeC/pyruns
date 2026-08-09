@@ -70,8 +70,6 @@ Global options:
 ```text
 -C, --directory PATH
 -w, --workspace NAME|PATH|SCRIPT.py
---json
---no-color
 --debug
 --version
 ```
@@ -147,14 +145,15 @@ Pyruns already sets `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and `PYTHONU
 
 `--env-file` is repeatable; later files override earlier files and command-line `-e` values override all files. Files accept blank lines, whole-line `#` comments, and `KEY=VALUE` only. Values are persisted in task metadata, so do not store secrets there.
 
-Preview an execution with no filesystem or process side effects; append `--json` for a stable plan object:
+Preview an execution with no filesystem or process side effects; append `--json` for a strict,
+versioned plan object:
 
 ```bash
 pyr exec --dry-run -n report -- python eval.py
 pyr exec --dry-run -n report --json -- python eval.py
 ```
 
-The preview does not create `_pyruns_`, tasks, or settings files, and it does not start the user command.
+The preview does not create `_pyruns_`, tasks, or settings files, and it does not start the user command. `--dry-run` and `--detach` are mutually exclusive.
 
 ```text
 <project>/_pyruns_/_shell_/tasks/<task>/
@@ -277,11 +276,15 @@ pyr -w train ls --trash
 pyr -w train restore baseline-lr1e3
 ```
 
+`ls` marks pinned tasks with `PIN` and keeps them ahead of normal tasks for every sort. `--reverse` changes order inside each group. JSON listings and `show` expose an explicit `pinned` field.
+
 `rm` executes immediately without confirmation, but remains a recoverable soft delete.
 
 ## JSON and automation
 
-Append `--json` only to commands that advertise machine output:
+Append `--json` only to commands that advertise machine output. Every result is a strict JSON
+object with top-level `"schema_version": 1`; YAML dates and timestamps become ISO 8601 strings,
+while NaN, Infinity, and unsupported objects are rejected rather than emitted as non-standard JSON:
 
 ```bash
 pyr -w shell ls --json
@@ -326,6 +329,11 @@ pyr ui shell
 pyr ui shell --no-browser
 pyr dev train.py
 ```
+
+The UI listens only on the local loopback interface and generates a fresh private access token on
+every start. The first browser request exchanges that token for an `HttpOnly`, same-site session
+cookie and removes it from the address bar. With `--no-browser`, open the complete printed URL and
+do not share it; the Web UI is a local tool, not a remote multi-user service.
 
 - Generator edits script configurations or shell payloads and creates tasks.
 - Manager searches, filters, runs, cancels, renames, pins, and removes tasks.

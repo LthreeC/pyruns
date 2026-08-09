@@ -628,3 +628,56 @@ class TestAddMonitor:
         monkeypatch.setattr(pyruns, "update_task_info", flaky_track_update)
         pyruns.track(loss=0.3)
         assert track_calls["count"] == 2
+
+    def test_record_nan_failure_warns_once_and_does_not_raise(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import pyruns
+
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        monkeypatch.setattr(pyruns, "_metric_warning_keys", set())
+
+        pyruns.record(loss=float("nan"))
+        pyruns.record(loss=float("nan"))
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.count("[pyruns] warning:") == 1
+        assert "record() could not save metrics" in captured.err
+        assert "ValueError:" in captured.err
+        assert "experiment will continue" in captured.err
+        with open(os.path.join(task_dir, TASK_INFO_FILENAME), encoding="utf-8") as f:
+            assert json.load(f)[RECORDS_KEY][0] == {}
+
+    def test_track_exhausted_io_retries_warns_once_and_does_not_raise(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import pyruns
+
+        task_dir = self._make_task_dir(tmp_path)
+        config_path = os.path.join(task_dir, "config.yaml")
+        open(config_path, "w").close()
+        monkeypatch.setenv(ENV_KEY_CONFIG, config_path)
+        monkeypatch.setattr(pyruns, "_metric_warning_keys", set())
+        monkeypatch.setattr(pyruns.time, "sleep", lambda _delay: None)
+        calls = {"count": 0}
+
+        def fail_update(*args, **kwargs):
+            calls["count"] += 1
+            raise OSError("task metadata remains locked")
+
+        monkeypatch.setattr(pyruns, "update_task_info", fail_update)
+
+        pyruns.track(loss=0.3)
+        pyruns.track(loss=0.2)
+
+        captured = capsys.readouterr()
+        assert calls["count"] == 10
+        assert captured.out == ""
+        assert captured.err.count("[pyruns] warning:") == 1
+        assert "track() could not save metrics after 5 attempts" in captured.err
+        assert "OSError: task metadata remains locked" in captured.err
+        assert "experiment will continue" in captured.err
