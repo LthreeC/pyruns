@@ -30,7 +30,6 @@ _POLL_INTERVAL_SEC = 0.05
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--backend", choices=("thread", "process"), default="thread")
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--submission-token", required=True)
     parser.add_argument("--submissions-json", required=True)
@@ -290,7 +289,6 @@ def main() -> int:
 
             claimed_now = tm.start_batch_tasks(
                 [name],
-                execution_mode=args.backend,
                 max_workers=args.jobs,
                 expected_run_indices={name: expected_run_index},
             )

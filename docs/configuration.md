@@ -216,9 +216,9 @@ global_env: {}
 - 默认值现在是 `14`
 - 不再额外做最小值 / 最大值限制
 
-Manager 的并发数和调度后端不是持久设置。CLI 在每次批量运行时用
-`run -j/--jobs` 与 `--backend` 明确选择；Web UI 则在当次批量运行面板中选择。
-这样配置文件不会保留一个与实际操作不一致的隐式执行策略。
+Manager 的并发数不是持久设置。CLI 在每次批量运行时用 `run -j/--jobs`
+明确选择；Web UI 则在当次批量运行面板中填写 Workers。这样配置文件不会保留
+一个与实际操作不一致的隐式并发策略。
 
 ### `shell_mode`
 
@@ -282,6 +282,6 @@ Manager 和 Monitor 使用单行搜索框。
 
 如果你要补一张“配置是怎么落到任务里的”展示图，最值得补的是：
 
-- `task_info.json` 详情面板截图
-- `config.yaml` / shell payload 面板截图
-- `Env Vars` 面板截图
+- `Info` 与 Run History 详情面板截图
+- `Config` 中的 `config.yaml` / shell payload 截图
+- `Env` 面板截图

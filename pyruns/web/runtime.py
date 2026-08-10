@@ -1197,13 +1197,13 @@ class PyrunsRuntime:
         return task
 
     @_with_stable_workspace
-    def start_task(self, task_name: str, execution_mode: str | None = None) -> Dict[str, Any]:
+    def start_task(self, task_name: str) -> Dict[str, Any]:
         """Start one task and return the updated snapshot."""
         task = self.require_task(task_name)
         if task.get("_load_error"):
             raise ValueError(str(task["_load_error"]))
         self.invalidate_cache()
-        started = self.task_manager.start_task_now(task_name, execution_mode)
+        started = self.task_manager.start_task_now(task_name)
         if not started:
             raise ValueError(f"Task '{task_name}' could not be started")
         return self.get_task(task_name) or task
@@ -1232,7 +1232,6 @@ class PyrunsRuntime:
         self,
         task_names: List[str],
         *,
-        execution_mode: str | None = None,
         max_workers: int | None = None,
     ) -> Dict[str, Any]:
         """Queue multiple tasks and return their updated snapshots."""
@@ -1254,7 +1253,6 @@ class PyrunsRuntime:
         self.invalidate_cache()
         claimed_names = self.task_manager.start_batch_tasks(
             normalized_names,
-            execution_mode=execution_mode,
             max_workers=max_workers,
         )
         if not claimed_names:
@@ -1761,7 +1759,15 @@ class PyrunsRuntime:
 
     def list_launcher_scripts(self) -> List[Dict[str, Any]]:
         """Return launchable scripts from the current project directory."""
-        return list_script_candidates()
+        run_root = os.path.abspath(self.root_dir)
+        parent = os.path.dirname(run_root)
+        if os.path.basename(run_root) == _cfg.DEFAULT_ROOT_NAME:
+            project_dir = parent
+        elif os.path.basename(parent) == _cfg.DEFAULT_ROOT_NAME:
+            project_dir = os.path.dirname(parent)
+        else:
+            project_dir = os.getcwd()
+        return list_script_candidates(project_dir)
 
     def list_launcher_configs(self, script_path: str) -> List[Dict[str, Any]]:
         """Return YAML config candidates for a selected script."""

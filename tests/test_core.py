@@ -3164,7 +3164,7 @@ def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_pat
 
     submitted: list[tuple[str, int, bool]] = []
 
-    def fake_submit(target, run_index, *, independent, execution_mode=None):
+    def fake_submit(target, run_index, *, independent):
         submitted.append((target["name"], run_index, independent))
 
     monkeypatch.setattr(manager, "_submit_task", fake_submit)
@@ -3367,7 +3367,7 @@ def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     monkeypatch.setattr(
         manager,
         "_submit_task",
-        lambda target, run_index, *, independent, execution_mode=None: submitted.append(target["name"]),
+        lambda target, run_index, *, independent: submitted.append(target["name"]),
     )
 
     manager.start_task_now(task["name"])
@@ -3376,26 +3376,6 @@ def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     refreshed = manager.get_task(task["name"])
     assert refreshed["status"] == "running"
     assert refreshed["run_index"] == 1
-
-
-def test_task_manager_independent_run_does_not_inherit_batch_execution_mode(tmp_path, monkeypatch):
-    tasks_dir = tmp_path / "tasks"
-    tasks_dir.mkdir()
-    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("independent-mode", {"value": 1})
-
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
-
-    manager.execution_mode = "process"
-    submitted_modes: list[str | None] = []
-    monkeypatch.setattr(
-        manager,
-        "_submit_task",
-        lambda target, run_index, *, independent, execution_mode=None: submitted_modes.append(execution_mode),
-    )
-
-    assert manager.start_task_now(task["name"]) is True
-    assert submitted_modes == ["thread"]
 
 
 def test_task_manager_plain_queued_pick_computes_next_run_from_history(tmp_path):
@@ -3441,7 +3421,7 @@ def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch
 
     submitted: list[tuple[str, int, bool]] = []
 
-    def fake_submit(target, run_index, *, independent, execution_mode=None):
+    def fake_submit(target, run_index, *, independent):
         submitted.append((target["name"], run_index, independent))
 
     monkeypatch.setattr(manager, "_submit_task", fake_submit)
@@ -3486,7 +3466,7 @@ def test_task_manager_run_now_does_not_consume_batch_slots(tmp_path, monkeypatch
 
     monkeypatch.setattr(task_manager_module, "ThreadPoolExecutor", CapturingExecutor)
 
-    manager.start_task_now(run_now["name"], execution_mode="thread")
+    manager.start_task_now(run_now["name"])
     assert run_now["name"] in manager._running_ids
     assert run_now["name"] not in manager._batch_running_ids
 
@@ -3577,11 +3557,10 @@ def test_task_manager_gpu_batch_run_waits_each_selected_task(tmp_path, monkeypat
     submitted = []
     monkeypatch.setattr(manager, "_submit_task", lambda *args, **kwargs: submitted.append((args, kwargs)))
 
-    manager.start_batch_tasks([task["name"] for task in tasks], execution_mode="thread", max_workers=3)
+    manager.start_batch_tasks([task["name"] for task in tasks], max_workers=3)
 
     assert submitted == []
     assert manager.max_workers == 3
-    assert manager.execution_mode == "thread"
     for task in tasks:
         queued = manager.get_task(task["name"])
         assert queued["status"] == "queued"
@@ -4024,8 +4003,7 @@ def test_task_manager_gpu_independent_submit_does_not_consume_batch_slots(tmp_pa
     independent_target, run_index = manager._pick_queued_task(independent_only=True)
     assert independent_target is not None
     independent = bool(independent_target.pop("_queued_independent", False))
-    queued_mode = independent_target.pop("_queued_execution_mode", None)
-    manager._submit_task(independent_target, run_index, independent=independent, execution_mode=queued_mode)
+    manager._submit_task(independent_target, run_index, independent=independent)
 
     assert run_now_task["name"] in manager._running_ids
     assert run_now_task["name"] not in manager._batch_running_ids
@@ -4061,13 +4039,12 @@ def test_task_manager_start_task_now_queues_gpu_task_as_independent(tmp_path, mo
 
     submitted = []
     monkeypatch.setattr(manager, "_submit_task", lambda *args, **kwargs: submitted.append((args, kwargs)))
-    manager.start_task_now(task["name"], execution_mode="process")
+    manager.start_task_now(task["name"])
 
     queued = manager.get_task(task["name"])
     assert submitted == []
     assert queued["status"] == "queued"
     assert queued["_queued_independent"] is True
-    assert queued["_queued_execution_mode"] == "process"
     assert (Path(task["dir"]) / RUN_LOGS_DIR / "queue.log").exists()
 
 
@@ -4086,11 +4063,10 @@ def test_task_manager_clears_stale_gpu_schedule_env_before_plain_rerun(tmp_path,
         target["_gpu_wait_started_at"] = 1.0
         target["_gpu_last_wait_log_at"] = 1.0
         target["_queued_independent"] = True
-        target["_queued_execution_mode"] = "process"
 
     submitted = []
 
-    def fake_submit(target, run_index, *, independent, execution_mode=None):
+    def fake_submit(target, run_index, *, independent):
         submitted.append(dict(target))
 
     monkeypatch.setattr(manager, "_submit_task", fake_submit)
@@ -4102,7 +4078,6 @@ def test_task_manager_clears_stale_gpu_schedule_env_before_plain_rerun(tmp_path,
     assert "_gpu_wait_started_at" not in submitted[0]
     assert "_gpu_last_wait_log_at" not in submitted[0]
     assert "_queued_independent" not in submitted[0]
-    assert "_queued_execution_mode" not in submitted[0]
 
 
 @pytest.mark.parametrize("final_status", ["completed", "failed", "cancelled"])
@@ -5719,7 +5694,7 @@ def test_task_manager_start_batch_sync_conflict_keeps_foreign_runner_without_sub
     monkeypatch.setattr(
         manager,
         "_submit_task",
-        lambda target, run_index, *, independent, execution_mode=None: submitted.append(target["name"]),
+        lambda target, run_index, *, independent: submitted.append(target["name"]),
     )
 
     claimed = manager.start_batch_tasks(["alpha"], max_workers=1)
@@ -5757,7 +5732,7 @@ def test_task_manager_expected_run_rejects_completed_race_without_run_two(
     monkeypatch.setattr(
         manager,
         "_submit_task",
-        lambda target, run_index, *, independent, execution_mode=None: submitted.append(
+        lambda target, run_index, *, independent: submitted.append(
             (str(target["name"]), run_index)
         ),
     )
@@ -5917,7 +5892,7 @@ def test_task_manager_shutdown_waits_for_start_lifecycle_section(tmp_path, monke
     shutdown_entered = threading.Event()
     shutdown_done = threading.Event()
 
-    def blocked_start(_task_id, _execution_mode=None):
+    def blocked_start(_task_id):
         start_entered.set()
         assert release_start.wait(timeout=2)
         return True
@@ -6242,6 +6217,139 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
     assert "alpha" not in manager._batch_running_ids
 
 
+def test_task_manager_shutdown_retries_cleanup_before_unregistering_atexit(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    manager = TaskManager(
+        tasks_dir=str(tasks_dir),
+        lazy_scan=False,
+        owns_task_lifecycle=False,
+    )
+    manager.owns_task_lifecycle = True
+    manager._atexit_registered = True
+
+    class RetryLock:
+        def __init__(self, lock):
+            self.lock = lock
+            self.attempts = 0
+
+        def acquire(self, *args, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                return False
+            return self.lock.acquire(*args, **kwargs)
+
+        def release(self):
+            self.lock.release()
+
+        def __enter__(self):
+            self.lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.lock.release()
+
+    retry_lock = RetryLock(manager._lock)
+    manager._lock = retry_lock
+    unregistered = []
+    monkeypatch.setattr(task_manager_module.atexit, "unregister", unregistered.append)
+
+    manager.shutdown()
+
+    assert manager._shutdown_cleanup_done is False
+    assert manager._atexit_registered is True
+    assert unregistered == []
+
+    manager.shutdown()
+
+    assert retry_lock.attempts == 2
+    assert manager._shutdown_cleanup_done is True
+    assert manager._atexit_registered is False
+    assert unregistered == [manager._atexit_callback]
+
+
+def test_task_manager_shutdown_does_not_mark_in_progress_cleanup_complete(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    manager = TaskManager(
+        tasks_dir=str(tasks_dir),
+        lazy_scan=False,
+        owns_task_lifecycle=False,
+    )
+    manager.owns_task_lifecycle = True
+    manager._atexit_registered = True
+
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+
+    def blocking_cleanup():
+        cleanup_started.set()
+        assert release_cleanup.wait(timeout=2)
+        return True
+
+    unregistered = []
+    monkeypatch.setattr(manager, "_perform_shutdown_cleanup", blocking_cleanup)
+    monkeypatch.setattr(task_manager_module.atexit, "unregister", unregistered.append)
+
+    first = threading.Thread(target=manager.shutdown)
+    first.start()
+    assert cleanup_started.wait(timeout=2)
+
+    manager.shutdown()
+
+    assert manager._shutdown_cleanup_in_progress is True
+    assert manager._shutdown_cleanup_done is False
+    assert manager._atexit_registered is True
+    assert unregistered == []
+
+    release_cleanup.set()
+    first.join(timeout=2)
+    assert not first.is_alive()
+    assert manager._shutdown_cleanup_in_progress is False
+    assert manager._shutdown_cleanup_done is True
+    assert manager._atexit_registered is False
+    assert unregistered == [manager._atexit_callback]
+
+
+def test_task_manager_shutdown_keeps_failed_cleanup_retryable(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    manager = TaskManager(
+        tasks_dir=str(tasks_dir),
+        lazy_scan=False,
+        owns_task_lifecycle=False,
+    )
+    manager.owns_task_lifecycle = True
+    manager._atexit_registered = True
+
+    attempts = 0
+
+    def flaky_cleanup():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("cleanup failed")
+        return True
+
+    unregistered = []
+    monkeypatch.setattr(manager, "_perform_shutdown_cleanup", flaky_cleanup)
+    monkeypatch.setattr(task_manager_module.atexit, "unregister", unregistered.append)
+
+    manager.shutdown()
+
+    assert manager._shutdown_cleanup_in_progress is False
+    assert manager._shutdown_cleanup_done is False
+    assert manager._atexit_registered is True
+    assert unregistered == []
+
+    manager.shutdown()
+
+    assert attempts == 2
+    assert manager._shutdown_cleanup_done is True
+    assert manager._atexit_registered is False
+    assert unregistered == [manager._atexit_callback]
+
+
 def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -6280,9 +6388,7 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
 
     old_executor = ExistingExecutor()
     manager._executor = old_executor
-    manager._executor_mode = "thread"
     manager._executor_workers = 1
-    manager.execution_mode = "thread"
     manager.max_workers = 1
     manager._ensure_executor()
     assert manager._executor is old_executor

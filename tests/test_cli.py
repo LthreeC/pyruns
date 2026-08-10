@@ -158,7 +158,10 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     output = capsys.readouterr().out
     assert "Pyruns saves terminal commands and Python experiments as named tasks" in output
     assert "pyr and pyruns are identical" in output
+    assert "'ui' (normal)" in output
+    assert "'dev' (development)" in output
     assert "Model: project -> workspace -> task -> numbered run" in output
+    assert "nearest project found from the current directory" in output
     assert "Quick start -- track one terminal command:" in output
     assert "pyr run check" in output
     assert "pyr ui shell" in output
@@ -195,6 +198,8 @@ def test_help_all_lists_advanced_commands_without_workspace(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "All command groups:" in result.stdout
+    assert "task setup" in result.stdout
+    assert "create/run" not in result.stdout
     assert "    status " in result.stdout
     assert "    restore " in result.stdout
     assert "    export " in result.stdout
@@ -396,7 +401,7 @@ def test_run_and_export_advertise_one_clear_canonical_option_set():
     run_help = commands["run"].format_help()
     assert "--config CONFIG" in run_help
     assert "-j N, --jobs N" in run_help
-    assert "--backend {thread,process}" in run_help
+    assert "--backend" not in run_help
     assert "--from" not in run_help
     assert "--workers" not in run_help
     assert "--mode" not in run_help
@@ -410,18 +415,29 @@ def test_run_and_export_advertise_one_clear_canonical_option_set():
     assert "with --path" in log_help
 
 
+def test_command_help_distinguishes_cancelling_from_stopping_observation():
+    _parser, commands = build_parser("pyr", show_all_commands=True)
+
+    assert "Ctrl+C during foreground exec requests cancellation" in commands["exec"].format_help()
+    assert "Ctrl+C while waiting requests cancellation" in commands["run"].format_help()
+    assert "Ctrl+C stops following and returns 130; it does not stop the task" in commands[
+        "log"
+    ].format_help()
+    assert "Timeout or Ctrl+C stops waiting only; the tasks continue running" in commands[
+        "wait"
+    ].format_help()
+
+
 def test_removed_run_option_spellings_are_rejected():
     parser, _commands = build_parser("pyr", show_all_commands=True)
 
-    canonical = parser.parse_args(
-        ("run", "--config", "sweep.yaml", "--jobs", "3", "--backend", "process")
-    )
+    canonical = parser.parse_args(("run", "--config", "sweep.yaml", "--jobs", "3"))
     assert canonical.config == "sweep.yaml"
     assert canonical.jobs == 3
-    assert canonical.backend == "process"
 
     for removed in (
         ("run", "--from", "sweep.yaml"),
+        ("run", "task", "--backend", "process"),
         ("run", "task", "--workers", "3"),
         ("run", "task", "--mode", "process"),
         ("run", "task", "-m", "process"),
@@ -531,6 +547,41 @@ def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(
     old_workspace_form = _run_cli(tmp_path, "-w", "train", "ui")
     assert old_workspace_form.returncode == 2
     assert "ui does not use -w/--workspace" in old_workspace_form.stderr
+
+
+def test_bare_ui_reuses_nearest_project_from_nested_directory(tmp_path, monkeypatch):
+    from pyruns.cli import commands
+    from pyruns.web.runtime import PyrunsRuntime
+
+    project_root = tmp_path / "_pyruns_"
+    project_root.mkdir()
+    (tmp_path / "train.py").write_text("print('train')\n", encoding="utf-8")
+    nested = tmp_path / "src" / "package"
+    nested.mkdir(parents=True)
+    launched = {}
+
+    monkeypatch.chdir(nested)
+    monkeypatch.delenv(commands.ENV_KEY_ROOT, raising=False)
+    monkeypatch.setattr(
+        commands,
+        "_launch_ui",
+        lambda **kwargs: launched.update(kwargs) or 0,
+    )
+
+    assert main(["ui", "--no-browser"]) == 0
+    assert launched == {
+        "start_path": commands.launcher_query(),
+        "port": None,
+        "open_browser": False,
+    }
+    assert Path(os.environ[commands.ENV_KEY_ROOT]) == project_root
+    assert not (nested / "_pyruns_").exists()
+
+    runtime = PyrunsRuntime()
+    try:
+        assert {item["label"] for item in runtime.list_launcher_scripts()} == {"train.py"}
+    finally:
+        runtime.shutdown()
 
 
 def test_ui_treats_an_existing_workspace_ending_in_py_as_a_workspace(
@@ -643,6 +694,33 @@ def test_bare_context_options_are_not_silently_ignored(tmp_path, args, message):
     assert result.returncode == 2
     assert message in result.stderr
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("-C", "", "ls"),
+        ("-w", "", "ls"),
+        ("init", ""),
+        ("init", "train.py", "--config", ""),
+        ("exec", "--name", "", "--", "python", "-V"),
+        ("exec", "--env-file", "", "--", "python", "-V"),
+        ("add", ""),
+        ("add", "config.yaml", "--name", ""),
+        ("run", "task", "--config", ""),
+        ("run", "--config", "config.yaml", "--name", ""),
+        ("ui", ""),
+        ("ui", "train.py", "--config", ""),
+        ("dev", ""),
+        ("dev", "train.py", "--config", ""),
+    ],
+)
+def test_explicit_empty_values_fail_instead_of_selecting_a_default(tmp_path, args):
+    result = _run_cli(tmp_path, *args)
+
+    assert result.returncode == 2
+    assert "value must not be empty" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 @pytest.mark.parametrize(
@@ -1761,6 +1839,11 @@ def test_exec_command_string_rejects_an_unquoted_tail_and_removed_shell_option(t
     assert "-c/--command accepts exactly one command string" in result.stderr
     assert not (tmp_path / "_pyruns_").exists()
 
+    separator = _run_cli(tmp_path, "exec", "-c", "echo hello", "--")
+    assert separator.returncode == 2
+    assert "-c/--command cannot be combined with '--' or argv arguments" in separator.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
     removed = _run_cli(tmp_path, "exec", "--shell", "echo hello")
     assert removed.returncode == 2
     assert "unrecognized arguments: --shell" in removed.stderr
@@ -1846,7 +1929,6 @@ def test_run_from_dry_run_previews_batch_without_creating_tasks(tmp_path):
     assert payload["dry_run"] is True
     assert payload["operation"] == "run-config"
     assert payload["task_count"] == 2
-    assert payload["backend"] == "thread"
     assert payload["jobs"] == 2
     assert [task["planned_name"] for task in payload["tasks"]] == [
         "preview_1-of-2",

@@ -1098,7 +1098,6 @@ def _submit_and_wait(
     manager: TaskManager,
     tasks: list[dict[str, Any]],
     *,
-    mode: str,
     workers: int,
     detach: bool,
 ) -> int:
@@ -1133,7 +1132,6 @@ def _submit_and_wait(
             manager,
             names,
             expected_runs=expected_runs,
-            execution_mode=mode,
             max_workers=min(max(1, workers), len(tasks)),
         )
     except SubmissionInterrupted as exc:
@@ -1366,6 +1364,8 @@ def cmd_exec(context: Any, args: Any) -> int:
     if has_separator:
         parts = parts[1:]
     shell_command = args.shell_command
+    if shell_command is not None and has_separator:
+        raise CliUsageError("-c/--command cannot be combined with '--' or argv arguments")
     if shell_command is not None and parts:
         raise CliUsageError("-c/--command accepts exactly one command string")
     if shell_command is None and parts and not has_separator:
@@ -1480,7 +1480,6 @@ def cmd_exec(context: Any, args: Any) -> int:
             context,
             manager,
             [task],
-            mode="thread",
             workers=1,
             detach=bool(args.detach),
         )
@@ -1513,7 +1512,6 @@ def cmd_run(context: Any, args: Any, manager: TaskManager, workspace: str) -> in
         context,
         manager,
         tasks,
-        mode=args.backend,
         workers=args.jobs,
         detach=bool(args.detach),
     )
@@ -1545,7 +1543,6 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
         "config": _normalized_path(resolved),
         "task_count": len(configs),
         "tasks": tasks,
-        "backend": args.backend,
         "jobs": min(args.jobs, len(configs)),
         "detach": bool(args.detach),
     }
@@ -1561,7 +1558,7 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
                 print(f"  {task['planned_name']}")
             else:
                 print(f"  {task['requested_name']} (a unique suffix will be added)")
-        print(f"Execution:  {args.backend}, {payload['jobs']} job(s)")
+        print(f"Concurrency: {payload['jobs']} job(s)")
         print("Result:     nothing was created or run")
     return 0
 
@@ -2384,13 +2381,16 @@ def cmd_ui(context: Any, args: Any) -> int:
         mark_workspace_active(workspace)
         return _launch_ui(start_path="/", port=args.port, open_browser=open_browser)
 
-    project_root = os.path.join(os.getcwd(), DEFAULT_ROOT_NAME)
+    project_root = project_root or _normalized_path(
+        os.path.join(os.getcwd(), DEFAULT_ROOT_NAME)
+    )
     try:
         validate_workspace_directory(project_root)
         os.makedirs(project_root, exist_ok=True)
         validate_workspace_directory(project_root)
     except (OSError, ValueError) as exc:
         raise CliError(f"unsafe project path: {exc}") from exc
+    os.environ[ENV_KEY_ROOT] = project_root
     return _launch_ui(
         start_path=launcher_query(),
         port=args.port,

@@ -310,8 +310,7 @@ pyr config unset monitor_scrollback
 pyr config path
 ```
 
-批量运行的并发数与后端在每次 `run` 时通过 `-j/--jobs` 和 `--backend` 明确选择，
-不会藏在项目配置里。
+批量运行的并发数在每次 `run` 时通过 `-j/--jobs` 明确选择，不会藏在项目配置里。
 
 ## 12. 显式打开 Web UI
 

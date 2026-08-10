@@ -902,7 +902,8 @@ def _write_temp_shell_wrapper(
 
 
 def _normalize_execution_path(path: str) -> str:
-    return os.path.abspath(os.path.expanduser(os.path.expandvars(str(path)))).replace("\\", "/")
+    expanded = os.path.abspath(os.path.expanduser(os.path.expandvars(str(path))))
+    return os.path.realpath(expanded).replace("\\", "/")
 
 
 def _resolve_shell_workdir(task_dir: str) -> str:
@@ -1060,7 +1061,7 @@ def _augment_wsl_env(command: List[str] | str, env: Dict[str, str], task_env_key
         return
     if not any(
         _is_windows_wsl_bash_executable(str(part))
-        or os.path.basename(str(part)).strip().lower() in {'wsl', 'wsl.exe'}
+        or _shell_executable_name(str(part)) in {'wsl', 'wsl.exe'}
         for part in command
     ):
         return

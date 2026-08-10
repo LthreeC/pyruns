@@ -200,6 +200,8 @@ pyr exec --name gpu0 --env-file .env.train -e SEED=42 -- python train.py
 pyr exec --name smoke -- python smoke.py
 ```
 
+此时按 Ctrl+C 会向这次 `exec` 提交的任务请求取消，并在完成清理后返回 `130`。这与单独执行 `wait` 或 `log -f` 不同：后两者只观察已有任务，中断观察不会停止任务。
+
 长任务使用 `--detach`。Pyruns 会在隐藏 runner 接受任务后返回：
 
 ```bash
@@ -227,10 +229,11 @@ pyr -w train run baseline
 pyr -w train run seed1 seed2 seed3 --jobs 3
 ```
 
-执行模式可选 `thread` 或 `process`：
+`-j/--jobs` 只控制同时运行的任务数。Pyruns 用线程协调这些任务，每个任务仍在
+独立子进程中执行，因此 Python 训练、Shell 命令和外部程序都可以正常并行：
 
 ```bash
-pyr -w train run seed1 seed2 --jobs 2 --backend process
+pyr -w train run seed1 seed2 --jobs 2
 ```
 
 也可以创建并立即运行：
@@ -254,6 +257,7 @@ pyr -w train run --config configs/quick.yaml --name quick --dry-run --json
 - `--name` 只与 `--config` 一起使用。
 - 默认等待所有任务进入最终状态。
 - 任一任务失败，批量命令返回 `1`。
+- 前台等待时按 Ctrl+C，会向这次 `run` 接受的任务请求取消并返回 `130`。
 - `--detach` 在 runner 接受全部任务后返回。
 - `-j/--jobs` 不会超过实际选择的任务数量。
 - runner 只接收部分任务时会列出 `claimed` / `unclaimed` 名称并返回 `1`，不会伪报整批成功。
@@ -317,7 +321,7 @@ pyr -w train log baseline --path --json
 
 `TASK@RUN` 是 `show` 和 `log` 的历史运行短语法，等价于 `TASK --run RUN`。`RUN` 必须是已有的正整数运行编号；`TASK@RUN` 不能再和 `--run` 组合，历史日志也不能 `--follow`。`@` 因此是保留分隔符，不能用于新任务名。
 
-`log` 没有全屏交互查看器。`log -f` 只是持续向 stdout 输出字节，并不是交互终端。原始日志模式不能与 `--json` 混用；需要机器可读数据时先取 `--path`。日志尚不存在时 `log --path` 也返回失败，不会输出一个虚构的未来文件路径。
+`log` 没有全屏交互查看器。`log -f` 只是持续向 stdout 输出字节，并不是交互终端。按 Ctrl+C 只停止跟随并返回 `130`，任务继续运行。原始日志模式不能与 `--json` 混用；需要机器可读数据时先取 `--path`。日志尚不存在时 `log --path` 也返回失败，不会输出一个虚构的未来文件路径。
 
 ## 10. 等待和停止：`wait`、`stop`
 
@@ -328,7 +332,7 @@ pyr -w train wait baseline
 pyr -w train wait seed1 seed2 --timeout 600
 ```
 
-`timeout=0` 表示无限等待。pending 任务尚未交给 runner，因此 `wait` 会拒绝它。
+`timeout=0` 表示无限等待。pending 任务尚未交给 runner，因此 `wait` 会拒绝它。正数超时或 Ctrl+C 都只停止等待，不会停止任务；需要取消任务时使用 `stop`。
 
 向真正拥有任务的 runner 请求取消：
 
@@ -383,7 +387,7 @@ pyr config path
 ```
 
 `config set` 将值解析为 YAML，并根据已知配置项的类型验证。未知 key 或类型错误不会静默写入。
-批量运行的并发数与后端不是项目配置；每次用 `run -j/--jobs --backend` 显式指定。
+批量运行的并发数不是项目配置；需要时在每次运行中用 `run -j/--jobs` 显式指定。
 
 ## 14. 系统快照：`metrics`
 
@@ -434,7 +438,7 @@ JSON 只写 stdout；用户可读错误仍写 stderr，并由退出码表示成�
 0    命令成功，且请求等待的任务全部成功
 1    工作区、目标、运行时或任务失败
 2    命令行用法错误
-130  等待或跟随日志时被中断
+130  命令被 Ctrl+C 中断
 ```
 
 例如，批量 `run` 中一个任务成功、一个失败，整体仍返回 `1`；这使 CI 无需额外解析输出。

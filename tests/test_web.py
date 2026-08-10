@@ -758,7 +758,6 @@ def test_parse_main_options_handles_browser_flags_and_invalid_ports(capsys):
         ("post", "/api/tasks/export/csv", {"task_names": ["ghost"]}, None, {"export_tasks_csv": KeyError("ghost")}, 404, "Task 'ghost' not found"),
         ("post", "/api/tasks/export/csv", {"task_names": []}, None, {"export_tasks_csv": ValueError("empty export")}, 400, "empty export"),
         ("post", "/api/tasks/ghost/run", None, None, {"start_task": KeyError("ghost")}, 404, "Task 'ghost' not found"),
-        ("post", "/api/tasks/alpha/run", {"execution_mode": "bad"}, None, {"start_task": ValueError("bad mode")}, 400, "bad mode"),
         ("post", "/api/tasks/ghost/cancel", None, None, {"cancel_task": KeyError("ghost")}, 404, "Task 'ghost' not found"),
         ("post", "/api/tasks/alpha/cancel", None, None, {"cancel_task": ValueError("not running")}, 400, "not running"),
         ("post", "/api/tasks/ghost/pin", {"pinned": True}, None, {"set_task_pin": KeyError("ghost")}, 404, "Task 'ghost' not found"),
@@ -2276,7 +2275,7 @@ def test_workspace_switch_waits_for_in_flight_task_start(tmp_path, monkeypatch):
             raise TimeoutError("task start test did not release")
         return task
 
-    def record_start(manager, task_name, execution_mode=None):
+    def record_start(manager, task_name):
         started_in.append(str(Path(manager.tasks_dir).parent))
         return True
 
@@ -2825,7 +2824,7 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    def fake_start(task_name: str, execution_mode: str | None = None) -> bool:
+    def fake_start(task_name: str) -> bool:
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
@@ -2937,11 +2936,10 @@ def test_run_task_endpoint_rejects_unclaimed_start(tmp_path):
     assert response.status_code == 400
     assert "could not be started" in response.json()["detail"]
 
-def test_batch_run_rejects_invalid_execution_mode_without_state_changes(tmp_path):
+def test_batch_run_rejects_removed_execution_mode_field(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
     runtime = _build_runtime(workspace)
-    runtime.task_manager.execution_mode = "thread"
     runtime.task_manager.max_workers = 1
     client = TestClient(create_app(runtime))
 
@@ -2954,27 +2952,22 @@ def test_batch_run_rejects_invalid_execution_mode_without_state_changes(tmp_path
         },
     )
 
-    assert response.status_code == 400
-    assert "Invalid execution_mode" in response.json()["detail"]
-    assert runtime.task_manager.execution_mode == "thread"
+    assert response.status_code == 422
     assert runtime.task_manager.max_workers == 1
     assert runtime.get_task("alpha", refresh=True)["status"] == "pending"
     info = json.loads((workspace / TASKS_DIR / "alpha" / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert info["status"] == "pending"
 
 
-def test_run_task_rejects_invalid_execution_mode_without_state_changes(tmp_path):
+def test_run_task_rejects_removed_execution_mode_field(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
     runtime = _build_runtime(workspace)
-    runtime.task_manager.execution_mode = "thread"
     client = TestClient(create_app(runtime))
 
     response = client.post("/api/tasks/alpha/run", json={"execution_mode": "proces"})
 
-    assert response.status_code == 400
-    assert "Invalid execution_mode" in response.json()["detail"]
-    assert runtime.task_manager.execution_mode == "thread"
+    assert response.status_code == 422
     assert runtime.get_task("alpha", refresh=True)["status"] == "pending"
     info = json.loads((workspace / TASKS_DIR / "alpha" / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     assert info["status"] == "pending"
@@ -3598,8 +3591,8 @@ def test_batch_run_and_delete_endpoints(tmp_path):
     client = TestClient(create_app(runtime))
     calls = []
 
-    def fake_start_batch(task_names, execution_mode=None, max_workers=None):
-        calls.append((list(task_names), execution_mode, max_workers))
+    def fake_start_batch(task_names, max_workers=None):
+        calls.append((list(task_names), max_workers))
         for task_name in task_names:
             task_dir = workspace / TASKS_DIR / task_name
 
@@ -3614,7 +3607,6 @@ def test_batch_run_and_delete_endpoints(tmp_path):
             "/api/tasks/batch/run",
             json={
                 "task_names": ["alpha", "beta"],
-                "execution_mode": "process",
                 "max_workers": 5,
             },
         )
@@ -3622,7 +3614,7 @@ def test_batch_run_and_delete_endpoints(tmp_path):
     delete_response = client.post("/api/tasks/batch/delete", json={"task_names": ["alpha"]})
 
     assert run_response.status_code == 200
-    assert calls == [(["alpha", "beta"], "process", 5)]
+    assert calls == [(["alpha", "beta"], 5)]
     assert run_response.json()["count"] == 2
     assert {item["status"] for item in run_response.json()["items"]} == {"queued"}
     assert delete_response.status_code == 200

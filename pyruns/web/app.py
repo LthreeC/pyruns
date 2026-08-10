@@ -170,17 +170,14 @@ class RunRootRequest(RequestModel):
     path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
 
 
-class TaskActionRequest(RequestModel):
-    """Task action request payload."""
-
-    execution_mode: str | None = Field(default=None, max_length=16)
+class TaskRunRequest(RequestModel):
+    """Strictly validate that task runs do not accept options."""
 
 
 class TaskBatchActionRequest(RequestModel):
     """Batch task action request payload."""
 
     task_names: list[str] = Field(default_factory=list)
-    execution_mode: str | None = Field(default=None, max_length=16)
     max_workers: int | None = Field(default=None, ge=1, le=MAX_UI_WORKERS)
 
 
@@ -817,7 +814,6 @@ def create_app(
             require_item_limit(payload.task_names, label="Batch run")
             return get_runtime().start_tasks_batch(
                 payload.task_names,
-                execution_mode=payload.execution_mode,
                 max_workers=payload.max_workers,
             )
         except KeyError as exc:
@@ -847,10 +843,9 @@ def create_app(
         return Response(content=csv_text, media_type="text/csv; charset=utf-8")
 
     @app.post("/api/tasks/{task_name}/run")
-    def run_task(task_name: str, payload: TaskActionRequest | None = None) -> dict[str, Any]:
+    def run_task(task_name: str, _payload: TaskRunRequest | None = None) -> dict[str, Any]:
         try:
-            execution_mode = payload.execution_mode if payload is not None else None
-            task = get_runtime().start_task(task_name, execution_mode)
+            task = get_runtime().start_task(task_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
         except ValueError as exc:

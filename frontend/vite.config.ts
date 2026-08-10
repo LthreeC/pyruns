@@ -36,8 +36,8 @@ export default defineConfig({
           if (
             includesPackage(moduleId, 'react') ||
             includesPackage(moduleId, 'react-dom') ||
+            includesPackage(moduleId, 'react-router') ||
             includesPackage(moduleId, 'react-router-dom') ||
-            includesPackage(moduleId, '@remix-run/router') ||
             includesPackage(moduleId, 'scheduler')
           ) {
             return 'vendor-react'

@@ -95,7 +95,6 @@ SHELL_CONFIG_FILENAMES = (
 )
 
 # System constraints & defaults
-EXECUTION_MODES = ["thread", "process"]
 CSV_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 DEFAULT_UI_PORT = 8099

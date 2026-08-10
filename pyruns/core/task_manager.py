@@ -12,14 +12,13 @@ import socket
 import threading
 import time
 import uuid
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from pyruns._config import (
     DEFAULT_RUNNER_HEARTBEAT_SECONDS,
     DEFAULT_RUNNER_LEASE_SECONDS,
     ERROR_LOG_FILENAME,
-    EXECUTION_MODES,
     QUEUE_LOG_FILENAME,
     TASK_KIND_CONFIG,
     TASK_INFO_FILENAME,
@@ -135,14 +134,13 @@ class TaskManager:
         self._shutdown_lock = threading.RLock()
         self._shutdown_event = threading.Event()
         self._shutdown_cleanup_done = False
+        self._shutdown_cleanup_in_progress = False
         self.owns_task_lifecycle = bool(owns_task_lifecycle)
 
         self._observers: List[Callable[[], None]] = []
         self._reactive_watchers = 0
         self._executor = None
         self._independent_executor = None
-        self._independent_executor_mode = None
-        self._executor_mode = None
         self._executor_workers = 0
         self.runner_host = socket.gethostname().lower()
         token = str(runner_token or uuid.uuid4().hex[:8])
@@ -152,7 +150,6 @@ class TaskManager:
         self._atexit_callback = self.shutdown
         self._atexit_registered = False
 
-        self.execution_mode = "thread"
         self.max_workers = 1
         self.is_processing = False
         self._running_ids: set[str] = set()
@@ -987,7 +984,6 @@ class TaskManager:
             "_gpu_wait_refresh_width",
             "_gpu_wait_persisted_signature",
             "_queued_independent",
-            "_queued_execution_mode",
         ):
             task.pop(key, None)
 
@@ -1128,17 +1124,6 @@ class TaskManager:
         meta["run_index"] = target
         meta.pop("_run_index", None)
 
-    @staticmethod
-    def _validate_execution_mode(mode: str | None, fallback: str | None = None) -> str:
-        """Return a supported execution mode or raise a user-facing error."""
-
-        raw_mode = fallback if mode is None else mode
-        normalized = str(raw_mode or "").strip().lower()
-        if normalized not in EXECUTION_MODES:
-            expected = ", ".join(EXECUTION_MODES)
-            raise ValueError(f"Invalid execution_mode {mode!r}; expected one of: {expected}")
-        return normalized
-
     @classmethod
     def _strip_queued_placeholder_run(cls, info: Dict[str, Any]) -> Dict[str, Any]:
         if str(info.get("status", "") or "").lower() != "queued":
@@ -1150,7 +1135,6 @@ class TaskManager:
     def start_batch_tasks(
         self,
         task_ids: List[str],
-        execution_mode: str | None = None,
         max_workers: int | None = None,
         expected_run_indices: Dict[str, int] | None = None,
     ) -> List[str]:
@@ -1161,7 +1145,6 @@ class TaskManager:
                 return []
             return self._start_batch_tasks(
                 task_ids,
-                execution_mode=execution_mode,
                 max_workers=max_workers,
                 expected_run_indices=expected_run_indices,
             )
@@ -1169,15 +1152,11 @@ class TaskManager:
     def _start_batch_tasks(
         self,
         task_ids: List[str],
-        execution_mode: str | None = None,
         max_workers: int | None = None,
         expected_run_indices: Dict[str, int] | None = None,
     ) -> List[str]:
         """Queue tasks while the lifecycle lock prevents concurrent shutdown."""
 
-        selected_execution_mode = self._validate_execution_mode(execution_mode, self.execution_mode)
-        if execution_mode is not None:
-            self.execution_mode = selected_execution_mode
         if max_workers is not None:
             self.max_workers = max(1, int(max_workers))
 
@@ -1294,28 +1273,16 @@ class TaskManager:
             self._submit_task(task, run_index, independent=False)
         return claimed_names
 
-    def start_task_now(
-        self,
-        task_id: str,
-        execution_mode: str | None = None,
-    ) -> bool:
+    def start_task_now(self, task_id: str) -> bool:
         """Immediately submit a single task outside the batch queue."""
 
         with self._shutdown_lock:
             if self._shutdown_event.is_set():
                 return False
-            return self._start_task_now(task_id, execution_mode)
+            return self._start_task_now(task_id)
 
-    def _start_task_now(
-        self,
-        task_id: str,
-        execution_mode: str | None = None,
-    ) -> bool:
+    def _start_task_now(self, task_id: str) -> bool:
         """Start one task while the lifecycle lock prevents concurrent shutdown."""
-        # Independent runs should not silently inherit the most recent batch mode.
-        # Callers can still request process mode explicitly.
-        execution_mode = self._validate_execution_mode(execution_mode, "thread")
-
         target = None
         run_index = 1
         target_name = ""
@@ -1356,7 +1323,6 @@ class TaskManager:
                     current = self._resolve_identifier_locked(target_name)
                     if current:
                         current["_queued_independent"] = True
-                        current["_queued_execution_mode"] = execution_mode
                         target = current
                 self._append_gpu_wait_started(target, run_index, gpu_config)
                 self.trigger_update()
@@ -1375,7 +1341,7 @@ class TaskManager:
                 if current:
                     target = current
             self.trigger_update()
-            self._submit_task(target, run_index, independent=True, execution_mode=execution_mode)
+            self._submit_task(target, run_index, independent=True)
         return synced
 
     def rerun_task(self, task_id: str) -> bool:
@@ -2237,12 +2203,10 @@ class TaskManager:
                     continue
 
                 independent = bool(target.pop("_queued_independent", False))
-                queued_mode = target.pop("_queued_execution_mode", None)
                 self._submit_task(
                     target,
                     run_index,
                     independent=independent,
-                    execution_mode=queued_mode,
                 )
             except Exception as exc:
                 logger.error("Scheduler error: %s", exc, exc_info=True)
@@ -2253,13 +2217,12 @@ class TaskManager:
                 break
 
     def _ensure_executor(self) -> None:
-        """Create or recreate the batch executor when mode/worker count changes."""
+        """Create or recreate the batch executor when the worker count changes."""
         with self._executor_lock:
             if self._shutdown_event.is_set():
                 raise RuntimeError("task manager is shutting down")
-            self.execution_mode = self._validate_execution_mode(self.execution_mode, "thread")
             workers = max(1, int(self.max_workers))
-            changed = self._executor_mode != self.execution_mode or self._executor_workers != workers
+            changed = self._executor_workers != workers
             if self._executor and not changed:
                 return
             if self._executor:
@@ -2268,9 +2231,7 @@ class TaskManager:
                 except Exception:
                     pass
 
-            cls = ProcessPoolExecutor if self.execution_mode == "process" else ThreadPoolExecutor
-            self._executor = cls(max_workers=workers)
-            self._executor_mode = self.execution_mode
+            self._executor = ThreadPoolExecutor(max_workers=workers)
             self._executor_workers = workers
 
     @staticmethod
@@ -2541,7 +2502,6 @@ class TaskManager:
         run_index: int,
         *,
         independent: bool,
-        execution_mode: str | None = None,
     ) -> None:
         """Persist a running state and submit one task to the chosen executor."""
 
@@ -2552,7 +2512,6 @@ class TaskManager:
                 target,
                 run_index,
                 independent=independent,
-                execution_mode=execution_mode,
             )
 
     def _submit_task_before_shutdown(
@@ -2561,7 +2520,6 @@ class TaskManager:
         run_index: int,
         *,
         independent: bool,
-        execution_mode: str | None = None,
     ) -> None:
         """Submit one task while the lifecycle lock is held."""
 
@@ -2581,18 +2539,9 @@ class TaskManager:
 
         try:
             if independent:
-                mode = self._validate_execution_mode(execution_mode, self.execution_mode)
                 with self._executor_lock:
-                    if self._independent_executor and self._independent_executor_mode != mode:
-                        try:
-                            self._independent_executor.shutdown(wait=False)
-                        except Exception:
-                            pass
-                        self._independent_executor = None
                     if not self._independent_executor:
-                        cls = ProcessPoolExecutor if mode == "process" else ThreadPoolExecutor
-                        self._independent_executor = cls(max_workers=32)
-                        self._independent_executor_mode = mode
+                        self._independent_executor = ThreadPoolExecutor(max_workers=32)
                 executor = self._independent_executor
             else:
                 self._ensure_executor()
@@ -2690,17 +2639,27 @@ class TaskManager:
     def _cleanup_on_shutdown(self) -> None:
         """Fail any queued/running tasks when the app is shutting down."""
         with self._shutdown_lock:
-            if self._shutdown_cleanup_done:
+            if self._shutdown_cleanup_done or self._shutdown_cleanup_in_progress:
                 return
-            self._shutdown_cleanup_done = True
+            self._shutdown_cleanup_in_progress = True
+
+        completed = False
+        try:
+            completed = self._perform_shutdown_cleanup()
+        finally:
+            with self._shutdown_lock:
+                self._shutdown_cleanup_in_progress = False
+                if completed:
+                    self._shutdown_cleanup_done = True
+
+    def _perform_shutdown_cleanup(self) -> bool:
+        """Perform one cleanup attempt and report whether it completed."""
 
         logger.info("System shutting down; cleaning up stuck task states...")
         acquired = self._lock.acquire(timeout=2.0)
         if not acquired:
-            with self._shutdown_lock:
-                self._shutdown_cleanup_done = False
             logger.warning("Skip shutdown cleanup: task manager lock not acquired in time.")
-            return
+            return False
 
         try:
             active_tasks = [
@@ -2804,26 +2763,30 @@ class TaskManager:
 
         if changed:
             self.trigger_update()
+        return True
 
     def shutdown(self) -> None:
         """Stop background scheduling and release executors promptly."""
         with self._shutdown_lock:
-            if self._atexit_registered:
+            self._shutdown_event.set()
+        if self.owns_task_lifecycle:
+            try:
+                self._cleanup_on_shutdown()
+            except Exception as exc:
+                logger.warning("Shutdown cleanup failed and will remain retryable: %s", exc)
+
+        with self._shutdown_lock:
+            if self._shutdown_cleanup_done and self._atexit_registered:
                 try:
                     atexit.unregister(self._atexit_callback)
                 except ValueError:
                     pass
                 self._atexit_registered = False
-            self._shutdown_event.set()
-        if self.owns_task_lifecycle:
-            self._cleanup_on_shutdown()
 
         with self._executor_lock:
             executors = [self._executor, self._independent_executor]
             self._executor = None
             self._independent_executor = None
-            self._independent_executor_mode = None
-            self._executor_mode = None
             self._executor_workers = 0
 
         for executor in executors:

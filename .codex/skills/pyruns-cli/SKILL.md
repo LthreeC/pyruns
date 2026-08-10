@@ -112,6 +112,8 @@ pyr exec -n train -d -- python train.py --epochs 100
 pyr -w shell wait train
 ```
 
+Ctrl+C during foreground `exec` or `run` requests cancellation of tasks submitted by that invocation. Ctrl+C during `wait` or `log -f`, and a `wait` timeout, stop observing only; the tasks continue. Use `stop` to cancel existing work.
+
 On Windows, detached runners and their managed task processes do not open new console windows.
 
 Preview `exec` without creating a workspace or task and without starting the user command:
@@ -189,7 +191,7 @@ pyr -w shell restore train-lr1e3
 
 Pinned tasks show a `PIN` marker in human listings and a `pinned` boolean in JSON. They remain first for every active-task sort; `--reverse` changes order inside the pinned and unpinned groups without moving pinned tasks below normal tasks.
 
-`log -f` streams bytes to stdout until the task finishes. It is not a prompt, REPL, full-screen viewer, or other interactive terminal mode.
+`log -f` streams bytes to stdout until the task finishes. It is not a prompt, REPL, full-screen viewer, or other interactive terminal mode. Ctrl+C stops following without stopping the task.
 
 `show` and `log` both accept `TASK@RUN` and `TASK --run RUN`. Do not combine `TASK@RUN` with `--run`, and do not follow a historical log. A selected `show` run includes its start time, finish time, duration, raw exit code, PID, source state, record, track, and log path.
 
@@ -235,7 +237,7 @@ pyr metrics
 
 `config` edits project-level settings shared by the project's workspaces, so it does not require `-w`. Values passed to `config set` are parsed as YAML scalars, lists, or mappings and validated against known settings.
 
-Concurrency and the task-management backend are per-run choices, not project settings. Select them explicitly with `run -j/--jobs` and `run --backend`.
+Concurrency is a per-run choice, not a project setting. Select it explicitly with `run -j/--jobs`. Pyruns coordinates tasks with threads while each tracked command still runs in its own child process.
 
 ## Start The Web UI Explicitly
 
@@ -279,7 +281,7 @@ The UI listens on loopback and prints a fresh tokenized URL on every start. The 
 0    command and requested tasks succeeded
 1    workspace, target, runtime, or task failure
 2    invalid command-line usage
-130  interrupted while waiting or following logs
+130  command interrupted by Ctrl+C
 ```
 
 ## Report Back

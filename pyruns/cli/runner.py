@@ -304,7 +304,6 @@ def submit_cli_tasks(
     task_names: list[str],
     *,
     expected_runs: dict[str, int],
-    execution_mode: str = "thread",
     max_workers: int = 1,
     startup_timeout: float | None = None,
 ) -> SubmissionResult:
@@ -338,8 +337,6 @@ def submit_cli_tasks(
         "pyruns.cli.detached_runner",
         "--workspace",
         workspace,
-        "--backend",
-        execution_mode,
         "--jobs",
         str(max(1, int(max_workers))),
         "--submission-token",

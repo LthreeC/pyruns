@@ -28,7 +28,12 @@ pyr exec -n smoke -- python -V
 pyr ls
 pyr show smoke
 pyr log smoke
+
+# Rerun the same saved task and keep a new numbered run
+pyr run smoke
 ```
+
+A task is a saved, repeatable object. Each `run` adds numbered history instead of replacing earlier logs.
 
 Detach long-running work, then control it with separate commands:
 
@@ -38,6 +43,8 @@ pyr status
 pyr wait train
 pyr log train
 ```
+
+Ctrl+C during foreground `exec` or `run` requests cancellation of tasks submitted by that command. Ctrl+C during `wait` or `log -f`, and `wait --timeout`, stop observing only; tasks keep running. Use `pyr stop TASK` to stop existing work.
 
 Start the Web UI explicitly when needed:
 
@@ -59,13 +66,15 @@ pyr ui shell
 - Detached runners outlive the invoking terminal and do not open extra console windows on Windows.
 - The CLI and Web UI share the same disk state.
 
+![Home](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_home.png)
+
 ## Git-style CLI
 
 ```text
 pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
-Global options:
+Context options must appear before the command:
 
 ```text
 -C, --directory PATH
@@ -74,7 +83,18 @@ Global options:
 --version
 ```
 
-Use `-w` only to disambiguate task commands such as `ls`, `run`, `show`, and `log` when a project has several workspaces; omit it when only one workspace exists. `exec` always targets the shell workspace, while the Web UI takes its target directly: `pyr ui shell`, `pyr ui train`, or `pyr ui train.py`.
+Command options appear after the command. The common forms are easier to read separately:
+
+```text
+pyr -C path/to/project ls             # discover a project from another directory
+pyr -w train ls --json                # select a workspace; --json belongs to ls
+pyr ui shell -p 8099                  # -p/--port belongs only to ui/dev
+pyr exec -n check -- python -V        # everything after -- is target argv
+```
+
+Use `-w` only to disambiguate task commands such as `ls`, `run`, `show`, and `log` when a project has several workspaces; omit it when only one workspace exists. `exec` always targets the shell workspace, while the Web UI takes its target directly: `pyr ui shell`, `pyr ui train`, or `pyr ui train.py`; do not write `pyr -w shell ui`. `ui` / `dev` also expose `-p, --port`, `--browser`, and `--no-browser`, all after the command. `--json` is not global: append it only to a command that advertises machine output, such as `pyr status --json`.
+
+Keep one hierarchy in mind: `project -> workspace -> task -> run`. A project owns `_pyruns_`; a workspace groups related tasks; a task has an exact name; every execution creates a numbered run.
 
 Commands:
 
@@ -89,7 +109,7 @@ Commands:
 | `show` | show task metadata and paths |
 | `log` | print, follow, or locate logs |
 | `wait` | wait for already active tasks |
-| `stop` | ask the owning runner to stop tasks and mark them `cancelled` |
+| `stop` | ask the owning runner to stop tasks; normal stops become `cancelled`, while stale tasks may become `failed` |
 | `rm` / `restore` | soft-delete and restore tasks |
 | `mv` / `pin` | manage task names and pinned state |
 | `export` | export CSV or JSON records |
@@ -260,7 +280,7 @@ model.save(os.path.join(pyruns.artifact_dir(), "model.pt"))
 ## Inspection and lifecycle
 
 ```bash
-pyr -w train ls -s running --status queued
+pyr -w train ls -s running -s queued
 pyr -w train status
 pyr -w train show baseline
 pyr -w train show baseline@2
@@ -314,7 +334,7 @@ Exit status:
 0    command and all waited tasks succeeded
 1    workspace, target, runtime, or task failure
 2    invalid command-line usage
-130  interrupted while waiting or following logs
+130  command interrupted by Ctrl+C
 ```
 
 ## Web UI
@@ -325,20 +345,35 @@ Exit status:
 pyr ui
 pyr ui train.py
 pyr ui train.py --config configs/default.yaml
+pyr ui train
 pyr ui shell
+pyr ui shell -p 8099
 pyr ui shell --no-browser
 pyr dev train.py
 ```
+
+Each form has one clear purpose:
+
+- `pyr ui` opens the workspace chooser instead of guessing a target.
+- `pyr ui shell` opens or creates the current project's shell workspace.
+- `pyr ui train.py` initializes or opens that Python script workspace; add `--config` when its first template is required.
+- `pyr ui train` or `pyr ui PATH` opens an existing exact workspace name or path.
+- `pyr dev ...` enables hot reload for Pyruns frontend development; normal use belongs to `ui`.
+
+`-p, --port` chooses the listening port. `--no-browser` starts only the server and prints its URL, while `--browser` forces automatic browser opening.
 
 The UI listens only on the local loopback interface and generates a fresh private access token on
 every start. The first browser request exchanges that token for an `HttpOnly`, same-site session
 cookie and removes it from the address bar. With `--no-browser`, open the complete printed URL and
 do not share it; the Web UI is a local tool, not a remote multi-user service.
 
-- Generator edits script configurations or shell payloads and creates tasks.
-- Manager searches, filters, runs, cancels, renames, pins, and removes tasks.
-- Monitor shows logs, metrics, and task details.
-- Dashboard presents project status and resource summaries.
+- Home / Dashboard shows GPU and system state, task totals, and recent tasks for the current workspace.
+- Generator edits script configuration through Grid, Tree, or YAML views, or edits shell commands before creating tasks.
+- Manager searches, filters, sorts, and controls tasks in bulk, with run, stop, rename, pin, and recoverable removal actions.
+- Monitor shows live or historical logs, log search, run and stop actions, details, and record export.
+- The sidebar's Workspace control switches workspaces; Runtime configures Python, environment variables, GPUs, and execution behavior.
+
+![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 
 ## Disk is the source of truth
 

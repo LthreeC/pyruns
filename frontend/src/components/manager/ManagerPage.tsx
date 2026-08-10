@@ -188,7 +188,6 @@ export default function ManagerPage() {
     toggleSelect, selectAll, clearSelection,
   } = useTaskStore()
 
-  const [bulkExecutionMode, setBulkExecutionMode] = useState('thread')
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [deleteTask, setDeleteTask] = useState<Task | null>(null)
@@ -401,7 +400,7 @@ export default function ManagerPage() {
     const maxWorkers = normalizeWorkerInput(maxWorkersInput)
     setMaxWorkersInput(String(maxWorkers))
     try {
-      const result = await api.batchRunTasks(names, bulkExecutionMode, maxWorkers)
+      const result = await api.batchRunTasks(names, maxWorkers)
       clearSelection()
       setSelectMode(false)
       await fetchTasks()
@@ -418,7 +417,7 @@ export default function ManagerPage() {
     } finally {
       finishBulkAction()
     }
-  }, [tasks, selectedIds, beginBulkAction, normalizeWorkerInput, maxWorkersInput, bulkExecutionMode, clearSelection, fetchTasks, notify, finishBulkAction])
+  }, [tasks, selectedIds, beginBulkAction, normalizeWorkerInput, maxWorkersInput, clearSelection, fetchTasks, notify, finishBulkAction])
 
   const handleDeleteSelected = useCallback(async () => {
     const names = tasks.filter(task => selectedIds.has(task.name)).map(task => task.name)
@@ -935,20 +934,6 @@ export default function ManagerPage() {
                   className="w-10 bg-transparent text-xs tabular-nums text-txt-primary outline-none disabled:opacity-50"
                 />
               </label>
-
-              <div className="relative">
-                <select
-                  value={bulkExecutionMode}
-                  disabled={Boolean(bulkAction)}
-                  onChange={event => setBulkExecutionMode(event.target.value)}
-                  aria-label="Execution mode for selected tasks"
-                  className="touch-target min-h-11 appearance-none rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 pr-7 text-xs text-txt-primary outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:opacity-50 sm:min-h-9"
-                >
-                  <option value="thread">Thread</option>
-                  <option value="process">Process</option>
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-              </div>
 
               <ActionButton
                 icon={bulkAction === 'run' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}

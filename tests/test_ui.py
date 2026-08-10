@@ -565,23 +565,21 @@ def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_lock
     assert 'role="alert"' in manager
 
 
-def test_react_manager_batch_run_sends_worker_count_and_execution_mode():
+def test_react_manager_batch_run_sends_only_worker_count():
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
 
-    assert "const [bulkExecutionMode, setBulkExecutionMode] = useState('thread')" in manager
+    assert "bulkExecutionMode" not in manager
     assert "const [maxWorkersInput, setMaxWorkersInput] = useState('2')" in manager
     assert "const normalizeWorkerInput = useCallback((value: string) => {" in manager
     assert "return Math.min(32, Math.max(1, parsed))" in manager
     assert "const maxWorkers = normalizeWorkerInput(maxWorkersInput)" in manager
     assert "setMaxWorkersInput(String(maxWorkers))" in manager
-    assert "await api.batchRunTasks(names, bulkExecutionMode, maxWorkers)" in manager
-    assert "value={bulkExecutionMode}" in manager
-    assert '<option value="thread">Thread</option>' in manager
-    assert '<option value="process">Process</option>' in manager
+    assert "await api.batchRunTasks(names, maxWorkers)" in manager
     assert "Workers" in manager
     assert "value={maxWorkersInput}" in manager
-    assert "body: JSON.stringify({ task_names: taskNames, execution_mode: executionMode, max_workers: maxWorkers })" in api
+    assert "body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers })" in api
+    assert "execution_mode" not in api
 
 
 def test_react_generator_stacks_editor_and_settings_on_narrow_viewports():

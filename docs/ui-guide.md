@@ -62,10 +62,11 @@ Generator 是整个 UI 最像“工作台”的页面。
 
 支持：
 
-- `Form`
+- `Grid`
+- `Tree`
 - `YAML`
 
-#### Form
+#### Grid / Tree
 
 适合：
 
@@ -75,6 +76,7 @@ Generator 是整个 UI 最像“工作台”的页面。
 
 当前特点：
 
+- `Grid` 适合快速扫描和编辑扁平参数，`Tree` 配合 Outline 按配置路径浏览
 - 类型 chip 会按模板声明类型稳定显示
 - pin 顶部参数不再强行重新排位，而是更强调状态变化
 - batch 触发项会被单独标记
@@ -132,13 +134,14 @@ Manager 是任务的调度台。
 
 常见标签包括：
 
-- `Task Info`
-- `Config` 或 `Script`
+- `Info`
+- `Config`
 - `Notes`
-- `Env Vars`
+- `Env`
 
 其中：
 
+- `Info` 显示任务模式、目录和完整 Run History
 - `python` 任务显示 `config.yaml`
 - `shell` 任务显示当前 runtime 对应的 `config.ps1` / `config.cmd` / `config.sh`
 
@@ -173,16 +176,16 @@ Monitor 支持选择多个任务并导出，适合快速聚合一批日志做对
 
 ## Dashboard
 
-Dashboard 是第一页，也是最适合做“项目展示图”的页面。
+Dashboard 是第一页，也是最适合做“工作区展示图”的页面。
 
 现在它主要承担：
 
-- 全局任务摘要
+- 当前 workspace 的任务摘要和最近任务
 - CPU / RAM / GPU 状态
 - 多 GPU 卡片布局
 - GPU 显存占用与进程明细入口
 
-## 三页统一设计语言
+## 四页统一设计语言
 
 当前 UI 的统一目标包括：
 

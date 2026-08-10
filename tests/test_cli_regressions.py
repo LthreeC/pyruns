@@ -148,7 +148,6 @@ def test_foreground_interrupt_cancels_only_the_tasks_just_submitted(tmp_path, mo
             SimpleNamespace(json_output=False, program="pyr"),
             FakeManager(),
             [task],
-            mode="thread",
             workers=1,
             detach=False,
         )
@@ -464,7 +463,6 @@ def test_detached_submission_never_installs_foreground_interrupt_cleanup(monkeyp
         SimpleNamespace(json_output=False, program="pyr"),
         FakeManager(),
         [task],
-        mode="thread",
         workers=1,
         detach=True,
     ) == 0
@@ -808,11 +806,9 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
         def start_batch_tasks(
             self,
             names,
-            execution_mode=None,
             max_workers=None,
             expected_run_indices=None,
         ):
-            assert execution_mode == "thread"
             assert max_workers == 1
             assert expected_run_indices == {"lost": 1}
             return ["lost"] if names == ["lost"] else []
@@ -825,7 +821,6 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
         "_parse_args",
         lambda: SimpleNamespace(
             workspace=str(tmp_path),
-            backend="thread",
             jobs=1,
             submission_token=token,
             submissions_json='[{"name":"lost","run_index":1}]',
@@ -876,12 +871,10 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
         def start_batch_tasks(
             self,
             names,
-            execution_mode=None,
             max_workers=None,
             expected_run_indices=None,
         ):
             assert names == ["repeat"]
-            assert execution_mode == "thread"
             assert max_workers == 1
             assert expected_run_indices == {"repeat": 1}
             return ["repeat"]
@@ -894,7 +887,6 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
         "_parse_args",
         lambda: SimpleNamespace(
             workspace=str(tmp_path),
-            backend="thread",
             jobs=1,
             submission_token=token,
             submissions_json='[{"name":"repeat","run_index":1}]',
@@ -958,12 +950,10 @@ def test_detached_runner_rejects_run_completed_before_claim(tmp_path, monkeypatc
         def start_batch_tasks(
             self,
             names,
-            execution_mode=None,
             max_workers=None,
             expected_run_indices=None,
         ):
             assert names == ["race"]
-            assert execution_mode == "thread"
             assert max_workers == 1
             assert expected_run_indices == {"race": 1}
             update_task_info(task["dir"], complete_first_run)
@@ -978,7 +968,6 @@ def test_detached_runner_rejects_run_completed_before_claim(tmp_path, monkeypatc
         "_parse_args",
         lambda: SimpleNamespace(
             workspace=str(tmp_path),
-            backend="thread",
             jobs=1,
             submission_token=token,
             submissions_json='[{"name":"race","run_index":1}]',
@@ -1041,7 +1030,7 @@ def test_batch_submission_accepts_exact_runner_receipt(tmp_path, monkeypatch):
     captured: dict[str, str] = {}
 
     def fake_popen(command, _env):
-        assert command[command.index("--backend") + 1] == "thread"
+        assert "--backend" not in command
         assert command[command.index("--jobs") + 1] == "1"
         assert "--startup-file" not in command
         captured["token"] = _submission_from_command(command)[0]
@@ -1714,7 +1703,6 @@ def test_unresolved_interrupt_cancels_only_exact_submission_owner(
             SimpleNamespace(json_output=False, program="pyr"),
             FakeManager(),
             [owned, foreign],
-            mode="thread",
             workers=2,
             detach=True,
         )
@@ -1739,7 +1727,6 @@ def test_detached_runner_aborts_before_claiming_when_request_already_exists(tmp_
         "_parse_args",
         lambda: SimpleNamespace(
             workspace=str(tmp_path),
-            backend="thread",
             jobs=1,
             submission_token=token,
             submissions_json='[{"name":"pending","run_index":1}]',
@@ -1782,13 +1769,11 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
         def start_batch_tasks(
             self,
             names,
-            execution_mode=None,
             max_workers=None,
             expected_run_indices=None,
         ):
             name = names[0]
             events.append(f"claim:{name}")
-            assert execution_mode == "thread"
             assert max_workers == 1
             assert expected_run_indices == {name: 1}
             if name == "batch-a":
@@ -1826,7 +1811,6 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
         "_parse_args",
         lambda: SimpleNamespace(
             workspace=str(tmp_path),
-            backend="thread",
             jobs=1,
             submission_token=token,
             submissions_json=(
@@ -2149,7 +2133,6 @@ def test_partial_submission_is_reported_and_worker_count_is_bounded(tmp_path, mo
         SimpleNamespace(json_output=False, program="pyr"),
         _submission_manager(tasks_dir, tasks),
         tasks,
-        mode="thread",
         workers=999999,
         detach=True,
     )
@@ -2197,7 +2180,6 @@ def test_unresolved_submission_reports_quoted_context_aware_recovery_commands(
         context,
         _submission_manager(tasks_dir, [task]),
         [task],
-        mode="thread",
         workers=1,
         detach=True,
     )

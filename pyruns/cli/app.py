@@ -189,6 +189,7 @@ def _exec_help_epilog(program: str) -> str:
         f"  {program} -w shell wait train                        wait for the final result\n"
         f"  {program} -w shell run train                         rerun the saved task\n"
         "  Foreground exec follows the log and returns the task result; -d changes waiting only.\n"
+        "  Ctrl+C during foreground exec requests cancellation of the task submitted by this call.\n"
         "  --dry-run and -d/--detach are mutually exclusive."
     )
 
@@ -201,6 +202,13 @@ def _port(value: str) -> int:
     if not 1 <= port <= 65535:
         raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
+
+
+def _non_empty(value: str) -> str:
+    text = str(value)
+    if not text.strip():
+        raise argparse.ArgumentTypeError("value must not be empty")
+    return text
 
 
 def _positive_int(value: str) -> int:
@@ -321,7 +329,7 @@ def build_parser(
     alternate = "pyruns" if program == "pyr" else "pyr"
     command_overview = (
         "All command groups:\n"
-        "  create/run       init  exec  add  run\n"
+        "  task setup       init  exec  add  run\n"
         "  inspect          ls  status  show  log\n"
         "  wait/control     wait  stop  rm  restore  mv  pin\n"
         "  output/settings  export  config  metrics\n"
@@ -336,9 +344,11 @@ def build_parser(
             "Pyruns saves terminal commands and Python experiments as named tasks that you can\n"
             "inspect and rerun. Logs, duration, exit codes, and source state live under _pyruns_.\n"
             f"{program} and {alternate} are identical; every invocation performs one operation and exits.\n"
-            "The Web UI starts only with 'ui'; a bare command prints this help.\n\n"
+            "The Web UI starts only with 'ui' (normal) or 'dev' (development); a bare command\n"
+            "prints this help.\n\n"
             "Model: project -> workspace -> task -> numbered run\n"
-            "  project    current directory (or -C PATH); owns one _pyruns_ directory\n"
+            "  project    nearest project found from the current directory (or -C PATH)\n"
+            "             and its parents; owns one _pyruns_ directory\n"
             "  workspace  'shell' for terminal commands, or one workspace per Python script\n"
             "  task       a saved command or YAML configuration with an exact name\n"
             "  run        one execution; rerunning a task keeps numbered history\n\n"
@@ -368,6 +378,7 @@ def build_parser(
     parser.add_argument(
         "-C",
         "--directory",
+        type=_non_empty,
         default=".",
         metavar="PATH",
         help="resolve the project as if Pyruns was started in PATH; place before COMMAND",
@@ -375,6 +386,7 @@ def build_parser(
     parser.add_argument(
         "-w",
         "--workspace",
+        type=_non_empty,
         metavar="NAME|PATH|SCRIPT.py",
         help="select an exact task workspace; use 'shell'; place before COMMAND",
     )
@@ -442,10 +454,15 @@ def build_parser(
     init.add_argument(
         "script",
         nargs="?",
+        type=_non_empty,
         metavar="SCRIPT.py",
         help="Python script for a script workspace",
     )
-    init.add_argument("--config", help="initial YAML template for the script workspace")
+    init.add_argument(
+        "--config",
+        type=_non_empty,
+        help="initial YAML template for the script workspace",
+    )
 
     execute = command(
         "exec",
@@ -461,7 +478,12 @@ def build_parser(
         epilog=_exec_help_epilog(program),
         common=True,
     )
-    execute.add_argument("-n", "--name", help="exact task name; an omitted name is generated safely")
+    execute.add_argument(
+        "-n",
+        "--name",
+        type=_non_empty,
+        help="exact task name; an omitted name is generated safely",
+    )
     execute.add_argument("-d", "--detach", action="store_true", help="return after the runner accepts the task")
     execute.add_argument(
         "--dry-run",
@@ -472,6 +494,7 @@ def build_parser(
         "-c",
         "--command",
         dest="shell_command",
+        type=_non_empty,
         metavar="COMMAND_STRING",
         help="run exactly one quoted command string through the workspace shell",
     )
@@ -487,6 +510,7 @@ def build_parser(
     execute.add_argument(
         "--env-file",
         action="append",
+        type=_non_empty,
         default=[],
         metavar="PATH",
         help="persist KEY=VALUE lines from UTF-8 files; later files then -e take precedence",
@@ -518,8 +542,13 @@ def build_parser(
         ),
         common=True,
     )
-    add.add_argument("config", metavar="CONFIG", help="YAML configuration path")
-    add.add_argument("-n", "--name", help="task-name prefix; defaults to the YAML filename")
+    add.add_argument("config", type=_non_empty, metavar="CONFIG", help="YAML configuration path")
+    add.add_argument(
+        "-n",
+        "--name",
+        type=_non_empty,
+        help="task-name prefix; defaults to the YAML filename",
+    )
 
     run = command(
         "run",
@@ -541,21 +570,23 @@ def build_parser(
                 "--name and --dry-run are valid only with --config.",
                 "--dry-run validates and expands YAML but creates and runs nothing.",
                 "--dry-run and -d/--detach are mutually exclusive.",
-                "-j/--jobs controls task concurrency; --backend selects thread or process management.",
+                "-j/--jobs controls how many tasks may run concurrently.",
                 "By default Pyruns waits for every task and reports aggregate failure.",
+                "Ctrl+C while waiting requests cancellation of tasks submitted by this run command.",
                 "--detach changes waiting only; accepted tasks continue under the hidden runner.",
                 "A partial runner acceptance is reported with claimed and unclaimed names and exits 1.",
             ),
         ),
         common=True,
     )
-    run.add_argument("tasks", nargs="*", metavar="TASK", help="exact task name")
+    run.add_argument("tasks", nargs="*", type=_non_empty, metavar="TASK", help="exact task name")
     run.add_argument(
         "--config",
+        type=_non_empty,
         metavar="CONFIG",
         help="create tasks from this YAML configuration before running",
     )
-    run.add_argument("-n", "--name", help="task-name prefix used with --config")
+    run.add_argument("-n", "--name", type=_non_empty, help="task-name prefix used with --config")
     run.add_argument(
         "-j",
         "--jobs",
@@ -563,12 +594,6 @@ def build_parser(
         default=1,
         metavar="N",
         help="maximum number of tasks to run concurrently",
-    )
-    run.add_argument(
-        "--backend",
-        choices=("thread", "process"),
-        default="thread",
-        help="task-management backend; defaults to thread",
     )
     run.add_argument("-d", "--detach", action="store_true", help="return after the runner accepts all tasks")
     run.add_argument(
@@ -685,6 +710,7 @@ def build_parser(
                 "--follow cannot be combined with --run or --path and rejects a pending task.",
                 "Raw log output is intentionally not JSON; combine --json with --path instead.",
                 "--follow streams bytes until the task finishes; it is not an interactive terminal.",
+                "Ctrl+C stops following and returns 130; it does not stop the task.",
             ),
         ),
         common=True,
@@ -709,6 +735,7 @@ def build_parser(
             "-w train wait seed1 seed2 --timeout 600",
             notes=(
                 "--timeout 0 means wait indefinitely; a positive timeout is measured in seconds.",
+                "Timeout or Ctrl+C stops waiting only; the tasks continue running.",
                 "Exit status is 1 for task failure, cancellation, or timeout, and 130 if interrupted.",
             ),
         ),
@@ -998,10 +1025,15 @@ def build_parser(
     ui.add_argument(
         "target",
         nargs="?",
+        type=_non_empty,
         metavar="WORKSPACE|SCRIPT.py",
         help="existing workspace name/path, 'shell', or Python script path",
     )
-    ui.add_argument("--config", help="YAML template imported for the script workspace")
+    ui.add_argument(
+        "--config",
+        type=_non_empty,
+        help="YAML template imported for the script workspace",
+    )
     _add_browser_options(ui)
 
     dev = command(
@@ -1024,8 +1056,17 @@ def build_parser(
             ),
         ),
     )
-    dev.add_argument("script", metavar="SCRIPT.py", help="Python script workspace to open")
-    dev.add_argument("--config", help="YAML template imported for the script workspace")
+    dev.add_argument(
+        "script",
+        type=_non_empty,
+        metavar="SCRIPT.py",
+        help="Python script workspace to open",
+    )
+    dev.add_argument(
+        "--config",
+        type=_non_empty,
+        help="YAML template imported for the script workspace",
+    )
     _add_browser_options(dev)
 
     help_parser = command(

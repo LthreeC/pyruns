@@ -28,7 +28,12 @@ pyr exec -n smoke -- python -V
 pyr ls
 pyr show smoke
 pyr log smoke
+
+# 重跑同一个已保存任务，并保留新的编号运行历史
+pyr run smoke
 ```
+
+这里的 task 是可重复运行的保存对象；每次 `run` 都会新增一个编号 run，不会覆盖旧日志。
 
 长任务使用 `--detach`，随后用独立命令控制：
 
@@ -38,6 +43,8 @@ pyr status
 pyr wait train
 pyr log train
 ```
+
+前台 `exec` / `run` 被 Ctrl+C 中断时，会请求取消由这次命令提交的任务；`wait`、`log -f` 的 Ctrl+C 或 `wait --timeout` 只停止观察，任务仍继续运行。需要真正停止已有任务时使用 `pyr stop TASK`。
 
 需要 Web UI 时显式启动：
 
@@ -76,15 +83,16 @@ pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 --version
 ```
 
-子命令自己的参数写在命令后。最常见的组合是：
+子命令自己的参数写在命令后。把每种位置分开看更直观：
 
 ```text
-pyr -C PATH -w train ls --json       # -C/-w 在命令前，--json 在命令后
-pyr ui shell --port 8099             # --port 只属于 ui/dev
-pyr exec -n check -- python -V       # -- 后面是原样传给目标程序的 argv
+pyr -C path/to/project ls             # -C 在命令前：从另一个目录发现项目
+pyr -w train ls --json                # -w 在命令前；--json 属于 ls
+pyr ui shell -p 8099                  # -p/--port 只属于 ui/dev
+pyr exec -n check -- python -V        # -- 后面是原样传给目标程序的 argv
 ```
 
-`-w` 只在 `ls`、`run`、`show`、`log` 等任务命令需要消除多 workspace 歧义时使用；项目只有一个 workspace 时可以省略。`exec` 固定使用 shell workspace，Web UI 则直接写成 `pyr ui shell`、`pyr ui train` 或 `pyr ui train.py`，不要写成 `pyr -w shell ui`。`--json` 不是全局模式，只在支持它的具体命令后使用，例如 `pyr status --json`。
+`-w` 只在 `ls`、`run`、`show`、`log` 等任务命令需要消除多 workspace 歧义时使用；项目只有一个 workspace 时可以省略。`exec` 固定使用 shell workspace，Web UI 则直接写成 `pyr ui shell`、`pyr ui train` 或 `pyr ui train.py`，不要写成 `pyr -w shell ui`。`ui` / `dev` 还提供 `-p, --port`、`--browser` 和 `--no-browser`，它们同样必须写在命令后。`--json` 不是全局模式，只在支持它的具体命令后使用，例如 `pyr status --json`。
 
 先记住一条层级即可：`project -> workspace -> task -> run`。项目拥有 `_pyruns_` 数据目录；workspace 收纳一组相关任务；task 是有精确名称的命令或配置；每次执行 task 都产生一个带编号的 run 历史。
 
@@ -101,7 +109,7 @@ pyr exec -n check -- python -V       # -- 后面是原样传给目标程序的 a
 | `show` | 查看任务元数据和路径 |
 | `log` | 打印、跟随或定位日志 |
 | `wait` | 等待已在运行的任务 |
-| `stop` | 向拥有任务的 runner 请求停止，并标记为 `cancelled` |
+| `stop` | 向拥有任务的 runner 请求停止；正常停止记为 `cancelled`，失联任务可记为 `failed` |
 | `rm` / `restore` | 软删除与恢复任务 |
 | `mv` / `pin` | 管理任务名称与置顶状态 |
 | `export` | 导出 CSV 或 JSON 记录 |
@@ -312,7 +320,7 @@ model.save(os.path.join(pyruns.artifact_dir(), "model.pt"))
 ## 查询、日志和生命周期
 
 ```bash
-pyr -w train ls -s running --status queued
+pyr -w train ls -s running -s queued
 pyr -w train status
 pyr -w train show baseline
 pyr -w train show baseline@2
@@ -365,7 +373,7 @@ pyr -w train export -s completed -o results.csv
 0    命令和等待的任务全部成功
 1    工作区、目标、运行时或任务失败
 2    命令行用法错误
-130  等待或跟随日志时被中断
+130  命令被 Ctrl+C 中断
 ```
 
 ## Web UI
@@ -376,10 +384,22 @@ pyr -w train export -s completed -o results.csv
 pyr ui
 pyr ui train.py
 pyr ui train.py --config configs/default.yaml
+pyr ui train
 pyr ui shell
+pyr ui shell -p 8099
 pyr ui shell --no-browser
 pyr dev train.py
 ```
+
+这些入口分别对应明确场景：
+
+- `pyr ui` 打开工作区选择器，不会猜测要进入哪个工作区。
+- `pyr ui shell` 打开或创建当前项目的 shell workspace。
+- `pyr ui train.py` 初始化或打开该 Python 脚本的 workspace；首次需要模板时可加 `--config`。
+- `pyr ui train` 或 `pyr ui PATH` 打开已有的精确 workspace 名称或路径。
+- `pyr dev ...` 只用于开发 Pyruns 前端时的热更新；日常使用选择 `ui`。
+
+`-p, --port` 选择监听端口；`--no-browser` 只启动服务并打印 URL；`--browser` 强制自动打开浏览器。
 
 UI 只监听本机回环地址。每次启动都会生成新的随机访问令牌；启动 URL 首次打开后，
 令牌会换成 `HttpOnly` 会话 cookie，并从地址栏移除。使用 `--no-browser` 时请复制终端
@@ -389,10 +409,11 @@ UI 只监听本机回环地址。每次启动都会生成新的随机访问令�
 Pyruns 不是代码沙箱。任务命令和 Python 脚本会继承当前用户的系统权限；只运行你信任
 的脚本、配置和命令。
 
-- Generator：编辑脚本配置或 shell payload，并创建任务。
-- Manager：搜索、筛选、运行、取消、重命名、置顶和删除任务。
-- Monitor：查看运行日志、指标和任务详情。
-- Dashboard：查看项目级运行状态和资源概览。
+- Home / Dashboard：查看当前 workspace 的 GPU 与系统状态、任务统计和最近任务。
+- Generator：在脚本 workspace 中用 Grid、Tree 或 YAML 编辑配置，或在 shell workspace 中编辑命令正文并创建任务。
+- Manager：搜索、筛选、排序和批量控制任务，也可运行、停止、重命名、置顶或移入回收站。
+- Monitor：查看实时或历史日志、搜索日志、运行或停止任务，并打开详情或导出记录。
+- 侧栏 Workspace 用于切换工作区；Runtime 用于设置 Python、环境变量、GPU 与运行方式。
 
 ![Monitor](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_monitor.png)
 

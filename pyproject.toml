@@ -68,7 +68,6 @@ pyruns = "pyruns.cli.app:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pyruns*"]
-exclude = ["pyruns.ui*"]
 
 [tool.setuptools.cmdclass]
 build_py = "pyruns._build.CleanBuildPy"

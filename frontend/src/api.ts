@@ -158,10 +158,10 @@ export function createTaskEventStream(): WebSocket {
   return new WebSocket(`${proto}//${location.host}/api/tasks/events`)
 }
 
-export const batchRunTasks = (taskNames: string[], executionMode?: string, maxWorkers?: number) =>
+export const batchRunTasks = (taskNames: string[], maxWorkers?: number) =>
   request<{ count: number; items: Task[]; skipped: string[] }>('/api/tasks/batch/run', {
     method: 'POST',
-    body: JSON.stringify({ task_names: taskNames, execution_mode: executionMode, max_workers: maxWorkers }),
+    body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers }),
   })
 
 export const batchDeleteTasks = (taskNames: string[]) =>
@@ -183,10 +183,9 @@ export async function exportTasksCsv(taskNames: string[]): Promise<Blob> {
   return res.blob()
 }
 
-export const runTask = (name: string, executionMode?: string) =>
+export const runTask = (name: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/run`, {
     method: 'POST',
-    body: JSON.stringify({ execution_mode: executionMode }),
   })
 
 export const cancelTask = (name: string) =>

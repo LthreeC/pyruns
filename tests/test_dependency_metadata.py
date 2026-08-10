@@ -73,7 +73,7 @@ def test_python_runtime_dependencies_do_not_include_legacy_nicegui():
     package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
 
     assert not any(item.startswith("nicegui") for item in dependencies)
-    assert package_find["exclude"] == ["pyruns.ui*"]
+    assert "exclude" not in package_find
     assert any(item.startswith("pydantic") for item in dependencies)
 
 

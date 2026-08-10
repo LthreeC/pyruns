@@ -198,12 +198,13 @@ def validate_workspace_file(path: str, workspace_dir: str, *, label: str) -> Non
     absolute = os.path.abspath(path)
     root = os.path.abspath(workspace_dir)
     validate_workspace_directory(root)
+    exists = os.path.lexists(absolute)
+    if exists and _path_is_link_or_reparse(absolute):
+        raise ValueError(f"{label} must not be a symlink, junction, or reparse point: {path}")
     if not _path_is_within(absolute, root):
         raise ValueError(f"{label} resolves outside its workspace boundary: {path}")
-    if not os.path.lexists(absolute):
+    if not exists:
         return
-    if _path_is_link_or_reparse(absolute):
-        raise ValueError(f"{label} must not be a symlink, junction, or reparse point: {path}")
     if not os.path.isfile(absolute):
         raise ValueError(f"{label} must be a regular file: {path}")
 
@@ -270,12 +271,13 @@ def validate_task_directory(task_dir: str) -> None:
 
     absolute = os.path.abspath(task_dir)
     validate_tasks_root(os.path.dirname(absolute))
-    if os.path.lexists(absolute) and _path_is_link_or_reparse(absolute):
+    exists = os.path.lexists(absolute)
+    if exists and not _path_is_within(absolute, os.path.dirname(absolute)):
+        raise ValueError(f"Task directory resolves outside the tasks directory: {task_dir}")
+    if exists and _path_is_link_or_reparse(absolute):
         raise ValueError(
             f"Task directory must not be a symlink, junction, or reparse point: {task_dir}"
         )
-    if os.path.lexists(absolute) and not _path_is_within(absolute, os.path.dirname(absolute)):
-        raise ValueError(f"Task directory resolves outside the tasks directory: {task_dir}")
 
 
 def _task_log_directory(task_dir: str, *, create: bool) -> str:
@@ -309,14 +311,15 @@ def _task_log_path(task_dir: str, filename: str, *, create_directory: bool) -> s
     log_dir = _task_log_directory(task_dir, create=create_directory)
 
     log_path = os.path.join(log_dir, filename)
+    exists = os.path.lexists(log_path)
+    if exists and _path_is_link_or_reparse(log_path):
+        raise ValueError(
+            "Log file must not be a symlink, junction, "
+            f"or reparse point: {log_path}"
+        )
     if not _path_is_within(log_path, log_dir):
         raise ValueError(f"Log path resolves outside the run logs directory: {log_path}")
-    if os.path.lexists(log_path):
-        if _path_is_link_or_reparse(log_path):
-            raise ValueError(
-                "Log file must not be a symlink, junction, "
-                f"or reparse point: {log_path}"
-            )
+    if exists:
         if not os.path.isfile(log_path):
             raise ValueError(f"Log path must be a regular file: {log_path}")
     return log_path
