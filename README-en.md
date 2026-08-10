@@ -367,6 +367,9 @@ every start. The first browser request exchanges that token for an `HttpOnly`, s
 cookie and removes it from the address bar. With `--no-browser`, open the complete printed URL and
 do not share it; the Web UI is a local tool, not a remote multi-user service.
 
+Pyruns is not a code sandbox. Task commands and Python scripts inherit the current user's system
+permissions; run only scripts, configurations, and commands that you trust.
+
 - Home / Dashboard shows GPU and system state, task totals, and recent tasks for the current workspace.
 - Generator edits script configuration through Grid, Tree, or YAML views, or edits shell commands before creating tasks.
 - Manager searches, filters, sorts, and controls tasks in bulk, with run, stop, rename, pin, and recoverable removal actions.
