@@ -22,7 +22,7 @@ from pyruns._config import (
     SCRIPT_INFO_FILENAME,
     TASK_INFO_FILENAME,
 )
-from pyruns.utils.process_utils import is_pid_running
+from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 
 _TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
@@ -31,6 +31,8 @@ _LOCK_POLL_SEC = 0.05
 _LOCK_TIMEOUT_SEC = 5.0
 _REPLACE_RETRY_COUNT = 5
 _REPLACE_RETRY_DELAY_SEC = 0.02
+_READ_RETRY_COUNT = 5
+_READ_RETRY_DELAY_SEC = 0.02
 _STALE_LOCK_MIN_AGE_SEC = 30.0
 _LOCK_OWNER_HOST = socket.gethostname().lower()
 MAX_TASK_INFO_BYTES = 16 * 1024 * 1024
@@ -71,24 +73,12 @@ def _replace_with_retry(src: str, dst: str) -> None:
             time.sleep(_REPLACE_RETRY_DELAY_SEC * (attempt + 1))
 
 
-def _read_lock_owner_pid(lock_path: str) -> Optional[int]:
-    try:
-        with open(lock_path, "r", encoding="utf-8") as handle:
-            raw_pid = handle.read().strip().split()[0]
-    except (OSError, IndexError):
-        return None
-    try:
-        return int(raw_pid)
-    except (TypeError, ValueError):
-        return None
-
-
-def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str]:
+def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str, Optional[float]]:
     try:
         with open(lock_path, "r", encoding="utf-8") as handle:
             parts = handle.read().strip().split()
     except OSError:
-        return None, ""
+        return None, "", None
     pid = None
     if parts:
         try:
@@ -96,7 +86,13 @@ def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str]:
         except (TypeError, ValueError):
             pid = None
     host = parts[2].lower() if len(parts) >= 3 else ""
-    return pid, host
+    acquired_at = None
+    if len(parts) >= 4:
+        try:
+            acquired_at = float(parts[3])
+        except (TypeError, ValueError, OverflowError):
+            acquired_at = None
+    return pid, host, acquired_at
 
 
 def _lock_file_is_stale(lock_path: str, *, min_age_sec: float = _STALE_LOCK_MIN_AGE_SEC) -> bool:
@@ -105,9 +101,20 @@ def _lock_file_is_stale(lock_path: str, *, min_age_sec: float = _STALE_LOCK_MIN_
     except OSError:
         return False
 
-    pid, host = _read_lock_owner(lock_path)
-    if pid is not None and (not host or host == _LOCK_OWNER_HOST):
-        return not is_pid_running(pid)
+    pid, host, acquired_at = _read_lock_owner(lock_path)
+    if pid is not None and host and host != _LOCK_OWNER_HOST:
+        return False
+    if pid is not None:
+        if not is_pid_running(pid):
+            return True
+        if acquired_at is not None:
+            process_created_at = get_process_create_time(pid)
+            if (
+                process_created_at is not None
+                and process_created_at > acquired_at + 0.01
+            ):
+                return True
+        return False
     return age >= max(0.0, min_age_sec)
 
 
@@ -402,15 +409,26 @@ def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
             if raise_error:
                 raise FileNotFoundError(info_path)
             return {}
-        _validate_contained_path(info_path, task_dir, label=TASK_INFO_FILENAME)
-        info = _load_json_object(info_path, max_bytes=MAX_TASK_INFO_BYTES, label=TASK_INFO_FILENAME)
-        info.pop("id", None)
-        normalize_run_history(info)
+        for attempt in range(_READ_RETRY_COUNT):
+            try:
+                _validate_contained_path(info_path, task_dir, label=TASK_INFO_FILENAME)
+                info = _load_json_object(
+                    info_path,
+                    max_bytes=MAX_TASK_INFO_BYTES,
+                    label=TASK_INFO_FILENAME,
+                )
+                info.pop("id", None)
+                normalize_run_history(info)
+                return info
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                if attempt >= _READ_RETRY_COUNT - 1:
+                    raise
+                time.sleep(_READ_RETRY_DELAY_SEC * (attempt + 1))
     except Exception:
         if raise_error:
             raise
         return {}
-    return info
+    return {}
 
 
 def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
@@ -501,29 +519,18 @@ def update_task_info(
     task_dir: str,
     updater: Callable[[Dict[str, Any]], None],
     *,
-    raise_error: bool = False,
     timeout_sec: float = _LOCK_TIMEOUT_SEC,
 ) -> Dict[str, Any]:
-    """Read-modify-write task_info.json using the shared atomic save path."""
+    """Strictly update an existing task_info.json through the atomic save path."""
     validate_task_directory(task_dir)
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
-    with task_info_lock(task_dir, timeout_sec=timeout_sec, create_dir=not raise_error):
-        if os.path.exists(info_path):
-            try:
-                _validate_contained_path(info_path, task_dir, label=TASK_INFO_FILENAME)
-                info = _load_json_object(
-                    info_path,
-                    max_bytes=MAX_TASK_INFO_BYTES,
-                    label=TASK_INFO_FILENAME,
-                )
-            except Exception:
-                if raise_error:
-                    raise
-                info = {}
-        else:
-            if raise_error:
-                raise FileNotFoundError(info_path)
-            info = {}
+    with task_info_lock(task_dir, timeout_sec=timeout_sec, create_dir=False):
+        _validate_contained_path(info_path, task_dir, label=TASK_INFO_FILENAME)
+        info = _load_json_object(
+            info_path,
+            max_bytes=MAX_TASK_INFO_BYTES,
+            label=TASK_INFO_FILENAME,
+        )
 
         info.pop("id", None)
         normalize_run_history(info)
@@ -685,7 +692,9 @@ def _validate_task_folder_name(name: str) -> Optional[str]:
     if not name or not name.strip():
         return "Task name cannot be empty"
     raw_name = name
-    name = name.strip()
+    if raw_name != raw_name.strip():
+        return "Task name cannot start or end with whitespace"
+    name = raw_name
     if len(name) > 200:
         return "Task name is too long (max 200 characters)"
     if "@" in name:
@@ -695,8 +704,8 @@ def _validate_task_folder_name(name: str) -> Optional[str]:
         return f"Task name contains invalid characters: {''.join(set(bad))}"
     if name.startswith("."):
         return "Task name cannot start with '.'"
-    if raw_name != raw_name.rstrip(" ."):
-        return "Task name cannot end with a space or '.'"
+    if raw_name.endswith("."):
+        return "Task name cannot end with '.'"
     if name.startswith("-"):
         return "Task name cannot start with '-'; it can be confused with an option"
     if _WINDOWS_RESERVED_NAME_RE.fullmatch(name):

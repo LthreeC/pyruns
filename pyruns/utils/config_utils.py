@@ -100,7 +100,12 @@ def load_yaml_strict(path: str) -> Dict[str, Any]:
     """Load a YAML file into a dict or raise a descriptive error."""
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    data = yaml.safe_load(_read_yaml_text_limited(path))
+    try:
+        data = yaml.safe_load(_read_yaml_text_limited(path))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML in '{path}': {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"YAML file is not valid UTF-8: {path}") from exc
     if data is None:
         return {}
     if not isinstance(data, dict):

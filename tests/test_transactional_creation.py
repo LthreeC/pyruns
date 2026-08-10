@@ -74,7 +74,11 @@ def test_create_task_is_complete_before_atomic_publish(tmp_path, monkeypatch):
             assert (source_path / "run_logs").is_dir()
             reservation = Path(generator._task_name_lock_path("alpha"))
             assert reservation.is_file()
-            assert reservation.read_text(encoding="ascii") == f"pid={os.getpid()}\n"
+            owner = json.loads(reservation.read_text(encoding="ascii"))
+            assert owner["host"] == task_generator_module._TASK_NAME_LOCK_OWNER_HOST
+            assert owner["pid"] == os.getpid()
+            assert owner["process_create_time"] is not None
+            assert len(owner["token"]) == 32
             observed["source"] = source_path
             observed["destination"] = destination_path
         return real_rename(source, destination)
@@ -497,6 +501,49 @@ def test_explicit_shell_task_name_fails_while_exact_name_is_reserved(tmp_path):
         holder.release_task_name_reservation(reservation)
 
 
+def test_task_name_reservation_recovers_only_an_aged_invalid_lock(tmp_path):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(root_dir=str(tasks_root))
+    lock_path = Path(generator._task_name_lock_path("stale-name"))
+    lock_path.write_bytes(b"")
+
+    snapshot = generator._task_name_lock_snapshot(str(lock_path))
+    assert snapshot is not None
+    assert generator._task_name_lock_is_stale(snapshot, min_age_sec=30) is False
+    with pytest.raises(ValueError, match="already exists or is being created"):
+        generator.create_task("stale-name", {"value": 1}, exact_name=True)
+    assert lock_path.exists()
+
+    os.utime(lock_path, (1, 1))
+    created = generator.create_task("stale-name", {"value": 2}, exact_name=True)
+
+    assert created["name"] == "stale-name"
+    assert not lock_path.exists()
+
+
+def test_task_name_reservation_keeps_valid_foreign_owner_even_when_old(tmp_path, monkeypatch):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(root_dir=str(tasks_root))
+    lock_path = Path(generator._task_name_lock_path("foreign"))
+    lock_path.write_text(
+        json.dumps({
+            "host": f"{task_generator_module._TASK_NAME_LOCK_OWNER_HOST}-foreign",
+            "pid": 4242,
+            "process_create_time": 1.0,
+            "token": "foreign-token",
+        }),
+        encoding="utf-8",
+    )
+    os.utime(lock_path, (1, 1))
+    monkeypatch.setattr(task_generator_module.time, "time", lambda: 1_000_000.0)
+
+    snapshot = generator._task_name_lock_snapshot(str(lock_path))
+    assert snapshot is not None
+    assert generator._task_name_lock_is_stale(snapshot, min_age_sec=0) is False
+    assert generator._remove_stale_task_name_lock(str(lock_path)) is False
+    assert lock_path.exists()
+
+
 def test_create_task_publish_failure_removes_private_staging_directory(tmp_path, monkeypatch):
     tasks_root = tmp_path / "tasks"
     generator = TaskGenerator(root_dir=str(tasks_root))
@@ -515,7 +562,7 @@ def test_create_task_publish_failure_removes_private_staging_directory(tmp_path,
 def test_batch_failure_rolls_back_only_tasks_created_by_batch(tmp_path, monkeypatch):
     tasks_root = tmp_path / "tasks"
     generator = TaskGenerator(root_dir=str(tasks_root))
-    existing = tasks_root / "batch_[1-of-3]"
+    existing = tasks_root / "batch_1-of-3"
     existing.mkdir()
     sentinel = existing / "keep.txt"
     sentinel.write_text("existing task", encoding="utf-8")
@@ -537,6 +584,63 @@ def test_batch_failure_rolls_back_only_tasks_created_by_batch(tmp_path, monkeypa
 
     assert [path.name for path in tasks_root.iterdir()] == [existing.name]
     assert sentinel.read_text(encoding="utf-8") == "existing task"
+
+
+def test_batch_failure_preserves_an_earlier_task_started_by_another_runner(
+    tmp_path,
+    monkeypatch,
+):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(root_dir=str(tasks_root))
+    real_write_payload = task_generator_module.write_task_payload
+    calls = 0
+
+    def start_first_then_fail_second(task_dir, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            published = [
+                path
+                for path in tasks_root.iterdir()
+                if path.is_dir() and not path.name.startswith(".")
+            ]
+            assert len(published) == 1
+
+            def mark_started(info):
+                info.update(
+                    {
+                        "status": "running",
+                        "run_index": 1,
+                        "runner_id": "other-host:4242:token",
+                        "runner_host": "other-host",
+                        "lease_until": 9_999_999_999.0,
+                    }
+                )
+
+            info_io.update_task_info(str(published[0]), mark_started)
+            raise RuntimeError("second task failed after first started")
+        return real_write_payload(task_dir, **kwargs)
+
+    monkeypatch.setattr(
+        task_generator_module,
+        "write_task_payload",
+        start_first_then_fail_second,
+    )
+
+    with pytest.raises(RuntimeError, match="second task failed after first started"):
+        generator.create_tasks([{"value": 1}, {"value": 2}], "batch")
+
+    published = [
+        path
+        for path in tasks_root.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    ]
+    assert len(published) == 1
+    preserved = info_io.load_task_info(str(published[0]), raise_error=True)
+    assert preserved["status"] == "running"
+    assert preserved["runner_id"] == "other-host:4242:token"
+    assert "_creation_rollback" not in preserved
+    assert list(tasks_root.glob(".pyruns-create-*.lock")) == []
 
 
 def test_task_generator_rejects_symlinked_tasks_root_before_writing(tmp_path):

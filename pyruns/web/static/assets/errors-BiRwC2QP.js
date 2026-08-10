@@ -1,0 +1,1 @@
+function n(t,s="Something went wrong."){if(t instanceof Error&&t.message)return t.message;if(typeof t=="string"&&t.trim())return t;if(t&&typeof t=="object"&&"message"in t){const e=t.message;if(typeof e=="string"&&e.trim())return e}return s}export{n as e};

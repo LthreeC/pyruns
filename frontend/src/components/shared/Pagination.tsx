@@ -22,7 +22,7 @@ export default function Pagination({ total, offset, limit, onOffsetChange }: Pro
         onClick={() => onOffsetChange(Math.max(0, offset - limit))}
         aria-label="Previous page"
         className={clsx(
-          'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
+          'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
           offset === 0 && 'opacity-30 cursor-not-allowed'
         )}
       >
@@ -37,7 +37,7 @@ export default function Pagination({ total, offset, limit, onOffsetChange }: Pro
         onClick={() => onOffsetChange(offset + limit)}
         aria-label="Next page"
         className={clsx(
-          'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
+          'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
           offset + limit >= total && 'opacity-30 cursor-not-allowed'
         )}
       >

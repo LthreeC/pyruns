@@ -6,15 +6,25 @@ import argparse
 import json
 import os
 import time
+from typing import Any
 
 from pyruns._config import ENV_KEY_ROOT, TASKS_DIR
-from pyruns.core.task_manager import TaskManager
+from pyruns.cli.submission_protocol import (
+    RUNNER_CLEANUP_TIMEOUT_SEC,
+    abort_requested,
+    submission_control_paths,
+    validate_submission_token,
+    write_submission_receipt,
+)
+from pyruns.core.task_manager import TaskManager, active_task_run_index
 from pyruns.utils.info_io import load_task_info
 from pyruns.utils.settings import ensure_settings_file, load_settings
 
 
 _FINAL_STATUSES = {"completed", "failed", "cancelled"}
 _ACTIVE_STATUSES = {"queued", "running"}
+_CLEANUP_TIMEOUT_SEC = RUNNER_CLEANUP_TIMEOUT_SEC
+_POLL_INTERVAL_SEC = 0.05
 
 
 def _parse_args() -> argparse.Namespace:
@@ -23,95 +33,390 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", choices=("thread", "process"), default="thread")
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--submission-token", required=True)
-    parser.add_argument("--startup-file", required=True)
-    parser.add_argument("--tasks-json", required=True)
+    parser.add_argument("--submissions-json", required=True)
     return parser.parse_args()
 
 
-def _task_names(raw: str) -> list[str]:
+def _task_submissions(raw: str) -> tuple[list[str], list[int]]:
     payload = json.loads(raw)
     if not isinstance(payload, list):
-        raise ValueError("tasks payload must be a list")
-    return [str(item) for item in payload if str(item)]
+        raise ValueError("submissions payload must be a list")
+    names: list[str] = []
+    run_indices: list[int] = []
+    for item in payload:
+        if not isinstance(item, dict) or set(item) != {"name", "run_index"}:
+            raise ValueError("each submission must contain name and run_index")
+        name = item.get("name")
+        run_index = item.get("run_index")
+        if not isinstance(name, str) or not name or type(run_index) is not int or run_index <= 0:
+            raise ValueError("submission names and run indices must be valid")
+        names.append(name)
+        run_indices.append(run_index)
+    return names, run_indices
 
 
-def _report_startup(path: str, status: str, detail: str = "") -> None:
-    target = os.path.abspath(path)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    temporary = target + ".tmp"
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump({"status": status, "detail": detail}, handle)
-    os.replace(temporary, target)
+def _submitted_run_status(info: dict[str, Any], run_index: int) -> str | None:
+    """Return only the lifecycle state belonging to the submitted run."""
+
+    run_statuses = info.get("run_statuses", [])
+    if isinstance(run_statuses, (list, tuple)) and run_index <= len(run_statuses):
+        recorded = str(run_statuses[run_index - 1] or "").lower()
+        if recorded in _FINAL_STATUSES:
+            return recorded
+
+    current = str(info.get("status", "") or "").lower()
+    if current in _ACTIVE_STATUSES and active_task_run_index(info) == run_index:
+        return current
+    try:
+        current_run_index = int(info.get("run_index", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if current in _FINAL_STATUSES and current_run_index == run_index:
+        return current
+    return None
+
+
+def _report(
+    path: str,
+    *,
+    token: str,
+    names: list[str],
+    run_indices: list[int],
+    status: str,
+    claimed: list[str],
+    detail: str = "",
+) -> None:
+    write_submission_receipt(
+        path,
+        token=token,
+        runner_pid=os.getpid(),
+        status=status,
+        names=names,
+        run_indices=run_indices,
+        claimed=claimed,
+        detail=detail,
+    )
+
+
+def _claimed_tasks_stopped(
+    tm: TaskManager,
+    selected: dict[str, dict[str, Any]],
+    claimed: list[str],
+    expected_runs: dict[str, int],
+) -> bool:
+    """Request cancellation and prove that every claimed task is inactive."""
+
+    if not claimed:
+        return True
+    expected_runner_id = str(getattr(tm, "runner_id", "") or "")
+    if not expected_runner_id:
+        return False
+    requested: set[str] = set()
+    deadline = time.monotonic() + max(0.05, _CLEANUP_TIMEOUT_SEC)
+    while True:
+        unsettled: list[str] = []
+        for name in claimed:
+            task = selected.get(name) or {}
+            task_dir = str(task.get("dir", "") or "")
+            info = load_task_info(task_dir) if task_dir else None
+            if not info:
+                return False
+            status = str(info.get("status", "") or "").lower()
+            if status in _FINAL_STATUSES:
+                continue
+            if status not in _ACTIVE_STATUSES:
+                return False
+            if str(info.get("runner_id", "") or "") != expected_runner_id:
+                return False
+            expected_run_index = expected_runs.get(name)
+            if (
+                type(expected_run_index) is not int
+                or active_task_run_index(info) != expected_run_index
+            ):
+                return False
+            unsettled.append(name)
+            if name not in requested:
+                try:
+                    if tm.request_task_cancel(
+                        name,
+                        expected_runner_id=expected_runner_id,
+                        expected_run_index=expected_run_index,
+                    ):
+                        requested.add(name)
+                except Exception:
+                    pass
+
+        if not unsettled:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_POLL_INTERVAL_SEC)
+
+
+def _stop_and_report(
+    tm: TaskManager,
+    *,
+    selected: dict[str, dict[str, Any]],
+    receipt_file: str,
+    token: str,
+    names: list[str],
+    run_indices: list[int],
+    claimed: list[str],
+    stopped_status: str,
+    detail: str,
+) -> int:
+    _report(
+        receipt_file,
+        token=token,
+        names=names,
+        run_indices=run_indices,
+        status="stopping",
+        claimed=claimed,
+        detail=detail,
+    )
+    expected_runs = dict(zip(names, run_indices))
+    stopped = _claimed_tasks_stopped(tm, selected, claimed, expected_runs)
+    status = stopped_status if stopped else "unresolved"
+    final_detail = detail if stopped else f"{detail}; cleanup could not be confirmed"
+    _report(
+        receipt_file,
+        token=token,
+        names=names,
+        run_indices=run_indices,
+        status=status,
+        claimed=claimed,
+        detail=final_detail,
+    )
+    return 2
 
 
 def main() -> int:
     args = _parse_args()
-    tm = None
-    startup_reported = False
+    tm: TaskManager | None = None
+    names: list[str] = []
+    run_indices: list[int] = []
+    claimed: list[str] = []
+    selected: dict[str, dict[str, Any]] = {}
+    receipt_file = ""
+    token = ""
+    accepted_reported = False
     try:
-        names = _task_names(args.tasks_json)
-        if not names or args.jobs <= 0:
-            _report_startup(args.startup_file, "error", "invalid task submission")
+        token = validate_submission_token(args.submission_token)
+        names, run_indices = _task_submissions(args.submissions_json)
+        if not names or len(names) != len(set(names)) or args.jobs <= 0:
             return 2
 
         workspace = os.path.abspath(args.workspace)
         tasks_dir = os.path.join(workspace, TASKS_DIR)
+        receipt_file, abort_file = submission_control_paths(tasks_dir, token)
+        _report(
+            receipt_file,
+            token=token,
+            names=names,
+            run_indices=run_indices,
+            status="starting",
+            claimed=claimed,
+        )
+        if abort_requested(abort_file, token=token):
+            _report(
+                receipt_file,
+                token=token,
+                names=names,
+                run_indices=run_indices,
+                status="aborted",
+                claimed=claimed,
+                detail="aborted before task discovery",
+            )
+            return 2
+
         os.environ[ENV_KEY_ROOT] = workspace
         ensure_settings_file(workspace)
         load_settings(workspace)
-        tm = TaskManager(tasks_dir=tasks_dir, lazy_scan=False, runner_token=args.submission_token)
+        tm = TaskManager(tasks_dir=tasks_dir, lazy_scan=False, runner_token=token)
 
-        selected = [tm.get_task(name) for name in names]
+        loaded = [tm.get_task(name) for name in names]
         if any(
             not task
+            or not str(task.get("dir", "") or "")
             or task.get("_load_error")
             or str(task.get("status", "") or "").lower() in _ACTIVE_STATUSES
-            for task in selected
+            for task in loaded
         ):
-            tm.shutdown()
-            tm = None
-            _report_startup(args.startup_file, "error", "one or more tasks are unavailable")
-            startup_reported = True
+            _report(
+                receipt_file,
+                token=token,
+                names=names,
+                run_indices=run_indices,
+                status="rejected",
+                claimed=claimed,
+                detail="one or more tasks are unavailable",
+            )
+            return 2
+        selected = {str(task["name"]): task for task in loaded if task}
+
+        if abort_requested(abort_file, token=token):
+            _report(
+                receipt_file,
+                token=token,
+                names=names,
+                run_indices=run_indices,
+                status="aborted",
+                claimed=claimed,
+                detail="aborted before claiming tasks",
+            )
             return 2
 
-        if len(names) == 1:
-            claimed = tm.start_task_now(names[0], execution_mode=args.backend)
-        else:
-            claimed_names = tm.start_batch_tasks(
-                names,
+        _report(
+            receipt_file,
+            token=token,
+            names=names,
+            run_indices=run_indices,
+            status="claiming",
+            claimed=claimed,
+        )
+        for name, expected_run_index in zip(names, run_indices):
+            if abort_requested(abort_file, token=token):
+                return _stop_and_report(
+                    tm,
+                    selected=selected,
+                    receipt_file=receipt_file,
+                    token=token,
+                    names=names,
+                    run_indices=run_indices,
+                    claimed=claimed,
+                    stopped_status="aborted",
+                    detail="submission aborted while claiming tasks",
+                )
+
+            claimed_now = tm.start_batch_tasks(
+                [name],
                 execution_mode=args.backend,
                 max_workers=args.jobs,
+                expected_run_indices={name: expected_run_index},
             )
-            claimed = set(claimed_names) == set(names)
-        if not claimed:
-            tm.shutdown()
-            tm = None
-            _report_startup(args.startup_file, "error", "runner could not claim every task")
-            startup_reported = True
-            return 2
+            if claimed_now != [name]:
+                status = "partial" if claimed else "rejected"
+                return _stop_and_report(
+                    tm,
+                    selected=selected,
+                    receipt_file=receipt_file,
+                    token=token,
+                    names=names,
+                    run_indices=run_indices,
+                    claimed=claimed,
+                    stopped_status=status,
+                    detail=f"runner could not claim task: {name}",
+                )
+            claimed.append(name)
+            _report(
+                receipt_file,
+                token=token,
+                names=names,
+                run_indices=run_indices,
+                status="claiming",
+                claimed=claimed,
+            )
 
-        _report_startup(args.startup_file, "ready")
-        startup_reported = True
+        if abort_requested(abort_file, token=token):
+            return _stop_and_report(
+                tm,
+                selected=selected,
+                receipt_file=receipt_file,
+                token=token,
+                names=names,
+                run_indices=run_indices,
+                claimed=claimed,
+                stopped_status="aborted",
+                detail="submission aborted after claiming tasks",
+            )
+
+        _report(
+            receipt_file,
+            token=token,
+            names=names,
+            run_indices=run_indices,
+            status="accepted",
+            claimed=claimed,
+        )
+        accepted_reported = True
         while True:
-            infos = []
-            for task in selected:
-                info = load_task_info(str(task["dir"])) or {}
-                infos.append(info)
+            if abort_requested(abort_file, token=token):
+                return _stop_and_report(
+                    tm,
+                    selected=selected,
+                    receipt_file=receipt_file,
+                    token=token,
+                    names=names,
+                    run_indices=run_indices,
+                    claimed=claimed,
+                    stopped_status="aborted",
+                    detail="accepted submission was aborted during handoff",
+                )
+
+            infos = [load_task_info(str(selected[name]["dir"])) or {} for name in names]
             if any(not info for info in infos):
                 return 1
-            statuses = [str(info.get("status", "") or "").lower() for info in infos]
+            statuses = [
+                _submitted_run_status(info, run_index)
+                for info, run_index in zip(infos, run_indices)
+            ]
+            if any(status is None for status in statuses):
+                return 1
             if all(status in _FINAL_STATUSES for status in statuses):
+                if abort_requested(abort_file, token=token):
+                    return _stop_and_report(
+                        tm,
+                        selected=selected,
+                        receipt_file=receipt_file,
+                        token=token,
+                        names=names,
+                        run_indices=run_indices,
+                        claimed=claimed,
+                        stopped_status="aborted",
+                        detail="accepted submission was aborted during handoff",
+                    )
                 return 0 if all(status == "completed" for status in statuses) else 1
-            time.sleep(0.1)
+            time.sleep(_POLL_INTERVAL_SEC)
     except Exception as exc:
-        if tm is not None:
-            tm.shutdown()
-            tm = None
-        if not startup_reported:
+        if receipt_file and not accepted_reported:
             try:
-                _report_startup(args.startup_file, "error", f"{type(exc).__name__}: {exc}")
+                status = "partial" if claimed and len(claimed) < len(names) else "aborted"
+                if not claimed:
+                    status = "rejected"
+                if tm is not None:
+                    return _stop_and_report(
+                        tm,
+                        selected=selected,
+                        receipt_file=receipt_file,
+                        token=token,
+                        names=names,
+                        run_indices=run_indices,
+                        claimed=claimed,
+                        stopped_status=status,
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
+                _report(
+                    receipt_file,
+                    token=token,
+                    names=names,
+                    run_indices=run_indices,
+                    status=status,
+                    claimed=claimed,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
             except Exception:
-                pass
+                try:
+                    _report(
+                        receipt_file,
+                        token=token,
+                        names=names,
+                        run_indices=run_indices,
+                        status="unresolved",
+                        claimed=claimed,
+                        detail=f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    pass
         return 2
     finally:
         if tm is not None:

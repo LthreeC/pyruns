@@ -324,27 +324,25 @@ export default function ManagerPage() {
   }, [bulkAction, deleteConfirm, visibleSelectedCount])
 
   useEffect(() => {
-    if (!detailTask) {
-      return
-    }
+    setDetailTask(current => {
+      if (!current) {
+        return current
+      }
 
-    const refreshed = tasks.find(task => task.name === detailTask.name)
-    if (!refreshed) {
-      return
-    }
+      const refreshed = tasks.find(task => task.name === current.name)
+      if (!refreshed || refreshed === current) {
+        return current
+      }
 
-    if (refreshed !== detailTask) {
-      setDetailTask(current => current?.name === refreshed.name
-        ? {
-            ...refreshed,
-            config: current.config,
-            config_text: current.config_text,
-            records: current.records,
-            tracks: current.tracks,
-          }
-        : current)
-    }
-  }, [detailTask, tasks])
+      return {
+        ...refreshed,
+        config: current.config,
+        config_text: current.config_text,
+        records: current.records,
+        tracks: current.tracks,
+      }
+    })
+  }, [tasks])
 
   const beginTaskAction = useCallback((taskName: string, action: PendingTaskAction) => {
     if (
@@ -834,7 +832,6 @@ export default function ManagerPage() {
               onChange={setQuery}
               placeholder="Search tasks..."
               ariaLabel="Search tasks"
-              className="[&>svg]:top-3.5 [&_button]:top-0 [&_button]:h-11 [&_button]:w-11 [&_textarea]:min-h-11 [&_textarea]:pr-11 [&_textarea]:[scrollbar-width:none] [&_textarea::-webkit-scrollbar]:hidden sm:[&>svg]:top-2.5 sm:[&_button]:top-1 sm:[&_button]:h-7 sm:[&_button]:w-7 sm:[&_textarea]:min-h-[34px] sm:[&_textarea]:pr-8"
             />
           </div>
 
@@ -845,7 +842,7 @@ export default function ManagerPage() {
                 onChange={event => setStatusFilter(event.target.value)}
                 aria-label="Filter tasks by status"
                 title="Filter by status"
-                className="min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
+                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
               >
                 {STATUS_OPTIONS.map(option => (
                   <option key={option} value={option}>
@@ -862,7 +859,7 @@ export default function ManagerPage() {
                 onChange={event => setColumns(Number(event.target.value))}
                 aria-label="Maximum cards per row"
                 title="Maximum cards per row; narrow windows reduce the count automatically"
-                className="min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
+                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
               >
                 {[1, 2, 3, 4, 5, 6, 7, 8].map(count => (
                   <option key={count} value={count}>{count} col{count > 1 ? 's' : ''}</option>
@@ -924,7 +921,7 @@ export default function ManagerPage() {
                 {allPageSelected ? 'Clear page' : 'Select page'}
               </ActionButton>
 
-              <label className="flex min-h-11 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-raised px-2.5 text-2xs text-txt-secondary sm:min-h-9">
+              <label className="touch-target flex min-h-11 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-raised px-2.5 text-2xs text-txt-secondary sm:min-h-9">
                 Workers
                 <input
                   type="number"
@@ -945,7 +942,7 @@ export default function ManagerPage() {
                   disabled={Boolean(bulkAction)}
                   onChange={event => setBulkExecutionMode(event.target.value)}
                   aria-label="Execution mode for selected tasks"
-                  className="min-h-11 appearance-none rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 pr-7 text-xs text-txt-primary outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:opacity-50 sm:min-h-9"
+                  className="touch-target min-h-11 appearance-none rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 pr-7 text-xs text-txt-primary outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:opacity-50 sm:min-h-9"
                 >
                   <option value="thread">Thread</option>
                   <option value="process">Process</option>
@@ -1159,7 +1156,14 @@ export default function ManagerPage() {
       />
 
       {detailTask && (
-        <TaskDetailPanel task={detailTask} onClose={closeDetailPanel} onRefresh={fetchTasks} />
+        <TaskDetailPanel
+          task={detailTask}
+          onClose={closeDetailPanel}
+          onTaskUpdated={updatedTask => {
+            setDetailTask(current => current?.name === updatedTask.name ? updatedTask : current)
+          }}
+          onRefresh={fetchTasks}
+        />
       )}
     </div>
   )
@@ -1312,7 +1316,7 @@ const TaskCard = memo(function TaskCard({
           aria-hidden="true"
           onPointerDown={event => onPointerDown(task, event)}
           className={clsx(
-            'absolute left-0.5 top-0.5 z-10 flex h-11 w-11 cursor-grab touch-none items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity] active:cursor-grabbing sm:left-2 sm:top-2 sm:h-7 sm:w-7',
+            'touch-target absolute left-0.5 top-0.5 z-10 flex h-11 w-11 cursor-grab touch-none items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity] active:cursor-grabbing sm:left-2 sm:top-2 sm:h-7 sm:w-7',
             'group-hover:bg-surface-overlay group-hover:text-txt-secondary',
             dragging && 'bg-accent/10 text-accent',
             (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
@@ -1335,7 +1339,7 @@ const TaskCard = memo(function TaskCard({
           aria-label={task.pinned ? `Unpin ${task.name}` : `Pin ${task.name}`}
           aria-busy={pendingAction === 'pin' || undefined}
           className={clsx(
-            'absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
+            'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
             task.pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
           )}
         >
@@ -1540,7 +1544,7 @@ function TaskIconButton({
       aria-busy={busy || undefined}
       title={title}
       className={clsx(
-        'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-not-allowed disabled:opacity-40 sm:h-9 sm:w-9',
+        'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-not-allowed disabled:opacity-40 sm:h-9 sm:w-9',
         className || 'text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary',
       )}
     >

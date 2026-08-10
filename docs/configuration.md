@@ -271,12 +271,11 @@ Python 任务仍然是脚本工作区的主链路：
 
 ## 10. 搜索与过滤
 
-Manager 和 Monitor 的搜索框支持多行输入。
+Manager 和 Monitor 使用单行搜索框。
 
 语义是：
 
-- 每一行是一个 term
-- 多行之间按 AND 匹配
+- 输入内容作为一个连续搜索片段
 - 会在任务名、preview、config_text、search_text、notes 等字段中做包含判断
 
 这个行为和后端 `filter_tasks` 保持一致。

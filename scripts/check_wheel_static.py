@@ -69,18 +69,17 @@ def check_wheel_static(wheel_path: Path, *, root: Path = ROOT) -> list[str]:
     source_files = _source_static_files(root)
     wheel_files = _wheel_static_files(wheel_path)
     source_assets = {name for name in source_files if name.startswith("assets/")}
-    wheel_assets = {name for name in wheel_files if name.startswith("assets/")}
 
     errors: list[str] = []
     if not source_assets:
         errors.append("source static assets directory is empty")
 
-    missing_assets = sorted(source_assets - wheel_assets)
-    extra_assets = sorted(wheel_assets - source_assets)
-    if missing_assets:
-        errors.append("wheel is missing static assets: " + ", ".join(missing_assets))
-    if extra_assets:
-        errors.append("wheel contains stale static assets: " + ", ".join(extra_assets))
+    missing_files = sorted(source_files - wheel_files)
+    extra_files = sorted(wheel_files - source_files)
+    if missing_files:
+        errors.append("wheel is missing static assets/files: " + ", ".join(missing_files))
+    if extra_files:
+        errors.append("wheel contains stale static assets/files: " + ", ".join(extra_files))
 
     if "index.html" not in wheel_files:
         errors.append("wheel is missing pyruns/web/static/index.html")

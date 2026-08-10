@@ -106,6 +106,34 @@ summary::-webkit-details-marker {
   }
 }
 
+@media (pointer: coarse) {
+  .touch-target {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+
+  .touch-input {
+    min-height: 44px !important;
+    font-size: 16px !important;
+  }
+
+  .generator-param-row {
+    grid-template-columns: 44px minmax(0, 1fr) !important;
+  }
+
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (pointer: coarse) and (min-width: 640px) {
+  .generator-param-row {
+    grid-template-columns: 44px minmax(150px, 0.95fr) minmax(150px, 1.05fr) !important;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

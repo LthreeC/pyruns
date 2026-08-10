@@ -32,6 +32,13 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
 
   await page.getByRole('link', { name: 'Manager' }).click()
   await expect(page.getByRole('heading', { name: 'Task Manager' })).toBeVisible()
+  const managerSearch = page.getByRole('textbox', { name: 'Search tasks' })
+  await expect(managerSearch).toHaveJSProperty('tagName', 'INPUT')
+
+  await page.getByRole('link', { name: 'Monitor' }).click()
+  const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks' })
+  await expect(monitorSearch).toHaveJSProperty('tagName', 'INPUT')
+  expect(await monitorSearch.evaluate(element => element.scrollHeight <= element.clientHeight)).toBe(true)
   expect(browserErrors).toEqual([])
 })
 
@@ -47,13 +54,108 @@ test('opening the workspace launcher preserves unsaved runtime edits', async ({ 
   await page.locator('[data-launcher-trigger="true"]').click()
   const discardDialog = page.getByRole('dialog', { name: 'Discard unsaved runtime changes?' })
   await expect(discardDialog).toBeVisible()
-  await discardDialog.getByRole('button', { name: 'Cancel' }).click()
+  await page.keyboard.press('Escape')
 
   const launcher = page.getByRole('dialog', { name: 'Launch Workspace' })
   await expect(launcher).toBeVisible()
   await launcher.getByRole('button', { name: 'Cancel' }).click()
   await expect(page.getByRole('dialog', { name: 'Runtime settings' })).toBeVisible()
   await expect(pythonPath).toHaveValue('D:\\tools\\python.exe')
+})
+
+test('recovering an expired session preserves unsaved runtime edits', async ({ page }) => {
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'Runtime' }).click()
+  const runtimePanel = page.getByRole('dialog', { name: 'Runtime settings' })
+  await runtimePanel.getByRole('button', { name: 'Path' }).click()
+
+  const pythonPath = runtimePanel.getByRole('textbox', { name: 'Python executable path' })
+  await pythonPath.fill('D:\\drafts\\python.exe')
+  await page.route('**/api/runtime?*', async route => {
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Unauthorized' }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await runtimePanel.getByRole('button', { name: 'Save', exact: true }).click()
+  const recovery = page.getByRole('alertdialog', { name: 'Session expired' })
+  await expect(recovery).toBeVisible()
+  const retryConnection = recovery.getByRole('button', { name: 'Retry connection' })
+  await expect(retryConnection).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(retryConnection).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await expect(retryConnection).toBeFocused()
+  await retryConnection.click()
+
+  await expect(recovery).toBeHidden()
+  await expect(runtimePanel).toBeVisible()
+  await expect(pythonPath).toHaveValue('D:\\drafts\\python.exe')
+  expect(await runtimePanel.evaluate(panel => panel.contains(document.activeElement))).toBe(true)
+})
+
+test('reconnect requires explicit discard when the server workspace changed', async ({ page }) => {
+  let returnChangedWorkspace = false
+  let changedWorkspace: Record<string, unknown> | null = null
+  await page.route('**/api/workspace', async route => {
+    if (!returnChangedWorkspace || !changedWorkspace) {
+      await route.continue()
+      return
+    }
+    await route.fulfill({ json: changedWorkspace })
+  })
+
+  const initialWorkspaceResponse = page.waitForResponse(response => (
+    new URL(response.url()).pathname === '/api/workspace'
+      && response.request().method() === 'GET'
+  ))
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const workspace = await (await initialWorkspaceResponse).json()
+  changedWorkspace = {
+    ...workspace,
+    run_root: `${workspace.run_root}-changed`,
+  }
+  await page.getByRole('button', { name: 'Runtime' }).click()
+  const runtimePanel = page.getByRole('dialog', { name: 'Runtime settings' })
+  await runtimePanel.getByRole('button', { name: 'Path' }).click()
+  const pythonPath = runtimePanel.getByRole('textbox', { name: 'Python executable path' })
+  await pythonPath.fill('D:\\drafts\\workspace-change.exe')
+
+  await page.route('**/api/runtime?*', async route => {
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Unauthorized' }),
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  await runtimePanel.getByRole('button', { name: 'Save', exact: true }).click()
+  const expired = page.getByRole('alertdialog', { name: 'Session expired' })
+  await expect(expired).toBeVisible()
+  returnChangedWorkspace = true
+  await expired.getByRole('button', { name: 'Retry connection' }).click()
+
+  const changed = page.getByRole('alertdialog', { name: 'Workspace changed' })
+  await expect(changed).toBeVisible()
+  await expect(page.locator('input[aria-label="Python executable path"]'))
+    .toHaveValue('D:\\drafts\\workspace-change.exe')
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  const discard = changed.getByRole('button', { name: 'Discard drafts and reconnect' })
+  await expect(discard).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(discard).toBeFocused()
+  await discard.click()
+  await expect(changed).toBeHidden()
 })
 
 test('launcher stays open while switching and ignores launch-history storage failures', async ({ page }) => {
@@ -94,6 +196,12 @@ test('launcher stays open while switching and ignores launch-history storage fai
 })
 
 test('browser navigation cannot discard unsaved task details without confirmation', async ({ page, isMobile }) => {
+  const browserErrors: string[] = []
+  page.on('console', message => {
+    if (message.type() === 'error') browserErrors.push(message.text())
+  })
+  page.on('pageerror', error => browserErrors.push(error.message))
+
   if (isMobile) {
     await page.setViewportSize({ width: 320, height: 568 })
   }
@@ -140,7 +248,7 @@ test('browser navigation cannot discard unsaved task details without confirmatio
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   }
   await page.getByRole('tab', { name: 'Notes' }).click()
-  const notes = page.getByPlaceholder('Add notes...')
+  const notes = page.getByRole('textbox', { name: 'Task notes' })
   await notes.fill('keep this draft')
 
   await page.evaluate(() => window.history.back())
@@ -150,10 +258,376 @@ test('browser navigation cannot discard unsaved task details without confirmatio
 
   await expect(page).toHaveURL(/\/manager$/)
   await expect(notes).toHaveValue('keep this draft')
+  expect(browserErrors).toEqual([])
+})
+
+test('monitor task details stay stable after the full task loads', async ({ page }) => {
+  const browserErrors: string[] = []
+  page.on('console', message => {
+    if (message.type() === 'error') browserErrors.push(message.text())
+  })
+  page.on('pageerror', error => browserErrors.push(error.message))
+
+  const task = {
+    name: 'alpha',
+    status: 'pending',
+    task_kind: 'shell',
+    dir: '/tmp/alpha',
+    config_file: '/tmp/alpha/task.sh',
+    config_text: 'echo alpha',
+    preview_text: 'echo alpha',
+    created_at: '2026-08-09T00:00:00Z',
+    run_index: 1,
+    pinned: false,
+    notes: 'keep monitor notes',
+    env: { MODE: 'review' },
+    start_times: ['2026-08-09T00:01:00Z'],
+    finish_times: [],
+    pids: [1234],
+    durations: [],
+    exit_codes: [],
+    source_states: ['clean'],
+    records: [{ loss: 0.5 }],
+    tracks: [{ step: 1 }],
+  }
+  const compactTask = {
+    ...task,
+    config: {},
+    config_text: '',
+    env: {},
+    start_times: [],
+    finish_times: [],
+    pids: [],
+    durations: [],
+    exit_codes: [],
+    source_states: [],
+    records: [],
+    tracks: [],
+    notes: '',
+    preview_text: '',
+    search_text: '',
+  }
+  await page.route('**/api/tasks?*', route => {
+    const query = new URL(route.request().url()).searchParams.get('query') || ''
+    const visibleTasks = query === 'hidden' ? [] : [compactTask]
+    return route.fulfill({ json: {
+      items: visibleTasks,
+      total: visibleTasks.length,
+      offset: 0,
+      limit: 200,
+      has_more: false,
+      status_counts: {
+        pending: 1,
+        queued: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+      },
+    } })
+  })
+  await page.route('**/api/tasks/alpha/logs?*', route => route.fulfill({
+    json: {
+      task_name: 'alpha',
+      selected_log: '',
+      available_logs: [],
+      content: '',
+      offset: 0,
+      log_identity: '',
+      tail_truncated: false,
+      tail_limit_bytes: 0,
+    },
+  }))
+  await page.route('**/api/tasks/alpha?*', route => route.fulfill({ json: task }))
+
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'View alpha, pending' }).click()
+  await page.getByRole('button', { name: 'View Details' }).click()
+  await expect(page.getByRole('dialog', { name: 'Task details for alpha' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Notes' }).click()
+  const notes = page.getByRole('textbox', { name: 'Task notes' })
+  await expect(notes).toHaveValue('keep monitor notes')
+  await notes.fill('local monitor draft')
+
+  const hiddenTasks = page.waitForResponse(response => {
+    const url = new URL(response.url())
+    return url.pathname === '/api/tasks' && url.searchParams.get('query') === 'hidden'
+  })
+  await page.getByRole('textbox', { name: 'Search monitor tasks' }).fill('hidden')
+  await hiddenTasks
+  await expect(page.getByRole('dialog', { name: 'Task details for alpha' })).toBeVisible()
+  await expect(notes).toHaveValue('local monitor draft')
+
+  const refreshedTasks = page.waitForResponse(response => {
+    const url = new URL(response.url())
+    return url.pathname === '/api/tasks' && url.searchParams.get('query') === 'alpha'
+  })
+  await page.getByRole('textbox', { name: 'Search monitor tasks' }).fill('alpha')
+  await refreshedTasks
+  await expect(notes).toHaveValue('local monitor draft')
+
+  await page.getByRole('tab', { name: 'Env' }).click()
+  await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')
+  await expect(page.getByRole('textbox', { name: 'Environment variable value' })).toHaveValue('review')
+  await page.getByRole('tab', { name: 'Info' }).click()
+  await expect(page.getByText('2026-08-09T00:01:00Z')).toBeVisible()
+  await expect(page.getByText('1234')).toBeVisible()
+
+  expect(browserErrors).toEqual([])
+})
+
+test('task detail conflicts and session recovery preserve local drafts', async ({ page }) => {
+  let latestNotes = ''
+  let latestEnv: Record<string, string> = {}
+  let rejectEnvWith401 = false
+  const task = {
+    name: 'alpha',
+    status: 'pending',
+    task_kind: 'shell',
+    dir: '/tmp/alpha',
+    config_file: '/tmp/alpha/task.sh',
+    config_text: 'echo alpha',
+    preview_text: 'echo alpha',
+    created_at: '2026-08-09T00:00:00Z',
+    run_index: 1,
+    pinned: false,
+  }
+  const taskPayload = () => ({ ...task, notes: latestNotes, env: latestEnv })
+  await page.route('**/api/tasks?*', route => route.fulfill({
+    json: {
+      items: [taskPayload()],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+      status_counts: {
+        pending: 1,
+        queued: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+      },
+    },
+  }))
+  await page.route('**/api/tasks/alpha?*', route => route.fulfill({ json: taskPayload() }))
+  const writes: { notes: string; expected_notes: string }[] = []
+  await page.route('**/api/tasks/alpha/notes', async route => {
+    const payload = route.request().postDataJSON() as { notes: string; expected_notes: string }
+    writes.push(payload)
+    if (writes.length === 1) {
+      latestNotes = 'newer remote notes'
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Task notes changed since they were loaded.' }),
+      })
+    }
+    latestNotes = payload.notes
+    const savedTask = taskPayload()
+    latestNotes = 'newer remote notes'
+    return route.fulfill({ json: { ok: true, task: savedTask } })
+  })
+  const envWrites: { env: Record<string, string>; expected_env: Record<string, string> }[] = []
+  await page.route('**/api/tasks/alpha/env', async route => {
+    if (rejectEnvWith401) {
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'UI authentication required' }),
+      })
+    }
+    const payload = route.request().postDataJSON() as {
+      env: Record<string, string>
+      expected_env: Record<string, string>
+    }
+    envWrites.push(payload)
+    if (envWrites.length === 1) {
+      latestEnv = { REMOTE: 'newer' }
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Task environment changed since it was loaded.' }),
+      })
+    }
+    latestEnv = payload.env
+    const savedTask = taskPayload()
+    latestEnv = { REMOTE: 'newer' }
+    return route.fulfill({ json: { ok: true, task: savedTask } })
+  })
+
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'Open details for alpha' }).click()
+  await page.getByRole('tab', { name: 'Notes' }).click()
+  const notes = page.getByRole('textbox', { name: 'Task notes' })
+  await notes.fill('local draft')
+  await page.getByRole('button', { name: 'Save Notes' }).click()
+
+  const conflictAlert = page.getByText('Another editor saved newer notes. Your draft is unchanged.')
+  await expect(conflictAlert).toBeVisible()
+  await expect(notes).toHaveValue('local draft')
+  await expect(page.getByRole('button', { name: 'Replace Notes' })).toBeVisible()
+  expect(writes).toEqual([{ notes: 'local draft', expected_notes: '' }])
+
+  await page.getByRole('button', { name: 'Replace Notes' }).click()
+  await expect(page.getByRole('button', { name: 'Save Notes' })).toBeVisible()
+  await expect(conflictAlert).toBeHidden()
+  await expect(notes).toHaveValue('newer remote notes')
+  expect(writes).toEqual([
+    { notes: 'local draft', expected_notes: '' },
+    { notes: 'local draft', expected_notes: 'newer remote notes' },
+  ])
+
+  await page.getByRole('tab', { name: 'Env' }).click()
+  await page.getByRole('button', { name: 'Add environment variable' }).click()
+  const envKey = page.getByRole('textbox', { name: 'Environment variable key' })
+  const envValue = page.getByRole('textbox', { name: 'Environment variable value' })
+  await envKey.fill('LOCAL')
+  await envValue.fill('draft')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+
+  const envConflict = page.getByText('Another editor saved newer environment variables. Your draft is unchanged.')
+  await expect(envConflict).toBeVisible()
+  await expect(envKey).toHaveValue('LOCAL')
+  await expect(envValue).toHaveValue('draft')
+  expect(envWrites).toEqual([{ env: { LOCAL: 'draft' }, expected_env: {} }])
+
+  await page.getByRole('button', { name: 'Replace Env' }).click()
+  await expect(envConflict).toBeHidden()
+  await expect(envKey).toHaveValue('REMOTE')
+  await expect(envValue).toHaveValue('newer')
+  expect(envWrites).toEqual([
+    { env: { LOCAL: 'draft' }, expected_env: {} },
+    { env: { LOCAL: 'draft' }, expected_env: { REMOTE: 'newer' } },
+  ])
+
+  await envKey.fill('LOCAL')
+  await envValue.fill('draft after expiry')
+  rejectEnvWith401 = true
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  const recovery = page.getByRole('alertdialog', { name: 'Session expired' })
+  await expect(recovery).toBeVisible()
+  await recovery.getByRole('button', { name: 'Retry connection' }).click()
+
+  await expect(recovery).toBeHidden()
+  await expect(page.getByRole('dialog', { name: 'Task details for alpha' })).toBeVisible()
+  await expect(envKey).toHaveValue('LOCAL')
+  await expect(envValue).toHaveValue('draft after expiry')
+  expect(await page.getByRole('dialog', { name: 'Task details for alpha' })
+    .evaluate(panel => panel.contains(document.activeElement))).toBe(true)
+})
+
+test('task detail only offers replacement after loading the newer value', async ({ page }) => {
+  let latestNotes = ''
+  let latestEnv: Record<string, string> = {}
+  let failNextDetailRead = false
+  let notesWrites = 0
+  let envWrites = 0
+  const task = {
+    name: 'alpha',
+    status: 'pending',
+    task_kind: 'shell',
+    dir: '/tmp/alpha',
+    config_file: '/tmp/alpha/task.sh',
+    config_text: 'echo alpha',
+    preview_text: 'echo alpha',
+    created_at: '2026-08-09T00:00:00Z',
+    run_index: 1,
+    pinned: false,
+  }
+  const taskPayload = () => ({ ...task, notes: latestNotes, env: latestEnv })
+
+  await page.route('**/api/tasks?*', route => route.fulfill({
+    json: {
+      items: [taskPayload()],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+      status_counts: {
+        pending: 1,
+        queued: 0,
+        running: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+      },
+    },
+  }))
+  await page.route('**/api/tasks/alpha?*', route => {
+    if (failNextDetailRead) {
+      failNextDetailRead = false
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Task detail temporarily unavailable.' }),
+      })
+    }
+    return route.fulfill({ json: taskPayload() })
+  })
+  await page.route('**/api/tasks/alpha/notes', route => {
+    notesWrites += 1
+    latestNotes = 'newer remote notes'
+    failNextDetailRead = notesWrites === 1
+    return route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'Task notes changed since they were loaded.' }),
+    })
+  })
+  await page.route('**/api/tasks/alpha/env', route => {
+    envWrites += 1
+    latestEnv = { REMOTE: 'newer' }
+    failNextDetailRead = envWrites === 1
+    return route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'Task environment changed since it was loaded.' }),
+    })
+  })
+
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'Open details for alpha' }).click()
+  await page.getByRole('tab', { name: 'Notes' }).click()
+  const notes = page.getByRole('textbox', { name: 'Task notes' })
+  await notes.fill('local draft')
+  await page.getByRole('button', { name: 'Save Notes' }).click()
+
+  await expect(page.getByText(
+    'Newer notes exist, but their latest version could not be loaded. Your draft is safe. Retry Save Notes before replacing anything.',
+  )).toBeVisible()
+  await expect(notes).toHaveValue('local draft')
+  await expect(page.getByRole('button', { name: 'Replace Notes' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Save Notes' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Save Notes' }).click()
+  await expect(page.getByText('Another editor saved newer notes. Your draft is unchanged.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Replace Notes' })).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Env' }).click()
+  await page.getByRole('button', { name: 'Add environment variable' }).click()
+  const envKey = page.getByRole('textbox', { name: 'Environment variable key' })
+  const envValue = page.getByRole('textbox', { name: 'Environment variable value' })
+  await envKey.fill('LOCAL')
+  await envValue.fill('draft')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+
+  await expect(page.getByText(
+    'Newer environment variables exist, but their latest version could not be loaded. Your draft is safe. Retry Save before replacing anything.',
+  )).toBeVisible()
+  await expect(envKey).toHaveValue('LOCAL')
+  await expect(envValue).toHaveValue('draft')
+  await expect(page.getByRole('button', { name: 'Replace Env' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByText('Another editor saved newer environment variables. Your draft is unchanged.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Replace Env' })).toBeVisible()
 })
 
 test('mobile navigation and runtime controls stay touch friendly without overflow', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'Mobile viewport contract')
+  await page.setViewportSize({ width: 375, height: 667 })
   await page.goto('/manager?token=pyruns-e2e-access-token')
 
   const sidebarTargets = [
@@ -172,6 +646,28 @@ test('mobile navigation and runtime controls stay touch friendly without overflo
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
+  await page.locator('[data-launcher-trigger="true"]').click()
+  const launcher = page.getByRole('dialog', { name: 'Launch Workspace' })
+  await launcher.getByRole('button', { name: 'Python', exact: true }).click()
+  const launcherTargets = [
+    launcher.getByRole('button', { name: 'Python', exact: true }),
+    launcher.getByRole('button', { name: 'Shell', exact: true }),
+    launcher.getByRole('textbox', { name: 'Python script path' }),
+    launcher.getByRole('button', { name: /Browse/ }),
+    launcher.getByRole('button', { name: 'Select Script Path' }),
+    launcher.getByRole('button', { name: 'Cancel' }),
+  ]
+  for (const target of launcherTargets) {
+    const box = await target.boundingBox()
+    expect(box?.width).toBeGreaterThanOrEqual(44)
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+  }
+  const launcherInputFontSize = await launcher
+    .getByRole('textbox', { name: 'Python script path' })
+    .evaluate(element => Number.parseFloat(window.getComputedStyle(element).fontSize))
+  expect(launcherInputFontSize).toBeGreaterThanOrEqual(16)
+  await launcher.getByRole('button', { name: 'Cancel' }).click()
+
   await page.getByRole('button', { name: 'Runtime' }).click()
   const runtimeTargets = [
     page.getByRole('tab', { name: 'Python' }),
@@ -188,5 +684,195 @@ test('mobile navigation and runtime controls stay touch friendly without overflo
     expect(box?.width).toBeGreaterThanOrEqual(44)
     expect(box?.height).toBeGreaterThanOrEqual(44)
   }
+  await page.getByRole('tab', { name: 'GPU' }).click()
+  const gpuScheduler = page.getByRole('switch', { name: 'GPU scheduling' })
+  const gpuSchedulerBox = await gpuScheduler.boundingBox()
+  expect(gpuSchedulerBox?.width).toBeGreaterThanOrEqual(44)
+  expect(gpuSchedulerBox?.height).toBeGreaterThanOrEqual(44)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  await page.getByRole('button', { name: 'Close runtime panel' }).click()
+  await page.getByRole('link', { name: 'Generator' }).click()
+  const taskPrefix = page.getByRole('textbox', { name: 'Task Prefix' })
+  const editorViewButtons = await page.locator('[aria-label="Editor view"] button').all()
+  const generatorTargets = [
+    page.locator('button[aria-haspopup="listbox"]').first(),
+    ...editorViewButtons,
+    taskPrefix,
+    page.locator('label').filter({ hasText: 'Append timestamp' }),
+    page.getByRole('button', { name: /^(Create Shell Task|Generate Tasks|Preview Batch Tasks)$/ }),
+  ]
+  for (const target of generatorTargets) {
+    const box = await target.boundingBox()
+    expect(box?.width).toBeGreaterThanOrEqual(44)
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+  }
+  const taskPrefixFontSize = await taskPrefix.evaluate(
+    element => Number.parseFloat(window.getComputedStyle(element).fontSize),
+  )
+  expect(taskPrefixFontSize).toBeGreaterThanOrEqual(16)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  await page.getByRole('link', { name: 'Monitor' }).click()
+  const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks' })
+  const monitorSearchBox = await monitorSearch.boundingBox()
+  expect(monitorSearchBox?.height).toBeGreaterThanOrEqual(44)
+  const monitorSearchFontSize = await monitorSearch.evaluate(
+    element => Number.parseFloat(window.getComputedStyle(element).fontSize),
+  )
+  expect(monitorSearchFontSize).toBeGreaterThanOrEqual(16)
+  const exportBox = await page.getByRole('button', { name: 'Export' }).boundingBox()
+  expect(exportBox?.height).toBeGreaterThanOrEqual(44)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  await page.setViewportSize({ width: 667, height: 375 })
+  await page.getByRole('link', { name: 'Manager' }).click()
+  const landscapeSearch = page.getByRole('textbox', { name: 'Search tasks' })
+  const landscapeSearchBox = await landscapeSearch.boundingBox()
+  expect(landscapeSearchBox?.height).toBeGreaterThanOrEqual(44)
+  expect(await landscapeSearch.evaluate(
+    element => Number.parseFloat(window.getComputedStyle(element).fontSize),
+  )).toBeGreaterThanOrEqual(16)
+  await page.getByRole('button', { name: 'Runtime' }).click()
+  for (const target of [
+    page.getByRole('tab', { name: 'Python' }),
+    page.getByRole('tab', { name: 'Env' }),
+    page.getByRole('tab', { name: 'GPU' }),
+    page.getByRole('button', { name: 'Reload runtime' }),
+    page.getByRole('button', { name: 'Close runtime panel' }),
+  ]) {
+    const box = await target.boundingBox()
+    expect(box?.width).toBeGreaterThanOrEqual(44)
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+test('authentication failures show a recoverable session screen', async ({ page }) => {
+  let rejectWorkspace = true
+  await page.route('**/api/workspace', route => {
+    if (rejectWorkspace) {
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'UI authentication required' }),
+      })
+    }
+    return route.continue()
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('heading', { name: 'Session expired' })).toBeVisible()
+  await expect(page).toHaveTitle('Session expired · Pyruns')
+  await expect(page.getByText('This browser no longer has access')).toBeVisible()
+
+  rejectWorkspace = false
+  await page.getByRole('button', { name: 'Retry connection' }).click()
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+
+  await page.route('**/api/runtime', route => route.fulfill({
+    status: 401,
+    contentType: 'application/json',
+    body: JSON.stringify({ detail: 'UI authentication required' }),
+  }))
+  await page.getByRole('button', { name: 'Runtime' }).click()
+  await expect(page.getByRole('heading', { name: 'Session expired' })).toBeVisible()
+})
+
+test('template picker keeps the current option active when reopened', async ({ page }) => {
+  await page.addInitScript(() => {
+    const testWindow = window as typeof window & { __templateScrollTargets?: string[] }
+    testWindow.__templateScrollTargets = []
+    Element.prototype.scrollIntoView = function scrollIntoView() {
+      testWindow.__templateScrollTargets?.push((this as HTMLElement).id)
+    }
+  })
+  const templates = [
+    { value: 'task-a', label: 'Task A' },
+    { value: 'task-b', label: 'Task B' },
+  ]
+  await page.route('**/api/templates', route => route.fulfill({ json: { items: templates } }))
+  await page.route('**/api/templates/content?*', route => {
+    const value = new URL(route.request().url()).searchParams.get('value') || ''
+    const label = templates.find(option => option.value === value)?.label || value
+    return route.fulfill({
+      json: {
+        value,
+        label,
+        path: `/tmp/${value}.sh`,
+        content: `echo ${value}`,
+        read_only: false,
+        mode_hint: 'shell',
+        parsed_config: null,
+      },
+    })
+  })
+
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('textbox', { name: 'Task Prefix' })).toBeVisible()
+  await page.getByRole('button', { name: /^(Load task|Select template|Task A)$/ }).click()
+  await page.getByRole('option', { name: 'Task B' }).click()
+  await expect(page.getByRole('button', { name: 'Task B' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Task B' }).click()
+  const templateSearch = page.getByRole('combobox', { name: /^Search (tasks|templates)$/ })
+  const options = page.getByRole('option')
+  await expect(options).toHaveCount(3)
+  expect(await options.evaluateAll(elements => elements.every(element => element.tabIndex === -1))).toBe(true)
+
+  await templateSearch.press('Home')
+  await expect(templateSearch).toHaveAttribute('aria-activedescendant', /option-0$/)
+  await expect.poll(() => page.evaluate(() => (
+    window as typeof window & { __templateScrollTargets?: string[] }
+  ).__templateScrollTargets?.at(-1))).toMatch(/option-0$/)
+
+  await templateSearch.press('End')
+  await expect(templateSearch).toHaveAttribute('aria-activedescendant', /option-2$/)
+  await expect.poll(() => page.evaluate(() => (
+    window as typeof window & { __templateScrollTargets?: string[] }
+  ).__templateScrollTargets?.at(-1))).toMatch(/option-2$/)
+
+  await templateSearch.press('Enter')
+  await expect(page.getByRole('button', { name: 'Task B' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Task B' }).click()
+  await page.getByRole('combobox', { name: /^Search (tasks|templates)$/ }).press('Tab')
+  await expect(page.getByRole('listbox')).toBeHidden()
+})
+
+test('template list load failure has a retry that clears the error', async ({ page }) => {
+  let attempts = 0
+  const templates = [{ value: 'task-a', label: 'Task A' }]
+  await page.route('**/api/templates', route => {
+    attempts += 1
+    if (attempts === 1) {
+      return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Template service temporarily unavailable.' }),
+      })
+    }
+    return route.fulfill({ json: { items: templates } })
+  })
+  await page.route('**/api/templates/content?*', route => route.fulfill({
+    json: {
+      value: 'task-a',
+      label: 'Task A',
+      path: '/tmp/task-a.yaml',
+      content: 'name: task-a',
+      read_only: false,
+      mode_hint: 'form',
+      parsed_config: { name: 'task-a' },
+    },
+  }))
+
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  const templateError = page.getByRole('alert').filter({ hasText: 'Templates could not be loaded.' })
+  await expect(templateError).toBeVisible()
+  await templateError.getByRole('button', { name: 'Retry' }).click()
+
+  await expect(templateError).toBeHidden()
+  await page.getByRole('button', { name: 'Load task' }).click()
+  await expect(page.getByRole('option', { name: 'Task A' })).toBeVisible()
+  expect(attempts).toBe(2)
 })

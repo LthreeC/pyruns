@@ -236,24 +236,25 @@ export default function DashboardPage() {
                 {workspaceName}
               </div>
             </div>
-            <div className="grid w-full min-w-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+            <div className="grid w-full min-w-0 grid-cols-[44px_minmax(0,1fr)] gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
               <button
                 type="button"
                 onClick={() => void handleManualRefresh()}
                 disabled={manualRefreshing || loading}
-                className="inline-flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2 py-2 text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
+                className="touch-target inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2 py-2 text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-10 sm:px-3"
+                aria-label="Refresh dashboard"
                 title="Refresh dashboard now"
               >
-                <RefreshCw className={clsx('h-4 w-4', manualRefreshing && 'animate-spin')} />
-                <span className="min-w-0 truncate">Refresh</span>
+                <RefreshCw aria-hidden="true" className={clsx('h-4 w-4', manualRefreshing && 'animate-spin')} />
+                <span className="hidden sm:inline">Refresh</span>
               </button>
               <button
                 type="button"
                 onClick={() => navigate(workspaceReady ? '/generator' : '/?launcher=1&mode=python')}
-                className="inline-flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-md bg-accent px-2 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent/90 sm:px-4"
+                className="touch-target inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-md bg-accent px-2 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover sm:min-h-10 sm:px-4"
               >
                 <Wand2 className="h-4 w-4" />
-                <span className="min-w-0 truncate">{workspaceReady ? 'Start New Task' : 'Choose Workspace'}</span>
+                <span className="whitespace-nowrap">{workspaceReady ? 'Start New Task' : 'Choose Workspace'}</span>
               </button>
             </div>
           </header>
@@ -385,7 +386,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => navigate('/manager')}
-                  className="flex items-center gap-1 rounded-md px-2 py-1 text-2xs text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-accent"
+                  className="touch-target inline-flex min-h-11 items-center gap-1 rounded-md px-2 py-1 text-2xs text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-accent sm:min-h-0"
                 >
                   View all <ArrowRight className="h-3 w-3" />
                 </button>
@@ -425,7 +426,7 @@ function TaskRow({ task, onClick }: { task: Task; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+      className="flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
     >
       <div className="flex-none">
         <StatusBadge status={task.status as TaskStatus} />
@@ -689,7 +690,7 @@ function GpuProcessDialog({
             type="button"
             onClick={onClose}
             aria-label="Close GPU details"
-            className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="touch-target inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 sm:h-9 sm:w-9"
           >
             <X className="h-4 w-4" />
           </button>
@@ -708,7 +709,7 @@ function GpuProcessDialog({
           {error && (
             <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
               <span>{error}</span>
-              <button type="button" onClick={onRetry} className="flex-none font-medium text-accent hover:text-accent-hover">Retry</button>
+              <button type="button" onClick={onRetry} className="touch-target inline-flex min-h-11 flex-none items-center rounded-md px-2 font-medium text-accent hover:text-accent-hover sm:min-h-0">Retry</button>
             </div>
           )}
           {loading && gpu.processes.length === 0 ? (

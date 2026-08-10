@@ -34,7 +34,7 @@ function ToastCard({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: num
       role={toast.tone === 'error' ? 'alert' : 'status'}
       aria-live={toast.tone === 'error' ? 'assertive' : 'polite'}
       className={clsx(
-        'pointer-events-auto flex w-[min(380px,calc(100vw-2rem))] items-start gap-2 rounded-md border px-3 py-2.5 shadow-md',
+        'pointer-events-none flex w-[min(380px,calc(100vw-2rem))] items-start gap-2 rounded-md border px-3 py-2.5 shadow-md',
         'bg-surface-raised',
         TOAST_STYLES[toast.tone],
       )}
@@ -51,7 +51,7 @@ function ToastCard({ toast, onDismiss }: { toast: ToastItem; onDismiss: (id: num
       <button
         type="button"
         onClick={() => onDismiss(toast.id)}
-        className="inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 sm:h-8 sm:w-8"
+        className="touch-target pointer-events-auto inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 sm:h-8 sm:w-8"
         aria-label="Dismiss notification"
       >
         <X className="h-3.5 w-3.5" />

@@ -17,6 +17,14 @@ FRONTEND_DIR = ROOT / "frontend"
 STATIC_DIR = ROOT / "pyruns" / "web" / "static"
 
 
+def hidden_subprocess_kwargs() -> dict[str, int]:
+    """Keep npm hidden when this standalone script runs on Windows."""
+
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def _hash_bytes(data: bytes) -> str:
     digest = hashlib.sha256()
     digest.update(data)
@@ -75,6 +83,7 @@ def check_frontend_static(*, root: Path = ROOT) -> list[str]:
             encoding="utf-8",
             errors="replace",
             capture_output=True,
+            **hidden_subprocess_kwargs(),
         )
         if result.returncode != 0:
             output = "\n".join(part for part in (result.stdout, result.stderr) if part)

@@ -39,6 +39,7 @@ import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import CodeTextEditor from '@/components/shared/CodeTextEditor'
+import ToggleSwitch from '@/components/shared/ToggleSwitch'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
 import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
@@ -250,8 +251,6 @@ function TemplatePicker({
     if (!open) return
 
     setTemplateFilter('')
-    const selectedIndex = visibleOptions.findIndex(option => option.value === value)
-    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0)
     const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0)
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null
@@ -268,10 +267,20 @@ function TemplatePicker({
   }, [closePicker, open])
 
   useEffect(() => {
-    if (open) {
-      setActiveIndex(0)
-    }
-  }, [open, templateFilter])
+    if (!open) return
+
+    const selectedIndex = visibleOptions.findIndex(option => option.value === value)
+    setActiveIndex(templateFilter ? 0 : Math.max(0, selectedIndex))
+  }, [open, templateFilter, value, visibleOptions])
+
+  useEffect(() => {
+    if (!open || !visibleOptions[activeIndex]) return
+
+    const scrollFrame = window.requestAnimationFrame(() => {
+      document.getElementById(`${listboxId}-option-${activeIndex}`)?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => window.cancelAnimationFrame(scrollFrame)
+  }, [activeIndex, listboxId, open, visibleOptions])
 
   const selectValue = useCallback((nextValue: string) => {
     onChange(nextValue)
@@ -327,7 +336,7 @@ function TemplatePicker({
             setOpen(true)
           }
         }}
-        className="flex h-8 w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 text-left text-xs text-txt-primary outline-none transition-colors hover:border-border focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+        className="touch-target flex h-11 w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 text-left text-sm text-txt-primary outline-none transition-colors hover:border-border focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-50 min-[701px]:h-8 min-[701px]:text-xs"
       >
         <span className="min-w-0 flex-1 truncate">{buttonLabel}</span>
         <ChevronDown className={clsx('h-3 w-3 flex-none text-txt-tertiary transition-transform', open && 'rotate-180')} />
@@ -348,7 +357,7 @@ function TemplatePicker({
               aria-controls={listboxId}
               aria-expanded={open}
               aria-activedescendant={visibleOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined}
-              className="h-7 w-full rounded-md border border-border-subtle bg-surface-overlay px-2 pl-7 text-xs text-txt-primary outline-none transition-colors placeholder:text-txt-tertiary focus:border-accent focus:ring-2 focus:ring-accent/15"
+              className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2 pl-7 text-base text-txt-primary outline-none transition-colors placeholder:text-txt-tertiary focus:border-accent focus:ring-2 focus:ring-accent/15 min-[701px]:h-7 min-[701px]:text-xs"
             />
           </div>
           <div id={listboxId} role="listbox" className="max-h-[min(18rem,50vh)] overflow-y-auto py-1">
@@ -359,12 +368,13 @@ function TemplatePicker({
                   id={`${listboxId}-option-${index}`}
                   type="button"
                   role="option"
+                  tabIndex={-1}
                   aria-selected={option.value === value}
                   title={option.value}
                   onClick={() => selectValue(option.value)}
                   onMouseEnter={() => setActiveIndex(index)}
                   className={clsx(
-                    'block w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-overlay',
+                    'touch-target block min-h-11 w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-overlay min-[701px]:min-h-0 min-[701px]:text-xs',
                     index === activeIndex && 'bg-surface-overlay',
                     option.value === value ? 'text-accent' : 'text-txt-primary',
                   )}
@@ -619,6 +629,8 @@ export default function GeneratorPage() {
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
   const [createdSummary, setCreatedSummary] = useState<CreatedTaskResult | null>(null)
   const [error, setError] = useState('')
+  const [templateLoadError, setTemplateLoadError] = useState('')
+  const [templateListLoading, setTemplateListLoading] = useState(false)
   const [formLayoutMode, setFormLayoutMode] = useState<FormLayoutMode>('tree')
   const [treeOpenSignal, setTreeOpenSignal] = useState(0)
   const [treeOpenValue, setTreeOpenValue] = useState(true)
@@ -632,13 +644,27 @@ export default function GeneratorPage() {
   const createRequestSeqRef = useRef(0)
   const generationInputKeyRef = useRef('')
   const generationDraftRevisionRef = useRef(0)
+  const templateListRequestSeqRef = useRef(0)
   const lastWorkspaceDefaultKeyRef = useRef('')
   const lastShellRootRef = useRef('')
 
-  const refreshTemplatesWithFeedback = useCallback(() => {
-    void fetchTemplates().catch((err: any) => {
-      setError(err?.message || 'Could not load templates')
-    })
+  const refreshTemplatesWithFeedback = useCallback(async () => {
+    const requestId = ++templateListRequestSeqRef.current
+    setTemplateListLoading(true)
+    try {
+      await fetchTemplates()
+      if (requestId === templateListRequestSeqRef.current) {
+        setTemplateLoadError('')
+      }
+    } catch (err: any) {
+      if (requestId === templateListRequestSeqRef.current) {
+        setTemplateLoadError(err?.message || 'Could not load templates')
+      }
+    } finally {
+      if (requestId === templateListRequestSeqRef.current) {
+        setTemplateListLoading(false)
+      }
+    }
   }, [fetchTemplates])
 
   const confirmTemplateReplacement = useCallback(async () => {
@@ -1130,7 +1156,7 @@ export default function GeneratorPage() {
               <button
                 type="button"
                 onClick={() => void handlePickShellFile()}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary"
+                className="touch-target inline-flex h-11 items-center gap-1.5 rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary min-[701px]:h-auto"
               >
                 <FileCode className="h-3 w-3" />
                 <span>Browse Shell</span>
@@ -1189,7 +1215,7 @@ export default function GeneratorPage() {
                   aria-pressed={active}
                   onClick={() => handleDisplayModeChange(mode as GeneratorDisplayMode)}
                   className={clsx(
-                    'inline-flex flex-1 items-center justify-center gap-1.5 border-l border-border-subtle px-3 py-1.5 text-xs font-medium transition-colors first:border-l-0 min-[701px]:flex-none',
+                    'touch-target inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 border-l border-border-subtle px-3 py-1.5 text-xs font-medium transition-colors first:border-l-0 min-[701px]:min-h-0 min-[701px]:flex-none',
                     active
                       ? 'bg-surface-raised text-txt-primary'
                       : 'text-txt-secondary hover:bg-surface-raised/55 hover:text-txt-primary',
@@ -1212,7 +1238,7 @@ export default function GeneratorPage() {
                 value={columns}
                 onChange={event => setColumns(Number(event.target.value))}
                 title="Columns per row"
-                className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 pr-6 text-xs text-txt-primary outline-none transition-colors focus:border-border"
+                className="touch-target h-11 appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 pr-6 text-base text-txt-primary outline-none transition-colors focus:border-border min-[701px]:h-auto min-[701px]:text-xs"
               >
                 {[2, 3, 4, 5, 6, 7, 8].map(count => (
                   <option key={count} value={count}>{count} col{count > 1 ? 's' : ''}</option>
@@ -1224,6 +1250,24 @@ export default function GeneratorPage() {
 
         </div>
       </div>
+
+      {templateLoadError && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-2 border-b border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300"
+        >
+          <AlertTriangle className="h-3.5 w-3.5 flex-none" />
+          <span className="min-w-0 flex-1 break-words">Templates could not be loaded. {templateLoadError}</span>
+          <button
+            type="button"
+            className="touch-target inline-flex min-h-11 flex-none items-center justify-center rounded-md border border-rose-500/25 px-3 py-1.5 font-medium transition-colors hover:bg-rose-500/10 disabled:cursor-wait disabled:opacity-60"
+            disabled={templateListLoading}
+            onClick={() => { void refreshTemplatesWithFeedback() }}
+          >
+            {templateListLoading ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
+      )}
 
       <div ref={generatorBodyRef} className={generatorBodyClassName}>
         <div className={generatorEditorClassName}>
@@ -1299,15 +1343,16 @@ export default function GeneratorPage() {
         >
           <CompactSection title="Naming" bodyClassName="space-y-2.5 p-2">
             <div>
-              <label className="block text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Task Prefix</label>
+              <label htmlFor="task-prefix" className="block text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Task Prefix</label>
               <input
+                id="task-prefix"
                 value={namePrefix}
                 onChange={event => setNamePrefix(event.target.value)}
                 placeholder="task"
-                className="mt-1.5 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-sm font-medium text-txt-primary outline-none transition-colors focus:border-border"
+                className="mt-1.5 h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-base font-medium text-txt-primary outline-none transition-colors focus:border-border min-[701px]:h-auto min-[701px]:text-sm"
               />
             </div>
-            <label className="inline-flex items-center gap-2 text-xs text-txt-secondary">
+            <label className="inline-flex min-h-11 items-center gap-2 text-xs text-txt-secondary min-[701px]:min-h-0">
               <input
                 type="checkbox"
                 checked={appendTimestamp}
@@ -1511,7 +1556,7 @@ function CreatedTaskSummary({
       <button
         type="button"
         onClick={onOpenManager}
-        className="inline-flex w-full items-center justify-center rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+        className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-800 min-[701px]:min-h-0"
       >
         Open in Manager
       </button>
@@ -1711,7 +1756,7 @@ function SectionExpandControls({
         title="Expand all sections"
         aria-label="Expand all sections"
         onClick={() => onSetAllSections(true)}
-        className="inline-flex h-11 w-11 items-center justify-center text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
+        className="touch-target inline-flex h-11 w-11 items-center justify-center text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
       >
         <UnfoldVertical className="h-3.5 w-3.5" />
       </button>
@@ -1720,7 +1765,7 @@ function SectionExpandControls({
         title="Collapse all sections"
         aria-label="Collapse all sections"
         onClick={() => onSetAllSections(false)}
-        className="inline-flex h-11 w-11 items-center justify-center border-l border-border-subtle text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
+        className="touch-target inline-flex h-11 w-11 items-center justify-center border-l border-border-subtle text-txt-secondary transition-colors hover:bg-surface-raised/60 hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
       >
         <FoldVertical className="h-3.5 w-3.5" />
       </button>
@@ -2648,7 +2693,7 @@ function ParamRow({
             title={pinned ? 'Unpin' : 'Pin'}
             aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
             className={clsx(
-              'flex h-4.5 w-4.5 flex-none items-center justify-center rounded transition-colors',
+              'touch-target flex h-4.5 w-4.5 flex-none items-center justify-center rounded transition-colors',
               pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
             )}
           >
@@ -2683,30 +2728,17 @@ function ParamRow({
           {originalType === 'bool' && !hasBatch ? (
             <div
               className={clsx(
-                'flex h-6 w-full items-center justify-between gap-2 rounded-md border bg-[var(--input-bg)] px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
+                'touch-input flex h-6 w-full items-center justify-between gap-2 rounded-md border bg-[var(--input-bg)] px-2 transition-colors focus-within:border-accent focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15',
                 batchActive ? 'border-amber-500/40' : 'border-border',
               )}
             >
               <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
-              <button
-                type="button"
-                onClick={() => onChange(!value)}
+              <ToggleSwitch
+                checked={Boolean(value)}
+                onChange={onChange}
+                label={name}
                 title={`Toggle ${name}`}
-                role="switch"
-                aria-checked={Boolean(value)}
-                aria-label={name}
-                className={clsx(
-                  'relative h-4.5 w-9 flex-none rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
-                  value ? 'bg-accent' : 'bg-zinc-600'
-                )}
-              >
-                <span
-                  className={clsx(
-                    'absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform',
-                    value ? 'left-[18px]' : 'left-0.5'
-                  )}
-                />
-              </button>
+              />
             </div>
           ) : (
             <input
@@ -2724,7 +2756,7 @@ function ParamRow({
               spellCheck={false}
               title={localValue}
               className={clsx(
-                'h-6 w-full rounded-md border bg-[var(--input-bg)] px-2 text-xs font-mono leading-4 text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
+                'touch-input h-6 w-full rounded-md border bg-[var(--input-bg)] px-2 text-xs font-mono leading-4 text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
                 hasBatch || batchActive ? 'border-amber-500/40' : 'border-border',
               )}
             />
@@ -2737,7 +2769,7 @@ function ParamRow({
   return (
     <div
       className={clsx(
-        'grid min-h-10 grid-cols-[24px_minmax(0,1fr)] min-w-0 items-center gap-2 rounded-md border border-border bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20 sm:grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]',
+        'generator-param-row grid min-h-10 grid-cols-[24px_minmax(0,1fr)] min-w-0 items-center gap-2 rounded-md border border-border bg-surface-raised px-2.5 py-1.5 shadow-sm transition-colors hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20 sm:grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]',
         pinned && 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.04]',
         (hasBatch || batchActive) && 'border-l-2 border-l-amber-500 border-y-amber-500/20 border-r-amber-500/20 bg-amber-500/[0.04]',
       )}
@@ -2751,7 +2783,7 @@ function ParamRow({
         title={pinned ? 'Unpin' : 'Pin'}
         aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
         className={clsx(
-          'flex h-6 w-6 flex-none items-center justify-center rounded-md transition-colors',
+          'touch-target flex h-6 w-6 flex-none items-center justify-center rounded-md transition-colors',
           pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
         )}
       >
@@ -2790,25 +2822,12 @@ function ParamRow({
             treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end',
           )}
         >
-          <button
-            type="button"
-            onClick={() => onChange(!value)}
+          <ToggleSwitch
+            checked={Boolean(value)}
+            onChange={onChange}
+            label={name}
             title={`Toggle ${name}`}
-            role="switch"
-            aria-checked={Boolean(value)}
-            aria-label={name}
-            className={clsx(
-              'relative h-4.5 w-9 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/30',
-              value ? 'bg-accent' : 'bg-zinc-600'
-            )}
-          >
-            <span
-              className={clsx(
-                'absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-transform',
-                value ? 'left-[18px]' : 'left-0.5'
-              )}
-            />
-          </button>
+          />
           <span className="min-w-0 truncate text-xs font-mono text-txt-secondary" title={String(value)}>{String(value)}</span>
         </div>
       ) : (
@@ -2827,7 +2846,7 @@ function ParamRow({
           spellCheck={false}
           title={localValue}
           className={clsx(
-            'rounded-md border bg-[var(--input-bg)] px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
+            'touch-input rounded-md border bg-[var(--input-bg)] px-1.5 py-1 text-xs font-mono text-txt-primary outline-none transition-colors hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15',
             treeParamRow ? 'col-start-2 min-w-0 w-full sm:col-start-auto' : 'ml-auto min-w-0 flex-1',
             hasBatch || batchActive ? 'border-amber-500/40' : 'border-border',
           )}

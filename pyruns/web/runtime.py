@@ -27,7 +27,11 @@ from pyruns._config import (
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.gpu_scheduler import GpuSchedulerConfig
-from pyruns.core.task_manager import TaskManager
+from pyruns.core.task_manager import (
+    TaskManager,
+    TaskStateConflict,
+    active_task_run_index,
+)
 from pyruns.core.report import build_export_csv
 from pyruns.launcher import (
     bootstrap_shell_workspace,
@@ -100,6 +104,14 @@ _GPU_SCHEDULER_PAYLOAD_KEYS = {
 
 class WorkspaceChangedError(RuntimeError):
     """Raised when a workspace-bound stream outlives its source workspace."""
+
+
+class TaskNotesConflictError(RuntimeError):
+    """Raised when task notes changed after an editor loaded them."""
+
+
+class TaskEnvConflictError(RuntimeError):
+    """Raised when task environment changed after an editor loaded it."""
 
 
 def _with_stable_workspace(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -1200,8 +1212,17 @@ class PyrunsRuntime:
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
         """Request cancellation from the runner that owns the task."""
         task = self.require_task(task_name)
+        task_dir = str(task.get("dir", "") or "")
+        info = load_task_info(task_dir) if task_dir else {}
+        status = str(info.get("status", "") or "").lower()
+        if status not in {"queued", "running"}:
+            raise ValueError(f"Task '{task_name}' cannot be cancelled")
         self.invalidate_cache()
-        ok = self.task_manager.request_task_cancel(task_name)
+        ok = self.task_manager.request_task_cancel(
+            task_name,
+            expected_runner_id=str(info.get("runner_id", "") or ""),
+            expected_run_index=active_task_run_index(info),
+        )
         if not ok:
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
         return self.get_task(task_name) or task
@@ -1348,11 +1369,19 @@ class PyrunsRuntime:
             return self.get_template_content(shell_path)
 
     @_with_stable_workspace
-    def update_task_notes(self, task_name: str, notes: str) -> Dict[str, Any]:
+    def update_task_notes(
+        self,
+        task_name: str,
+        notes: str,
+        expected_notes: str,
+    ) -> Dict[str, Any]:
         """Persist notes for one task."""
         self.require_task(task_name, refresh=False)
         self.invalidate_cache()
-        ok, result = self.task_manager.update_task_notes(task_name, notes)
+        try:
+            ok, result = self.task_manager.update_task_notes(task_name, notes, expected_notes)
+        except TaskStateConflict as exc:
+            raise TaskNotesConflictError(str(exc)) from exc
         if not ok:
             if str(result) == "Task not found":
                 raise KeyError(task_name)
@@ -1360,11 +1389,19 @@ class PyrunsRuntime:
         return self.require_task(task_name, refresh=True)
 
     @_with_stable_workspace
-    def update_task_env(self, task_name: str, env: Dict[str, Any]) -> Dict[str, Any]:
+    def update_task_env(
+        self,
+        task_name: str,
+        env: Dict[str, Any],
+        expected_env: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Persist env vars for one task."""
         self.require_task(task_name, refresh=False)
         self.invalidate_cache()
-        ok, result = self.task_manager.update_task_env(task_name, env)
+        try:
+            ok, result = self.task_manager.update_task_env(task_name, env, expected_env)
+        except TaskStateConflict as exc:
+            raise TaskEnvConflictError(str(exc)) from exc
         if not ok:
             if str(result) == "Task not found":
                 raise KeyError(task_name)

@@ -213,6 +213,25 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _run_index(value: str) -> int:
+    from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS
+
+    text = str(value)
+    if not text.isdecimal():
+        raise argparse.ArgumentTypeError("run must be a positive integer")
+    normalized = text.lstrip("0") or "0"
+    maximum = str(MAX_RUN_HISTORY_SLOTS)
+    if (
+        normalized == "0"
+        or len(normalized) > len(maximum)
+        or (len(normalized) == len(maximum) and normalized > maximum)
+    ):
+        raise argparse.ArgumentTypeError(
+            f"run must be between 1 and {MAX_RUN_HISTORY_SLOTS}"
+        )
+    return int(normalized)
+
+
 def _non_negative_float(value: str) -> float:
     try:
         parsed = float(value)
@@ -644,7 +663,7 @@ def build_parser(
         common=True,
     )
     show.add_argument("task", metavar="TASK[@RUN]", help="exact task name, optionally at one run number")
-    show.add_argument("--run", type=_positive_int, help="select a historical run number")
+    show.add_argument("--run", type=_run_index, help="select a historical run number")
 
     logs = command(
         "log",
@@ -673,7 +692,7 @@ def build_parser(
     )
     logs.add_argument("task", metavar="TASK[@RUN]", help="exact task name, optionally at one run number")
     logs.add_argument("-f", "--follow", action="store_true", help="wait for new output until the task finishes")
-    logs.add_argument("--run", type=_positive_int, help="select a historical run number")
+    logs.add_argument("--run", type=_run_index, help="select a historical run number")
     logs.add_argument("--path", action="store_true", help="print only the selected log path")
 
     wait = command(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import atexit
 import codecs
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -30,7 +29,6 @@ from pyruns._config import (
     ENV_KEY_RUN_INDEX,
     ERROR_LOG_FILENAME,
     RECORDS_KEY,
-    RUN_LOGS_DIR,
     SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
@@ -655,6 +653,9 @@ def _prepare_env(
     env.update(_load_workspace_global_env(task_dir))
     if extra_env:
         env.update(normalize_environment(extra_env))
+    # The Web UI bootstrap credential is process-private and must never become
+    # part of a user task's environment, including through workspace overrides.
+    env.pop("PYRUNS_UI_TOKEN", None)
     _prepend_runtime_python_to_path(env, python_runtime)
     pyruns_import_root = _current_pyruns_import_root()
     _prepend_pythonpath(env, pyruns_import_root)
@@ -1300,7 +1301,13 @@ def _consume_pending_stop_summary(task_dir: str, run_index: int) -> Dict[str, An
     return captured or None
 
 
-def _terminate_started_process(proc: Any, *, task_name: str, run_index: int) -> bool:
+def _terminate_started_process(
+    proc: Any,
+    *,
+    expected_create_time: float | None,
+    task_name: str,
+    run_index: int,
+) -> bool:
     """Kill a child process that survived an internal worker failure."""
 
     if proc is None:
@@ -1308,10 +1315,16 @@ def _terminate_started_process(proc: Any, *, task_name: str, run_index: int) -> 
     try:
         if proc.poll() is not None:
             return False
-        created_at = get_process_create_time(int(proc.pid))
+        if expected_create_time is None:
+            logger.warning(
+                "Terminating child process for %s run #%d through its owned Popen handle "
+                "because the OS creation time is unavailable",
+                task_name,
+                run_index,
+            )
         terminated = kill_process(
             int(proc.pid),
-            expected_create_time=created_at,
+            expected_create_time=expected_create_time,
         )
         if not terminated:
             return False
@@ -1350,7 +1363,6 @@ def run_task_worker(
     shell_executable = task_meta.get("shell_executable")
 
     workspace_dir = os.path.dirname(os.path.dirname(task_dir))
-    script_info_path = os.path.join(workspace_dir, "script_info.json")
     if task_kind == TASK_KIND_CONFIG:
         try:
             s_info = load_script_info(workspace_dir)
@@ -1388,12 +1400,24 @@ def run_task_worker(
     heartbeat_thread: threading.Thread | None = None
     source_state_thread: threading.Thread | None = None
 
+    def _owns_current_run(info: Dict[str, Any]) -> bool:
+        if not runner_id:
+            return True
+        try:
+            current_run_index = int(info.get("run_index", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return (
+            str(info.get("runner_id", "") or "") == runner_id
+            and current_run_index == int(run_index)
+        )
+
     def _refresh_runner_lease() -> None:
         if not runner_id:
             return
 
         def _apply(info: Dict[str, Any]) -> None:
-            if info.get("runner_id") not in {None, "", runner_id}:
+            if not _owns_current_run(info):
                 return
             if info.get("status") == "running":
                 _set_runner_lease(
@@ -1475,6 +1499,8 @@ def run_task_worker(
         _capture_process_metrics()
 
         def _mark_stopped(info: Dict[str, Any]) -> None:
+            if not _owns_current_run(info):
+                return
             slot = ensure_run_slot(info, run_index)
             info["status"] = status
             info["progress"] = progress
@@ -1568,6 +1594,18 @@ def run_task_worker(
                 process_terminated=False,
             )
 
+        if runner_id and not _owns_current_run(load_task_info(task_dir)):
+            logger.info(
+                "Skip launching %s run #%d because task ownership changed",
+                name,
+                run_index,
+            )
+            return {
+                "status": "failed",
+                "progress": 0.0,
+                "error": "task ownership changed before process launch",
+            }
+
         proc = subprocess.Popen(
             command,
             shell=False,
@@ -1585,7 +1623,12 @@ def run_task_worker(
             return _finish_stopped_run(
                 stop_summary,
                 process_started=True,
-                process_terminated=_terminate_started_process(proc, task_name=name, run_index=run_index),
+                process_terminated=_terminate_started_process(
+                    proc,
+                    expected_create_time=process_create_time,
+                    task_name=name,
+                    run_index=run_index,
+                ),
             )
 
         start_str = get_now_str()
@@ -1603,7 +1646,12 @@ def run_task_worker(
             task_dir=task_dir,
         )
 
+        started_state_applied = False
+
         def _mark_started(info: Dict[str, Any]) -> None:
+            nonlocal started_state_applied
+            if not _owns_current_run(info):
+                return
             slot = ensure_run_slot(info, run_index)
             info["status"] = "running"
             info["progress"] = 0.0
@@ -1616,8 +1664,27 @@ def run_task_worker(
                 runner_host=runner_host,
                 lease_seconds=lease_seconds,
             )
+            started_state_applied = True
 
         update_task_info(task_dir, _mark_started)
+        if runner_id and not started_state_applied:
+            child_process_terminated = _terminate_started_process(
+                proc,
+                expected_create_time=process_create_time,
+                task_name=name,
+                run_index=run_index,
+            )
+            logger.info(
+                "Stopped %s run #%d because task ownership changed after process launch",
+                name,
+                run_index,
+            )
+            return {
+                "status": "failed",
+                "progress": 0.0,
+                "error": "task ownership changed after process launch",
+                "child_process_terminated": child_process_terminated,
+            }
 
         source_state_thread = threading.Thread(target=_collect_source_state_async, daemon=True)
         source_state_thread.start()
@@ -1693,6 +1760,8 @@ def run_task_worker(
 
         def _mark_finished(info: Dict[str, Any]) -> None:
             nonlocal progress, status, stop_summary
+            if not _owns_current_run(info):
+                return
             raw_stop_summary = info.get("_pending_stop_summary")
             if isinstance(raw_stop_summary, dict):
                 try:
@@ -1784,11 +1853,18 @@ def run_task_worker(
 
     except Exception as exc:
         end_str = get_now_str()
-        child_process_terminated = _terminate_started_process(proc, task_name=name, run_index=run_index)
+        child_process_terminated = _terminate_started_process(
+            proc,
+            expected_create_time=process_create_time,
+            task_name=name,
+            run_index=run_index,
+        )
         _capture_process_metrics()
         _join_source_state()
 
         def _mark_error(info: Dict[str, Any]) -> None:
+            if not _owns_current_run(info):
+                return
             slot = ensure_run_slot(info, run_index)
             info["status"] = "failed"
             info["progress"] = 0.0

@@ -82,6 +82,7 @@ def test_gpu_scheduler_respects_workspace_and_task_cuda_visible_devices(
         ok, saved_env = manager.update_task_env(
             task["name"],
             {"CUDA_VISIBLE_DEVICES": task_device},
+            {},
         )
         assert ok is True
         assert saved_env == {"CUDA_VISIBLE_DEVICES": task_device}

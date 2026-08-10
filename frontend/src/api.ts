@@ -20,14 +20,71 @@ import type {
 
 const BASE = ''
 
+export class ApiError extends Error {
+  readonly status: number
+  readonly body: unknown
+
+  constructor(status: number, message: string, body: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body
+  }
+}
+
+type UnauthorizedListener = (error: ApiError) => void
+
+const unauthorizedListeners = new Set<UnauthorizedListener>()
+let authorizationEpoch = 0
+
+export function beginAuthorizationAttempt() {
+  authorizationEpoch += 1
+}
+
+export function subscribeUnauthorized(listener: UnauthorizedListener) {
+  unauthorizedListeners.add(listener)
+  return () => {
+    unauthorizedListeners.delete(listener)
+  }
+}
+
+function errorMessage(body: unknown, status: number) {
+  if (
+    body
+    && typeof body === 'object'
+    && 'detail' in body
+    && typeof body.detail === 'string'
+    && body.detail.trim()
+  ) {
+    return body.detail
+  }
+  return `HTTP ${status}`
+}
+
+async function responseError(res: Response, requestAuthorizationEpoch: number) {
+  const body: unknown = await res.json().catch(() => undefined)
+  const error = new ApiError(res.status, errorMessage(body, res.status), body)
+  if (res.status === 401 && requestAuthorizationEpoch === authorizationEpoch) {
+    authorizationEpoch += 1
+    for (const listener of unauthorizedListeners) {
+      try {
+        listener(error)
+      } catch {
+        // The request must still reject with the original authentication error.
+      }
+    }
+  }
+  return error
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const requestAuthorizationEpoch = authorizationEpoch
   const res = await fetch(`${BASE}${url}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail || `HTTP ${res.status}`)
+    throw await responseError(res, requestAuthorizationEpoch)
   }
   return res.json()
 }
@@ -114,14 +171,14 @@ export const batchDeleteTasks = (taskNames: string[]) =>
   })
 
 export async function exportTasksCsv(taskNames: string[]): Promise<Blob> {
+  const requestAuthorizationEpoch = authorizationEpoch
   const res = await fetch(`${BASE}/api/tasks/export/csv`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_names: taskNames }),
   })
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.detail || `HTTP ${res.status}`)
+    throw await responseError(res, requestAuthorizationEpoch)
   }
   return res.blob()
 }
@@ -147,16 +204,16 @@ export const reorderTasks = (items: { name: string; pinned: boolean }[]) =>
     body: JSON.stringify({ items }),
   })
 
-export const updateNotes = (name: string, notes: string) =>
+export const updateNotes = (name: string, notes: string, expectedNotes: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/notes`, {
     method: 'PATCH',
-    body: JSON.stringify({ notes }),
+    body: JSON.stringify({ notes, expected_notes: expectedNotes }),
   })
 
-export const updateEnv = (name: string, env: Record<string, any>) =>
+export const updateEnv = (name: string, env: Record<string, any>, expectedEnv: Record<string, any>) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/env`, {
     method: 'PATCH',
-    body: JSON.stringify({ env }),
+    body: JSON.stringify({ env, expected_env: expectedEnv }),
   })
 
 export const renameTask = (name: string, newName: string) =>

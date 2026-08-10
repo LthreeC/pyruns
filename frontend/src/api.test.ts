@@ -1,0 +1,158 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  ApiError,
+  beginAuthorizationAttempt,
+  exportTasksCsv,
+  getWorkspace,
+  subscribeUnauthorized,
+  updateEnv,
+  updateNotes,
+} from './api'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('API errors', () => {
+  it('sends the notes version used for optimistic concurrency', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ ok: true, task: { name: 'alpha', notes: 'next' } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await updateNotes('alpha', 'next', 'previous')
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/notes', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ notes: 'next', expected_notes: 'previous' }),
+    }))
+  })
+
+  it('sends the environment version used for optimistic concurrency', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ ok: true, task: { name: 'alpha', env: { NEXT: '2' } } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await updateEnv('alpha', { NEXT: '2' }, { PREVIOUS: '1' })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/env', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ env: { NEXT: '2' }, expected_env: { PREVIOUS: '1' } }),
+    }))
+  })
+
+  it('preserves the HTTP status and response body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: 'Workspace is unavailable' }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } },
+    )))
+
+    const error = await getWorkspace().catch(value => value)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({
+      status: 503,
+      message: 'Workspace is unavailable',
+      body: { detail: 'Workspace is unavailable' },
+    })
+  })
+
+  it('notifies subscribers when a JSON request loses authorization', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: 'UI authentication required' }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    )))
+    const listener = vi.fn()
+    const unsubscribe = subscribeUnauthorized(listener)
+
+    const error = await getWorkspace().catch(value => value)
+    unsubscribe()
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 401, message: 'UI authentication required' })
+    expect(listener).toHaveBeenCalledOnce()
+    expect(listener).toHaveBeenCalledWith(error)
+  })
+
+  it('uses the same authorization contract for file exports', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: 'UI authentication required' }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    )))
+    const listener = vi.fn()
+    const unsubscribe = subscribeUnauthorized(listener)
+
+    const error = await exportTasksCsv(['alpha']).catch(value => value)
+    unsubscribe()
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 401 })
+    expect(listener).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a late 401 from an authorization epoch that already expired', async () => {
+    let resolveFirst!: (response: Response) => void
+    let resolveSecond!: (response: Response) => void
+    const first = new Promise<Response>(resolve => { resolveFirst = resolve })
+    const second = new Promise<Response>(resolve => { resolveSecond = resolve })
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => second)
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })))
+    const listener = vi.fn()
+    const unsubscribe = subscribeUnauthorized(listener)
+    const firstRequest = getWorkspace().catch(value => value)
+    const secondRequest = getWorkspace().catch(value => value)
+
+    resolveFirst(new Response(JSON.stringify({ detail: 'UI authentication required' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await firstRequest
+    expect(listener).toHaveBeenCalledOnce()
+
+    await getWorkspace()
+    resolveSecond(new Response(JSON.stringify({ detail: 'stale authentication failure' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await secondRequest
+    unsubscribe()
+
+    expect(listener).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a request from before a successful reconnection attempt', async () => {
+    let resolveStale!: (response: Response) => void
+    const staleResponse = new Promise<Response>(resolve => { resolveStale = resolve })
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => staleResponse)
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })))
+    const listener = vi.fn()
+    const unsubscribe = subscribeUnauthorized(listener)
+    const staleRequest = getWorkspace().catch(value => value)
+
+    beginAuthorizationAttempt()
+    await getWorkspace()
+    resolveStale(new Response(JSON.stringify({ detail: 'stale authentication failure' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await staleRequest
+    unsubscribe()
+
+    expect(listener).not.toHaveBeenCalled()
+  })
+})

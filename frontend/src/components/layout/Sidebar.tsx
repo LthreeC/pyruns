@@ -126,7 +126,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
           aria-label={workspaceLabel}
           title={workspacePathHint}
-          className="min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
+          className="touch-target min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
         >
           <div className={clsx('flex items-center gap-2', compact && 'justify-center')}>
             <FileCode className="h-4 w-4 flex-none text-txt-tertiary" />
@@ -161,7 +161,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           onClick={() => setRuntimeOpen(true)}
           aria-label="Runtime"
           title="Runtime"
-          className="mt-1 min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
+          className="touch-target mt-1 min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
         >
           <div className={clsx('flex items-center gap-2', compact && 'justify-center')}>
             <SlidersHorizontal className="h-4 w-4 flex-none text-txt-tertiary" />

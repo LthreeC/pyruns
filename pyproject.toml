@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyruns"
-version = "0.2.11"
+version = "0.2.12"
 description = "Git-style CLI and web UI for reproducible Python experiments and terminal workloads."
 readme = "README.md"
 license = "MIT"
@@ -69,6 +69,9 @@ pyruns = "pyruns.cli.app:main"
 where = ["."]
 include = ["pyruns*"]
 exclude = ["pyruns.ui*"]
+
+[tool.setuptools.cmdclass]
+build_py = "pyruns._build.CleanBuildPy"
 
 [tool.setuptools.package-data]
 "pyruns" = ["*.css", "**/*.css", "*.html", "**/*.html", "*.js", "**/*.js", "*.txt", "**/*.txt", "*.svg", "**/*.svg"]

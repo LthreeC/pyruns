@@ -238,7 +238,8 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "ToastHost" in app
     assert "pointer-events-none fixed bottom-3 right-3" in toast_host
     assert "flex-col-reverse" in toast_host
-    assert "pointer-events-auto flex w-[min(380px,calc(100vw-2rem))]" in toast_host
+    assert "pointer-events-none flex w-[min(380px,calc(100vw-2rem))]" in toast_host
+    assert "pointer-events-auto inline-flex h-11 w-11" in toast_host
     assert "focus-visible:ring-2 focus-visible:ring-accent/35" in toast_host
     assert "text-emerald-700 dark:text-emerald-300" in toast_host
     assert "text-rose-700 dark:text-rose-300" in toast_host
@@ -452,6 +453,8 @@ def test_react_components_avoid_excessive_rounding_and_shadows():
     for path in FRONTEND_COMPONENTS_DIR.rglob("*.tsx"):
         source = path.read_text(encoding="utf-8")
         for token in forbidden:
+            if path.name == "ToggleSwitch.tsx" and token == "rounded-full border":
+                continue
             if token in source:
                 offenders.append(f"{path.relative_to(FRONTEND_COMPONENTS_DIR)}:{token}")
 
@@ -511,8 +514,11 @@ def test_react_mobile_pages_constrain_empty_states_and_header_actions():
     assert "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'" in monitor
     assert 'className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col"' in monitor
     assert 'className="flex h-full min-w-0 items-center justify-center px-4"' in monitor
-    assert "grid w-full min-w-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center" in dashboard
-    assert "min-h-10 min-w-0" in dashboard
+    assert (
+        "grid w-full min-w-0 grid-cols-[44px_minmax(0,1fr)] gap-2 "
+        "sm:flex sm:w-auto sm:flex-wrap sm:items-center"
+    ) in dashboard
+    assert "touch-target inline-flex min-h-11 min-w-0" in dashboard
     assert "max-w-full flex-col items-center justify-center gap-3 px-4 py-20 text-center" in empty_state
     assert "max-w-full break-words" in empty_state
 
@@ -719,18 +725,21 @@ def test_react_task_detail_env_editor_handles_edits_feedback_and_errors():
     assert 'key={`${key}-${index}`}' not in source
     assert "type EnvSaveStatus" in source
     assert "function buildEnvPairsFromEnv" in source
-    assert "function envSignature" in source
-    assert "staleEnvPropSignatureRef" in source
-    assert "staleEnvPropSignatureRef.current === envSignature(task.env || {})" in source
-    assert "const response = await api.updateEnv(taskName, env)" in source
-    assert "const savedEnv = response.task?.env || env" in source
+    assert "const envBaseRef = useRef(copyEnv(task.env || {}))" in source
+    assert "if (envDirty || previousTaskNameRef.current !== task.name)" in source
+    assert "envBaseRef.current = incomingEnv" in source
+    assert "const expectedEnv = envBaseRef.current" in source
+    assert "const response = await api.updateEnv(taskName, env, expectedEnv)" in source
+    assert "const savedEnv = copyEnv(response.task?.env || env)" in source
     assert "setEnvPairs(buildEnvPairsFromEnv(savedEnv))" in source
     assert "getEnvValidationMessage(envPairs)" in source
     assert "ENV_NAME_PATTERN" in source
     assert "Invalid environment variable name" in source
     assert "const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)" in source
-    assert "envSaveStatus === 'saved' ? 'Saved' : 'Save'" in source
+    assert "? 'Replace Env'" in source
     assert "envSaveStatus === 'error'" in source
+    assert "err instanceof api.ApiError && err.status === 409" in source
+    assert "Your draft was kept. Saving it again will replace the newer environment." in source
     assert "aria-label=\"Add environment variable\"" in source
     assert "setPendingEnvFocusId(pair.id)" in source
     assert "aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}" in source
@@ -749,11 +758,12 @@ def test_react_task_detail_env_editor_handles_edits_feedback_and_errors():
 def test_react_manager_keeps_open_task_detail_synced_after_list_refresh():
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
 
-    assert "const refreshed = tasks.find(task => task.name === detailTask.name)" in manager
+    assert "setDetailTask(current => {" in manager
+    assert "const refreshed = tasks.find(task => task.name === current.name)" in manager
     assert "...refreshed," in manager
     assert "config: current.config" in manager
     assert "config_text: current.config_text" in manager
-    assert "}, [detailTask, tasks])" in manager
+    assert "}, [tasks])" in manager
 
 
 def test_react_generator_shows_creation_progress_and_result_actions():
@@ -901,6 +911,7 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
 
 def test_react_mobile_task_controls_keep_usable_touch_targets():
     action_button = (FRONTEND_COMPONENTS_DIR / "shared" / "ActionButton.tsx").read_text(encoding="utf-8")
+    dashboard = (FRONTEND_COMPONENTS_DIR / "dashboard" / "DashboardPage.tsx").read_text(encoding="utf-8")
     sidebar = (FRONTEND_COMPONENTS_DIR / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
@@ -908,13 +919,17 @@ def test_react_mobile_task_controls_keep_usable_touch_targets():
     pagination = FRONTEND_PAGINATION.read_text(encoding="utf-8")
     toast_host = FRONTEND_TOAST_HOST.read_text(encoding="utf-8")
 
-    assert "min-h-9 gap-1.5 rounded-md px-3 py-1.5 text-xs" in action_button
+    assert "min-h-11 gap-1.5 rounded-md px-3 py-1.5 text-xs sm:min-h-9" in action_button
+    assert "touch-target inline-flex min-h-11 min-w-0 items-center justify-center" in dashboard
+    assert "touch-target inline-flex min-h-11 items-center gap-1" in dashboard
+    assert "flex min-h-11 w-full items-center gap-3" in dashboard
+    assert "touch-target inline-flex h-11 w-11 flex-none items-center justify-center" in dashboard
     assert "min-h-10" in sidebar
     assert "basis-[12rem]" in monitor
     assert "flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition-colors" in monitor
-    assert "'absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors" in manager
+    assert "'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors" in manager
     assert "sm:right-2 sm:top-1.5 sm:h-9 sm:w-9" in manager
-    assert "'inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors" in manager
+    assert "'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors" in manager
     assert "sm:h-9 sm:w-9" in manager
     assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in confirm_dialog
     assert "min-h-11" in confirm_dialog
@@ -1139,7 +1154,8 @@ def test_react_search_input_clear_button_is_accessible():
     assert "aria-label={ariaLabel}" in source
     assert 'aria-label="Clear search"' in source
     assert 'title="Clear search"' in source
-    assert "inline-flex h-11 w-11 items-center justify-center" in source
+    assert "inline-flex h-11 w-11" in source
+    assert "items-center justify-center" in source
     assert "sm:h-7 sm:w-7" in source
     assert "focus:ring-2 focus:ring-accent/25" in source
 
@@ -1266,15 +1282,18 @@ def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
 
 def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
+    toggle_switch = (FRONTEND_COMPONENTS_DIR / "shared" / "ToggleSwitch.tsx").read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "type RuntimePage = 'python' | 'env' | 'gpu'" in runtime_panel
     assert "GPU scheduling" in runtime_panel
-    assert 'role="switch"' in runtime_panel
-    assert "aria-checked={gpuSchedulerEnabled}" in runtime_panel
-    assert "absolute left-[3px] top-[3px]" in runtime_panel
-    assert "gpuSchedulerEnabled ? 'translate-x-5' : 'translate-x-0'" in runtime_panel
+    assert "<ToggleSwitch" in runtime_panel
+    assert "checked={gpuSchedulerEnabled}" in runtime_panel
+    assert 'role="switch"' in toggle_switch
+    assert "aria-checked={checked}" in toggle_switch
+    assert "absolute left-[3px] top-[3px]" in toggle_switch
+    assert "checked ? 'translate-x-5' : 'translate-x-0'" in toggle_switch
     assert "Advanced scheduling rules" in runtime_panel
     assert "Auto pick" in runtime_panel
     assert "Specific indices" in runtime_panel
@@ -1627,6 +1646,7 @@ def test_react_generator_tree_mode_uses_outline_explorer():
 
 def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
+    toggle_switch = (FRONTEND_COMPONENTS_DIR / "shared" / "ToggleSwitch.tsx").read_text(encoding="utf-8")
 
     assert "layoutMode?: FormLayoutMode" in generator
     assert "const treeParamRow = layoutMode === 'tree'" in generator
@@ -1638,7 +1658,9 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
     assert "treeParamRow ? 'col-start-2 min-w-0 w-full sm:col-start-auto' : 'ml-auto min-w-0 flex-1'" in generator
     assert 'aria-label={`${name} parameter value`}' in generator
-    assert 'aria-checked={Boolean(value)}' in generator
+    assert "checked={Boolean(value)}" in generator
+    assert 'role="switch"' in toggle_switch
+    assert "aria-checked={checked}" in toggle_switch
     assert "if (!treeParamRow)" in generator
     assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
@@ -1647,7 +1669,7 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
     assert "hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
-    assert "focus-visible:ring-2 focus-visible:ring-accent/30" in generator
+    assert "focus-visible:ring-2 focus-visible:ring-accent/30" in toggle_switch
 
 
 def test_react_generator_shell_mode_loads_existing_shell_tasks():

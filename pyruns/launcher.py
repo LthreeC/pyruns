@@ -75,6 +75,10 @@ def workspace_root_parent_for_script(script_path: str) -> str:
 def workspace_name_for_script_base(script_base: str) -> str:
     """Return a filesystem-safe workspace directory name for a Python script."""
 
+    if str(script_base).casefold() == WORKSPACE_KIND_SHELL:
+        raise ValueError(
+            "Python script name 'shell.py' is reserved for the shell workspace selector"
+        )
     return f"py{SHELL_WORKSPACE_NAME}" if script_base == SHELL_WORKSPACE_NAME else script_base
 
 
@@ -485,24 +489,6 @@ def bootstrap_workspace(
     script_dir = workspace_root_for_script(filepath)
 
     validate_workspace_directory(script_dir)
-    os.makedirs(script_dir, exist_ok=True)
-    validate_workspace_directory(script_dir)
-    tasks_dir = os.path.join(script_dir, TASKS_DIR)
-    validate_tasks_root(tasks_dir)
-    os.makedirs(tasks_dir, exist_ok=True)
-    validate_tasks_root(tasks_dir)
-    ensure_settings_file(pyruns_dir)
-
-    script_info = {
-        "workspace_kind": WORKSPACE_KIND_SCRIPT,
-        "script_name": script_base,
-        "script_path": filepath,
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    existing = load_script_info(script_dir)
-    if existing.get("last_used_template"):
-        script_info["last_used_template"] = existing["last_used_template"]
-
     config_default_path = normalize_path(os.path.join(script_dir, CONFIG_DEFAULT_FILENAME))
     validate_workspace_file(
         config_default_path,
@@ -522,20 +508,45 @@ def bootstrap_workspace(
             resolved_custom_yaml = ""
 
     keep_existing_default = preserve_default and os.path.exists(config_default_path)
-    if resolved_custom_yaml and not keep_existing_default:
-        _atomic_copy_file(resolved_custom_yaml, config_default_path)
-        script_info["config_default_source"] = resolved_custom_yaml
-        script_info["config_default_source_name"] = os.path.basename(resolved_custom_yaml)
-    elif mode == "argparse" and not keep_existing_default:
-        params = extract_argparse_params(filepath)
-        generate_config_file(script_dir, filepath, params)
-    elif mode == "pyruns_load" and not os.path.exists(config_default_path):
+    argparse_params = None
+    if mode == "argparse" and not resolved_custom_yaml and not keep_existing_default:
+        argparse_params = extract_argparse_params(filepath)
+    elif (
+        mode == "pyruns_load"
+        and not resolved_custom_yaml
+        and not os.path.exists(config_default_path)
+    ):
         raise FileNotFoundError(
             "This script uses pyruns.load() and needs a YAML template on first launch. "
             "Choose a YAML config in the Launcher, or run "
             "`pyr init <script.py> --config <config.yaml>` once. "
             f"Later `pyr ui <script.py>` will reuse `{CONFIG_DEFAULT_FILENAME}` automatically."
         )
+
+    existing = load_script_info(script_dir)
+    script_info = {
+        "workspace_kind": WORKSPACE_KIND_SCRIPT,
+        "script_name": script_base,
+        "script_path": filepath,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if existing.get("last_used_template"):
+        script_info["last_used_template"] = existing["last_used_template"]
+
+    os.makedirs(script_dir, exist_ok=True)
+    validate_workspace_directory(script_dir)
+    tasks_dir = os.path.join(script_dir, TASKS_DIR)
+    validate_tasks_root(tasks_dir)
+    os.makedirs(tasks_dir, exist_ok=True)
+    validate_tasks_root(tasks_dir)
+    ensure_settings_file(pyruns_dir)
+
+    if resolved_custom_yaml and not keep_existing_default:
+        _atomic_copy_file(resolved_custom_yaml, config_default_path)
+        script_info["config_default_source"] = resolved_custom_yaml
+        script_info["config_default_source_name"] = os.path.basename(resolved_custom_yaml)
+    elif mode == "argparse" and not keep_existing_default:
+        generate_config_file(script_dir, filepath, argparse_params or {})
     elif existing.get("config_default_source"):
         script_info["config_default_source"] = existing["config_default_source"]
         script_info["config_default_source_name"] = existing.get(

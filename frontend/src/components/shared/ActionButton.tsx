@@ -13,15 +13,15 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const VARIANT_STYLES: Record<ActionButtonVariant, string> = {
   primary: 'bg-accent text-white hover:bg-accent-hover',
-  success: 'bg-emerald-600 text-white hover:bg-emerald-500',
-  danger: 'bg-rose-600 text-white hover:bg-rose-500',
+  success: 'bg-emerald-700 text-white hover:bg-emerald-800',
+  danger: 'bg-rose-700 text-white hover:bg-rose-800',
   ghost: 'bg-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
   accentTint: 'bg-accent/8 text-accent hover:bg-accent/12',
 }
 
 const SIZE_STYLES: Record<ActionButtonSize, string> = {
-  sm: 'min-h-9 gap-1.5 rounded-md px-3 py-1.5 text-xs',
-  md: 'min-h-10 gap-2 rounded-md px-3.5 py-2 text-sm',
+  sm: 'min-h-11 gap-1.5 rounded-md px-3 py-1.5 text-xs sm:min-h-9',
+  md: 'min-h-11 gap-2 rounded-md px-3.5 py-2 text-sm sm:min-h-10',
 }
 
 export default function ActionButton({
@@ -36,7 +36,7 @@ export default function ActionButton({
     <button
       type="button"
       className={clsx(
-        'inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+        'touch-target inline-flex items-center justify-center font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
         VARIANT_STYLES[variant],
         SIZE_STYLES[size],
         className,

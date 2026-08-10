@@ -2,6 +2,7 @@ import {
   useState,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   type ComponentType,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -23,6 +24,7 @@ import * as api from '@/api'
 interface Props {
   task: Task
   onClose: () => void
+  onTaskUpdated: (task: Task) => void
   onRefresh: () => void
 }
 
@@ -79,11 +81,9 @@ function buildEnvPairs(task: Task): EnvPair[] {
   return buildEnvPairsFromEnv(task.env || {})
 }
 
-function envSignature(env: Record<string, string> = {}) {
-  return JSON.stringify(
-    Object.entries(env || {})
-      .map(([key, value]) => [key, String(value)])
-      .sort(([left], [right]) => left.localeCompare(right))
+function copyEnv(env: Record<string, string> = {}) {
+  return Object.fromEntries(
+    Object.entries(env || {}).map(([key, value]) => [key, String(value)])
   )
 }
 
@@ -124,7 +124,7 @@ function getEnvValidationMessage(envPairs: EnvPair[]): string {
   return ''
 }
 
-export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
+export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefresh }: Props) {
   const [tab, setTab] = useState<Tab>('info')
   const [notes, setNotes] = useState(task.notes || '')
   const [envPairs, setEnvPairs] = useState(() => buildEnvPairs(task))
@@ -132,7 +132,10 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(task.name)
   const [notesDirty, setNotesDirty] = useState(false)
+  const [notesConflict, setNotesConflict] = useState(false)
+  const [notesSaveError, setNotesSaveError] = useState('')
   const [envDirty, setEnvDirty] = useState(false)
+  const [envConflict, setEnvConflict] = useState(false)
   const [envSaveStatus, setEnvSaveStatus] = useState<EnvSaveStatus>('idle')
   const [envSaveError, setEnvSaveError] = useState('')
   const [pendingEnvFocusId, setPendingEnvFocusId] = useState<string | null>(null)
@@ -146,13 +149,14 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const backdropPointerStartedRef = useRef(false)
   const pendingPanelWidthRef = useRef(panelWidth)
   const panelResizeFrameRef = useRef<number | null>(null)
-  const staleEnvPropSignatureRef = useRef('')
   const panelRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const taskRequestSeqRef = useRef(0)
   const notesDraftRevisionRef = useRef(0)
   const envDraftRevisionRef = useRef(0)
+  const envBaseRef = useRef(copyEnv(task.env || {}))
+  const notesBaseRef = useRef(task.notes || '')
   const notify = useToastStore(state => state.notify)
   const setTaskDetailDraftDirty = useTaskDetailDraftStore(state => state.setDirty)
   const clearTaskDetailDraft = useTaskDetailDraftStore(state => state.clear)
@@ -206,12 +210,16 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     setSaving(false)
     setRenaming(false)
     setNotesDirty(false)
+    setNotesConflict(false)
+    setNotesSaveError('')
     setEnvDirty(false)
+    setEnvConflict(false)
     setEnvSaveStatus('idle')
     setEnvSaveError('')
     setPendingEnvFocusId(null)
     setDiscardConfirmOpen(false)
-    staleEnvPropSignatureRef.current = ''
+    notesBaseRef.current = task.notes || ''
+    envBaseRef.current = copyEnv(task.env || {})
   }, [task.name])
 
   useEffect(() => () => {
@@ -222,16 +230,20 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     if (notesDirty || previousTaskNameRef.current !== task.name) {
       return
     }
-    setNotes(task.notes || '')
+    const incomingNotes = task.notes || ''
+    notesBaseRef.current = incomingNotes
+    setNotes(incomingNotes)
+    setNotesConflict(false)
+    setNotesSaveError('')
   }, [task.name, task.notes, notesDirty])
 
   useEffect(() => {
     if (envDirty || previousTaskNameRef.current !== task.name) {
       return
     }
-    if (staleEnvPropSignatureRef.current === envSignature(task.env || {})) {
-      return
-    }
+    const incomingEnv = copyEnv(task.env || {})
+    envBaseRef.current = incomingEnv
+    setEnvConflict(false)
     setEnvPairs(buildEnvPairs(task))
   }, [task.name, task.env, envDirty])
 
@@ -327,22 +339,59 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     const requestId = ++taskRequestSeqRef.current
     const taskName = task.name
     const draftRevision = notesDraftRevisionRef.current
+    const expectedNotes = notesBaseRef.current
     setSaving(true)
+    setNotesSaveError('')
     try {
-      await api.updateNotes(taskName, notes)
+      const response = await api.updateNotes(taskName, notes, expectedNotes)
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+      const savedNotes = response.task?.notes ?? notes
+      notesBaseRef.current = savedNotes
+      onTaskUpdated(response.task)
+      setNotesConflict(false)
+      setNotesSaveError('')
       if (notesDraftRevisionRef.current === draftRevision) {
+        setNotes(savedNotes)
         setNotesDirty(false)
       }
       onRefresh()
       notify({ tone: 'success', title: 'Notes saved', detail: taskName })
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
-      notify({ tone: 'error', title: 'Could not save notes', detail: errorMessage(err) })
+      if (err instanceof api.ApiError && err.status === 409) {
+        try {
+          const latestTask = await api.getTask(taskName, true)
+          if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+          notesBaseRef.current = latestTask.notes || ''
+        } catch {
+          if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+          setNotesConflict(false)
+          setNotesSaveError('Newer notes exist, but their latest version could not be loaded. Your draft is safe. Retry Save Notes before replacing anything.')
+          onRefresh()
+          notify({
+            tone: 'error',
+            title: 'Could not load newer notes',
+            detail: 'Your draft was kept. Retry Save Notes to check the latest version.',
+          })
+          return
+        }
+        setNotesConflict(true)
+        setNotesSaveError('')
+        onRefresh()
+        notify({
+          tone: 'error',
+          title: 'Notes changed elsewhere',
+          detail: 'Your draft was kept. Saving it again will replace the newer notes.',
+        })
+        return
+      }
+      const message = errorMessage(err)
+      setNotesSaveError(`Could not save notes. Your draft is safe. ${message}`)
+      notify({ tone: 'error', title: 'Could not save notes', detail: message })
     } finally {
       if (requestId === taskRequestSeqRef.current) setSaving(false)
     }
-  }, [task.name, notes, onRefresh, notify])
+  }, [task.name, notes, onTaskUpdated, onRefresh, notify])
 
   const handleSaveEnv = useCallback(async () => {
     const validationMessage = getEnvValidationMessage(envPairs)
@@ -355,6 +404,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
     const requestId = ++taskRequestSeqRef.current
     const taskName = task.name
     const draftRevision = envDraftRevisionRef.current
+    const expectedEnv = envBaseRef.current
     setSaving(true)
     setEnvSaveStatus('idle')
     setEnvSaveError('')
@@ -364,11 +414,13 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
         .map(({ key, value }) => [key.trim(), value])
     )
     try {
-      const response = await api.updateEnv(taskName, env)
+      const response = await api.updateEnv(taskName, env, expectedEnv)
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+      const savedEnv = copyEnv(response.task?.env || env)
+      envBaseRef.current = savedEnv
+      onTaskUpdated(response.task)
+      setEnvConflict(false)
       if (envDraftRevisionRef.current === draftRevision) {
-        const savedEnv = response.task?.env || env
-        staleEnvPropSignatureRef.current = envSignature(task.env || {})
         setEnvPairs(buildEnvPairsFromEnv(savedEnv))
         setEnvDirty(false)
         setEnvSaveStatus('saved')
@@ -376,13 +428,42 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
       onRefresh()
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+      if (err instanceof api.ApiError && err.status === 409) {
+        try {
+          const latestTask = await api.getTask(taskName, true)
+          if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+          envBaseRef.current = copyEnv(latestTask.env || {})
+        } catch {
+          if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
+          setEnvConflict(false)
+          setEnvSaveStatus('error')
+          setEnvSaveError('Newer environment variables exist, but their latest version could not be loaded. Your draft is safe. Retry Save before replacing anything.')
+          onRefresh()
+          notify({
+            tone: 'error',
+            title: 'Could not load newer environment',
+            detail: 'Your draft was kept. Retry Save to check the latest version.',
+          })
+          return
+        }
+        setEnvConflict(true)
+        setEnvSaveStatus('error')
+        setEnvSaveError('')
+        onRefresh()
+        notify({
+          tone: 'error',
+          title: 'Environment changed elsewhere',
+          detail: 'Your draft was kept. Saving it again will replace the newer environment.',
+        })
+        return
+      }
       if (envDraftRevisionRef.current !== draftRevision) return
       setEnvSaveStatus('error')
       setEnvSaveError(errorMessage(err))
     } finally {
       if (requestId === taskRequestSeqRef.current) setSaving(false)
     }
-  }, [task.name, envPairs, onRefresh])
+  }, [task.name, envPairs, onTaskUpdated, onRefresh, notify])
 
   function requestClose() {
     if (hasUnsavedChanges) {
@@ -455,14 +536,29 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
   const duplicateEnvKeys = getDuplicateEnvKeys(envPairs)
   const envValidationMessage = getEnvValidationMessage(envPairs)
   const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)
-  const envSaveButtonLabel = saving ? 'Saving...' : envSaveStatus === 'saved' ? 'Saved' : 'Save'
-  const envFeedback = envValidationMessage || envSaveError
-  const envFeedbackIsError = envSaveStatus === 'error' || Boolean(envValidationMessage)
-  const envSaveTitle = envValidationMessage || (envDirty ? 'Save environment variables' : 'No environment changes to save')
+  const envSaveButtonLabel = saving
+    ? 'Saving...'
+    : envConflict
+      ? 'Replace Env'
+      : envSaveStatus === 'saved'
+        ? 'Saved'
+        : 'Save'
+  const envFeedback = envValidationMessage
+    || (envConflict ? 'Another editor saved newer environment variables. Your draft is unchanged.' : envSaveError)
+  const envFeedbackIsError = envConflict || envSaveStatus === 'error' || Boolean(envValidationMessage)
+  const envSaveTitle = envValidationMessage
+    || (envConflict
+      ? 'Replace the newer environment variables with this draft'
+      : envDirty
+        ? 'Save environment variables'
+        : 'No environment changes to save')
+  const notesFeedback = notesConflict
+    ? 'Another editor saved newer notes. Your draft is unchanged.'
+    : notesSaveError
   const renameDirty = renaming && newName.trim() !== '' && newName.trim() !== task.name
   const hasUnsavedChanges = notesDirty || envDirty || renameDirty
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setTaskDetailDraftDirty(task.name, hasUnsavedChanges)
   }, [hasUnsavedChanges, setTaskDetailDraftDirty, task.name])
 
@@ -596,14 +692,14 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                     }
                   }}
                   title="New task name"
-                  className="w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-sm text-txt-primary outline-none focus:border-border"
+                  className="touch-input w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-sm text-txt-primary outline-none focus:border-border"
                 />
                 <button
                   type="button"
                   onClick={() => void handleRename()}
                   title="Save name"
                   aria-label="Save task name"
-                  className="rounded-md p-1.5 text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+                  className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
                 >
                   <Check className="h-3.5 w-3.5" />
                 </button>
@@ -615,7 +711,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   }}
                   title="Cancel"
                   aria-label="Cancel task rename"
-                  className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+                  className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -628,7 +724,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   onClick={() => setRenaming(true)}
                   title="Rename task"
                   aria-label="Rename task"
-                  className="rounded-md p-1 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+                  className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
                 >
                   <Pencil className="h-3 w-3" />
                 </button>
@@ -640,7 +736,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
             ref={closeButtonRef}
             type="button"
             onClick={requestClose}
-            className="rounded-md p-1.5 text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary"
+            className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
             title="Close"
             aria-label="Close task details"
           >
@@ -648,7 +744,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
           </button>
         </div>
 
-        <div role="tablist" aria-label="Task detail sections" className="flex gap-1 border-b border-border-subtle px-3 py-2">
+        <div role="tablist" aria-label="Task detail sections" className="grid grid-cols-4 gap-1 border-b border-border-subtle px-3 py-2">
           {tabs.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
@@ -673,7 +769,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                 panelRef.current?.querySelector<HTMLElement>(`#task-detail-tab-${nextTab}`)?.focus()
               }}
               className={clsx(
-                'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors',
+                'touch-target flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-xs transition-colors sm:min-h-0 sm:gap-1.5 sm:px-3 sm:py-1.5',
                 tab === key
                   ? 'bg-surface-overlay text-txt-primary'
                   : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
@@ -703,24 +799,38 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   setNotesDirty(true)
                 }}
                 placeholder="Add notes..."
+                aria-label="Task notes"
                 className="min-h-[220px] flex-1 resize-none rounded-lg border border-border-subtle bg-surface-overlay p-3 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
               />
+              {notesFeedback && (
+                <div
+                  role="alert"
+                  className={clsx(
+                    'rounded-md border px-3 py-2 text-xs',
+                    notesConflict
+                      ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                      : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+                  )}
+                >
+                  {notesFeedback}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => void handleSaveNotes()}
                 disabled={saving}
-                className="self-end rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay disabled:opacity-50"
+                className="touch-target min-h-11 self-end rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay disabled:opacity-50"
               >
                 <span className="inline-flex items-center gap-1.5">
                   <Save className="h-3.5 w-3.5" />
-                  Save Notes
+                  {notesConflict ? 'Replace Notes' : 'Save Notes'}
                 </span>
               </button>
             </div>
           )}
           {tab === 'env' && (
             <div className="flex flex-col gap-3">
-              <div className="grid grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_32px] gap-2 px-0.5 text-2xs font-medium text-txt-tertiary">
+              <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_44px] gap-2 px-0.5 text-2xs font-medium text-txt-tertiary sm:grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_44px]">
                 <span>Key</span>
                 <span>Value</span>
                 <span className="sr-only">Actions</span>
@@ -739,7 +849,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   || Boolean(normalizedKey && !ENV_NAME_PATTERN.test(normalizedKey))
 
                 return (
-                <div key={pair.id} className="grid grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_32px] items-center gap-2">
+                <div key={pair.id} className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_44px] items-center gap-2 sm:grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_44px]">
                   <input
                     ref={node => { envKeyInputRefs.current[pair.id] = node }}
                     value={pair.key}
@@ -752,7 +862,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                     placeholder="KEY"
                     aria-label="Environment variable key"
                     className={clsx(
-                      'w-full rounded-md border bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors',
+                      'touch-input min-h-11 min-w-0 w-full rounded-md border bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors sm:min-h-0',
                       keyHasError ? 'border-rose-400/70 focus:border-rose-400' : 'border-border-subtle focus:border-border',
                     )}
                   />
@@ -766,7 +876,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                     }}
                     placeholder="value"
                     aria-label="Environment variable value"
-                    className="w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
+                    className="touch-input min-h-11 min-w-0 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border sm:min-h-0"
                   />
                   <button
                     type="button"
@@ -774,7 +884,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                       setEnvPairs(current => current.filter(envPair => envPair.id !== pair.id))
                       markEnvDirty()
                     }}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-400/35"
+                    className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-400/35 dark:hover:text-rose-300"
                     title="Remove variable"
                     aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}
                   >
@@ -788,7 +898,7 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                 <button
                   type="button"
                   onClick={addEnvPair}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/35"
+                  className="touch-target inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/35"
                   aria-label="Add environment variable"
                 >
                   <Plus className="h-3.5 w-3.5" />
@@ -801,9 +911,9 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                   disabled={envSaveDisabled}
                   title={envSaveTitle}
                   className={clsx(
-                    'inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed',
+                    'touch-target inline-flex min-h-11 items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed',
                     envSaveStatus === 'saved' && !envDirty
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                       : envSaveDisabled
                         ? 'border-border-subtle text-txt-secondary opacity-60'
                         : 'border-accent bg-accent text-white hover:bg-accent-hover',
@@ -824,15 +934,15 @@ export default function TaskDetailPanel({ task, onClose, onRefresh }: Props) {
                 {envFeedback ? (
                   <span className={clsx(
                     'inline-flex items-center gap-1.5',
-                    envFeedbackIsError ? 'text-rose-500' : 'text-txt-tertiary',
+                    envFeedbackIsError ? 'text-rose-700 dark:text-rose-300' : 'text-txt-tertiary',
                   )}>
                     <AlertCircle className="h-3.5 w-3.5" />
                     {envFeedback}
                   </span>
                 ) : envDirty ? (
-                  <span className="text-amber-600 dark:text-amber-400">Unsaved changes</span>
+                  <span className="text-amber-700 dark:text-amber-300">Unsaved changes</span>
                 ) : envSaveStatus === 'saved' ? (
-                  <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+                  <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     Saved
                   </span>

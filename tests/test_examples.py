@@ -251,7 +251,7 @@ def test_advanced_argparse_example_runs_through_runtime(tmp_path):
         append_timestamp=False,
     )
     task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "example-env-ok"})
+    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "example-env-ok"}, {})
     runtime.start_task(task_name)
 
     task = _wait_for_task(runtime, task_name)
@@ -313,7 +313,7 @@ def test_pyruns_load_nested_example_runs_through_runtime(tmp_path, config_name, 
         append_timestamp=False,
     )
     task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "nested-env-ok"})
+    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "nested-env-ok"}, {})
     runtime.start_task(task_name)
 
     task = _wait_for_task(runtime, task_name)
@@ -358,6 +358,7 @@ def test_pyruns_load_nested_accelerate_example_runs_through_runtime(tmp_path):
             "CUDA_VISIBLE_DEVICES": "",
             "PYRUNS_EXAMPLE_ENV": "accelerate-env-ok",
         },
+        {},
     )
     runtime.start_task(task_name)
 
@@ -484,7 +485,7 @@ def test_shell_workspace_runs_task_with_env_inherited_by_subprocess(tmp_path):
         append_timestamp=False,
     )
     task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-env-ok"})
+    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-env-ok"}, {})
 
     runtime.start_task(task_name)
     task = _wait_for_task(runtime, task_name)
@@ -551,7 +552,7 @@ def test_shell_workspace_payload_examples_run_through_runtime(
         append_timestamp=False,
     )
     task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-payload-ok"})
+    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-payload-ok"}, {})
 
     runtime.start_task(task_name)
     task = _wait_for_task(runtime, task_name)

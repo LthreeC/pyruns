@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -22,29 +22,23 @@ export default function SearchInput({
 }: Props) {
   const [local, setLocal] = useState(value)
   const debounced = useDebouncedValue(local, debounceMs)
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => { onChange(debounced) }, [debounced])
   useEffect(() => { setLocal(value) }, [value])
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    textarea.style.height = '0px'
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 34), 120)
-    textarea.style.height = `${nextHeight}px`
-  }, [local])
 
   return (
-    <div className={clsx('relative flex items-start', className)}>
-      <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-txt-tertiary" />
-      <textarea
-        ref={textareaRef}
-        rows={1}
+    <div className={clsx('relative flex items-center', className)}>
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-txt-tertiary" />
+      <input
+        type="text"
+        inputMode="search"
+        enterKeyHint="search"
+        autoComplete="off"
         value={local}
         onChange={e => setLocal(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel}
-        className="min-h-11 w-full resize-none overflow-y-auto rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-11 text-xs leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised sm:min-h-[34px] sm:pr-8"
+        className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-11 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised sm:h-[34px] sm:pr-8 sm:text-xs"
       />
       {local && (
         <button
@@ -52,7 +46,7 @@ export default function SearchInput({
           onClick={() => { setLocal(''); onChange('') }}
           aria-label="Clear search"
           title="Clear search"
-          className="absolute right-0 top-0 inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25 sm:right-1 sm:top-1 sm:h-7 sm:w-7"
+          className="touch-target absolute right-0 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25 sm:right-1 sm:h-7 sm:w-7"
         >
           <X className="h-3.5 w-3.5" />
         </button>

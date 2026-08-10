@@ -95,7 +95,7 @@ export default function ConfirmDialog({
             onClick={handleCancel}
             disabled={pending}
             aria-label="Close dialog"
-            className="inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:w-8"
+            className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-50 sm:h-8 sm:w-8"
           >
             <X className="w-4 h-4" />
           </button>
@@ -109,7 +109,7 @@ export default function ConfirmDialog({
             type="button"
             onClick={handleCancel}
             disabled={pending}
-            className="min-h-11 rounded-md px-3.5 py-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9"
+            className="touch-target min-h-11 rounded-md px-3.5 py-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9"
           >
             Cancel
           </button>
@@ -117,7 +117,7 @@ export default function ConfirmDialog({
             type="button"
             onClick={handleConfirm}
             disabled={pending}
-            className={`inline-flex min-h-11 min-w-20 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-9 ${
+            className={`touch-target inline-flex min-h-11 min-w-20 items-center justify-center gap-1.5 rounded-md px-3.5 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-9 ${
               confirmVariant === 'danger'
                 ? 'border border-rose-500/20 text-rose-700 hover:bg-rose-500/10 dark:text-rose-300'
                 : 'border border-border-subtle text-txt-primary hover:bg-surface-overlay'

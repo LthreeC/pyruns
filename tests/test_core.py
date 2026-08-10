@@ -62,7 +62,7 @@ from pyruns.core.gpu_scheduler import GpuAssignment, GpuDecision, GpuDevice, Gpu
 from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator, create_task_object
-from pyruns.core.task_manager import TaskManager
+from pyruns.core.task_manager import TaskManager, TaskStateConflict
 from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
@@ -72,6 +72,7 @@ from pyruns.launcher import (
 )
 from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.info_io import (
+    MAX_RUN_HISTORY_SLOTS,
     ensure_run_slot,
     load_task_info,
     normalize_run_history,
@@ -1158,6 +1159,18 @@ def test_prepare_env_preserves_parent_conda_environment_and_applies_task_overrid
     )
 
 
+def test_prepare_env_never_exposes_ui_access_token(monkeypatch):
+    monkeypatch.setenv("PYRUNS_UI_TOKEN", "server-secret")
+
+    env = _prepare_env(
+        extra_env={"PYRUNS_UI_TOKEN": "task-override"},
+        task_dir="/fake/task",
+        task_kind=TASK_KIND_SHELL,
+    )
+
+    assert "PYRUNS_UI_TOKEN" not in env
+
+
 def test_resolve_python_runtime_from_task_env_python_executable(tmp_path):
     fake_python = tmp_path / "env" / "bin" / "python"
     fake_python.parent.mkdir(parents=True)
@@ -1827,6 +1840,19 @@ def test_shell_named_python_script_uses_reserved_safe_workspace_dir(tmp_path):
         item["script_name"] == "_shell_" and item["workspace_path"] == expected_workspace
         for item in list_script_candidates(str(tmp_path))
     )
+
+
+@pytest.mark.parametrize("filename", ["shell.py", "SHELL.py"])
+def test_shell_workspace_selector_is_reserved_from_python_script_names(tmp_path, filename):
+    script_path = tmp_path / filename
+    script_path.write_text("print('reserved')\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reserved for the shell workspace selector"):
+        workspace_root_for_script(str(script_path))
+    with pytest.raises(ValueError, match="reserved for the shell workspace selector"):
+        bootstrap_workspace(str(script_path))
+
+    assert not (tmp_path / DEFAULT_ROOT_NAME).exists()
 
 
 def test_bootstrap_shell_workspace_records_project_root(tmp_path):
@@ -2843,13 +2869,18 @@ def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, mo
             raise RuntimeError("task info update failed")
         return original_update(*args, **kwargs)
 
+    captured_create_times = []
     killed = []
     monkeypatch.setattr(executor, "update_task_info", flaky_update)
-    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: 1000.0)
+    monkeypatch.setattr(
+        executor,
+        "get_process_create_time",
+        lambda pid: captured_create_times.append(pid) or 1000.0,
+    )
     monkeypatch.setattr(
         executor,
         "kill_process",
-        lambda pid, expected_create_time=None: killed.append(pid) or True,
+        lambda pid, expected_create_time=None: killed.append((pid, expected_create_time)) or True,
     )
 
     result = executor.run_task_worker(
@@ -2862,13 +2893,37 @@ def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, mo
 
     assert result["status"] == "failed"
     assert "task info update failed" in result["error"]
-    assert killed == [9876]
+    assert captured_create_times == [9876]
+    assert killed == [(9876, 1000.0)]
     info = load_task_info(str(task_dir))
     assert info["status"] == "failed"
     error_log = task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME
     error_text = error_log.read_text(encoding="utf-8")
     assert "Internal error during run #1" in error_text
     assert "child_process_terminated=True" in error_text
+
+
+def test_terminate_started_process_uses_owned_popen_when_create_time_is_unavailable(monkeypatch):
+    mock_proc = MagicMock()
+    mock_proc.pid = 9875
+    mock_proc.poll.side_effect = [None, 0]
+    killed = []
+    monkeypatch.setattr(
+        executor,
+        "kill_process",
+        lambda pid, expected_create_time=None: killed.append((pid, expected_create_time)) or True,
+    )
+
+    terminated = executor._terminate_started_process(
+        mock_proc,
+        expected_create_time=None,
+        task_name="OwnedProcessTask",
+        run_index=1,
+    )
+
+    assert terminated is True
+    assert killed == [(9875, None)]
+    mock_proc.wait.assert_called_once_with(timeout=1)
 
 
 def test_run_task_worker_pending_stop_before_process_start_skips_popen(tmp_path, monkeypatch):
@@ -2999,6 +3054,89 @@ def test_run_task_worker_pending_stop_after_popen_kills_child_before_pid_persist
     assert "process_started=True" in error_text
     assert "process_terminated=True" in error_text
     assert not (task_dir / RUN_LOGS_DIR / "run1.log").exists()
+
+
+def test_run_task_worker_stops_process_when_ownership_changes_during_launch(
+    tmp_path,
+    monkeypatch,
+):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    script = tmp_path / "train.py"
+    script.write_text("print('train')\n", encoding="utf-8")
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "OwnershipRaceTask",
+            "status": "running",
+            "progress": 0.0,
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "script": str(script),
+            "run_index": 1,
+            "runner_id": "runner-old",
+            "runner_host": "host-old",
+            "start_times": [""],
+            "finish_times": [""],
+            "run_statuses": ["running"],
+            "pids": [None],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {})
+    monkeypatch.setattr(
+        executor,
+        "_build_command",
+        lambda *args, **kwargs: ([sys.executable, "-c", "print('old')"], str(tmp_path), []),
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9878
+    mock_proc.poll.side_effect = [None, 0]
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b""])
+
+    def fake_popen(*args, **kwargs):
+        def replace_owner(info):
+            ensure_run_slot(info, 2)
+            info["status"] = "running"
+            info["progress"] = 0.5
+            info["run_index"] = 2
+            info["runner_id"] = "runner-new"
+            info["runner_host"] = "host-new"
+            info["run_statuses"] = ["failed", "running"]
+
+        update_task_info(str(task_dir), replace_owner)
+        return mock_proc
+
+    killed = []
+    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: 1000.0)
+    monkeypatch.setattr(
+        executor,
+        "kill_process",
+        lambda pid, expected_create_time=None: killed.append((pid, expected_create_time)) or True,
+    )
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="OwnershipRaceTask",
+        created_at="now",
+        config={},
+        run_index=1,
+        runner_id="runner-old",
+        runner_host="host-old",
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "task ownership changed after process launch"
+    assert result["child_process_terminated"] is True
+    assert killed == [(9878, 1000.0)]
+    mock_proc.wait.assert_called_once_with(timeout=1)
+    final_info = load_task_info(str(task_dir))
+    assert final_info["status"] == "running"
+    assert final_info["progress"] == 0.5
+    assert final_info["run_index"] == 2
+    assert final_info["runner_id"] == "runner-new"
+    assert final_info["run_statuses"] == ["failed", "running"]
 
 
 def test_task_manager_uses_explicit_runner_token(tmp_path):
@@ -4972,6 +5110,43 @@ def test_task_manager_shutdown_does_not_overwrite_newer_final_disk_status(tmp_pa
     assert load_task_info(task["dir"])["status"] == "completed"
 
 
+def test_task_manager_shutdown_does_not_overwrite_new_run_claimed_during_cleanup(
+    tmp_path,
+    monkeypatch,
+):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("reclaimed", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    _mark_task_owned_by_manager(manager, task["name"], Path(task["dir"]))
+    monkeypatch.setattr(manager, "_current_process_identity", lambda _info: (None, None))
+
+    original_mark_failed = manager._mark_failed_on_disk
+
+    def claim_new_run_before_terminal_write(task_ref, **kwargs):
+        def _claim(info):
+            info["status"] = "running"
+            info["run_index"] = 2
+            info["runner_id"] = "other-host:5252:new-run"
+            info["runner_host"] = "other-host"
+            info["lease_heartbeat"] = time.time()
+            info["lease_until"] = time.time() + 60
+
+        update_task_info(task["dir"], _claim)
+        return original_mark_failed(task_ref, **kwargs)
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", claim_new_run_before_terminal_write)
+
+    manager._cleanup_on_shutdown()
+
+    info = load_task_info(task["dir"])
+    assert info["status"] == "running"
+    assert info["run_index"] == 2
+    assert info["runner_id"] == "other-host:5252:new-run"
+
+
 def test_foreign_queued_runner_lease_survives_observer_shutdown(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -5302,15 +5477,18 @@ def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypat
     assert [item["name"] for item in reordered] == ["beta", "alpha"]
     assert manager.get_task("beta")["pinned"] is True
 
-    assert manager.update_task_notes("missing", "x") == (False, "Task not found")
-    assert manager.update_task_notes("alpha", "note") == (True, "note")
-    assert manager.update_task_env("missing", {}) == (False, "Task not found")
-    assert manager.update_task_env("alpha", {"A": 1}) == (True, {"A": "1"})
-    assert manager.update_task_env("alpha", {"BAD=KEY": "x"}) == (
+    assert manager.update_task_notes("missing", "x", "") == (False, "Task not found")
+    assert manager.update_task_notes("alpha", "note", "") == (True, "note")
+    assert manager.update_task_env("missing", {}, {}) == (False, "Task not found")
+    assert manager.update_task_env("alpha", {"A": 1}, {}) == (True, {"A": "1"})
+    with pytest.raises(TaskStateConflict, match="environment changed"):
+        manager.update_task_env("alpha", {"B": "2"}, {})
+    assert manager.update_task_env("alpha", {"B": "2"}, {"A": "1"}) == (True, {"B": "2"})
+    assert manager.update_task_env("alpha", {"BAD=KEY": "x"}, {"B": "2"}) == (
         False,
         "invalid environment variable name: BAD=KEY",
     )
-    assert manager.update_task_env("alpha", {"GOOD": "bad\x00value"}) == (
+    assert manager.update_task_env("alpha", {"GOOD": "bad\x00value"}, {"B": "2"}) == (
         False,
         "environment variable 'GOOD' contains a null byte",
     )
@@ -5555,6 +5733,51 @@ def test_task_manager_start_batch_sync_conflict_keeps_foreign_runner_without_sub
     assert "alpha" not in manager._running_ids
 
 
+def test_task_manager_expected_run_rejects_completed_race_without_run_two(
+    tmp_path,
+    monkeypatch,
+):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("race", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    def complete_first_run(info):
+        slot = ensure_run_slot(info, 1)
+        info["status"] = "completed"
+        info["start_times"][slot] = "2026-08-10_10-00-00"
+        info["finish_times"][slot] = "2026-08-10_10-00-01"
+        info["run_statuses"][slot] = "completed"
+        info["exit_codes"][slot] = 0
+
+    update_task_info(task["dir"], complete_first_run)
+    submitted: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        manager,
+        "_submit_task",
+        lambda target, run_index, *, independent, execution_mode=None: submitted.append(
+            (str(target["name"]), run_index)
+        ),
+    )
+
+    for _ in range(2):
+        assert manager.start_batch_tasks(
+            ["race"],
+            max_workers=1,
+            expected_run_indices={"race": 1},
+        ) == []
+
+    info = load_task_info(task["dir"])
+    assert submitted == []
+    assert info["status"] == "completed"
+    assert info["run_index"] == 1
+    assert info["run_statuses"] == ["completed"]
+    assert manager.get_task("race")["run_index"] == 1
+    assert "race" not in manager._running_ids
+
+
 def test_task_manager_gpu_queue_sync_conflict_skips_wait_log_and_clears_transient_state(tmp_path, monkeypatch):
     settings_root = tmp_path
     tasks_dir = settings_root / "tasks"
@@ -5623,6 +5846,343 @@ def test_task_manager_rerun_returns_false_when_queue_sync_conflicts_with_foreign
     assert refreshed["status"] == "running"
     assert refreshed["run_index"] == 2
     assert refreshed["runner_id"] == "other-host:987:abcdef"
+
+
+@pytest.mark.parametrize("entrypoint", ["batch", "start", "rerun"])
+def test_task_manager_rejects_run_history_overflow_before_changing_state(
+    tmp_path,
+    entrypoint,
+):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("history-full", {"value": 1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "completed",
+            "run_index": MAX_RUN_HISTORY_SLOTS,
+        }),
+    )
+    before = load_task_info(task["dir"], raise_error=True)
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with pytest.raises(ValueError, match="reached the run history limit"):
+        if entrypoint == "batch":
+            manager.start_batch_tasks([task["name"]])
+        elif entrypoint == "start":
+            manager.start_task_now(task["name"])
+        else:
+            manager.rerun_task(task["name"])
+
+    assert load_task_info(task["dir"], raise_error=True) == before
+    assert manager.get_task(task["name"])["status"] == "completed"
+
+
+def test_task_manager_rejects_starts_after_shutdown(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("stopped", {"value": 1})
+    update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    manager.shutdown()
+    monkeypatch.setattr(
+        task_manager_module,
+        "ThreadPoolExecutor",
+        lambda *args, **kwargs: pytest.fail("executor must not be created after shutdown"),
+    )
+
+    assert manager.start_batch_tasks([task["name"]]) == []
+    assert manager.start_task_now(task["name"]) is False
+    assert manager.rerun_task(task["name"]) is False
+    with pytest.raises(RuntimeError, match="shutting down"):
+        manager._ensure_executor()
+    assert manager._executor is None
+    assert manager._independent_executor is None
+
+
+def test_task_manager_shutdown_waits_for_start_lifecycle_section(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    shutdown_entered = threading.Event()
+    shutdown_done = threading.Event()
+
+    def blocked_start(_task_id, _execution_mode=None):
+        start_entered.set()
+        assert release_start.wait(timeout=2)
+        return True
+
+    monkeypatch.setattr(manager, "_start_task_now", blocked_start)
+    start_thread = threading.Thread(target=manager.start_task_now, args=("alpha",))
+    start_thread.start()
+    assert start_entered.wait(timeout=1)
+
+    def run_shutdown():
+        shutdown_entered.set()
+        manager.shutdown()
+        shutdown_done.set()
+
+    shutdown_thread = threading.Thread(target=run_shutdown)
+    shutdown_thread.start()
+    assert shutdown_entered.wait(timeout=1)
+    assert manager._shutdown_event.is_set() is False
+    assert shutdown_done.is_set() is False
+
+    release_start.set()
+    start_thread.join(timeout=2)
+    shutdown_thread.join(timeout=2)
+
+    assert start_thread.is_alive() is False
+    assert shutdown_thread.is_alive() is False
+    assert shutdown_done.is_set() is True
+    assert manager._shutdown_event.is_set() is True
+
+
+def test_task_manager_does_not_claim_or_queue_creation_rollback_tombstone(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("rolled-back", {"value": 1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({
+            "status": "cancelled",
+            "_creation_rollback": {"token": "creator-token"},
+        }),
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with manager._lock:
+        current = manager._tasks_by_name[task["name"]]
+        current["status"] = "queued"
+    assert manager._claim_task_for_run(current, 1, counts_for_batch=True) is None
+
+    with manager._lock:
+        manager._tasks_by_name[task["name"]]["status"] = "pending"
+    assert manager._sync_status_to_disk(
+        task["name"],
+        "queued",
+        run_index=1,
+        expected_statuses={"pending"},
+    ) is False
+
+    persisted = load_task_info(task["dir"], raise_error=True)
+    assert persisted["status"] == "cancelled"
+    assert persisted["_creation_rollback"] == {"token": "creator-token"}
+
+
+def test_task_manager_delete_marker_blocks_concurrent_start(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    real_rename = os.rename
+    start_results = []
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        deleting = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+        contender = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+
+    def rename_after_start_attempt(source, destination):
+        if os.path.normcase(os.path.abspath(source)) == os.path.normcase(task["dir"]):
+            start_results.append(contender.start_task_now("alpha"))
+            marked = load_task_info(task["dir"], raise_error=True)
+            assert marked["_namespace_operation"]["kind"] == "delete"
+        return real_rename(source, destination)
+
+    monkeypatch.setattr("pyruns.core.task_manager.os.rename", rename_after_start_attempt)
+    try:
+        assert deleting.delete_tasks(["alpha"]) == ["alpha"]
+        assert start_results == [False]
+        trashed = load_task_info(str(tasks_dir / TRASH_DIR / "alpha"), raise_error=True)
+        assert "_namespace_operation" not in trashed
+    finally:
+        deleting.shutdown()
+        contender.shutdown()
+
+
+def test_task_manager_rename_marker_blocks_concurrent_start(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    real_rename = os.rename
+    start_results = []
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        renaming = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+        contender = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+
+    def rename_after_start_attempt(source, destination):
+        if os.path.normcase(os.path.abspath(source)) == os.path.normcase(task["dir"]):
+            start_results.append(contender.start_task_now("alpha"))
+            marked = load_task_info(task["dir"], raise_error=True)
+            assert marked["_namespace_operation"]["kind"] == "rename"
+        return real_rename(source, destination)
+
+    monkeypatch.setattr("pyruns.core.task_manager.os.rename", rename_after_start_attempt)
+    try:
+        assert renaming.rename_task("alpha", "beta") == (True, "beta")
+        assert start_results == [False]
+        renamed = load_task_info(str(tasks_dir / "beta"), raise_error=True)
+        assert renamed["name"] == "beta"
+        assert "_namespace_operation" not in renamed
+    finally:
+        renaming.shutdown()
+        contender.shutdown()
+
+
+def test_task_manager_delete_rechecks_status_before_moving(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+
+    real_begin = manager._begin_namespace_operation
+
+    def begin_after_concurrent_rerun(*args, **kwargs):
+        update_task_info(
+            task["dir"],
+            lambda info: info.update({"status": "queued", "run_index": 1}),
+        )
+        return real_begin(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_begin_namespace_operation", begin_after_concurrent_rerun)
+    try:
+        assert manager.delete_tasks(["alpha"]) == []
+        assert Path(task["dir"]).is_dir()
+        assert load_task_info(task["dir"], raise_error=True)["status"] == "queued"
+        assert not (tasks_dir / TRASH_DIR / "alpha").exists()
+    finally:
+        manager.shutdown()
+
+
+def test_task_manager_delete_binds_stop_to_original_run(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+    update_task_info(
+        task["dir"],
+        lambda info: info.update(
+            {
+                "status": "running",
+                "run_index": 1,
+                "pids": [12345],
+                "pid_create_times": [1000.0],
+                "runner_id": manager.runner_id,
+                "runner_host": manager.runner_host,
+                "lease_heartbeat": time.time(),
+                "lease_until": time.time() + 60,
+            }
+        ),
+    )
+    manager.scan_disk()
+    real_persist = manager._persist_pending_stop_summary
+
+    def persist_after_concurrent_rerun(*args, **kwargs):
+        update_task_info(
+            task["dir"],
+            lambda info: info.update(
+                {
+                    "status": "running",
+                    "run_index": 2,
+                    "runner_id": manager.runner_id,
+                    "runner_host": manager.runner_host,
+                    "lease_heartbeat": time.time(),
+                    "lease_until": time.time() + 60,
+                }
+            ),
+        )
+        return real_persist(*args, **kwargs)
+
+    killed = []
+    monkeypatch.setattr(manager, "_persist_pending_stop_summary", persist_after_concurrent_rerun)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda pid, expected_create_time=None: killed.append(pid) or True,
+    )
+    try:
+        assert manager.delete_tasks(["alpha"]) == []
+        persisted = load_task_info(task["dir"], raise_error=True)
+        assert persisted["status"] == "running"
+        assert persisted["run_index"] == 2
+        assert killed == []
+        assert not (tasks_dir / TRASH_DIR / "alpha").exists()
+    finally:
+        manager.shutdown()
+
+
+def test_task_manager_discards_expired_namespace_marker_when_starting(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    update_task_info(
+        task["dir"],
+        lambda info: info.update(
+            {
+                "_namespace_operation": {
+                    "kind": "delete",
+                    "token": "expired",
+                    "host": socket.gethostname().lower(),
+                    "pid": os.getpid(),
+                    "pid_create_time": task_manager_module.get_process_create_time(os.getpid()),
+                    "expires_at": time.time() - 1,
+                }
+            }
+        ),
+    )
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=False,
+            owns_task_lifecycle=False,
+        )
+    try:
+        assert manager._sync_status_to_disk(
+            "alpha",
+            "queued",
+            run_index=1,
+            expected_statuses={"pending"},
+        ) is True
+        persisted = load_task_info(task["dir"], raise_error=True)
+        assert persisted["status"] == "queued"
+        assert "_namespace_operation" not in persisted
+    finally:
+        manager.shutdown()
 
 
 def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeypatch):
@@ -6474,6 +7034,81 @@ def test_run_task_worker_pending_stop_summary_forces_failed_even_when_exit_code_
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_stale_completion_does_not_overwrite_new_runner(
+    mock_popen,
+    mock_emit,
+    mock_detect,
+    tmp_path,
+    monkeypatch,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
+    save_task_info(
+        task_dir,
+        {
+            "name": "RecoveredTask",
+            "script": "script.py",
+            "status": "running",
+            "progress": 0.0,
+            "run_index": 1,
+            "runner_id": "runner-old",
+            "runner_host": "host-old",
+            "start_times": [""],
+            "finish_times": [""],
+            "run_statuses": ["running"],
+            "pids": [None],
+        },
+    )
+
+    original_append = executor._append_run_log_text
+
+    def append_after_recovery(*args, **kwargs):
+        def replace_owner(info):
+            first_slot = ensure_run_slot(info, 1)
+            second_slot = ensure_run_slot(info, 2)
+            info["run_statuses"][first_slot] = "failed"
+            info["finish_times"][first_slot] = "2026-03-20_00-00-02"
+            info["run_statuses"][second_slot] = "running"
+            info["status"] = "running"
+            info["progress"] = 0.25
+            info["run_index"] = 2
+            info["runner_id"] = "runner-new"
+            info["runner_host"] = "host-new"
+
+        update_task_info(task_dir, replace_owner)
+        return original_append(*args, **kwargs)
+
+    monkeypatch.setattr(executor, "_append_run_log_text", append_after_recovery)
+    mock_proc = MagicMock()
+    mock_proc.pid = 7778
+    mock_proc.wait.return_value = 0
+    mock_proc.stdout.read1 = MagicMock(side_effect=[b"old output", b""])
+    mock_popen.return_value = mock_proc
+
+    result = run_task_worker(
+        task_dir=task_dir,
+        name="RecoveredTask",
+        created_at="now",
+        config={},
+        run_index=1,
+        runner_id="runner-old",
+        runner_host="host-old",
+    )
+
+    assert result["status"] == "completed"
+    final_info = load_task_info(task_dir)
+    assert final_info["status"] == "running"
+    assert final_info["progress"] == 0.25
+    assert final_info["run_index"] == 2
+    assert final_info["runner_id"] == "runner-new"
+    assert final_info["runner_host"] == "host-new"
+    assert final_info["run_statuses"] == ["failed", "running"]
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
     mock_popen,
     mock_emit,
@@ -6607,9 +7242,9 @@ class TestTaskGeneratorCreateTask:
 
     def test_group_index_is_used_in_task_name_and_folder(self, tmp_path):
         gen = TaskGenerator(root_dir=str(tmp_path))
-        task = gen.create_task("batch-run", {"x": 1}, group_index="[3-of-10]")
+        task = gen.create_task("batch-run", {"x": 1}, group_index="3-of-10")
 
-        assert task["name"] == "batch-run_[3-of-10]"
+        assert task["name"] == "batch-run_3-of-10"
         assert os.path.basename(task["dir"]) == task["name"]
 
     def test_deduplication_keeps_unique_dirs_when_timestamp_suffix_collides(self, tmp_path, monkeypatch):
@@ -6708,9 +7343,9 @@ class TestTaskGeneratorCreateTasks:
         assert [task["name"] for task in single] == ["single"]
         assert len(tasks) == 3
         assert [task["name"] for task in tasks] == [
-            "batch_[1-of-3]",
-            "batch_[2-of-3]",
-            "batch_[3-of-3]",
+            "batch_1-of-3",
+            "batch_2-of-3",
+            "batch_3-of-3",
         ]
         assert len({task["dir"] for task in tasks}) == 3
 
@@ -6885,6 +7520,14 @@ class TestBuildExportJSON:
         assert result[0]["name"] == "j1"
         assert result[0]["run"] == 1
         assert result[0]["loss"] == 0.3
+
+    def test_output_remains_ascii_safe_for_supplementary_unicode(self, tmp_path):
+        task = _make_task(tmp_path, "emoji-😀", records=[{"label": "😀"}])
+
+        document = build_export_json([task])
+
+        assert document.isascii()
+        assert json.loads(document)[0]["label"] == "😀"
 
     def test_no_monitor_still_exports_run_history(self, tmp_path):
         task = _make_task(tmp_path, "j2")

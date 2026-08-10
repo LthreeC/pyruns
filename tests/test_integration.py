@@ -53,7 +53,7 @@ class TestEndToEndBatchFlow:
         lr_values = set()
         model_values = set()
         for i, task in enumerate(tasks):
-            assert task["name"] == f"my-exp_[{i+1}-of-6]"
+            assert task["name"] == f"my-exp_{i+1}-of-6"
             cfg_path = os.path.join(task["dir"], "config.yaml")
             cfg = load_yaml(cfg_path)
             lr_values.add(cfg["lr"])

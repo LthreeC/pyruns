@@ -208,11 +208,29 @@ pin / unpin 任务。
 
 #### `PATCH /api/tasks/{task_name}/notes`
 
-更新 notes。
+更新 notes。请求必须同时提交编辑时读到的 `expected_notes`：
+
+```json
+{
+  "notes": "needs review",
+  "expected_notes": ""
+}
+```
+
+如果 notes 已被其他客户端修改，接口返回 `409 Conflict` 且不覆盖新内容。
 
 #### `PATCH /api/tasks/{task_name}/env`
 
-更新任务环境变量。
+更新任务环境变量。请求必须同时提交编辑时读到的完整 `expected_env`：
+
+```json
+{
+  "env": {"CUDA_VISIBLE_DEVICES": "0"},
+  "expected_env": {}
+}
+```
+
+如果环境变量已被其他客户端修改，接口返回 `409 Conflict` 且保留磁盘上的新内容。
 
 #### `POST /api/tasks/{task_name}/rename`
 

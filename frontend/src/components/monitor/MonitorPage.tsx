@@ -72,6 +72,25 @@ const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
 const TASK_EVENT_FALLBACK_POLL_MS = 60_000
 const TASK_EVENT_DEGRADED_POLL_MS = 5_000
 const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
+// Keep this aligned with the fields blanked by the server's compact Monitor payload.
+const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
+  'config',
+  'config_text',
+  'log',
+  'env',
+  'cmd',
+  'start_times',
+  'finish_times',
+  'pids',
+  'durations',
+  'exit_codes',
+  'source_states',
+  'records',
+  'tracks',
+  'notes',
+  'preview_text',
+  'search_text',
+])
 const TERMINAL_SEARCH_OPTIONS: ISearchOptions = {
   decorations: {
     matchBackground: '#1F4E79',
@@ -148,6 +167,13 @@ export function appendedMonitorLogDelta(previous: string, next: string): string 
     attempts += 1
   }
   return null
+}
+
+function mergeMonitorTaskSummary(current: Task, refreshed: Task): Task {
+  const summary = Object.fromEntries(
+    Object.entries(refreshed).filter(([key]) => !COMPACT_MONITOR_DETAIL_FIELDS.has(key)),
+  )
+  return { ...current, ...summary }
 }
 
 export default function MonitorPage() {
@@ -868,28 +894,24 @@ export default function MonitorPage() {
   }, [isTerminalSearchShortcutTarget, runTerminalSearch, terminalSearchOpen])
 
   useEffect(() => {
-    if (!detailTask) {
-      return
-    }
+    setDetailTask(current => {
+      if (!current) {
+        return current
+      }
 
-    const refreshed = monitorTasks.find(task => task.name === detailTask.name)
-    if (!refreshed) {
-      setDetailTask(null)
-      return
-    }
+      const refreshed = monitorTasks.find(task => task.name === current.name)
+      if (!refreshed) {
+        // Filtering, pagination, or a transient refresh may hide the summary.
+        // Keep the full detail and any local draft until the user closes it.
+        return current
+      }
+      if (refreshed === current) {
+        return current
+      }
 
-    if (refreshed !== detailTask) {
-      setDetailTask(current => current?.name === refreshed.name
-        ? {
-            ...refreshed,
-            config: current.config,
-            config_text: current.config_text,
-            records: current.records,
-            tracks: current.tracks,
-          }
-        : current)
-    }
-  }, [detailTask, monitorTasks])
+      return mergeMonitorTaskSummary(current, refreshed)
+    })
+  }, [monitorTasks])
 
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
@@ -1419,7 +1441,7 @@ export default function MonitorPage() {
           <SearchInput
             value={sidebarQuery}
             onChange={setSidebarQuery}
-            placeholder="Search all tasks..."
+            placeholder="Search..."
             ariaLabel="Search monitor tasks"
             debounceMs={250}
           />
@@ -1533,7 +1555,7 @@ export default function MonitorPage() {
                 <button
                   type="button"
                   onClick={() => (allExportSelected ? clearExport() : selectAllExport(filteredTasks.map(task => task.name)))}
-                  className="text-accent transition-colors hover:text-accent-hover"
+                  className="touch-target text-accent transition-colors hover:text-accent-hover"
                 >
                   {allExportSelected ? 'Deselect loaded' : 'Select loaded'}
                 </button>
@@ -1660,7 +1682,7 @@ export default function MonitorPage() {
                     title="Select log file"
                     aria-label="Select task log file"
                     disabled={loading}
-                    className="appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2 py-1.5 pr-6 text-2xs text-txt-primary outline-none transition-colors focus:border-border"
+                    className="touch-input appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2 py-1.5 pr-6 text-2xs text-txt-primary outline-none transition-colors focus:border-border"
                   >
                     {availableLogs.map(log => (
                       <option key={log} value={log}>{log}</option>
@@ -1735,7 +1757,7 @@ export default function MonitorPage() {
                     }}
                     placeholder="Search logs"
                     aria-label="Search terminal logs"
-                    className="min-w-0 flex-1 bg-transparent px-1 py-0.5 text-xs text-[#cccccc] caret-[#cccccc] outline-none selection:bg-[#264f78] selection:text-white placeholder:text-[#6f7787]"
+                    className="touch-input min-w-0 flex-1 bg-transparent px-1 py-0.5 text-xs text-[#cccccc] caret-[#cccccc] outline-none selection:bg-[#264f78] selection:text-white placeholder:text-[#6f7787]"
                   />
                   <span
                     role="status"
@@ -1751,7 +1773,7 @@ export default function MonitorPage() {
                   <button
                     type="button"
                     onClick={() => runTerminalSearch('previous')}
-                    className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
+                    className="touch-target rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
                     title="Previous match"
                     aria-label="Previous match"
                   >
@@ -1760,7 +1782,7 @@ export default function MonitorPage() {
                   <button
                     type="button"
                     onClick={() => runTerminalSearch('next')}
-                    className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
+                    className="touch-target rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
                     title="Next match"
                     aria-label="Next match"
                   >
@@ -1769,7 +1791,7 @@ export default function MonitorPage() {
                   <button
                     type="button"
                     onClick={() => closeTerminalSearch()}
-                    className="rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
+                    className="touch-target rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
                     title="Close search"
                     aria-label="Close terminal search"
                   >
@@ -1792,6 +1814,10 @@ export default function MonitorPage() {
           onClose={() => {
             detailWorkspaceKeyRef.current = ''
             setDetailTask(null)
+          }}
+          onTaskUpdated={updatedTask => {
+            upsertMonitorTask(updatedTask)
+            setDetailTask(current => current?.name === updatedTask.name ? updatedTask : current)
           }}
           onRefresh={() => {
             void fetchMonitorTasks()

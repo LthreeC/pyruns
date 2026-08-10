@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import secrets
 import shutil
+import socket
 import stat
 import tempfile
 import time
@@ -18,10 +21,13 @@ from pyruns._config import (
 from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.info_io import (
     load_script_info,
+    run_slot_count,
     save_task_info,
+    update_task_info,
     validate_task_name,
     validate_tasks_root,
 )
+from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
@@ -34,6 +40,12 @@ logger = get_logger(__name__)
 
 _TASK_NAME_LOCK_PREFIX = ".pyruns-create-"
 _TASK_NAME_LOCK_SUFFIX = ".lock"
+_TASK_NAME_LOCK_STALE_MIN_AGE_SEC = 30.0
+_TASK_NAME_LOCK_OWNER_HOST = socket.gethostname().lower()
+
+
+class _TaskCreationRollbackConflict(RuntimeError):
+    """Raised when a published task is no longer safe for batch rollback."""
 
 
 def _resolve_requested_task_kind(task_kind: str) -> str:
@@ -182,10 +194,154 @@ class TaskGenerator:
         if not removed:
             logger.warning("Could not safely clean incomplete task directory %s", task_dir)
 
+    def _rollback_created_batch_task(
+        self,
+        task_dir: str,
+        *,
+        expected_identity: tuple[int, int],
+    ) -> bool:
+        """Tombstone and remove a task only while it is still unused batch output."""
+
+        rollback_token = secrets.token_hex(16)
+
+        def _mark_for_rollback(info: Dict[str, Any]) -> None:
+            status = str(info.get("status", "pending") or "pending").lower()
+            if (
+                status != "pending"
+                or str(info.get("runner_id", "") or "")
+                or run_slot_count(info) != 0
+            ):
+                raise _TaskCreationRollbackConflict(
+                    "task was started or changed before batch rollback"
+                )
+            info["status"] = "cancelled"
+            info["_creation_rollback"] = rollback_token
+
+        try:
+            updated = update_task_info(task_dir, _mark_for_rollback)
+        except (OSError, TypeError, ValueError, _TaskCreationRollbackConflict) as exc:
+            logger.warning("Preserving task that is unsafe to roll back %s: %s", task_dir, exc)
+            return False
+        if updated.get("_creation_rollback") != rollback_token:
+            logger.warning("Preserving task whose rollback marker changed: %s", task_dir)
+            return False
+        try:
+            return self._remove_private_task_dir(
+                task_dir,
+                expected_identity=expected_identity,
+            )
+        except OSError as exc:
+            logger.warning("Could not remove rolled-back task directory %s: %s", task_dir, exc)
+            return False
+
     def _task_name_lock_path(self, task_name: str) -> str:
         return os.path.join(
             self.root_dir,
             f"{_TASK_NAME_LOCK_PREFIX}{task_name}{_TASK_NAME_LOCK_SUFFIX}",
+        )
+
+    @staticmethod
+    def _task_name_lock_snapshot(
+        lock_path: str,
+    ) -> tuple[tuple[int, int, int, int], bytes] | None:
+        try:
+            with open(lock_path, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                content = handle.read(4096)
+        except OSError:
+            return None
+        return (
+            (int(info.st_dev), int(info.st_ino), int(info.st_mtime_ns), int(info.st_size)),
+            content,
+        )
+
+    @staticmethod
+    def _task_name_lock_owner(content: bytes) -> Dict[str, Any] | None:
+        try:
+            owner = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(owner, dict):
+            return None
+        pid = owner.get("pid")
+        host = owner.get("host")
+        token = owner.get("token")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return None
+        if not isinstance(host, str) or not host or not isinstance(token, str) or not token:
+            return None
+        return owner
+
+    @classmethod
+    def _task_name_lock_is_stale(
+        cls,
+        snapshot: tuple[tuple[int, int, int, int], bytes],
+        *,
+        min_age_sec: float = _TASK_NAME_LOCK_STALE_MIN_AGE_SEC,
+    ) -> bool:
+        modified_at = snapshot[0][2] / 1_000_000_000
+        age = max(0.0, time.time() - modified_at)
+        owner = cls._task_name_lock_owner(snapshot[1])
+        if owner is None:
+            return age >= max(0.0, min_age_sec)
+        if owner["host"].lower() != _TASK_NAME_LOCK_OWNER_HOST:
+            return False
+
+        pid = owner["pid"]
+        if not is_pid_running(pid):
+            return True
+        expected = owner.get("process_create_time")
+        try:
+            expected_value = float(expected)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        actual = get_process_create_time(pid)
+        return bool(actual is not None and abs(actual - expected_value) > 0.01)
+
+    def _quarantine_task_name_lock(
+        self,
+        lock_path: str,
+        expected: tuple[tuple[int, int, int, int], bytes],
+    ) -> bool:
+        validate_tasks_root(self.root_dir)
+        if self._task_name_lock_snapshot(lock_path) != expected:
+            return False
+        quarantine_path = (
+            f"{lock_path}.stale-{os.getpid()}-{secrets.token_hex(8)}"
+        )
+        try:
+            os.replace(lock_path, quarantine_path)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
+        if self._task_name_lock_snapshot(quarantine_path) != expected:
+            try:
+                if not os.path.exists(lock_path):
+                    os.replace(quarantine_path, lock_path)
+            except OSError:
+                pass
+            return False
+        try:
+            os.remove(quarantine_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            try:
+                if not os.path.exists(lock_path):
+                    os.replace(quarantine_path, lock_path)
+            except OSError:
+                pass
+            return False
+        return True
+
+    def _remove_stale_task_name_lock(self, lock_path: str) -> bool:
+        snapshot = self._task_name_lock_snapshot(lock_path)
+        return bool(
+            snapshot is not None
+            and self._task_name_lock_is_stale(snapshot)
+            and self._quarantine_task_name_lock(lock_path, snapshot)
         )
 
     def _try_reserve_task_name(
@@ -199,16 +355,30 @@ class TaskGenerator:
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
         flags |= int(getattr(os, "O_BINARY", 0))
         flags |= int(getattr(os, "O_CLOEXEC", 0))
-        try:
-            fd = os.open(lock_path, flags, 0o600)
-        except FileExistsError:
-            return None
+        while True:
+            try:
+                fd = os.open(lock_path, flags, 0o600)
+                break
+            except FileExistsError:
+                if self._remove_stale_task_name_lock(lock_path):
+                    continue
+                return None
 
         identity: tuple[int, int] | None = None
         try:
             lock_stat = os.fstat(fd)
             identity = int(lock_stat.st_dev), int(lock_stat.st_ino)
-            payload = f"pid={os.getpid()}\n".encode("ascii")
+            payload = json.dumps(
+                {
+                    "host": _TASK_NAME_LOCK_OWNER_HOST,
+                    "pid": os.getpid(),
+                    "process_create_time": get_process_create_time(os.getpid()),
+                    "token": secrets.token_hex(16),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("ascii")
             offset = 0
             while offset < len(payload):
                 written = os.write(fd, payload[offset:])
@@ -337,7 +507,7 @@ class TaskGenerator:
         """Create one task folder with task metadata, task payload, and ``run_logs/``."""
 
         timestamp = get_now_str()
-        base_name = name_prefix.strip() if name_prefix else ""
+        base_name = str(name_prefix) if name_prefix else ""
         if not base_name:
             base_name = f"task_{timestamp}"
 
@@ -481,7 +651,7 @@ class TaskGenerator:
         name_prefix: str,
         task_kind: str = TASK_KIND_CONFIG,
     ) -> List[Dict[str, Any]]:
-        """Create many config tasks, appending ``[i-of-n]`` suffixes when needed."""
+        """Create many config tasks, appending ``i-of-n`` suffixes when needed."""
 
         total = len(configs)
         normalized_kind = _resolve_requested_task_kind(task_kind)
@@ -489,7 +659,7 @@ class TaskGenerator:
         created: List[tuple[str, tuple[int, int]]] = []
         try:
             for index, config in enumerate(configs, start=1):
-                group_index = f"[{index}-of-{total}]" if total > 1 else ""
+                group_index = f"{index}-of-{total}" if total > 1 else ""
                 task = self.create_task(
                     name_prefix,
                     config,
@@ -503,7 +673,7 @@ class TaskGenerator:
                 created.append((task["dir"], identity))
         except BaseException:
             for task_dir, identity in reversed(created):
-                self._cleanup_private_task_dir(
+                self._rollback_created_batch_task(
                     task_dir,
                     expected_identity=identity,
                 )

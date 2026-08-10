@@ -67,7 +67,7 @@ pyr ui shell
 pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
-常用上下文和输出参数：
+全局参数必须写在命令前：
 
 ```text
 -C, --directory PATH
@@ -76,7 +76,15 @@ pyr [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 --version
 ```
 
-`-w` 只在 `ls`、`run`、`show`、`log` 等任务命令需要消除多 workspace 歧义时使用；项目只有一个 workspace 时可以省略。`exec` 固定使用 shell workspace，Web UI 则直接写成 `pyr ui shell`、`pyr ui train` 或 `pyr ui train.py`。需要机器输出时，在支持的命令后加 `--json`，例如 `pyr status --json`。
+子命令自己的参数写在命令后。最常见的组合是：
+
+```text
+pyr -C PATH -w train ls --json       # -C/-w 在命令前，--json 在命令后
+pyr ui shell --port 8099             # --port 只属于 ui/dev
+pyr exec -n check -- python -V       # -- 后面是原样传给目标程序的 argv
+```
+
+`-w` 只在 `ls`、`run`、`show`、`log` 等任务命令需要消除多 workspace 歧义时使用；项目只有一个 workspace 时可以省略。`exec` 固定使用 shell workspace，Web UI 则直接写成 `pyr ui shell`、`pyr ui train` 或 `pyr ui train.py`，不要写成 `pyr -w shell ui`。`--json` 不是全局模式，只在支持它的具体命令后使用，例如 `pyr status --json`。
 
 先记住一条层级即可：`project -> workspace -> task -> run`。项目拥有 `_pyruns_` 数据目录；workspace 收纳一组相关任务；task 是有精确名称的命令或配置；每次执行 task 都产生一个带编号的 run 历史。
 
@@ -377,6 +385,9 @@ UI 只监听本机回环地址。每次启动都会生成新的随机访问令�
 令牌会换成 `HttpOnly` 会话 cookie，并从地址栏移除。使用 `--no-browser` 时请复制终端
 打印的完整 URL，不要把它分享给其他用户。这个机制用于隔离同机其他进程，不是远程
 多用户部署的身份系统。
+
+Pyruns 不是代码沙箱。任务命令和 Python 脚本会继承当前用户的系统权限；只运行你信任
+的脚本、配置和命令。
 
 - Generator：编辑脚本配置或 shell payload，并创建任务。
 - Manager：搜索、筛选、运行、取消、重命名、置顶和删除任务。

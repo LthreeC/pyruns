@@ -150,7 +150,7 @@ CLI 不依赖 FastAPI，也没有交互式 REPL。`pyr exec --detach` 启动隐�
 #### `sort_utils.py`
 
 - 搜索和排序逻辑
-- Manager / Monitor 多行搜索的 AND 语义
+- Manager / Monitor 的任务深度搜索与状态过滤
 
 ## 3. 磁盘是最终状态源
 

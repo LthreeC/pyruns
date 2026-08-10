@@ -32,7 +32,12 @@ from pyruns._config import (
 from pyruns.utils.events import log_emitter
 from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
-from pyruns.web.runtime import PyrunsRuntime, WorkspaceChangedError
+from pyruns.web.runtime import (
+    PyrunsRuntime,
+    TaskEnvConflictError,
+    TaskNotesConflictError,
+    WorkspaceChangedError,
+)
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -52,8 +57,9 @@ MAX_QUERY_CHARS = 2_048
 MAX_PATH_CHARS = 32_768
 MAX_LOG_TAIL_LINES = MAX_MONITOR_SCROLLBACK
 MAX_LOG_RESPONSE_BYTES = MAX_MONITOR_CHUNK_SIZE
-_UI_SESSION_COOKIE = "pyruns_session"
+_UI_SESSION_COOKIE_PREFIX = "pyruns_session_"
 _UI_TOKEN_ENV = "PYRUNS_UI_TOKEN"
+_UI_COOKIE_NONCE_ENV = "PYRUNS_UI_COOKIE_NONCE"
 LOG_STREAM_DROPPED_NOTICE = (
     "[pyruns] Live log stream skipped older buffered output; "
     "open the log file for full history.\n"
@@ -207,12 +213,14 @@ class TaskNotesRequest(RequestModel):
     """Notes update payload."""
 
     notes: str = Field(default="", max_length=MAX_TASK_NOTES_CHARS)
+    expected_notes: str = Field(max_length=MAX_TASK_NOTES_CHARS)
 
 
 class TaskEnvRequest(RequestModel):
     """Env update payload."""
 
     env: dict[str, Any] = Field(default_factory=dict)
+    expected_env: dict[str, Any]
 
 
 class RuntimeUpdateRequest(RequestModel):
@@ -395,12 +403,38 @@ def find_available_port(start_port: int, *, host: str = "127.0.0.1", max_attempt
 
 
 def _url_with_access_token(url: str, token: str) -> str:
-    """Add the one-time UI bootstrap token without corrupting an existing query."""
+    """Add the private UI bootstrap token without corrupting an existing query."""
 
     parsed = urlsplit(url)
     query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "token"]
     query.append(("token", token))
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def _token_matches(candidate: Any, expected: Any) -> bool:
+    """Compare untrusted token text without rejecting non-ASCII input."""
+
+    candidate_bytes = str(candidate or "").encode("utf-8")
+    expected_bytes = str(expected or "").encode("utf-8")
+    return bool(candidate_bytes and expected_bytes) and secrets.compare_digest(
+        candidate_bytes,
+        expected_bytes,
+    )
+
+
+def _session_cookie_name(nonce: str | None = None) -> str:
+    """Return one opaque cookie name for this server instance."""
+
+    value = str(nonce or "")
+    if len(value) != 32 or any(char not in "0123456789abcdef" for char in value):
+        value = secrets.token_hex(16)
+    return f"{_UI_SESSION_COOKIE_PREFIX}{value}"
+
+
+def _session_cookie_nonce_for_port(port: int) -> str:
+    """Reuse one cookie slot when a later UI instance reuses the same port."""
+
+    return f"{int(port):032x}"
 
 
 def _clean_bootstrap_target(request: Request) -> str:
@@ -417,13 +451,19 @@ def create_app(
     runtime: PyrunsRuntime | None = None,
     *,
     access_token: str | None = None,
+    session_cookie_nonce: str | None = None,
     allow_test_client_bypass: bool = False,
 ) -> FastAPI:
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
     app = FastAPI(title="Pyruns API", version=__version__)
     app.state.runtime = runtime or PyrunsRuntime()
-    app.state.access_token = str(access_token or os.getenv(_UI_TOKEN_ENV) or secrets.token_urlsafe(32))
+    reload_token = os.getenv(_UI_TOKEN_ENV) if access_token is None else None
+    app.state.access_token = str(access_token or reload_token or secrets.token_urlsafe(32))
+    cookie_nonce = session_cookie_nonce
+    if cookie_nonce is None and reload_token:
+        cookie_nonce = os.getenv(_UI_COOKIE_NONCE_ENV)
+    app.state.session_cookie_name = _session_cookie_name(cookie_nonce)
     app.state.allow_test_client_bypass = bool(allow_test_client_bypass)
 
     @app.middleware("http")
@@ -461,13 +501,14 @@ def create_app(
 
         bootstrap_token = request.query_params.get("token")
         if bootstrap_token is not None and not request.url.path.startswith("/api"):
-            if request.method != "GET" or not secrets.compare_digest(
-                str(bootstrap_token), app.state.access_token
+            if request.method != "GET" or not _token_matches(
+                bootstrap_token,
+                app.state.access_token,
             ):
                 return json_error(401, "Invalid UI access token")
             response = RedirectResponse(_clean_bootstrap_target(request), status_code=303)
             response.set_cookie(
-                _UI_SESSION_COOKIE,
+                app.state.session_cookie_name,
                 app.state.access_token,
                 httponly=True,
                 samesite="strict",
@@ -482,9 +523,10 @@ def create_app(
             and request.client is not None
             and request.client.host == "testclient"
         )
-        session_token = request.cookies.get(_UI_SESSION_COOKIE, "")
-        if is_api and not test_client_bypass and not secrets.compare_digest(
-            str(session_token), app.state.access_token
+        session_token = request.cookies.get(app.state.session_cookie_name, "")
+        if is_api and not test_client_bypass and not _token_matches(
+            session_token,
+            app.state.access_token,
         ):
             response = json_error(401, "UI authentication required")
             response.headers["WWW-Authenticate"] = "PyrunsToken"
@@ -551,9 +593,10 @@ def create_app(
         ):
             return 4403, "Forbidden origin"
         test_client_bypass = app.state.allow_test_client_bypass and allow_test_host
-        session_token = websocket.cookies.get(_UI_SESSION_COOKIE, "")
-        if not test_client_bypass and not secrets.compare_digest(
-            str(session_token), app.state.access_token
+        session_token = websocket.cookies.get(app.state.session_cookie_name, "")
+        if not test_client_bypass and not _token_matches(
+            session_token,
+            app.state.access_token,
         ):
             return 4401, "UI authentication required"
         return None
@@ -837,9 +880,15 @@ def create_app(
     @app.patch("/api/tasks/{task_name}/notes")
     def update_task_notes(task_name: str, payload: TaskNotesRequest) -> dict[str, Any]:
         try:
-            task = get_runtime().update_task_notes(task_name, payload.notes)
+            task = get_runtime().update_task_notes(
+                task_name,
+                payload.notes,
+                payload.expected_notes,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except TaskNotesConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "task": task}
@@ -848,9 +897,16 @@ def create_app(
     def update_task_env(task_name: str, payload: TaskEnvRequest) -> dict[str, Any]:
         try:
             require_environment_limit(payload.env)
-            task = get_runtime().update_task_env(task_name, payload.env)
+            require_environment_limit(payload.expected_env)
+            task = get_runtime().update_task_env(
+                task_name,
+                payload.env,
+                payload.expected_env,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except TaskEnvConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "task": task}
@@ -1310,8 +1366,13 @@ def main(
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
     token = str(access_token or secrets.token_urlsafe(32))
-    previous_token = os.environ.get(_UI_TOKEN_ENV)
-    os.environ[_UI_TOKEN_ENV] = token
+    previous_token = os.environ.get(_UI_TOKEN_ENV) if reload else None
+    previous_cookie_nonce = os.environ.get(_UI_COOKIE_NONCE_ENV) if reload else None
+    if reload:
+        # Uvicorn's reload child creates the app from an import string and must
+        # receive the token out of process. Normal single-process startup passes
+        # it directly and must not expose it through the server environment.
+        os.environ[_UI_TOKEN_ENV] = token
     try:
         host = "127.0.0.1"
         explicit_port = port is not None
@@ -1333,6 +1394,9 @@ def main(
                 f"[pyruns] Port {configured_port} is busy; using {port} instead.",
                 flush=True,
             )
+        cookie_nonce = _session_cookie_nonce_for_port(port)
+        if reload:
+            os.environ[_UI_COOKIE_NONCE_ENV] = cookie_nonce
         url = f"http://{host}:{port}{start_path}"
         authenticated_url = _url_with_access_token(url, token)
         print(f"[pyruns] UI: {authenticated_url}", flush=True)
@@ -1349,7 +1413,13 @@ def main(
                 flush=True,
             )
         uvicorn.run(
-            "pyruns.web.app:create_app" if reload else create_app(runtime, access_token=token),
+            "pyruns.web.app:create_app"
+            if reload
+            else create_app(
+                runtime,
+                access_token=token,
+                session_cookie_nonce=cookie_nonce,
+            ),
             host=host,
             port=port,
             reload=reload,
@@ -1359,10 +1429,15 @@ def main(
             log_level="warning",
         )
     finally:
-        if previous_token is None:
-            os.environ.pop(_UI_TOKEN_ENV, None)
-        else:
-            os.environ[_UI_TOKEN_ENV] = previous_token
+        if reload:
+            if previous_token is None:
+                os.environ.pop(_UI_TOKEN_ENV, None)
+            else:
+                os.environ[_UI_TOKEN_ENV] = previous_token
+            if previous_cookie_nonce is None:
+                os.environ.pop(_UI_COOKIE_NONCE_ENV, None)
+            else:
+                os.environ[_UI_COOKIE_NONCE_ENV] = previous_cookie_nonce
         shutdown = getattr(runtime, "shutdown", None)
         if callable(shutdown):
             shutdown()

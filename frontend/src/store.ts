@@ -252,12 +252,22 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   },
 }))
 
+export class WorkspaceChangeRequiresDiscardError extends Error {
+  readonly unsavedChanges: string[]
+
+  constructor(unsavedChanges: string[]) {
+    super('The server selected another workspace while local changes are unsaved.')
+    this.name = 'WorkspaceChangeRequiresDiscardError'
+    this.unsavedChanges = [...unsavedChanges]
+  }
+}
+
 interface WorkspaceState {
   workspace: WorkspaceInfo | null
   workspaceEpoch: number
   lastScriptWorkspace: WorkspaceInfo | null
   loading: boolean
-  fetch: () => Promise<void>
+  fetch: (options?: { discardUnsavedChanges?: boolean }) => Promise<void>
   setWorkspace: (workspace: WorkspaceInfo | null) => void
   setRunRoot: (path: string) => Promise<void>
   openShellWorkspace: () => Promise<void>
@@ -269,7 +279,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaceEpoch: 0,
   lastScriptWorkspace: null,
   loading: false,
-  async fetch() {
+  async fetch(options = {}) {
     const requestId = ++workspaceRequestSeq
     set({ loading: true })
     try {
@@ -278,13 +288,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         return
       }
       const previousRunRoot = get().workspace?.run_root
+      const nextRunRoot = ws?.run_root
+      const unsavedChanges = getUnsavedWorkspaceChangeLabels()
+      if (
+        previousRunRoot !== nextRunRoot
+        && unsavedChanges.length > 0
+        && !options.discardUnsavedChanges
+      ) {
+        throw new WorkspaceChangeRequiresDiscardError(unsavedChanges)
+      }
       set(state => ({
         workspace: ws,
-        workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== ws?.run_root ? 1 : 0),
+        workspaceEpoch: state.workspaceEpoch + (previousRunRoot !== nextRunRoot ? 1 : 0),
         lastScriptWorkspace: ws?.workspace_kind === 'script' ? ws : state.lastScriptWorkspace,
       }))
-      if (previousRunRoot !== ws?.run_root) {
-        resetWorkspaceScopedState(String(ws?.run_root || ''))
+      if (previousRunRoot !== nextRunRoot) {
+        resetWorkspaceScopedState(String(nextRunRoot || ''))
       }
     } finally {
       if (requestId === workspaceRequestSeq) {

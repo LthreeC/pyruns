@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  FileCode, ChevronRight, Rocket, FileSearch, FolderPlus,
+  ArrowLeft, FileCode, ChevronRight, Rocket, FileSearch, FolderPlus,
   CheckCircle2, AlertTriangle, Loader2, History,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -492,6 +492,9 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
     })
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) {
+        return
+      }
       if (event.key === 'Escape') {
         event.preventDefault()
         requestClose()
@@ -661,7 +664,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   {!mustChooseConfig && (
                     <button
                       onClick={handleSkipConfig}
-                      className="text-xs text-accent transition-colors hover:text-accent-hover"
+                      className="touch-target inline-flex min-h-11 items-center px-2 text-xs text-accent transition-colors hover:text-accent-hover sm:min-h-8"
                     >
                       Open without config
                     </button>
@@ -685,7 +688,7 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
                   {!mustChooseConfig && (
                     <button
                       onClick={handleSkipConfig}
-                      className="w-full px-3 py-2 text-left text-2xs text-txt-tertiary transition-colors hover:text-txt-secondary"
+                      className="min-h-11 w-full px-3 py-2 text-left text-2xs text-txt-tertiary transition-colors hover:text-txt-secondary"
                     >
                       Open without config
                     </button>
@@ -703,16 +706,17 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
               type="button"
               disabled={loading}
               onClick={() => useLauncherStore.setState({ step: step - 1 })}
-              className="text-xs text-txt-tertiary transition-colors hover:text-txt-secondary disabled:cursor-wait disabled:opacity-50"
+              className="touch-target inline-flex min-h-11 items-center px-2 text-xs text-txt-tertiary transition-colors hover:text-txt-secondary disabled:cursor-wait disabled:opacity-50 sm:min-h-8"
             >
-              ← Back
+              <ArrowLeft aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Back
             </button>
           ) : <div />}
           <button
             type="button"
             disabled={loading}
             onClick={requestClose}
-            className="text-xs text-txt-tertiary transition-colors hover:text-txt-secondary disabled:cursor-wait disabled:opacity-50"
+            className="touch-target inline-flex min-h-11 items-center px-2 text-xs text-txt-tertiary transition-colors hover:text-txt-secondary disabled:cursor-wait disabled:opacity-50 sm:min-h-8"
           >
             Cancel
           </button>
@@ -807,7 +811,7 @@ function ModeActionPanel({
         disabled={!pickerAvailable || busy}
         onClick={() => void onBrowseOpen()}
         className={clsx(
-          'inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+          'touch-target inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9',
           isPython
             ? 'bg-accent text-white hover:bg-accent-hover'
             : 'bg-accent/10 text-accent hover:bg-accent/20',
@@ -839,13 +843,13 @@ function ModeActionPanel({
             }
           }}
           placeholder={placeholder}
-          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 font-mono text-xs text-txt-primary outline-none transition-colors focus:border-border"
+          className="touch-input min-h-11 w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 font-mono text-xs text-txt-primary outline-none transition-colors focus:border-border sm:min-h-9"
         />
         <button
           type="button"
           disabled={!pathReady || busy}
           onClick={() => void onManualOpen()}
-          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
+          className="touch-target min-h-11 w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-9 sm:w-auto sm:flex-none"
         >
           {busy ? 'Preparing...' : manualLabel}
         </button>
@@ -895,7 +899,7 @@ function RecentPathList({
             type="button"
             disabled={busy}
             onClick={() => void onOpen(path)}
-            className="group flex min-h-10 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:cursor-wait disabled:opacity-60"
+            className="group flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 disabled:cursor-wait disabled:opacity-60"
           >
             <Icon className="h-3.5 w-3.5 flex-none text-txt-tertiary transition-colors group-hover:text-accent" />
             <span className="min-w-0 flex-1">
@@ -943,7 +947,7 @@ function ConfigActionPanel({
         type="button"
         disabled={!pickerAvailable}
         onClick={() => void onBrowseOpen()}
-        className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-md bg-accent text-white px-3 py-2 text-xs font-medium transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+        className="touch-target inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9"
       >
         <FileCode className="h-3.5 w-3.5" />
         Browse Config
@@ -970,13 +974,13 @@ function ConfigActionPanel({
             }
           }}
           placeholder={mustChooseConfig ? 'Path to YAML config' : 'Optional path to YAML config'}
-          className="w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 font-mono text-xs text-txt-primary outline-none transition-colors focus:border-border"
+          className="touch-input min-h-11 w-full min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-raised px-2.5 py-1.5 font-mono text-xs text-txt-primary outline-none transition-colors focus:border-border sm:min-h-9"
         />
         <button
           type="button"
           disabled={!pathReady}
           onClick={() => void onManualOpen()}
-          className="w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto sm:flex-none"
+          className="touch-target min-h-11 w-full rounded-md border border-border-subtle px-3 py-1.5 text-xs font-medium text-txt-secondary transition-colors hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-9 sm:w-auto sm:flex-none"
         >
           Open Config Path
         </button>
@@ -1036,7 +1040,7 @@ function ConfigItem({ config, onClick }: { config: ConfigCandidate; onClick: () 
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-md hover:bg-surface-overlay transition-colors text-left group"
+      className="group flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-surface-overlay"
     >
       <FileCode className="h-4 w-4 flex-none text-txt-tertiary transition-colors group-hover:text-accent" />
       <div className="flex-1 min-w-0">

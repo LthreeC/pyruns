@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import zipfile
 
+import pytest
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 CI
@@ -113,11 +115,90 @@ def test_flake8_ignores_local_editor_history():
 
 
 def test_packaging_includes_static_svg_assets():
-    package_data = _load_pyproject()["tool"]["setuptools"]["package-data"]["pyruns"]
+    setuptools_config = _load_pyproject()["tool"]["setuptools"]
+    package_data = setuptools_config["package-data"]["pyruns"]
 
     assert "*.svg" in package_data
     assert "**/*.svg" in package_data
+    assert setuptools_config["cmdclass"]["build_py"] == "pyruns._build.CleanBuildPy"
     assert (ROOT / "pyruns" / "web" / "static" / "pyruns.svg").exists()
+
+
+def test_build_py_removes_stale_package_output(tmp_path):
+    from setuptools.dist import Distribution
+
+    from pyruns._build import CleanBuildPy
+
+    source_root = tmp_path / "source"
+    source_package = source_root / "pyruns"
+    source_package.mkdir(parents=True)
+    (source_package / "__init__.py").write_text("CURRENT = True\n", encoding="utf-8")
+
+    build_root = tmp_path / "build" / "lib"
+    stale_asset = build_root / "pyruns" / "web" / "static" / "assets" / "index-old.js"
+    stale_asset.parent.mkdir(parents=True)
+    stale_asset.write_text("console.log('stale')\n", encoding="utf-8")
+
+    distribution = Distribution(
+        {
+            "packages": ["pyruns"],
+            "package_dir": {"": str(source_root)},
+        }
+    )
+    distribution.script_name = "setup.py"
+    command = CleanBuildPy(distribution)
+    command.ensure_finalized()
+    command.build_lib = str(build_root)
+    command.run()
+
+    assert not stale_asset.exists()
+    assert (build_root / "pyruns" / "__init__.py").read_text(encoding="utf-8") == "CURRENT = True\n"
+
+
+def test_build_py_refuses_to_clean_source_package(tmp_path):
+    from setuptools.dist import Distribution
+
+    from pyruns._build import CleanBuildPy
+
+    source_package = tmp_path / "pyruns"
+    source_package.mkdir()
+    marker = source_package / "__init__.py"
+    marker.write_text("KEEP = True\n", encoding="utf-8")
+
+    distribution = Distribution({"packages": ["pyruns"], "package_dir": {"": str(tmp_path)}})
+    distribution.script_name = "setup.py"
+    command = CleanBuildPy(distribution)
+    command.ensure_finalized()
+    command.build_lib = str(tmp_path)
+
+    with pytest.raises(RuntimeError, match="overlaps Pyruns source"):
+        command.run()
+
+    assert marker.read_text(encoding="utf-8") == "KEEP = True\n"
+
+
+def test_build_cleanup_retries_transient_windows_removal(tmp_path, monkeypatch):
+    from pyruns import _build
+
+    target = tmp_path / "build" / "lib" / "pyruns"
+    target.mkdir(parents=True)
+    original_rmtree = _build.shutil.rmtree
+    calls = 0
+
+    def flaky_rmtree(path, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("transient OneDrive lock")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(_build.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(_build.time, "sleep", lambda _seconds: None)
+
+    _build._remove_build_path(target)
+
+    assert calls == 2
+    assert not target.exists()
 
 
 def test_examples_extra_declares_hydra_dependencies():
@@ -206,6 +287,7 @@ def test_wheel_static_checker_rejects_stale_assets(tmp_path):
     source_assets.mkdir(parents=True)
     (source_assets / "index-current.js").write_text("console.log('ok')\n", encoding="utf-8")
     (source_assets / "index-current.css").write_text("body{}\n", encoding="utf-8")
+    (source_static / "pyruns.svg").write_text("<svg></svg>\n", encoding="utf-8")
     (source_static / "index.html").write_text(
         '<link rel="stylesheet" href="/assets/index-current.css">'
         '<script type="module" src="/assets/index-current.js"></script>',
@@ -216,10 +298,22 @@ def test_wheel_static_checker_rejects_stale_assets(tmp_path):
     good_wheel = tmp_path / "good.whl"
     with zipfile.ZipFile(good_wheel, "w") as wheel:
         wheel.write(source_static / "index.html", "pyruns/web/static/index.html")
+        wheel.write(source_static / "pyruns.svg", "pyruns/web/static/pyruns.svg")
         wheel.write(source_assets / "index-current.js", "pyruns/web/static/assets/index-current.js")
         wheel.write(source_assets / "index-current.css", "pyruns/web/static/assets/index-current.css")
 
     assert checker.check_wheel_static(good_wheel, root=tmp_path) == []
+
+    missing_root_file_wheel = tmp_path / "missing-root-file.whl"
+    with zipfile.ZipFile(missing_root_file_wheel, "w") as wheel:
+        wheel.write(source_static / "index.html", "pyruns/web/static/index.html")
+        wheel.write(source_assets / "index-current.js", "pyruns/web/static/assets/index-current.js")
+        wheel.write(source_assets / "index-current.css", "pyruns/web/static/assets/index-current.css")
+
+    assert any(
+        "missing static assets/files: pyruns.svg" in error
+        for error in checker.check_wheel_static(missing_root_file_wheel, root=tmp_path)
+    )
 
     stale_wheel = tmp_path / "stale.whl"
     with zipfile.ZipFile(stale_wheel, "w") as wheel:
@@ -251,8 +345,12 @@ def test_frontend_static_checker_rejects_stale_assets(tmp_path, monkeypatch):
 
     checker = _load_frontend_static_checker()
     monkeypatch.setattr(checker.shutil, "which", lambda _name: "npm")
+    hidden_flags = {"creationflags": 0x08000000}
+    monkeypatch.setattr(checker, "hidden_subprocess_kwargs", lambda: hidden_flags)
+    captured_kwargs = {}
 
-    def fake_run(command, cwd, text, capture_output, **_kwargs):
+    def fake_run(command, cwd, text, capture_output, **kwargs):
+        captured_kwargs.update(kwargs)
         build_dir = Path(command[command.index("--outDir") + 1])
         build_dir.mkdir(parents=True)
         (build_dir / "index.html").write_text("new\n", encoding="utf-8")
@@ -261,6 +359,7 @@ def test_frontend_static_checker_rejects_stale_assets(tmp_path, monkeypatch):
     monkeypatch.setattr(checker.subprocess, "run", fake_run)
 
     assert checker.check_frontend_static(root=tmp_path) == ["changed committed static asset: index.html"]
+    assert captured_kwargs["creationflags"] == hidden_flags["creationflags"]
 
 
 def test_frontend_static_checker_allows_text_line_ending_differences(tmp_path, monkeypatch):

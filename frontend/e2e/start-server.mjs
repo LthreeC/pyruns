@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, resolve } from 'node:path'
@@ -23,6 +23,7 @@ const child = spawn(
   ],
   {
     cwd: repositoryRoot,
+    detached: process.platform !== 'win32',
     env: {
       ...process.env,
       PYTHONPATH: pythonPath,
@@ -35,14 +36,60 @@ const child = spawn(
 )
 
 let stopping = false
-function stop(exitCode = 0) {
-  if (stopping) return
-  stopping = true
-  if (child.exitCode == null) {
-    child.kill()
-  }
+let finished = false
+let requestedExitCode = null
+
+function finish(exitCode) {
+  if (finished) return
+  finished = true
   rmSync(runRoot, { recursive: true, force: true })
   process.exitCode = exitCode
+}
+
+function terminateChild() {
+  if (child.exitCode != null || !child.pid) return
+
+  if (process.platform === 'win32') {
+    const result = spawnSync(
+      'taskkill.exe',
+      ['/F', '/T', '/PID', String(child.pid)],
+      { stdio: 'ignore', windowsHide: true },
+    )
+    if (result.error || result.status !== 0) {
+      child.kill('SIGKILL')
+    }
+  } else {
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+    } catch {
+      child.kill('SIGTERM')
+    }
+  }
+
+  const forceTimer = setTimeout(() => {
+    if (child.exitCode != null) return
+    if (process.platform === 'win32') {
+      child.kill('SIGKILL')
+      return
+    }
+    try {
+      process.kill(-child.pid, 'SIGKILL')
+    } catch {
+      child.kill('SIGKILL')
+    }
+  }, 2_000)
+  forceTimer.unref()
+}
+
+function stop(exitCode = 0) {
+  if (requestedExitCode == null) requestedExitCode = exitCode
+  if (stopping) return
+  stopping = true
+  if (!child.pid) {
+    finish(requestedExitCode)
+    return
+  }
+  terminateChild()
 }
 
 process.once('SIGINT', () => stop(130))
@@ -51,4 +98,4 @@ child.once('error', error => {
   console.error(error)
   stop(1)
 })
-child.once('exit', code => stop(code ?? 1))
+child.once('close', code => finish(requestedExitCode ?? code ?? 1))

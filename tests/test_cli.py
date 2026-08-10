@@ -16,7 +16,15 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from pyruns._config import RUN_LOGS_DIR, TASK_INFO_FILENAME, TASKS_DIR, TRASH_DIR
+from pyruns._config import (
+    ERROR_LOG_FILENAME,
+    QUEUE_LOG_FILENAME,
+    RUN_LOGS_DIR,
+    SCRIPT_INFO_FILENAME,
+    TASK_INFO_FILENAME,
+    TASKS_DIR,
+    TRASH_DIR,
+)
 from pyruns.cli.app import build_parser, main
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.utils.info_io import load_task_info, update_task_info
@@ -48,7 +56,7 @@ def test_cli_log_path_rejects_simulated_reparse_file(tmp_path, monkeypatch):
     monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
 
     with pytest.raises(commands.CliError, match="unsafe log path"):
-        commands._log_path({"name": "safe", "dir": str(task_dir)})
+        commands._resolve_log_reference({"name": "safe", "dir": str(task_dir)})
 
 
 def _source_cli(*args: str) -> list[str]:
@@ -67,6 +75,7 @@ def test_cli_app_module_runs_without_duplicate_import_warning():
         text=True,
         timeout=15,
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
     assert result.returncode == 0
@@ -503,6 +512,18 @@ def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(
         encoding="utf-8"
     ) == "train"
 
+    (tmp_path / "_pyruns_" / "train").rename(tmp_path / "_pyruns_" / "named.py")
+    launched.clear()
+    assert main(["ui", "named.py"]) == 0
+    assert launched == {
+        "start_path": "/",
+        "port": None,
+        "open_browser": None,
+    }
+    assert (tmp_path / "_pyruns_" / ".active_workspace").read_text(
+        encoding="utf-8"
+    ) == "named.py"
+
     removed = _run_cli(tmp_path, "ui", "--shell")
     assert removed.returncode == 2
     assert "unrecognized arguments: --shell" in removed.stderr
@@ -510,6 +531,41 @@ def test_ui_uses_positional_workspace_target_and_rejects_old_selectors(
     old_workspace_form = _run_cli(tmp_path, "-w", "train", "ui")
     assert old_workspace_form.returncode == 2
     assert "ui does not use -w/--workspace" in old_workspace_form.stderr
+
+
+def test_ui_treats_an_existing_workspace_ending_in_py_as_a_workspace(
+    tmp_path,
+    monkeypatch,
+):
+    from pyruns.cli import commands
+
+    script = tmp_path / "train.py"
+    script.write_text("print('train')\n", encoding="utf-8")
+    source_workspace = Path(bootstrap_workspace(str(script)))
+    dotted_workspace = source_workspace.parent / "archive.py"
+    dotted_workspace.mkdir()
+    (dotted_workspace / SCRIPT_INFO_FILENAME).write_text(
+        (source_workspace / SCRIPT_INFO_FILENAME).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    launched = {}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        commands,
+        "_launch_ui",
+        lambda **kwargs: launched.update(kwargs) or 0,
+    )
+
+    assert main(["ui", str(dotted_workspace), "--no-browser"]) == 0
+    assert launched == {
+        "start_path": "/",
+        "port": None,
+        "open_browser": False,
+    }
+    assert (tmp_path / "_pyruns_" / ".active_workspace").read_text(
+        encoding="utf-8"
+    ) == "archive.py"
 
 
 @pytest.mark.parametrize(
@@ -720,6 +776,49 @@ def test_init_config_requires_a_script(tmp_path):
     assert not (tmp_path / "_pyruns_").exists()
 
 
+def test_init_missing_config_does_not_leave_a_workspace(tmp_path):
+    script = tmp_path / "train.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+
+    result = _run_cli(
+        tmp_path,
+        "init",
+        str(script),
+        "--config",
+        "missing.yaml",
+    )
+
+    assert result.returncode == 1
+    assert "not found" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+def test_init_invalid_yaml_does_not_leave_a_workspace(tmp_path):
+    script = tmp_path / "train.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    config = tmp_path / "invalid.yaml"
+    config.write_text("broken: [\n", encoding="utf-8")
+
+    result = _run_cli(tmp_path, "init", str(script), "--config", str(config))
+
+    assert result.returncode == 1
+    assert "Invalid YAML" in result.stderr
+    assert "invalid.yaml" in result.stderr
+    assert "internal error" not in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+def test_init_load_script_without_template_does_not_leave_a_workspace(tmp_path):
+    script = tmp_path / "train.py"
+    script.write_text("import pyruns\nconfig = pyruns.load()\n", encoding="utf-8")
+
+    result = _run_cli(tmp_path, "init", str(script))
+
+    assert result.returncode == 1
+    assert "needs a YAML template" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
 def test_init_shell_outputs_workspace_and_status_is_json(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert main(["init", "--json"]) == 0
@@ -846,8 +945,19 @@ def test_follow_task_retries_final_log_until_size_is_stable(monkeypatch):
     offsets = iter([0, 7, 7, 7, 7])
     calls = []
 
-    monkeypatch.setattr(commands, "_task_record", lambda _task: {"status": "completed"})
-    monkeypatch.setattr(commands, "_log_path", lambda _task: "run1.log")
+    identity = commands._TaskRunIdentity(run_index=1, runner_id="host:1:token")
+    monkeypatch.setattr(
+        commands,
+        "_bound_task_record",
+        lambda _task, observed: {"status": "completed"}
+        if observed == identity
+        else pytest.fail("follow must retain the captured run identity"),
+    )
+    monkeypatch.setattr(
+        commands,
+        "_resolve_log_reference",
+        lambda _task, **_kwargs: commands._LogReference("run1.log", 1, "run"),
+    )
 
     def read_log(_path, offset):
         calls.append(offset)
@@ -855,7 +965,7 @@ def test_follow_task_retries_final_log_until_size_is_stable(monkeypatch):
 
     monkeypatch.setattr(commands, "_write_available_log", read_log)
 
-    assert commands._follow_task({"name": "fast"})["status"] == "completed"
+    assert commands._follow_task({"name": "fast"}, identity=identity)["status"] == "completed"
     assert calls == [0, 0, 7, 7, 7]
 
 
@@ -869,11 +979,26 @@ def test_follow_task_reads_only_new_queue_bytes_and_expected_run(monkeypatch):
     ])
     reads = []
 
-    monkeypatch.setattr(commands, "_task_record", lambda _task: next(records))
+    identity = commands._TaskRunIdentity(
+        run_index=2,
+        runner_id="host:1:token",
+        started_queued=True,
+    )
     monkeypatch.setattr(
         commands,
-        "_log_path",
-        lambda _task, run_index=None: "queue.log" if run_index is None else f"run{run_index}.log",
+        "_bound_task_record",
+        lambda _task, observed: next(records)
+        if observed == identity
+        else pytest.fail("follow must retain the captured run identity"),
+    )
+    monkeypatch.setattr(
+        commands,
+        "_resolve_log_reference",
+        lambda _task, run_index=None, **_kwargs: commands._LogReference(
+            "queue.log" if run_index is None else f"run{run_index}.log",
+            None if run_index is None else run_index,
+            "queue" if run_index is None else "run",
+        ),
     )
 
     def read_log(path, offset):
@@ -881,11 +1006,16 @@ def test_follow_task_reads_only_new_queue_bytes_and_expected_run(monkeypatch):
         return offset
 
     monkeypatch.setattr(commands, "_write_available_log", read_log)
+    monkeypatch.setattr(
+        commands.os.path,
+        "isfile",
+        lambda path: path == "run2.log",
+    )
     monkeypatch.setattr(commands.time, "sleep", lambda _seconds: None)
 
     result = commands._follow_task(
         {"name": "rerun"},
-        expected_run=2,
+        identity=identity,
         initial_queue_offset=41,
     )
 
@@ -907,12 +1037,14 @@ def test_explicit_run_log_never_falls_back_to_an_older_log(tmp_path):
     )
     (log_dir / "run1.log").write_text("old run\n", encoding="utf-8")
 
-    path = commands._log_path(
+    reference = commands._resolve_log_reference(
         {"name": "exact-log", "dir": str(task_dir)},
         run_index=2,
     )
 
-    assert path == str(log_dir / "run2.log")
+    assert reference.path == str(log_dir / "run2.log")
+    assert reference.run_index == 2
+    assert reference.kind == "run"
 
 
 def test_workspace_discovery_walks_upward(tmp_path, monkeypatch, capsys):
@@ -959,17 +1091,23 @@ def test_typo_suggestions_preserve_exact_command_workspace_and_task_matching(tmp
         "train", "echo ok\n"
     )
     workspace_typo = _run_cli(tmp_path, "-w", "sheel", "status")
+    workspace_whitespace = _run_cli(tmp_path, "-w", " shell", "status")
     by_index = _run_cli(tmp_path, "-w", "shell", "show", "1")
     task_typo = _run_cli(tmp_path, "-w", "shell", "show", "trian")
+    task_whitespace = _run_cli(tmp_path, "-w", "shell", "show", " train")
 
     assert workspace_typo.returncode == 1
     assert "workspace not found: sheel" in workspace_typo.stderr
     assert "Did you mean 'shell'?" in workspace_typo.stderr
+    assert workspace_whitespace.returncode == 1
+    assert "workspace not found:  shell" in workspace_whitespace.stderr
     assert by_index.returncode == 1
     assert task_typo.returncode == 1
     assert "task not found" in by_index.stderr
     assert "task not found: trian" in task_typo.stderr
     assert "Did you mean 'train'?" in task_typo.stderr
+    assert task_whitespace.returncode == 2
+    assert "Task name cannot start or end with whitespace" in task_whitespace.stderr
 
 
 def test_exec_exact_argv_runs_and_returns_task_result(tmp_path):
@@ -1655,8 +1793,8 @@ def test_add_is_noninteractive_and_run_from_waits_for_all(tmp_path):
     assert created.returncode == 0, created.stderr
     payload = json.loads(created.stdout)
     assert [item["name"] for item in payload["created"]] == [
-        "created_[1-of-2]",
-        "created_[2-of-2]",
+        "created_1-of-2",
+        "created_2-of-2",
     ]
 
     run = _run_cli(
@@ -1670,7 +1808,7 @@ def test_add_is_noninteractive_and_run_from_waits_for_all(tmp_path):
         "--name",
         "run",
         "-j",
-        "2",
+        "99",
         timeout=30,
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -1699,7 +1837,7 @@ def test_run_from_dry_run_previews_batch_without_creating_tasks(tmp_path):
         "--name",
         "preview",
         "--jobs",
-        "2",
+        "99",
         "--dry-run",
     )
 
@@ -1711,8 +1849,8 @@ def test_run_from_dry_run_previews_batch_without_creating_tasks(tmp_path):
     assert payload["backend"] == "thread"
     assert payload["jobs"] == 2
     assert [task["planned_name"] for task in payload["tasks"]] == [
-        "preview_[1-of-2]",
-        "preview_[2-of-2]",
+        "preview_1-of-2",
+        "preview_2-of-2",
     ]
     assert not any(task["name_is_exact"] for task in payload["tasks"])
     assert {path.name for path in tasks_dir.iterdir()} == before
@@ -1931,7 +2069,7 @@ def test_human_and_json_output_survive_ascii_terminal_encoding(tmp_path):
     from pyruns.core.task_generator import TaskGenerator
 
     TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
-        "unicode-☃",
+        "unicode-😀",
         "echo ok\n",
     )
     ascii_env = {"PYTHONIOENCODING": "ascii"}
@@ -1944,7 +2082,7 @@ def test_human_and_json_output_survive_ascii_terminal_encoding(tmp_path):
         env_overrides=ascii_env,
     )
     assert human.returncode == 0
-    assert r"unicode-\u2603" in human.stdout
+    assert r"unicode-\U0001f600" in human.stdout
 
     machine = _run_cli(
         tmp_path,
@@ -1955,7 +2093,7 @@ def test_human_and_json_output_survive_ascii_terminal_encoding(tmp_path):
         env_overrides=ascii_env,
     )
     assert machine.returncode == 0
-    assert json.loads(machine.stdout)["tasks"][0]["name"] == "unicode-☃"
+    assert json.loads(machine.stdout)["tasks"][0]["name"] == "unicode-😀"
 
 
 def test_show_and_log_accept_task_run_references(tmp_path):
@@ -1993,12 +2131,14 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     path_payload = json.loads(path_result.stdout)
     assert path_payload["task"] == "versioned"
     assert path_payload["run"] == 1
+    assert path_payload["kind"] == "run"
     assert path_payload["path"].endswith("run1.log")
 
     shown = _run_cli(tmp_path, "-w", "shell", "show", "versioned@1", "--json")
     detail = json.loads(shown.stdout)
     assert detail["run_index"] == 2
     assert detail["selected_run"]["index"] == 1
+    assert detail["selected_run"]["status"] == "completed"
     assert detail["selected_run"]["start_time"]
     assert detail["selected_run"]["finish_time"]
     assert detail["selected_run"]["duration_seconds"] >= 0
@@ -2048,6 +2188,166 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert "available runs: 1-2" in missing.stderr
 
 
+def test_show_reports_the_selected_historical_run_status(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    task = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "history-status",
+        "echo ok\n",
+    )
+
+    def set_history(info):
+        info.update(
+            {
+                "status": "completed",
+                "run_index": 2,
+                "run_statuses": ["failed", "completed"],
+                "start_times": ["2026-08-10 10:00:00", "2026-08-10 10:01:00"],
+                "finish_times": ["2026-08-10 10:00:01", "2026-08-10 10:01:01"],
+                "durations": [1.0, 1.0],
+                "exit_codes": [7, 0],
+            }
+        )
+
+    update_task_info(task["dir"], set_history)
+
+    result = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "show",
+        "history-status@1",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    detail = json.loads(result.stdout)
+    assert detail["status"] == "completed"
+    assert detail["run_index"] == 2
+    assert detail["selected_run"]["index"] == 1
+    assert detail["selected_run"]["status"] == "failed"
+    assert detail["selected_run"]["exit_code"] == 7
+
+
+def test_log_path_json_reports_the_actual_log_run_and_kind(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    generator = TaskGenerator(root_dir=str(workspace / TASKS_DIR))
+    old_log_task = generator.create_shell_task("old-log", "echo old\n")
+    error_task = generator.create_shell_task("error-log", "echo error\n")
+    pre_run_error_task = generator.create_shell_task(
+        "pre-run-error",
+        "echo pre-run-error\n",
+    )
+    queue_task = generator.create_shell_task("queue-log", "echo queue\n")
+
+    update_task_info(
+        old_log_task["dir"],
+        lambda info: info.update(
+            {
+                "status": "completed",
+                "run_index": 2,
+                "run_statuses": ["completed", "completed"],
+            }
+        ),
+    )
+    update_task_info(
+        error_task["dir"],
+        lambda info: info.update(
+            {
+                "status": "failed",
+                "run_index": 1,
+                "run_statuses": ["failed"],
+            }
+        ),
+    )
+    update_task_info(
+        queue_task["dir"],
+        lambda info: info.update({"status": "queued", "run_index": 0}),
+    )
+    update_task_info(
+        pre_run_error_task["dir"],
+        lambda info: info.update({"status": "failed", "run_index": 0}),
+    )
+
+    old_log_dir = Path(old_log_task["dir"]) / RUN_LOGS_DIR
+    error_log_dir = Path(error_task["dir"]) / RUN_LOGS_DIR
+    pre_run_error_log_dir = Path(pre_run_error_task["dir"]) / RUN_LOGS_DIR
+    queue_log_dir = Path(queue_task["dir"]) / RUN_LOGS_DIR
+    old_log_dir.mkdir(exist_ok=True)
+    error_log_dir.mkdir(exist_ok=True)
+    pre_run_error_log_dir.mkdir(exist_ok=True)
+    queue_log_dir.mkdir(exist_ok=True)
+    (old_log_dir / "run1.log").write_text("old\n", encoding="utf-8")
+    (error_log_dir / ERROR_LOG_FILENAME).write_text("error\n", encoding="utf-8")
+    (pre_run_error_log_dir / ERROR_LOG_FILENAME).write_text(
+        "pre-run-error\n",
+        encoding="utf-8",
+    )
+    (queue_log_dir / QUEUE_LOG_FILENAME).write_text("queued\n", encoding="utf-8")
+
+    def log_reference(name):
+        result = _run_cli(
+            tmp_path,
+            "-w",
+            "shell",
+            "log",
+            name,
+            "--path",
+            "--json",
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    old_reference = log_reference("old-log")
+    error_reference = log_reference("error-log")
+    pre_run_error_reference = log_reference("pre-run-error")
+    queue_reference = log_reference("queue-log")
+
+    assert old_reference["run"] == 1
+    assert old_reference["kind"] == "run"
+    assert old_reference["path"].endswith("run1.log")
+    assert error_reference["run"] is None
+    assert error_reference["kind"] == "error"
+    assert error_reference["path"].endswith(ERROR_LOG_FILENAME)
+    assert pre_run_error_reference["run"] is None
+    assert pre_run_error_reference["kind"] == "error"
+    assert pre_run_error_reference["path"].endswith(ERROR_LOG_FILENAME)
+    assert queue_reference["run"] is None
+    assert queue_reference["kind"] == "queue"
+    assert queue_reference["path"].endswith(QUEUE_LOG_FILENAME)
+
+    shown = _run_cli(
+        tmp_path,
+        "-w",
+        "shell",
+        "show",
+        "pre-run-error",
+        "--json",
+    )
+    assert shown.returncode == 0, shown.stderr
+    assert json.loads(shown.stdout)["latest_log"].endswith(ERROR_LOG_FILENAME)
+
+
+def test_oversized_task_run_reference_is_a_usage_error(tmp_path):
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.core.task_generator import TaskGenerator
+
+    TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        "bounded-run",
+        "echo ok\n",
+    )
+    reference = "bounded-run@" + ("9" * 5000)
+
+    result = _run_cli(tmp_path, "-w", "shell", "show", reference)
+
+    assert result.returncode == 2
+    assert "RUN must be between 1 and 1000" in result.stderr
+    assert "internal error" not in result.stderr.lower()
+
+
 def test_task_names_reserve_at_for_run_references(tmp_path):
     result = _run_cli(
         tmp_path,
@@ -2061,6 +2361,23 @@ def test_task_names_reserve_at_for_run_references(tmp_path):
 
     assert result.returncode == 2
     assert "reserved for TASK@RUN references" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+@pytest.mark.parametrize("name", [" leading-space", "trailing-space "])
+def test_task_names_reject_boundary_whitespace_without_creating_workspace(tmp_path, name):
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        name,
+        "--",
+        sys.executable,
+        "-V",
+    )
+
+    assert result.returncode == 2
+    assert "Task name cannot start or end with whitespace" in result.stderr
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -2557,6 +2874,24 @@ def test_export_defaults_to_stdout_and_can_write_file(tmp_path):
     )
     assert json_stdout.returncode == 0, json_stdout.stderr
     assert json.loads(json_stdout.stdout)[0]["name"] == "exportable"
+
+
+def test_atomic_export_preserves_existing_file_when_replace_fails(tmp_path, monkeypatch):
+    from pyruns.cli import commands
+
+    output = tmp_path / "report.json"
+    output.write_text("old report\n", encoding="utf-8")
+
+    def fail_replace(_source, _destination):
+        raise OSError("replace blocked")
+
+    monkeypatch.setattr(commands.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace blocked"):
+        commands._atomic_write_export(str(output), "new report\n")
+
+    assert output.read_text(encoding="utf-8") == "old report\n"
+    assert list(tmp_path.iterdir()) == [output]
 
 
 def test_config_get_set_unset_and_path(tmp_path):

@@ -199,7 +199,7 @@ pyr init train.py --config configs/default.yaml
 
 ```bash
 pyr -w train add configs/sweep.yaml -n sweep
-pyr -w train run sweep_[1-of-4] sweep_[2-of-4] -j 2
+pyr -w train run sweep_1-of-4 sweep_2-of-4 -j 2
 ```
 
 任务名必须精确填写；Pyruns 不接受列表序号或模糊名称。
@@ -217,7 +217,7 @@ epochs: 10
 ```bash
 pyr -w train add configs/sweep.yaml -n sweep
 pyr -w train ls sweep
-pyr -w train run sweep_[1-of-4] sweep_[2-of-4] -j 2
+pyr -w train run sweep_1-of-4 sweep_2-of-4 -j 2
 ```
 
 完整语法见 [批量配置语法](batch-syntax.md)。
@@ -341,7 +341,7 @@ python -m pip install -e .
 pyr --help
 ```
 
-前端开发与构建：
+前端开发与构建要求 Node.js 20 或更高版本：
 
 ```bash
 npm --prefix frontend install

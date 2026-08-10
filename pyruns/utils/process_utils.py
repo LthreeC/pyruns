@@ -32,6 +32,22 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
 
 
+def _psutil_process_is_alive(pid: int) -> bool | None:
+    """Return psutil liveness, treating zombies as exited, or None on failure."""
+
+    if _psutil is None:
+        return None
+    try:
+        status = _psutil.Process(pid).status()
+    except Exception:
+        return None
+    exited_statuses = {
+        getattr(_psutil, "STATUS_ZOMBIE", "zombie"),
+        getattr(_psutil, "STATUS_DEAD", "dead"),
+    }
+    return status not in exited_statuses
+
+
 def is_pid_running(pid: Any) -> bool:
     """Check whether *pid* is still alive (cross-platform).
 
@@ -45,11 +61,9 @@ def is_pid_running(pid: Any) -> bool:
     except (TypeError, ValueError):
         return False
 
-    if _psutil is not None:
-        try:
-            return _psutil.pid_exists(pid)
-        except Exception:
-            pass
+    psutil_alive = _psutil_process_is_alive(pid)
+    if psutil_alive is not None:
+        return psutil_alive
 
     if os.name == "nt":
         try:
@@ -139,8 +153,13 @@ def _process_tree_identities(pid: int) -> list[tuple[int, float | None]]:
 
 def _process_identity_is_alive(identity: tuple[int, float | None]) -> bool:
     pid, created_at = identity
+    psutil_alive = _psutil_process_is_alive(pid)
+    if psutil_alive is False:
+        return False
     if created_at is not None:
         return process_identity_matches(pid, created_at)
+    if psutil_alive is True:
+        return True
     return is_pid_running(pid)
 
 
@@ -158,16 +177,47 @@ def _wait_for_process_tree_exit(
         time.sleep(_POSIX_KILL_POLL_SEC)
 
 
-def _posix_process_group_exists(killpg: Any, pgid: int) -> bool:
+def _signal_posix_process_tree(
+    identities: list[tuple[int, float | None]],
+    signal_number: int,
+) -> None:
+    """Signal every snapshotted process group without touching our own group."""
+
+    killpg = getattr(os, "killpg", None)
     try:
-        killpg(pgid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
+        current_group = int(os.getpgrp())
+    except (AttributeError, OSError):
+        current_group = -1
+
+    # Signal the root group first so the parent cannot keep spawning work while
+    # independently-sessioned descendants are being stopped.
+    for identity in identities:
+        process_pid, _created_at = identity
+        if not _process_identity_is_alive(identity):
+            continue
+        try:
+            process_group = int(os.getpgid(process_pid))
+        except (AttributeError, OSError, ProcessLookupError):
+            process_group = None
+
+        group_signalled = False
+        if (
+            killpg is not None
+            and process_group is not None
+            and process_group == process_pid
+            and process_group != current_group
+        ):
+            try:
+                killpg(process_group, signal_number)
+                group_signalled = True
+            except (OSError, ProcessLookupError):
+                pass
+        if group_signalled or not _process_identity_is_alive(identity):
+            continue
+        try:
+            os.kill(process_pid, signal_number)
+        except (OSError, ProcessLookupError):
+            pass
 
 
 def kill_process(
@@ -218,46 +268,20 @@ def kill_process(
             return terminated
         else:
             import signal
-            killpg = getattr(os, "killpg", None)
-            sent_group_signal = False
-            try:
-                if killpg is not None:
-                    killpg(pid, signal.SIGTERM)
-                    sent_group_signal = True
-                else:
-                    os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                return not any(_process_identity_is_alive(identity) for identity in identities)
-            except OSError:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    return not any(_process_identity_is_alive(identity) for identity in identities)
-
-            deadline = time.monotonic() + _POSIX_KILL_GRACE_SEC
-            group_alive_after_term = sent_group_signal
-            while time.monotonic() < deadline:
-                if sent_group_signal and killpg is not None:
-                    if not _posix_process_group_exists(killpg, pid):
-                        group_alive_after_term = False
-                        break
-                elif not is_pid_running(pid):
-                    break
-                time.sleep(_POSIX_KILL_POLL_SEC)
+            grace_timeout = min(
+                max(0.0, float(timeout)),
+                max(0.0, _POSIX_KILL_GRACE_SEC),
+            )
+            _signal_posix_process_tree(identities, signal.SIGTERM)
+            if _wait_for_process_tree_exit(identities, timeout=grace_timeout):
+                return True
 
             kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-            try:
-                if sent_group_signal and killpg is not None and group_alive_after_term:
-                    killpg(pid, kill_signal)
-                elif is_pid_running(pid):
-                    os.kill(pid, kill_signal)
-            except ProcessLookupError:
-                pass
+            _signal_posix_process_tree(identities, kill_signal)
             return _wait_for_process_tree_exit(
                 identities,
-                timeout=min(max(0.0, float(timeout)), _POSIX_KILL_GRACE_SEC),
+                timeout=grace_timeout,
             )
     except Exception as exc:
         logger.warning(f"Failed to kill PID {pid}: {exc}")
         return False
-

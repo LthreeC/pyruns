@@ -675,6 +675,26 @@ def test_is_pid_running_self():
     assert is_pid_running(my_pid)
 
 
+@pytest.mark.parametrize("terminal_status", ["zombie", "dead"])
+def test_process_utils_treats_terminal_psutil_status_as_exited(monkeypatch, terminal_status):
+    class TerminalProcess:
+        def status(self):
+            return terminal_status
+
+    class TerminalPsutil:
+        STATUS_ZOMBIE = "zombie"
+        STATUS_DEAD = "dead"
+
+        @staticmethod
+        def Process(_pid):
+            return TerminalProcess()
+
+    monkeypatch.setattr(process_utils, "_psutil", TerminalPsutil())
+
+    assert process_utils.is_pid_running(4242) is False
+    assert process_utils._process_identity_is_alive((4242, 123.0)) is False
+
+
 def test_process_utils_import_falls_back_without_psutil(monkeypatch):
     real_import = builtins.__import__
 
@@ -792,33 +812,53 @@ def test_is_pid_running_nt_ctypes_error_returns_false(monkeypatch):
 def test_kill_process_posix(monkeypatch):
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgrp", lambda: 1, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: pid, raising=False)
     monkeypatch.setattr(
         process_utils.os,
         "killpg",
         lambda pid, sig: calls.append(("pg", pid, sig)),
         raising=False,
     )
-    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: False)
-    monkeypatch.setattr(process_utils, "_posix_process_group_exists", lambda killpg, pgid: False)
+    monkeypatch.setattr(
+        process_utils,
+        "_process_tree_identities",
+        lambda _pid: [(99999, 1.0)],
+    )
+    monkeypatch.setattr(process_utils, "_process_identity_is_alive", lambda _identity: True)
+    monkeypatch.setattr(process_utils, "_wait_for_process_tree_exit", lambda *_args, **_kwargs: True)
 
-    kill_process(99999)
+    assert kill_process(99999) is True
 
     assert calls == [("pg", 99999, signal.SIGTERM)]
 
 
 def test_kill_process_posix_escalates_process_group(monkeypatch):
     calls = []
+    waits = iter([False, True])
     monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
     monkeypatch.setattr(process_utils, "_POSIX_KILL_GRACE_SEC", 0)
-    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: True)
+    monkeypatch.setattr(process_utils.os, "getpgrp", lambda: 1, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: pid, raising=False)
     monkeypatch.setattr(
         process_utils.os,
         "killpg",
         lambda pid, sig: calls.append(("pg", pid, sig)),
         raising=False,
     )
+    monkeypatch.setattr(
+        process_utils,
+        "_process_tree_identities",
+        lambda _pid: [(99999, 1.0)],
+    )
+    monkeypatch.setattr(process_utils, "_process_identity_is_alive", lambda _identity: True)
+    monkeypatch.setattr(
+        process_utils,
+        "_wait_for_process_tree_exit",
+        lambda *_args, **_kwargs: next(waits),
+    )
 
-    kill_process(99999)
+    assert kill_process(99999) is True
 
     assert calls == [
         ("pg", 99999, signal.SIGTERM),
@@ -845,34 +885,30 @@ def test_kill_process_exception_caught():
             kill_process(99999)
 
 
-def test_posix_process_group_exists_handles_lookup_permission_and_os_errors():
-    assert process_utils._posix_process_group_exists(lambda _pgid, _sig: None, 123) is True
-
-    def missing(_pgid, _sig):
-        raise ProcessLookupError()
-
-    def denied(_pgid, _sig):
-        raise PermissionError()
-
-    def failed(_pgid, _sig):
-        raise OSError()
-
-    assert process_utils._posix_process_group_exists(missing, 123) is False
-    assert process_utils._posix_process_group_exists(denied, 123) is True
-    assert process_utils._posix_process_group_exists(failed, 123) is False
-
-
 def test_kill_process_posix_returns_when_group_or_fallback_process_is_missing(monkeypatch):
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgrp", lambda: 1, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(process_utils, "_process_identity_is_alive", lambda _identity: True)
+    monkeypatch.setattr(process_utils, "_wait_for_process_tree_exit", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        process_utils,
+        "_process_tree_identities",
+        lambda pid: [(pid, 1.0)],
+    )
 
     def missing_group(pid, sig):
         calls.append(("pg", pid, sig))
         raise ProcessLookupError()
 
+    def process_signal(pid, sig):
+        calls.append(("pid", pid, sig))
+
     monkeypatch.setattr(process_utils.os, "killpg", missing_group, raising=False)
-    kill_process(111)
-    assert calls == [("pg", 111, signal.SIGTERM)]
+    monkeypatch.setattr(process_utils.os, "kill", process_signal)
+    assert kill_process(111) is True
+    assert calls == [("pg", 111, signal.SIGTERM), ("pid", 111, signal.SIGTERM)]
 
     calls.clear()
 
@@ -886,17 +922,27 @@ def test_kill_process_posix_returns_when_group_or_fallback_process_is_missing(mo
 
     monkeypatch.setattr(process_utils.os, "killpg", group_fails, raising=False)
     monkeypatch.setattr(process_utils.os, "kill", process_missing)
-    kill_process(222)
+    assert kill_process(222) is True
     assert calls == [("pg", 222, signal.SIGTERM), ("pid", 222, signal.SIGTERM)]
 
 
 def test_kill_process_posix_without_killpg_escalates_live_process(monkeypatch):
     calls = []
-    alive_checks = []
+    waits = iter([False, False])
     monkeypatch.setattr(process_utils.os, "name", "posix", raising=False)
     monkeypatch.setattr(process_utils.os, "killpg", None, raising=False)
     monkeypatch.setattr(process_utils, "_POSIX_KILL_GRACE_SEC", 0)
-    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: alive_checks.append(pid) or True)
+    monkeypatch.setattr(
+        process_utils,
+        "_process_tree_identities",
+        lambda _pid: [(333, 1.0)],
+    )
+    monkeypatch.setattr(process_utils, "_process_identity_is_alive", lambda _identity: True)
+    monkeypatch.setattr(
+        process_utils,
+        "_wait_for_process_tree_exit",
+        lambda *_args, **_kwargs: next(waits),
+    )
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
 
     assert kill_process(333) is False
@@ -905,7 +951,39 @@ def test_kill_process_posix_without_killpg_escalates_live_process(monkeypatch):
         (333, signal.SIGTERM),
         (333, getattr(signal, "SIGKILL", signal.SIGTERM)),
     ]
-    assert alive_checks == [333, 333]
+
+
+def test_signal_posix_process_tree_covers_independent_descendant_groups(monkeypatch):
+    calls = []
+    identities = [(100, 1.0), (200, 2.0), (201, 3.0)]
+    groups = {100: 100, 200: 200, 201: 200}
+    monkeypatch.setattr(process_utils, "_process_identity_is_alive", lambda _identity: True)
+    monkeypatch.setattr(process_utils.os, "getpgrp", lambda: 50, raising=False)
+    monkeypatch.setattr(
+        process_utils.os,
+        "getpgid",
+        lambda pid: groups[pid],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        process_utils.os,
+        "killpg",
+        lambda pgid, sig: calls.append(("pg", pgid, sig)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        process_utils.os,
+        "kill",
+        lambda pid, sig: calls.append(("pid", pid, sig)),
+    )
+
+    process_utils._signal_posix_process_tree(identities, signal.SIGTERM)
+
+    assert calls == [
+        ("pg", 100, signal.SIGTERM),
+        ("pg", 200, signal.SIGTERM),
+        ("pid", 201, signal.SIGTERM),
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1025,26 +1103,26 @@ def test_sort_tasks_for_manager_keeps_pinned_active_and_fresh_tasks_first():
 def test_sort_tasks_for_manager_uses_natural_name_tiebreaker():
     tasks = [
         {
-            "name": "task_2026-05-28_02-25-46_[10-of-18]",
+            "name": "task_2026-05-28_02-25-46_10-of-18",
             "status": "pending",
             "created_at": "2026-05-28_02-25-46",
         },
         {
-            "name": "task_2026-05-28_02-25-46_[2-of-18]",
+            "name": "task_2026-05-28_02-25-46_2-of-18",
             "status": "pending",
             "created_at": "2026-05-28_02-25-46",
         },
         {
-            "name": "task_2026-05-28_02-25-46_[1-of-18]",
+            "name": "task_2026-05-28_02-25-46_1-of-18",
             "status": "pending",
             "created_at": "2026-05-28_02-25-46",
         },
     ]
 
     assert [task["name"] for task in sort_tasks_for_manager(tasks)] == [
-        "task_2026-05-28_02-25-46_[1-of-18]",
-        "task_2026-05-28_02-25-46_[2-of-18]",
-        "task_2026-05-28_02-25-46_[10-of-18]",
+        "task_2026-05-28_02-25-46_1-of-18",
+        "task_2026-05-28_02-25-46_2-of-18",
+        "task_2026-05-28_02-25-46_10-of-18",
     ]
 
 
@@ -1322,6 +1400,29 @@ class TestLoadSaveTaskInfo:
         assert updated["status"] == "completed"
         assert load_task_info(task_dir)["status"] == "completed"
 
+    def test_load_retries_transient_read_permission_error(self, tmp_path):
+        task_dir = str(tmp_path)
+        save_task_info(task_dir, {"name": "retry-test", "status": "pending"})
+        from pyruns.utils import info_io
+
+        real_load = info_io._load_json_object
+        calls = {"count": 0}
+
+        def flaky_load(path, *, max_bytes, label):
+            if calls["count"] == 0:
+                calls["count"] += 1
+                raise PermissionError("temporarily locked")
+            return real_load(path, max_bytes=max_bytes, label=label)
+
+        with patch("pyruns.utils.info_io._load_json_object", side_effect=flaky_load), patch(
+            "pyruns.utils.info_io.time.sleep"
+        ) as sleep:
+            loaded = load_task_info(task_dir, raise_error=True)
+
+        assert calls["count"] == 1
+        sleep.assert_called_once()
+        assert loaded["status"] == "pending"
+
     def test_task_info_lock_recovers_stale_process_lock_file(self, tmp_path):
         task_dir = str(tmp_path)
         lock_path = tmp_path / f".{TASK_INFO_FILENAME}.lock"
@@ -1567,7 +1668,7 @@ class TestYamlIO:
         path = str(tmp_path / "bad.yaml")
         with open(path, "w", encoding="utf-8") as f:
             f.write("a: [1, 2\n")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match=r"Invalid YAML.*bad\.yaml"):
             load_yaml_strict(path)
 
     def test_yaml_io_rejects_oversized_documents_before_parse_or_publish(self, tmp_path):
@@ -1658,9 +1759,9 @@ class TestListTemplateFiles:
                 },
             )
 
-        add_task("task_2026-05-28_02-25-46_[10-of-18]")
-        add_task("task_2026-05-28_02-25-46_[2-of-18]")
-        add_task("task_2026-05-28_02-25-46_[1-of-18]")
+        add_task("task_2026-05-28_02-25-46_10-of-18")
+        add_task("task_2026-05-28_02-25-46_2-of-18")
+        add_task("task_2026-05-28_02-25-46_1-of-18")
         add_task("running-old", status="running", start_times=["2026-05-28_02-25-00"])
 
         result = list_template_files(run_root)
@@ -1668,9 +1769,9 @@ class TestListTemplateFiles:
         assert list(result.values())[:5] == [
             "config_default.yaml",
             "running-old",
-            "task_2026-05-28_02-25-46_[1-of-18]",
-            "task_2026-05-28_02-25-46_[2-of-18]",
-            "task_2026-05-28_02-25-46_[10-of-18]",
+            "task_2026-05-28_02-25-46_1-of-18",
+            "task_2026-05-28_02-25-46_2-of-18",
+            "task_2026-05-28_02-25-46_10-of-18",
         ]
 
     def test_skips_dot_dirs(self, tmp_path):
@@ -1907,8 +2008,11 @@ class TestValidateTaskName:
         "name",
         [
             "-dangerous-option",
+            " leading-space",
+            "\tleading-tab",
             "trailing.",
             "trailing ",
+            "trailing\t",
             "CON",
             "con.txt",
             "PRN",
@@ -2150,9 +2254,9 @@ def test_info_io_lock_helpers_handle_invalid_stale_and_failed_cleanup(tmp_path, 
     task_dir.mkdir()
     lock_path = task_dir / info_io._LOCK_FILENAME
 
-    assert info_io._read_lock_owner_pid(str(lock_path)) is None
+    assert info_io._read_lock_owner(str(lock_path)) == (None, "", None)
     lock_path.write_text("not-a-pid extra", encoding="utf-8")
-    assert info_io._read_lock_owner_pid(str(lock_path)) is None
+    assert info_io._read_lock_owner(str(lock_path)) == (None, "", None)
 
     lock_path.write_text("999999 extra", encoding="utf-8")
     monkeypatch.setattr(info_io, "is_pid_running", lambda pid: False)
@@ -2191,6 +2295,32 @@ def test_stale_lock_cleanup_does_not_remove_replaced_live_lock(tmp_path, monkeyp
     assert lock_path.read_text(encoding="utf-8") == live_owner
 
 
+def test_task_info_lock_detects_reused_live_pid(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    lock_path = tmp_path / info_io._LOCK_FILENAME
+    acquired_at = 1000.0
+    lock_path.write_text(
+        f"4242 1 {info_io._LOCK_OWNER_HOST} {acquired_at}",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(info_io, "is_pid_running", lambda _pid: True)
+    monkeypatch.setattr(info_io, "get_process_create_time", lambda _pid: acquired_at + 10)
+
+    assert info_io._lock_file_is_stale(str(lock_path)) is True
+
+
+def test_task_info_lock_keeps_valid_foreign_owner_even_when_old(tmp_path, monkeypatch):
+    import pyruns.utils.info_io as info_io
+
+    lock_path = tmp_path / info_io._LOCK_FILENAME
+    foreign_host = f"{info_io._LOCK_OWNER_HOST}-foreign"
+    lock_path.write_text(f"4242 1 {foreign_host} 1", encoding="utf-8")
+    monkeypatch.setattr(info_io.time, "time", lambda: 1_000_000.0)
+
+    assert info_io._lock_file_is_stale(str(lock_path), min_age_sec=0) is False
+
+
 def test_task_info_lock_times_out_when_live_lock_persists(tmp_path, monkeypatch):
     import pyruns.utils.info_io as info_io
 
@@ -2211,17 +2341,20 @@ def test_info_io_load_and_update_error_modes(tmp_path):
     task_dir.mkdir()
     info_path = task_dir / TASK_INFO_FILENAME
 
-    info_path.write_text("{not json", encoding="utf-8")
+    broken_payload = "{not json"
+    info_path.write_text(broken_payload, encoding="utf-8")
     assert load_task_info(str(task_dir)) == {}
     with pytest.raises(json.JSONDecodeError):
         load_task_info(str(task_dir), raise_error=True)
 
     with pytest.raises(json.JSONDecodeError):
-        update_task_info(str(task_dir), lambda info: info.update(name="x"), raise_error=True)
+        update_task_info(str(task_dir), lambda info: info.update(name="x"))
+    assert info_path.read_text(encoding="utf-8") == broken_payload
 
     missing_dir = tmp_path / "missing"
     with pytest.raises(FileNotFoundError):
-        update_task_info(str(missing_dir), lambda info: None, raise_error=True)
+        update_task_info(str(missing_dir), lambda info: None)
+    assert not missing_dir.exists()
 
 
 def test_script_info_roundtrip_and_invalid_json(tmp_path):
@@ -2553,6 +2686,25 @@ def test_settings_stale_lock_cleanup_restores_racing_live_lock(tmp_path, monkeyp
 
     assert settings._remove_stale_settings_lock(str(lock_path)) is False
     assert lock_path.read_bytes() == live_owner
+
+
+def test_settings_lock_only_recovers_invalid_owner_after_safe_age(tmp_path, monkeypatch):
+    path = tmp_path / SETTINGS_FILENAME
+    lock_path = Path(f"{path}.lock")
+    lock_path.write_bytes(b"")
+    snapshot = settings._settings_lock_snapshot(str(lock_path))
+    assert snapshot is not None
+    modified_at = snapshot[0][2] / 1_000_000_000
+
+    monkeypatch.setattr(settings.time, "time", lambda: modified_at + 1)
+    assert settings._settings_lock_is_stale(snapshot, min_age_sec=30) is False
+    assert settings._remove_stale_settings_lock(str(lock_path)) is False
+    assert lock_path.exists()
+
+    monkeypatch.setattr(settings.time, "time", lambda: modified_at + 31)
+    assert settings._settings_lock_is_stale(snapshot, min_age_sec=30) is True
+    assert settings._remove_stale_settings_lock(str(lock_path)) is True
+    assert not lock_path.exists()
 
 
 def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatch):

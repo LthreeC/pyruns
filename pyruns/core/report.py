@@ -186,7 +186,7 @@ def build_export_json(
         return json.dumps(
             _build_export_rows(tasks, statuses=statuses),
             indent=2,
-            ensure_ascii=False,
+            ensure_ascii=True,
             allow_nan=False,
         )
     except ValueError as exc:

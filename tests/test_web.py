@@ -1,5 +1,6 @@
 import json
 import ast
+import re
 import socket
 import subprocess
 import sys
@@ -35,7 +36,12 @@ from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
 from pyruns.web.app import create_app as _create_app
-from pyruns.web.runtime import PyrunsRuntime, parse_global_env_text
+from pyruns.web.runtime import (
+    PyrunsRuntime,
+    TaskEnvConflictError,
+    TaskNotesConflictError,
+    parse_global_env_text,
+)
 
 WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
 WEB_RUNTIME = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "runtime.py"
@@ -276,6 +282,156 @@ def test_local_api_requires_random_session_token_outside_test_bypass():
     assert "token=" not in str(authenticated.url)
 
 
+def test_parallel_ui_instances_keep_independent_http_sessions():
+    first_token = "first-instance-bootstrap-secret"
+    second_token = "second-instance-bootstrap-secret"
+    first_app = create_app(
+        _RouteRuntime({"get_workspace_info": {"instance": "first"}}),
+        access_token=first_token,
+        allow_test_client_bypass=False,
+    )
+    second_app = create_app(
+        _RouteRuntime({"get_workspace_info": {"instance": "second"}}),
+        access_token=second_token,
+        allow_test_client_bypass=False,
+    )
+    first_name = first_app.state.session_cookie_name
+    second_name = second_app.state.session_cookie_name
+
+    assert first_name != second_name
+    assert re.fullmatch(r"pyruns_session_[0-9a-f]{32}", first_name)
+    assert re.fullmatch(r"pyruns_session_[0-9a-f]{32}", second_name)
+    assert first_token not in first_name
+    assert second_token not in second_name
+
+    first_client = TestClient(first_app)
+    second_client = TestClient(second_app)
+    assert first_client.get(f"/?token={first_token}", follow_redirects=False).status_code == 303
+    assert second_client.get(f"/?token={second_token}", follow_redirects=False).status_code == 303
+    first_cookie = first_client.cookies.get(first_name)
+    second_cookie = second_client.cookies.get(second_name)
+    shared_cookie = f"{first_name}={first_cookie}; {second_name}={second_cookie}"
+
+    assert first_cookie == first_token
+    assert second_cookie == second_token
+    assert first_client.get(
+        "/api/workspace",
+        headers={"Cookie": f"{second_name}={second_cookie}"},
+    ).status_code == 401
+    assert second_client.get(
+        "/api/workspace",
+        headers={"Cookie": f"{first_name}={first_cookie}"},
+    ).status_code == 401
+    assert first_client.get(
+        "/api/workspace",
+        headers={"Cookie": shared_cookie},
+    ).json() == {"instance": "first"}
+    assert second_client.get(
+        "/api/workspace",
+        headers={"Cookie": shared_cookie},
+    ).json() == {"instance": "second"}
+
+
+def test_explicit_ui_instance_ignores_inherited_reload_cookie_nonce(monkeypatch):
+    inherited_nonce = "a" * 32
+    monkeypatch.setenv("PYRUNS_UI_COOKIE_NONCE", inherited_nonce)
+
+    app = create_app(
+        _RouteRuntime(),
+        access_token="explicit-token",
+        allow_test_client_bypass=False,
+    )
+
+    assert app.state.session_cookie_name != f"pyruns_session_{inherited_nonce}"
+
+
+def test_parallel_ui_instances_keep_independent_websocket_sessions():
+    class EventManager:
+        def on_change(self, _callback):
+            return None
+
+        def off_change(self, _callback):
+            return None
+
+    class EventRuntime(_RouteRuntime):
+        def __init__(self):
+            super().__init__()
+            self.event_manager = EventManager()
+
+        def get_task_event_stream_context(self):
+            return "workspace", self.event_manager
+
+        def workspace_stream_is_current(self, root, manager):
+            return root == "workspace" and manager is self.event_manager
+
+        def release_task_event_stream_context(self, _root, _manager):
+            return None
+
+    first_token = "first-websocket-secret"
+    second_token = "second-websocket-secret"
+    first_app = create_app(
+        EventRuntime(),
+        access_token=first_token,
+        allow_test_client_bypass=False,
+    )
+    second_app = create_app(
+        EventRuntime(),
+        access_token=second_token,
+        allow_test_client_bypass=False,
+    )
+    first_name = first_app.state.session_cookie_name
+    second_name = second_app.state.session_cookie_name
+    first_client = TestClient(first_app)
+    second_client = TestClient(second_app)
+    assert first_client.get(f"/?token={first_token}", follow_redirects=False).status_code == 303
+    assert second_client.get(f"/?token={second_token}", follow_redirects=False).status_code == 303
+    first_cookie = first_client.cookies.get(first_name)
+    second_cookie = second_client.cookies.get(second_name)
+    shared_cookie = f"{first_name}={first_cookie}; {second_name}={second_cookie}"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with first_client.websocket_connect(
+            "/api/tasks/events",
+            headers={"Cookie": f"{second_name}={second_cookie}"},
+        ):
+            pass
+    assert exc_info.value.code == 4401
+
+    with first_client.websocket_connect(
+        "/api/tasks/events",
+        headers={"Cookie": shared_cookie},
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "ready", "revision": 0}
+    with second_client.websocket_connect(
+        "/api/tasks/events",
+        headers={"Cookie": shared_cookie},
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "ready", "revision": 0}
+
+
+def test_unicode_ui_token_is_rejected_without_server_error():
+    app = create_app(
+        _RouteRuntime(),
+        access_token="ascii-token",
+        allow_test_client_bypass=False,
+    )
+    client = TestClient(app)
+
+    rejected = client.get(
+        "/launcher",
+        params={"token": chr(233)},
+        follow_redirects=False,
+    )
+    accepted = client.get(
+        "/launcher?token=ascii-token",
+        follow_redirects=False,
+    )
+
+    assert rejected.status_code == 401
+    assert rejected.json() == {"detail": "Invalid UI access token"}
+    assert accepted.status_code == 303
+
+
 def test_local_websocket_requires_session_token_outside_test_bypass():
     app = create_app(
         _RouteRuntime(),
@@ -362,7 +518,11 @@ def test_api_rejects_unknown_fields_and_resource_limit_overrides(monkeypatch):
     )
     oversized_env = client.patch(
         "/api/tasks/alpha/env",
-        json={"env": {"A": "1", "B": "2"}},
+        json={"env": {"A": "1", "B": "2"}, "expected_env": {}},
+    )
+    oversized_expected_env = client.patch(
+        "/api/tasks/alpha/env",
+        json={"env": {}, "expected_env": {"A": "1", "B": "2"}},
     )
 
     assert unknown.status_code == 422
@@ -370,6 +530,7 @@ def test_api_rejects_unknown_fields_and_resource_limit_overrides(monkeypatch):
     assert unbounded_page.status_code == 422
     assert oversized_batch.status_code == 400
     assert oversized_env.status_code == 400
+    assert oversized_expected_env.status_code == 400
 
 
 def test_log_websocket_rejects_cross_origin_browser_clients():
@@ -602,10 +763,12 @@ def test_parse_main_options_handles_browser_flags_and_invalid_ports(capsys):
         ("post", "/api/tasks/alpha/cancel", None, None, {"cancel_task": ValueError("not running")}, 400, "not running"),
         ("post", "/api/tasks/ghost/pin", {"pinned": True}, None, {"set_task_pin": KeyError("ghost")}, 404, "Task 'ghost' not found"),
         ("post", "/api/tasks/alpha/pin", {"pinned": None}, None, {"set_task_pin": ValueError("pin required")}, 400, "pin required"),
-        ("patch", "/api/tasks/ghost/notes", {"notes": "x"}, None, {"update_task_notes": KeyError("ghost")}, 404, "Task 'ghost' not found"),
-        ("patch", "/api/tasks/alpha/notes", {"notes": "x"}, None, {"update_task_notes": ValueError("bad notes")}, 400, "bad notes"),
-        ("patch", "/api/tasks/ghost/env", {"env": {}}, None, {"update_task_env": KeyError("ghost")}, 404, "Task 'ghost' not found"),
-        ("patch", "/api/tasks/alpha/env", {"env": {"BAD KEY": "x"}}, None, {"update_task_env": ValueError("bad env")}, 400, "bad env"),
+        ("patch", "/api/tasks/ghost/notes", {"notes": "x", "expected_notes": ""}, None, {"update_task_notes": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("patch", "/api/tasks/alpha/notes", {"notes": "x", "expected_notes": ""}, None, {"update_task_notes": ValueError("bad notes")}, 400, "bad notes"),
+        ("patch", "/api/tasks/alpha/notes", {"notes": "x", "expected_notes": ""}, None, {"update_task_notes": TaskNotesConflictError("notes changed")}, 409, "notes changed"),
+        ("patch", "/api/tasks/ghost/env", {"env": {}, "expected_env": {}}, None, {"update_task_env": KeyError("ghost")}, 404, "Task 'ghost' not found"),
+        ("patch", "/api/tasks/alpha/env", {"env": {"BAD KEY": "x"}, "expected_env": {}}, None, {"update_task_env": ValueError("bad env")}, 400, "bad env"),
+        ("patch", "/api/tasks/alpha/env", {"env": {}, "expected_env": {}}, None, {"update_task_env": TaskEnvConflictError("env changed")}, 409, "env changed"),
         ("post", "/api/tasks/ghost/rename", {"new_name": "beta"}, None, {"rename_task": KeyError("ghost")}, 404, "Task 'ghost' not found"),
         ("post", "/api/tasks/alpha/rename", {"new_name": "bad/name"}, None, {"rename_task": ValueError("bad name")}, 400, "bad name"),
         ("get", "/api/tasks/ghost/logs", None, None, {"get_task_logs": KeyError("ghost")}, 404, "Task 'ghost' not found"),
@@ -735,6 +898,77 @@ def test_main_flushes_private_url_before_blocking_server_run(monkeypatch):
     assert printed
     assert all(kwargs.get("flush") is True for _args, kwargs in printed)
     assert any("token=test-token" in str(args[0]) for args, _kwargs in printed)
+
+
+def test_main_keeps_access_token_out_of_environment_without_reload(monkeypatch):
+    from pyruns.web import app as web_app
+
+    captured = {}
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    monkeypatch.delenv(web_app._UI_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(web_app._UI_COOKIE_NONCE_ENV, raising=False)
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
+
+    def fake_run(app_target, **_kwargs):
+        captured["app_target"] = app_target
+        captured["token"] = web_app.os.environ.get(web_app._UI_TOKEN_ENV)
+        captured["cookie_nonce"] = web_app.os.environ.get(web_app._UI_COOKIE_NONCE_ENV)
+        captured["cookie_name"] = app_target.state.session_cookie_name
+
+    monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
+
+    web_app.main(open_browser=False, access_token="server-secret")
+
+    assert not isinstance(captured["app_target"], str)
+    assert captured["token"] is None
+    assert captured["cookie_nonce"] is None
+    assert captured["cookie_name"] == web_app._session_cookie_name(
+        web_app._session_cookie_nonce_for_port(8099)
+    )
+    assert web_app._UI_TOKEN_ENV not in web_app.os.environ
+    assert web_app._UI_COOKIE_NONCE_ENV not in web_app.os.environ
+
+
+def test_main_limits_access_token_environment_to_reload_supervisor(monkeypatch):
+    from pyruns.web import app as web_app
+
+    captured = {}
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+    monkeypatch.delenv(web_app._UI_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(web_app._UI_COOKIE_NONCE_ENV, raising=False)
+    monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
+
+    def fake_run(app_target, **_kwargs):
+        captured["app_target"] = app_target
+        captured["token"] = web_app.os.environ.get(web_app._UI_TOKEN_ENV)
+        captured["cookie_nonce"] = web_app.os.environ.get(web_app._UI_COOKIE_NONCE_ENV)
+
+    monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
+
+    web_app.main(reload=True, open_browser=False, access_token="reload-secret")
+
+    assert captured["app_target"] == "pyruns.web.app:create_app"
+    assert captured["token"] == "reload-secret"
+    assert re.fullmatch(r"[0-9a-f]{32}", captured["cookie_nonce"])
+    assert captured["cookie_nonce"] == web_app._session_cookie_nonce_for_port(8099)
+    assert web_app._UI_TOKEN_ENV not in web_app.os.environ
+    assert web_app._UI_COOKIE_NONCE_ENV not in web_app.os.environ
 
 
 def test_main_explicit_busy_port_fails_instead_of_silently_incrementing(monkeypatch):
@@ -2595,12 +2829,21 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
-            info["status"] = "running"
+            now = time.time()
+            info.update(
+                {
+                    "status": "running",
+                    "runner_id": "other-host:123:test-runner",
+                    "runner_host": "other-host",
+                    "lease_heartbeat": now,
+                    "lease_until": now + 60,
+                }
+            )
 
         update_task_info(str(task_dir), apply)
         return True
 
-    def fake_cancel(task_name: str) -> bool:
+    def fake_cancel(task_name: str, **_identity: object) -> bool:
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
@@ -2980,7 +3223,7 @@ def test_template_content_and_generator_create_endpoints(tmp_path):
     assert create_response.status_code == 200
     payload = create_response.json()
     assert payload["count"] == 2
-    assert {item["name"] for item in payload["items"]} == {"demo_[1-of-2]", "demo_[2-of-2]"}
+    assert {item["name"] for item in payload["items"]} == {"demo_1-of-2", "demo_2-of-2"}
     assert payload["recent_tasks"]
     assert payload["recent_tasks"][0]["config"] == {}
     assert payload["recent_tasks"][0]["records"] == []
@@ -3111,8 +3354,8 @@ def test_generator_range_syntax_survives_yaml_parsing(tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert payload["count"] == 10
-    assert payload["items"][0]["name"] == "range-demo_[1-of-10]"
-    assert payload["items"][-1]["name"] == "range-demo_[10-of-10]"
+    assert payload["items"][0]["name"] == "range-demo_1-of-10"
+    assert payload["items"][-1]["name"] == "range-demo_10-of-10"
 
 
 def test_shell_workspace_endpoint_and_generator_shell_mode(tmp_path):
@@ -3427,8 +3670,14 @@ def test_pin_notes_env_and_rename_endpoints(tmp_path):
     client = TestClient(create_app(runtime))
 
     pin_response = client.post("/api/tasks/alpha/pin", json={"pinned": True})
-    notes_response = client.patch("/api/tasks/alpha/notes", json={"notes": "needs review"})
-    env_response = client.patch("/api/tasks/alpha/env", json={"env": {"CUDA_VISIBLE_DEVICES": "0"}})
+    notes_response = client.patch(
+        "/api/tasks/alpha/notes",
+        json={"notes": "needs review", "expected_notes": ""},
+    )
+    env_response = client.patch(
+        "/api/tasks/alpha/env",
+        json={"env": {"CUDA_VISIBLE_DEVICES": "0"}, "expected_env": {}},
+    )
     rename_response = client.post("/api/tasks/alpha/rename", json={"new_name": "alpha-renamed"})
 
     assert pin_response.status_code == 200
@@ -3440,6 +3689,60 @@ def test_pin_notes_env_and_rename_endpoints(tmp_path):
     assert rename_response.status_code == 200
     assert rename_response.json()["task"]["name"] == "alpha-renamed"
     assert client.get("/api/tasks/alpha-renamed").status_code == 200
+
+
+def test_notes_endpoint_rejects_stale_write_without_overwriting_disk(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    first = client.patch(
+        "/api/tasks/alpha/notes",
+        json={"notes": "first", "expected_notes": ""},
+    )
+    stale = client.patch(
+        "/api/tasks/alpha/notes",
+        json={"notes": "stale", "expected_notes": ""},
+    )
+    blind = client.patch(
+        "/api/tasks/alpha/notes",
+        json={"notes": "blind"},
+    )
+
+    assert first.status_code == 200
+    assert stale.status_code == 409
+    assert "changed" in stale.json()["detail"]
+    assert blind.status_code == 422
+    task_dir = workspace / TASKS_DIR / "alpha"
+    assert load_task_info(str(task_dir))["notes"] == "first"
+
+
+def test_env_endpoint_rejects_stale_write_without_overwriting_disk(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    first = client.patch(
+        "/api/tasks/alpha/env",
+        json={"env": {"FIRST": "1"}, "expected_env": {}},
+    )
+    stale = client.patch(
+        "/api/tasks/alpha/env",
+        json={"env": {"STALE": "1"}, "expected_env": {}},
+    )
+    blind = client.patch(
+        "/api/tasks/alpha/env",
+        json={"env": {"BLIND": "1"}},
+    )
+
+    assert first.status_code == 200
+    assert stale.status_code == 409
+    assert "changed" in stale.json()["detail"]
+    assert blind.status_code == 422
+    task_dir = workspace / TASKS_DIR / "alpha"
+    assert load_task_info(str(task_dir))["env"] == {"FIRST": "1"}
 
 
 @pytest.mark.parametrize(
@@ -3455,7 +3758,7 @@ def test_task_env_endpoint_rejects_values_that_subprocess_cannot_use(tmp_path, e
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    response = client.patch("/api/tasks/alpha/env", json={"env": env})
+    response = client.patch("/api/tasks/alpha/env", json={"env": env, "expected_env": {}})
 
     assert response.status_code == 400
     assert load_task_info(str(workspace / TASKS_DIR / "alpha")).get("env", {}) == {}
@@ -3987,7 +4290,11 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
         runtime.start_tasks_batch(["alpha"])
 
     monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha")})
-    monkeypatch.setattr(runtime.task_manager, "request_task_cancel", lambda name: False)
+    monkeypatch.setattr(
+        runtime.task_manager,
+        "request_task_cancel",
+        lambda name, **_identity: False,
+    )
     with pytest.raises(ValueError, match="cannot be cancelled"):
         runtime.cancel_task("alpha")
 
@@ -4009,19 +4316,19 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="bad pin"):
         runtime.set_task_pin("alpha", True)
 
-    monkeypatch.setattr(runtime.task_manager, "update_task_notes", lambda name, notes: (False, "Task not found"))
+    monkeypatch.setattr(runtime.task_manager, "update_task_notes", lambda name, notes, expected: (False, "Task not found"))
     with pytest.raises(KeyError):
-        runtime.update_task_notes("alpha", "note")
-    monkeypatch.setattr(runtime.task_manager, "update_task_notes", lambda name, notes: (False, "bad notes"))
+        runtime.update_task_notes("alpha", "note", "")
+    monkeypatch.setattr(runtime.task_manager, "update_task_notes", lambda name, notes, expected: (False, "bad notes"))
     with pytest.raises(ValueError, match="bad notes"):
-        runtime.update_task_notes("alpha", "note")
+        runtime.update_task_notes("alpha", "note", "")
 
-    monkeypatch.setattr(runtime.task_manager, "update_task_env", lambda name, env: (False, "Task not found"))
+    monkeypatch.setattr(runtime.task_manager, "update_task_env", lambda name, env, expected: (False, "Task not found"))
     with pytest.raises(KeyError):
-        runtime.update_task_env("alpha", {})
-    monkeypatch.setattr(runtime.task_manager, "update_task_env", lambda name, env: (False, "bad env"))
+        runtime.update_task_env("alpha", {}, {})
+    monkeypatch.setattr(runtime.task_manager, "update_task_env", lambda name, env, expected: (False, "bad env"))
     with pytest.raises(ValueError, match="bad env"):
-        runtime.update_task_env("alpha", {})
+        runtime.update_task_env("alpha", {}, {})
 
     monkeypatch.setattr(runtime.task_manager, "rename_task", lambda name, new_name: (False, "Task not found"))
     with pytest.raises(KeyError):
@@ -4036,6 +4343,31 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items: (False, "bad order"))
     with pytest.raises(ValueError, match="bad order"):
         runtime.reorder_tasks([])
+
+
+def test_runtime_cancel_binds_the_refreshed_runner_and_run(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    task_dir = workspace / TASKS_DIR / "alpha"
+    captured = {}
+
+    def request_cancel(name, **kwargs):
+        captured["name"] = name
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(runtime.task_manager, "request_task_cancel", request_cancel)
+
+    result = runtime.cancel_task("alpha")
+
+    info = load_task_info(str(task_dir))
+    assert result["name"] == "alpha"
+    assert captured == {
+        "name": "alpha",
+        "expected_runner_id": info["runner_id"],
+        "expected_run_index": 1,
+    }
 
 
 def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch):

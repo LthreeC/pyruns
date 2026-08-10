@@ -126,6 +126,7 @@ _SETTINGS_FILE_LOCKS: Dict[str, threading.RLock] = {}
 _SETTINGS_FILE_LOCKS_GUARD = threading.Lock()
 _SETTINGS_LOCK_TIMEOUT_SEC = 5.0
 _SETTINGS_LOCK_POLL_SEC = 0.05
+_SETTINGS_STALE_LOCK_MIN_AGE_SEC = 30.0
 _SETTINGS_LOCK_OWNER_HOST = socket.gethostname().lower()
 
 
@@ -176,9 +177,17 @@ def _settings_lock_owner(content: bytes) -> Dict[str, Any] | None:
     return owner
 
 
-def _settings_lock_is_stale(snapshot: tuple[tuple[int, int, int, int], bytes]) -> bool:
+def _settings_lock_is_stale(
+    snapshot: tuple[tuple[int, int, int, int], bytes],
+    *,
+    min_age_sec: float = _SETTINGS_STALE_LOCK_MIN_AGE_SEC,
+) -> bool:
+    modified_at = snapshot[0][2] / 1_000_000_000
+    age = max(0.0, time.time() - modified_at)
     owner = _settings_lock_owner(snapshot[1])
-    if owner is None or owner["host"].lower() != _SETTINGS_LOCK_OWNER_HOST:
+    if owner is None:
+        return age >= max(0.0, min_age_sec)
+    if owner["host"].lower() != _SETTINGS_LOCK_OWNER_HOST:
         return False
 
     pid = owner["pid"]

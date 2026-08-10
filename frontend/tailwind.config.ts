@@ -30,8 +30,8 @@ export default {
           strong: 'var(--border-strong)',
         },
         accent: {
-          DEFAULT: '#5E6AD2',
-          hover: '#6E7AE2',
+          DEFAULT: '#5360C9',
+          hover: '#4F5BC4',
         },
         status: {
           pending: '#6B7280',

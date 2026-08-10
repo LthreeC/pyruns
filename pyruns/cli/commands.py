@@ -5,12 +5,15 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import signal
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, time as datetime_time
 from pathlib import Path
 from typing import Any, Iterator
@@ -20,6 +23,7 @@ import yaml
 
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
+    ERROR_LOG_FILENAME,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
     ENV_KEY_ROOT,
     MAX_MONITOR_CHUNK_SIZE,
@@ -33,7 +37,11 @@ from pyruns._config import (
     WORKSPACE_KIND_SCRIPT,
     WORKSPACE_KIND_SHELL,
 )
-from pyruns.cli.runner import SubmissionResult, submit_cli_tasks
+from pyruns.cli.runner import (
+    SubmissionInterrupted,
+    SubmissionResult,
+    submit_cli_tasks,
+)
 from pyruns.core.report import build_export_csv, build_export_json
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
@@ -49,6 +57,7 @@ from pyruns.utils.batch_utils import generate_batch_configs
 from pyruns.utils.config_utils import load_yaml_strict, safe_filename
 from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.info_io import (
+    MAX_RUN_HISTORY_SLOTS,
     load_script_info,
     load_task_info,
     resolve_log_path,
@@ -63,7 +72,11 @@ from pyruns.utils.info_io import (
 from pyruns.utils.log_io import safe_read_log
 from pyruns.utils.log_utils import configure_project_root_logger
 from pyruns.utils.parse_utils import resolve_config_path
-from pyruns.utils.process_utils import hidden_subprocess_kwargs
+from pyruns.utils.process_utils import (
+    get_process_create_time,
+    hidden_subprocess_kwargs,
+    kill_process,
+)
 from pyruns.utils.settings import (
     SETTINGS_DEFAULTS,
     _settings_path,
@@ -105,6 +118,20 @@ class CliUsageError(CliError):
         super().__init__(message, exit_code=2)
 
 
+@dataclass(frozen=True)
+class _TaskRunIdentity:
+    run_index: int
+    runner_id: str | None
+    started_queued: bool = False
+
+
+@dataclass(frozen=True)
+class _LogReference:
+    path: str
+    run_index: int | None
+    kind: str
+
+
 def _eprint(message: str = "") -> None:
     print(message, file=sys.stderr)
 
@@ -128,7 +155,7 @@ def _json_dump(payload: Any) -> None:
         encoded = json.dumps(
             document,
             indent=2,
-            ensure_ascii=False,
+            ensure_ascii=True,
             sort_keys=False,
             allow_nan=False,
             default=_json_default,
@@ -184,7 +211,7 @@ def _workspace_label(workspace: str) -> str:
 
 
 def _resolve_workspace_selector(selector: str, project_root: str | None) -> str:
-    raw = str(selector or "").strip()
+    raw = str(selector or "")
     if not raw:
         raise CliUsageError("workspace selector cannot be empty")
 
@@ -239,7 +266,7 @@ def resolve_workspace(context: Any) -> str:
     """Resolve exactly one workspace without using the active-workspace marker."""
 
     project_root = _find_project_root()
-    selector = str(context.workspace or "").strip()
+    selector = str(context.workspace or "")
     if selector:
         return _resolve_workspace_selector(selector, project_root)
     if not project_root:
@@ -257,7 +284,7 @@ def resolve_workspace(context: Any) -> str:
 def _shell_workspace_for_exec(context: Any, *, create: bool = True) -> str:
     project_root = _find_project_root()
     if context.workspace:
-        selector = str(context.workspace).strip()
+        selector = str(context.workspace)
         if selector.lower() == "shell":
             if not project_root:
                 project_root = _normalized_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
@@ -375,11 +402,24 @@ def _parse_task_run_reference(value: str) -> tuple[str, int | None]:
         raise CliUsageError(
             f"invalid task run reference '{reference}'; expected TASK@RUN"
         )
-    if not task_name or int(run_text) <= 0:
+    normalized_run = run_text.lstrip("0") or "0"
+    maximum_run = str(MAX_RUN_HISTORY_SLOTS)
+    if (
+        len(normalized_run) > len(maximum_run)
+        or (
+            len(normalized_run) == len(maximum_run)
+            and normalized_run > maximum_run
+        )
+    ):
+        raise CliUsageError(
+            f"invalid task run reference; RUN must be between 1 and {MAX_RUN_HISTORY_SLOTS}"
+        )
+    run_index = int(normalized_run)
+    if not task_name or run_index <= 0:
         raise CliUsageError(
             f"invalid task run reference '{reference}'; RUN must be a positive integer"
         )
-    return task_name, int(run_text)
+    return task_name, run_index
 
 
 def _resolve_task_run_reference(
@@ -403,12 +443,17 @@ def _latest_run_index(task: dict[str, Any], info: dict[str, Any] | None = None) 
     return len(source.get("start_times", []) or [])
 
 
-def _selected_run_record(task: dict[str, Any], run_index: int) -> dict[str, Any]:
+def _selected_run_record(
+    task: dict[str, Any],
+    run_index: int,
+    *,
+    info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return one validated historical run summary."""
 
     task_dir = str(task.get("dir", "") or "")
-    info = load_task_info(task_dir) or task
-    total = run_slot_count(info)
+    current_info = info if info is not None else (load_task_info(task_dir) or task)
+    total = run_slot_count(current_info)
     if run_index > total:
         name = str(task.get("name", "") or "")
         message = (
@@ -419,12 +464,22 @@ def _selected_run_record(task: dict[str, Any], run_index: int) -> dict[str, Any]
         raise CliError(message)
 
     def value_at(key: str) -> Any:
-        values = list(info.get(key, []) or [])
+        values = list(current_info.get(key, []) or [])
         return values[run_index - 1] if run_index <= len(values) else None
 
-    log_path = _log_path(task, run_index=run_index)
+    status = str(value_at("run_statuses") or "").lower() or None
+    if status is None and run_index == _latest_run_index(task, current_info):
+        current_status = str(current_info.get("status", "") or "").lower()
+        if current_status != "queued":
+            status = current_status or None
+    log_reference = _resolve_log_reference(
+        task,
+        run_index=run_index,
+        info=current_info,
+    )
     return {
         "index": run_index,
+        "status": status,
         "start_time": value_at("start_times") or None,
         "finish_time": value_at("finish_times") or None,
         "pid": value_at("pids") or None,
@@ -433,15 +488,41 @@ def _selected_run_record(task: dict[str, Any], run_index: int) -> dict[str, Any]
         "source_state": value_at("source_states") or None,
         "record": value_at("records") or {},
         "track": value_at("tracks") or {},
-        "log": _normalized_path(log_path) if os.path.isfile(log_path) else None,
+        "log": (
+            _normalized_path(log_reference.path)
+            if os.path.isfile(log_reference.path)
+            else None
+        ),
     }
 
 
-def _log_path(task: dict[str, Any], *, run_index: int | None = None) -> str:
+def _log_reference_from_path(path: str) -> _LogReference:
+    filename = os.path.basename(path)
+    if filename == QUEUE_LOG_FILENAME:
+        return _LogReference(path, None, "queue")
+    if filename == ERROR_LOG_FILENAME:
+        return _LogReference(path, None, "error")
+    if filename.startswith("run") and filename.endswith(".log"):
+        run_text = filename[3:-4]
+        if run_text.isascii() and run_text.isdecimal():
+            return _LogReference(path, int(run_text), "run")
+    return _LogReference(path, None, "auxiliary")
+
+
+def _resolve_log_reference(
+    task: dict[str, Any],
+    *,
+    run_index: int | None = None,
+    info: dict[str, Any] | None = None,
+) -> _LogReference:
+    """Resolve a log path together with the run identity it actually represents."""
+
     task_dir = str(task.get("dir", "") or "")
-    info = load_task_info(task_dir) or task
-    status = str(info.get("status", task.get("status", "")) or "").lower()
-    selected_run = run_index or _latest_run_index(task, info)
+    current_info = info if info is not None else (load_task_info(task_dir) or task)
+    status = str(
+        current_info.get("status", task.get("status", "")) or ""
+    ).lower()
+    selected_run = run_index or _latest_run_index(task, current_info)
     if selected_run <= 0:
         selected_run = 1
     filename = (
@@ -456,16 +537,15 @@ def _log_path(task: dict[str, Any], *, run_index: int | None = None) -> str:
             f"unsafe log path for task '{task.get('name', '')}': {exc}"
         ) from exc
     if run_index is not None:
-        return run_path
+        return _LogReference(run_path, selected_run, "run")
     if filename == QUEUE_LOG_FILENAME:
-        return run_path
+        return _LogReference(run_path, None, "queue")
     if os.path.isfile(run_path):
-        return run_path
-    if selected_run == _latest_run_index(task, info):
-        fallback = resolve_log_path(task_dir)
-        if fallback:
-            return fallback
-    return run_path
+        return _LogReference(run_path, selected_run, "run")
+    fallback = resolve_log_path(task_dir)
+    if fallback:
+        return _log_reference_from_path(fallback)
+    return _LogReference(run_path, selected_run, "run")
 
 
 def _task_record(
@@ -473,15 +553,21 @@ def _task_record(
     *,
     detailed: bool = False,
     selected_run: int | None = None,
+    info_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task_dir = str(task.get("dir", "") or "")
-    info = load_task_info(task_dir) or {}
+    info = (
+        info_snapshot
+        if info_snapshot is not None
+        else (load_task_info(task_dir) or {})
+    )
     status = str(info.get("status", task.get("status", "pending")) or "pending")
     kind = str(info.get("task_kind", task.get("task_kind", "config")) or "config")
     run_index = _latest_run_index(task, info)
     config_file = resolve_task_config_file({**task, **info}, kind, task_dir)
     payload_path = os.path.join(task_dir, config_file) if config_file else ""
-    latest_log = _log_path(task, run_index=run_index) if run_index > 0 else ""
+    latest_log_reference = _resolve_log_reference(task, info=info)
+    latest_log = latest_log_reference.path
     pids = info.get("pids", task.get("pids", [])) or []
     latest_pid = next((pid for pid in reversed(pids) if pid), None)
 
@@ -530,7 +616,11 @@ def _task_record(
             }
         )
         if selected_run is not None:
-            record["selected_run"] = _selected_run_record(task, selected_run)
+            record["selected_run"] = _selected_run_record(
+                task,
+                selected_run,
+                info=info,
+            )
     return record
 
 
@@ -672,6 +762,26 @@ def _render_argument_command(parts: list[str], workspace: str) -> str:
     return shlex.join(parts)
 
 
+def _render_recovery_command(
+    context: Any,
+    workspace: str,
+    command: str,
+    arguments: list[str] | None = None,
+) -> str:
+    """Render a copyable command with the exact project and workspace context."""
+
+    parts = [
+        _program(context),
+        "-C",
+        str(getattr(context, "directory", "") or os.getcwd()),
+        "-w",
+        _normalized_path(workspace),
+        command,
+        *(arguments or []),
+    ]
+    return _render_argument_command(parts, workspace)
+
+
 def _resolve_exec_script_path(parts: list[str]) -> str | None:
     """Validate and resolve a directly invoked shell script path."""
 
@@ -705,15 +815,120 @@ def _build_exec_argv(
         raise CliError(str(exc)) from exc
 
 
+def _active_run_index(info: dict[str, Any]) -> int:
+    latest_run = _latest_run_index(info, info)
+    if str(info.get("status", "") or "").lower() != "queued":
+        return latest_run
+    gpu_wait = info.get("gpu_wait")
+    if isinstance(gpu_wait, dict):
+        try:
+            queued_run = int(gpu_wait.get("run_index", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            queued_run = 0
+        if queued_run > latest_run:
+            return queued_run
+    return latest_run + 1
+
+
+def _capture_task_run_identity(task: dict[str, Any]) -> _TaskRunIdentity:
+    task_dir = str(task.get("dir", "") or "")
+    info = load_task_info(task_dir)
+    if not info:
+        raise CliError(f"cannot read task state: {task.get('name', '')}")
+    status = str(info.get("status", "pending") or "pending").lower()
+    run_index = (
+        _active_run_index(info)
+        if status in _ACTIVE_STATUSES
+        else _latest_run_index(task, info)
+    )
+    runner_id = str(info.get("runner_id", "") or "")
+    return _TaskRunIdentity(
+        run_index=run_index,
+        runner_id=runner_id if status in _ACTIVE_STATUSES else None,
+        started_queued=status == "queued",
+    )
+
+
+def _bound_task_record(
+    task: dict[str, Any],
+    identity: _TaskRunIdentity,
+) -> dict[str, Any]:
+    """Read only the run captured when the command began."""
+
+    task_dir = str(task.get("dir", "") or "")
+    info = load_task_info(task_dir)
+    name = str(task.get("name", "") or "")
+    if not info:
+        raise CliError(f"cannot read task state: {name}")
+
+    current_status = str(info.get("status", "pending") or "pending").lower()
+    latest_run = _latest_run_index(task, info)
+    selected: dict[str, Any] | None = None
+    status = current_status
+
+    if current_status in _ACTIVE_STATUSES:
+        active_run = _active_run_index(info)
+        if active_run == identity.run_index:
+            current_runner_id = str(info.get("runner_id", "") or "")
+            if identity.runner_id != current_runner_id:
+                raise CliError(
+                    f"task run identity changed while observing '{name}'"
+                )
+        elif identity.run_index > 0 and latest_run >= identity.run_index:
+            selected = _selected_run_record(
+                task,
+                identity.run_index,
+                info=info,
+            )
+            status = str(selected.get("status", "") or "").lower()
+            if status not in _FINAL_STATUSES:
+                raise CliError(
+                    f"task started another run before run {identity.run_index} settled: {name}"
+                )
+        else:
+            raise CliError(f"task run identity changed while observing '{name}'")
+    elif identity.run_index > 0 and latest_run >= identity.run_index:
+        selected = _selected_run_record(
+            task,
+            identity.run_index,
+            info=info,
+        )
+        status = str(selected.get("status", "") or "").lower()
+        if not status:
+            raise CliError(
+                f"run {identity.run_index} has no recorded status for task '{name}'"
+            )
+    elif not (
+        identity.started_queued
+        and latest_run < identity.run_index
+        and current_status in _FINAL_STATUSES
+    ):
+        if not (identity.run_index == 0 and current_status == "pending"):
+            raise CliError(f"task run identity changed while observing '{name}'")
+
+    record = _task_record(task, info_snapshot=info)
+    record["status"] = status
+    if identity.run_index > 0:
+        record["run_index"] = identity.run_index
+    if selected is not None:
+        record["pid"] = selected.get("pid")
+        record["latest_log"] = selected.get("log")
+    return record
+
+
 def _wait_for_task_records(
     tasks: list[dict[str, Any]],
+    identities: dict[str, _TaskRunIdentity],
     *,
     timeout: float = 0.0,
     require_started: bool = False,
 ) -> list[dict[str, Any]]:
     deadline = time.monotonic() + timeout if timeout > 0 else None
     while True:
-        records = [_task_record(task) for task in tasks]
+        records = [
+            _bound_task_record(task, identities[str(task["name"])])
+            for task in tasks
+        ]
         statuses = [str(record["status"]) for record in records]
         if require_started and any(status == "pending" for status in statuses):
             raise CliError("one or more tasks were not accepted by a runner")
@@ -731,36 +946,37 @@ def _write_available_log(path: str, offset: int) -> int:
         if not content or next_offset == offset:
             return offset
         try:
-            try:
-                sys.stdout.write(content)
-            except UnicodeEncodeError:
-                encoding = str(getattr(sys.stdout, "encoding", "") or "utf-8")
-                safe_content = content.encode(encoding, errors="replace").decode(encoding)
-                sys.stdout.write(safe_content)
-            sys.stdout.flush()
-        except BrokenPipeError:
-            from pyruns.cli.app import _silence_broken_pipe
-
-            _silence_broken_pipe()
+            sys.stdout.write(content)
+        except UnicodeEncodeError:
+            encoding = str(getattr(sys.stdout, "encoding", "") or "utf-8")
+            safe_content = content.encode(encoding, errors="replace").decode(encoding)
+            sys.stdout.write(safe_content)
+        sys.stdout.flush()
         offset = next_offset
 
 
 def _follow_task(
     task: dict[str, Any],
     *,
-    expected_run: int | None = None,
+    identity: _TaskRunIdentity,
     initial_queue_offset: int = 0,
 ) -> dict[str, Any]:
     current_path = ""
     offset = 0
     while True:
-        latest_record = _task_record(task)
-        if expected_run is not None and latest_record["status"] != "queued":
-            next_path = _log_path(task, run_index=expected_run)
+        latest_record = _bound_task_record(task, identity)
+        if latest_record["status"] != "queued":
+            reference = _resolve_log_reference(
+                task,
+                run_index=identity.run_index,
+            )
+            next_path = reference.path
+            if current_path and not os.path.isfile(next_path):
+                next_path = current_path
             next_offset = 0
         else:
-            next_path = _log_path(task)
-            next_offset = initial_queue_offset if expected_run is not None else 0
+            next_path = _resolve_log_reference(task).path
+            next_offset = initial_queue_offset
         if next_path != current_path:
             current_path = next_path
             offset = next_offset
@@ -784,6 +1000,7 @@ def _cancel_submitted_tasks_after_interrupt(
     context: Any,
     manager: TaskManager,
     tasks: list[dict[str, Any]],
+    identities: dict[str, _TaskRunIdentity],
 ) -> None:
     """Cancel the foreground submission while preserving Ctrl+C's exit status."""
 
@@ -796,13 +1013,18 @@ def _cancel_submitted_tasks_after_interrupt(
     wait_tasks: list[dict[str, Any]] = []
     for task in tasks:
         name = str(task["name"])
+        identity = identities[name]
         try:
-            requested = manager.request_task_cancel(name)
+            requested = manager.request_task_cancel(
+                name,
+                expected_runner_id=identity.runner_id,
+                expected_run_index=identity.run_index,
+            )
         except Exception:
             requested = False
         if not requested:
             try:
-                current_status = str(_task_record(task)["status"])
+                current_status = str(_bound_task_record(task, identity)["status"])
             except Exception:
                 current_status = ""
             if current_status in _ACTIVE_STATUSES:
@@ -816,6 +1038,7 @@ def _cancel_submitted_tasks_after_interrupt(
         try:
             records = _wait_for_task_records(
                 wait_tasks,
+                {str(task["name"]): identities[str(task["name"])] for task in wait_tasks},
                 timeout=_INTERRUPT_CANCEL_TIMEOUT_SEC,
             )
         except Exception as exc:
@@ -833,6 +1056,41 @@ def _cancel_submitted_tasks_after_interrupt(
             f"{_program(context)}: warning: cancellation was not confirmed for: "
             + ", ".join(unresolved)
         )
+
+
+def _tasks_owned_by_submission(
+    tasks: list[dict[str, Any]],
+    *,
+    submission_token: str,
+    runner_pid: int,
+    expected_runs: dict[str, int],
+) -> tuple[list[dict[str, Any]], dict[str, _TaskRunIdentity]]:
+    """Select only active tasks whose persisted runner identity is exact."""
+
+    owned: list[dict[str, Any]] = []
+    identities: dict[str, _TaskRunIdentity] = {}
+    for task in tasks:
+        info = load_task_info(str(task.get("dir", "") or "")) or {}
+        if str(info.get("status", "") or "").lower() not in _ACTIVE_STATUSES:
+            continue
+        parts = str(info.get("runner_id", "") or "").rsplit(":", 2)
+        if (
+            len(parts) != 3
+            or parts[1] != str(runner_pid)
+            or parts[2] != submission_token
+        ):
+            continue
+        name = str(task.get("name", "") or "")
+        expected_run = expected_runs.get(name, 0)
+        if expected_run <= 0 or _active_run_index(info) != expected_run:
+            continue
+        owned.append(task)
+        identities[name] = _TaskRunIdentity(
+            run_index=expected_run,
+            runner_id=str(info.get("runner_id", "") or ""),
+            started_queued=str(info.get("status", "") or "").lower() == "queued",
+        )
+    return owned, identities
 
 
 def _submit_and_wait(
@@ -874,64 +1132,133 @@ def _submit_and_wait(
         submission: SubmissionResult = submit_cli_tasks(
             manager,
             names,
+            expected_runs=expected_runs,
             execution_mode=mode,
             max_workers=min(max(1, workers), len(tasks)),
         )
-    except KeyboardInterrupt:
-        if not detach:
-            _cancel_submitted_tasks_after_interrupt(context, manager, tasks)
+    except SubmissionInterrupted as exc:
+        if exc.result.status == "unresolved":
+            owned, owned_identities = _tasks_owned_by_submission(
+                tasks,
+                submission_token=exc.submission_token,
+                runner_pid=exc.runner_pid,
+                expected_runs=expected_runs,
+            )
+            if owned:
+                _cancel_submitted_tasks_after_interrupt(
+                    context,
+                    manager,
+                    owned,
+                    owned_identities,
+                )
+            else:
+                program = _program(context)
+                _eprint(
+                    f"{program}: warning: runner cleanup could not be verified; "
+                    "abort request retained"
+                )
+                _eprint(f"Check task state: {program} status")
         raise
-    if submission.status != "accepted":
-        payload = {
-            "submission_status": submission.status,
-            "claimed": list(submission.claimed),
-            "unclaimed": list(submission.unclaimed),
-        }
-        if context.json_output:
-            _json_dump(payload)
-        else:
-            _eprint(
-                f"{_program(context)}: runner submission {submission.status}; "
-                f"claimed {len(submission.claimed)} of {len(names)} tasks"
-            )
-            if submission.claimed:
-                _eprint("Claimed: " + ", ".join(submission.claimed))
-            if submission.unclaimed:
-                _eprint("Unclaimed: " + ", ".join(submission.unclaimed))
-        return 1
-
-    if detach:
-        records = [_task_record(task) for task in tasks]
-        if context.json_output:
-            _json_dump(
-                {
-                    "submission_status": "accepted",
-                    "claimed": names,
-                    "unclaimed": [],
-                    "tasks": records,
-                }
-            )
-        else:
-            for name in names:
-                print(name)
-        return 0
-
+    identities: dict[str, _TaskRunIdentity] = {}
     try:
+        if submission.status != "accepted":
+            payload = {
+                "submission_status": submission.status,
+                "claimed": list(submission.claimed),
+                "unclaimed": list(submission.unclaimed),
+                "cleanup_verified": submission.status != "unresolved",
+            }
+            if context.json_output:
+                _json_dump(payload)
+            elif submission.status == "unresolved":
+                program = _program(context)
+                workspace = os.path.dirname(manager.tasks_dir)
+                _eprint(
+                    f"{program}: runner submission unresolved; "
+                    "cleanup could not be verified"
+                )
+                _eprint(
+                    "Check task state: "
+                    + _render_recovery_command(context, workspace, "status")
+                )
+                _eprint(
+                    "Stop active tasks: "
+                    + _render_recovery_command(context, workspace, "stop", names)
+                )
+            else:
+                _eprint(
+                    f"{_program(context)}: runner submission {submission.status}; "
+                    f"claimed {len(submission.claimed)} of {len(names)} tasks"
+                )
+                if submission.claimed:
+                    _eprint("Claimed: " + ", ".join(submission.claimed))
+                if submission.unclaimed:
+                    _eprint("Unclaimed: " + ", ".join(submission.unclaimed))
+            return 1
+
+        if not submission.runner_id:
+            raise CliError("accepted runner did not return an ownership identity")
+        identities = {
+            name: _TaskRunIdentity(
+                run_index=expected_runs[name],
+                runner_id=submission.runner_id,
+                started_queued=True,
+            )
+            for name in names
+        }
+
+        if detach:
+            records = [_task_record(task) for task in tasks]
+            if context.json_output:
+                _json_dump(
+                    {
+                        "submission_status": "accepted",
+                        "claimed": names,
+                        "unclaimed": [],
+                        "tasks": records,
+                    }
+                )
+            else:
+                for name in names:
+                    print(name)
+            return 0
+
         if len(tasks) == 1 and not context.json_output:
             name = names[0]
             record = _follow_task(
                 tasks[0],
-                expected_run=expected_runs[name],
+                identity=identities[name],
                 initial_queue_offset=queue_offsets[name],
             )
             _eprint(f"{_program(context)}: {record['name']} {record['status']}")
             return 0 if record["status"] == "completed" else 1
 
-        records = _wait_for_task_records(tasks, require_started=True)
+        records = _wait_for_task_records(
+            tasks,
+            identities,
+            require_started=True,
+        )
         _print_task_result(context, records)
         return 0 if all(record["status"] == "completed" for record in records) else 1
     except KeyboardInterrupt:
-        _cancel_submitted_tasks_after_interrupt(context, manager, tasks)
+        if not detach and submission.status == "accepted":
+            if not identities and submission.runner_id:
+                identities = {
+                    name: _TaskRunIdentity(
+                        run_index=expected_runs[name],
+                        runner_id=submission.runner_id,
+                        started_queued=True,
+                    )
+                    for name in names
+                }
+            if not identities:
+                raise
+            _cancel_submitted_tasks_after_interrupt(
+                context,
+                manager,
+                tasks,
+                identities,
+            )
         raise
 
 
@@ -964,7 +1291,7 @@ def _load_task_config_batch(
     prefix = name_prefix or safe_filename(os.path.splitext(os.path.basename(resolved))[0])
     total = len(configs)
     names = [
-        f"{prefix}_[{index}-of-{total}]" if total > 1 else prefix
+        f"{prefix}_{index}-of-{total}" if total > 1 else prefix
         for index in range(1, total + 1)
     ]
     for name in names:
@@ -1051,7 +1378,7 @@ def cmd_exec(context: Any, args: Any) -> int:
         base_dir=os.path.abspath(context.directory),
     )
     env.update(_parse_env(list(args.env or [])))
-    requested_name = str(args.name or "command").strip()
+    requested_name = str(args.name) if args.name is not None else "command"
     name_error = validate_task_name(requested_name)
     if name_error:
         raise CliUsageError(name_error)
@@ -1219,7 +1546,7 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
         "task_count": len(configs),
         "tasks": tasks,
         "backend": args.backend,
-        "jobs": args.jobs,
+        "jobs": min(args.jobs, len(configs)),
         "detach": bool(args.detach),
     }
     if context.json_output:
@@ -1234,7 +1561,7 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
                 print(f"  {task['planned_name']}")
             else:
                 print(f"  {task['requested_name']} (a unique suffix will be added)")
-        print(f"Execution:  {args.backend}, {args.jobs} job(s)")
+        print(f"Execution:  {args.backend}, {payload['jobs']} job(s)")
         print("Result:     nothing was created or run")
     return 0
 
@@ -1396,6 +1723,7 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
     if selected_run is not None:
         run = record["selected_run"]
         print(f"Selected:   run {run['index']}")
+        print(f"Run status: {run['status'] or '-'}")
         print(f"Started:    {run['start_time'] or '-'}")
         print(f"Finished:   {run['finish_time'] or '-'}")
         print(f"Run PID:    {run['pid'] or '-'}")
@@ -1438,16 +1766,20 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
         raise CliUsageError("--json is only supported by log together with --path")
     if selected_run is not None:
         _selected_run_record(task, selected_run)
-    if args.follow and str(task.get("status", "pending")) == "pending":
-        raise CliError(f"cannot follow pending task: {task['name']}")
-    path = _log_path(task, run_index=selected_run)
-    if not os.path.isfile(path):
-        raise CliError(f"log does not exist: {_normalized_path(path)}")
+    identity: _TaskRunIdentity | None = None
+    if args.follow:
+        identity = _capture_task_run_identity(task)
+        if _bound_task_record(task, identity)["status"] == "pending":
+            raise CliError(f"cannot follow pending task: {task['name']}")
+    reference = _resolve_log_reference(task, run_index=selected_run)
+    if not os.path.isfile(reference.path):
+        raise CliError(f"log does not exist: {_normalized_path(reference.path)}")
     if args.path:
         payload = {
             "task": task["name"],
-            "run": selected_run or _latest_run_index(task),
-            "path": _normalized_path(path),
+            "run": reference.run_index,
+            "kind": reference.kind,
+            "path": _normalized_path(reference.path),
         }
         if context.json_output:
             _json_dump(payload)
@@ -1456,10 +1788,11 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
         return 0
 
     if not args.follow:
-        _write_available_log(path, 0)
+        _write_available_log(reference.path, 0)
         return 0
 
-    record = _follow_task(task)
+    assert identity is not None
+    record = _follow_task(task, identity=identity)
     return 0 if record["status"] == "completed" else 1
 
 
@@ -1468,29 +1801,74 @@ def cmd_wait(context: Any, args: Any, manager: TaskManager) -> int:
     pending = [task["name"] for task in tasks if str(task.get("status", "")) == "pending"]
     if pending:
         raise CliError("cannot wait for pending tasks: " + ", ".join(pending))
-    records = _wait_for_task_records(tasks, timeout=float(args.timeout))
+    identities = {
+        str(task["name"]): _capture_task_run_identity(task)
+        for task in tasks
+    }
+    records = _wait_for_task_records(
+        tasks,
+        identities,
+        timeout=float(args.timeout),
+    )
     _print_task_result(context, records)
     return 0 if all(record["status"] == "completed" for record in records) else 1
 
 
 def cmd_stop(context: Any, args: Any, manager: TaskManager) -> int:
     tasks = _resolve_exact_tasks(manager, list(args.tasks))
-    inactive = [task["name"] for task in tasks if str(task.get("status", "")) not in _ACTIVE_STATUSES]
+    identities = {
+        str(task["name"]): _capture_task_run_identity(task)
+        for task in tasks
+    }
+    initial_records = {
+        str(task["name"]): _bound_task_record(task, identities[str(task["name"])])
+        for task in tasks
+    }
+    inactive = [
+        task["name"]
+        for task in tasks
+        if str(initial_records[str(task["name"])]["status"]) not in _ACTIVE_STATUSES
+    ]
     if inactive:
         raise CliError("task is not active: " + ", ".join(inactive))
 
     requested: list[dict[str, Any]] = []
+    not_requested: list[str] = []
     for task in tasks:
-        if not manager.request_task_cancel(task["name"]):
-            raise CliError(f"could not request cancellation for '{task['name']}'")
+        name = str(task["name"])
+        identity = identities[name]
+        if not manager.request_task_cancel(
+            name,
+            expected_runner_id=identity.runner_id,
+            expected_run_index=identity.run_index,
+        ):
+            not_requested.append(name)
+            continue
         requested.append(task)
-    records = _wait_for_task_records(requested, timeout=float(args.timeout))
+
+    if not requested:
+        raise CliError(
+            "task run changed before cancellation: "
+            + ", ".join(repr(name) for name in not_requested)
+        )
+    records = _wait_for_task_records(
+        requested,
+        identities,
+        timeout=float(args.timeout),
+    )
     if context.json_output:
-        _json_dump({"stopped": records})
+        _json_dump({"stopped": records, "not_stopped": not_requested})
     else:
         for record in records:
             print(record["name"])
-    return 0 if all(record["status"] == "cancelled" for record in records) else 1
+        if not_requested:
+            _eprint(
+                f"{_program(context)}: task run changed before cancellation: "
+                + ", ".join(repr(name) for name in not_requested)
+            )
+    return 0 if not not_requested and all(
+        record["status"] == "cancelled" for record in records
+    ) else 1
 
 
 def cmd_rm(context: Any, args: Any, manager: TaskManager) -> int:
@@ -1717,6 +2095,25 @@ def cmd_pin(context: Any, args: Any, manager: TaskManager) -> int:
     return 0
 
 
+def _atomic_write_export(path: str, content: str) -> None:
+    parent = os.path.dirname(path)
+    temporary = os.path.join(
+        parent,
+        f".{os.path.basename(path)}.{os.getpid()}.{uuid.uuid4().hex}.tmp",
+    )
+    try:
+        with open(temporary, "x", encoding="utf-8", newline="") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.remove(temporary)
+        except FileNotFoundError:
+            pass
+
+
 def cmd_export(args: Any, manager: TaskManager) -> int:
     export_format = args.format or "csv"
     if args.tasks:
@@ -1738,9 +2135,8 @@ def cmd_export(args: Any, manager: TaskManager) -> int:
         return 0
     output = os.path.abspath(os.path.expanduser(os.path.expandvars(args.output)))
     try:
-        with open(output, "w", encoding="utf-8", newline="") as handle:
-            handle.write(content)
-    except OSError as exc:
+        _atomic_write_export(output, content)
+    except (OSError, UnicodeError) as exc:
         raise CliError(f"cannot write export '{args.output}': {exc}") from exc
     print(_normalized_path(output))
     return 0
@@ -1938,13 +2334,33 @@ def cmd_ui(context: Any, args: Any) -> int:
         raise CliUsageError(
             "ui does not use -w/--workspace; pass WORKSPACE or SCRIPT.py after 'ui'"
         )
-    target = str(args.target or "").strip()
-    is_script = target.lower().endswith(".py")
+    target = str(args.target or "")
+    path_candidate = os.path.abspath(
+        os.path.expanduser(os.path.expandvars(target))
+    ) if target else ""
+    project_root = _find_project_root()
+    is_workspace_path = bool(
+        path_candidate
+        and os.path.isdir(path_candidate)
+        and os.path.isfile(os.path.join(path_candidate, SCRIPT_INFO_FILENAME))
+    )
+    is_named_workspace = bool(
+        target
+        and project_root
+        and os.path.isfile(
+            os.path.join(project_root, target, SCRIPT_INFO_FILENAME)
+        )
+    )
+    is_script = (
+        target.lower().endswith(".py")
+        and not is_workspace_path
+        and not is_named_workspace
+    )
     if args.config and not is_script:
         raise CliUsageError("--config requires SCRIPT.py")
     open_browser = _browser_choice(args)
     if target.lower() == "shell":
-        project_root = _find_project_root() or _normalized_path(
+        project_root = project_root or _normalized_path(
             os.path.join(os.getcwd(), DEFAULT_ROOT_NAME)
         )
         workspace = _normalized_path(bootstrap_shell_workspace(project_root))
@@ -1963,7 +2379,7 @@ def cmd_ui(context: Any, args: Any) -> int:
         return _launch_ui(start_path="/", port=args.port, open_browser=open_browser)
 
     if target:
-        workspace = _resolve_workspace_selector(target, _find_project_root())
+        workspace = _resolve_workspace_selector(target, project_root)
         os.environ[ENV_KEY_ROOT] = workspace
         mark_workspace_active(workspace)
         return _launch_ui(start_path="/", port=args.port, open_browser=open_browser)
@@ -1994,11 +2410,32 @@ def cmd_dev(context: Any, args: Any) -> int:
         command.append("--no-browser")
     elif args.browser:
         command.append("--browser")
-    return subprocess.run(
-        command,
-        check=False,
-        **hidden_subprocess_kwargs(),
-    ).returncode
+    try:
+        process = subprocess.Popen(command, **hidden_subprocess_kwargs())
+    except OSError as exc:
+        raise CliError(f"could not start dev server: {exc}") from exc
+    process_create_time = get_process_create_time(process.pid)
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        previous_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            stopped = process.poll() is not None or kill_process(
+                process.pid,
+                expected_create_time=process_create_time,
+            )
+            if stopped:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+            else:
+                _eprint(
+                    f"{_program(context)}: warning: could not verify dev server shutdown"
+                )
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint_handler)
+        raise
 
 
 def dispatch(context: Any, args: Any) -> int:

@@ -112,7 +112,7 @@ def _write_metrics(
                 slot = _lazy_export("ensure_run_slot")(info, run_index)
                 apply_update(info, slot)
 
-            _lazy_export("update_task_info")(task_dir, _apply, raise_error=True)
+            _lazy_export("update_task_info")(task_dir, _apply)
             return
         except (IOError, OSError) as error:
             if attempt == max_attempts:

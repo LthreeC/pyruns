@@ -29,5 +29,6 @@ docs/.vitepress/.temp/
 frontend/.vite-dev-server*.log
 frontend/playwright-report/
 frontend/test-results/
+frontend/*.tsbuildinfo
 
 .npm-cache/
