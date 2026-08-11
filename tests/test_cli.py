@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -17,10 +19,12 @@ import pytest
 import yaml
 
 from pyruns._config import (
+    ENV_KEY_CLI_SHELL_EXECUTABLE,
     ERROR_LOG_FILENAME,
     QUEUE_LOG_FILENAME,
     RUN_LOGS_DIR,
     SCRIPT_INFO_FILENAME,
+    SHELL_CONFIG_FILENAMES,
     TASK_INFO_FILENAME,
     TASKS_DIR,
     TRASH_DIR,
@@ -282,7 +286,7 @@ def test_help_explains_config_ui_metrics_and_help_workflows(tmp_path):
     assert "Environment variable names and values are validated" in config_set_help.stdout
     assert "does not require a workspace" in metrics_help.stdout
     assert "Do not write '-w shell ui'" in ui_help.stdout
-    assert "-p PORT, --port PORT" in ui_help.stdout
+    assert re.search(r"-p(?: PORT)?, --port PORT\b", ui_help.stdout)
     assert "Use 'ui --help' to discover --port" in ui_help.stdout
     assert "--no-browser keeps the server headless" in ui_help.stdout
     assert "Use 'ui' for normal use" in dev_help.stdout
@@ -400,7 +404,7 @@ def test_run_and_export_advertise_one_clear_canonical_option_set():
 
     run_help = commands["run"].format_help()
     assert "--config CONFIG" in run_help
-    assert "-j N, --jobs N" in run_help
+    assert re.search(r"-j(?: N)?, --jobs N\b", run_help)
     assert "--backend" not in run_help
     assert "--from" not in run_help
     assert "--workers" not in run_help
@@ -1226,9 +1230,10 @@ def test_exec_auto_initializes_shell_workspace(tmp_path, monkeypatch, capsys):
     ) == 0
     assert "auto initialized" in capsys.readouterr().out
     task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "auto-init"
-    assert load_task_info(str(task_dir))["status"] == "completed"
-    expected_suffix = ".ps1" if os.name == "nt" else ".sh"
-    assert next(task_dir.glob("config.*")).suffix == expected_suffix
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "completed"
+    assert info["config_file"] in SHELL_CONFIG_FILENAMES
+    assert (task_dir / info["config_file"]).is_file()
 
 
 def test_exact_argv_rendering_matches_each_shell_runtime(monkeypatch):
@@ -1403,6 +1408,9 @@ def test_exact_argv_rerun_ignores_changed_shell_runtime(tmp_path):
 @pytest.mark.skipif(os.name != "nt", reason="requires PowerShell and cmd.exe")
 def test_shell_expression_rerun_uses_creation_shell_runtime(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if not powershell:
+        pytest.skip("PowerShell is unavailable")
     first = _run_cli(
         tmp_path,
         "exec",
@@ -1410,6 +1418,7 @@ def test_shell_expression_rerun_uses_creation_shell_runtime(tmp_path):
         "stored-shell",
         "-c",
         "Write-Output stored-shell-ok",
+        env_overrides={ENV_KEY_CLI_SHELL_EXECUTABLE: powershell},
     )
     assert first.returncode == 0, first.stdout + first.stderr
 
@@ -1536,13 +1545,15 @@ def test_cmd_exact_argv_round_trip_preserves_batch_metacharacters(tmp_path, monk
 def test_exec_command_string_preserves_expression(tmp_path, monkeypatch, capsys):
     from pyruns.cli import commands
 
-    expression = (
-        "Write-Output alpha; Write-Output beta"
-        if os.name == "nt"
-        else "printf 'alpha\\n'; printf 'beta\\n'"
-    )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(commands, "_find_project_root", lambda: None)
+    shell_kind = commands.get_shell_runtime_for_workspace()["terminal_kind"]
+    if shell_kind == "powershell":
+        expression = "Write-Output alpha; Write-Output beta"
+    elif shell_kind == "cmd":
+        expression = "echo alpha & echo beta"
+    else:
+        expression = "printf 'alpha\\n'; printf 'beta\\n'"
     assert main(["exec", "--name", "shell-expression", "-c", expression]) == 0
     output = capsys.readouterr().out
     assert "alpha" in output
@@ -1949,20 +1960,18 @@ def test_run_dry_run_rejects_existing_task_mode_as_usage(tmp_path):
 
 def test_batch_run_waits_and_aggregates_failure(tmp_path):
     workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    from pyruns.cli import commands
     from pyruns.core.task_generator import TaskGenerator
 
     generator = TaskGenerator(root_dir=str(workspace / TASKS_DIR))
-    if os.name == "nt":
-        generator.create_shell_task(
-            "batch-ok", f'& "{sys.executable}" -c "print(1)"\n'
-        )
-        generator.create_shell_task(
-            "batch-bad", f'& "{sys.executable}" -c "exit 5"\n'
-        )
-    else:
-        executable = shlex.quote(sys.executable)
-        generator.create_shell_task("batch-ok", f"{executable} -c 'print(1)'\n")
-        generator.create_shell_task("batch-bad", f"{executable} -c 'exit 5'\n")
+    ok_command = commands._render_argument_command(
+        [sys.executable, "-c", "print(1)"], str(workspace)
+    )
+    bad_command = commands._render_argument_command(
+        [sys.executable, "-c", "raise SystemExit(5)"], str(workspace)
+    )
+    generator.create_shell_task("batch-ok", ok_command + "\n")
+    generator.create_shell_task("batch-bad", bad_command + "\n")
     result = _run_cli(
         tmp_path,
         "-w",

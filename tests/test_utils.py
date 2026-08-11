@@ -578,6 +578,7 @@ def test_read_last_lines_respects_max_bytes(tmp_path):
 def test_decode_log_bytes_falls_back_to_gbk_for_windows_logs(monkeypatch):
     text = "测试 PowerShell 输出"
     encoded = text.encode("gbk")
+    monkeypatch.setattr(log_io.locale, "getpreferredencoding", lambda _do_setlocale=False: "ascii")
     monkeypatch.setattr("pyruns.utils.log_io.os.name", "nt", raising=False)
     assert decode_log_bytes(encoded) == text
 
@@ -866,14 +867,19 @@ def test_kill_process_posix_escalates_process_group(monkeypatch):
     ]
 
 
+@patch(
+    "pyruns.utils.process_utils.hidden_subprocess_kwargs",
+    return_value={"creationflags": 0x08000000},
+)
 @patch("pyruns.utils.process_utils.os.name", "nt")
 @patch("subprocess.run")
-def test_kill_process_nt(mock_run):
+def test_kill_process_nt(mock_run, mock_hidden_subprocess_kwargs):
     kill_process(99999)
+    mock_hidden_subprocess_kwargs.assert_called_once_with()
     mock_run.assert_called_with(
         ["taskkill", "/F", "/T", "/PID", "99999"],
         capture_output=True, timeout=5,
-        creationflags=process_utils.subprocess.CREATE_NO_WINDOW,
+        creationflags=0x08000000,
     )
 
 
