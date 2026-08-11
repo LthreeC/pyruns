@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from typing import Any
@@ -12,7 +11,10 @@ from pyruns._config import ENV_KEY_ROOT, TASKS_DIR
 from pyruns.cli.submission_protocol import (
     RUNNER_CLEANUP_TIMEOUT_SEC,
     abort_requested,
+    read_submission_payload,
+    remove_control_file,
     submission_control_paths,
+    submission_payload_path,
     validate_submission_token,
     write_submission_receipt,
 )
@@ -32,26 +34,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--submission-token", required=True)
-    parser.add_argument("--submissions-json", required=True)
     return parser.parse_args()
-
-
-def _task_submissions(raw: str) -> tuple[list[str], list[int]]:
-    payload = json.loads(raw)
-    if not isinstance(payload, list):
-        raise ValueError("submissions payload must be a list")
-    names: list[str] = []
-    run_indices: list[int] = []
-    for item in payload:
-        if not isinstance(item, dict) or set(item) != {"name", "run_index"}:
-            raise ValueError("each submission must contain name and run_index")
-        name = item.get("name")
-        run_index = item.get("run_index")
-        if not isinstance(name, str) or not name or type(run_index) is not int or run_index <= 0:
-            raise ValueError("submission names and run indices must be valid")
-        names.append(name)
-        run_indices.append(run_index)
-    return names, run_indices
 
 
 def _submitted_run_status(info: dict[str, Any], run_index: int) -> str | None:
@@ -197,17 +180,22 @@ def main() -> int:
     claimed: list[str] = []
     selected: dict[str, dict[str, Any]] = {}
     receipt_file = ""
+    payload_file = ""
     token = ""
     accepted_reported = False
     try:
         token = validate_submission_token(args.submission_token)
-        names, run_indices = _task_submissions(args.submissions_json)
-        if not names or len(names) != len(set(names)) or args.jobs <= 0:
-            return 2
-
         workspace = os.path.abspath(args.workspace)
         tasks_dir = os.path.join(workspace, TASKS_DIR)
         receipt_file, abort_file = submission_control_paths(tasks_dir, token)
+        payload_file = submission_payload_path(tasks_dir, token)
+        payload = read_submission_payload(payload_file, token=token)
+        names = list(payload.names)
+        run_indices = list(payload.run_indices)
+        remove_control_file(payload_file)
+        if not names or len(names) != len(set(names)) or args.jobs <= 0:
+            return 2
+
         _report(
             receipt_file,
             token=token,
@@ -417,6 +405,8 @@ def main() -> int:
                     pass
         return 2
     finally:
+        if payload_file:
+            remove_control_file(payload_file)
         if tm is not None:
             tm.shutdown()
 

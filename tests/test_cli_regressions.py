@@ -18,9 +18,12 @@ from pyruns.cli.runner import SubmissionResult
 from pyruns.cli.submission_protocol import (
     SCHEMA_VERSION,
     atomic_write_json,
+    read_submission_payload,
     read_submission_receipt,
     submission_control_paths,
+    submission_payload_path,
     write_abort_request,
+    write_submission_payload,
     write_submission_receipt,
 )
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
@@ -61,13 +64,37 @@ def _runner_process(exit_code: int | None = None) -> SimpleNamespace:
 def _submission_from_command(
     command: list[str],
 ) -> tuple[str, list[str], list[int], Path, Path]:
+    token, receipt, abort = _submission_control_from_command(command)
+    assert "--submissions-json" not in command
+    workspace = Path(command[command.index("--workspace") + 1])
+    payload_path = submission_payload_path(str(workspace / TASKS_DIR), token)
+    payload = read_submission_payload(payload_path, token=token)
+    names = list(payload.names)
+    run_indices = list(payload.run_indices)
+    return token, names, run_indices, receipt, abort
+
+
+def _submission_control_from_command(command: list[str]) -> tuple[str, Path, Path]:
     token = command[command.index("--submission-token") + 1]
-    submissions = json.loads(command[command.index("--submissions-json") + 1])
-    names = [submission["name"] for submission in submissions]
-    run_indices = [submission["run_index"] for submission in submissions]
     workspace = Path(command[command.index("--workspace") + 1])
     receipt, abort = submission_control_paths(str(workspace / TASKS_DIR), token)
-    return token, names, run_indices, Path(receipt), Path(abort)
+    return token, Path(receipt), Path(abort)
+
+
+def _write_test_submission(
+    workspace: Path,
+    token: str,
+    names: list[str],
+    run_indices: list[int],
+) -> Path:
+    payload_path = Path(submission_payload_path(str(workspace / TASKS_DIR), token))
+    write_submission_payload(
+        str(payload_path),
+        token=token,
+        names=names,
+        run_indices=run_indices,
+    )
+    return payload_path
 
 
 def _write_test_receipt(
@@ -795,6 +822,7 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
     events = []
     task = {"name": "lost", "dir": str(tmp_path / "tasks" / "lost"), "status": "pending"}
     token = "1" * 32
+    payload_path = _write_test_submission(tmp_path, token, ["lost"], [1])
 
     class FakeTaskManager:
         def __init__(self, **_kwargs):
@@ -823,7 +851,6 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
             workspace=str(tmp_path),
             jobs=1,
             submission_token=token,
-            submissions_json='[{"name":"lost","run_index":1}]',
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
@@ -836,6 +863,7 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
 
     assert detached_runner.main() == 1
     assert events == ["shutdown"]
+    assert not payload_path.exists()
     receipt_path, _ = submission_control_paths(str(tmp_path / TASKS_DIR), token)
     receipt = read_submission_receipt(
         receipt_path,
@@ -860,6 +888,7 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
         "status": "pending",
     }
     events: list[str] = []
+    payload_path = _write_test_submission(tmp_path, token, ["repeat"], [1])
 
     class FakeTaskManager:
         def __init__(self, **_kwargs):
@@ -889,7 +918,6 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
             workspace=str(tmp_path),
             jobs=1,
             submission_token=token,
-            submissions_json='[{"name":"repeat","run_index":1}]',
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
@@ -910,6 +938,7 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
 
     assert detached_runner.main() == 0
     assert events == ["shutdown"]
+    assert not payload_path.exists()
 
     receipt_path, _ = submission_control_paths(str(tmp_path / TASKS_DIR), token)
     receipt = read_submission_receipt(
@@ -931,6 +960,7 @@ def test_detached_runner_rejects_run_completed_before_claim(tmp_path, monkeypatc
     tasks_dir.mkdir(parents=True)
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("race", {"value": 1})
     events: list[str] = []
+    payload_path = _write_test_submission(tmp_path, token, ["race"], [1])
 
     def complete_first_run(info):
         slot = ensure_run_slot(info, 1)
@@ -970,13 +1000,13 @@ def test_detached_runner_rejects_run_completed_before_claim(tmp_path, monkeypatc
             workspace=str(tmp_path),
             jobs=1,
             submission_token=token,
-            submissions_json='[{"name":"race","run_index":1}]',
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
 
     assert detached_runner.main() == 2
     assert events == ["claim-rejected", "shutdown"]
+    assert not payload_path.exists()
 
     info = load_task_info(task["dir"])
     assert info["status"] == "completed"
@@ -1057,6 +1087,50 @@ def test_batch_submission_accepts_exact_runner_receipt(tmp_path, monkeypatch):
     assert token == captured["token"]
 
 
+def test_large_batch_submission_keeps_runner_command_below_windows_limit(
+    tmp_path,
+    monkeypatch,
+):
+    from pyruns.cli import runner
+
+    tasks_dir = tmp_path / "workspace" / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    names = [f"sweep_{index:04d}-of-0720" for index in range(1, 721)]
+    run_indices = list(range(1, len(names) + 1))
+    tasks = [{"name": name} for name in names]
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, _env):
+        token, submitted_names, submitted_runs, _receipt, _abort = (
+            _submission_from_command(command)
+        )
+        captured["command"] = command
+        captured["token"] = token
+        assert submitted_names == names
+        assert submitted_runs == run_indices
+        _write_test_receipt(command, "accepted", names)
+        return _runner_process()
+
+    monkeypatch.setattr(runner, "_detached_popen", fake_popen)
+    monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
+
+    result = runner.submit_cli_tasks(
+        _submission_manager(tasks_dir, tasks),
+        names,
+        expected_runs=dict(zip(names, run_indices)),
+        max_workers=8,
+        startup_timeout=0.2,
+    )
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "--submissions-json" not in command
+    assert len(subprocess.list2cmdline(command)) < 32_767
+    assert result.status == "accepted"
+    payload_path = submission_payload_path(str(tasks_dir), str(captured["token"]))
+    assert not Path(payload_path).exists()
+
+
 def test_batch_submission_returns_exact_runner_rejection(tmp_path, monkeypatch):
     from pyruns.cli import runner
 
@@ -1078,6 +1152,37 @@ def test_batch_submission_returns_exact_runner_rejection(tmp_path, monkeypatch):
         startup_timeout=0.1,
     )
     assert result == SubmissionResult("rejected", (), ("batch-a",))
+
+
+def test_submission_removes_payload_when_runner_process_cannot_start(
+    tmp_path,
+    monkeypatch,
+):
+    from pyruns.cli import runner
+
+    tasks_dir = tmp_path / "workspace" / TASKS_DIR
+    tasks_dir.mkdir(parents=True)
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("launch-failure", {})
+    captured: dict[str, Path] = {}
+
+    def failed_popen(command, _env):
+        token, names, run_indices, _receipt, _abort = _submission_from_command(command)
+        assert names == ["launch-failure"]
+        assert run_indices == [1]
+        captured["payload"] = Path(submission_payload_path(str(tasks_dir), token))
+        raise OSError("test process creation failure")
+
+    monkeypatch.setattr(runner, "_detached_popen", failed_popen)
+    monkeypatch.setattr(runner, "get_follow_shell_runtime", lambda: {})
+
+    result = runner.submit_cli_tasks(
+        _submission_manager(tasks_dir, [task]),
+        ["launch-failure"],
+        expected_runs={"launch-failure": 1},
+    )
+
+    assert result == SubmissionResult("rejected", (), ("launch-failure",))
+    assert not captured["payload"].exists()
 
 
 def test_submission_accepts_fast_failed_task_as_claimed(tmp_path, monkeypatch):
@@ -1237,8 +1342,10 @@ def test_foreign_terminal_state_cannot_claim_a_submission(tmp_path, monkeypatch)
             task["dir"],
             lambda info: info.update({"status": "failed", "run_index": 1}),
         )
-        _, _, _, receipt, abort = _submission_from_command(command)
-        paths.update(receipt=receipt, abort=abort)
+        token, _, _, receipt, abort = _submission_from_command(command)
+        workspace = Path(command[command.index("--workspace") + 1])
+        payload = Path(submission_payload_path(str(workspace / TASKS_DIR), token))
+        paths.update(payload=payload, receipt=receipt, abort=abort)
         return _runner_process()
 
     monkeypatch.setattr(runner, "_detached_popen", fake_popen)
@@ -1261,6 +1368,7 @@ def test_foreign_terminal_state_cannot_claim_a_submission(tmp_path, monkeypatch)
     )
     assert result == SubmissionResult("unresolved", (), ("foreign",))
     assert kill_calls == [(4242, 10.0)]
+    assert paths["payload"].is_file()
     assert paths["abort"].is_file()
     assert not paths["receipt"].is_file()
 
@@ -1554,7 +1662,7 @@ def test_submission_interrupt_persists_abort_and_ignores_repeated_sigint(tmp_pat
     assert captured["abort_seen"] is True
     command = captured["command"]
     assert isinstance(command, list)
-    _, _, _, receipt, abort = _submission_from_command(command)
+    _, receipt, abort = _submission_control_from_command(command)
     assert not receipt.exists()
     assert not abort.exists()
 
@@ -1623,7 +1731,14 @@ def test_submission_cleanup_interrupt_preserves_the_first_terminal_result(
     monkeypatch.setattr(runner, "get_process_create_time", lambda _pid: 10.0)
     monkeypatch.setattr(runner, "_read_receipt", lambda *_args, **_kwargs: None)
     monotonic_values = iter([0.0, 1.0])
-    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        runner,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: next(monotonic_values),
+            sleep=runner.time.sleep,
+        ),
+    )
 
     def interrupted_abort(*_args, **_kwargs):
         nonlocal abort_calls
@@ -1717,6 +1832,7 @@ def test_detached_runner_aborts_before_claiming_when_request_already_exists(tmp_
     tasks_dir = tmp_path / TASKS_DIR
     receipt_file, abort_file = submission_control_paths(str(tasks_dir), token)
     write_abort_request(abort_file, token=token, reason="test timeout")
+    payload_path = _write_test_submission(tmp_path, token, ["pending"], [1])
 
     class UnexpectedTaskManager:
         def __init__(self, **_kwargs):
@@ -1729,12 +1845,12 @@ def test_detached_runner_aborts_before_claiming_when_request_already_exists(tmp_
             workspace=str(tmp_path),
             jobs=1,
             submission_token=token,
-            submissions_json='[{"name":"pending","run_index":1}]',
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", UnexpectedTaskManager)
 
     assert detached_runner.main() == 2
+    assert not payload_path.exists()
     receipt = read_submission_receipt(
         receipt_file,
         token=token,
@@ -1758,6 +1874,12 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
         task_b["dir"]: {"status": "pending"},
     }
     events: list[str] = []
+    payload_path = _write_test_submission(
+        tmp_path,
+        token,
+        ["batch-a", "batch-b"],
+        [1, 1],
+    )
 
     class FakeTaskManager:
         def __init__(self, **_kwargs):
@@ -1813,10 +1935,6 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
             workspace=str(tmp_path),
             jobs=1,
             submission_token=token,
-            submissions_json=(
-                '[{"name":"batch-a","run_index":1},'
-                '{"name":"batch-b","run_index":1}]'
-            ),
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
@@ -1824,6 +1942,7 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
     monkeypatch.setattr(detached_runner, "write_submission_receipt", recording_write_receipt)
 
     assert detached_runner.main() == 2
+    assert not payload_path.exists()
     assert states[task_a["dir"]]["status"] == "cancelled"
     assert events.index("cancel:batch-a") < events.index("receipt:partial")
     assert events[-1] == "shutdown"

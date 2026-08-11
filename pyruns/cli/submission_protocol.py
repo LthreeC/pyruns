@@ -12,6 +12,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 2
+MAX_SUBMISSION_PAYLOAD_BYTES = 32 * 1024 * 1024
 RUNNER_CLEANUP_TIMEOUT_SEC = 15.0
 # The submitter must outwait cleanup plus one blocking process-stop attempt.
 SUBMITTER_ABORT_TIMEOUT_SEC = RUNNER_CLEANUP_TIMEOUT_SEC + 10.0
@@ -35,6 +36,12 @@ class SubmissionReceipt:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class SubmissionPayload:
+    names: tuple[str, ...]
+    run_indices: tuple[int, ...]
+
+
 def validate_submission_token(token: str) -> str:
     """Return a canonical token that is safe to embed in a file name."""
 
@@ -52,6 +59,16 @@ def submission_control_paths(tasks_dir: str, token: str) -> tuple[str, str]:
     return (
         os.path.join(root, f".runner-receipt-{safe_token}.json"),
         os.path.join(root, f".runner-abort-{safe_token}.json"),
+    )
+
+
+def submission_payload_path(tasks_dir: str, token: str) -> str:
+    """Return the submitter-authored payload path for one runner."""
+
+    safe_token = validate_submission_token(token)
+    return os.path.join(
+        os.path.abspath(tasks_dir),
+        f".runner-submission-{safe_token}.json",
     )
 
 
@@ -274,6 +291,98 @@ def remove_control_file(path: str) -> None:
         pass
     except OSError:
         pass
+
+
+def write_submission_payload(
+    path: str,
+    *,
+    token: str,
+    names: list[str] | tuple[str, ...],
+    run_indices: list[int] | tuple[int, ...],
+) -> None:
+    """Write one bounded, token-bound task submission payload."""
+
+    safe_token = validate_submission_token(token)
+    normalized_names = tuple(str(name) for name in names)
+    normalized_run_indices = tuple(run_indices)
+    if (
+        not normalized_names
+        or any(not name for name in normalized_names)
+        or len(normalized_names) != len(set(normalized_names))
+    ):
+        raise ValueError("submission task names must be unique and non-empty")
+    if (
+        len(normalized_run_indices) != len(normalized_names)
+        or any(type(value) is not int or value <= 0 for value in normalized_run_indices)
+    ):
+        raise ValueError(
+            "submission run indices must be positive integers aligned with tasks"
+        )
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "submission_token": safe_token,
+        "submissions": [
+            {"name": name, "run_index": run_index}
+            for name, run_index in zip(normalized_names, normalized_run_indices)
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_SUBMISSION_PAYLOAD_BYTES:
+        raise ValueError(
+            "submission payload is too large "
+            f"(max {MAX_SUBMISSION_PAYLOAD_BYTES} bytes)"
+        )
+    atomic_write_json(path, payload)
+
+
+def read_submission_payload(path: str, *, token: str) -> SubmissionPayload:
+    """Read and strictly validate one bounded task submission payload."""
+
+    expected_token = validate_submission_token(token)
+    with open(path, "rb") as handle:
+        raw = handle.read(MAX_SUBMISSION_PAYLOAD_BYTES + 1)
+    if len(raw) > MAX_SUBMISSION_PAYLOAD_BYTES:
+        raise ValueError(
+            "submission payload is too large "
+            f"(max {MAX_SUBMISSION_PAYLOAD_BYTES} bytes)"
+        )
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise ValueError("invalid submission payload") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "submission_token", "submissions"}
+        or type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != SCHEMA_VERSION
+        or payload.get("submission_token") != expected_token
+        or not isinstance(payload.get("submissions"), list)
+    ):
+        raise ValueError("invalid submission payload")
+
+    names: list[str] = []
+    run_indices: list[int] = []
+    for item in payload["submissions"]:
+        if not isinstance(item, dict) or set(item) != {"name", "run_index"}:
+            raise ValueError("invalid submission payload")
+        name = item.get("name")
+        run_index = item.get("run_index")
+        if (
+            not isinstance(name, str)
+            or not name
+            or type(run_index) is not int
+            or run_index <= 0
+        ):
+            raise ValueError("invalid submission payload")
+        names.append(name)
+        run_indices.append(run_index)
+    if not names or len(names) != len(set(names)):
+        raise ValueError("invalid submission payload")
+    return SubmissionPayload(tuple(names), tuple(run_indices))
 
 
 def _is_string_list(value: Any) -> bool:

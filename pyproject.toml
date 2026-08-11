@@ -46,6 +46,7 @@ test = [
     "httpx>=0.24,<1",
     "pytest>=8,<10",
     "pytest-cov>=6,<8",
+    "setuptools>=77",
     "tomli>=2,<3; python_version < '3.11'",
 ]
 lint = [

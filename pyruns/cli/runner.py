@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import subprocess
@@ -20,7 +19,9 @@ from pyruns.cli.submission_protocol import (
     read_submission_receipt,
     remove_control_file,
     submission_control_paths,
+    submission_payload_path,
     write_abort_request,
+    write_submission_payload,
 )
 from pyruns.utils.process_utils import get_process_create_time, kill_process
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
@@ -331,6 +332,7 @@ def submit_cli_tasks(
     workspace = os.path.dirname(os.path.abspath(str(tm.tasks_dir)))
     submission_token = uuid.uuid4().hex
     receipt_file, abort_file = submission_control_paths(str(tm.tasks_dir), submission_token)
+    payload_file = submission_payload_path(str(tm.tasks_dir), submission_token)
     command = [
         sys.executable,
         "-m",
@@ -341,13 +343,6 @@ def submit_cli_tasks(
         str(max(1, int(max_workers))),
         "--submission-token",
         submission_token,
-        "--submissions-json",
-        json.dumps(
-            [
-                {"name": name, "run_index": run_index}
-                for name, run_index in zip(names, run_indices)
-            ]
-        ),
     ]
 
     env = os.environ.copy()
@@ -363,8 +358,19 @@ def submit_cli_tasks(
     interrupted = False
     try:
         try:
+            write_submission_payload(
+                payload_file,
+                token=submission_token,
+                names=names,
+                run_indices=run_indices,
+            )
+        except (OSError, ValueError):
+            remove_control_file(payload_file)
+            return _submission_result(names, status="rejected")
+        try:
             process = _detached_popen(command, env)
         except OSError:
+            remove_control_file(payload_file)
             return _submission_result(names, status="rejected")
 
         process_create_time = get_process_create_time(process.pid)
@@ -460,6 +466,7 @@ def submit_cli_tasks(
         if outcome is None:
             outcome = _submission_result(names, status="unresolved")
         if outcome.status != "unresolved":
+            remove_control_file(payload_file)
             remove_control_file(receipt_file)
             remove_control_file(abort_file)
         if interrupted:
@@ -491,6 +498,7 @@ def submit_cli_tasks(
             reason="interrupted",
         )
         if aborted.result.status != "unresolved":
+            remove_control_file(payload_file)
             remove_control_file(receipt_file)
             remove_control_file(abort_file)
         raise SubmissionInterrupted(
