@@ -23,7 +23,6 @@ const child = spawn(
   ],
   {
     cwd: repositoryRoot,
-    detached: process.platform !== 'win32',
     env: {
       ...process.env,
       PYTHONPATH: pythonPath,
@@ -59,11 +58,7 @@ function terminateChild() {
       child.kill('SIGKILL')
     }
   } else {
-    try {
-      process.kill(-child.pid, 'SIGTERM')
-    } catch {
-      child.kill('SIGTERM')
-    }
+    child.kill('SIGTERM')
   }
 
   const forceTimer = setTimeout(() => {
@@ -72,11 +67,7 @@ function terminateChild() {
       child.kill('SIGKILL')
       return
     }
-    try {
-      process.kill(-child.pid, 'SIGKILL')
-    } catch {
-      child.kill('SIGKILL')
-    }
+    child.kill('SIGKILL')
   }, 2_000)
   forceTimer.unref()
 }

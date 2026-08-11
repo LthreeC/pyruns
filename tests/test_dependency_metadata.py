@@ -281,6 +281,20 @@ def test_frontend_workflow_checks_committed_static_assets():
     assert "python scripts/check_frontend_static.py" in workflow.split("npm --prefix frontend ci", 1)[1]
 
 
+def test_frontend_e2e_server_remains_managed_and_ci_run_is_bounded():
+    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
+    server = (ROOT / "frontend" / "e2e" / "start-server.mjs").read_text(encoding="utf-8")
+    e2e_step = workflow.split("- name: Run browser end-to-end tests", 1)[1].split(
+        "- name: Build docs", 1
+    )[0]
+
+    assert "timeout-minutes: 10" in e2e_step
+    assert "detached:" not in server
+    assert "process.kill(-child.pid" not in server
+    assert "windowsHide: true" in server
+    assert "'taskkill.exe'" in server
+
+
 def test_wheel_static_checker_rejects_stale_assets(tmp_path):
     source_static = tmp_path / "pyruns" / "web" / "static"
     source_assets = source_static / "assets"
