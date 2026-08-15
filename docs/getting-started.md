@@ -39,6 +39,17 @@ my-project/
         └── tasks/
 ```
 
+这里使用 `-n smoke` 是因为后续命令要精确引用 `smoke`。临时运行时不必手动取名；
+省略名称会生成 `task_YYYY-MM-DD_HH-MM-SS`，`-nt PREFIX` 则生成带语义前缀的时间戳名称：
+
+```bash
+pyr exec -- python -V
+pyr exec -nt smoke -- python -V       # smoke_YYYY-MM-DD_HH-MM-SS
+```
+
+`-n NAME` 是精确名称，`-nt PREFIX` 是自动名称，两者不能同时使用。同一秒发生名称冲突时，
+Pyruns 仍会使用现有的安全去重后缀，避免覆盖任务。
+
 `--` 是“Pyruns 参数到此结束”的分隔符，后面是目标程序的精确参数向量。它本身不启用 shell；即使命令自身带 `--epochs`、`-p` 等选项，也不会与 Pyruns 参数混淆。
 
 只预览计划、不创建 workspace/task 也不运行命令：
@@ -103,12 +114,20 @@ pyr exec -n eval -- python eval.py --checkpoint "best model.pt"
 pyr exec -n preprocess -- ./scripts/preprocess.sh "dataset A" --fast
 ```
 
-只有需要管道、重定向、变量展开、通配符或 `&&` 等 shell 解析时才使用 `-c` / `--command`。它后面必须是一整个被引用的 command string：
+只有需要管道、重定向、变量展开、通配符或 `&&` 等 shell 解析时才使用 `-c` / `--command`。`-c` 会消费并合并后续 command text；简单命令可直接写成 `-c echo hello`。表达式含 `;`、`|`、重定向或变量时，通常仍要按调用端 shell 的规则引用整段，避免 Pyruns 启动前就被拆开：
 
 ```bash
 pyr exec -n report -c "python eval.py > metrics.txt"
 pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log"
 ```
+
+Pyruns 不修改 Bash、Zsh、Fish 或 PowerShell 的行编辑器。所有平台都使用相同规则：普通程序或脚本使用 `--` 后的精确 argv；需要 shell 语法时，将完整表达式引用为 `-c` 的一个参数。例如 PowerShell：
+
+```powershell
+pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -ForegroundColor $colors[$_-1] }'
+```
+
+Shell task 使用跨平台伪终端保留颜色：Linux/macOS 使用系统 PTY，Windows 强制使用原生 ConPTY 且不创建可见控制台窗口。日志保留 SGR 颜色，但过滤清屏、光标定位和窗口标题等控制序列；伪终端不可用时回退到普通 stdout/stderr 管道。
 
 少量环境变量只需写一次 `-e`，`--` 明确标记目标命令的开始：
 

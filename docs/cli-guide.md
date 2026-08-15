@@ -106,6 +106,29 @@ pyr init train.py --config configs/default.yaml
 
 ## 5. 运行终端命令：`exec`
 
+### 任务命名
+
+`exec` 不要求手动命名。省略名称时，每次会以当前本地时间生成任务名：
+
+```bash
+pyr exec -- python -V                # task_YYYY-MM-DD_HH-MM-SS
+```
+
+需要可读前缀并希望自动区分每次执行时，使用 `-nt` / `--name-timestamp`：
+
+```bash
+pyr exec -nt smoke -- python -V      # smoke_YYYY-MM-DD_HH-MM-SS
+```
+
+需要之后用固定名称执行 `show`、`log` 或 `run` 时，继续使用 `-n` / `--name`：
+
+```bash
+pyr exec -n smoke -- python -V       # 精确名称 smoke
+```
+
+`-n` 与 `-nt` 互斥。自动名称若在同一秒冲突，会安全追加唯一后缀；精确名称冲突仍直接报错，
+不会覆盖已有任务。
+
 ### 精确 argv 模式
 
 默认使用 `--` 后的参数向量。它最适合普通程序调用，也最适合自动化：
@@ -126,7 +149,7 @@ pyr exec --dry-run --name smoke -- python -V
 pyr exec --dry-run --name smoke --json -- python -V
 ```
 
-计划会说明目标 workspace 是否需要创建、任务名是否可精确使用、工作目录、argv 或 shell 表达式、解释器和环境变量。`--dry-run` 不创建 `_pyruns_`、设置文件或任务目录，也不会执行用户命令。它与 `--detach` 互斥，因为预览不会产生可供后台接管的任务。显式任务名已存在时仍会像真实执行一样报错；省略 `--name` 且默认名称冲突时，计划会说明真实执行需要生成唯一后缀。
+计划会说明目标 workspace 是否需要创建、任务名是否可精确使用、工作目录、argv 或 shell 表达式、解释器和环境变量。`--dry-run` 不创建 `_pyruns_`、设置文件或任务目录，也不会执行用户命令。它与 `--detach` 互斥，因为预览不会产生可供后台接管的任务。显式任务名已存在时仍会像真实执行一样报错；自动时间戳名称冲突时，计划会说明真实执行需要生成唯一后缀。
 
 ### 直接运行 Shell 脚本文件
 
@@ -164,7 +187,30 @@ pyr exec --name report -c "python eval.py > metrics.txt"
 pyr exec --name pipeline -c "python preprocess.py && python train.py | tee train.log"
 ```
 
-`-c` 后面必须只有一个完整 command string，因此外层引号不能省略；`-c echo hello` 会被拒绝。字符串由工作区解析到的 shell 执行，引用规则和可用命令可能因 Bash、PowerShell 与 cmd.exe 而不同。普通程序或脚本文件不需要这些能力时，使用 `--` 后的精确 argv。
+`-c` 会消费并合并后续 command text，因此 `-c echo hello` 会作为 `echo hello` 执行。表达式含 `;`、`|`、重定向或变量时，通常仍要按调用端 shell 的规则引用整段，否则调用端会在 Pyruns 启动前先拆分它。表达式由工作区解析到的 shell 执行，引用规则和可用命令可能因 Bash、PowerShell 与 cmd.exe 而不同。普通程序或脚本文件不需要这些能力时，使用 `--` 后的精确 argv。
+
+### 调用端引用规则
+
+Pyruns 不安装或修改 Bash、Zsh、Fish、PowerShell 的行编辑器。所有平台都遵循同一命令契约：`--` 只传递精确 argv；变量、管道、分号、重定向、通配符和命令链必须放在一个引用后的 `-c` 表达式中。
+
+PowerShell 示例：
+
+```powershell
+pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -ForegroundColor $colors[$_-1] }'
+```
+
+Bash、Zsh 或 Fish 示例：
+
+```bash
+pyr exec -c 'printf "%s\n" "$HOME" | sed "s/home/HOME/"'
+```
+
+这是调用端 shell 的固有限制：它会在启动 `pyr` 前解析自己的控制符，因此外部 CLI 无法在启动后找回未引用的剩余文本。颜色捕获则使用统一的伪终端语义：Linux/macOS 通过系统 PTY，Windows 强制通过原生 ConPTY 且不创建可见控制台窗口。SGR 颜色进入 `runN.log`，清屏、光标定位和窗口标题等界面控制序列会被过滤；伪终端不可用时回退到普通管道。
+
+如果操作系统无法直接启动精确 argv 的首个参数，Pyruns 会自动改用工作区 shell 执行已安全
+引用的任务 payload。这样 PowerShell 的 `ls` 等 alias 或 shell builtin 可以直接使用；命令失败时
+保留 PowerShell、Bash 或 cmd 自己产生的原始完整错误，不再重写成 Pyruns 的错误摘要。argv 中的
+重定向符、连接符等值仍保持引用，不会意外变成 shell 语法。
 
 ### 环境变量
 

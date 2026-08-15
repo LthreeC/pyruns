@@ -64,9 +64,17 @@ pyr -C path/to/project -w shell status
 `exec` initializes the shell workspace automatically when needed. `--` ends Pyruns option parsing and passes every following item as an exact argument vector:
 
 ```bash
+pyr exec -- python -V
+pyr exec -nt env-check -- python -V
 pyr exec -n env-check -- python -V
 pyr exec -n smoke -- python train.py --epochs 1
 ```
+
+Omitting the name generates `task_YYYY-MM-DD_HH-MM-SS`. Use `-nt PREFIX` or
+`--name-timestamp PREFIX` for `PREFIX_YYYY-MM-DD_HH-MM-SS`; use `-n NAME` or
+`--name NAME` only when the exact stable name is important. Exact and timestamped naming
+are mutually exclusive. Automatic names receive an additional unique suffix if they collide;
+an explicit duplicate exact name remains an error.
 
 This quoting-safe form is the default. `--` is a separator, not a shell-mode switch: pipes, redirects, variables, globs, and command chaining are not interpreted. Pyruns stores the argument vector as structured task metadata and reuses the creation working directory on every rerun. Changing the configured shell later does not reinterpret an argv task.
 
@@ -87,7 +95,14 @@ Use `-c` / `--command` only when the command intentionally depends on shell synt
 pyr exec -n report -c "python eval.py > metrics.txt"
 ```
 
-`-c` follows the familiar `sh -c` convention and accepts exactly one quoted command string. Pyruns stores the resolved shell executable and creation working directory, then uses both for reruns. Use exact argv after `--` whenever shell syntax is not required.
+`-c` follows the familiar `sh -c` convention and consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, pipes, redirects, variables, globs, or command chains must be quoted according to the calling shell so they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. It stores the resolved shell executable and creation working directory, then uses both for reruns. Use exact argv after `--` whenever shell syntax is not required.
+
+Shell tasks preserve terminal colors through one cross-platform pseudoterminal contract: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, mode, and window-title controls are filtered. If terminal capture is unavailable, Pyruns falls back to ordinary stdout and stderr pipes.
+
+If the OS cannot start the first exact-argv item directly, Pyruns retries the safely quoted stored
+payload through the workspace shell. This resolves shell aliases and built-ins while preserving the
+shell's original complete error output. Shell syntax in argv values remains quoted rather than being
+reinterpreted.
 
 Set a few task-local environment variables with one `-e` or `--env` followed by multiple `KEY=VALUE` entries. `--` marks the target-command boundary. Repeating the option remains supported:
 
@@ -123,7 +138,7 @@ pyr exec --dry-run -n smoke -- python -V
 pyr exec --dry-run -n smoke --json -- python -V
 ```
 
-The plan reports workspace creation, task-name availability, working directory, command mode and argv or shell expression, runtime, and environment. Treat `planned_name: null` as a signal that automatic naming needs a unique suffix. An explicit duplicate `--name` remains an error. Preview and detached execution are different operations, so `--dry-run` and `--detach` are rejected together.
+The plan reports workspace creation, task-name availability, working directory, command mode and argv or shell expression, runtime, and environment. Treat `planned_name: null` as a signal that automatic timestamp naming needs an additional unique suffix. An explicit duplicate `--name` remains an error. Preview and detached execution are different operations, so `--dry-run` and `--detach` are rejected together.
 
 ## Use A Python Script Workspace
 

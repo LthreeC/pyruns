@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
 from pyruns._config import (
@@ -65,6 +66,7 @@ from pyruns.utils.task_files import (
     resolve_task_config_file,
     resolve_task_payload_path,
 )
+from pyruns.utils.terminal_capture import spawn_terminal_process
 
 logger = get_logger(__name__)
 _ISOLATED_IMPORT_ROOT_LOCK = threading.Lock()
@@ -1056,6 +1058,35 @@ def _build_shell_command(
     return [shell_path, script_path], workdir, []
 
 
+def _spawn_captured_process(
+    command: List[str],
+    *,
+    workdir: str,
+    env: Dict[str, str],
+    preserve_terminal_output: bool = False,
+) -> Any:
+    """Spawn through a PTY for shell colors, with a redirected fallback."""
+
+    if preserve_terminal_output:
+        try:
+            return spawn_terminal_process(command, cwd=workdir, env=env)
+        except Exception as exc:
+            logger.warning(
+                "Terminal capture unavailable; falling back to redirected output: %s",
+                exc,
+            )
+
+    return subprocess.Popen(
+        command,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=workdir,
+        env=env,
+        **_popen_process_group_kwargs(),
+    )
+
+
 def _augment_wsl_env(command: List[str] | str, env: Dict[str, str], task_env_keys: set[str]) -> None:
     if isinstance(command, str):
         return
@@ -1258,14 +1289,21 @@ def _append_error_summary(
     run_index: int,
     title: str,
     detail_lines: List[str],
+    traceback_text: str = "",
 ) -> None:
     """Append one failure/error summary block into ``error.log``."""
 
     err_log_path = prepare_task_log_path(task_dir, ERROR_LOG_FILENAME)
+    traceback_block = (
+        f"\nTraceback:\n{traceback_text.rstrip()}\n"
+        if traceback_text.strip()
+        else ""
+    )
     block = (
         f"\n\n{'=' * 70}\n"
         f"[PYRUNS] {title}\n"
         + "\n".join(detail_lines)
+        + traceback_block
         + f"\n{'=' * 70}\n"
     )
     with open(err_log_path, "a", encoding="utf-8") as handle:
@@ -1357,6 +1395,7 @@ def run_task_worker(
     log_path = _get_log_path(task_dir, run_index)
     task_meta = load_task_info(task_dir)
     task_kind = normalize_task_kind(task_meta.get("task_kind", task_meta.get("config_mode")))
+    command_mode = str(task_meta.get("command_mode", "") or "").lower()
     config_file = resolve_task_config_file(task_meta, task_kind, task_dir)
     script_path = task_meta.get("script")
     meta_cmd = task_meta.get("cmd")
@@ -1607,15 +1646,39 @@ def run_task_worker(
                 "error": "task ownership changed before process launch",
             }
 
-        proc = subprocess.Popen(
-            command,
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=workdir,
-            env=env,
-            **_popen_process_group_kwargs(),
-        )
+        try:
+            proc = _spawn_captured_process(
+                command,
+                workdir=workdir,
+                env=env,
+                preserve_terminal_output=(
+                    task_kind == TASK_KIND_SHELL and command_mode == "shell"
+                ),
+            )
+        except FileNotFoundError:
+            if task_kind != TASK_KIND_SHELL or command_mode != "argv":
+                raise
+            command, _shell_workdir, shell_cleanup_paths = _build_shell_command(
+                task_dir,
+                config_file or SHELL_CONFIG_FILENAME,
+                shell_executable=shell_executable,
+            )
+            command = _apply_python_runtime_to_shell_command(command, python_runtime)
+            cleanup_paths.extend(shell_cleanup_paths)
+            _augment_wsl_env(
+                command,
+                env,
+                set((env_vars or {}).keys()) | {ENV_KEY_RUN_INDEX},
+            )
+            logger.debug(
+                "Direct argv launch failed; retrying through workspace shell: %s",
+                command,
+            )
+            proc = _spawn_captured_process(
+                command,
+                workdir=workdir,
+                env=env,
+            )
         process_started_at = time.monotonic()
         process_create_time = get_process_create_time(proc.pid)
 
@@ -1734,6 +1797,10 @@ def run_task_worker(
         exit_code = int(ret)
         _capture_process_metrics()
         end_str = get_now_str()
+        reader_thread.join(timeout=0.25)
+        close_output = getattr(proc, "close_output", None)
+        if callable(close_output):
+            close_output()
         reader_thread.join(timeout=5)
         _join_source_state()
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
@@ -1853,6 +1920,7 @@ def run_task_worker(
         }
 
     except Exception as exc:
+        traceback_text = traceback.format_exc()
         end_str = get_now_str()
         child_process_terminated = _terminate_started_process(
             proc,
@@ -1893,13 +1961,13 @@ def run_task_worker(
             run_index=run_index,
             title=f"Internal error during run #{run_index} at {end_str}",
             detail_lines=detail_lines,
+            traceback_text=traceback_text,
         )
 
         block = (
-            f"\n{'=' * 70}\n"
-            f"[PYRUNS ERROR] Task {name} failed\n"
-            + "\n".join(detail_lines)
-            + f"\n{'=' * 70}\n"
+            f"\n[PYRUNS] {'-' * 20} ERROR {'-' * 20}\n"
+            f"{traceback_text.rstrip()}\n"
+            f"[PYRUNS] {'-' * 47}\n"
         )
         try:
             log_path = _get_log_path(task_dir, run_index)

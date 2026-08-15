@@ -371,6 +371,16 @@ def test_json_stays_in_command_scope_and_exec_separator_preserves_child_options(
     assert child_args.command_argv == ["--", "python", "train.py", "--json"]
 
 
+def test_exec_parses_timestamped_name_option_without_confusing_exact_name():
+    parser, _commands = build_parser("pyr", show_all_commands=True)
+
+    parsed = parser.parse_args(("exec", "-nt", "smoke", "--", "python", "-V"))
+
+    assert parsed.name is None
+    assert parsed.name_timestamp == "smoke"
+    assert parsed.command_argv == ["--", "python", "-V"]
+
+
 def test_json_output_is_strict_and_versioned(capsys):
     from pyruns.cli.commands import CliError, _json_dump
 
@@ -708,6 +718,7 @@ def test_bare_context_options_are_not_silently_ignored(tmp_path, args, message):
         ("init", ""),
         ("init", "train.py", "--config", ""),
         ("exec", "--name", "", "--", "python", "-V"),
+        ("exec", "--name-timestamp", "", "--", "python", "-V"),
         ("exec", "--env-file", "", "--", "python", "-V"),
         ("add", ""),
         ("add", "config.yaml", "--name", ""),
@@ -760,6 +771,24 @@ def test_unknown_options_fail_with_usage_on_stderr(tmp_path):
     assert result.returncode == 2
     assert "unrecognized arguments: --unknown" in result.stderr
     assert result.stdout == ""
+
+
+def test_exec_rejects_exact_and_timestamped_names_together(tmp_path):
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "-n",
+        "exact",
+        "-nt",
+        "prefixed",
+        "--",
+        "python",
+        "-V",
+    )
+
+    assert result.returncode == 2
+    assert "not allowed with argument" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_json_is_command_scoped_and_long_options_require_exact_spelling(tmp_path):
@@ -981,26 +1010,59 @@ def test_exec_dry_run_is_stable_json_and_has_no_workspace_side_effect(tmp_path):
     assert not (tmp_path / "_pyruns_").exists()
 
 
-def test_exec_dry_run_reports_automatic_name_collision_without_writing(tmp_path):
-    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+def test_exec_dry_run_reports_automatic_name_collision_without_writing(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from pyruns.cli import commands
     from pyruns.core.task_generator import TaskGenerator
 
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(commands, "get_now_str", lambda: "2026-08-15_12-34-56")
     TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
-        "command", "echo old\n"
+        "task_2026-08-15_12-34-56", "echo old\n"
     )
     before = {path.name for path in (workspace / TASKS_DIR).iterdir()}
 
-    result = _run_cli(tmp_path, "exec", "--dry-run", "--json", "--", sys.executable, "-V")
+    result = main(["exec", "--dry-run", "--json", "--", sys.executable, "-V"])
+    captured = capsys.readouterr()
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    task = json.loads(result.stdout)["task"]
+    assert result == 0, captured.out + captured.err
+    task = json.loads(captured.out)["task"]
     assert task == {
-        "requested_name": "command",
+        "requested_name": "task_2026-08-15_12-34-56",
         "planned_name": None,
         "name_is_exact": False,
         "name_available": False,
     }
     assert {path.name for path in (workspace / TASKS_DIR).iterdir()} == before
+
+
+def test_exec_dry_run_appends_timestamp_to_requested_prefix(tmp_path):
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--dry-run",
+        "--json",
+        "-nt",
+        "smoke",
+        "--",
+        sys.executable,
+        "-V",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    task = json.loads(result.stdout)["task"]
+    assert re.fullmatch(
+        r"smoke_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}",
+        task["requested_name"],
+    )
+    assert task["planned_name"] == task["requested_name"]
+    assert task["name_is_exact"] is False
+    assert task["name_available"] is True
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_exec_command_string_dry_run_does_not_evaluate_the_expression(tmp_path):
@@ -1105,6 +1167,19 @@ def test_follow_task_reads_only_new_queue_bytes_and_expected_run(monkeypatch):
     assert reads[0] == ("queue.log", 41)
     assert all(path != "run1.log" for path, _offset in reads)
     assert any(path == "run2.log" and offset == 0 for path, offset in reads)
+
+
+def test_write_available_log_does_not_duplicate_crlf_rows(tmp_path, capsys):
+    from pyruns.cli import commands
+
+    log_path = tmp_path / "run.log"
+    content = b"first\r\nsecond\r\nprogress 1%\rprogress 100%"
+    log_path.write_bytes(content)
+
+    offset = commands._write_available_log(str(log_path), 0)
+
+    assert offset == len(content)
+    assert capsys.readouterr().out == "first\nsecond\nprogress 1%\rprogress 100%"
 
 
 def test_explicit_run_log_never_falls_back_to_an_older_log(tmp_path):
@@ -1803,6 +1878,55 @@ def test_exec_rejects_an_explicit_duplicate_name(tmp_path):
     assert [path.name for path in tasks_dir.iterdir() if path.is_dir()] == ["duplicate"]
 
 
+def test_exec_without_name_creates_timestamped_task(tmp_path):
+    result = _run_cli(tmp_path, "exec", "--", sys.executable, "-V")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    tasks_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR
+    names = [path.name for path in tasks_dir.iterdir() if path.is_dir()]
+    assert len(names) == 1
+    assert re.fullmatch(
+        r"task_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}",
+        names[0],
+    )
+    assert f"created {names[0]}" in result.stderr
+
+
+def test_exec_missing_program_preserves_workspace_shell_error(tmp_path):
+    missing = "__pyruns_missing_program_9f0d8a__"
+    result = _run_cli(tmp_path, "exec", "--name", "missing-program", "--", missing)
+
+    assert result.returncode == 1
+    assert missing in result.stdout
+    if os.name == "nt":
+        assert any(
+            marker in result.stdout
+            for marker in (
+                "CommandNotFoundException",
+                "is not recognized as a name",
+                "无法将",
+            )
+        )
+    else:
+        assert "not found" in result.stdout.lower()
+    assert "Command:" not in result.stdout
+    assert "Hint:" not in result.stdout
+    assert "Full details:" not in result.stdout
+
+    error_log = (
+        tmp_path
+        / "_pyruns_"
+        / "_shell_"
+        / TASKS_DIR
+        / "missing-program"
+        / RUN_LOGS_DIR
+        / ERROR_LOG_FILENAME
+    )
+    error_text = error_log.read_text(encoding="utf-8")
+    assert "reason=exit_code" in error_text
+    assert "Traceback:" not in error_text
+
+
 def test_exec_persists_exact_argv_and_creation_workdir(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     nested = tmp_path / "nested" / "deeper"
@@ -1835,19 +1959,21 @@ def test_exec_persists_exact_argv_and_creation_workdir(tmp_path):
     assert rerun_payload == [str(nested), "value with spaces", "x&y"]
 
 
-def test_exec_command_string_rejects_an_unquoted_tail_and_removed_shell_option(tmp_path):
+def test_exec_command_string_consumes_an_unquoted_tail_and_rejects_separator(tmp_path):
     result = _run_cli(
         tmp_path,
         "exec",
-        "--name",
-        "bad-shell",
+        "--dry-run",
+        "--json",
         "-c",
         "echo",
         "hello",
     )
 
-    assert result.returncode == 2
-    assert "-c/--command accepts exactly one command string" in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["command_mode"] == "shell"
+    assert payload["shell_expression"] == "echo hello"
     assert not (tmp_path / "_pyruns_").exists()
 
     separator = _run_cli(tmp_path, "exec", "-c", "echo hello", "--")
@@ -1858,6 +1984,53 @@ def test_exec_command_string_rejects_an_unquoted_tail_and_removed_shell_option(t
     removed = _run_cli(tmp_path, "exec", "--shell", "echo hello")
     assert removed.returncode == 2
     assert "unrecognized arguments: --shell" in removed.stderr
+
+
+def test_windows_legacy_command_line_recovery_preserves_shell_quotes():
+    from pyruns.cli.commands import _extract_windows_shell_command_from_raw
+
+    expression = (
+        '$colors=@("Red","Green"); '
+        'Write-Host "Test message - $_" -ForegroundColor $colors[0]'
+    )
+    raw = f'"C:\\Tools\\pyr.exe" exec -c "{expression}"'
+
+    assert _extract_windows_shell_command_from_raw(raw) == expression
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+def test_exec_powershell_shell_expression_preserves_host_colors(tmp_path):
+    import importlib.util
+
+    if importlib.util.find_spec("winpty") is None:
+        pytest.skip("pywinpty is unavailable")
+
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        "host-color",
+        "-c",
+        "Write-Host 'red-text' -ForegroundColor Red",
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "red-text" in result.stdout
+    assert "\x1b[38;" in result.stdout
+    assert "\x1b[2J" not in result.stdout
+    assert "\x1b]0;" not in result.stdout
+    log_text = (
+        tmp_path
+        / "_pyruns_"
+        / "_shell_"
+        / TASKS_DIR
+        / "host-color"
+        / RUN_LOGS_DIR
+        / "run1.log"
+    ).read_text(encoding="utf-8")
+    assert "\x1b[38;" in log_text
+    assert "\x1b[2J" not in log_text
 
 
 def test_add_is_noninteractive_and_run_from_waits_for_all(tmp_path):

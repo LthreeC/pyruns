@@ -87,6 +87,15 @@ def test_python_runtime_dependencies_include_websocket_server_support():
     )
 
 
+def test_windows_runtime_declares_native_conpty_support():
+    dependencies = {item.lower() for item in _load_pyproject()["project"]["dependencies"]}
+
+    assert any(
+        item.startswith("pywinpty>=2.0.15") and "sys_platform == 'win32'" in item
+        for item in dependencies
+    )
+
+
 def test_ci_installs_declared_web_test_dependencies():
     optional = _load_pyproject()["project"]["optional-dependencies"]
     workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
 import signal
 import shlex
 import shutil
@@ -92,6 +93,7 @@ from pyruns.utils.shell_runtime import (
     get_shell_runtime_for_workspace,
 )
 from pyruns.utils.task_files import resolve_task_config_file
+from pyruns.utils.time_utils import get_now_str
 
 
 _ACTIVE_STATUSES = {"queued", "running"}
@@ -762,6 +764,35 @@ def _render_argument_command(parts: list[str], workspace: str) -> str:
     return shlex.join(parts)
 
 
+def _extract_windows_shell_command_from_raw(raw_command_line: str) -> str | None:
+    """Recover a final ``-c`` expression from PowerShell's Legacy argv transport."""
+
+    match = re.search(
+        r"(?<!\S)(?:-c|--command)(?:\s+|=)(?P<command>.*)\Z",
+        str(raw_command_line or ""),
+    )
+    if match is None:
+        return None
+    command = match.group("command").strip()
+    if len(command) >= 2 and command.startswith('"') and command.endswith('"'):
+        command = command[1:-1]
+    return command
+
+
+def _recover_windows_shell_command() -> str | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        get_command_line = ctypes.windll.kernel32.GetCommandLineW
+        get_command_line.restype = ctypes.c_wchar_p
+        raw_command_line = get_command_line()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    return _extract_windows_shell_command_from_raw(raw_command_line or "")
+
+
 def _render_recovery_command(
     context: Any,
     workspace: str,
@@ -945,6 +976,7 @@ def _write_available_log(path: str, offset: int) -> int:
         content, next_offset = safe_read_log(path, offset, max_bytes=65536)
         if not content or next_offset == offset:
             return offset
+        content = content.replace("\r\n", "\n")
         try:
             sys.stdout.write(content)
         except UnicodeEncodeError:
@@ -1367,7 +1399,15 @@ def cmd_exec(context: Any, args: Any) -> int:
     if shell_command is not None and has_separator:
         raise CliUsageError("-c/--command cannot be combined with '--' or argv arguments")
     if shell_command is not None and parts:
-        raise CliUsageError("-c/--command accepts exactly one command string")
+        recovered = (
+            _recover_windows_shell_command()
+            if bool(getattr(args, "_from_process_argv", False))
+            else None
+        )
+        shell_command = recovered if recovered is not None else " ".join(
+            [str(shell_command), *(str(part) for part in parts)]
+        )
+        parts = []
     if shell_command is None and parts and not has_separator:
         raise CliUsageError("exec argv form requires '--' before COMMAND")
     if shell_command is None and not parts:
@@ -1378,7 +1418,14 @@ def cmd_exec(context: Any, args: Any) -> int:
         base_dir=os.path.abspath(context.directory),
     )
     env.update(_parse_env(list(args.env or [])))
-    requested_name = str(args.name) if args.name is not None else "command"
+    exact_name = args.name is not None
+    if exact_name:
+        requested_name = str(args.name)
+    else:
+        name_prefix = (
+            str(args.name_timestamp) if args.name_timestamp is not None else "task"
+        )
+        requested_name = f"{name_prefix}_{get_now_str()}"
     name_error = validate_task_name(requested_name)
     if name_error:
         raise CliUsageError(name_error)
@@ -1414,9 +1461,9 @@ def cmd_exec(context: Any, args: Any) -> int:
         task_plan = _task_name_plan(
             tasks_dir,
             requested_name,
-            exact=args.name is not None,
+            exact=exact_name,
         )
-        if args.name is not None and not task_plan["name_available"]:
+        if exact_name and not task_plan["name_available"]:
             raise CliError(f"Task name '{requested_name}' already exists in the current workspace")
         workspace_exists = os.path.isfile(os.path.join(workspace, SCRIPT_INFO_FILENAME))
         payload = {
@@ -1454,7 +1501,7 @@ def cmd_exec(context: Any, args: Any) -> int:
         return 0
 
     with _task_manager(workspace, lazy_scan=None) as manager:
-        if args.name is not None:
+        if exact_name:
             name_error = validate_task_name(requested_name, manager.tasks_dir)
             if name_error:
                 raise CliError(name_error)
@@ -1463,7 +1510,7 @@ def cmd_exec(context: Any, args: Any) -> int:
             task = generator.create_shell_task(
                 requested_name,
                 command_text.rstrip() + "\n",
-                exact_name=args.name is not None,
+                exact_name=exact_name,
                 command_mode="shell" if uses_shell_command else "argv",
                 command_argv=command_argv,
                 workdir=context.directory,

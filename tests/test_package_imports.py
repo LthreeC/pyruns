@@ -19,6 +19,7 @@ assert {
         "psutil",
         "pyruns.core.config_manager",
         "pyruns.utils.info_io",
+        "winpty",
         "yaml",
 }.isdisjoint(sys.modules)
 

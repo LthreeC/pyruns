@@ -35,6 +35,17 @@ pyr run smoke
 
 A task is a saved, repeatable object. Each `run` adds numbered history instead of replacing earlier logs.
 
+When you do not need to reference the task by name immediately, omit the naming option and
+Pyruns generates `task_YYYY-MM-DD_HH-MM-SS`. Use `-nt` to keep a semantic prefix and append
+the timestamp automatically:
+
+```bash
+pyr exec -- python -V
+pyr exec -nt smoke -- python -V       # smoke_YYYY-MM-DD_HH-MM-SS
+```
+
+`-n smoke` still means the exact name `smoke`, so `-n` and `-nt` are mutually exclusive.
+
 Detach long-running work, then control it with separate commands:
 
 ```bash
@@ -126,10 +137,12 @@ values. See the [complete CLI guide](docs/cli-guide.md) for every option and con
 
 ### Shell Workspace
 
-Use it for arbitrary terminal commands, repository reproduction, installation, preprocessing, training, evaluation, and pipelines:
+Use it for arbitrary terminal commands, repository reproduction, installation, preprocessing, training, evaluation, and pipelines. An omitted name becomes `task_YYYY-MM-DD_HH-MM-SS`; `-nt PREFIX` appends a timestamp; `-n NAME` uses an exact name:
 
 ```bash
 pyr init
+pyr exec -- python -V
+pyr exec -nt env-check -- python -V
 pyr exec -n env-check -- python -V
 pyr exec -n install -- python -m pip install -r requirements.txt
 pyr exec -n baseline -d -- python train.py --config baseline.yaml
@@ -152,7 +165,9 @@ This is the tracked replacement for common `bash xxx.sh` or `pwsh -File xxx.ps1`
 pyr exec -n report -c "python eval.py > metrics.txt"
 ```
 
-`-c` accepts exactly one quoted command string. For ordinary programs and script files, prefer the exact argument vector after `--`.
+`-c` consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, `|`, redirects, or variables must be quoted according to the calling shell so that they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. The contract is the same everywhere: use exact argv after `--` for ordinary programs and a quoted `-c` expression for shell syntax.
+
+Shell tasks preserve terminal colors through a cross-platform pseudoterminal: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, and window-title controls are filtered. Pyruns falls back to ordinary stdout/stderr pipes only when terminal capture is unavailable.
 
 Use one `-e` followed by multiple `KEY=VALUE` entries, with `--` separating them from the target command. Repeating `-e` remains supported. Use a UTF-8 env file for larger sets:
 

@@ -35,6 +35,16 @@ pyr run smoke
 
 这里的 task 是可重复运行的保存对象；每次 `run` 都会新增一个编号 run，不会覆盖旧日志。
 
+不需要马上按名称引用任务时，可以完全省略命名参数；Pyruns 会自动生成
+`task_YYYY-MM-DD_HH-MM-SS`。想保留语义前缀并自动附加时间戳时使用 `-nt`：
+
+```bash
+pyr exec -- python -V
+pyr exec -nt smoke -- python -V       # smoke_YYYY-MM-DD_HH-MM-SS
+```
+
+`-n smoke` 仍表示精确名称 `smoke`，因此 `-n` 与 `-nt` 互斥。
+
 长任务使用 `--detach`，随后用独立命令控制：
 
 ```bash
@@ -126,10 +136,13 @@ pyr exec -n check -- python -V        # -- 后面是原样传给目标程序的 
 
 ### Shell Workspace
 
-用于任意终端命令、仓库复现、安装、预处理、训练、评估和流水线：
+用于任意终端命令、仓库复现、安装、预处理、训练、评估和流水线。省略名称时自动生成
+`task_YYYY-MM-DD_HH-MM-SS`；`-nt PREFIX` 自动追加时间戳；`-n NAME` 使用精确名称：
 
 ```bash
 pyr init
+pyr exec -- python -V
+pyr exec -nt env-check -- python -V
 pyr exec -n env-check -- python -V
 pyr exec -n install -- python -m pip install -r requirements.txt
 pyr exec -n baseline -d -- python train.py --config baseline.yaml
@@ -149,7 +162,7 @@ pyr exec -n setup-bat -- .\scripts\setup.bat
 `--` 是标准的 CLI 参数边界，不是 Pyruns 的一种“模式”：
 
 - `--` 是参数分隔符，表示 Pyruns 自己的选项到此结束；后面的每一项都是目标程序的独立 argv，Pyruns 不做管道、重定向、变量展开或通配符解析。
-- `-c` / `--command` 明确接收一个 shell command string，命名和 `sh -c`、`python -c` 的习惯一致。
+- `-c` / `--command` 接收后续 shell command text，命名和 `sh -c`、`python -c` 的习惯一致。
 
 普通程序和脚本路径优先使用 `--`：
 
@@ -165,7 +178,13 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log"
 ```
 
-`-c` 后必须是一个完整 command string，因此外层引号不能省略；`-c echo hello` 会被拒绝。Shell 语法会带来平台和引用差异，不需要这些语法时继续使用 `--` 后的精确 argv。
+`-c echo hello` 会把剩余文本合并成 `echo hello`。命令含 `;`、`|`、重定向或变量时，必须按调用端 shell 的规则引用整段表达式，避免调用端在 Pyruns 启动前将它拆开。Pyruns 不安装 shell 专用的行编辑钩子；所有平台都遵循同一契约：普通程序使用 `--` 后的精确 argv，需要 shell 语法时使用带引号的 `-c`。
+
+```powershell
+pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -ForegroundColor $colors[$_-1] }'
+```
+
+Shell task 使用跨平台伪终端捕获颜色：Linux/macOS 使用系统 PTY，Windows 强制使用原生 ConPTY，且不会创建可见控制台窗口。SGR 颜色序列会写入日志并在前台还原；清屏、光标定位和窗口标题等界面控制序列会被过滤。伪终端不可用时才回退到普通 stdout/stderr 管道。
 
 少量任务环境变量只需写一次 `-e`，后面连续列出多个 `KEY=VALUE`，并用 `--` 与目标命令分隔：
 

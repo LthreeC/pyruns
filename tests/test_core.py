@@ -2202,6 +2202,126 @@ def test_executor_runtime_source_and_summary_helpers_cover_edge_paths(tmp_path, 
     assert executor._build_run_source_state(task_dir=str(task_dir), script_path=None, workdir=str(tmp_path)).startswith("git ")
 
 
+def test_spawn_captured_process_hides_windows_console(monkeypatch, tmp_path):
+    import pyruns.core.executor as executor
+
+    sentinel = object()
+    captured = {}
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        executor,
+        "spawn_terminal_process",
+        MagicMock(side_effect=Exception("ConPTY unavailable")),
+    )
+    monkeypatch.setattr(executor, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        executor.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    result = executor._spawn_captured_process(
+        ["powershell", "-File", "task.ps1"],
+        workdir=str(tmp_path),
+        env={"PATH": "test"},
+        preserve_terminal_output=True,
+    )
+
+    assert result is sentinel
+    assert captured["command"] == ["powershell", "-File", "task.ps1"]
+    assert captured["kwargs"]["creationflags"] == 0x08000000
+    assert captured["kwargs"]["stdout"] is subprocess.PIPE
+    assert captured["kwargs"]["stderr"] is subprocess.STDOUT
+    assert captured["kwargs"]["shell"] is False
+
+
+def test_terminal_output_filter_preserves_sgr_and_removes_screen_controls():
+    from pyruns.utils.terminal_capture import _SgrOutputFilter
+
+    output_filter = _SgrOutputFilter()
+    rendered = b"".join(
+        [
+            output_filter.feed(b"\x1b[?9001h\x1b[?25l\x1b[2"),
+            output_filter.feed(b"J\x1b[m\x1b[38;5;9mred"),
+            output_filter.feed(
+                b"\x1b]0;PowerShell\x07\x1b[?25h\x1b[m\r\n"
+            ),
+            output_filter.finish(),
+        ]
+    )
+
+    assert rendered == b"\x1b[m\x1b[38;5;9mred\x1b[m\r\n"
+    assert b"\x1b[2J" not in rendered
+    assert b"PowerShell" not in rendered
+
+    unterminated_color = _SgrOutputFilter()
+    rendered = b"".join(
+        [
+            unterminated_color.feed(b"\x1b[38;5;9merror\r\n"),
+            unterminated_color.finish(),
+        ]
+    )
+    assert rendered == b"\x1b[38;5;9merror\r\n\x1b[0m"
+    assert unterminated_color.finish() == b""
+
+
+def test_windows_terminal_capture_forces_native_conpty(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from pyruns.utils import terminal_capture
+
+    fake_process = MagicMock()
+    fake_process.pid = 1234
+    spawn = MagicMock(return_value=fake_process)
+    monkeypatch.setitem(
+        sys.modules,
+        "winpty",
+        SimpleNamespace(
+            Backend=SimpleNamespace(ConPTY=0),
+            PtyProcess=SimpleNamespace(spawn=spawn),
+        ),
+    )
+
+    adapter = terminal_capture._spawn_windows_conpty(
+        ["powershell", "-File", "task.ps1"],
+        cwd=str(tmp_path),
+        env={"PATH": "test"},
+    )
+
+    assert adapter.pid == 1234
+    assert spawn.call_args.kwargs["backend"] == 0
+    assert spawn.call_args.kwargs["env"]["TERM"] == "xterm-256color"
+    assert spawn.call_args.kwargs["env"]["COLORTERM"] == "truecolor"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX PTY")
+def test_posix_terminal_capture_preserves_command_colors(tmp_path):
+    from pyruns.utils.terminal_capture import _spawn_posix_pty
+
+    process = _spawn_posix_pty(
+        ["sh", "-c", "printf '\\033[31mred\\033[0m\\n'"],
+        cwd=str(tmp_path),
+        env=os.environ.copy(),
+    )
+    chunks = []
+    while True:
+        chunk = process.stdout.read1(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    assert process.wait(timeout=5) == 0
+    process.close_output()
+
+    assert b"\x1b[31mred\x1b[0m" in b"".join(chunks)
+
+
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.parse_utils.extract_argparse_params")
 def test_build_command_argparse_handles_unusual_param_shapes_and_fallbacks(mock_extract, mock_detect):
@@ -2781,8 +2901,88 @@ def test_run_task_worker_internal_spawn_error_persists_failure_and_keeps_cleanup
     assert info["progress"] == 0.0
     assert info["finish_times"][0]
     error_log = task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME
-    assert "Internal error during run #1" in error_log.read_text(encoding="utf-8")
+    error_text = error_log.read_text(encoding="utf-8")
+    assert "Internal error during run #1" in error_text
+    assert "Traceback:" in error_text
+    assert "OSError: spawn failed" in error_text
+    run_text = (task_dir / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
+    assert "[PYRUNS] -------------------- ERROR --------------------" in run_text
+    assert "Traceback (most recent call last):" in run_text
+    assert "OSError: spawn failed" in run_text
+    assert "command=" not in run_text
+    assert "task_dir=" not in run_text
     assert cleanup_path.exists()
+
+
+def test_run_task_worker_missing_argv_command_retries_through_workspace_shell(
+    tmp_path,
+    monkeypatch,
+):
+    import pyruns.core.executor as executor
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "MissingCommand",
+            "status": "queued",
+            "task_kind": TASK_KIND_SHELL,
+            "command_mode": "argv",
+            "cmd": ["ls"],
+            "workdir": str(tmp_path),
+            "start_times": [],
+            "finish_times": [],
+            "pids": [],
+        },
+    )
+    shell_command = ["workspace-shell", "payload"]
+    monkeypatch.setattr(
+        executor,
+        "_build_shell_command",
+        lambda *args, **kwargs: (shell_command, str(tmp_path), []),
+    )
+    mock_proc = MagicMock()
+    mock_proc.pid = 9874
+    mock_proc.stdout.read1 = MagicMock(
+        side_effect=[b"original shell error\n", b""]
+    )
+    mock_proc.wait.return_value = 1
+    mock_proc.returncode = 1
+    popen_commands = []
+
+    def fake_popen(command, *args, **kwargs):
+        popen_commands.append(command)
+        if len(popen_commands) == 1:
+            raise FileNotFoundError(2, "executable not found", "ls")
+        return mock_proc
+
+    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: None)
+    monkeypatch.setattr(executor, "_build_run_source_state", lambda **kwargs: {})
+
+    result = executor.run_task_worker(
+        task_dir=str(task_dir),
+        name="MissingCommand",
+        created_at="now",
+        config={},
+        run_index=1,
+    )
+
+    assert result["status"] == "failed"
+    assert result["exit_code"] == 1
+    assert popen_commands == [["ls"], shell_command]
+    run_text = (task_dir / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
+    assert "original shell error\n" in run_text
+    assert "Command:" not in run_text
+    assert "Hint:" not in run_text
+    assert "Full details:" not in run_text
+
+    error_text = (task_dir / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(
+        encoding="utf-8"
+    )
+    assert "Run #1 failed" in error_text
+    assert "reason=exit_code 1" in error_text
 
 
 def test_run_task_worker_rejects_a_missing_persisted_workdir_without_spawning(tmp_path, monkeypatch):

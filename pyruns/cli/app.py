@@ -157,6 +157,11 @@ def _exec_help_epilog(program: str) -> str:
     return (
         "Examples:\n"
         "  Choose a command form:\n\n"
+        "  Task naming:\n"
+        f"    {program} exec -- python -V                         auto-name as task_<timestamp>\n"
+        f"    {program} exec -nt smoke -- python -V               name as smoke_<timestamp>\n"
+        f"    {program} exec -n smoke -- python -V                 use the exact name smoke\n"
+        "    -n/--name and -nt/--name-timestamp are mutually exclusive.\n\n"
         "  Exact argv (recommended for Python and ordinary programs):\n"
         f"    {program} exec -n smoke -- python -V\n"
         f"    {program} exec -n train -- python train.py --epochs 10\n"
@@ -172,7 +177,8 @@ def _exec_help_epilog(program: str) -> str:
         "  Shell expression (only for pipes, redirects, expansion, globs, or chaining):\n"
         f"    {program} exec -n report -c \"python eval.py > metrics.txt\"\n"
         f"    {program} exec -n pipeline -c \"python prep.py && python train.py\"\n"
-        "    -c accepts exactly one quoted string and runs it through the stored workspace shell.\n\n"
+        "    -c consumes the remaining command text and runs it through the stored workspace shell.\n"
+        "    Quote expressions containing shell syntax according to the calling shell.\n\n"
         "Environment:\n"
         f"  {program} exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py\n"
         f"  {program} exec -n gpu0 --env-file .env.train -e SEED=42 -- python train.py\n"
@@ -469,6 +475,8 @@ def build_parser(
         help_text="create and run a tracked command or shell script",
         description=(
             "Create a shell task in the project shell workspace and run it.\n"
+            "Omit a name to generate task_<timestamp>, use -nt PREFIX to append the timestamp,\n"
+            "or use -n NAME when the task name must be exact.\n"
             "The default form is '-- PROGRAM ARG ...': -- ends Pyruns option parsing and stores\n"
             "every following item as an exact argv element. It does not enable shell parsing.\n"
             "Use -c/--command only when the command intentionally needs pipes, redirects, variable\n"
@@ -478,11 +486,19 @@ def build_parser(
         epilog=_exec_help_epilog(program),
         common=True,
     )
-    execute.add_argument(
+    execute_name = execute.add_mutually_exclusive_group()
+    execute_name.add_argument(
         "-n",
         "--name",
         type=_non_empty,
-        help="exact task name; an omitted name is generated safely",
+        help="exact task name",
+    )
+    execute_name.add_argument(
+        "-nt",
+        "--name-timestamp",
+        type=_non_empty,
+        metavar="PREFIX",
+        help="task-name prefix followed by the current timestamp",
     )
     execute.add_argument("-d", "--detach", action="store_true", help="return after the runner accepts the task")
     execute.add_argument(
@@ -496,7 +512,7 @@ def build_parser(
         dest="shell_command",
         type=_non_empty,
         metavar="COMMAND_STRING",
-        help="run exactly one quoted command string through the workspace shell",
+        help="run the remaining command text through the workspace shell",
     )
     execute.add_argument(
         "-e",
@@ -1110,6 +1126,7 @@ def _main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     _validate_leading_option_scope(raw_argv, parser, set(command_parsers))
     args = parser.parse_args(raw_argv)
+    args._from_process_argv = argv is None
 
     try:
         directory = os.path.abspath(os.path.expanduser(os.path.expandvars(args.directory)))
