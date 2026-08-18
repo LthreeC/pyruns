@@ -53,6 +53,8 @@ pyr -w path/to/train.py show baseline
 pyr -w path/to/_pyruns_/train log baseline
 ```
 
+`exec` is the exception to ancestor discovery: without an explicit workspace path, it always creates or uses `<current-directory>/_pyruns_/_shell_`. `-w shell` has the same current-directory anchor. Use an exact workspace path to target a shell workspace elsewhere.
+
 Use `-C PATH` to run as if invoked from another directory:
 
 ```bash
@@ -98,6 +100,8 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 `-c` follows the familiar `sh -c` convention and consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, pipes, redirects, variables, globs, or command chains must be quoted according to the calling shell so they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. It stores the resolved shell executable and creation working directory, then uses both for reruns. Use exact argv after `--` whenever shell syntax is not required.
 
 Shell tasks preserve terminal colors through one cross-platform pseudoterminal contract: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, mode, and window-title controls are filtered. If terminal capture is unavailable, Pyruns falls back to ordinary stdout and stderr pipes.
+
+The START banner and source state are written to the run log before Pyruns copies command output, so framework metadata never appears between command output lines. Source collection runs concurrently with the child process while stdout/stderr is continuously drained into a disk-backed spool; ordering adds no sleep or child-process backpressure.
 
 If the OS cannot start the first exact-argv item directly, Pyruns retries the safely quoted stored
 payload through the workspace shell. This resolves shell aliases and built-ins while preserving the

@@ -284,19 +284,20 @@ def resolve_workspace(context: Any) -> str:
 
 
 def _shell_workspace_for_exec(context: Any, *, create: bool = True) -> str:
-    project_root = _find_project_root()
+    local_project_root = _normalized_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
     if context.workspace:
         selector = str(context.workspace)
         if selector.lower() == "shell":
-            if not project_root:
-                project_root = _normalized_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
-            shell_workspace = _normalized_path(os.path.join(project_root, SHELL_WORKSPACE_NAME))
+            shell_workspace = _normalized_path(
+                os.path.join(local_project_root, SHELL_WORKSPACE_NAME)
+            )
             return (
-                _normalized_path(bootstrap_shell_workspace(project_root))
+                _normalized_path(bootstrap_shell_workspace(local_project_root))
                 if create
                 else shell_workspace
             )
 
+        project_root = _find_project_root()
         selected = _resolve_workspace_selector(selector, project_root)
         info = load_script_info(selected)
         if (
@@ -306,11 +307,11 @@ def _shell_workspace_for_exec(context: Any, *, create: bool = True) -> str:
             raise CliUsageError("exec requires the shell workspace; use '-w shell' or omit -w")
         return selected
 
-    if not project_root:
-        project_root = _normalized_path(os.path.join(os.getcwd(), DEFAULT_ROOT_NAME))
-    shell_workspace = _normalized_path(os.path.join(project_root, SHELL_WORKSPACE_NAME))
+    shell_workspace = _normalized_path(
+        os.path.join(local_project_root, SHELL_WORKSPACE_NAME)
+    )
     return (
-        _normalized_path(bootstrap_shell_workspace(project_root))
+        _normalized_path(bootstrap_shell_workspace(local_project_root))
         if create
         else shell_workspace
     )

@@ -372,7 +372,7 @@ def build_parser(
             "  Put context options (-C, -w, --debug) before COMMAND.\n"
             f"  For automation, append --json where advertised; output includes schema_version 1.\n"
             "  Task names are exact. With several workspaces, select one with -w.\n"
-            "  exec creates the shell workspace automatically.\n\n"
+            "  exec uses the current directory's shell workspace and creates it automatically.\n\n"
             "More help:\n"
             f"  {program} help COMMAND\n"
             f"  {program} help -a        list all commands\n"
@@ -474,7 +474,7 @@ def build_parser(
         "exec",
         help_text="create and run a tracked command or shell script",
         description=(
-            "Create a shell task in the project shell workspace and run it.\n"
+            "Create a shell task in the current directory's shell workspace and run it.\n"
             "Omit a name to generate task_<timestamp>, use -nt PREFIX to append the timestamp,\n"
             "or use -n NAME when the task name must be exact.\n"
             "The default form is '-- PROGRAM ARG ...': -- ends Pyruns option parsing and stores\n"

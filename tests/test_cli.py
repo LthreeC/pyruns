@@ -1214,6 +1214,28 @@ def test_workspace_discovery_walks_upward(tmp_path, monkeypatch, capsys):
     assert Path(payload["workspace"]).name == "_shell_"
 
 
+def test_exec_uses_current_directory_instead_of_ancestor_workspace(tmp_path):
+    ancestor_workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    nested = tmp_path / "nested"
+    nested.mkdir()
+
+    result = _run_cli(
+        nested,
+        "exec",
+        "--name",
+        "local-shell",
+        "--",
+        sys.executable,
+        "-c",
+        "print('local workspace')",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    local_task = nested / "_pyruns_" / "_shell_" / TASKS_DIR / "local-shell"
+    assert local_task.is_dir()
+    assert not (ancestor_workspace / TASKS_DIR / "local-shell").exists()
+
+
 def test_multiple_workspaces_require_explicit_selection(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     script = tmp_path / "train.py"
@@ -1943,13 +1965,16 @@ def test_exec_persists_exact_argv_and_creation_workdir(tmp_path):
     )
     assert first_payload == [str(nested), "value with spaces", "x&y"]
 
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "cwd-argv"
+    workspace = nested / "_pyruns_" / "_shell_"
+    task_dir = workspace / TASKS_DIR / "cwd-argv"
     info = load_task_info(str(task_dir))
     assert info["command_mode"] == "argv"
     assert info["cmd"] == command
     assert Path(info["workdir"]) == nested
 
-    rerun = _run_cli(tmp_path, "-w", "shell", "run", "cwd-argv")
+    rerun_cwd = tmp_path / "rerun"
+    rerun_cwd.mkdir()
+    rerun = _run_cli(rerun_cwd, "-w", str(workspace), "run", "cwd-argv")
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
     rerun_payload = next(
         json.loads(line)

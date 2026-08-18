@@ -186,6 +186,8 @@ pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -Fo
 
 Shell task 使用跨平台伪终端捕获颜色：Linux/macOS 使用系统 PTY，Windows 强制使用原生 ConPTY，且不会创建可见控制台窗口。SGR 颜色序列会写入日志并在前台还原；清屏、光标定位和窗口标题等界面控制序列会被过滤。伪终端不可用时才回退到普通 stdout/stderr 管道。
 
+`exec` 始终使用 `<当前目录>/_pyruns_/_shell_`，不会复用父目录中的 shell workspace。启动横幅和 Source 状态会先写入日志，随后才转存命令输出。Source 采集与子进程并行执行；期间 stdout/stderr 会持续读入可落盘缓冲，不会通过休眠或阻塞子进程来换取日志顺序。
+
 少量任务环境变量只需写一次 `-e`，后面连续列出多个 `KEY=VALUE`，并用 `--` 与目标命令分隔：
 
 ```bash
@@ -261,7 +263,7 @@ Script 任务保存在：
 
 ## 工作区选择
 
-Pyruns 会从当前目录向父目录寻找最近的 `_pyruns_`。只有一个 workspace 时自动选择；存在多个时必须显式传 `-w`，不会猜测：
+查询和管理命令会从当前目录向父目录寻找最近的 `_pyruns_`。只有一个 workspace 时自动选择；存在多个时必须显式传 `-w`，不会猜测。`exec` 是例外：未传显式 workspace 路径时，它固定使用当前目录的 `_pyruns_/_shell_`：
 
 ```bash
 pyr -w shell ls

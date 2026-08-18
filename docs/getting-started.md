@@ -247,7 +247,8 @@ Pyruns 从当前目录向父目录查找最近的 `_pyruns_`：
 
 - 只有一个 workspace：自动选择。
 - 多个 workspace：必须使用 `-w`。
-- 没有 workspace：`exec` 自动创建 shell workspace；其他任务命令提示先 `pyr init`。
+- 没有 workspace：其他任务命令提示先 `pyr init`。
+- `exec` 不向上复用 shell workspace，始终在当前目录自动创建或使用 `_pyruns_/_shell_`。
 
 ```bash
 pyr -w shell ls

@@ -169,6 +169,8 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 
 Shell tasks preserve terminal colors through a cross-platform pseudoterminal: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, and window-title controls are filtered. Pyruns falls back to ordinary stdout/stderr pipes only when terminal capture is unavailable.
 
+`exec` always uses `<current-directory>/_pyruns_/_shell_`; it does not reuse a parent directory's shell workspace. The start banner and source state are written before command output is copied into the log. Source collection runs concurrently with the child process; stdout/stderr is continuously drained into a disk-backed buffer without sleeps or child-process blocking.
+
 Use one `-e` followed by multiple `KEY=VALUE` entries, with `--` separating them from the target command. Repeating `-e` remains supported. Use a UTF-8 env file for larger sets:
 
 ```bash
@@ -221,7 +223,7 @@ pyr -w train run --config configs/sweep.yaml -n sweep -j 4 --dry-run
 
 ## Workspace selection
 
-Pyruns walks from the current directory toward its parents to find the nearest `_pyruns_`. It selects the workspace automatically only when exactly one exists. Multiple workspaces require `-w`:
+Inspection and management commands walk from the current directory toward its parents to find the nearest `_pyruns_`. They select the workspace automatically only when exactly one exists. Multiple workspaces require `-w`. `exec` is the exception: without an explicit workspace path, it always uses the current directory's `_pyruns_/_shell_`:
 
 ```bash
 pyr -w shell ls

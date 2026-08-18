@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pyruns._config import (
     CONFIG_FILENAME,
@@ -76,6 +76,7 @@ _PRIVATE_RUNTIME_ROOTS: set[str] = set()
 _PRIVATE_RUNTIME_ROOT_OWNER_PID = os.getpid()
 _SOURCE_STATE_GIT_TIMEOUT_SEC = 1.0
 _SOURCE_STATE_DIGEST_LEN = 12
+_SOURCE_OUTPUT_SPOOL_MAX_BYTES = 1024 * 1024
 _CUDA_OOM_MARKERS = (
     "cuda out of memory",
     "torch.cuda.outofmemoryerror",
@@ -1438,7 +1439,10 @@ def run_task_worker(
     stop_summary: Dict[str, Any] | None = None
     heartbeat_stop = threading.Event()
     heartbeat_thread: threading.Thread | None = None
+    source_state_ready = threading.Event()
     source_state_thread: threading.Thread | None = None
+    source_output_flush_lock = threading.Lock()
+    source_output_flush: Callable[[], None] | None = None
 
     def _owns_current_run(info: Dict[str, Any]) -> bool:
         if not runner_id:
@@ -1486,15 +1490,19 @@ def run_task_worker(
             )
         except Exception as exc:
             logger.debug("Failed to build source state for %s: %s", name, exc)
-            return
-
-        _persist_run_source_state(
-            task_dir=task_dir,
-            task_name=name,
-            log_path=log_path,
-            run_index=run_index,
-            source_state=collected,
-        )
+        else:
+            _persist_run_source_state(
+                task_dir=task_dir,
+                task_name=name,
+                log_path=log_path,
+                run_index=run_index,
+                source_state=collected,
+            )
+        finally:
+            source_state_ready.set()
+            with source_output_flush_lock:
+                if source_output_flush is not None:
+                    source_output_flush()
 
     def _join_source_state() -> None:
         if (
@@ -1750,7 +1758,10 @@ def run_task_worker(
                 "child_process_terminated": child_process_terminated,
             }
 
-        source_state_thread = threading.Thread(target=_collect_source_state_async, daemon=True)
+        source_state_thread = threading.Thread(
+            target=_collect_source_state_async,
+            daemon=True,
+        )
         source_state_thread.start()
 
         if runner_id:
@@ -1758,38 +1769,76 @@ def run_task_worker(
             heartbeat_thread.start()
 
         def _tee_output() -> None:
+            nonlocal source_output_flush
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             current_log_path = _get_log_path(task_dir, run_index)
-            with open(current_log_path, "ab") as handle:
-                for chunk in iter(lambda: proc.stdout.read1(4096), b""):
-                    if not chunk:
-                        break
-                    text = decoder.decode(chunk)
+            with (
+                tempfile.SpooledTemporaryFile(
+                    max_size=_SOURCE_OUTPUT_SPOOL_MAX_BYTES,
+                    mode="w+b",
+                ) as pending,
+                open(current_log_path, "ab") as handle,
+            ):
+                output_lock = threading.Lock()
+
+                def _append_output(text: str) -> None:
                     encoded = text.encode("utf-8")
                     if encoded:
                         handle.write(encoded)
                     handle.flush()
-                    chunk_offset = handle.tell()
                     normalized = normalize_log_newlines(text)
                     if normalized:
                         log_emitter.emit(
                             name,
                             normalized,
-                            offset=chunk_offset,
+                            offset=handle.tell(),
                             log_file_name=os.path.basename(log_path),
                             task_dir=task_dir,
                         )
-                tail = decoder.decode(b"", final=True)
-                if tail:
-                    handle.write(tail.encode("utf-8"))
-                    handle.flush()
-                    log_emitter.emit(
-                        name,
-                        normalize_log_newlines(tail),
-                        offset=handle.tell(),
-                        log_file_name=os.path.basename(log_path),
-                        task_dir=task_dir,
-                    )
+
+                def _flush_pending() -> None:
+                    if pending.tell() == 0:
+                        return
+                    pending.seek(0)
+                    while header := pending.read(8):
+                        size = int.from_bytes(header, "big")
+                        _append_output(pending.read(size).decode("utf-8"))
+                    pending.seek(0)
+                    pending.truncate()
+
+                def _queue_or_append(text: str) -> None:
+                    if not text:
+                        return
+                    with output_lock:
+                        if source_state_ready.is_set():
+                            _flush_pending()
+                            _append_output(text)
+                            return
+                        encoded = text.encode("utf-8")
+                        pending.write(len(encoded).to_bytes(8, "big"))
+                        pending.write(encoded)
+
+                def _flush_when_source_ready() -> None:
+                    if not source_state_ready.is_set():
+                        return
+                    with output_lock:
+                        _flush_pending()
+
+                with source_output_flush_lock:
+                    source_output_flush = _flush_when_source_ready
+                    _flush_when_source_ready()
+                try:
+                    for chunk in iter(lambda: proc.stdout.read1(4096), b""):
+                        if not chunk:
+                            break
+                        _queue_or_append(decoder.decode(chunk))
+                    _queue_or_append(decoder.decode(b"", final=True))
+                    source_state_ready.wait()
+                    _flush_when_source_ready()
+                finally:
+                    with source_output_flush_lock:
+                        if source_output_flush is _flush_when_source_ready:
+                            source_output_flush = None
 
         reader_thread = threading.Thread(target=_tee_output, daemon=True)
         reader_thread.start()
@@ -1801,8 +1850,8 @@ def run_task_worker(
         close_output = getattr(proc, "close_output", None)
         if callable(close_output):
             close_output()
-        reader_thread.join(timeout=5)
         _join_source_state()
+        reader_thread.join(timeout=5)
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
             status = "cancelled"

@@ -507,8 +507,21 @@ def test_foreground_exec_sigint_stops_and_verifies_the_managed_process(tmp_path)
         "import time; print('ready', flush=True); time.sleep(20)",
     ]
     code = (
-        "import signal, threading\n"
-        "threading.Timer(1.5, lambda: signal.raise_signal(signal.SIGINT)).start()\n"
+        "import signal, sys\n"
+        "class InterruptOnReady:\n"
+        "    def __init__(self, stream):\n"
+        "        self.stream = stream\n"
+        "        self.sent = False\n"
+        "    def write(self, text):\n"
+        "        written = self.stream.write(text)\n"
+        "        self.stream.flush()\n"
+        "        if not self.sent and 'ready' in text:\n"
+        "            self.sent = True\n"
+        "            signal.raise_signal(signal.SIGINT)\n"
+        "        return written\n"
+        "    def __getattr__(self, name):\n"
+        "        return getattr(self.stream, name)\n"
+        "sys.stdout = InterruptOnReady(sys.stdout)\n"
         "from pyruns.cli.app import main\n"
         f"raise SystemExit(main({args!r}))\n"
     )

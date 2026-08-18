@@ -2605,7 +2605,16 @@ def test_run_duration_excludes_log_reader_drain_delay(mock_popen, _mock_emit, mo
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
-def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emit, mock_detect, tmp_path):
+def test_run_task_worker_drains_output_while_collecting_source_state(
+    mock_popen,
+    mock_emit,
+    mock_detect,
+    tmp_path,
+    monkeypatch,
+):
+    import pyruns.core.executor as executor
+
+    monkeypatch.setattr(executor, "_SOURCE_OUTPUT_SPOOL_MAX_BYTES", 1)
     mock_detect.return_value = ("pyruns_load", None)
     task_dir = str(tmp_path)
     os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
@@ -2624,15 +2633,41 @@ def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emi
     mock_proc = MagicMock()
     mock_proc.pid = 9999
     mock_proc.wait.return_value = 0
-    mock_proc.stdout.read1 = MagicMock(side_effect=[b"done\n", b""])
     mock_popen.return_value = mock_proc
     order = []
     source_started = threading.Event()
+    output_read = threading.Event()
+    output_emitted = threading.Event()
+    allow_eof = threading.Event()
+
+    def read_output(_size):
+        if not output_read.is_set():
+            assert source_started.wait(1)
+            order.append("output")
+            output_read.set()
+            return b"done\n"
+        assert allow_eof.wait(1)
+        return b""
+
+    mock_proc.stdout.read1 = MagicMock(side_effect=read_output)
+
+    def wait_for_output():
+        assert output_emitted.wait(1)
+        allow_eof.set()
+        return 0
+
+    mock_proc.wait.side_effect = wait_for_output
+
+    def record_emit(_name, content, **_kwargs):
+        if "done" in content:
+            output_emitted.set()
+
+    mock_emit.side_effect = record_emit
 
     def build_source_state(**kwargs):
         order.append("source")
         source_started.set()
-        time.sleep(0.05)
+        assert output_read.wait(1)
         return "git late | clean | script late"
 
     def record_popen(*args, **kwargs):
@@ -2651,10 +2686,14 @@ def test_run_task_worker_starts_process_before_source_state(mock_popen, mock_emi
 
     assert res["status"] == "completed"
     assert source_started.wait(1)
+    assert output_read.wait(1)
+    assert output_emitted.wait(1)
     assert order[0] == "popen"
-    assert "source" in order
+    assert order.index("output") > order.index("source")
     info = load_task_info(task_dir)
     assert info["source_states"] == ["git late | clean | script late"]
+    run_text = Path(task_dir, RUN_LOGS_DIR, "run1.log").read_text(encoding="utf-8")
+    assert run_text.index("[PYRUNS] Source git late") < run_text.index("done")
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
