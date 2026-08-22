@@ -1060,6 +1060,7 @@ test('generator preserves shell and uncommitted form drafts across navigation', 
 })
 
 test('manager applies and remembers the selected card order', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
   const baseTask = {
     status: 'pending',
     dir: '',
@@ -1099,6 +1100,18 @@ test('manager applies and remembers the selected card order', async ({ page }) =
 
   await page.goto('/manager?token=pyruns-e2e-access-token')
   const sortSelect = page.getByRole('combobox', { name: 'Sort task cards' })
+  await expect.poll(() => sortSelect.evaluate(element => {
+    const select = element as HTMLSelectElement
+    const style = window.getComputedStyle(select)
+    const context = document.createElement('canvas').getContext('2d')
+    if (!context) return false
+    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+    const widestOption = Math.max(...Array.from(select.options, option => context.measureText(option.text).width))
+    const availableWidth = select.clientWidth
+      - Number.parseFloat(style.paddingLeft)
+      - Number.parseFloat(style.paddingRight)
+    return widestOption <= availableWidth
+  })).toBe(true)
   await sortSelect.selectOption('name_desc')
   await expect(page.locator('[data-task-card]')).toHaveCount(3)
   await expect.poll(() => page.locator('[data-task-card]').evaluateAll(cards => (

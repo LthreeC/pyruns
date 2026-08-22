@@ -860,8 +860,8 @@ export default function ManagerPage() {
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 sm:flex-none">
+          <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+            <div className="relative min-w-0 sm:flex-none">
               <select
                 value={statusFilter}
                 onChange={event => setStatusFilter(event.target.value)}
@@ -878,8 +878,8 @@ export default function ManagerPage() {
               <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
             </div>
 
-            <div className="relative flex-1 sm:flex-none">
-              <ArrowUpDown className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            <div className="relative col-span-2 row-start-2 min-w-0 sm:flex-none">
+              <ArrowUpDown className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary sm:left-2.5" />
               <select
                 value={sortMode}
                 onChange={event => setSortMode(event.target.value as TaskSortMode)}
@@ -887,16 +887,16 @@ export default function ManagerPage() {
                 title={sortMode === 'priority'
                   ? 'Pinned first, then active and recently added tasks'
                   : 'Sort task cards'}
-                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-8 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
+                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-7 pr-7 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto sm:pl-8 sm:pr-8"
               >
                 {TASK_SORT_OPTIONS.map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary sm:right-2.5" />
             </div>
 
-            <div className="relative flex-1 sm:flex-none">
+            <div className="relative col-start-2 row-start-1 min-w-0 sm:flex-none">
               <select
                 value={columns}
                 onChange={event => setColumns(Number(event.target.value))}
@@ -916,7 +916,7 @@ export default function ManagerPage() {
                 icon={<MousePointer2 className="h-4 w-4" />}
                 variant="primary"
                 size="sm"
-                className="h-11 sm:h-auto"
+                className="col-span-2 row-start-3 h-11 justify-self-start sm:h-auto"
                 disabled={tasks.length === 0 || anyTaskActionPending || Boolean(bulkAction)}
                 title={anyTaskActionPending ? 'Wait for the current task action to finish' : undefined}
                 onClick={() => setSelectMode(true)}
