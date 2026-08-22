@@ -1,66 +1,81 @@
-import ast
 import os
 import re
 import tempfile
 import time
+from collections.abc import Mapping
+from datetime import date, datetime, time as datetime_time
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+from omegaconf import DictConfig, ListConfig, OmegaConf
+from omegaconf._utils import get_yaml_loader
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
 from pyruns.utils.info_io import _replace_with_retry, load_task_info
 from pyruns.utils.sort_utils import sort_tasks_for_manager
 
-# Fix PyYAML parsing of scientific notation without a dot (e.g. 5e-3)
-yaml_float_pattern = re.compile(
-    r'''^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
-         |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
-         |\.[0-9_]+(?:[eE][-+]?[0-9]+)?
-         |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*
-         |[-+]?\.(?:inf|Inf|INF)
-         |\.(?:nan|NaN|NAN))$''', re.X)
-yaml.SafeLoader.add_implicit_resolver(
-    'tag:yaml.org,2002:float',
-    yaml_float_pattern,
-    list('-+0123456789.')
-)
 
-# PyYAML still treats values like ``30:40:1`` as YAML 1.1 sexagesimal integers.
-# That collides with Pyruns range batch syntax, where users expect ``start:stop:step``.
-# Replace the implicit int resolver with a YAML-1.2-style pattern that keeps colon
-# forms as plain strings so batch expansion can process them later.
-yaml_int_pattern = re.compile(
+# OmegaConf's loader inherits YAML 1.1 integer resolution, which would turn
+# Pyruns' ``start:stop:step`` batch syntax into a sexagesimal integer.  Build a
+# private loader from OmegaConf's own loader and change only its integer
+# resolver.  No process-global PyYAML state is modified.
+_PYRUNS_INT_PATTERN = re.compile(
     r'''^(?:[-+]?(?:0|[1-9][0-9_]*)
          |[-+]?0b[0-1_]+
          |[-+]?0o[0-7_]+
          |[-+]?0x[0-9a-fA-F_]+)$''',
     re.X,
 )
-for first_char, resolvers in list(yaml.SafeLoader.yaml_implicit_resolvers.items()):
-    yaml.SafeLoader.yaml_implicit_resolvers[first_char] = [
-        (tag, regexp)
-        for tag, regexp in resolvers
-        if tag != 'tag:yaml.org,2002:int'
-    ]
-yaml.SafeLoader.add_implicit_resolver(
-    'tag:yaml.org,2002:int',
-    yaml_int_pattern,
-    list('-+0123456789'),
-)
-
-class _PrettyDumper(yaml.SafeDumper):
-    """SafeDumper variant that renders multi-line strings as YAML block scalars."""
 
 
-def _str_presenter(dumper: yaml.Dumper, data: str):
-    if "\n" in data:
-        # `|-` style keeps the text readable and avoids noisy escaped "\\n".
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+def _get_pyruns_yaml_loader() -> Any:
+    loader = get_yaml_loader()
+    loader.yaml_implicit_resolvers = {
+        key: [
+            (tag, regexp)
+            for tag, regexp in resolvers
+            if tag != "tag:yaml.org,2002:int"
+        ]
+        for key, resolvers in loader.yaml_implicit_resolvers.items()
+    }
+    loader.add_implicit_resolver(
+        "tag:yaml.org,2002:int",
+        _PYRUNS_INT_PATTERN,
+        list("-+0123456789"),
+    )
+    return loader
 
 
-_PrettyDumper.add_representer(str, _str_presenter)
+def load_config_text(text: str) -> DictConfig | ListConfig:
+    """Parse YAML text into an OmegaConf container using Pyruns semantics."""
 
+    parsed = yaml.load(text, Loader=_get_pyruns_yaml_loader())
+    if parsed is None:
+        parsed = {}
+    config = OmegaConf.create(parsed)
+    if not isinstance(config, (DictConfig, ListConfig)):
+        raise ValueError("Configuration root must be a mapping or list")
+    return config
+
+
+def to_container(value: Any, *, resolve: bool = False) -> Any:
+    """Convert an OmegaConf value to safe JSON/YAML-compatible containers."""
+
+    if isinstance(value, (DictConfig, ListConfig)):
+        return OmegaConf.to_container(value, resolve=resolve, enum_to_str=True)
+    return value
+
+
+def _normalize_yaml_objects(value: Any) -> Any:
+    """Convert Python date/time objects to stable ISO scalar strings."""
+
+    if isinstance(value, (datetime, date, datetime_time)):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {key: _normalize_yaml_objects(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, ListConfig)):
+        return [_normalize_yaml_objects(item) for item in value]
+    return value
 
 def safe_filename(name: str) -> str:
     """Sanitize a string to be safe for filenames."""
@@ -77,13 +92,15 @@ def list_yaml_files(config_dir: str) -> List[str]:
     return files
 
 
-def load_yaml(path: str) -> Dict[str, Any]:
-    """Load a YAML file into a dict."""
+def load_yaml(path: str) -> DictConfig:
+    """Load a mapping YAML file into an OmegaConf ``DictConfig``."""
     try:
-        data = yaml.safe_load(_read_yaml_text_limited(path))
-        return data if isinstance(data, dict) else {}
+        data = load_config_text(_read_yaml_text_limited(path))
+        if isinstance(data, DictConfig):
+            return data
+        return OmegaConf.create({})
     except Exception:
-        return {}
+        return OmegaConf.create({})
 
 
 def _read_yaml_text_limited(path: str) -> str:
@@ -96,34 +113,30 @@ def _read_yaml_text_limited(path: str) -> str:
     return raw.decode("utf-8-sig")
 
 
-def load_yaml_strict(path: str) -> Dict[str, Any]:
-    """Load a YAML file into a dict or raise a descriptive error."""
+def load_yaml_strict(path: str) -> DictConfig:
+    """Load a mapping YAML file or raise a descriptive error."""
     if not os.path.exists(path):
         raise FileNotFoundError(path)
     try:
-        data = yaml.safe_load(_read_yaml_text_limited(path))
-    except yaml.YAMLError as exc:
+        data = load_config_text(_read_yaml_text_limited(path))
+    except (yaml.YAMLError, ValueError) as exc:
         raise ValueError(f"Invalid YAML in '{path}': {exc}") from exc
     except UnicodeDecodeError as exc:
         raise ValueError(f"YAML file is not valid UTF-8: {path}") from exc
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
+    if not isinstance(data, DictConfig):
         raise ValueError(f"YAML root must be a mapping: {path}")
     return data
 
 
-def save_yaml(path: str, data: Dict[str, Any]) -> None:
-    """Save a dict to a YAML file."""
-    if not data:
+def save_yaml(path: str, data: Any) -> None:
+    """Atomically save an OmegaConf-compatible value as YAML."""
+    container = _normalize_yaml_objects(to_container(data, resolve=False))
+    if not container:
         text = "# empty config\n"
     else:
-        text = yaml.dump(
-            data,
-            Dumper=_PrettyDumper,
-            sort_keys=False,
-            allow_unicode=True,
-            default_flow_style=False,
+        text = OmegaConf.to_yaml(
+            OmegaConf.create(container, flags={"allow_objects": True}),
+            resolve=False,
         )
     encoded = text.encode("utf-8")
     if len(encoded) > MAX_CONFIG_FILE_BYTES:
@@ -162,21 +175,18 @@ def parse_value(val_str: Any) -> Any:
     if not isinstance(val_str, str):
         return val_str
     try:
-        return ast.literal_eval(val_str)
+        parsed = load_config_text(f"value: {val_str}\n")
+        return to_container(parsed["value"], resolve=False)
     except Exception:
-        if val_str.lower() == "true":
-            return True
-        if val_str.lower() == "false":
-            return False
         return val_str
 
 
-def flatten_dict(d: Dict[str, Any], parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
+def flatten_dict(d: Mapping[str, Any] | DictConfig, parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
     """Flatten a nested dict using dotted keys: ``{a: {b: 1}}`` → ``{'a.b': 1}``."""
     items = []
     for k, v in d.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
+        if isinstance(v, Mapping) or isinstance(v, DictConfig):
             items.extend(flatten_dict(v, new_key, sep=sep).items())
         else:
             items.append((new_key, v))
@@ -195,12 +205,12 @@ def unflatten_dict(d: Dict[str, Any], sep: str = '.') -> Dict[str, Any]:
     return result
 
 
-def get_nested(data: dict, full_key: str):
+def get_nested(data: Mapping[str, Any], full_key: str):
     """Retrieve parent_dict, key, value for a dotted key path."""
     parts = full_key.split('.')
     d = data
     for p in parts[:-1]:
-        if p not in d or not isinstance(d[p], dict):
+        if p not in d or not isinstance(d[p], Mapping):
             return None, None, None
         d = d[p]
     k = parts[-1]
@@ -284,13 +294,13 @@ def list_template_files(run_root: str) -> Dict[str, str]:
     return options
 
 
-def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 120) -> str:
+def preview_config_line(cfg: Mapping[str, Any], max_items: int = 6, max_len: int = 120) -> str:
     """Build a short preview string from config values (including nested).
 
     Flattens the dict so nested values like model.name=resnet50 are included.
     Truncates long values and adds ellipsis when exceeding max_items or max_len.
     """
-    if not isinstance(cfg, dict):
+    if not isinstance(cfg, Mapping):
         return ""
     flat = flatten_dict(cfg)
     items = []
@@ -317,7 +327,7 @@ def preview_config_line(cfg: Dict[str, Any], max_items: int = 6, max_len: int = 
 
 
 def build_config_preview_and_search_text(
-    cfg: Dict[str, Any],
+    cfg: Mapping[str, Any],
     *,
     task_name: str = "",
     notes: str = "",
@@ -326,7 +336,7 @@ def build_config_preview_and_search_text(
 ) -> Tuple[str, str]:
     """Build cached preview and normalized search text for a task config."""
     preview = preview_config_line(cfg, max_items=max_items, max_len=max_len)
-    if not isinstance(cfg, dict):
+    if not isinstance(cfg, Mapping):
         cfg = {}
 
     flat = flatten_dict(cfg)
@@ -344,7 +354,10 @@ def build_config_preview_and_search_text(
     return preview, normalized_blob
 
 
-def validate_config_types_against_template(orig_config: Dict[str, Any], new_configs: List[Dict[str, Any]]) -> Optional[str]:
+def validate_config_types_against_template(
+    orig_config: Mapping[str, Any],
+    new_configs: List[Mapping[str, Any]],
+) -> Optional[str]:
     """Ensure generated configs match the primitive types of the original template.
 
     Allows int → float coercion (safe widening), and permits strings

@@ -21,6 +21,7 @@ from typing import Any, Iterator
 
 import psutil
 import yaml
+from omegaconf import DictConfig, OmegaConf
 
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
@@ -55,7 +56,7 @@ from pyruns.launcher import (
     resolve_workspace_for_script,
 )
 from pyruns.utils.batch_utils import generate_batch_configs
-from pyruns.utils.config_utils import load_yaml_strict, safe_filename
+from pyruns.utils.config_utils import load_config_text, load_yaml_strict, safe_filename, to_container
 from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
@@ -610,7 +611,7 @@ def _task_record(
                 "tracks": info.get("tracks", task.get("tracks", [])) or [],
                 "env": info.get("env", task.get("env", {})) or {},
                 "notes": info.get("notes", task.get("notes", "")) or "",
-                "config": task.get("config", {}) or {},
+                "config": to_container(task.get("config", {}) or {}, resolve=False),
                 "command": command_text or None,
                 "command_mode": info.get("command_mode", task.get("command_mode")),
                 "command_argv": command_argv if isinstance(command_argv, list) else None,
@@ -1786,7 +1787,7 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
         print(f"Shell:      {record['shell_kind']}")
     if record["config"]:
         print("Config:")
-        print(yaml.safe_dump(record["config"], allow_unicode=True, sort_keys=False).rstrip())
+        print(OmegaConf.to_yaml(OmegaConf.create(record["config"]), resolve=False).rstrip())
     if record["env"]:
         print("Environment:")
         for key, value in sorted(record["env"].items()):
@@ -2281,7 +2282,8 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
         if context.json_output:
             _json_dump(values)
         else:
-            print(yaml.safe_dump(values, allow_unicode=True, sort_keys=True).rstrip())
+            ordered = dict(sorted(values.items()))
+            print(OmegaConf.to_yaml(OmegaConf.create(ordered), resolve=False).rstrip())
         return 0
     if args.key not in SETTINGS_DEFAULTS:
         raise CliError(f"unknown setting: {args.key}")
@@ -2290,14 +2292,19 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
         if context.json_output:
             _json_dump({args.key: value})
         elif isinstance(value, (dict, list)):
-            print(yaml.safe_dump(value, allow_unicode=True, sort_keys=False).rstrip())
+            print(OmegaConf.to_yaml(OmegaConf.create(value), resolve=False).rstrip())
         else:
             print(str(value).lower() if isinstance(value, bool) else value)
         return 0
     if action == "set":
         try:
-            value = yaml.safe_load(args.value)
-        except yaml.YAMLError as exc:
+            parsed = load_config_text(f"value: {args.value}\n")
+            value = (
+                to_container(parsed["value"], resolve=False)
+                if isinstance(parsed, DictConfig)
+                else args.value
+            )
+        except (ValueError, yaml.YAMLError) as exc:
             raise CliUsageError(f"invalid YAML value: {exc}") from exc
         value = _validate_setting_value(args.key, value)
     elif action == "unset":
@@ -2317,7 +2324,7 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
     if context.json_output:
         _json_dump({args.key: saved})
     elif isinstance(saved, (dict, list)):
-        print(yaml.safe_dump(saved, allow_unicode=True, sort_keys=False).rstrip())
+        print(OmegaConf.to_yaml(OmegaConf.create(saved), resolve=False).rstrip())
     else:
         print(str(saved).lower() if isinstance(saved, bool) else saved)
     return 0

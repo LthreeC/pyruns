@@ -41,7 +41,7 @@ cfg = pyruns.load()
 
 ### `pyruns.load()`
 
-返回 `ConfigNode`。
+返回 OmegaConf 的 `DictConfig` 或 `ListConfig`。
 
 示例：
 
@@ -49,6 +49,14 @@ cfg = pyruns.load()
 cfg = pyruns.load()
 print(cfg.lr)
 print(cfg.model.name)
+```
+
+需要转换为普通 Python 字典或列表时，使用 OmegaConf 官方 API：
+
+```python
+from omegaconf import OmegaConf
+
+data = OmegaConf.to_container(cfg, resolve=True)
 ```
 
 ### `pyruns.record(data=None, **kwargs)`

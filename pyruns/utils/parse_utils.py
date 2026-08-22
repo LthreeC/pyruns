@@ -3,8 +3,9 @@ import functools
 import os
 import shlex
 import tempfile
-import yaml
 from typing import Dict, Any, List, Optional, Tuple
+
+from omegaconf import OmegaConf
 
 from .._config import CONFIG_DEFAULT_FILENAME, MAX_CONFIG_FILE_BYTES
 from .info_io import (
@@ -253,7 +254,10 @@ def generate_config_file(pyruns_dir: str, filepath: str, params: Dict[str, Dict[
     for key, info in params.items():
         default = info.get("default")
         help_text = info.get("help", "")
-        line = yaml.safe_dump({key: default}, sort_keys=False).strip()
+        line = OmegaConf.to_yaml(
+            OmegaConf.create({key: default}),
+            resolve=False,
+        ).strip()
         lines.append(f"{line}  # {help_text}\n" if help_text else f"{line}\n")
 
     content = "".join(lines)

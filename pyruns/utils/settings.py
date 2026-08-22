@@ -13,9 +13,11 @@ import socket
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Dict
 
 import yaml
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.info_io import validate_workspace_file
@@ -31,7 +33,9 @@ from pyruns._config import (
     DEFAULT_MONITOR_SCROLLBACK,
     DEFAULT_MONITOR_SIDEBAR_WIDTH_PCT,
     DEFAULT_SHELL_MODE,
+    MAX_CONFIG_FILE_BYTES,
 )
+from pyruns.utils.config_utils import load_config_text, to_container
 
 
 SETTINGS_DEFAULTS: Dict[str, Any] = {
@@ -336,16 +340,45 @@ def _atomic_create_text_file(path: str, text: str) -> bool:
             pass
 
 
-def _parse_settings_mapping(text: str, path: str) -> Dict[str, Any]:
+def _parse_settings_mapping(
+    text: str,
+    path: str,
+    *,
+    allow_empty_sequence: bool = False,
+) -> Dict[str, Any]:
+    if not text.strip():
+        raise ValueError(f"Settings file is empty: {path}")
     try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
+        config = load_config_text(text)
+        data = to_container(config, resolve=False)
+    except (ValueError, yaml.YAMLError) as exc:
         raise ValueError(f"Could not parse settings file '{path}': {exc}") from exc
     if data is None:
         raise ValueError(f"Settings file is empty: {path}")
+    if allow_empty_sequence and data == []:
+        return {}
     if not isinstance(data, dict):
         raise ValueError(f"Settings file root must be a mapping: {path}")
     return data
+
+
+def _read_settings_text(path: str) -> str:
+    """Read a bounded UTF-8 settings document for every settings operation."""
+
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(MAX_CONFIG_FILE_BYTES + 1)
+    except OSError as exc:
+        raise ValueError(f"Could not read settings file '{path}': {exc}") from exc
+    if len(raw) > MAX_CONFIG_FILE_BYTES:
+        raise ValueError(
+            f"Could not read settings file '{path}': file is too large "
+            f"(max {MAX_CONFIG_FILE_BYTES} bytes)"
+        )
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Could not read settings file '{path}': {exc}") from exc
 
 
 def setting_numbers_are_finite(value: Any) -> bool:
@@ -353,12 +386,12 @@ def setting_numbers_are_finite(value: Any) -> bool:
         return True
     if isinstance(value, float):
         return math.isfinite(value)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping) or isinstance(value, DictConfig):
         return all(
             setting_numbers_are_finite(item_key) and setting_numbers_are_finite(item_value)
             for item_key, item_value in value.items()
         )
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, ListConfig)):
         return all(setting_numbers_are_finite(item) for item in value)
     return True
 
@@ -412,11 +445,7 @@ def load_settings(root_dir: str = ROOT_DIR) -> Dict[str, Any]:
     )
 
     if os.path.lexists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(f"Could not read settings file '{path}': {exc}") from exc
+        text = _read_settings_text(path)
         data = _parse_settings_mapping(text, path)
         merged.update(
             (key, value)
@@ -456,20 +485,16 @@ def _yaml_scalar_to_text(value: Any) -> str:
     if isinstance(value, list):
         if not value:
             return "[]"
-        return "\n" + yaml.dump(value, default_flow_style=False, allow_unicode=True).rstrip("\n")
+        return "\n" + OmegaConf.to_yaml(OmegaConf.create(value), resolve=False).rstrip("\n")
     if isinstance(value, dict):
         if not value:
             return "{}"
-        return "\n" + yaml.dump(value, default_flow_style=False, allow_unicode=True, sort_keys=False).rstrip("\n")
+        return "\n" + OmegaConf.to_yaml(OmegaConf.create(value), resolve=False).rstrip("\n")
     if isinstance(value, str):
-        rendered = yaml.safe_dump(
-            value,
-            default_flow_style=True,
-            allow_unicode=True,
-            width=10_000,
-        ).rstrip("\n")
-        if rendered.endswith("\n..."):
-            rendered = rendered[:-4]
+        rendered = OmegaConf.to_yaml(
+            OmegaConf.create({"value": value}),
+            resolve=False,
+        ).split("value:", 1)[1].strip()
         return rendered
     return str(value)
 
@@ -515,12 +540,9 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
             text = ""
             loaded: Dict[str, Any] = {}
             if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    text = f.read()
+                text = _read_settings_text(path)
 
-                loaded = yaml.safe_load(text) or {}
-                if not isinstance(loaded, dict):
-                    raise ValueError(f"Settings file root must be a mapping: {path}")
+                loaded = _parse_settings_mapping(text, path, allow_empty_sequence=True)
 
             has_unknown_keys = any(item_key not in SETTINGS_DEFAULTS for item_key in loaded)
             loaded = {
@@ -536,11 +558,9 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
                 isinstance(value, (dict, list)) for value in updates.values()
             ):
                 loaded.update(updates)
-                new_text = yaml.safe_dump(
-                    loaded,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                    sort_keys=False,
+                new_text = OmegaConf.to_yaml(
+                    OmegaConf.create(loaded),
+                    resolve=False,
                 )
             else:
                 new_text = text
@@ -608,11 +628,8 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
             text = ""
             loaded: Dict[str, Any] = {}
             if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    text = f.read()
-                loaded = yaml.safe_load(text) or {}
-                if not isinstance(loaded, dict):
-                    raise ValueError(f"Settings file root must be a mapping: {path}")
+                text = _read_settings_text(path)
+                loaded = _parse_settings_mapping(text, path, allow_empty_sequence=True)
 
             has_unknown_keys = any(item_key not in SETTINGS_DEFAULTS for item_key in loaded)
             known = {
@@ -621,11 +638,9 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
                 if item_key in SETTINGS_DEFAULTS and item_key != key
             }
             if has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
-                new_text = yaml.safe_dump(
-                    known,
-                    default_flow_style=False,
-                    allow_unicode=True,
-                    sort_keys=False,
+                new_text = OmegaConf.to_yaml(
+                    OmegaConf.create(known),
+                    resolve=False,
                 )
             else:
                 new_text = _setting_block_pattern(key).sub("", text)

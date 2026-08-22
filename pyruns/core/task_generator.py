@@ -12,6 +12,8 @@ import tempfile
 import time
 from typing import Any, Dict, List
 
+from omegaconf import DictConfig, OmegaConf
+
 from pyruns._config import (
     RUN_LOGS_DIR,
     TASK_KIND_CONFIG,
@@ -57,12 +59,35 @@ def _resolve_requested_task_kind(task_kind: str) -> str:
     return normalize_task_kind(requested_kind)
 
 
+def _config_without_ui_metadata(config: Dict[str, Any] | DictConfig) -> DictConfig:
+    """Return a mapping config without generator-only metadata keys."""
+
+    if isinstance(config, DictConfig):
+        raw = OmegaConf.to_container(config, resolve=False)
+    else:
+        raw = dict(config or {})
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration root must be a mapping")
+    cleaned = {
+        key: value
+        for key, value in raw.items()
+        if not str(key).startswith("_meta")
+    }
+    # TaskGenerator is also a public Python API and historically accepted
+    # date/datetime values. Keep those objects in the OmegaConf tree until the
+    # payload/API serialization boundary converts them to supported values.
+    normalized = OmegaConf.create(cleaned, flags={"allow_objects": True})
+    if not isinstance(normalized, DictConfig):
+        raise ValueError("Configuration root must be a mapping")
+    return normalized
+
+
 def create_task_object(
     task_dir: str,
     name: str,
     *,
     task_kind: str = TASK_KIND_CONFIG,
-    config: Dict[str, Any] | None = None,
+    config: Dict[str, Any] | DictConfig | None = None,
     config_text: str = "",
     config_file: str | None = None,
 ) -> Dict[str, Any]:
@@ -70,9 +95,10 @@ def create_task_object(
 
     normalized_kind = _resolve_requested_task_kind(task_kind)
     resolved_config_file = config_file or TASK_KIND_TO_CONFIG_FILENAME[normalized_kind]
+    normalized_config = _config_without_ui_metadata(config or {})
     preview_text, search_text = build_task_preview_and_search(
         task_kind=normalized_kind,
-        config=config or {},
+        config=normalized_config,
         config_text=config_text,
         task_name=name,
     )
@@ -80,7 +106,7 @@ def create_task_object(
         "dir": task_dir,
         "name": name,
         "status": "pending",
-        "config": config or {},
+        "config": normalized_config,
         "config_text": config_text if normalized_kind == TASK_KIND_SHELL else "",
         "config_file": resolved_config_file,
         "task_kind": normalized_kind,
@@ -483,19 +509,15 @@ class TaskGenerator:
         return script_path if script_path and os.path.exists(script_path) else ""
 
     @staticmethod
-    def _clean_task_config(config: Dict[str, Any]) -> Dict[str, Any]:
-        """Remove UI-only metadata before persisting ``config.yaml``."""
+    def _clean_task_config(config: Dict[str, Any] | DictConfig) -> DictConfig:
+        """Remove UI-only metadata while retaining an OmegaConf container."""
 
-        return {
-            key: value
-            for key, value in (config or {}).items()
-            if not str(key).startswith("_meta")
-        }
+        return _config_without_ui_metadata(config)
 
     def create_task(
         self,
         name_prefix: str,
-        config: Dict[str, Any] | None = None,
+        config: Dict[str, Any] | DictConfig | None = None,
         *,
         exact_name: bool = False,
         config_text: str = "",

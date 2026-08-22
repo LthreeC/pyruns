@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from omegaconf import DictConfig, OmegaConf
 from unittest.mock import patch
 
 import pyruns.utils.batch_utils as batch_utils
@@ -1861,7 +1862,8 @@ class TestGenerateBatchConfigs:
         """No pipe syntax → returns [original_config]."""
         configs = generate_batch_configs(sample_config)
         assert len(configs) == 1
-        assert configs[0] is sample_config
+        assert isinstance(configs[0], DictConfig)
+        assert OmegaConf.to_container(configs[0], resolve=False) == sample_config
 
     def test_product_values_metadata_and_fixed_fields(self, sample_config_with_pipes):
         configs = generate_batch_configs(sample_config_with_pipes)
@@ -2504,8 +2506,12 @@ def test_save_setting_for_root_preserves_or_appends_structured_values(tmp_path, 
     assert "gpu_scheduler_device_ids:" in path.read_text(encoding="utf-8")
 
     path.write_text("gpu_scheduler_device_ids: []\n", encoding="utf-8")
-    monkeypatch.setattr(settings.yaml, "safe_load", lambda text: (_ for _ in ()).throw(yaml.YAMLError("bad yaml")))
-    with pytest.raises(yaml.YAMLError, match="bad yaml"):
+    monkeypatch.setattr(
+        settings,
+        "load_config_text",
+        lambda text: (_ for _ in ()).throw(yaml.YAMLError("bad yaml")),
+    )
+    with pytest.raises(ValueError, match="Could not parse settings file.*bad yaml"):
         settings.save_setting_for_root(str(root), "gpu_scheduler_device_ids", [1])
     assert path.read_text(encoding="utf-8") == "gpu_scheduler_device_ids: []\n"
     assert not Path(f"{path}.lock").exists()

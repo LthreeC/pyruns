@@ -56,6 +56,7 @@ from pyruns.utils.process_utils import (
 from pyruns.utils.settings import load_settings
 from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.events import event_sys
+from pyruns.utils.config_utils import to_container
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
     normalize_task_kind,
@@ -314,6 +315,7 @@ class TaskManager:
     def _finalize_full_task_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply derived API fields to an already detached full-task snapshot."""
         data["dir"] = str(data.get("dir", "")).replace("\\", "/")
+        data["config"] = to_container(data.get("config", {}) or {}, resolve=False)
         data.pop("_gpu_wait_persisted_signature", None)
         gpu_wait = TaskManager._serialized_gpu_wait(data)
         if gpu_wait is None:
@@ -366,7 +368,12 @@ class TaskManager:
                 "search_text": task.get("search_text", ""),
                 "_load_error": task.get("_load_error"),
             }
-        return TaskManager._finalize_full_task_snapshot(copy.deepcopy(task))
+        full_snapshot = copy.deepcopy(task)
+        full_snapshot["config"] = to_container(
+            full_snapshot.get("config", {}) or {},
+            resolve=False,
+        )
+        return TaskManager._finalize_full_task_snapshot(full_snapshot)
 
     def list_tasks(self, *, summary: bool = False) -> List[Dict[str, Any]]:
         """Return detached copies of the current task list."""

@@ -17,6 +17,8 @@ import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from omegaconf import ListConfig
+
 from pyruns._config import (
     CONFIG_FILENAME,
     DEFAULT_RUNNER_HEARTBEAT_SECONDS,
@@ -1224,11 +1226,11 @@ def _build_command(
                         cmd_list.append(flag)
                     return
 
-                if isinstance(value, list):
+                if isinstance(value, (list, ListConfig)):
                     if action == "append":
                         for item in value:
                             cmd_list.append(flag)
-                            if isinstance(item, (list, tuple)) and nargs not in (None, ""):
+                            if isinstance(item, (list, tuple, ListConfig)) and nargs not in (None, ""):
                                 cmd_list.extend(str(part) for part in item)
                             else:
                                 cmd_list.append(str(item))
@@ -1257,7 +1259,7 @@ def _build_command(
             for key in positional_order:
                 if key in config and config[key] is not None:
                     value = config[key]
-                    if isinstance(value, list):
+                    if isinstance(value, (list, ListConfig)):
                         for item in value:
                             cmd_list.append(str(item))
                     else:

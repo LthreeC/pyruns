@@ -3234,6 +3234,19 @@ def test_config_get_set_unset_and_path(tmp_path):
     ):
         assert removed_key not in values
 
+    structured_set = _run_cli(
+        tmp_path,
+        "config",
+        "set",
+        "global_env",
+        "{FOO: bar}",
+    )
+    assert structured_set.returncode == 0, structured_set.stderr
+    assert structured_set.stdout.strip() == "FOO: bar"
+    structured_get = _run_cli(tmp_path, "config", "get", "global_env")
+    assert structured_get.returncode == 0, structured_get.stderr
+    assert structured_get.stdout.strip() == "FOO: bar"
+
     enabled_logs = _run_cli(tmp_path, "config", "set", "log_enabled", "true")
     assert enabled_logs.returncode == 0, enabled_logs.stderr
     logged_json = _run_cli(tmp_path, "-w", "shell", "ls", "--json")

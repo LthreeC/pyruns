@@ -45,9 +45,12 @@ from pyruns._config import (
     RECORDS_KEY,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
+    MAX_CONFIG_FILE_BYTES,
     WORKSPACE_KIND_SHELL,
 )
-from pyruns.core.config_manager import ConfigNode, ConfigManager
+from omegaconf import DictConfig, ListConfig, OmegaConf
+
+from pyruns.core.config_manager import ConfigManager
 from pyruns.core.executor import (
     _append_run_log_text,
     _build_command,
@@ -827,7 +830,7 @@ def test_executor_support_code_uses_unpredictable_private_temp_roots(tmp_path, m
     assert second_import_root != import_root
 
 
-def test_config_node_nested_access_export_and_repr():
+def test_omegaconf_nested_access_and_container_export():
     data = {
         "lr": 0.01,
         "optimizer": {
@@ -838,7 +841,7 @@ def test_config_node_nested_access_export_and_repr():
         "label": "train",
         "_private": "hidden",
     }
-    node = ConfigNode(data)
+    node = OmegaConf.create(data)
 
     assert node.lr == 0.01
     assert node.optimizer.name == "adam"
@@ -846,8 +849,8 @@ def test_config_node_nested_access_export_and_repr():
     assert len(node.layers) == 3
     assert node.layers[0] == 64
     assert node.layers[2].dropout == 0.5
-    assert getattr(node, "_private") == "hidden"
-    d = node.to_dict()
+    assert node["_private"] == "hidden"
+    d = OmegaConf.to_container(node, resolve=False)
     assert "lr" in d
     assert "optimizer" in d
     assert isinstance(d["optimizer"], dict)
@@ -855,11 +858,10 @@ def test_config_node_nested_access_export_and_repr():
     assert isinstance(d["layers"], list)
     assert isinstance(d["layers"][2], dict)
     assert d["layers"][2]["dropout"] == 0.5
-    assert "_private" not in d
-    r = repr(node)
-    assert "ConfigNode(" in r
-    assert "lr=0.01" in r
-    assert "label='train'" in r
+    assert d["_private"] == "hidden"
+    assert isinstance(node, DictConfig)
+    assert isinstance(node.optimizer, DictConfig)
+    assert isinstance(node.layers, ListConfig)
 
 
 def test_config_manager_rejects_unloaded_missing_unsupported_and_invalid(
@@ -922,10 +924,39 @@ def test_config_manager_reads_yaml_json_and_list(tmp_path):
     list_manager = ConfigManager()
     list_manager.read(str(list_path))
     nodes = list_manager.load()
-    assert isinstance(nodes, list)
+    assert isinstance(nodes, ListConfig)
     assert len(nodes) == 2
     assert nodes[0].a == 1
     assert nodes[1].b == 2
+
+
+def test_config_manager_uses_omegaconf_interpolation_and_pyruns_scalars(tmp_path):
+    path = tmp_path / "advanced.yaml"
+    path.write_text(
+        "base: /tmp\n"
+        "output: ${base}/results\n"
+        "range: 30:40:1\n"
+        "scientific: 5e-3\n",
+        encoding="utf-8",
+    )
+
+    manager = ConfigManager()
+    manager.read(str(path))
+    config = manager.load()
+
+    assert isinstance(config, DictConfig)
+    assert config.output == "/tmp/results"
+    assert config.range == "30:40:1"
+    assert config.scientific == 0.005
+    assert OmegaConf.to_container(config, resolve=False)["output"] == "${base}/results"
+
+
+def test_config_manager_rejects_oversized_config(tmp_path):
+    path = tmp_path / "oversized.yaml"
+    path.write_bytes(b"value: " + b"x" * (MAX_CONFIG_FILE_BYTES + 1))
+
+    with pytest.raises(RuntimeError, match="too large"):
+        ConfigManager().read(str(path))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1368,6 +1399,36 @@ def test_build_command_argparse_groups_nargs_list_values(mock_extract, mock_dete
     assert cmd.count("--layers") == 1
     index = cmd.index("--layers")
     assert cmd[index:index + 3] == ["--layers", "128", "256"]
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_expands_omegaconf_list_values(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "dataset": {"name": "dataset", "default": "toy"},
+        "layers": {"name": "--layers", "nargs": "+", "default": [64]},
+        "tag": {"name": "--tag", "action": "append", "default": []},
+    }
+    config = OmegaConf.create({
+        "dataset": "toy",
+        "layers": [128, 256],
+        "tag": ["smoke", "nightly"],
+    })
+
+    cmd, _, cleanup_paths = _build_command(None, "train.py", None, config)
+
+    assert cmd[-8:] == [
+        "toy",
+        "--layers",
+        "128",
+        "256",
+        "--tag",
+        "smoke",
+        "--tag",
+        "nightly",
+    ]
+    assert cleanup_paths == []
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

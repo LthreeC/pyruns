@@ -3,7 +3,7 @@
 import re
 from typing import Dict, List
 
-import yaml
+from omegaconf import OmegaConf
 
 _ACTIVE_STATUSES = {"running", "queued"}
 _INACTIVE_TIE_PRIORITIES = {
@@ -105,7 +105,10 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
         normalized_blob = str(task.get("search_text", "") or "").lower()
         if not normalized_blob:
             try:
-                yaml_str = yaml.dump(task.get("config", {}), default_flow_style=False).lower()
+                yaml_str = OmegaConf.to_yaml(
+                    OmegaConf.create(task.get("config", {}) or {}),
+                    resolve=False,
+                ).lower()
             except Exception:
                 yaml_str = str(task.get("config", {})).lower()
             text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}".lower()

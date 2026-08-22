@@ -216,7 +216,9 @@ def test_examples_extra_declares_hydra_dependencies():
 
     assert "examples" in optional
     assert any(item.startswith("hydra-core>=") for item in optional["examples"])
-    assert any(item.startswith("omegaconf>=") for item in optional["examples"])
+    dependencies = _load_pyproject()["project"]["dependencies"]
+    assert any(item.startswith("omegaconf>=") for item in dependencies)
+    assert not any(item.startswith("omegaconf>=") for item in optional["examples"])
     assert 'pip install "pyruns[examples]"' in examples_readme
 
 

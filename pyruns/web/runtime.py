@@ -15,6 +15,7 @@ from functools import wraps
 from typing import Any, Callable, Dict, List
 
 import yaml
+from omegaconf import DictConfig
 
 import pyruns._config as _cfg
 from pyruns._config import (
@@ -52,8 +53,10 @@ from pyruns.utils import get_now_str
 from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import (
+    load_config_text,
     list_template_files,
     preview_config_line,
+    to_container,
     validate_config_types_against_template,
 )
 from pyruns.utils.info_io import (
@@ -970,8 +973,8 @@ class PyrunsRuntime:
         data: Any = None
         if mode_hint == "yaml":
             try:
-                data = yaml.safe_load(content)
-            except yaml.YAMLError:
+                data = load_config_text(content)
+            except (ValueError, yaml.YAMLError):
                 data = None
         returned_value = path if os.path.isabs(str(template_value or "")) else template_value
 
@@ -982,7 +985,7 @@ class PyrunsRuntime:
             "content": content,
             "read_only": os.path.basename(path) == CONFIG_DEFAULT_FILENAME,
             "mode_hint": mode_hint,
-            "parsed_config": data if isinstance(data, dict) else None,
+            "parsed_config": to_container(data, resolve=False) if isinstance(data, DictConfig) else None,
         }
 
     @staticmethod
@@ -995,18 +998,16 @@ class PyrunsRuntime:
             )
         return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
 
-    def _load_generator_template_config(self, template_value: str) -> Dict[str, Any]:
+    def _load_generator_template_config(self, template_value: str) -> DictConfig:
         try:
             path = self.resolve_template_path(template_value)
-            parsed = yaml.safe_load(self._read_template_text(path, template_value))
-            if parsed is None:
-                return {}
-            if not isinstance(parsed, dict):
+            parsed = load_config_text(self._read_template_text(path, template_value))
+            if not isinstance(parsed, DictConfig):
                 raise ValueError(f"YAML root must be a mapping: {path}")
             return parsed
         except ValueError:
             raise
-        except (OSError, yaml.YAMLError) as exc:
+        except (OSError, ValueError, yaml.YAMLError) as exc:
             raise ValueError(f"Could not load template '{template_value}': {exc}") from exc
 
     @property
@@ -1614,7 +1615,7 @@ class PyrunsRuntime:
             page = self.list_tasks(limit=12, refresh=False, summary=True)
             return {
                 "count": 1,
-                "items": [task],
+                "items": [self.task_manager.serialize_task(task, summary=False)],
                 "recent_tasks": page.items,
                 "task_kind": TASK_KIND_SHELL,
             }
@@ -1623,15 +1624,12 @@ class PyrunsRuntime:
             raise ValueError(f"Unsupported generator mode: {mode}")
 
         try:
-            parsed = yaml.safe_load(_require_bounded_editor_text(yaml_text, label="YAML content"))
-        except yaml.YAMLError as exc:
+            base_config = load_config_text(
+                _require_bounded_editor_text(yaml_text, label="YAML content")
+            )
+        except (ValueError, yaml.YAMLError) as exc:
             raise ValueError(f"Invalid YAML: {exc}") from exc
-
-        if parsed is None:
-            base_config = {}
-        elif isinstance(parsed, dict):
-            base_config = parsed
-        else:
+        if not isinstance(base_config, DictConfig):
             raise ValueError("YAML content must be a mapping at the root.")
 
         if template_value:
@@ -1664,7 +1662,10 @@ class PyrunsRuntime:
         page = self.list_tasks(limit=12, refresh=False, summary=True)
         return {
             "count": len(tasks),
-            "items": [item for item in tasks],
+            "items": [
+                self.task_manager.serialize_task(item, summary=False)
+                for item in tasks
+            ],
             "recent_tasks": page.items,
             "task_kind": TASK_KIND_CONFIG,
         }
@@ -1709,15 +1710,12 @@ class PyrunsRuntime:
             raise ValueError(f"Unsupported generator mode: {mode}")
 
         try:
-            parsed = yaml.safe_load(_require_bounded_editor_text(yaml_text, label="YAML content"))
-        except yaml.YAMLError as exc:
+            base_config = load_config_text(
+                _require_bounded_editor_text(yaml_text, label="YAML content")
+            )
+        except (ValueError, yaml.YAMLError) as exc:
             raise ValueError(f"Invalid YAML: {exc}") from exc
-
-        if parsed is None:
-            base_config = {}
-        elif isinstance(parsed, dict):
-            base_config = parsed
-        else:
+        if not isinstance(base_config, DictConfig):
             raise ValueError("YAML content must be a mapping at the root.")
 
         if template_value:
@@ -1747,7 +1745,7 @@ class PyrunsRuntime:
                 {
                     "index": index,
                     "preview": preview_config_line(config),
-                    "config": config,
+                    "config": to_container(config, resolve=False),
                 }
             )
 

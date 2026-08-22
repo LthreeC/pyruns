@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Tuple
 
-import yaml
+from omegaconf import DictConfig
 
 from pyruns._config import (
     CONFIG_FILENAME,
@@ -19,6 +19,7 @@ from pyruns._config import (
 )
 from pyruns.utils.config_utils import (
     build_config_preview_and_search_text,
+    load_config_text,
     save_yaml,
 )
 from pyruns.utils.info_io import (
@@ -96,7 +97,7 @@ def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) ->
     return raw.decode("utf-8")
 
 
-def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, Dict[str, Any], str, str]:
+def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, DictConfig, str, str]:
     """Return ``(task_kind, config, config_text, load_error)`` for one task."""
 
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
@@ -116,10 +117,8 @@ def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, Dict[st
             return task_kind, {}, "", str(exc)
 
     try:
-        parsed = yaml.safe_load(_read_text_limited(config_path))
-        if parsed is None:
-            parsed = {}
-        if not isinstance(parsed, dict):
+        parsed = load_config_text(_read_text_limited(config_path))
+        if not isinstance(parsed, DictConfig):
             raise ValueError(f"YAML root must be a mapping: {config_path}")
         return task_kind, parsed, "", ""
     except Exception as exc:
@@ -131,7 +130,7 @@ def write_task_payload(
     *,
     task_kind: str,
     config_file: str,
-    config: Dict[str, Any] | None = None,
+    config: Dict[str, Any] | DictConfig | None = None,
     config_text: str = "",
 ) -> None:
     """Persist the task payload using the appropriate on-disk representation."""
@@ -155,7 +154,7 @@ def write_task_payload(
 def build_task_preview_and_search(
     *,
     task_kind: str,
-    config: Dict[str, Any] | None = None,
+    config: Dict[str, Any] | DictConfig | None = None,
     config_text: str = "",
     task_name: str = "",
     notes: str = "",

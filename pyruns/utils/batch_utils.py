@@ -6,7 +6,10 @@ Syntax (in YAML string values):
     param: (val1 | val2 | val3)      →  zip (paired, all same length)
 """
 import itertools
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from omegaconf import DictConfig, OmegaConf
 
 from pyruns.utils.config_utils import flatten_dict, unflatten_dict, parse_value
 from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE, DEFAULT_BATCH_CONFIG_LIMIT
@@ -111,10 +114,10 @@ def _parse_pipe_value(value) -> Optional[Tuple[Sequence[Any], str]]:
 # ═══════════════════════════════════════════════════════════════
 
 def generate_batch_configs(
-    base_config: Dict[str, Any],
+    base_config: Mapping[str, Any] | DictConfig,
     *,
     max_configs: int | None = DEFAULT_BATCH_CONFIG_LIMIT,
-) -> List[Dict[str, Any]]:
+) -> List[DictConfig]:
     """Generate multiple configs with mixed product + zip params.
 
     Syntax (in YAML string values):
@@ -134,14 +137,21 @@ def generate_batch_configs(
     Non-pipe values are kept fixed in every config.
     A "_meta_desc" key is added to each config with a human-readable description.
     """
-    total_count = count_batch_configs(base_config)
+    if isinstance(base_config, DictConfig):
+        normalized_config = base_config
+    else:
+        normalized_config = OmegaConf.create(dict(base_config))
+    if not isinstance(normalized_config, DictConfig):
+        raise ValueError("Batch configuration root must be a mapping")
+
+    total_count = count_batch_configs(normalized_config)
     if max_configs is not None and total_count > int(max_configs):
         raise ValueError(
             f"Batch expansion would create {total_count} tasks; limit is {int(max_configs)}. "
             "Narrow the range or split it into smaller batches."
         )
 
-    flat = flatten_dict(base_config)
+    flat = flatten_dict(normalized_config)
 
     product_params: Dict[str, List] = {}  # key → [typed values]
     zip_params: Dict[str, List] = {}      # key → [typed values]
@@ -160,7 +170,7 @@ def generate_batch_configs(
             fixed[k] = v
 
     if not product_params and not zip_params:
-        return [base_config]
+        return [normalized_config]
 
     # Validate: all zip params must have the same length
     if zip_params:
@@ -189,7 +199,7 @@ def generate_batch_configs(
         z_combos = [()]
 
     # Cross-join: every product combo × every zip combo
-    configs: List[Dict[str, Any]] = []
+    configs: List[DictConfig] = []
     for p_combo in p_combos:
         for z_combo in z_combos:
             temp_flat = fixed.copy()
@@ -200,14 +210,16 @@ def generate_batch_configs(
             for k, v in zip(z_keys, z_combo):
                 temp_flat[k] = v
                 desc_parts.append(f"{k.split('.')[-1]}={v}")
-            config = unflatten_dict(temp_flat)
+            config = OmegaConf.create(unflatten_dict(temp_flat))
+            if not isinstance(config, DictConfig):
+                raise ValueError("Generated batch configuration root must be a mapping")
             config["_meta_desc"] = ", ".join(desc_parts)
             configs.append(config)
 
     return configs
 
 
-def count_batch_configs(base_config: Dict[str, Any]) -> int:
+def count_batch_configs(base_config: Mapping[str, Any] | DictConfig) -> int:
     """Preview how many configs would be generated (without building them).
 
     Returns 0 if zip params have mismatched lengths (invalid).
@@ -241,7 +253,7 @@ def count_batch_configs(base_config: Dict[str, Any]) -> int:
     return product_total * zip_total
 
 
-def strip_batch_pipes(config: Dict[str, Any]) -> Dict[str, Any]:
+def strip_batch_pipes(config: Mapping[str, Any] | DictConfig) -> DictConfig:
     """Strip pipe syntax, keeping only the first value from each pipe-separated field.
 
     Used when generating a single task — ensures config.yaml has clean typed values
@@ -256,4 +268,7 @@ def strip_batch_pipes(config: Dict[str, Any]) -> Dict[str, Any]:
             result[k] = parse_value(values[0])
         else:
             result[k] = v
-    return unflatten_dict(result)
+    normalized = OmegaConf.create(unflatten_dict(result))
+    if not isinstance(normalized, DictConfig):
+        raise ValueError("Configuration root must be a mapping")
+    return normalized
