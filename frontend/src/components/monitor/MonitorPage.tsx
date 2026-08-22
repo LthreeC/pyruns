@@ -58,6 +58,7 @@ import {
   resolveMonitorScrollback,
 } from '@/utils/monitorSettings'
 import { configureReadOnlyTerminalInput } from '@/utils/monitorAccessibility'
+import { pickInitialMonitorTask } from '@/utils/monitorSelection'
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
@@ -514,6 +515,23 @@ export default function MonitorPage() {
       })
     })
   }, [notify, refreshMonitorTasks])
+
+  useEffect(() => {
+    if (selectedTaskName || monitorLoading || monitorTasks.length === 0) {
+      return
+    }
+    const initialTask = pickInitialMonitorTask(monitorTasks)
+    if (!initialTask) {
+      return
+    }
+    void selectTask(initialTask.name).catch(err => {
+      notify({
+        tone: 'error',
+        title: 'Could not load task logs',
+        detail: errorMessage(err),
+      })
+    })
+  }, [monitorLoading, monitorTasks, notify, selectTask, selectedTaskName])
 
   useEffect(() => {
     if (selectedTaskFromList) {

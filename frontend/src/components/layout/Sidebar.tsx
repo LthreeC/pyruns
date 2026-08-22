@@ -5,7 +5,7 @@ import {
   Sun, Moon, ChevronsUpDown, FileCode, SlidersHorizontal,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useMonitorStore, useWorkspaceStore, useThemeStore } from '@/store'
+import { useWorkspaceStore, useThemeStore } from '@/store'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 
 const RuntimePanel = lazy(() => import('./RuntimePanel'))
@@ -50,16 +50,6 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
         ? 'Workspace Env'
         : 'Follow'
 
-  const clearMonitorSelection = () => {
-    useMonitorStore.setState({
-      selectedTaskName: null,
-      logContent: '',
-      logOffset: 0,
-      availableLogs: [],
-      selectedLog: '',
-    })
-  }
-
   const openWorkspaceLauncher = (mode: 'python' | 'shell') => {
     const nextParams = new URLSearchParams(searchParams)
     nextParams.set('launcher', '1')
@@ -97,7 +87,6 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
             key={to}
             to={to}
             end={end}
-            onClick={to === '/monitor' ? clearMonitorSelection : undefined}
             aria-label={label}
             title={label}
             className={({ isActive }) => clsx(
