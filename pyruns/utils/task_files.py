@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Tuple
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from pyruns._config import (
     CONFIG_FILENAME,
@@ -35,6 +35,13 @@ TASK_KIND_ALIASES = {
     "python": TASK_KIND_CONFIG,
     TASK_KIND_SHELL: TASK_KIND_SHELL,
 }
+
+
+def _empty_config() -> DictConfig:
+    config = OmegaConf.create({})
+    if not isinstance(config, DictConfig):
+        raise RuntimeError("OmegaConf did not create a mapping config")
+    return config
 
 
 def normalize_workspace_kind(value: Any) -> str:
@@ -105,16 +112,16 @@ def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, DictCon
     try:
         config_path = resolve_task_payload_path(task_dir, config_file)
     except ValueError as exc:
-        return task_kind, {}, "", str(exc)
+        return task_kind, _empty_config(), "", str(exc)
 
     if not os.path.exists(config_path):
-        return task_kind, {}, "", f"{config_file} is missing"
+        return task_kind, _empty_config(), "", f"{config_file} is missing"
 
     if task_kind == TASK_KIND_SHELL:
         try:
-            return task_kind, {}, _read_text_limited(config_path), ""
+            return task_kind, _empty_config(), _read_text_limited(config_path), ""
         except Exception as exc:
-            return task_kind, {}, "", str(exc)
+            return task_kind, _empty_config(), "", str(exc)
 
     try:
         parsed = load_config_text(_read_text_limited(config_path))
@@ -122,7 +129,7 @@ def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, DictCon
             raise ValueError(f"YAML root must be a mapping: {config_path}")
         return task_kind, parsed, "", ""
     except Exception as exc:
-        return task_kind, {}, "", str(exc)
+        return task_kind, _empty_config(), "", str(exc)
 
 
 def write_task_payload(

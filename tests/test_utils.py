@@ -328,12 +328,14 @@ def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkey
 
     kind, config, text, error = read_task_payload(str(task_dir), {"task_kind": TASK_KIND_CONFIG})
     assert kind == TASK_KIND_CONFIG
+    assert isinstance(config, DictConfig)
     assert config == {}
     assert text == ""
     assert error == f"{CONFIG_FILENAME} is missing"
 
     kind, config, text, error = read_task_payload(str(task_dir), {"task_kind": TASK_KIND_SHELL})
     assert kind == TASK_KIND_SHELL
+    assert isinstance(config, DictConfig)
     assert config == {}
     assert "Write-Host hi" in text
     assert error == ""
@@ -344,6 +346,7 @@ def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkey
     monkeypatch.setattr("builtins.open", fail_open)
     kind, config, text, error = read_task_payload(str(task_dir), {"task_kind": TASK_KIND_SHELL})
     assert kind == TASK_KIND_SHELL
+    assert isinstance(config, DictConfig)
     assert config == {}
     assert text == ""
     assert "cannot read" in error
@@ -352,6 +355,19 @@ def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkey
     config_dir = tmp_path / "config-task"
     write_task_payload(str(config_dir), task_kind=TASK_KIND_CONFIG, config_file=CONFIG_FILENAME, config={"lr": 0.1})
     assert load_yaml_strict(str(config_dir / CONFIG_FILENAME)) == {"lr": 0.1}
+
+    invalid_dir = tmp_path / "invalid-config-task"
+    invalid_dir.mkdir()
+    (invalid_dir / CONFIG_FILENAME).write_text("broken: [\n", encoding="utf-8")
+    kind, config, text, error = read_task_payload(
+        str(invalid_dir),
+        {"task_kind": TASK_KIND_CONFIG},
+    )
+    assert kind == TASK_KIND_CONFIG
+    assert isinstance(config, DictConfig)
+    assert config == {}
+    assert text == ""
+    assert error
 
     shell_dir = tmp_path / "shell-task"
     write_task_payload(
@@ -387,6 +403,7 @@ def test_task_payload_rejects_config_file_escape(tmp_path):
     )
 
     assert kind == TASK_KIND_CONFIG
+    assert isinstance(config, DictConfig)
     assert config == {}
     assert text == ""
     assert "outside the task directory" in error
