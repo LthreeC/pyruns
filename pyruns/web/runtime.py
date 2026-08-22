@@ -462,6 +462,29 @@ class PyrunsRuntime:
             for task in tasks
         )
 
+    @_with_stable_workspace
+    def active_task_count(self) -> int:
+        """Synchronously count active work across every manager owned by this UI."""
+
+        self.ensure_tasks_loaded(full_refresh=False)
+        with self._lock:
+            managers = list(dict.fromkeys(self._task_managers.values()))
+            if self._task_manager is not None and self._task_manager not in managers:
+                managers.append(self._task_manager)
+
+        active_count = 0
+        for manager in managers:
+            manager.refresh_from_disk(force_all=True, discover=True)
+            manager_count = sum(
+                1
+                for task in manager.list_tasks(summary=True)
+                if str(task.get("status", "") or "").lower() in {"queued", "running"}
+            )
+            if manager_count == 0 and bool(getattr(manager, "is_processing", False)):
+                manager_count = 1
+            active_count += manager_count
+        return active_count
+
     def _retire_task_manager_if_idle(self, manager_key: str, task_manager: TaskManager) -> None:
         """Stop and forget one non-current manager after its active work has finished."""
 

@@ -6,17 +6,19 @@ import argparse
 import asyncio
 import os
 import secrets
+import signal
 import socket
 import sys
 import threading
 import time
 import webbrowser
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -38,6 +40,18 @@ from pyruns.web.runtime import (
     TaskNotesConflictError,
     WorkspaceChangedError,
 )
+from pyruns.web.self_update import (
+    ActiveTasksError,
+    UI_PRODUCTION_RESTART_ENV,
+    UI_TOKEN_ENV,
+    LatestVersionCheckError,
+    UiUpdateCoordinator,
+    UpdateCheckError,
+    UpdateInProgressError,
+    check_latest_version,
+    read_update_result,
+    replace_process_with_updater,
+)
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
@@ -58,7 +72,7 @@ MAX_PATH_CHARS = 32_768
 MAX_LOG_TAIL_LINES = MAX_MONITOR_SCROLLBACK
 MAX_LOG_RESPONSE_BYTES = MAX_MONITOR_CHUNK_SIZE
 _UI_SESSION_COOKIE_PREFIX = "pyruns_session_"
-_UI_TOKEN_ENV = "PYRUNS_UI_TOKEN"
+_UI_TOKEN_ENV = UI_TOKEN_ENV
 _UI_COOKIE_NONCE_ENV = "PYRUNS_UI_COOKIE_NONCE"
 LOG_STREAM_DROPPED_NOTICE = (
     "[pyruns] Live log stream skipped older buffered output; "
@@ -450,6 +464,7 @@ def create_app(
     access_token: str | None = None,
     session_cookie_nonce: str | None = None,
     allow_test_client_bypass: bool = False,
+    update_coordinator: UiUpdateCoordinator | None = None,
 ) -> FastAPI:
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
@@ -462,6 +477,9 @@ def create_app(
         cookie_nonce = os.getenv(_UI_COOKIE_NONCE_ENV)
     app.state.session_cookie_name = _session_cookie_name(cookie_nonce)
     app.state.allow_test_client_bypass = bool(allow_test_client_bypass)
+    app.state.instance_id = secrets.token_urlsafe(16)
+    app.state.update_coordinator = update_coordinator
+    app.state.update_result = read_update_result()
 
     @app.middleware("http")
     async def protect_local_server(request: Request, call_next):
@@ -560,6 +578,10 @@ def create_app(
 
     def get_runtime() -> PyrunsRuntime:
         return app.state.runtime
+
+    def task_start_guard():
+        coordinator = app.state.update_coordinator
+        return coordinator.task_start_guard() if coordinator is not None else nullcontext()
 
     def require_item_limit(items: list[Any], *, label: str) -> None:
         if len(items) > MAX_TASK_BATCH_ITEMS:
@@ -812,12 +834,15 @@ def create_app(
     def run_tasks_batch(payload: TaskBatchActionRequest) -> dict[str, Any]:
         try:
             require_item_limit(payload.task_names, label="Batch run")
-            return get_runtime().start_tasks_batch(
-                payload.task_names,
-                max_workers=payload.max_workers,
-            )
+            with task_start_guard():
+                return get_runtime().start_tasks_batch(
+                    payload.task_names,
+                    max_workers=payload.max_workers,
+                )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except UpdateInProgressError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -845,9 +870,12 @@ def create_app(
     @app.post("/api/tasks/{task_name}/run")
     def run_task(task_name: str, _payload: TaskRunRequest | None = None) -> dict[str, Any]:
         try:
-            task = get_runtime().start_task(task_name)
+            with task_start_guard():
+                task = get_runtime().start_task(task_name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except UpdateInProgressError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "task": task}
@@ -1307,6 +1335,51 @@ def create_app(
             except RuntimeError:
                 pass
 
+    @app.get("/api/system/info")
+    def get_system_info() -> dict[str, Any]:
+        coordinator = app.state.update_coordinator
+        return {
+            "version": __version__,
+            "instance_id": app.state.instance_id,
+            "update_supported": coordinator is not None,
+            "update_state": coordinator.state if coordinator is not None else "unavailable",
+            "last_update": app.state.update_result,
+        }
+
+    @app.get("/api/system/update/check")
+    def check_pyruns_update() -> dict[str, Any]:
+        if app.state.update_coordinator is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Update checks are available only in the normal 'pyr ui' server.",
+            )
+        try:
+            return check_latest_version(__version__)
+        except LatestVersionCheckError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/system/update", status_code=202)
+    def update_pyruns(background_tasks: BackgroundTasks) -> dict[str, Any]:
+        coordinator = app.state.update_coordinator
+        if coordinator is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Full-process updates are available only in the normal 'pyr ui' server.",
+            )
+        try:
+            coordinator.prepare(get_runtime())
+        except ActiveTasksError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except UpdateCheckError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        background_tasks.add_task(coordinator.trigger_shutdown)
+        return {
+            "ok": True,
+            "instance_id": app.state.instance_id,
+            "version": __version__,
+            "state": coordinator.state,
+        }
+
     @app.get("/api/system/metrics")
     def get_metrics(include_processes: bool = False) -> dict[str, Any]:
         return get_runtime().get_metrics(include_processes=include_processes)
@@ -1350,6 +1423,12 @@ def create_app(
     return app
 
 
+def _request_server_shutdown() -> None:
+    """Deliver the same graceful stop signal used by Ctrl+C."""
+
+    signal.raise_signal(signal.SIGINT)
+
+
 def main(
     *,
     reload: bool = False,
@@ -1361,6 +1440,7 @@ def main(
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
     token = str(access_token or secrets.token_urlsafe(32))
+    update_coordinator = None if reload else UiUpdateCoordinator(_request_server_shutdown)
     previous_token = os.environ.get(_UI_TOKEN_ENV) if reload else None
     previous_cookie_nonce = os.environ.get(_UI_COOKIE_NONCE_ENV) if reload else None
     if reload:
@@ -1414,6 +1494,7 @@ def main(
                 runtime,
                 access_token=token,
                 session_cookie_nonce=cookie_nonce,
+                update_coordinator=update_coordinator,
             ),
             host=host,
             port=port,
@@ -1436,6 +1517,12 @@ def main(
         shutdown = getattr(runtime, "shutdown", None)
         if callable(shutdown):
             shutdown()
+    if update_coordinator is not None and update_coordinator.requested:
+        replace_process_with_updater(
+            port=int(port),
+            token=token,
+            previous_version=__version__,
+        )
 
 
 def _parse_main_options(args: list[str]) -> tuple[int | None, bool | None]:
@@ -1463,8 +1550,17 @@ def _parse_port_value(raw: str) -> int:
 
 if __name__ == "__main__":
     main_port, main_open_browser = _parse_main_options(sys.argv[1:])
+    production_restart = _env_truthy(UI_PRODUCTION_RESTART_ENV)
+    restart_token = os.environ.pop(_UI_TOKEN_ENV, None) if production_restart else None
+    if production_restart:
+        os.environ.pop(UI_PRODUCTION_RESTART_ENV, None)
     try:
-        main(reload=True, port=main_port, open_browser=main_open_browser)
+        main(
+            reload=not production_restart,
+            port=main_port,
+            open_browser=main_open_browser,
+            access_token=restart_token,
+        )
     except RuntimeError as exc:
         print(f"pyruns: {exc}", file=sys.stderr)
         raise SystemExit(1) from None

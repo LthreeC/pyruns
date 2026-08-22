@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx'
 import { useWorkspaceStore, useThemeStore } from '@/store'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
+import UpdateControl from './UpdateControl'
 
 const RuntimePanel = lazy(() => import('./RuntimePanel'))
 
@@ -69,16 +70,19 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
       className="flex h-full flex-none flex-col border-r border-border-subtle bg-surface-raised"
       style={{ width }}
     >
-      <div className={clsx('flex h-12 items-center border-b border-border-subtle', compact ? 'justify-center px-0' : 'gap-2 px-4')}>
-        <Rocket className="h-4 w-4 text-accent" />
-        {!compact && (
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-txt-primary">Pyruns</div>
-            <div className="text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
-              {!workspaceReady ? 'workspace needed' : shellWorkspaceActive ? 'shell workspace' : 'script workspace'}
+      <div className="border-b border-border-subtle">
+        <div className={clsx('flex h-12 items-center', compact ? 'justify-center gap-1 px-0' : 'gap-2 px-3')}>
+          <Rocket className="h-4 w-4 text-accent" />
+          {!compact && (
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-txt-primary">Pyruns</div>
+              <div className="truncate text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
+                {!workspaceReady ? 'workspace needed' : shellWorkspaceActive ? 'shell workspace' : 'script workspace'}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+          <UpdateControl compact={compact} />
+        </div>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 py-3">

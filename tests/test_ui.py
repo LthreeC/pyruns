@@ -13,6 +13,7 @@ FRONTEND_MANAGER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "c
 FRONTEND_LAUNCHER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "launcher" / "LauncherPage.tsx"
 FRONTEND_APP_SHELL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "AppShell.tsx"
 FRONTEND_SIDEBAR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "Sidebar.tsx"
+FRONTEND_UPDATE_CONTROL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "UpdateControl.tsx"
 FRONTEND_TASK_DETAIL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "manager" / "TaskDetailPanel.tsx"
 FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.ts"
 FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "types.ts"
@@ -129,6 +130,25 @@ def test_react_app_lazy_loads_routes_and_runtime_panel():
     assert "import RuntimePanel from './RuntimePanel'" not in sidebar
     assert "<Suspense fallback={null}>" in sidebar
     assert "{runtimeOpen && (" in sidebar
+
+
+def test_react_update_control_requires_confirmation_and_full_instance_restart():
+    source = FRONTEND_UPDATE_CONTROL.read_text(encoding="utf-8")
+    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
+    api = FRONTEND_API.read_text(encoding="utf-8")
+
+    assert "<UpdateControl compact={compact} />" in sidebar
+    assert "requestConfirmation({" in source
+    assert "hasUnsavedWork" in source
+    assert "api.checkPyrunsUpdate()" in source
+    assert "api.updatePyruns()" in source
+    assert "info.instance_id !== previousInstanceId" in source
+    assert "window.location.reload()" in source
+    assert "motion-reduce:animate-none" in source
+    assert "if (!systemInfo.update_supported) return null" in source
+    assert "'/api/system/info'" in api
+    assert "'/api/system/update/check'" in api
+    assert "'/api/system/update'" in api
 
 
 def test_frontend_entrypoints_use_local_lightweight_assets():

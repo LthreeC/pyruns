@@ -144,6 +144,34 @@ export interface RuntimeInfo {
   }
 }
 
+export interface UiUpdateResult {
+  ok: boolean
+  previous_version: string
+  installed_version: string
+  exit_code: number
+}
+
+export interface SystemInfo {
+  version: string
+  instance_id: string
+  update_supported: boolean
+  update_state: 'idle' | 'restarting' | 'unavailable' | string
+  last_update: UiUpdateResult | null
+}
+
+export interface UiUpdateResponse {
+  ok: boolean
+  instance_id: string
+  version: string
+  state: 'restarting' | string
+}
+
+export interface UiVersionCheck {
+  current_version: string
+  latest_version: string
+  update_available: boolean
+}
+
 export interface TemplateOption {
   value: string
   label: string

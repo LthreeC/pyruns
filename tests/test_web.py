@@ -1,11 +1,14 @@
 import json
 import ast
+import http.cookiejar
+import os
 import re
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +23,7 @@ from pyruns._config import (
     CONFIG_FILENAME,
     DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
+    ENV_KEY_ROOT,
     SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
@@ -87,6 +91,148 @@ def test_web_app_version_matches_package_version():
     app = create_app(_RouteRuntime())
 
     assert app.version == __version__
+
+
+def test_system_info_exposes_instance_and_disables_updates_without_coordinator(monkeypatch):
+    from pyruns.web import self_update
+
+    monkeypatch.delenv(self_update.UI_UPDATE_RESULT_ENV, raising=False)
+    client = TestClient(create_app(_RouteRuntime()))
+
+    info = client.get("/api/system/info")
+    check = client.get("/api/system/update/check")
+    update = client.post("/api/system/update")
+
+    assert info.status_code == 200
+    assert info.json()["version"] == __version__
+    assert info.json()["instance_id"]
+    assert info.json()["update_supported"] is False
+    assert info.json()["update_state"] == "unavailable"
+    assert info.json()["last_update"] is None
+    assert check.status_code == 503
+    assert update.status_code == 503
+
+
+def test_system_update_check_reports_latest_pypi_version(monkeypatch):
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    monkeypatch.setattr(
+        "pyruns.web.app.check_latest_version",
+        lambda current: {
+            "current_version": current,
+            "latest_version": "0.4.0",
+            "update_available": True,
+        },
+    )
+    coordinator = UiUpdateCoordinator(lambda: None)
+    client = TestClient(create_app(_RouteRuntime(), update_coordinator=coordinator))
+
+    response = client.get("/api/system/update/check")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "current_version": __version__,
+        "latest_version": "0.4.0",
+        "update_available": True,
+    }
+
+    def fail_check(_current):
+        from pyruns.web.self_update import LatestVersionCheckError
+
+        raise LatestVersionCheckError("PyPI unavailable")
+
+    monkeypatch.setattr("pyruns.web.app.check_latest_version", fail_check)
+    failed = client.get("/api/system/update/check")
+    assert failed.status_code == 503
+    assert failed.json()["detail"] == "PyPI unavailable"
+
+
+def test_system_update_requires_idle_runtime_then_gates_task_starts():
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    shutdowns = []
+    runtime = _RouteRuntime(
+        {
+            "active_task_count": 0,
+            "start_task": {"name": "alpha", "status": "running"},
+        }
+    )
+    coordinator = UiUpdateCoordinator(lambda: shutdowns.append("shutdown"))
+    client = TestClient(create_app(runtime, update_coordinator=coordinator))
+
+    response = client.post("/api/system/update")
+    start = client.post("/api/tasks/alpha/run")
+    info = client.get("/api/system/info")
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "restarting"
+    assert shutdowns == ["shutdown"]
+    assert start.status_code == 503
+    assert "new tasks are disabled" in start.json()["detail"]
+    assert info.json()["update_supported"] is True
+    assert info.json()["update_state"] == "restarting"
+
+
+def test_system_update_refuses_active_tasks_without_stopping_server():
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    shutdowns = []
+    runtime = _RouteRuntime({"active_task_count": 2})
+    coordinator = UiUpdateCoordinator(lambda: shutdowns.append("shutdown"))
+    client = TestClient(create_app(runtime, update_coordinator=coordinator))
+
+    response = client.post("/api/system/update")
+
+    assert response.status_code == 409
+    assert "2 queued or running tasks" in response.json()["detail"]
+    assert coordinator.requested is False
+    assert shutdowns == []
+
+
+def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
+    refreshes = []
+
+    class CountingManager:
+        def __init__(self):
+            self.tasks = [
+                {"name": "running", "status": "running"},
+                {"name": "pending", "status": "pending"},
+            ]
+            self.is_processing = False
+            self.callback = None
+
+        def refresh_from_disk(self, **kwargs):
+            refreshes.append(kwargs)
+
+        def list_tasks(self, *, summary=False):
+            return [dict(task) for task in self.tasks]
+
+        def on_change(self, callback):
+            self.callback = callback
+
+        def off_change(self, callback):
+            assert callback is self.callback
+            self.callback = None
+
+        def shutdown(self):
+            pass
+
+    manager = CountingManager()
+    runtime = PyrunsRuntime(
+        root_dir=str(tmp_path),
+        task_manager_factory=lambda _tasks_dir: manager,
+    )
+    try:
+        assert runtime.active_task_count() == 1
+        assert any(call == {"force_all": True, "discover": True} for call in refreshes)
+
+        manager.tasks[0]["status"] = "completed"
+        assert runtime.active_task_count() == 0
+
+        manager.is_processing = True
+        assert runtime.active_task_count() == 1
+    finally:
+        runtime.shutdown()
 
 
 def test_web_app_does_not_launch_server_when_imported_as_multiprocessing_main():
@@ -2801,6 +2947,124 @@ def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
     web_app.main(open_browser=False, port=8123)
 
     assert events == ["run", "shutdown"]
+
+
+def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
+    from pyruns.web import app as web_app
+
+    events = []
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+        def active_task_count(self) -> int:
+            return 0
+
+        def shutdown(self) -> None:
+            events.append("runtime-shutdown")
+
+    def fake_run(app_target, **_kwargs):
+        events.append("server-run")
+        client = TestClient(app_target)
+        assert client.get("/?token=private-token", follow_redirects=False).status_code == 303
+        response = client.post("/api/system/update")
+        assert response.status_code == 202
+
+    def fake_replace(**kwargs):
+        events.append(("replace", kwargs))
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
+    monkeypatch.setattr(web_app, "_request_server_shutdown", lambda: events.append("server-stop"))
+    monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
+    monkeypatch.setattr(web_app, "replace_process_with_updater", fake_replace)
+
+    web_app.main(open_browser=False, port=8123, access_token="private-token")
+
+    assert events == [
+        "server-run",
+        "server-stop",
+        "runtime-shutdown",
+        (
+            "replace",
+            {
+                "port": 8123,
+                "token": "private-token",
+                "previous_version": __version__,
+            },
+        ),
+    ]
+
+
+def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+
+    token = "live-update-smoke-token"
+    code = (
+        "import json; "
+        "from pyruns.web import app; "
+        "app.replace_process_with_updater = "
+        "lambda **kwargs: print('REPLACED=' + json.dumps(kwargs, sort_keys=True), flush=True); "
+        f"app.main(open_browser=False, port={port}, access_token={token!r})"
+    )
+    environment = os.environ.copy()
+    environment[ENV_KEY_ROOT] = str(tmp_path)
+    process = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.settimeout(0.1)
+                if client_socket.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.05)
+        assert process.poll() is None
+
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        )
+        opener.open(f"http://127.0.0.1:{port}/?token={token}", timeout=5).read()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/system/update",
+            data=b"",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with opener.open(request, timeout=5) as response:
+            assert response.status == 202
+
+        stdout, stderr = process.communicate(timeout=15)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+
+    assert process.returncode == 0, stdout + stderr
+    replacement = next(
+        json.loads(line.removeprefix("REPLACED="))
+        for line in stdout.splitlines()
+        if line.startswith("REPLACED=")
+    )
+    assert replacement == {
+        "port": port,
+        "previous_version": __version__,
+        "token": token,
+    }
 
 
 def test_tasks_and_task_detail_endpoints_return_data(tmp_path):

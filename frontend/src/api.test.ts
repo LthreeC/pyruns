@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
   beginAuthorizationAttempt,
+  checkPyrunsUpdate,
   exportTasksCsv,
+  getSystemInfo,
   getWorkspace,
   subscribeUnauthorized,
+  updatePyruns,
   updateEnv,
   updateNotes,
 } from './api'
@@ -44,6 +47,39 @@ describe('API errors', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/env', expect.objectContaining({
       method: 'PATCH',
       body: JSON.stringify({ env: { NEXT: '2' }, expected_env: { PREVIOUS: '1' } }),
+    }))
+  })
+
+  it('uses dedicated system endpoints for full-process updates', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        version: '0.3.0',
+        instance_id: 'old-instance',
+        update_supported: true,
+        update_state: 'idle',
+        last_update: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        current_version: '0.3.0',
+        latest_version: '0.4.0',
+        update_available: true,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        instance_id: 'old-instance',
+        version: '0.3.0',
+        state: 'restarting',
+      }), { status: 202, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getSystemInfo()
+    await checkPyrunsUpdate()
+    await updatePyruns()
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/system/info', expect.any(Object))
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/system/update/check', expect.any(Object))
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/system/update', expect.objectContaining({
+      method: 'POST',
     }))
   })
 

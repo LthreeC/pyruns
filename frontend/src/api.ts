@@ -16,6 +16,9 @@ import type {
   PathValidationResult,
   RuntimeInfo,
   GpuSchedulerSettings,
+  SystemInfo,
+  UiUpdateResponse,
+  UiVersionCheck,
 } from './types'
 
 const BASE = ''
@@ -256,6 +259,14 @@ export function createLogStream(taskName: string, options: {
 export const getMetrics = (includeProcesses = false) => request<SystemMetrics>(
   `/api/system/metrics?include_processes=${includeProcesses ? 'true' : 'false'}`,
 )
+
+export const getSystemInfo = () => request<SystemInfo>('/api/system/info')
+
+export const checkPyrunsUpdate = () => request<UiVersionCheck>('/api/system/update/check')
+
+export const updatePyruns = () => request<UiUpdateResponse>('/api/system/update', {
+  method: 'POST',
+})
 
 export const getLauncherScripts = () => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts')
 export const getLauncherConfigs = (script: string) =>

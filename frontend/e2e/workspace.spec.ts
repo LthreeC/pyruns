@@ -1,5 +1,115 @@
 import { expect, test } from '@playwright/test'
 
+test('idle UI update confirms, waits for a new instance, and reloads', async ({ page, isMobile }) => {
+  let restarted = false
+  let updateChecks = 0
+  let updateRequests = 0
+
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: restarted ? '0.4.0' : '0.3.0',
+      instance_id: restarted ? 'new-instance' : 'old-instance',
+      update_supported: true,
+      update_state: 'idle',
+      last_update: restarted
+        ? {
+            ok: true,
+            previous_version: '0.3.0',
+            installed_version: '0.4.0',
+            exit_code: 0,
+          }
+        : null,
+    },
+  }))
+  await page.route('**/api/system/update/check', route => {
+    updateChecks += 1
+    return route.fulfill({
+      json: {
+        current_version: '0.3.0',
+        latest_version: '0.4.0',
+        update_available: true,
+      },
+    })
+  })
+  await page.route('**/api/system/update', route => {
+    updateRequests += 1
+    restarted = true
+    return route.fulfill({
+      status: 202,
+      json: {
+        ok: true,
+        instance_id: 'old-instance',
+        version: '0.3.0',
+        state: 'restarting',
+      },
+    })
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const updateButton = page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ })
+  const homeLink = page.getByRole('link', { name: 'Home' })
+  await expect(updateButton).toBeVisible()
+  const updateBox = await updateButton.boundingBox()
+  const homeBox = await homeLink.boundingBox()
+  const sidebarBox = await page.locator('aside').boundingBox()
+  if (!updateBox || !homeBox || !sidebarBox) throw new Error('Sidebar controls must have stable layout boxes')
+  expect(updateBox.width).toBeLessThanOrEqual(isMobile ? 44 : 80)
+  expect(updateBox.height).toBeGreaterThanOrEqual(40)
+  expect(updateBox.height).toBeLessThanOrEqual(44)
+  expect(updateBox.x + updateBox.width).toBeLessThanOrEqual(sidebarBox.x + sidebarBox.width + 0.5)
+  expect(updateBox.y).toBeLessThan(homeBox.y)
+  await updateButton.click()
+  const confirmation = page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' })
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: 'Update and Restart' }).click()
+
+  await expect(page.getByRole('dialog', { name: 'Updating Pyruns' })).toBeVisible()
+  await expect(page.getByText('Pyruns updated')).toBeVisible()
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
+  expect(updateChecks).toBe(1)
+  expect(updateRequests).toBe(1)
+})
+
+test('update control reports the current PyPI release without restarting', async ({ page }) => {
+  let updateRequests = 0
+  let releaseVersionCheck!: () => void
+  const versionCheckGate = new Promise<void>(resolve => {
+    releaseVersionCheck = resolve
+  })
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: '0.3.0',
+      instance_id: 'current-instance',
+      update_supported: true,
+      update_state: 'idle',
+      last_update: null,
+    },
+  }))
+  await page.route('**/api/system/update/check', async route => {
+    await versionCheckGate
+    return route.fulfill({
+      json: {
+        current_version: '0.3.0',
+        latest_version: '0.3.0',
+        update_available: false,
+      },
+    })
+  })
+  await page.route('**/api/system/update', route => {
+    updateRequests += 1
+    return route.fulfill({ status: 500, json: { detail: 'Update should not start' } })
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ }).click()
+  await expect(page.getByRole('button', { name: 'Checking for Pyruns updates' })).toBeDisabled()
+  releaseVersionCheck()
+
+  await expect(page.getByText('Pyruns is up to date')).toBeVisible()
+  await expect(page.getByText('v0.3.0 is the latest version on PyPI.')).toBeVisible()
+  expect(updateRequests).toBe(0)
+})
+
 test('launcher, navigation, and theme work without browser errors', async ({ page }) => {
   const browserErrors: string[] = []
   page.on('console', message => {
