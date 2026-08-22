@@ -1032,7 +1032,15 @@ def _materialize_windows_command_file(
         newline="\r\n",
         directory=task_dir,
     )
-    return [*command[:5], wrapper_path], [wrapper_path]
+    # ``cmd /s /c`` strips the quotes around a command path and then splits a
+    # wrapper path containing spaces. The generated wrapper already controls
+    # quoting, so /s is unnecessary and unsafe here.
+    command_prefix = [
+        str(part)
+        for part in command[:5]
+        if str(part).lower() != "/s"
+    ]
+    return [*command_prefix, wrapper_path], [wrapper_path]
 
 
 def _build_shell_command(

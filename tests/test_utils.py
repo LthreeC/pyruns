@@ -2240,6 +2240,50 @@ def test_logger_configuration_can_disable_or_attach_file_handler(tmp_path, monke
         log_utils._LIBRARY_ROOT_LOGGER = original_library_logger
 
 
+def test_logger_configuration_is_idempotent_during_settings_import(monkeypatch):
+    from pyruns.utils import log_utils
+
+    root_logger = logging.getLogger(log_utils.get_library_root())
+    original_handlers = list(root_logger.handlers)
+    original_level = root_logger.level
+    original_propagate = root_logger.propagate
+    original_library_logger = log_utils._LIBRARY_ROOT_LOGGER
+    reentered = False
+
+    def reentrant_setting(key, default=None):
+        nonlocal reentered
+        if not reentered:
+            reentered = True
+            log_utils.configure_project_root_logger()
+        return True if key == "log_enabled" else default
+
+    try:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+
+        monkeypatch.setattr(log_utils, "_LIBRARY_ROOT_LOGGER", None)
+        monkeypatch.setattr("pyruns.utils.settings.get", reentrant_setting)
+
+        log_utils.configure_project_root_logger()
+
+        console_handlers = [
+            handler
+            for handler in root_logger.handlers
+            if bool(getattr(handler, "_pyruns_console_handler", False))
+        ]
+        assert reentered is True
+        assert len(console_handlers) == 1
+    finally:
+        for handler in list(root_logger.handlers):
+            root_logger.removeHandler(handler)
+            handler.close()
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
+        root_logger.setLevel(original_level)
+        root_logger.propagate = original_propagate
+        log_utils._LIBRARY_ROOT_LOGGER = original_library_logger
+
+
 def test_console_logger_ignores_only_an_already_closed_output_stream(capsys):
     from pyruns.utils import log_utils
 

@@ -1537,8 +1537,10 @@ def test_shell_expression_rerun_uses_creation_shell_runtime(tmp_path):
 @pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
 @pytest.mark.parametrize("suffix", [".cmd", ".bat"])
 def test_exec_runs_windows_command_file_with_arguments(tmp_path, suffix):
-    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    script_dir = tmp_path / "scripts with spaces"
+    project = tmp_path / "workspace with spaces"
+    project.mkdir()
+    bootstrap_shell_workspace(str(project / "_pyruns_"))
+    script_dir = project / "scripts with spaces"
     script_dir.mkdir()
     script = script_dir / f"run check{suffix}"
     script.write_text(
@@ -1553,12 +1555,12 @@ def test_exec_runs_windows_command_file_with_arguments(tmp_path, suffix):
     )
 
     result = _run_cli(
-        tmp_path,
+        project,
         "exec",
         "--name",
         f"direct-{suffix[1:]}",
         "--",
-        str(script.relative_to(tmp_path)),
+        str(script.relative_to(project)),
         "value with spaces",
         "x&y",
         "%PATH%",

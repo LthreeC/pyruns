@@ -57,6 +57,12 @@ def configure_project_root_logger(
         if _LIBRARY_ROOT_LOGGER and not force:
             return
 
+        # Register the root logger before loading settings. Importing settings
+        # reaches modules that call get_logger(), so late registration would
+        # let that re-entrant call install a second console handler.
+        _LIBRARY_ROOT_LOGGER = logging.getLogger(get_library_root())
+        _LIBRARY_ROOT_LOGGER.propagate = False
+
         # Read logging settings from workspace config
         try:
             from pyruns.utils.settings import get as _get_setting
@@ -65,9 +71,6 @@ def configure_project_root_logger(
         except Exception:
             log_enabled = True
             log_level = "INFO"
-
-        _LIBRARY_ROOT_LOGGER = logging.getLogger(get_library_root())
-        _LIBRARY_ROOT_LOGGER.propagate = False
 
         if force:
             for handler in list(_LIBRARY_ROOT_LOGGER.handlers):
