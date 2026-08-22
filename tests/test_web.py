@@ -4051,7 +4051,10 @@ def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
             ]
         },
     )
-    listed = client.get("/api/tasks", params={"limit": 10_000, "refresh": True}).json()["items"]
+    listed = client.get(
+        "/api/tasks",
+        params={"limit": 10_000, "refresh": True, "sort": "manual"},
+    ).json()["items"]
     gamma_info = json.loads(
         (workspace / TASKS_DIR / "gamma" / "task_info.json").read_text(encoding="utf-8")
     )
@@ -4105,6 +4108,25 @@ def test_tasks_endpoint_keeps_active_and_new_tasks_ahead_of_old_manual_order(tmp
     assert response.status_code == 200
     names = [item["name"] for item in response.json()["items"]]
     assert names[:4] == ["running-old", "new-pending", "completed-old", "pending-old"]
+
+
+def test_tasks_endpoint_applies_selected_sort_before_pagination(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    _add_task(workspace, "beta")
+    _add_task(workspace, "gamma")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    response = client.get(
+        "/api/tasks",
+        params={"sort": "name_desc", "offset": 1, "limit": 1},
+    )
+    invalid = client.get("/api/tasks", params={"sort": "unsupported"})
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["items"]] == ["beta"]
+    assert invalid.status_code == 422
 
 
 def test_logs_websocket_streams_live_chunks(tmp_path):

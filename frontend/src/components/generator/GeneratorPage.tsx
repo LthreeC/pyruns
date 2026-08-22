@@ -646,7 +646,6 @@ export default function GeneratorPage() {
   const generationDraftRevisionRef = useRef(0)
   const templateListRequestSeqRef = useRef(0)
   const lastWorkspaceDefaultKeyRef = useRef('')
-  const lastShellRootRef = useRef('')
 
   const refreshTemplatesWithFeedback = useCallback(async () => {
     const requestId = ++templateListRequestSeqRef.current
@@ -747,12 +746,6 @@ export default function GeneratorPage() {
 
   useEffect(() => {
     if (isShellWorkspace) {
-      const shellRoot = workspace?.run_root || ''
-      if (shellRoot && lastShellRootRef.current !== shellRoot) {
-        lastShellRootRef.current = shellRoot
-        clearTemplate()
-        refreshTemplatesWithFeedback()
-      }
       if (viewMode !== 'shell') {
         setViewMode('shell')
       }
@@ -762,11 +755,10 @@ export default function GeneratorPage() {
       return
     }
 
-    lastShellRootRef.current = ''
     if (viewMode === 'shell') {
       setViewMode('form')
     }
-  }, [clearTemplate, isShellWorkspace, refreshTemplatesWithFeedback, setShellText, setViewMode, shellText, viewMode, workspace?.run_root])
+  }, [isShellWorkspace, setShellText, setViewMode, shellText, viewMode])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -840,12 +832,11 @@ export default function GeneratorPage() {
   }, [resizingGeneratorSettings])
 
   useEffect(() => {
-    if (!workspace?.run_root || isShellWorkspace) {
+    if (!workspace?.run_root) {
       return
     }
     refreshTemplatesWithFeedback()
   }, [
-    isShellWorkspace,
     refreshTemplatesWithFeedback,
     workspace?.config_default_source,
     workspace?.config_default_source_name,
@@ -2623,7 +2614,13 @@ function ParamRow({
   onChange: (value: any) => void
   onTogglePin: () => void
 }) {
-  const originalType = declaredType || inferParamType(value)
+  const inferredType = declaredType || inferParamType(value)
+  const editingRef = useRef(false)
+  const originalTypeRef = useRef(inferredType)
+  if (!editingRef.current) {
+    originalTypeRef.current = inferredType
+  }
+  const originalType = declaredType || originalTypeRef.current
   const treeParamRow = layoutMode === 'tree'
   const markDraftEdited = useContext(GeneratorDraftEditContext)
 
@@ -2638,6 +2635,7 @@ function ParamRow({
   const handleLocalValueChange = (nextValue: string) => {
     setLocalValue(nextValue)
     markDraftEdited()
+    onChange(nextValue)
   }
 
   const commitValue = () => {
@@ -2745,8 +2743,12 @@ function ParamRow({
               type="text"
               aria-label={`${name} parameter value`}
               value={localValue}
+              onFocus={() => { editingRef.current = true }}
               onChange={event => handleLocalValueChange(event.target.value)}
-              onBlur={commitValue}
+              onBlur={() => {
+                commitValue()
+                editingRef.current = false
+              }}
               onKeyDown={event => {
                 if (event.key === 'Enter') {
                   event.preventDefault()
@@ -2835,8 +2837,12 @@ function ParamRow({
           type="text"
           aria-label={`${name} parameter value`}
           value={localValue}
+          onFocus={() => { editingRef.current = true }}
           onChange={event => handleLocalValueChange(event.target.value)}
-          onBlur={commitValue}
+          onBlur={() => {
+            commitValue()
+            editingRef.current = false
+          }}
           onKeyDown={event => {
             if (event.key === 'Enter') {
               event.preventDefault()

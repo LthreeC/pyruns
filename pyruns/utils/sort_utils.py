@@ -1,5 +1,6 @@
 """Shared task sorting and filtering helpers."""
 
+import math
 import re
 from typing import Dict, List
 
@@ -14,6 +15,14 @@ _INACTIVE_TIE_PRIORITIES = {
 _NON_DIGIT_PATTERN = re.compile(r"\D+")
 _NATURAL_CHUNK_PATTERN = re.compile(r"(\d+)")
 _COLON_SPACES_PATTERN = re.compile(r"\s*:\s*")
+TASK_SORT_MODES = frozenset({
+    "priority",
+    "manual",
+    "activity_desc",
+    "activity_asc",
+    "name_asc",
+    "name_desc",
+})
 
 
 def _timestamp_weight(task: Dict[str, object]) -> int:
@@ -74,16 +83,61 @@ def task_manager_sort_key(task: Dict[str, object]) -> tuple:
     )
 
 
-def sort_tasks_for_manager(tasks: List[Dict[str, object]]) -> List[Dict[str, object]]:
-    """Return pinned tasks first, then active/fresh tasks ahead of old manual order."""
+def _manual_sort_key(task: Dict[str, object]) -> tuple:
+    order = task.get("task_order")
+    try:
+        normalized_order = float(order) if order is not None else math.nan
+    except (TypeError, ValueError):
+        normalized_order = math.nan
+    if math.isfinite(normalized_order):
+        return (0, normalized_order, _natural_name_key(task.get("name", "")))
+    return (1, *task_manager_sort_key(task))
+
+
+def _sort_manager_group(
+    tasks: List[Dict[str, object]],
+    sort_mode: str,
+) -> List[Dict[str, object]]:
+    if sort_mode == "priority":
+        return sorted(tasks, key=task_manager_sort_key)
+    if sort_mode == "manual":
+        return sorted(tasks, key=_manual_sort_key)
+    if sort_mode == "activity_desc":
+        return sorted(
+            tasks,
+            key=lambda task: (-_timestamp_weight(task), _natural_name_key(task.get("name", ""))),
+        )
+    if sort_mode == "activity_asc":
+        return sorted(
+            tasks,
+            key=lambda task: (_timestamp_weight(task), _natural_name_key(task.get("name", ""))),
+        )
+    if sort_mode == "name_asc":
+        return sorted(tasks, key=lambda task: _natural_name_key(task.get("name", "")))
+    if sort_mode == "name_desc":
+        return sorted(
+            tasks,
+            key=lambda task: _natural_name_key(task.get("name", "")),
+            reverse=True,
+        )
+    raise ValueError(f"Unknown task sort mode: {sort_mode}")
+
+
+def sort_tasks_for_manager(
+    tasks: List[Dict[str, object]],
+    sort_mode: str = "priority",
+) -> List[Dict[str, object]]:
+    """Sort Manager cards within pinned and unpinned groups."""
+    if sort_mode not in TASK_SORT_MODES:
+        raise ValueError(f"Unknown task sort mode: {sort_mode}")
     valid = [task for task in tasks if task is not None]
-    pinned = sorted(
+    pinned = _sort_manager_group(
         [task for task in valid if task.get("pinned")],
-        key=task_manager_sort_key,
+        sort_mode,
     )
-    others = sorted(
+    others = _sort_manager_group(
         [task for task in valid if not task.get("pinned")],
-        key=task_manager_sort_key,
+        sort_mode,
     )
     return pinned + others
 

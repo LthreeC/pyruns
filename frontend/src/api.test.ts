@@ -5,6 +5,7 @@ import {
   beginAuthorizationAttempt,
   checkPyrunsUpdate,
   exportTasksCsv,
+  getTasks,
   getSystemInfo,
   getWorkspace,
   subscribeUnauthorized,
@@ -18,6 +19,21 @@ afterEach(() => {
 })
 
 describe('API errors', () => {
+  it('sends the selected Manager card order to the task endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ items: [], total: 0, offset: 0, limit: 50, has_more: false }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getTasks({ sort: 'name_desc', offset: 50, limit: 50 })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/tasks?offset=50&limit=50&sort=name_desc',
+      expect.any(Object),
+    )
+  })
+
   it('sends the notes version used for optimistic concurrency', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ ok: true, task: { name: 'alpha', notes: 'next' } }),

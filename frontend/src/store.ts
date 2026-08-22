@@ -6,6 +6,7 @@ import type {
   RuntimeInfo,
   ScriptCandidate,
   Task,
+  TaskSortMode,
   TaskStatusCounts,
   TemplateContent,
   WorkspaceInfo,
@@ -29,10 +30,19 @@ let confirmationIdSeq = 0
 let confirmationResolver: ((confirmed: boolean) => void) | null = null
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
+const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
 const MONITOR_TASK_PAGE_SIZE = 200
 const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
+const TASK_SORT_MODES = new Set<TaskSortMode>([
+  'priority',
+  'manual',
+  'activity_desc',
+  'activity_asc',
+  'name_asc',
+  'name_desc',
+])
 
 function readLocalStorage(key: string) {
   if (typeof window === 'undefined') {
@@ -166,6 +176,11 @@ function readStoredNumber(key: string, fallback: number, min: number, max: numbe
   }
   const parsed = Number.parseInt(raw, 10)
   return clampInteger(parsed, fallback, min, max)
+}
+
+function readStoredTaskSortMode(): TaskSortMode {
+  const value = readLocalStorage(MANAGER_SORT_STORAGE_KEY) as TaskSortMode | null
+  return value && TASK_SORT_MODES.has(value) ? value : 'priority'
 }
 
 function readStoredStringArray(key: string) {
@@ -534,12 +549,14 @@ interface TaskState {
   hasMore: boolean
   query: string
   statusFilter: string
+  sortMode: TaskSortMode
   selectedIds: Set<string>
   loading: boolean
   error: string | null
   columns: number
   setQuery: (q: string) => void
   setStatusFilter: (s: string) => void
+  setSortMode: (mode: TaskSortMode) => void
   setOffset: (o: number) => void
   setColumns: (n: number) => void
   fetchTasks: () => Promise<void>
@@ -575,6 +592,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   hasMore: false,
   query: '',
   statusFilter: 'All',
+  sortMode: readStoredTaskSortMode(),
   selectedIds: new Set(),
   loading: false,
   error: null,
@@ -591,6 +609,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set({ statusFilter: s, offset: 0, selectedIds: new Set() })
     }
   },
+  setSortMode(sortMode) {
+    if (sortMode !== get().sortMode) {
+      taskRequestSeq += 1
+      writeLocalStorage(MANAGER_SORT_STORAGE_KEY, sortMode)
+      set({ sortMode, offset: 0, selectedIds: new Set() })
+    }
+  },
   setOffset(o) {
     if (o !== get().offset) {
       taskRequestSeq += 1
@@ -605,7 +630,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   async fetchTasks() {
     const requestId = ++taskRequestSeq
     const workspaceKey = currentWorkspaceKey()
-    const { query, statusFilter, offset, limit } = get()
+    const { query, statusFilter, sortMode, offset, limit } = get()
     let requestedOffset = offset
     const isCurrentRequest = () => {
       const current = get()
@@ -613,12 +638,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         && workspaceKey === currentWorkspaceKey()
         && current.query === query
         && current.statusFilter === statusFilter
+        && current.sortMode === sortMode
         && current.offset === requestedOffset
         && current.limit === limit
     }
     set({ loading: true, error: null })
     try {
-      const page = await api.getTasks({ query, status: statusFilter, offset, limit, summary: true })
+      const page = await api.getTasks({ query, status: statusFilter, sort: sortMode, offset, limit, summary: true })
       if (!isCurrentRequest()) {
         return
       }
@@ -632,6 +658,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           const retryPage = await api.getTasks({
             query,
             status: statusFilter,
+            sort: sortMode,
             offset: nextOffset,
             limit,
             summary: true,

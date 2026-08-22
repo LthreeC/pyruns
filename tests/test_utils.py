@@ -1150,6 +1150,54 @@ def test_sort_tasks_for_manager_uses_natural_name_tiebreaker():
     ]
 
 
+def test_sort_tasks_for_manager_supports_explicit_card_orders():
+    tasks = [
+        {
+            "name": "alpha",
+            "status": "completed",
+            "created_at": "2026-06-03_10-00-00",
+            "task_order": 2,
+        },
+        {
+            "name": "task10",
+            "status": "pending",
+            "created_at": "2026-06-01_10-00-00",
+            "task_order": 0,
+        },
+        {
+            "name": "task2",
+            "status": "failed",
+            "created_at": "2026-06-02_10-00-00",
+            "task_order": 1,
+        },
+        {
+            "name": "pinned",
+            "status": "pending",
+            "created_at": "2026-05-01_10-00-00",
+            "pinned": True,
+        },
+    ]
+
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, "manual")] == [
+        "pinned", "task10", "task2", "alpha",
+    ]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, "activity_desc")] == [
+        "pinned", "alpha", "task2", "task10",
+    ]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, "activity_asc")] == [
+        "pinned", "task10", "task2", "alpha",
+    ]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, "name_asc")] == [
+        "pinned", "alpha", "task2", "task10",
+    ]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, "name_desc")] == [
+        "pinned", "task10", "task2", "alpha",
+    ]
+
+    with pytest.raises(ValueError, match="Unknown task sort mode"):
+        sort_tasks_for_manager(tasks, "unsupported")
+
+
 @pytest.fixture(autouse=True)
 def clean_cache():
     # Before each test

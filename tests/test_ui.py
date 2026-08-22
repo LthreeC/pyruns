@@ -814,7 +814,9 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "type DragPlacement = 'before' | 'after'" in source
     assert "api.reorderTasks" in source
     assert "const REORDER_TASK_LIMIT = 10_000" in source
-    assert "api.getTasks({ limit: REORDER_TASK_LIMIT, refresh: false, compact: true })" in source
+    assert "limit: REORDER_TASK_LIMIT" in source
+    assert "sort: sortMode" in source
+    assert "setSortMode('manual')" in source
     assert "const visibleSectionTasks = tasks.filter" in source
     assert "already first among the visible tasks" in source
     assert "buildReorderedItems" in source
@@ -836,7 +838,7 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "summary?: boolean" in api
     assert "sp.set('summary', String(params.summary))" in api
     assert "sp.set('compact', String(params.compact))" in api
-    assert "api.getTasks({ query, status: statusFilter, offset, limit, summary: true })" in store
+    assert "api.getTasks({ query, status: statusFilter, sort: sortMode, offset, limit, summary: true })" in store
     assert "page.items.length === 0" in store
     assert "Math.floor((page.total - 1) / limit) * limit" in store
     assert "retryPage = await api.getTasks" in store

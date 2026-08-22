@@ -14,7 +14,7 @@ import time
 import webbrowser
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import uvicorn
@@ -790,6 +790,14 @@ def create_app(
         refresh: bool = True,
         summary: bool = False,
         compact: bool = False,
+        sort: Literal[
+            "priority",
+            "manual",
+            "activity_desc",
+            "activity_asc",
+            "name_asc",
+            "name_desc",
+        ] = "priority",
     ) -> dict[str, Any]:
         page = get_runtime().list_tasks(
             query=query,
@@ -798,6 +806,7 @@ def create_app(
             limit=limit,
             refresh=refresh,
             summary=summary,
+            sort_mode=sort,
         )
         items = [_compact_monitor_task(item) for item in page.items] if compact else page.items
         return {

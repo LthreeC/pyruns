@@ -986,3 +986,126 @@ test('template list load failure has a retry that clears the error', async ({ pa
   await expect(page.getByRole('option', { name: 'Task A' })).toBeVisible()
   expect(attempts).toBe(2)
 })
+
+test('generator preserves shell and uncommitted form drafts across navigation', async ({ page }) => {
+  let activeWorkspace: Record<string, unknown> = {
+    run_root: 'C:/pyruns-e2e/shell-workspace',
+    working_root: 'C:/pyruns-e2e',
+    tasks_dir: 'C:/pyruns-e2e/shell-workspace/tasks',
+    workspace_kind: 'shell',
+    workspace_ready: true,
+    script_path: '',
+    script_name: 'Shell',
+    native_file_picker: false,
+    settings: {},
+    templates: [],
+    shell_runtime: {
+      mode: 'follow',
+      source: 'test',
+      terminal_kind: 'powershell',
+      display_name: 'PowerShell',
+      executable: 'powershell.exe',
+    },
+  }
+  await page.route('**/api/workspace', route => route.fulfill({ json: activeWorkspace }))
+  await page.route('**/api/templates', route => route.fulfill({
+    json: { items: [{ value: 'default.yaml', label: 'Default' }] },
+  }))
+  await page.route('**/api/templates/content?*', route => route.fulfill({
+    json: {
+      value: 'default.yaml',
+      label: 'Default',
+      path: 'C:/pyruns-e2e/default.yaml',
+      content: 'epochs: 10\n',
+      parsed_config: { epochs: 10 },
+      read_only: false,
+      mode_hint: 'form',
+    },
+  }))
+
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  const shellEditor = page.getByRole('textbox', { name: 'Task shell editor' })
+  await expect(shellEditor).toBeVisible()
+  await shellEditor.fill('echo shell-draft-kept')
+
+  await page.getByRole('link', { name: 'Manager' }).click()
+  await page.getByRole('link', { name: 'Generator' }).click()
+  await expect(page.getByRole('textbox', { name: 'Task shell editor' })).toContainText('echo shell-draft-kept')
+
+  activeWorkspace = {
+    run_root: 'C:/pyruns-e2e/script-workspace',
+    working_root: 'C:/pyruns-e2e',
+    tasks_dir: 'C:/pyruns-e2e/script-workspace/tasks',
+    workspace_kind: 'script',
+    workspace_ready: true,
+    script_path: 'C:/pyruns-e2e/train.py',
+    script_name: 'train.py',
+    native_file_picker: false,
+    settings: {},
+    templates: [],
+  }
+
+  await page.reload()
+  const epochs = page.getByRole('textbox', { name: 'epochs parameter value' })
+  await expect(epochs).toHaveValue('10')
+  await epochs.fill('27')
+  await page.getByRole('link', { name: 'Manager' }).evaluate((link: HTMLElement) => link.click())
+  await page.getByRole('link', { name: 'Generator' }).click()
+
+  const restoredEpochs = page.getByRole('textbox', { name: 'epochs parameter value' })
+  await expect(restoredEpochs).toHaveValue('27')
+  await restoredEpochs.focus()
+  await page.getByRole('button', { name: 'YAML' }).click()
+  await expect(page.getByRole('textbox', { name: 'Task YAML editor' })).toContainText('epochs: 27')
+})
+
+test('manager applies and remembers the selected card order', async ({ page }) => {
+  const baseTask = {
+    status: 'pending',
+    dir: '',
+    config: {},
+    config_text: '',
+    config_file: '',
+    task_kind: 'shell',
+    pinned: false,
+    notes: '',
+    env: {},
+    created_at: '2026-08-23_10-00-00',
+    start_times: [],
+    finish_times: [],
+    pids: [],
+    progress: 0,
+    run_index: 0,
+    preview_text: '',
+    search_text: '',
+    records: [],
+    tracks: [],
+  }
+  const tasks = ['alpha', 'beta', 'gamma'].map(name => ({ ...baseTask, name }))
+  await page.route('**/api/tasks?*', route => {
+    const sort = new URL(route.request().url()).searchParams.get('sort')
+    const items = sort === 'name_desc' ? [...tasks].reverse() : tasks
+    return route.fulfill({
+      json: {
+        items,
+        total: items.length,
+        offset: 0,
+        limit: 50,
+        has_more: false,
+        status_counts: { pending: 3, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 },
+      },
+    })
+  })
+
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const sortSelect = page.getByRole('combobox', { name: 'Sort task cards' })
+  await sortSelect.selectOption('name_desc')
+  await expect(page.locator('[data-task-card]')).toHaveCount(3)
+  await expect.poll(() => page.locator('[data-task-card]').evaluateAll(cards => (
+    cards.map(card => card.getAttribute('data-task-card'))
+  ))).toEqual(['gamma', 'beta', 'alpha'])
+
+  await page.getByRole('link', { name: 'Generator' }).click()
+  await page.getByRole('link', { name: 'Manager' }).click()
+  await expect(page.getByRole('combobox', { name: 'Sort task cards' })).toHaveValue('name_desc')
+})

@@ -1132,6 +1132,7 @@ class PyrunsRuntime:
         limit: int = 50,
         refresh: bool = True,
         summary: bool = False,
+        sort_mode: str = "priority",
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh)
@@ -1148,7 +1149,7 @@ class PyrunsRuntime:
             task_status = str(task.get("status", "pending") or "pending").lower()
             status_counts[task_status] = status_counts.get(task_status, 0) + 1
         tasks = filter_tasks(all_tasks, query, status)
-        ordered = sort_tasks_for_manager(tasks)
+        ordered = sort_tasks_for_manager(tasks, sort_mode)
 
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))

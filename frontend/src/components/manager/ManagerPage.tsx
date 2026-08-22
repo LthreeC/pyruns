@@ -10,7 +10,7 @@ import {
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowDown, ArrowUp, ChevronDown, Cpu, GripVertical, Loader2, MousePointer2, Pin, Play,
+  AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, Cpu, GripVertical, Loader2, MousePointer2, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -23,13 +23,21 @@ import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from './TaskDetailPanel'
-import type { Task } from '@/types'
+import type { Task, TaskSortMode } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { ALL_STATUSES, STATUS_LABELS } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', ...ALL_STATUSES]
+const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string }[] = [
+  { value: 'priority', label: 'Smart priority' },
+  { value: 'manual', label: 'Manual order' },
+  { value: 'activity_desc', label: 'Recent activity' },
+  { value: 'activity_asc', label: 'Oldest activity' },
+  { value: 'name_asc', label: 'Name A-Z' },
+  { value: 'name_desc', label: 'Name Z-A' },
+]
 type DragTarget = 'pinned' | 'tasks'
 type DragPlacement = 'before' | 'after'
 type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
@@ -183,8 +191,8 @@ function hasReorderChanges(tasks: Task[], items: { name: string; pinned: boolean
 
 export default function ManagerPage() {
   const {
-    tasks, total, statusCounts, offset, limit, query, statusFilter, selectedIds, loading, error, columns,
-    setQuery, setStatusFilter, setOffset, setColumns, fetchTasks,
+    tasks, total, statusCounts, offset, limit, query, statusFilter, sortMode, selectedIds, loading, error, columns,
+    setQuery, setStatusFilter, setSortMode, setOffset, setColumns, fetchTasks,
     toggleSelect, selectAll, clearSelection,
   } = useTaskStore()
 
@@ -233,7 +241,7 @@ export default function ManagerPage() {
 
   useEffect(() => {
     void fetchTasks()
-  }, [query, statusFilter, offset, fetchTasks, workspaceEpoch])
+  }, [query, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch])
 
   useEffect(() => {
     detailRequestSeqRef.current += 1
@@ -546,6 +554,14 @@ export default function ManagerPage() {
     setTaskActionMessage('')
   }, [selectMode])
 
+  const refreshManualOrder = useCallback(async () => {
+    if (useTaskStore.getState().sortMode === 'manual') {
+      await fetchTasks()
+      return
+    }
+    setSortMode('manual')
+  }, [fetchTasks, setSortMode])
+
   const handleTaskDrop = useCallback(async (intent: DropIntent, taskName = draggedTaskNameRef.current) => {
     const task = tasks.find(item => item.name === taskName)
     setDragOverTarget(null)
@@ -566,7 +582,12 @@ export default function ManagerPage() {
     }
 
     try {
-      const allTasks = await api.getTasks({ limit: REORDER_TASK_LIMIT, refresh: false, compact: true })
+      const allTasks = await api.getTasks({
+        limit: REORDER_TASK_LIMIT,
+        refresh: false,
+        compact: true,
+        sort: sortMode,
+      })
       if (rejectIncompleteReorder(allTasks)) {
         return
       }
@@ -586,13 +607,13 @@ export default function ManagerPage() {
       } else {
         setTaskActionMessage(`Moved ${task.name}.`)
       }
-      await fetchTasks()
+      await refreshManualOrder()
     } catch (err) {
       notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
     } finally {
       finishTaskAction(task.name)
     }
-  }, [beginTaskAction, fetchTasks, notify, rejectIncompleteReorder, tasks, finishTaskAction])
+  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction])
 
   const handleMoveTask = useCallback(async (task: Task, direction: -1 | 1) => {
     if (!beginTaskAction(task.name, 'move')) return
@@ -609,7 +630,12 @@ export default function ManagerPage() {
         return
       }
 
-      const allTasks = await api.getTasks({ limit: REORDER_TASK_LIMIT, refresh: false, compact: true })
+      const allTasks = await api.getTasks({
+        limit: REORDER_TASK_LIMIT,
+        refresh: false,
+        compact: true,
+        sort: sortMode,
+      })
       if (rejectIncompleteReorder(allTasks)) {
         return
       }
@@ -626,13 +652,13 @@ export default function ManagerPage() {
       }
       await api.reorderTasks(items)
       setTaskActionMessage(`Moved ${task.name} ${direction < 0 ? 'earlier' : 'later'}.`)
-      await fetchTasks()
+      await refreshManualOrder()
     } catch (err) {
       notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
     } finally {
       finishTaskAction(task.name)
     }
-  }, [beginTaskAction, fetchTasks, notify, rejectIncompleteReorder, tasks, finishTaskAction])
+  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction])
 
   useEffect(() => {
     const applyDropIntent = (intent: DropIntent | null) => {
@@ -847,6 +873,24 @@ export default function ManagerPage() {
                   <option key={option} value={option}>
                     {option === 'All' ? 'All' : STATUS_LABELS[option as TaskStatus]}
                   </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            </div>
+
+            <div className="relative flex-1 sm:flex-none">
+              <ArrowUpDown className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              <select
+                value={sortMode}
+                onChange={event => setSortMode(event.target.value as TaskSortMode)}
+                aria-label="Sort task cards"
+                title={sortMode === 'priority'
+                  ? 'Pinned first, then active and recently added tasks'
+                  : 'Sort task cards'}
+                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-8 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
+              >
+                {TASK_SORT_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
               <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
@@ -1306,7 +1350,7 @@ const TaskCard = memo(function TaskCard({
             dragging && 'bg-accent/10 text-accent',
             (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
           )}
-          title="Drag to reorder; keyboard users can use Move earlier and Move later"
+          title="Drag to set manual order; keyboard users can use Move earlier and Move later"
         >
           <GripVertical className="h-3.5 w-3.5" />
         </span>

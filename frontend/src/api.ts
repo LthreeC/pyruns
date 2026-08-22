@@ -5,6 +5,7 @@ import type {
   Task,
   TaskLogs,
   TaskPage,
+  TaskSortMode,
   TemplateContent,
   WorkspaceInfo,
   SystemMetrics,
@@ -141,6 +142,7 @@ export const getTasks = (params: {
   refresh?: boolean
   summary?: boolean
   compact?: boolean
+  sort?: TaskSortMode
 } = {}) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
@@ -150,6 +152,7 @@ export const getTasks = (params: {
   if (params.refresh != null) sp.set('refresh', String(params.refresh))
   if (params.summary != null) sp.set('summary', String(params.summary))
   if (params.compact != null) sp.set('compact', String(params.compact))
+  if (params.sort) sp.set('sort', params.sort)
   return request<TaskPage>(`/api/tasks?${sp}`)
 }
 

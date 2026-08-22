@@ -1,6 +1,7 @@
 export type TaskKind = 'python' | 'shell'
 export type WorkspaceKind = 'script' | 'shell'
 export type GeneratorMode = 'form' | 'yaml' | 'shell'
+export type TaskSortMode = 'priority' | 'manual' | 'activity_desc' | 'activity_asc' | 'name_asc' | 'name_desc'
 
 export interface GPUWaitDeviceStatus {
   index: number

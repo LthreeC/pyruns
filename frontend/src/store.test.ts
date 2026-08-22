@@ -43,6 +43,7 @@ describe('workspace-scoped stores', () => {
     vi.resetAllMocks()
     useWorkspaceStore.getState().setWorkspace(null)
     useRuntimeStore.setState({ dirty: false })
+    useTaskStore.setState({ sortMode: 'priority' })
     useGeneratorStore.setState({
       selectedTemplate: '',
       templateContent: null,
@@ -108,6 +109,25 @@ describe('workspace-scoped stores', () => {
     expect(useTaskStore.getState().total).toBe(1)
     expect(useTaskStore.getState().selectedIds).toEqual(new Set(['kept']))
     expect(useTaskStore.getState().error).toBe('offline')
+  })
+
+  it('uses and persists the selected Manager card order', async () => {
+    const setItem = vi.fn()
+    vi.stubGlobal('window', { localStorage: { getItem: vi.fn(), setItem } })
+    vi.mocked(api.getTasks).mockResolvedValueOnce({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+    })
+
+    useTaskStore.getState().setSortMode('activity_asc')
+    await useTaskStore.getState().fetchTasks()
+
+    expect(setItem).toHaveBeenCalledWith('pyruns_manager_sort', 'activity_asc')
+    expect(api.getTasks).toHaveBeenCalledWith(expect.objectContaining({ sort: 'activity_asc' }))
+    expect(useTaskStore.getState().sortMode).toBe('activity_asc')
   })
 
   it('preserves the current generator draft after a template load failure', async () => {
