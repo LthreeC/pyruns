@@ -152,6 +152,85 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
   expect(browserErrors).toEqual([])
 })
 
+test('monitor terminal search stays responsive with a large scrollback buffer', async ({ page }) => {
+  const lineCount = 12_050
+  const logContent = Array.from(
+    { length: lineCount },
+    (_, index) => `terminal line ${String(index).padStart(5, '0')}${index === lineCount - 1 ? ' terminal-target' : ''}`,
+  ).join('\n')
+  const task = {
+    name: 'large-log',
+    status: 'completed',
+    task_kind: 'shell',
+    dir: '/tmp/large-log',
+    config_file: '/tmp/large-log/task.sh',
+    config: {},
+    config_text: '',
+    created_at: '2026-08-23T00:00:00Z',
+    run_index: 1,
+    pinned: false,
+    env: {},
+    start_times: [],
+    finish_times: [],
+    pids: [],
+    durations: [],
+    exit_codes: [],
+    source_states: [],
+    records: [],
+    tracks: [],
+    notes: '',
+    preview_text: '',
+    search_text: '',
+  }
+
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [task],
+    total: 1,
+    offset: 0,
+    limit: 200,
+    has_more: false,
+    status_counts: {
+      pending: 0,
+      queued: 0,
+      running: 0,
+      completed: 1,
+      failed: 0,
+      cancelled: 0,
+    },
+  } }))
+  await page.route('**/api/tasks/large-log/logs?*', route => route.fulfill({ json: {
+    task_name: 'large-log',
+    selected_log: 'run1.log',
+    available_logs: ['run1.log'],
+    content: logContent,
+    offset: logContent.length,
+    log_identity: 'large-log-v1',
+    tail_truncated: false,
+    tail_limit_bytes: 0,
+  } }))
+
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  const terminal = page.getByRole('region', { name: 'Read-only logs for large-log' })
+  await expect(terminal.locator('.xterm-rows')).toContainText('terminal-target', { timeout: 10_000 })
+  await terminal.click()
+  await page.keyboard.press('Control+f')
+
+  const search = page.getByRole('textbox', { name: 'Search terminal logs' })
+  await expect(search).toBeFocused()
+  const typingStarted = Date.now()
+  await search.pressSequentially('terminal-target')
+  expect(Date.now() - typingStarted).toBeLessThan(1_000)
+  await expect(search).toHaveValue('terminal-target')
+
+  const searchForm = page.getByRole('search')
+  await expect(searchForm.getByRole('status')).toHaveText('Match', { timeout: 3_000 })
+  await page.keyboard.press('F3')
+  await expect(searchForm.getByRole('status')).toHaveText('Match')
+  await page.keyboard.press('Escape')
+  await expect(search).toBeHidden()
+  await expect(page.getByRole('textbox', { name: 'Read-only task log output' })).toBeFocused()
+})
+
 test('opening the workspace launcher preserves unsaved runtime edits', async ({ page }) => {
   await page.goto('/manager?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'Runtime' }).click()

@@ -58,6 +58,12 @@ import {
   resolveMonitorScrollback,
 } from '@/utils/monitorSettings'
 import { configureReadOnlyTerminalInput } from '@/utils/monitorAccessibility'
+import {
+  shouldDecorateTerminalSearch,
+  TERMINAL_SEARCH_DEBOUNCE_MS,
+  TERMINAL_SEARCH_HIGHLIGHT_LIMIT,
+  terminalSearchResultLabel,
+} from '@/utils/monitorSearch'
 import { pickInitialMonitorTask } from '@/utils/monitorSelection'
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
@@ -72,7 +78,6 @@ const LOG_STREAM_FLUSH_MS = 50
 const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
 const TASK_EVENT_FALLBACK_POLL_MS = 60_000
 const TASK_EVENT_DEGRADED_POLL_MS = 5_000
-const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000
 // Keep this aligned with the fields blanked by the server's compact Monitor payload.
 const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'config',
@@ -107,6 +112,8 @@ type PendingLiveLogChunk = {
   offset?: number
   logIdentity?: string
 }
+
+type TerminalSearchDirection = 'next' | 'previous'
 
 function clampMonitorSidebarWidth(value: number) {
   if (!Number.isFinite(value)) {
@@ -230,6 +237,9 @@ export default function MonitorPage() {
   const terminalSearchInputRef = useRef<HTMLInputElement | null>(null)
   const terminalSearchShortcutScopeRef = useRef(false)
   const terminalSearchQueryRef = useRef('')
+  const terminalSearchDecoratedRef = useRef<boolean | null>(null)
+  const terminalSearchResultsRef = useRef<{ resultIndex: number; resultCount: number } | null>(null)
+  const terminalSearchTimerRef = useRef<number | null>(null)
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
   const wsStreamActiveRef = useRef(false)
@@ -239,7 +249,6 @@ export default function MonitorPage() {
   const taskRefreshInFlightRef = useRef(false)
   const taskRefreshQueuedRef = useRef(false)
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
-  const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
   const [terminalSearchStatus, setTerminalSearchStatus] = useState('')
   const selectedTaskFromList = useMemo(
     () => monitorTasks.find(task => task.name === selectedTaskName),
@@ -401,29 +410,77 @@ export default function MonitorPage() {
     setStopConfirmTask('')
     setTaskActionPending(null)
   }, [workspaceKey])
-  terminalSearchQueryRef.current = terminalSearchQuery
-
-  const runTerminalSearch = useCallback((direction: 'next' | 'previous' = 'next', incremental = false) => {
-    const query = terminalSearchQueryRef.current
+  const runTerminalSearch = useCallback((
+    query: string,
+    direction: TerminalSearchDirection = 'next',
+    incremental = false,
+  ) => {
     const searchAddon = searchAddonRef.current
-    if (!searchAddon) {
-      return false
+    const term = xtermRef.current
+    if (!searchAddon || !term) {
+      return ''
     }
 
     if (!query) {
       searchAddon.clearDecorations()
-      setTerminalSearchStatus('')
-      return false
+      terminalSearchDecoratedRef.current = null
+      terminalSearchResultsRef.current = null
+      return ''
     }
 
-    const found = direction === 'previous'
-      ? searchAddon.findPrevious(query, TERMINAL_SEARCH_OPTIONS)
-      : searchAddon.findNext(query, { ...TERMINAL_SEARCH_OPTIONS, incremental })
-    if (!found) {
-      setTerminalSearchStatus('No match')
+    const decorated = shouldDecorateTerminalSearch(term.buffer.active.length)
+    if (terminalSearchDecoratedRef.current !== decorated) {
+      searchAddon.clearDecorations()
+      terminalSearchDecoratedRef.current = decorated
     }
-    return found
+
+    terminalSearchResultsRef.current = null
+    const searchOptions = decorated
+      ? { ...TERMINAL_SEARCH_OPTIONS, incremental }
+      : { incremental }
+    const found = direction === 'previous'
+      ? searchAddon.findPrevious(query, searchOptions)
+      : searchAddon.findNext(query, searchOptions)
+    const result = terminalSearchResultsRef.current as {
+      resultIndex: number
+      resultCount: number
+    } | null
+    return terminalSearchResultLabel({
+      found,
+      decorated,
+      resultIndex: result?.resultIndex,
+      resultCount: result?.resultCount,
+    })
   }, [])
+
+  const cancelPendingTerminalSearch = useCallback(() => {
+    if (terminalSearchTimerRef.current !== null) {
+      window.clearTimeout(terminalSearchTimerRef.current)
+      terminalSearchTimerRef.current = null
+    }
+  }, [])
+
+  const scheduleTerminalSearch = useCallback((query: string) => {
+    cancelPendingTerminalSearch()
+    terminalSearchQueryRef.current = query
+    if (!query) {
+      setTerminalSearchStatus(runTerminalSearch('', 'next', true))
+      return
+    }
+
+    setTerminalSearchStatus('Searching...')
+    terminalSearchTimerRef.current = window.setTimeout(() => {
+      terminalSearchTimerRef.current = null
+      if (terminalSearchQueryRef.current === query) {
+        setTerminalSearchStatus(runTerminalSearch(query, 'next', true))
+      }
+    }, TERMINAL_SEARCH_DEBOUNCE_MS)
+  }, [cancelPendingTerminalSearch, runTerminalSearch])
+
+  const runPendingTerminalSearchNow = useCallback((direction: TerminalSearchDirection) => {
+    cancelPendingTerminalSearch()
+    setTerminalSearchStatus(runTerminalSearch(terminalSearchQueryRef.current, direction))
+  }, [cancelPendingTerminalSearch, runTerminalSearch])
 
   const isTerminalSearchShortcutTarget = useCallback((target: EventTarget | null) => {
     if (!(target instanceof Node)) {
@@ -436,14 +493,17 @@ export default function MonitorPage() {
   }, [])
 
   const closeTerminalSearch = useCallback((restoreTerminalFocus = true) => {
+    cancelPendingTerminalSearch()
     setTerminalSearchOpen(false)
-    setTerminalSearchQuery('')
     setTerminalSearchStatus('')
+    terminalSearchQueryRef.current = ''
+    terminalSearchDecoratedRef.current = null
+    terminalSearchResultsRef.current = null
     searchAddonRef.current?.clearDecorations()
     if (restoreTerminalFocus) {
       window.requestAnimationFrame(() => xtermRef.current?.focus())
     }
-  }, [])
+  }, [cancelPendingTerminalSearch])
 
   useEffect(() => {
     taskActionRequestRef.current += 1
@@ -699,15 +759,18 @@ export default function MonitorPage() {
     const fitAddon = new FitAddon()
     const searchAddon = new SearchAddon({ highlightLimit: TERMINAL_SEARCH_HIGHLIGHT_LIMIT })
     const searchResultsDisposable = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      terminalSearchResultsRef.current = { resultIndex, resultCount }
       if (!terminalSearchQueryRef.current) {
-        setTerminalSearchStatus('')
         return
       }
-      if (resultCount <= 0) {
-        setTerminalSearchStatus('No match')
-        return
+      if (terminalSearchDecoratedRef.current) {
+        setTerminalSearchStatus(terminalSearchResultLabel({
+          found: resultCount > 0,
+          decorated: true,
+          resultIndex,
+          resultCount,
+        }))
       }
-      setTerminalSearchStatus(resultIndex >= 0 ? `${resultIndex + 1}/${resultCount}` : `${TERMINAL_SEARCH_HIGHLIGHT_LIMIT}+`)
     })
     term.loadAddon(fitAddon)
     term.loadAddon(searchAddon)
@@ -848,8 +911,6 @@ export default function MonitorPage() {
 
   useEffect(() => {
     if (!terminalSearchOpen) {
-      searchAddonRef.current?.clearDecorations()
-      setTerminalSearchStatus('')
       return
     }
 
@@ -861,11 +922,12 @@ export default function MonitorPage() {
   }, [terminalSearchOpen])
 
   useEffect(() => {
-    if (!terminalSearchOpen) {
-      return
+    if (terminalSearchOpen && terminalSearchQueryRef.current) {
+      scheduleTerminalSearch(terminalSearchQueryRef.current)
     }
-    runTerminalSearch('next', true)
-  }, [renderKey, runTerminalSearch, terminalSearchOpen, terminalSearchQuery])
+  }, [renderKey, scheduleTerminalSearch, terminalSearchOpen])
+
+  useEffect(() => () => cancelPendingTerminalSearch(), [cancelPendingTerminalSearch])
 
   useEffect(() => {
     const handleTerminalPointerScope = (event: PointerEvent) => {
@@ -904,12 +966,12 @@ export default function MonitorPage() {
       }
 
       event.preventDefault()
-      runTerminalSearch(event.shiftKey ? 'previous' : 'next')
+      runPendingTerminalSearchNow(event.shiftKey ? 'previous' : 'next')
     }
 
     window.addEventListener('keydown', handleTerminalSearchShortcut, true)
     return () => window.removeEventListener('keydown', handleTerminalSearchShortcut, true)
-  }, [isTerminalSearchShortcutTarget, runTerminalSearch, terminalSearchOpen])
+  }, [isTerminalSearchShortcutTarget, runPendingTerminalSearchNow, terminalSearchOpen])
 
   useEffect(() => {
     setDetailTask(current => {
@@ -1755,18 +1817,18 @@ export default function MonitorPage() {
                   className="absolute right-3 top-3 z-20 flex w-[calc(100%-1.5rem)] max-w-[26rem] items-center gap-1 rounded-md border border-[#454545] bg-[#252526] px-1.5 py-1 text-[#cccccc] shadow-[0_2px_10px_rgba(0,0,0,0.45)]"
                   onSubmit={event => {
                     event.preventDefault()
-                    runTerminalSearch('next')
+                    runPendingTerminalSearchNow('next')
                   }}
                 >
                   <Search className="h-3.5 w-3.5 flex-none text-[#8b949e]" />
                   <input
                     ref={terminalSearchInputRef}
-                    value={terminalSearchQuery}
-                    onChange={event => setTerminalSearchQuery(event.target.value)}
+                    defaultValue=""
+                    onChange={event => scheduleTerminalSearch(event.target.value)}
                     onKeyDown={event => {
                       if (event.key === 'Enter') {
                         event.preventDefault()
-                        runTerminalSearch(event.shiftKey ? 'previous' : 'next')
+                        runPendingTerminalSearchNow(event.shiftKey ? 'previous' : 'next')
                       }
                       if (event.key === 'Escape') {
                         event.preventDefault()
@@ -1790,7 +1852,7 @@ export default function MonitorPage() {
                   </span>
                   <button
                     type="button"
-                    onClick={() => runTerminalSearch('previous')}
+                    onClick={() => runPendingTerminalSearchNow('previous')}
                     className="touch-target rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
                     title="Previous match"
                     aria-label="Previous match"
@@ -1799,7 +1861,7 @@ export default function MonitorPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => runTerminalSearch('next')}
+                    onClick={() => runPendingTerminalSearchNow('next')}
                     className="touch-target rounded-md p-1 text-[#a0a6b1] transition-colors hover:bg-[#2a2d2e] hover:text-[#f0f0f0] focus:outline-none focus:ring-2 focus:ring-[#007acc]/40"
                     title="Next match"
                     aria-label="Next match"

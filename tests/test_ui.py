@@ -9,6 +9,7 @@ FRONTEND_LOG_STREAM = Path(__file__).resolve().parents[1] / "frontend" / "src" /
 FRONTEND_STORE = Path(__file__).resolve().parents[1] / "frontend" / "src" / "store.ts"
 FRONTEND_DASHBOARD = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "dashboard" / "DashboardPage.tsx"
 FRONTEND_MONITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx"
+FRONTEND_MONITOR_SEARCH = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "monitorSearch.ts"
 FRONTEND_MANAGER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "manager" / "ManagerPage.tsx"
 FRONTEND_LAUNCHER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "launcher" / "LauncherPage.tsx"
 FRONTEND_APP_SHELL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "AppShell.tsx"
@@ -1131,14 +1132,24 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
 
 def test_react_monitor_supports_terminal_search_shortcut_and_controls():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    search_policy = FRONTEND_MONITOR_SEARCH.read_text(encoding="utf-8")
 
     assert "SearchAddon, type ISearchOptions" in source
-    assert "const TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 1000" in source
+    assert "TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 250" in search_policy
+    assert "TERMINAL_SEARCH_DECORATION_ROW_LIMIT = 10_000" in search_policy
+    assert "TERMINAL_SEARCH_DEBOUNCE_MS = 150" in search_policy
     assert "const TERMINAL_SEARCH_OPTIONS: ISearchOptions" in source
     assert "searchAddonRef" in source
     assert "new SearchAddon({ highlightLimit: TERMINAL_SEARCH_HIGHLIGHT_LIMIT })" in source
     assert "term.loadAddon(searchAddon)" in source
-    assert "`${TERMINAL_SEARCH_HIGHLIGHT_LIMIT}+`" in source
+    assert "shouldDecorateTerminalSearch(term.buffer.active.length)" in source
+    assert "? { ...TERMINAL_SEARCH_OPTIONS, incremental }" in source
+    assert ": { incremental }" in source
+    assert "terminalSearchTimerRef" in source
+    assert "setTerminalSearchStatus('Searching...')" in source
+    assert "}, TERMINAL_SEARCH_DEBOUNCE_MS)" in source
+    assert 'defaultValue=""' in source
+    assert "value={terminalSearchQuery}" not in source
     assert "window.addEventListener('keydown', handleTerminalSearchShortcut, true)" in source
     assert "terminalSearchShortcutScopeRef" in source
     assert "shortcutTargetsTerminal" in source
@@ -1148,7 +1159,7 @@ def test_react_monitor_supports_terminal_search_shortcut_and_controls():
     assert "bg-[#252526]" in source
     assert "text-[#cccccc]" in source
     assert "text-[#f48771]" in source
-    assert "runTerminalSearch(event.shiftKey ? 'previous' : 'next')" in source
+    assert "runPendingTerminalSearchNow(event.shiftKey ? 'previous' : 'next')" in source
     assert 'aria-label="Previous match"' in source
     assert 'aria-label="Next match"' in source
     assert 'aria-label="Close terminal search"' in source
