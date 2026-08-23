@@ -15,6 +15,7 @@ import {
 import type { SystemInfo, UiVersionCheck } from '@/types'
 
 const RESTART_POLL_MS = 500
+const INSTANCE_POLL_MS = 5_000
 const SLOW_UPDATE_MS = 90_000
 const UPDATE_NOTICE_PREFIX = 'pyruns.update.notice.'
 
@@ -56,7 +57,7 @@ function UpdateProgressDialog({ open, takingLong }: { open: boolean; takingLong:
         <p id="pyruns-update-detail" aria-live="polite" className="mt-2 text-sm leading-6 text-txt-secondary">
           {takingLong
             ? 'The package update is still running. The terminal contains the current pip status.'
-            : 'Installing the package and restarting this interface...'}
+            : 'Installing the package and restarting every interface that shares it...'}
         </p>
         {takingLong && (
           <button
@@ -78,6 +79,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
   const [checking, setChecking] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [takingLong, setTakingLong] = useState(false)
+  const instanceIdRef = useRef('')
   const runtimeDirty = useRuntimeStore(state => state.dirty)
   const generatorDirty = useGeneratorStore(state => state.dirty)
   const taskDetailDirty = useTaskDetailDraftStore(state => state.dirty)
@@ -112,15 +114,36 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
 
   useEffect(() => {
     let active = true
-    api.getSystemInfo()
-      .then(info => {
+    let polling = false
+    const pollInstance = async () => {
+      if (!active || polling) return
+      polling = true
+      try {
+        const info = await api.getSystemInfo()
         if (!active) return
+        if (instanceIdRef.current && info.instance_id !== instanceIdRef.current) {
+          window.location.reload()
+          return
+        }
+        instanceIdRef.current = info.instance_id
         setSystemInfo(info)
         reportUpdateResult(info)
-      })
-      .catch(() => undefined)
+      } catch {
+        // Connection loss is expected while this or another shared UI restarts.
+      } finally {
+        polling = false
+      }
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void pollInstance()
+    }
+    void pollInstance()
+    const timer = window.setInterval(() => void pollInstance(), INSTANCE_POLL_MS)
+    document.addEventListener('visibilitychange', handleVisibility)
     return () => {
       active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [reportUpdateResult])
 
@@ -176,8 +199,8 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     const confirmed = await requestConfirmation({
       title: `Update Pyruns to v${versionCheck.latest_version}?`,
       description: hasUnsavedWork
-        ? `Upgrade from v${versionCheck.current_version}. The interface will restart and unsaved drafts will be discarded. No update starts while a task is queued or running.`
-        : `Upgrade from v${versionCheck.current_version}, then restart this interface. No update starts while a task is queued or running.`,
+        ? `Upgrade from v${versionCheck.current_version}. Every interface sharing this installation will restart when idle, and unsaved drafts will be discarded. No update starts while a task is queued or running.`
+        : `Upgrade from v${versionCheck.current_version}, then restart every interface sharing this installation. No update starts while a task is queued or running.`,
       confirmLabel: 'Update and Restart',
     })
     if (!confirmed) return

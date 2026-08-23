@@ -38,7 +38,8 @@ from pyruns.utils.batch_utils import (
 from pyruns.utils.config_utils import (
     safe_filename, parse_value, flatten_dict, unflatten_dict,
     load_yaml, load_yaml_strict, save_yaml, list_yaml_files, list_template_files,
-    preview_config_line, validate_config_types_against_template,
+    preview_config_line, build_config_preview_and_search_text,
+    validate_config_types_against_template,
 )
 from pyruns.utils.log_io import (
     append_log, decode_log_bytes, normalize_log_newlines,
@@ -1660,6 +1661,17 @@ def test_parse_value_preserves_expected_scalar_and_collection_types():
         assert type(result) is type(expected), value
 
 
+def test_parse_value_preserves_unresolved_interpolations(monkeypatch):
+    monkeypatch.setenv("PYRUNS_TEST_SECRET", "must-not-leak")
+
+    assert parse_value("${oc.env:PYRUNS_TEST_SECRET}") == (
+        "${oc.env:PYRUNS_TEST_SECRET}"
+    )
+    assert parse_value(
+        "['${oc.env:PYRUNS_TEST_SECRET}', '${missing.reference}']"
+    ) == ["${oc.env:PYRUNS_TEST_SECRET}", "${missing.reference}"]
+
+
 # ═══════════════════════════════════════════════════════════════
 #  flatten / unflatten
 # ═══════════════════════════════════════════════════════════════
@@ -1708,6 +1720,75 @@ class TestFlattenUnflatten:
         # Parent is not a dict
         pd, k, v = get_nested(data, "x.y")
         assert pd is None
+
+    def test_dictconfig_interpolations_remain_unresolved(self, monkeypatch):
+        monkeypatch.setenv("PYRUNS_TEST_SECRET", "must-not-leak")
+        config = OmegaConf.create(
+            {
+                "root": "/tmp/run",
+                "output": "${root}/results",
+                "secret": "${oc.env:PYRUNS_TEST_SECRET}",
+            }
+        )
+
+        assert flatten_dict(config) == {
+            "root": "/tmp/run",
+            "output": "${root}/results",
+            "secret": "${oc.env:PYRUNS_TEST_SECRET}",
+        }
+        preview, search_text = build_config_preview_and_search_text(config)
+        assert "must-not-leak" not in preview
+        assert "must-not-leak" not in search_text
+        assert "${oc.env:pyruns_test_secret}" in search_text
+
+    def test_listconfig_interpolations_remain_unresolved(self, monkeypatch):
+        monkeypatch.setenv("PYRUNS_TEST_SECRET", "must-not-leak")
+        config = OmegaConf.create(
+            {
+                "items": [
+                    "${oc.env:PYRUNS_TEST_SECRET}",
+                    {"nested": "${oc.env:PYRUNS_TEST_SECRET}"},
+                ]
+            }
+        )
+
+        flat = flatten_dict(config)
+        assert "must-not-leak" not in str(flat["items"])
+        preview, search_text = build_config_preview_and_search_text(config)
+        assert "must-not-leak" not in preview
+        assert "must-not-leak" not in search_text
+        assert "${oc.env:pyruns_test_secret}" in search_text
+
+    def test_batch_candidate_interpolation_remains_unresolved(self, monkeypatch):
+        monkeypatch.setenv("PYRUNS_TEST_SECRET", "must-not-leak")
+        config = OmegaConf.create(
+            {"choice": "${oc.env:PYRUNS_TEST_SECRET} | public"}
+        )
+
+        generated = generate_batch_configs(config)
+        values = [
+            OmegaConf.to_container(item, resolve=False)["choice"]
+            for item in generated
+        ]
+        assert values == ["${oc.env:PYRUNS_TEST_SECRET}", "public"]
+        assert all("must-not-leak" not in str(value) for value in values)
+
+    def test_missing_environment_interpolation_does_not_break_preview_or_batch(self, monkeypatch):
+        monkeypatch.delenv("PYRUNS_TEST_MISSING", raising=False)
+        config = OmegaConf.create(
+            {
+                "learning_rate": "0.1 | 0.2",
+                "output": "${oc.env:PYRUNS_TEST_MISSING}",
+            }
+        )
+
+        assert "output=${oc.env:" in preview_config_line(config)
+        assert count_batch_configs(config) == 2
+        generated = generate_batch_configs(config)
+        assert [item["learning_rate"] for item in generated] == [0.1, 0.2]
+        assert [
+            OmegaConf.to_container(item, resolve=False)["output"] for item in generated
+        ] == ["${oc.env:PYRUNS_TEST_MISSING}"] * 2
 
 
 # ═══════════════════════════════════════════════════════════════

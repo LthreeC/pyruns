@@ -51,6 +51,7 @@ from pyruns.web.self_update import (
     check_latest_version,
     read_update_result,
     replace_process_with_updater,
+    replace_process_with_waiter,
 )
 from pyruns.utils import get_logger
 
@@ -670,14 +671,17 @@ def create_app(
     @app.post("/api/generator/create")
     def create_tasks_from_generator(payload: GeneratorCreateRequest) -> dict[str, Any]:
         try:
-            return get_runtime().create_tasks_from_template(
-                name_prefix=payload.name_prefix,
-                mode=payload.mode,
-                yaml_text=payload.yaml_text,
-                shell_text=payload.shell_text,
-                template_value=payload.template_value,
-                append_timestamp=payload.append_timestamp,
-            )
+            with task_start_guard():
+                return get_runtime().create_tasks_from_template(
+                    name_prefix=payload.name_prefix,
+                    mode=payload.mode,
+                    yaml_text=payload.yaml_text,
+                    shell_text=payload.shell_text,
+                    template_value=payload.template_value,
+                    append_timestamp=payload.append_timestamp,
+                )
+        except UpdateInProgressError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1347,17 +1351,18 @@ def create_app(
     @app.get("/api/system/info")
     def get_system_info() -> dict[str, Any]:
         coordinator = app.state.update_coordinator
+        update_supported = coordinator is not None and coordinator.supported
         return {
             "version": __version__,
             "instance_id": app.state.instance_id,
-            "update_supported": coordinator is not None,
-            "update_state": coordinator.state if coordinator is not None else "unavailable",
+            "update_supported": update_supported,
+            "update_state": coordinator.state if update_supported else "unavailable",
             "last_update": app.state.update_result,
         }
 
     @app.get("/api/system/update/check")
     def check_pyruns_update() -> dict[str, Any]:
-        if app.state.update_coordinator is None:
+        if app.state.update_coordinator is None or not app.state.update_coordinator.supported:
             raise HTTPException(
                 status_code=503,
                 detail="Update checks are available only in the normal 'pyr ui' server.",
@@ -1370,18 +1375,19 @@ def create_app(
     @app.post("/api/system/update", status_code=202)
     def update_pyruns(background_tasks: BackgroundTasks) -> dict[str, Any]:
         coordinator = app.state.update_coordinator
-        if coordinator is None:
+        if coordinator is None or not coordinator.supported:
             raise HTTPException(
                 status_code=503,
                 detail="Full-process updates are available only in the normal 'pyr ui' server.",
             )
         try:
-            coordinator.prepare(get_runtime())
+            ready = coordinator.prepare(get_runtime())
         except ActiveTasksError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UpdateCheckError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        background_tasks.add_task(coordinator.trigger_shutdown)
+        if ready:
+            background_tasks.add_task(coordinator.trigger_shutdown)
         return {
             "ok": True,
             "instance_id": app.state.instance_id,
@@ -1449,7 +1455,13 @@ def main(
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
     token = str(access_token or secrets.token_urlsafe(32))
-    update_coordinator = None if reload else UiUpdateCoordinator(_request_server_shutdown)
+    update_coordinator = None if reload else UiUpdateCoordinator(
+        _request_server_shutdown,
+        shared=True,
+        current_version=__version__,
+    )
+    if update_coordinator is not None:
+        update_coordinator.attach(runtime)
     previous_token = os.environ.get(_UI_TOKEN_ENV) if reload else None
     previous_cookie_nonce = os.environ.get(_UI_COOKIE_NONCE_ENV) if reload else None
     if reload:
@@ -1457,6 +1469,7 @@ def main(
         # receive the token out of process. Normal single-process startup passes
         # it directly and must not expose it through the server environment.
         os.environ[_UI_TOKEN_ENV] = token
+    server_returned = False
     try:
         host = "127.0.0.1"
         explicit_port = port is not None
@@ -1513,7 +1526,10 @@ def main(
             access_log=False,
             log_level="warning",
         )
+        server_returned = True
     finally:
+        if update_coordinator is not None:
+            update_coordinator.quiesce()
         if reload:
             if previous_token is None:
                 os.environ.pop(_UI_TOKEN_ENV, None)
@@ -1524,14 +1540,52 @@ def main(
             else:
                 os.environ[_UI_COOKIE_NONCE_ENV] = previous_cookie_nonce
         shutdown = getattr(runtime, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
+        try:
+            if callable(shutdown):
+                shutdown()
+        except BaseException:
+            if update_coordinator is not None:
+                update_coordinator.close(
+                    failed_handoff=update_coordinator.requested,
+                )
+            raise
+        if not server_returned and update_coordinator is not None:
+            update_coordinator.close(
+                failed_handoff=update_coordinator.requested,
+            )
     if update_coordinator is not None and update_coordinator.requested:
-        replace_process_with_updater(
-            port=int(port),
-            token=token,
-            previous_version=__version__,
-        )
+        try:
+            handoff = update_coordinator.handoff()
+        except BaseException:
+            update_coordinator.close(failed_handoff=True)
+            raise
+        try:
+            if handoff["role"] == "owner":
+                replace_process_with_updater(
+                    port=int(port),
+                    token=token,
+                    previous_version=__version__,
+                    request_id=str(handoff["request_id"]),
+                    instance_id=str(handoff["instance_id"]),
+                    state_dir=str(handoff["state_dir"]),
+                    restart_only=handoff["operation"] == "restart",
+                    installed_version=str(handoff["target_version"]),
+                )
+            else:
+                replace_process_with_waiter(
+                    port=int(port),
+                    token=token,
+                    previous_version=__version__,
+                    request_id=str(handoff["request_id"]),
+                    instance_id=str(handoff["instance_id"]),
+                    state_dir=str(handoff["state_dir"]),
+                )
+        finally:
+            # os.execve() never returns. Reaching this path means handoff failed
+            # or was replaced by a test double, so release the shared gate.
+            update_coordinator.close(failed_handoff=True)
+    elif update_coordinator is not None:
+        update_coordinator.close()
 
 
 def _parse_main_options(args: list[str]) -> tuple[int | None, bool | None]:

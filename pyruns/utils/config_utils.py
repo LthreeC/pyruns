@@ -176,7 +176,7 @@ def parse_value(val_str: Any) -> Any:
         return val_str
     try:
         parsed = load_config_text(f"value: {val_str}\n")
-        return to_container(parsed["value"], resolve=False)
+        return to_container(parsed, resolve=False)["value"]
     except Exception:
         return val_str
 
@@ -184,7 +184,8 @@ def parse_value(val_str: Any) -> Any:
 def flatten_dict(d: Mapping[str, Any] | DictConfig, parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
     """Flatten a nested dict using dotted keys: ``{a: {b: 1}}`` → ``{'a.b': 1}``."""
     items = []
-    for k, v in d.items():
+    source_items = d.items_ex(resolve=False) if isinstance(d, DictConfig) else d.items()
+    for k, v in source_items:
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
         if isinstance(v, Mapping) or isinstance(v, DictConfig):
             items.extend(flatten_dict(v, new_key, sep=sep).items())

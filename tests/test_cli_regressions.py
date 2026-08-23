@@ -29,9 +29,79 @@ from pyruns.cli.submission_protocol import (
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.utils.info_io import ensure_run_slot, load_task_info, update_task_info
+from pyruns.update_coordination import (
+    UPDATE_STATE_DIR_ENV,
+    CoordinationStore,
+    process_record,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_cli_submission_guard_rejects_before_command_body_during_update(tmp_path, monkeypatch):
+    from pyruns.cli import commands
+
+    state_dir = tmp_path / "update-state"
+    monkeypatch.setenv(UPDATE_STATE_DIR_ENV, str(state_dir))
+    store = CoordinationStore(state_dir)
+    owner_id = "a" * 32
+    request = process_record(record_id=owner_id, kind="ui-update")
+    request.update(
+        {
+            "request_id": "b" * 32,
+            "owner_instance_id": owner_id,
+            "stage": "updating",
+            "previous_version": "0.3.0",
+        }
+    )
+    store.ensure()
+    with store.locked():
+        store.write_request_locked(request)
+
+    entered = False
+    with pytest.raises(commands.CliError, match="new tasks are disabled"):
+        with commands._task_submission_guard():
+            entered = True
+
+    assert entered is False
+
+
+def test_cli_add_is_blocked_before_task_creation_during_update(tmp_path, monkeypatch):
+    from pyruns.cli import commands
+
+    state_dir = tmp_path / "update-state"
+    monkeypatch.setenv(UPDATE_STATE_DIR_ENV, str(state_dir))
+    store = CoordinationStore(state_dir)
+    owner_id = "c" * 32
+    request = process_record(record_id=owner_id, kind="ui-update")
+    request.update(
+        {
+            "request_id": "d" * 32,
+            "owner_instance_id": owner_id,
+            "stage": "updating",
+            "previous_version": "0.3.0",
+        }
+    )
+    store.ensure()
+    with store.locked():
+        store.write_request_locked(request)
+
+    created = False
+
+    def unexpected_create(*_args, **_kwargs):
+        nonlocal created
+        created = True
+        raise AssertionError("task creation must be gated")
+
+    monkeypatch.setattr(commands, "_create_tasks", unexpected_create)
+    context = SimpleNamespace(json_output=False, directory=str(tmp_path), program="pyr")
+    args = SimpleNamespace(config="config.yaml", name=None)
+
+    with pytest.raises(commands.CliError, match="new tasks are disabled"):
+        commands.cmd_add(context, args, SimpleNamespace(), str(tmp_path))
+
+    assert created is False
 
 
 def _source_cli_command(*args: str) -> list[str]:
@@ -2368,7 +2438,9 @@ def test_log_writer_stops_after_stdout_pipe_closes(tmp_path, monkeypatch):
 def test_test_tmp_root_moves_outside_ancestor_pyruns_project(
     tmp_path,
     isolated_tmp_root_resolver,
+    monkeypatch,
 ):
+    monkeypatch.delenv("PYRUNS_TEST_TMP_ROOT", raising=False)
     project = tmp_path / "polluted"
     (project / "_pyruns_").mkdir(parents=True)
     candidate = project / "pyruns-tests"

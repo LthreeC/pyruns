@@ -144,6 +144,9 @@ def test_react_update_control_requires_confirmation_and_full_instance_restart():
     assert "api.checkPyrunsUpdate()" in source
     assert "api.updatePyruns()" in source
     assert "info.instance_id !== previousInstanceId" in source
+    assert "info.instance_id !== instanceIdRef.current" in source
+    assert "window.setInterval(() => void pollInstance(), INSTANCE_POLL_MS)" in source
+    assert "document.addEventListener('visibilitychange', handleVisibility)" in source
     assert "window.location.reload()" in source
     assert "motion-reduce:animate-none" in source
     assert "if (!systemInfo.update_supported) return null" in source

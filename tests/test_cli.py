@@ -3289,6 +3289,25 @@ def test_config_get_set_unset_and_path(tmp_path):
     assert "TaskManager initialised" in logged_json.stderr
 
 
+def test_config_set_does_not_resolve_environment_interpolations(tmp_path):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+    result = _run_cli(
+        tmp_path,
+        "config",
+        "set",
+        "global_env",
+        "{TOKEN: '${oc.env:PYRUNS_TEST_SECRET}'}",
+        env_overrides={"PYRUNS_TEST_SECRET": "must-not-be-persisted"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    settings_text = (
+        tmp_path / "_pyruns_" / "_pyruns_settings.yaml"
+    ).read_text(encoding="utf-8")
+    assert "must-not-be-persisted" not in settings_text
+    assert "${oc.env:PYRUNS_TEST_SECRET}" in settings_text
+
+
 def test_config_rejects_unknown_keys_and_wrong_types(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     unknown = _run_cli(tmp_path, "config", "get", "manager_max_workers")

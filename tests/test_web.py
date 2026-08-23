@@ -173,6 +173,23 @@ def test_system_update_requires_idle_runtime_then_gates_task_starts():
     assert info.json()["update_state"] == "restarting"
 
 
+def test_system_update_gates_generator_task_creation():
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    runtime = _RouteRuntime({"active_task_count": 0})
+    coordinator = UiUpdateCoordinator(lambda: None)
+    client = TestClient(create_app(runtime, update_coordinator=coordinator))
+
+    assert client.post("/api/system/update").status_code == 202
+    response = client.post(
+        "/api/generator/create",
+        json={"name_prefix": "blocked", "mode": "yaml", "yaml_text": "x: 1"},
+    )
+
+    assert response.status_code == 503
+    assert "new tasks are disabled" in response.json()["detail"]
+
+
 def test_system_update_refuses_active_tasks_without_stopping_server():
     from pyruns.web.self_update import UiUpdateCoordinator
 
@@ -3031,19 +3048,16 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
 
     web_app.main(open_browser=False, port=8123, access_token="private-token")
 
-    assert events == [
-        "server-run",
-        "server-stop",
-        "runtime-shutdown",
-        (
-            "replace",
-            {
-                "port": 8123,
-                "token": "private-token",
-                "previous_version": __version__,
-            },
-        ),
-    ]
+    assert events[:3] == ["server-run", "server-stop", "runtime-shutdown"]
+    assert events[3][0] == "replace"
+    replacement = events[3][1]
+    assert replacement["port"] == 8123
+    assert replacement["token"] == "private-token"
+    assert replacement["previous_version"] == __version__
+    assert replacement["request_id"]
+    assert replacement["instance_id"]
+    assert replacement["state_dir"]
+    assert replacement["restart_only"] is False
 
 
 def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
@@ -3106,11 +3120,14 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
         for line in stdout.splitlines()
         if line.startswith("REPLACED=")
     )
-    assert replacement == {
-        "port": port,
-        "previous_version": __version__,
-        "token": token,
-    }
+    assert replacement["port"] == port
+    assert replacement["previous_version"] == __version__
+    assert replacement["token"] == token
+    assert replacement["request_id"]
+    assert replacement["instance_id"]
+    assert replacement["state_dir"] == os.environ["PYRUNS_UPDATE_STATE_DIR"]
+    assert replacement["restart_only"] is False
+    assert isinstance(replacement["installed_version"], str)
 
 
 def test_tasks_and_task_detail_endpoints_return_data(tmp_path):

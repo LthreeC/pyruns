@@ -9,6 +9,7 @@
 .ruff_cache/
 .pytest_cache/
 .playwright-mcp/
+.pyruns-update/
 *.egg-info/
 
 node_modules/

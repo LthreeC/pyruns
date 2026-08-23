@@ -110,6 +110,29 @@ test('update control reports the current PyPI release without restarting', async
   expect(updateRequests).toBe(0)
 })
 
+test('a shared backend restart reloads a non-initiating interface', async ({ page }) => {
+  let restarted = false
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: restarted ? '0.4.0' : '0.3.0',
+      instance_id: restarted ? 'shared-new-instance' : 'shared-old-instance',
+      update_supported: true,
+      update_state: 'idle',
+      last_update: null,
+    },
+  }))
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ })).toBeVisible()
+
+  restarted = true
+  const reloaded = page.waitForEvent('load')
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+  await reloaded
+
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
+})
+
 test('launcher, navigation, and theme work without browser errors', async ({ page }) => {
   const browserErrors: string[] = []
   page.on('console', message => {

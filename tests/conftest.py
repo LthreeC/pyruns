@@ -66,6 +66,14 @@ def _prevent_windows_test_console_windows(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_update_coordination_state(monkeypatch, tmp_path_factory):
+    """Keep installation-wide update leases isolated between tests."""
+
+    state_dir = tmp_path_factory.mktemp("update-state")
+    monkeypatch.setenv("PYRUNS_UPDATE_STATE_DIR", str(state_dir))
+
+
 @pytest.fixture()
 def tmp_path():
     """Workspace-local replacement for pytest's default tmp_path fixture."""

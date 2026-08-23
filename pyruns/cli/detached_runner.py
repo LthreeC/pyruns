@@ -21,6 +21,7 @@ from pyruns.cli.submission_protocol import (
 from pyruns.core.task_manager import TaskManager, active_task_run_index
 from pyruns.utils.info_io import load_task_info
 from pyruns.utils.settings import ensure_settings_file, load_settings
+from pyruns.update_coordination import EnvironmentActivityLease
 
 
 _FINAL_STATUSES = {"completed", "failed", "cancelled"}
@@ -183,6 +184,7 @@ def main() -> int:
     payload_file = ""
     token = ""
     accepted_reported = False
+    activity = EnvironmentActivityLease("cli-runner")
     try:
         token = validate_submission_token(args.submission_token)
         workspace = os.path.abspath(args.workspace)
@@ -195,6 +197,8 @@ def main() -> int:
         remove_control_file(payload_file)
         if not names or len(names) != len(set(names)) or args.jobs <= 0:
             return 2
+
+        activity.start()
 
         _report(
             receipt_file,
@@ -409,6 +413,7 @@ def main() -> int:
             remove_control_file(payload_file)
         if tm is not None:
             tm.shutdown()
+        activity.close()
 
 
 if __name__ == "__main__":

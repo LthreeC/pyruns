@@ -95,6 +95,11 @@ from pyruns.utils.shell_runtime import (
 )
 from pyruns.utils.task_files import resolve_task_config_file
 from pyruns.utils.time_utils import get_now_str
+from pyruns.update_coordination import (
+    EnvironmentActivityLease,
+    UpdateCoordinationError,
+    UpdateInProgressError,
+)
 
 
 _ACTIVE_STATUSES = {"queued", "running"}
@@ -119,6 +124,25 @@ class CliUsageError(CliError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, exit_code=2)
+
+
+@contextmanager
+def _task_submission_guard() -> Iterator[None]:
+    """Prevent task creation and runner handoff while an update gate is active."""
+
+    lease = EnvironmentActivityLease("cli-submission")
+    try:
+        lease.start()
+    except UpdateInProgressError as exc:
+        raise CliError(str(exc)) from exc
+    except (OSError, UpdateCoordinationError, ValueError) as exc:
+        raise CliError(
+            "Could not coordinate task submission with the shared Pyruns installation."
+        ) from exc
+    try:
+        yield
+    finally:
+        lease.close()
 
 
 @dataclass(frozen=True)
@@ -1502,47 +1526,49 @@ def cmd_exec(context: Any, args: Any) -> int:
             print("Result:     nothing was created or run")
         return 0
 
-    with _task_manager(workspace, lazy_scan=None) as manager:
-        if exact_name:
-            name_error = validate_task_name(requested_name, manager.tasks_dir)
-            if name_error:
-                raise CliError(name_error)
-        generator = TaskGenerator(root_dir=manager.tasks_dir)
-        try:
-            task = generator.create_shell_task(
-                requested_name,
-                command_text.rstrip() + "\n",
-                exact_name=exact_name,
-                command_mode="shell" if uses_shell_command else "argv",
-                command_argv=command_argv,
-                workdir=context.directory,
-                shell_executable=shell_executable,
-                shell_kind=shell_kind,
-                env=env,
-                script_path=source_script,
+    with _task_submission_guard():
+        with _task_manager(workspace, lazy_scan=None) as manager:
+            if exact_name:
+                name_error = validate_task_name(requested_name, manager.tasks_dir)
+                if name_error:
+                    raise CliError(name_error)
+            generator = TaskGenerator(root_dir=manager.tasks_dir)
+            try:
+                task = generator.create_shell_task(
+                    requested_name,
+                    command_text.rstrip() + "\n",
+                    exact_name=exact_name,
+                    command_mode="shell" if uses_shell_command else "argv",
+                    command_argv=command_argv,
+                    workdir=context.directory,
+                    shell_executable=shell_executable,
+                    shell_kind=shell_kind,
+                    env=env,
+                    script_path=source_script,
+                )
+            except ValueError as exc:
+                raise CliError(str(exc)) from exc
+            manager.add_task(task)
+            _eprint(f"{_program(context)}: created {task['name']}")
+            return _submit_and_wait(
+                context,
+                manager,
+                [task],
+                workers=1,
+                detach=bool(args.detach),
             )
-        except ValueError as exc:
-            raise CliError(str(exc)) from exc
-        manager.add_task(task)
-        _eprint(f"{_program(context)}: created {task['name']}")
-        return _submit_and_wait(
-            context,
-            manager,
-            [task],
-            workers=1,
-            detach=bool(args.detach),
-        )
 
 
 def cmd_add(context: Any, args: Any, manager: TaskManager, workspace: str) -> int:
-    tasks = _create_tasks(manager, workspace, args.config, args.name)
-    records = [_task_record(task) for task in tasks]
-    if context.json_output:
-        _json_dump({"created": records})
-    else:
-        for task in tasks:
-            print(task["name"])
-    return 0
+    with _task_submission_guard():
+        tasks = _create_tasks(manager, workspace, args.config, args.name)
+        records = [_task_record(task) for task in tasks]
+        if context.json_output:
+            _json_dump({"created": records})
+        else:
+            for task in tasks:
+                print(task["name"])
+        return 0
 
 
 def cmd_run(context: Any, args: Any, manager: TaskManager, workspace: str) -> int:
@@ -1550,20 +1576,21 @@ def cmd_run(context: Any, args: Any, manager: TaskManager, workspace: str) -> in
         raise CliUsageError("run accepts either exact TASK names or --config CONFIG, not both")
     if args.name and not args.config:
         raise CliUsageError("--name is only valid together with --config")
-    if args.config:
-        tasks = _create_tasks(manager, workspace, args.config, args.name)
-        _eprint(f"{_program(context)}: created {len(tasks)} task(s)")
-    else:
-        if not args.tasks:
-            raise CliUsageError("run requires at least one TASK or --config CONFIG")
-        tasks = _resolve_exact_tasks(manager, list(args.tasks))
-    return _submit_and_wait(
-        context,
-        manager,
-        tasks,
-        workers=args.jobs,
-        detach=bool(args.detach),
-    )
+    with _task_submission_guard():
+        if args.config:
+            tasks = _create_tasks(manager, workspace, args.config, args.name)
+            _eprint(f"{_program(context)}: created {len(tasks)} task(s)")
+        else:
+            if not args.tasks:
+                raise CliUsageError("run requires at least one TASK or --config CONFIG")
+            tasks = _resolve_exact_tasks(manager, list(args.tasks))
+        return _submit_and_wait(
+            context,
+            manager,
+            tasks,
+            workers=args.jobs,
+            detach=bool(args.detach),
+        )
 
 
 def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
@@ -2300,7 +2327,7 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
         try:
             parsed = load_config_text(f"value: {args.value}\n")
             value = (
-                to_container(parsed["value"], resolve=False)
+                to_container(parsed, resolve=False)["value"]
                 if isinstance(parsed, DictConfig)
                 else args.value
             )

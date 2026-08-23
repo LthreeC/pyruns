@@ -7770,6 +7770,45 @@ class TestTaskGeneratorCreateTasks:
                 cfg = yaml.safe_load(f)
             assert isinstance(cfg["lr"], (int, float))
 
+    def test_batch_tasks_persist_unresolved_interpolations(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PYRUNS_TEST_SECRET", "must-not-be-persisted")
+        gen = TaskGenerator(root_dir=str(tmp_path))
+        configs = generate_batch_configs(
+            OmegaConf.create(
+                {
+                    "lr": "0.001 | 0.01",
+                    "secret": "${oc.env:PYRUNS_TEST_SECRET}",
+                    "output": "${secret}/results",
+                    "secret_choice": "${oc.env:PYRUNS_TEST_SECRET} | public",
+                    "secret_list": [
+                        "${oc.env:PYRUNS_TEST_SECRET}",
+                        {"nested": "${secret}"},
+                    ],
+                }
+            )
+        )
+
+        tasks = gen.create_tasks(configs, "interpolation")
+
+        assert len(tasks) == 4
+        config_texts = []
+        for task in tasks:
+            config_text = Path(task["dir"], CONFIG_FILENAME).read_text(encoding="utf-8")
+            config_texts.append(config_text)
+            assert "must-not-be-persisted" not in config_text
+            assert "secret: ${oc.env:PYRUNS_TEST_SECRET}" in config_text
+            assert "output: ${secret}/results" in config_text
+            saved = yaml.safe_load(config_text)
+            assert saved["secret_list"] == [
+                "${oc.env:PYRUNS_TEST_SECRET}",
+                {"nested": "${secret}"},
+            ]
+        assert any(
+            "secret_choice: ${oc.env:PYRUNS_TEST_SECRET}" in text
+            for text in config_texts
+        )
+        assert any("secret_choice: public" in text for text in config_texts)
+
 # ═══════════════════════════════════════════════════════════════
 #  Report — CSV and JSON export
 # ═══════════════════════════════════════════════════════════════
