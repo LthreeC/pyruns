@@ -1155,6 +1155,18 @@ class PyrunsRuntime:
         safe_limit = max(0, int(limit))
         items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
         if summary:
+            if query.strip() and items:
+                matches_by_name = self.task_manager.get_task_search_matches(
+                    [str(task.get("name", "") or "") for task in items],
+                    query,
+                )
+                items = [
+                    {
+                        **task,
+                        "search_matches": matches_by_name.get(str(task.get("name", "") or ""), []),
+                    }
+                    for task in items
+                ]
             items = _cap_summary_task_payloads(items)
         total = len(ordered)
         has_more = (safe_offset + len(items)) < total

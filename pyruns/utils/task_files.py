@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Tuple
+from collections.abc import Mapping
+from typing import Any, Dict, List, Tuple
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -19,6 +20,7 @@ from pyruns._config import (
 )
 from pyruns.utils.config_utils import (
     build_config_preview_and_search_text,
+    flatten_dict,
     load_config_text,
     save_yaml,
 )
@@ -26,6 +28,7 @@ from pyruns.utils.info_io import (
     validate_task_directory,
     validate_workspace_file,
 )
+from pyruns.utils.sort_utils import normalize_task_search_text, task_search_needles
 
 MAX_TASK_PAYLOAD_BYTES = 4 * 1024 * 1024
 
@@ -187,3 +190,134 @@ def build_task_preview_and_search(
         task_name=task_name,
         notes=notes,
     )
+
+
+_TASK_SEARCH_MATCH_LIMIT = 4
+_TASK_SEARCH_SNIPPET_CHARS = 180
+
+
+def _normalized_search_with_positions(text: str) -> Tuple[str, List[int]]:
+    """Normalize text while retaining a map back to source character offsets."""
+
+    normalized: List[str] = []
+    positions: List[int] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == ":":
+            while normalized and normalized[-1].isspace() and normalized[-1] not in "\r\n":
+                normalized.pop()
+                positions.pop()
+            normalized.append(char)
+            positions.append(index)
+            index += 1
+            while index < len(text) and text[index].isspace() and text[index] not in "\r\n":
+                index += 1
+            continue
+
+        for lowered in char.lower():
+            normalized.append(lowered)
+            positions.append(index)
+        index += 1
+    return "".join(normalized), positions
+
+
+def _task_search_snippet(text: str, needle: str, max_chars: int) -> Tuple[str, int, int] | None:
+    display = str(text or "").replace("\t", "    ").strip()
+    if not display:
+        return None
+
+    normalized, positions = _normalized_search_with_positions(display)
+    match_index = normalized.find(needle)
+    if match_index < 0 or not positions:
+        return None
+
+    source_start = positions[match_index]
+    source_end = positions[min(len(positions) - 1, match_index + len(needle) - 1)] + 1
+    if len(display) <= max_chars:
+        return display, source_start, source_end
+
+    body_limit = max(1, max_chars - 6)
+    context_before = max(0, min(source_start, body_limit // 3))
+    body_start = max(0, source_start - context_before)
+    body_end = min(len(display), body_start + body_limit)
+    if source_end > body_end:
+        body_end = min(len(display), source_end)
+        body_start = max(0, body_end - body_limit)
+
+    prefix = "..." if body_start > 0 else ""
+    suffix = "..." if body_end < len(display) else ""
+    snippet = f"{prefix}{display[body_start:body_end]}{suffix}"
+    match_start = len(prefix) + max(0, source_start - body_start)
+    match_end = len(prefix) + max(0, min(body_end, source_end) - body_start)
+    return snippet, min(match_start, len(snippet)), min(match_end, len(snippet))
+
+
+def _task_search_sources(task: Mapping[str, Any]):
+    name = str(task.get("name", "") or "")
+    if name:
+        yield "name", "", name
+
+    notes = str(task.get("notes", "") or "")
+    note_lines = notes.splitlines()
+    for line_number, line in enumerate(note_lines, start=1):
+        if line.strip():
+            location = f"Line {line_number}" if len(note_lines) > 1 else ""
+            yield "notes", location, line
+
+    if normalize_task_kind(task.get("task_kind")) == TASK_KIND_SHELL:
+        for line_number, line in enumerate(str(task.get("config_text", "") or "").splitlines(), start=1):
+            if line.strip():
+                yield "script", f"Line {line_number}", line
+        return
+
+    config = task.get("config", {}) or {}
+    if not isinstance(config, (Mapping, DictConfig)):
+        return
+    for key, value in flatten_dict(config).items():
+        key_text = str(key)
+        if key_text.startswith("_meta"):
+            continue
+        detail_lines = f"{key_text}: {value}".splitlines()
+        for line in detail_lines:
+            if line.strip():
+                yield "config", key_text, line
+
+
+def build_task_search_matches(
+    task: Mapping[str, Any],
+    query: str,
+    *,
+    limit: int = _TASK_SEARCH_MATCH_LIMIT,
+    max_snippet_chars: int = _TASK_SEARCH_SNIPPET_CHARS,
+) -> List[Dict[str, Any]]:
+    """Build bounded, display-ready match context for one filtered task."""
+
+    needles = task_search_needles(query)
+    if not needles or limit <= 0:
+        return []
+
+    matches: List[Dict[str, Any]] = []
+    remaining_needles = needles[:limit]
+    for field, location, source in _task_search_sources(task):
+        normalized_source = normalize_task_search_text(source)
+        for needle in list(remaining_needles):
+            if needle not in normalized_source:
+                continue
+            snippet_match = _task_search_snippet(source, needle, max(32, int(max_snippet_chars)))
+            if snippet_match is None:
+                continue
+            snippet, match_start, match_end = snippet_match
+            matches.append(
+                {
+                    "field": field,
+                    "location": location,
+                    "snippet": snippet,
+                    "match_start": match_start,
+                    "match_end": match_end,
+                }
+            )
+            remaining_needles.remove(needle)
+            if not remaining_needles:
+                return matches
+    return matches

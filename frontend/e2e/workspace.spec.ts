@@ -498,7 +498,16 @@ test('monitor task details stay stable after the full task loads', async ({ page
   }
   await page.route('**/api/tasks?*', route => {
     const query = new URL(route.request().url()).searchParams.get('query') || ''
-    const visibleTasks = query === 'hidden' ? [] : [compactTask]
+    const visibleTasks = query === 'hidden' ? [] : [{
+      ...compactTask,
+      search_matches: query ? [{
+        field: 'name',
+        location: '',
+        snippet: 'alpha',
+        match_start: 0,
+        match_end: 5,
+      }] : undefined,
+    }]
     return route.fulfill({ json: {
       items: visibleTasks,
       total: visibleTasks.length,
@@ -546,6 +555,9 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await hiddenTasks
   await expect(page.getByRole('dialog', { name: 'Task details for alpha' })).toBeVisible()
   await expect(notes).toHaveValue('local monitor draft')
+  const monitorSidebar = page.getByRole('complementary', { name: 'Task monitor sidebar' })
+  await expect(monitorSidebar.getByText('Current Task', { exact: true })).toHaveCount(0)
+  await expect(monitorSidebar.getByText('Search Results', { exact: true })).toBeVisible()
 
   const refreshedTasks = page.waitForResponse(response => {
     const url = new URL(response.url())
@@ -554,6 +566,9 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await page.getByRole('textbox', { name: 'Search monitor tasks' }).fill('alpha')
   await refreshedTasks
   await expect(notes).toHaveValue('local monitor draft')
+  const searchResult = monitorSidebar.getByRole('button', { name: /View alpha, pending\. Matches:/ })
+  await expect(searchResult.getByText('Name', { exact: true })).toBeVisible()
+  await expect(searchResult.locator('mark')).toHaveText('alpha')
 
   await page.getByRole('tab', { name: 'Env' }).click()
   await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')

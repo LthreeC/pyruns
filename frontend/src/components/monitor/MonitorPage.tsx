@@ -46,7 +46,7 @@ import ActionButton from '@/components/shared/ActionButton'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
-import type { GPUWaitStatus, LogStreamMessage, Task } from '@/types'
+import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
@@ -78,6 +78,12 @@ const LOG_STREAM_FLUSH_MS = 50
 const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
 const TASK_EVENT_FALLBACK_POLL_MS = 60_000
 const TASK_EVENT_DEGRADED_POLL_MS = 5_000
+const TASK_SEARCH_FIELD_LABELS: Record<TaskSearchMatch['field'], string> = {
+  name: 'Name',
+  notes: 'Notes',
+  config: 'Config',
+  script: 'Script',
+}
 // Keep this aligned with the fields blanked by the server's compact Monitor payload.
 const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'config',
@@ -1327,6 +1333,7 @@ export default function MonitorPage() {
   usePolling(pollLiveLog, 1500, Boolean(isLive), false)
 
   const filteredTasks = monitorTasks
+  const sidebarSearchActive = Boolean(sidebarQuery.trim())
   const pinnedTasks = useMemo(
     () => filteredTasks.filter(task => task.pinned),
     [filteredTasks],
@@ -1340,7 +1347,9 @@ export default function MonitorPage() {
     [exportIds, filteredTasks],
   )
   const selectedTaskOutsideList = Boolean(
-    selectedTask && !filteredTasks.some(task => task.name === selectedTask.name),
+    !sidebarSearchActive
+    && selectedTask
+    && !filteredTasks.some(task => task.name === selectedTask.name),
   )
 
   const handleSidebarClick = (task: Task) => {
@@ -1534,67 +1543,92 @@ export default function MonitorPage() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-          {selectedTaskOutsideList && selectedTask && (
+          {sidebarSearchActive ? (
             <CompactSection
-              title="Current Task"
-              icon={<Rows3 className="h-3.5 w-3.5 text-accent" />}
-              className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
-              bodyClassName="space-y-1 pt-0"
+              title="Search Results"
+              count={monitorTotal}
+              icon={<Search className="h-3.5 w-3.5 text-accent" />}
+              bodyClassName="space-y-1 p-1"
             >
-              <SidebarItem
-                task={selectedTask}
-                active={!exportMode}
-                exportMode={exportMode}
-                exportSelected={exportIds.has(selectedTask.name)}
-                onClick={() => handleSidebarClick(selectedTask)}
-              />
-            </CompactSection>
-          )}
-          {pinnedTasks.length > 0 && (
-            <CompactSection
-              title="Pinned Tasks"
-              count={pinnedTasks.length}
-              icon={<Pin className="h-3.5 w-3.5 text-accent" />}
-              accent
-              className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
-              bodyClassName="space-y-1 pt-0"
-            >
-              {pinnedTasks.map(task => (
+              {monitorTasks.length === 0 ? (
+                <div className="px-2 py-5 text-center text-2xs text-txt-tertiary" role="status">
+                  {monitorLoading ? 'Searching tasks...' : 'No matching tasks'}
+                </div>
+              ) : monitorTasks.map(task => (
                 <SidebarItem
                   key={task.name}
                   task={task}
                   active={!exportMode && task.name === selectedTaskName}
                   exportMode={exportMode}
                   exportSelected={exportIds.has(task.name)}
+                  searchMatches={task.search_matches}
                   onClick={() => handleSidebarClick(task)}
                 />
               ))}
             </CompactSection>
-          )}
+          ) : (
+            <>
+              {selectedTaskOutsideList && selectedTask && (
+                <CompactSection
+                  title="Current Task"
+                  icon={<Rows3 className="h-3.5 w-3.5 text-accent" />}
+                  className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
+                  bodyClassName="space-y-1 pt-0"
+                >
+                  <SidebarItem
+                    task={selectedTask}
+                    active={!exportMode}
+                    exportMode={exportMode}
+                    exportSelected={exportIds.has(selectedTask.name)}
+                    onClick={() => handleSidebarClick(selectedTask)}
+                  />
+                </CompactSection>
+              )}
+              {pinnedTasks.length > 0 && (
+                <CompactSection
+                  title="Pinned Tasks"
+                  count={pinnedTasks.length}
+                  icon={<Pin className="h-3.5 w-3.5 text-accent" />}
+                  accent
+                  className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
+                  bodyClassName="space-y-1 pt-0"
+                >
+                  {pinnedTasks.map(task => (
+                    <SidebarItem
+                      key={task.name}
+                      task={task}
+                      active={!exportMode && task.name === selectedTaskName}
+                      exportMode={exportMode}
+                      exportSelected={exportIds.has(task.name)}
+                      onClick={() => handleSidebarClick(task)}
+                    />
+                  ))}
+                </CompactSection>
+              )}
 
-          <CompactSection
-            title="Tasks"
-            subtitle={`${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
-            icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
-            bodyClassName="space-y-1 p-1"
-          >
-            {otherTasks.length === 0 && pinnedTasks.length === 0 ? (
-              <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">
-                {monitorLoading ? 'Loading tasks…' : sidebarQuery ? 'No matching tasks' : 'No tasks'}
-              </div>
-            ) : (
-              otherTasks.map(task => (
-                <SidebarItem
-                  key={task.name}
-                  task={task}
-                  active={!exportMode && task.name === selectedTaskName}
-                  exportMode={exportMode}
-                  exportSelected={exportIds.has(task.name)}
-                  onClick={() => handleSidebarClick(task)}
-                />
-              ))
-            )}
-          </CompactSection>
+              <CompactSection
+                title="Tasks"
+                subtitle={`${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
+                icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
+                bodyClassName="space-y-1 p-1"
+              >
+                {otherTasks.length === 0 && pinnedTasks.length === 0 ? (
+                  <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">
+                    {monitorLoading ? 'Loading tasks...' : 'No tasks'}
+                  </div>
+                ) : otherTasks.map(task => (
+                  <SidebarItem
+                    key={task.name}
+                    task={task}
+                    active={!exportMode && task.name === selectedTaskName}
+                    exportMode={exportMode}
+                    exportSelected={exportIds.has(task.name)}
+                    onClick={() => handleSidebarClick(task)}
+                  />
+                ))}
+              </CompactSection>
+            </>
+          )}
 
           {(monitorHasMore || monitorTasks.length > 0) && (
             <div className="mt-2 space-y-1 px-1 text-center">
@@ -2062,41 +2096,82 @@ function SidebarItem({
   active,
   exportMode,
   exportSelected,
+  searchMatches = [],
   onClick,
 }: {
   task: Task
   active: boolean
   exportMode: boolean
   exportSelected: boolean
+  searchMatches?: TaskSearchMatch[]
   onClick: () => void
 }) {
+  const visibleMatches = searchMatches.slice(0, 3)
+  const matchSummary = visibleMatches
+    .map(match => `${TASK_SEARCH_FIELD_LABELS[match.field]}${match.location ? ` ${match.location}` : ''}: ${match.snippet}`)
+    .join('; ')
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={!exportMode && active ? 'true' : undefined}
       aria-pressed={exportMode ? exportSelected : undefined}
-      aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}`}
+      aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}${matchSummary ? `. Matches: ${matchSummary}` : ''}`}
       className={clsx(
-        'flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
+        'flex min-h-9 w-full flex-col items-stretch rounded-md border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'
           : 'border-transparent hover:border-border-subtle hover:bg-surface-overlay'
       )}
-      title={task.name}
-      style={{ contentVisibility: 'auto', containIntrinsicSize: '44px' }}
+      title={matchSummary ? `${task.name}\n${matchSummary}` : task.name}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: searchMatches.length > 0 ? '112px' : '44px' }}
     >
-      {exportMode && <SelectionIndicator selected={exportSelected} />}
-      <StatusDot status={task.status as TaskStatus} />
-      <span className={clsx(
-        'min-w-0 flex-1 break-all text-xs leading-4 truncate-2',
-        active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
-      )}>
-        {task.name}
+      <span className="flex w-full min-w-0 items-center gap-1.5">
+        {exportMode && <SelectionIndicator selected={exportSelected} />}
+        <StatusDot status={task.status as TaskStatus} />
+        <span className={clsx(
+          'min-w-0 flex-1 break-all text-xs leading-4 truncate-2',
+          active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
+        )}>
+          {task.name}
+        </span>
+        {task.status === 'running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
       </span>
-      {task.status === 'running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
+      {visibleMatches.length > 0 && (
+        <span className="mt-1.5 block w-full space-y-1 border-t border-border-subtle pt-1.5">
+          {visibleMatches.map((match, index) => (
+            <SearchMatchContext key={`${match.field}-${match.location}-${index}`} match={match} />
+          ))}
+          {searchMatches.length > visibleMatches.length && (
+            <span className="block text-2xs text-txt-tertiary">
+              +{searchMatches.length - visibleMatches.length} more match
+            </span>
+          )}
+        </span>
+      )}
     </button>
+  )
+}
+
+function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
+  const start = Math.max(0, Math.min(match.snippet.length, Number(match.match_start) || 0))
+  const end = Math.max(start, Math.min(match.snippet.length, Number(match.match_end) || 0))
+  const label = TASK_SEARCH_FIELD_LABELS[match.field]
+
+  return (
+    <span className="block min-w-0">
+      <span className="block truncate text-2xs font-medium text-accent">
+        {label}{match.location ? ` · ${match.location}` : ''}
+      </span>
+      <span className="truncate-2 block break-all text-2xs leading-4 text-txt-tertiary">
+        {match.snippet.slice(0, start)}
+        <mark className="rounded-sm bg-amber-200/80 px-0.5 text-slate-950 dark:bg-amber-400/75 dark:text-slate-950">
+          {match.snippet.slice(start, end)}
+        </mark>
+        {match.snippet.slice(end)}
+      </span>
+    </span>
   )
 }
 

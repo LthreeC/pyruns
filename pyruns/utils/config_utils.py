@@ -12,7 +12,7 @@ from omegaconf._utils import get_yaml_loader
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
 from pyruns.utils.info_io import _replace_with_retry, load_task_info
-from pyruns.utils.sort_utils import sort_tasks_for_manager
+from pyruns.utils.sort_utils import normalize_task_search_text, sort_tasks_for_manager
 
 
 # OmegaConf's loader inherits YAML 1.1 integer resolution, which would turn
@@ -349,8 +349,8 @@ def build_config_preview_and_search_text(
         if short_key != key:
             search_lines.append(f"{short_key}: {value}")
 
-    blob = "\n".join(search_lines).lower()
-    normalized_blob = re.sub(r"\s*:\s*", ":", blob)
+    blob = "\n".join(search_lines)
+    normalized_blob = normalize_task_search_text(blob)
     return preview, normalized_blob
 
 

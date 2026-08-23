@@ -2031,6 +2031,50 @@ def test_tasks_endpoint_status_counts_are_global_before_filters_and_pagination(t
     assert payload["status_counts"]["failed"] == 1
 
 
+def test_compact_task_search_returns_field_context_without_scanning_logs(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="log-only-token\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    update_task_info(
+        str(task_dir),
+        lambda info: info.update({"notes": "Owner: Research\nNeeds REVIEW before launch"}),
+    )
+    save_yaml(
+        str(task_dir / CONFIG_FILENAME),
+        {"model": {"name": "ResNet50"}, "batch_size": 32},
+    )
+    client = TestClient(create_app(_build_runtime(workspace)))
+
+    notes_response = client.get(
+        "/api/tasks",
+        params={"query": "review", "summary": True, "compact": True, "limit": 10},
+    )
+    config_response = client.get(
+        "/api/tasks",
+        params={"query": "name: resnet50", "summary": True, "compact": True, "limit": 10},
+    )
+    log_response = client.get(
+        "/api/tasks",
+        params={"query": "log-only-token", "summary": True, "compact": True, "limit": 10},
+    )
+
+    assert notes_response.status_code == 200
+    notes_match = notes_response.json()["items"][0]["search_matches"][0]
+    assert notes_match["field"] == "notes"
+    assert notes_match["location"] == "Line 2"
+    assert notes_match["snippet"][notes_match["match_start"]:notes_match["match_end"]] == "REVIEW"
+
+    assert config_response.status_code == 200
+    config_match = config_response.json()["items"][0]["search_matches"][0]
+    assert config_match["field"] == "config"
+    assert config_match["location"] == "model.name"
+    assert "ResNet50" in config_match["snippet"]
+
+    assert log_response.status_code == 200
+    assert log_response.json()["total"] == 0
+    assert log_response.json()["items"] == []
+
+
 def test_tasks_endpoint_exposes_persisted_structured_gpu_wait_state(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "gpu-wait", status="queued")

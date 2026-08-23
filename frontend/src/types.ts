@@ -30,6 +30,16 @@ export interface GPUWaitStatus {
   devices?: GPUWaitDeviceStatus[]
 }
 
+export type TaskSearchField = 'name' | 'notes' | 'config' | 'script'
+
+export interface TaskSearchMatch {
+  field: TaskSearchField
+  location: string
+  snippet: string
+  match_start: number
+  match_end: number
+}
+
 export interface Task {
   name: string
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -54,6 +64,7 @@ export interface Task {
   run_index: number
   preview_text: string
   search_text: string
+  search_matches?: TaskSearchMatch[]
   records: any[]
   tracks: any[]
   gpu_wait?: GPUWaitStatus | null

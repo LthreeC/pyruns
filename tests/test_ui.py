@@ -433,6 +433,9 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert 'title="Pinned Tasks"' in monitor
     assert "count={pinnedTasks.length}" in monitor
     assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
+    assert 'title="Search Results"' in monitor
+    assert "searchMatches={task.search_matches}" in monitor
+    assert "TASK_SEARCH_FIELD_LABELS" in monitor
 
 
 def test_react_monitor_preserves_selection_and_clears_only_after_confirmed_deletion():
@@ -442,6 +445,7 @@ def test_react_monitor_preserves_selection_and_clears_only_after_confirmed_delet
     assert "selectedTaskFromList" in monitor
     assert "api.getTask(selectedTaskName, false)" in monitor
     assert 'title="Current Task"' in monitor
+    assert "!sidebarSearchActive" in monitor
     assert "if (!selectedTaskName || selectedTaskFromList)" in monitor
     assert "/not found/i.test(errorMessage(error))" in monitor
     assert "selectedTaskName: null" in monitor
@@ -947,7 +951,7 @@ def test_react_mobile_task_controls_keep_usable_touch_targets():
     assert "touch-target inline-flex h-11 w-11 flex-none items-center justify-center" in dashboard
     assert "min-h-10" in sidebar
     assert "basis-[12rem]" in monitor
-    assert "flex min-h-9 w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-left transition-colors" in monitor
+    assert "flex min-h-9 w-full flex-col items-stretch rounded-md border px-2 py-1.5 text-left transition-colors" in monitor
     assert "'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors" in manager
     assert "sm:right-2 sm:top-1.5 sm:h-9 sm:w-9" in manager
     assert "'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors" in manager

@@ -57,6 +57,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
+    build_task_search_matches,
     is_known_task_kind,
     normalize_task_kind,
     normalize_workspace_kind,
@@ -2150,6 +2151,43 @@ class TestFilterTasksMultiline:
         filtered = filter_tasks(tasks, "device:null\nbatch_size:32")
         assert len(filtered) == 1
         assert filtered[0]["name"] == "t1"
+
+    def test_search_matches_report_field_context_and_highlight_offsets(self):
+        task = {
+            "name": "alpha-train",
+            "notes": "Owner: Research\nNeeds REVIEW before launch",
+            "task_kind": TASK_KIND_CONFIG,
+            "config": {"model": {"name": "ResNet50"}, "batch_size": 32},
+        }
+
+        matches = build_task_search_matches(task, "review\nname: resnet50")
+
+        assert [(match["field"], match["location"]) for match in matches] == [
+            ("notes", "Line 2"),
+            ("config", "model.name"),
+        ]
+        for match in matches:
+            highlighted = match["snippet"][match["match_start"]:match["match_end"]]
+            assert highlighted
+        assert matches[0]["snippet"][matches[0]["match_start"]:matches[0]["match_end"]] == "REVIEW"
+        assert matches[1]["snippet"][matches[1]["match_start"]:matches[1]["match_end"]] == "name: ResNet50"
+
+    def test_shell_search_matches_use_script_line_numbers_and_stay_bounded(self):
+        task = {
+            "name": "shell-task",
+            "notes": "",
+            "task_kind": TASK_KIND_SHELL,
+            "config_text": "# setup\necho TOKEN_A\nprintf TOKEN_B\necho TOKEN_C\nprintf TOKEN_D\necho TOKEN_E\n",
+        }
+
+        matches = build_task_search_matches(
+            task,
+            "token_a\ntoken_b\ntoken_c\ntoken_d\ntoken_e",
+        )
+
+        assert len(matches) == 4
+        assert all(match["field"] == "script" for match in matches)
+        assert matches[0]["location"] == "Line 2"
 
 
 

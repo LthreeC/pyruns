@@ -14,7 +14,7 @@ _INACTIVE_TIE_PRIORITIES = {
 }
 _NON_DIGIT_PATTERN = re.compile(r"\D+")
 _NATURAL_CHUNK_PATTERN = re.compile(r"(\d+)")
-_COLON_SPACES_PATTERN = re.compile(r"\s*:\s*")
+_COLON_SPACES_PATTERN = re.compile(r"[^\S\r\n]*:[^\S\r\n]*")
 TASK_SORT_MODES = frozenset({
     "priority",
     "manual",
@@ -23,6 +23,25 @@ TASK_SORT_MODES = frozenset({
     "name_asc",
     "name_desc",
 })
+
+
+def normalize_task_search_text(value: object) -> str:
+    """Normalize task search text without collapsing line boundaries."""
+
+    return _COLON_SPACES_PATTERN.sub(":", str(value or "").lower())
+
+
+def task_search_needles(query: str) -> List[str]:
+    """Return the non-empty normalized lines used by task search."""
+
+    needles: List[str] = []
+    for line in str(query or "").split("\n"):
+        if not line.strip():
+            continue
+        normalized = normalize_task_search_text(line.strip())
+        if normalized not in needles:
+            needles.append(normalized)
+    return needles
 
 
 def _timestamp_weight(task: Dict[str, object]) -> int:
@@ -151,12 +170,12 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
     if not query:
         return tasks
 
-    query_lines = [line.strip().lower() for line in query.split("\n") if line.strip()]
+    query_lines = task_search_needles(query)
     if not query_lines:
         return tasks
 
     def matches_all(task: Dict[str, object]) -> bool:
-        normalized_blob = str(task.get("search_text", "") or "").lower()
+        normalized_blob = normalize_task_search_text(task.get("search_text", ""))
         if not normalized_blob:
             try:
                 yaml_str = OmegaConf.to_yaml(
@@ -166,12 +185,10 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
             except Exception:
                 yaml_str = str(task.get("config", {})).lower()
             text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}".lower()
-            normalized_blob = text_blob
-        normalized_blob = _COLON_SPACES_PATTERN.sub(":", normalized_blob)
+            normalized_blob = normalize_task_search_text(text_blob)
 
         for line in query_lines:
-            normalized_line = _COLON_SPACES_PATTERN.sub(":", line)
-            if normalized_line not in normalized_blob:
+            if line not in normalized_blob:
                 return False
         return True
 

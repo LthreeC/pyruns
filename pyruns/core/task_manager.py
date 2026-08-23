@@ -59,6 +59,7 @@ from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
+    build_task_search_matches,
     normalize_task_kind,
     read_task_payload,
     resolve_task_config_file,
@@ -402,6 +403,30 @@ class TaskManager:
                 summary=False,
             )
         return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
+
+    def get_task_search_matches(
+        self,
+        task_names: List[str],
+        query: str,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Return bounded search context for a page of in-memory tasks."""
+
+        with self._lock:
+            snapshots = [
+                {
+                    "name": task.get("name", ""),
+                    "notes": task.get("notes", ""),
+                    "task_kind": task.get("task_kind"),
+                    "config": task.get("config", {}),
+                    "config_text": task.get("config_text", ""),
+                }
+                for name in task_names
+                if (task := self._tasks_by_name.get(name)) is not None
+            ]
+        return {
+            str(task.get("name", "")): build_task_search_matches(task, query)
+            for task in snapshots
+        }
 
     def scan_disk_async(self) -> None:
         """Run a full disk scan in the background."""
