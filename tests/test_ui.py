@@ -405,7 +405,8 @@ def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
     assert "window.matchMedia('(max-width: 700px)')" in source
     assert "compactMonitorLayout ? 'flex-col' : 'flex-row'" in source
     assert "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'" in source
-    assert "style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}" in source
+    assert "? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }" in source
+    assert ": { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}" in source
     assert 'className="flex-none border-b border-border-subtle px-2.5 py-2"' in source
     assert 'className="min-h-0 flex-1 overflow-y-auto px-2 py-2"' in source
     assert 'className="flex-none border-t border-border-subtle px-2.5 py-2"' in source
@@ -424,7 +425,7 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "limit: nextLimit" in store
     assert "compact: true" in store
     assert "limit: 0" not in store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
-    assert "fetchMonitorTasks({ query: sidebarQuery, refresh: true, workspaceKey })" in monitor
+    assert "refresh: !sidebarQuery.trim()" in monitor
     assert "fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
     assert "useTaskEvents({" in monitor
@@ -434,8 +435,13 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "count={pinnedTasks.length}" in monitor
     assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
     assert 'title="Search Results"' in monitor
-    assert "searchMatches={task.search_matches}" in monitor
+    assert "<SearchResultGroup" in monitor
+    assert "task.search_match_count" in monitor
+    assert "searchResultSummary" in monitor
     assert "TASK_SEARCH_FIELD_LABELS" in monitor
+    assert 'ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"' in monitor
+    assert "!event.shiftKey && key === 'f'" in monitor
+    assert "MIN_MONITOR_SIDEBAR_WIDTH_PX = 240" in monitor
 
 
 def test_react_monitor_preserves_selection_and_clears_only_after_confirmed_deletion():
@@ -911,7 +917,7 @@ def test_react_monitor_sidebar_can_be_resized_from_split_handle():
     assert "event.key === 'Home'" in source
     assert "event.key === 'End'" in source
     assert "cursor-col-resize" in source
-    assert "style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}" in source
+    assert ": { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}" in source
 
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():

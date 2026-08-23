@@ -1156,17 +1156,24 @@ class PyrunsRuntime:
         items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
         if summary:
             if query.strip() and items:
-                matches_by_name = self.task_manager.get_task_search_matches(
+                results_by_name = self.task_manager.get_task_search_results(
                     [str(task.get("name", "") or "") for task in items],
                     query,
                 )
-                items = [
-                    {
-                        **task,
-                        "search_matches": matches_by_name.get(str(task.get("name", "") or ""), []),
-                    }
-                    for task in items
-                ]
+                enriched_items: List[Dict[str, Any]] = []
+                for task in items:
+                    result = results_by_name.get(
+                        str(task.get("name", "") or ""),
+                        {"matches": [], "match_count": 0},
+                    )
+                    enriched_items.append(
+                        {
+                            **task,
+                            "search_matches": result["matches"],
+                            "search_match_count": result["match_count"],
+                        }
+                    )
+                items = enriched_items
             items = _cap_summary_task_payloads(items)
         total = len(ordered)
         has_more = (safe_offset + len(items)) < total

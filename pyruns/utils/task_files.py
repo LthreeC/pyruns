@@ -192,7 +192,7 @@ def build_task_preview_and_search(
     )
 
 
-_TASK_SEARCH_MATCH_LIMIT = 4
+_TASK_SEARCH_MATCH_LIMIT = 8
 _TASK_SEARCH_SNIPPET_CHARS = 180
 
 
@@ -222,18 +222,19 @@ def _normalized_search_with_positions(text: str) -> Tuple[str, List[int]]:
     return "".join(normalized), positions
 
 
-def _task_search_snippet(text: str, needle: str, max_chars: int) -> Tuple[str, int, int] | None:
-    display = str(text or "").replace("\t", "    ").strip()
-    if not display:
-        return None
-
-    normalized, positions = _normalized_search_with_positions(display)
-    match_index = normalized.find(needle)
-    if match_index < 0 or not positions:
-        return None
-
-    source_start = positions[match_index]
-    source_end = positions[min(len(positions) - 1, match_index + len(needle) - 1)] + 1
+def _build_task_search_snippet(
+    display: str,
+    positions: List[int] | None,
+    match_index: int,
+    match_length: int,
+    max_chars: int,
+) -> Tuple[str, int, int]:
+    if positions is None:
+        source_start = match_index
+        source_end = match_index + match_length
+    else:
+        source_start = positions[match_index]
+        source_end = positions[min(len(positions) - 1, match_index + match_length - 1)] + 1
     if len(display) <= max_chars:
         return display, source_start, source_end
 
@@ -251,6 +252,52 @@ def _task_search_snippet(text: str, needle: str, max_chars: int) -> Tuple[str, i
     match_start = len(prefix) + max(0, source_start - body_start)
     match_end = len(prefix) + max(0, min(body_end, source_end) - body_start)
     return snippet, min(match_start, len(snippet)), min(match_end, len(snippet))
+
+
+def _task_search_source_matches(
+    text: str,
+    needles: List[str],
+    max_chars: int,
+    limit: int,
+) -> Tuple[int, List[Tuple[int, str, int, int]]]:
+    display = str(text or "").replace("\t", "    ").strip()
+    if not display:
+        return 0, []
+
+    normalized = normalize_task_search_text(display)
+    positions: List[int] | None = None
+    if not (display.isascii() and len(normalized) == len(display)):
+        normalized, positions = _normalized_search_with_positions(display)
+    if not normalized:
+        return 0, []
+
+    occurrences: List[Tuple[int, int, int]] = []
+    match_count = 0
+    for needle_index, needle in enumerate(needles):
+        match_count += normalized.count(needle)
+        if limit <= 0:
+            continue
+        search_start = 0
+        needle_contexts = 0
+        while search_start <= len(normalized) and needle_contexts < limit:
+            match_index = normalized.find(needle, search_start)
+            if match_index < 0:
+                break
+            occurrences.append((match_index, needle_index, len(needle)))
+            needle_contexts += 1
+            search_start = match_index + max(1, len(needle))
+
+    contexts: List[Tuple[int, str, int, int]] = []
+    for match_index, needle_index, match_length in sorted(occurrences)[:limit]:
+        snippet, match_start, match_end = _build_task_search_snippet(
+            display,
+            positions,
+            match_index,
+            match_length,
+            max_chars,
+        )
+        contexts.append((needle_index, snippet, match_start, match_end))
+    return match_count, contexts
 
 
 def _task_search_sources(task: Mapping[str, Any]):
@@ -293,21 +340,40 @@ def build_task_search_matches(
 ) -> List[Dict[str, Any]]:
     """Build bounded, display-ready match context for one filtered task."""
 
-    needles = task_search_needles(query)
-    if not needles or limit <= 0:
-        return []
+    return build_task_search_result(
+        task,
+        query,
+        limit=limit,
+        max_snippet_chars=max_snippet_chars,
+    )["matches"]
 
+
+def build_task_search_result(
+    task: Mapping[str, Any],
+    query: str,
+    *,
+    limit: int = _TASK_SEARCH_MATCH_LIMIT,
+    max_snippet_chars: int = _TASK_SEARCH_SNIPPET_CHARS,
+) -> Dict[str, Any]:
+    """Return bounded contexts and the exact in-memory match count for one task."""
+
+    needles = task_search_needles(query)
+    if not needles:
+        return {"matches": [], "match_count": 0}
+
+    safe_limit = max(0, int(limit))
+    snippet_chars = max(32, int(max_snippet_chars))
     matches: List[Dict[str, Any]] = []
-    remaining_needles = needles[:limit]
+    match_count = 0
     for field, location, source in _task_search_sources(task):
-        normalized_source = normalize_task_search_text(source)
-        for needle in list(remaining_needles):
-            if needle not in normalized_source:
-                continue
-            snippet_match = _task_search_snippet(source, needle, max(32, int(max_snippet_chars)))
-            if snippet_match is None:
-                continue
-            snippet, match_start, match_end = snippet_match
+        source_count, contexts = _task_search_source_matches(
+            source,
+            needles,
+            snippet_chars,
+            safe_limit - len(matches),
+        )
+        match_count += source_count
+        for _needle_index, snippet, match_start, match_end in contexts:
             matches.append(
                 {
                     "field": field,
@@ -317,7 +383,4 @@ def build_task_search_matches(
                     "match_end": match_end,
                 }
             )
-            remaining_needles.remove(needle)
-            if not remaining_needles:
-                return matches
-    return matches
+    return {"matches": matches, "match_count": match_count}

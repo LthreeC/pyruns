@@ -1534,6 +1534,38 @@ def test_shell_expression_rerun_uses_creation_shell_runtime(tmp_path):
     assert "stored-shell-ok" in rerun.stdout
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires PowerShell")
+def test_powershell_shell_expression_flushes_formatted_object_output(tmp_path):
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if not powershell:
+        pytest.skip("PowerShell is unavailable")
+
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--name",
+        "formatted-output",
+        "-c",
+        "Get-Location; Write-Output 'flush-object-123'",
+        env_overrides={ENV_KEY_CLI_SHELL_EXECUTABLE: powershell},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert str(tmp_path) in result.stdout
+    assert "flush-object-123" in result.stdout
+    log_text = (
+        tmp_path
+        / "_pyruns_"
+        / "_shell_"
+        / TASKS_DIR
+        / "formatted-output"
+        / RUN_LOGS_DIR
+        / "run1.log"
+    ).read_text(encoding="utf-8")
+    assert str(tmp_path) in log_text
+    assert "flush-object-123" in log_text
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
 @pytest.mark.parametrize("suffix", [".cmd", ".bat"])
 def test_exec_runs_windows_command_file_with_arguments(tmp_path, suffix):

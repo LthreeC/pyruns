@@ -958,7 +958,6 @@ def _materialize_windows_shell_wrapper(
                 "    if ($__pyrunsExitCode -ne 0) { exit $__pyrunsExitCode }",
                 "    exit 1",
                 "}",
-                "exit 0",
             ]
         )
         wrapper_path = _write_temp_shell_wrapper(

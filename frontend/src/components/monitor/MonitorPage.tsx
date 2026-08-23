@@ -70,6 +70,7 @@ const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
 const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
+const MIN_MONITOR_SIDEBAR_WIDTH_PX = 240
 const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'
 const QUEUE_LOG_NAME = 'queue.log'
 const RUN_LOG_PATTERN = /^run\d+\.log$/
@@ -240,6 +241,7 @@ export default function MonitorPage() {
     taskName: null,
     logName: '',
   })
+  const sidebarSearchInputRef = useRef<HTMLInputElement | null>(null)
   const terminalSearchInputRef = useRef<HTMLInputElement | null>(null)
   const terminalSearchShortcutScopeRef = useRef(false)
   const terminalSearchQueryRef = useRef('')
@@ -301,7 +303,11 @@ export default function MonitorPage() {
     compactMonitorLayout ? 'flex-col' : 'flex-row',
   )
   const refreshMonitorTasks = useCallback(
-    () => fetchMonitorTasks({ query: sidebarQuery, refresh: true, workspaceKey }),
+    () => fetchMonitorTasks({
+      query: sidebarQuery,
+      refresh: !sidebarQuery.trim(),
+      workspaceKey,
+    }),
     [fetchMonitorTasks, sidebarQuery, workspaceKey],
   )
   const refreshDetachedSelectedTask = useCallback(async () => {
@@ -947,7 +953,7 @@ export default function MonitorPage() {
   useEffect(() => {
     const handleTerminalSearchShortcut = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase()
-      const isFind = (event.ctrlKey || event.metaKey) && !event.altKey && key === 'f'
+      const isFind = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'f'
       const activeElement = document.activeElement
       const activeIsPageRoot = activeElement === document.body || activeElement === document.documentElement
       const shortcutTargetsTerminal = (
@@ -978,6 +984,25 @@ export default function MonitorPage() {
     window.addEventListener('keydown', handleTerminalSearchShortcut, true)
     return () => window.removeEventListener('keydown', handleTerminalSearchShortcut, true)
   }, [isTerminalSearchShortcutTarget, runPendingTerminalSearchNow, terminalSearchOpen])
+
+  useEffect(() => {
+    const handleGlobalTaskSearchShortcut = (event: KeyboardEvent) => {
+      if (
+        !(event.ctrlKey || event.metaKey)
+        || !event.shiftKey
+        || event.altKey
+        || event.key.toLowerCase() !== 'f'
+      ) {
+        return
+      }
+      event.preventDefault()
+      sidebarSearchInputRef.current?.focus()
+      sidebarSearchInputRef.current?.select()
+    }
+
+    window.addEventListener('keydown', handleGlobalTaskSearchShortcut, true)
+    return () => window.removeEventListener('keydown', handleGlobalTaskSearchShortcut, true)
+  }, [])
 
   useEffect(() => {
     setDetailTask(current => {
@@ -1334,6 +1359,16 @@ export default function MonitorPage() {
 
   const filteredTasks = monitorTasks
   const sidebarSearchActive = Boolean(sidebarQuery.trim())
+  const loadedSearchMatchCount = useMemo(
+    () => monitorTasks.reduce(
+      (count, task) => count + Math.max(task.search_matches?.length ?? 0, task.search_match_count ?? 0),
+      0,
+    ),
+    [monitorTasks],
+  )
+  const searchResultSummary = monitorHasMore
+    ? `${loadedSearchMatchCount.toLocaleString()}+ matches in ${monitorTasks.length.toLocaleString()} of ${monitorTotal.toLocaleString()} tasks`
+    : `${loadedSearchMatchCount.toLocaleString()} match${loadedSearchMatchCount === 1 ? '' : 'es'} in ${monitorTotal.toLocaleString()} task${monitorTotal === 1 ? '' : 's'}`
   const pinnedTasks = useMemo(
     () => filteredTasks.filter(task => task.pinned),
     [filteredTasks],
@@ -1491,7 +1526,9 @@ export default function MonitorPage() {
           'flex flex-none flex-col overflow-hidden bg-surface-raised',
           compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle',
         )}
-        style={compactMonitorLayout ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT } : { width: `${monitorSidebarWidthPct}%` }}
+        style={compactMonitorLayout
+          ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }
+          : { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}
       >
         <div className="flex-none border-b border-border-subtle px-2.5 py-2">
           <div className="mb-2 flex items-center justify-between">
@@ -1530,9 +1567,11 @@ export default function MonitorPage() {
           <SearchInput
             value={sidebarQuery}
             onChange={setSidebarQuery}
-            placeholder="Search..."
+            placeholder="Search name, notes, config, scripts"
             ariaLabel="Search monitor tasks"
+            ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
             debounceMs={250}
+            inputRef={sidebarSearchInputRef}
           />
           {monitorError && (
             <div className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-500/20 bg-rose-500/8 px-2 py-1.5 text-2xs text-rose-700 dark:text-rose-300" role="alert">
@@ -1546,22 +1585,21 @@ export default function MonitorPage() {
           {sidebarSearchActive ? (
             <CompactSection
               title="Search Results"
-              count={monitorTotal}
+              subtitle={searchResultSummary}
               icon={<Search className="h-3.5 w-3.5 text-accent" />}
-              bodyClassName="space-y-1 p-1"
+              bodyClassName="border-y border-border-subtle"
             >
               {monitorTasks.length === 0 ? (
                 <div className="px-2 py-5 text-center text-2xs text-txt-tertiary" role="status">
                   {monitorLoading ? 'Searching tasks...' : 'No matching tasks'}
                 </div>
               ) : monitorTasks.map(task => (
-                <SidebarItem
+                <SearchResultGroup
                   key={task.name}
                   task={task}
                   active={!exportMode && task.name === selectedTaskName}
                   exportMode={exportMode}
                   exportSelected={exportIds.has(task.name)}
-                  searchMatches={task.search_matches}
                   onClick={() => handleSidebarClick(task)}
                 />
               ))}
@@ -2096,27 +2134,21 @@ function SidebarItem({
   active,
   exportMode,
   exportSelected,
-  searchMatches = [],
   onClick,
 }: {
   task: Task
   active: boolean
   exportMode: boolean
   exportSelected: boolean
-  searchMatches?: TaskSearchMatch[]
   onClick: () => void
 }) {
-  const visibleMatches = searchMatches.slice(0, 3)
-  const matchSummary = visibleMatches
-    .map(match => `${TASK_SEARCH_FIELD_LABELS[match.field]}${match.location ? ` ${match.location}` : ''}: ${match.snippet}`)
-    .join('; ')
   return (
     <button
       type="button"
       onClick={onClick}
       aria-current={!exportMode && active ? 'true' : undefined}
       aria-pressed={exportMode ? exportSelected : undefined}
-      aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}${matchSummary ? `. Matches: ${matchSummary}` : ''}`}
+      aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}`}
       className={clsx(
         'flex min-h-9 w-full flex-col items-stretch rounded-md border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
@@ -2124,8 +2156,8 @@ function SidebarItem({
           ? 'border-accent/25 bg-accent/10'
           : 'border-transparent hover:border-border-subtle hover:bg-surface-overlay'
       )}
-      title={matchSummary ? `${task.name}\n${matchSummary}` : task.name}
-      style={{ contentVisibility: 'auto', containIntrinsicSize: searchMatches.length > 0 ? '112px' : '44px' }}
+      title={task.name}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '44px' }}
     >
       <span className="flex w-full min-w-0 items-center gap-1.5">
         {exportMode && <SelectionIndicator selected={exportSelected} />}
@@ -2138,19 +2170,78 @@ function SidebarItem({
         </span>
         {task.status === 'running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
       </span>
-      {visibleMatches.length > 0 && (
-        <span className="mt-1.5 block w-full space-y-1 border-t border-border-subtle pt-1.5">
-          {visibleMatches.map((match, index) => (
-            <SearchMatchContext key={`${match.field}-${match.location}-${index}`} match={match} />
-          ))}
-          {searchMatches.length > visibleMatches.length && (
-            <span className="block text-2xs text-txt-tertiary">
-              +{searchMatches.length - visibleMatches.length} more match
-            </span>
-          )}
-        </span>
-      )}
     </button>
+  )
+}
+
+function SearchResultGroup({
+  task,
+  active,
+  exportMode,
+  exportSelected,
+  onClick,
+}: {
+  task: Task
+  active: boolean
+  exportMode: boolean
+  exportSelected: boolean
+  onClick: () => void
+}) {
+  const matches = task.search_matches ?? []
+  const matchCount = Math.max(matches.length, task.search_match_count ?? 0)
+  const hiddenMatchCount = Math.max(0, matchCount - matches.length)
+  const action = exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'
+  const [expanded, setExpanded] = useState(true)
+
+  return (
+    <details
+      open={expanded}
+      onToggle={event => setExpanded(event.currentTarget.open)}
+      className="group border-b border-border-subtle last:border-b-0"
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '180px' }}
+    >
+      <summary
+        className={clsx(
+          'flex min-h-9 cursor-pointer list-none items-center gap-1.5 px-1.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35',
+          active ? 'bg-accent/10' : 'hover:bg-surface-overlay',
+        )}
+        title={task.name}
+      >
+        <ChevronDown className="h-3.5 w-3.5 flex-none -rotate-90 text-txt-tertiary transition-transform group-open:rotate-0" aria-hidden="true" />
+        {exportMode && <SelectionIndicator selected={exportSelected} />}
+        <StatusDot status={task.status as TaskStatus} />
+        <span className={clsx(
+          'min-w-0 flex-1 truncate text-xs leading-4',
+          active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary',
+        )}>
+          {task.name}
+        </span>
+        <span className="flex-none rounded bg-surface-overlay px-1.5 py-0.5 text-2xs tabular-nums text-txt-tertiary">
+          {matchCount.toLocaleString()}
+        </span>
+      </summary>
+      <ul className="list-none pb-1 pl-5" aria-label={`Matches in ${task.name}`}>
+        {matches.map((match, index) => (
+          <li key={`${match.field}-${match.location}-${match.match_start}-${index}`}>
+            <button
+              type="button"
+              onClick={onClick}
+              aria-current={!exportMode && active ? 'true' : undefined}
+              aria-pressed={exportMode ? exportSelected : undefined}
+              aria-label={`${action} ${TASK_SEARCH_FIELD_LABELS[match.field]} match in ${task.name}${match.location ? ` at ${match.location}` : ''}: ${match.snippet}`}
+              className="block w-full border-l border-border-subtle px-2 py-1.5 text-left transition-colors hover:border-accent/50 hover:bg-surface-overlay focus:outline-none focus-visible:border-accent focus-visible:bg-surface-overlay focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
+            >
+              <SearchMatchContext match={match} />
+            </button>
+          </li>
+        ))}
+        {hiddenMatchCount > 0 && (
+          <li className="border-l border-border-subtle px-2 py-1 text-2xs text-txt-tertiary">
+            +{hiddenMatchCount.toLocaleString()} more match{hiddenMatchCount === 1 ? '' : 'es'} in this task
+          </li>
+        )}
+      </ul>
+    </details>
   )
 }
 
@@ -2162,9 +2253,9 @@ function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
   return (
     <span className="block min-w-0">
       <span className="block truncate text-2xs font-medium text-accent">
-        {label}{match.location ? ` · ${match.location}` : ''}
+        {label}{match.location ? `: ${match.location}` : ''}
       </span>
-      <span className="truncate-2 block break-all text-2xs leading-4 text-txt-tertiary">
+      <span className="truncate-2 block break-words text-2xs leading-4 text-txt-tertiary">
         {match.snippet.slice(0, start)}
         <mark className="rounded-sm bg-amber-200/80 px-0.5 text-slate-950 dark:bg-amber-400/75 dark:text-slate-950">
           {match.snippet.slice(start, end)}

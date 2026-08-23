@@ -65,6 +65,7 @@ export interface Task {
   preview_text: string
   search_text: string
   search_matches?: TaskSearchMatch[]
+  search_match_count?: number
   records: any[]
   tracks: any[]
   gpu_wait?: GPUWaitStatus | null

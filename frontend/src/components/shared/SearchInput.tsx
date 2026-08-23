@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type Ref } from 'react'
 import { Search, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -10,6 +10,8 @@ interface Props {
   ariaLabel?: string
   debounceMs?: number
   className?: string
+  inputRef?: Ref<HTMLInputElement>
+  ariaKeyShortcuts?: string
 }
 
 export default function SearchInput({
@@ -19,6 +21,8 @@ export default function SearchInput({
   ariaLabel = 'Search',
   debounceMs = 300,
   className,
+  inputRef,
+  ariaKeyShortcuts,
 }: Props) {
   const [local, setLocal] = useState(value)
   const debounced = useDebouncedValue(local, debounceMs)
@@ -30,6 +34,7 @@ export default function SearchInput({
     <div className={clsx('relative flex items-center', className)}>
       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-txt-tertiary" />
       <input
+        ref={inputRef}
         type="text"
         inputMode="search"
         enterKeyHint="search"
@@ -38,6 +43,7 @@ export default function SearchInput({
         onChange={e => setLocal(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel}
+        aria-keyshortcuts={ariaKeyShortcuts}
         className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-11 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised sm:h-[34px] sm:pr-8 sm:text-xs"
       />
       {local && (

@@ -58,6 +58,7 @@ from pyruns.utils.info_io import (
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
     build_task_search_matches,
+    build_task_search_result,
     is_known_task_kind,
     normalize_task_kind,
     normalize_workspace_kind,
@@ -2172,7 +2173,7 @@ class TestFilterTasksMultiline:
         assert matches[0]["snippet"][matches[0]["match_start"]:matches[0]["match_end"]] == "REVIEW"
         assert matches[1]["snippet"][matches[1]["match_start"]:matches[1]["match_end"]] == "name: ResNet50"
 
-    def test_shell_search_matches_use_script_line_numbers_and_stay_bounded(self):
+    def test_shell_search_matches_use_script_line_numbers(self):
         task = {
             "name": "shell-task",
             "notes": "",
@@ -2185,9 +2186,58 @@ class TestFilterTasksMultiline:
             "token_a\ntoken_b\ntoken_c\ntoken_d\ntoken_e",
         )
 
-        assert len(matches) == 4
+        assert len(matches) == 5
         assert all(match["field"] == "script" for match in matches)
         assert matches[0]["location"] == "Line 2"
+
+    def test_search_result_counts_repeated_matches_beyond_context_limit(self):
+        task = {
+            "name": "repeated-task",
+            "notes": "\n".join(f"token on row {index}" for index in range(1, 11)),
+            "task_kind": TASK_KIND_CONFIG,
+            "config": {},
+        }
+
+        result = build_task_search_result(task, "token", limit=4)
+
+        assert result["match_count"] == 10
+        assert len(result["matches"]) == 4
+        assert [match["location"] for match in result["matches"]] == [
+            "Line 1",
+            "Line 2",
+            "Line 3",
+            "Line 4",
+        ]
+
+    def test_search_result_reports_multiple_occurrences_on_one_line(self):
+        task = {
+            "name": "repeat-line",
+            "notes": "token then TOKEN then token",
+            "task_kind": TASK_KIND_CONFIG,
+            "config": {},
+        }
+
+        result = build_task_search_result(task, "token")
+
+        assert result["match_count"] == 3
+        assert len(result["matches"]) == 3
+        assert [
+            match["snippet"][match["match_start"]:match["match_end"]]
+            for match in result["matches"]
+        ] == ["token", "TOKEN", "token"]
+
+    def test_search_result_keeps_large_repeated_source_context_bounded(self):
+        task = {
+            "name": "large-line",
+            "notes": "token " * 20_000,
+            "task_kind": TASK_KIND_CONFIG,
+            "config": {},
+        }
+
+        result = build_task_search_result(task, "token", limit=4)
+
+        assert result["match_count"] == 20_000
+        assert len(result["matches"]) == 4
 
 
 

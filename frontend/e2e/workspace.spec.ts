@@ -500,13 +500,23 @@ test('monitor task details stay stable after the full task loads', async ({ page
     const query = new URL(route.request().url()).searchParams.get('query') || ''
     const visibleTasks = query === 'hidden' ? [] : [{
       ...compactTask,
-      search_matches: query ? [{
-        field: 'name',
-        location: '',
-        snippet: 'alpha',
-        match_start: 0,
-        match_end: 5,
-      }] : undefined,
+      search_matches: query ? [
+        {
+          field: 'name',
+          location: '',
+          snippet: 'alpha',
+          match_start: 0,
+          match_end: 5,
+        },
+        {
+          field: 'notes',
+          location: 'Line 2',
+          snippet: 'Review alpha before launch',
+          match_start: 7,
+          match_end: 12,
+        },
+      ] : undefined,
+      search_match_count: query ? 5 : undefined,
     }]
     return route.fulfill({ json: {
       items: visibleTasks,
@@ -540,6 +550,8 @@ test('monitor task details stay stable after the full task loads', async ({ page
 
   await page.goto('/monitor?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'View alpha, pending' }).click()
+  await page.keyboard.press('Control+Shift+F')
+  await expect(page.getByRole('textbox', { name: 'Search monitor tasks' })).toBeFocused()
   await page.getByRole('button', { name: 'View Details' }).click()
   await expect(page.getByRole('dialog', { name: 'Task details for alpha' })).toBeVisible()
   await page.getByRole('tab', { name: 'Notes' }).click()
@@ -566,9 +578,14 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await page.getByRole('textbox', { name: 'Search monitor tasks' }).fill('alpha')
   await refreshedTasks
   await expect(notes).toHaveValue('local monitor draft')
-  const searchResult = monitorSidebar.getByRole('button', { name: /View alpha, pending\. Matches:/ })
-  await expect(searchResult.getByText('Name', { exact: true })).toBeVisible()
-  await expect(searchResult.locator('mark')).toHaveText('alpha')
+  await expect(monitorSidebar.getByText('5 matches in 1 task', { exact: true })).toBeVisible()
+  const nameMatch = monitorSidebar.getByRole('button', { name: /View Name match in alpha:/ })
+  const notesMatch = monitorSidebar.getByRole('button', { name: /View Notes match in alpha at Line 2:/ })
+  await expect(nameMatch.getByText('Name', { exact: true })).toBeVisible()
+  await expect(nameMatch.locator('mark')).toHaveText('alpha')
+  await expect(notesMatch.getByText('Notes: Line 2', { exact: true })).toBeVisible()
+  await expect(notesMatch.locator('mark')).toHaveText('alpha')
+  await expect(monitorSidebar.getByText('+3 more matches in this task', { exact: true })).toBeVisible()
 
   await page.getByRole('tab', { name: 'Env' }).click()
   await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')

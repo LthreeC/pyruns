@@ -2060,12 +2060,14 @@ def test_compact_task_search_returns_field_context_without_scanning_logs(tmp_pat
 
     assert notes_response.status_code == 200
     notes_match = notes_response.json()["items"][0]["search_matches"][0]
+    assert notes_response.json()["items"][0]["search_match_count"] == 1
     assert notes_match["field"] == "notes"
     assert notes_match["location"] == "Line 2"
     assert notes_match["snippet"][notes_match["match_start"]:notes_match["match_end"]] == "REVIEW"
 
     assert config_response.status_code == 200
     config_match = config_response.json()["items"][0]["search_matches"][0]
+    assert config_response.json()["items"][0]["search_match_count"] == 1
     assert config_match["field"] == "config"
     assert config_match["location"] == "model.name"
     assert "ResNet50" in config_match["snippet"]

@@ -59,7 +59,7 @@ from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
-    build_task_search_matches,
+    build_task_search_result,
     normalize_task_kind,
     read_task_payload,
     resolve_task_config_file,
@@ -404,12 +404,12 @@ class TaskManager:
             )
         return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
 
-    def get_task_search_matches(
+    def get_task_search_results(
         self,
         task_names: List[str],
         query: str,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Return bounded search context for a page of in-memory tasks."""
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return bounded contexts and counts for a page of in-memory tasks."""
 
         with self._lock:
             snapshots = [
@@ -424,7 +424,7 @@ class TaskManager:
                 if (task := self._tasks_by_name.get(name)) is not None
             ]
         return {
-            str(task.get("name", "")): build_task_search_matches(task, query)
+            str(task.get("name", "")): build_task_search_result(task, query)
             for task in snapshots
         }
 
