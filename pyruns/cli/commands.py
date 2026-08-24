@@ -21,7 +21,7 @@ from typing import Any, Iterator
 
 import psutil
 import yaml
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
@@ -56,7 +56,7 @@ from pyruns.launcher import (
     resolve_workspace_for_script,
 )
 from pyruns.utils.batch_utils import generate_batch_configs
-from pyruns.utils.config_utils import load_config_text, load_yaml_strict, safe_filename, to_container
+from pyruns.utils.config_utils import load_yaml_strict, parse_yaml_value, safe_filename, to_container
 from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
@@ -2325,12 +2325,7 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
         return 0
     if action == "set":
         try:
-            parsed = load_config_text(f"value: {args.value}\n")
-            value = (
-                to_container(parsed, resolve=False)["value"]
-                if isinstance(parsed, DictConfig)
-                else args.value
-            )
+            value = parse_yaml_value(args.value)
         except (ValueError, yaml.YAMLError) as exc:
             raise CliUsageError(f"invalid YAML value: {exc}") from exc
         value = _validate_setting_value(args.key, value)

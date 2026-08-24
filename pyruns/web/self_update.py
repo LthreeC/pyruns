@@ -41,7 +41,7 @@ class ActiveTasksError(RuntimeError):
     def __init__(self, active_count: int) -> None:
         self.active_count = max(1, int(active_count))
         super().__init__(
-            f"Pyruns can update only while idle; {self.active_count} queued or running "
+            f"Pyruns can update or restart only while idle; {self.active_count} queued or running "
             f"task{'s' if self.active_count != 1 else ''} remain."
         )
 
@@ -71,6 +71,7 @@ class UiUpdateCoordinator:
         self._shutdown_triggered = False
         self._runtime: Any = None
         self._current_version = str(current_version or "")
+        self._installed_version_value = self._current_version
         self._target_version = ""
         self._request_id = ""
         self._operation = "upgrade"
@@ -80,7 +81,7 @@ class UiUpdateCoordinator:
         self._coordination_error = ""
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
-        self._next_version_check = time.monotonic() + 5.0
+        self._next_version_check = 0.0
 
     @property
     def supported(self) -> bool:
@@ -93,7 +94,36 @@ class UiUpdateCoordinator:
 
     @property
     def state(self) -> str:
-        return "restarting" if self.requested else "idle"
+        if self.requested:
+            return "restarting"
+        return "restart_required" if self.restart_required else "idle"
+
+    @property
+    def installed_version(self) -> str:
+        with self._lock:
+            return self._installed_version_value or self._current_version
+
+    @property
+    def restart_required(self) -> bool:
+        with self._lock:
+            return bool(
+                self._current_version
+                and self._installed_version_value
+                and self._installed_version_value != self._current_version
+            )
+
+    def refresh_installed_version(self, *, force: bool = False) -> str:
+        """Refresh the on-disk distribution version without requesting a restart."""
+
+        now = time.monotonic()
+        with self._lock:
+            if not force and now < self._next_version_check:
+                return self._installed_version_value or self._current_version
+            self._next_version_check = now + 5.0
+        installed = self._installed_version(self._current_version)
+        with self._lock:
+            self._installed_version_value = installed
+            return installed
 
     @property
     def instance_id(self) -> str:
@@ -231,7 +261,30 @@ class UiUpdateCoordinator:
                 lock_context.__exit__(*sys.exc_info())
 
     def prepare(self, runtime: Any) -> bool:
-        """Publish the update gate only after every registered process is idle."""
+        """Publish an upgrade gate after every registered process is idle."""
+
+        return self._prepare_operation(runtime, operation="upgrade", target_version="")
+
+    def prepare_restart(self, runtime: Any) -> bool:
+        """Publish a restart gate for an externally changed installation."""
+
+        installed = self.refresh_installed_version(force=True)
+        if not self._current_version or installed == self._current_version:
+            raise UpdateCheckError("The running UI already matches the installed Pyruns version.")
+        return self._prepare_operation(
+            runtime,
+            operation="restart",
+            target_version=installed,
+        )
+
+    def _prepare_operation(
+        self,
+        runtime: Any,
+        *,
+        operation: str,
+        target_version: str,
+    ) -> bool:
+        """Publish one shared full-process operation after every user is idle."""
 
         with self._lock:
             if self._requested:
@@ -246,6 +299,9 @@ class UiUpdateCoordinator:
                 if active_count > 0:
                     raise ActiveTasksError(active_count)
                 self._requested = True
+                self._operation = operation
+                self._target_version = target_version
+                self._role = "owner"
                 return True
             try:
                 with self._store.locked():
@@ -273,15 +329,18 @@ class UiUpdateCoordinator:
                         raise ActiveTasksError(active_count)
 
                     request_id = secrets.token_hex(16)
-                    request = process_record(record_id=self._instance_id, kind="ui-update")
+                    request = process_record(
+                        record_id=self._instance_id,
+                        kind="ui-restart" if operation == "restart" else "ui-update",
+                    )
                     request.update(
                         {
                             "request_id": request_id,
                             "owner_instance_id": self._instance_id,
-                            "operation": "upgrade",
+                            "operation": operation,
                             "stage": "draining",
                             "previous_version": self._current_version,
-                            "target_version": "",
+                            "target_version": target_version,
                             "requested_at": time.time(),
                         }
                     )
@@ -299,7 +358,7 @@ class UiUpdateCoordinator:
                 raise
             except (OSError, UpdateCoordinationError, TypeError, ValueError) as exc:
                 raise UpdateCheckError(
-                    "Could not coordinate an idle update across this Pyruns installation."
+                    f"Could not coordinate an idle {operation} across this Pyruns installation."
                 ) from exc
 
     def trigger_shutdown(self) -> None:
@@ -315,28 +374,6 @@ class UiUpdateCoordinator:
             with self._lock:
                 self._shutdown_triggered = False
             raise
-
-    def _publish_external_restart(self, installed_version: str) -> None:
-        if self._store is None:
-            return
-        with self._store.locked():
-            request = self._store.active_request_locked(recover=True)
-            if request is None:
-                request_id = secrets.token_hex(16)
-                request = process_record(record_id=self._instance_id, kind="ui-restart")
-                request.update(
-                    {
-                        "request_id": request_id,
-                        "owner_instance_id": self._instance_id,
-                        "operation": "restart",
-                        "stage": "draining",
-                        "previous_version": self._current_version,
-                        "target_version": str(installed_version),
-                        "requested_at": time.time(),
-                    }
-                )
-                self._store.write_request_locked(request)
-            self._join_request(request)
 
     @staticmethod
     def _installed_version(fallback: str) -> str:
@@ -384,13 +421,8 @@ class UiUpdateCoordinator:
 
         active_count = self._runtime_active_count(strict=False)
         self._write_instance(phase="serving", active_count=active_count)
-        if time.monotonic() < self._next_version_check or not self._current_version:
-            return
-        self._next_version_check = time.monotonic() + 5.0
-        installed = self._installed_version(self._current_version)
-        if installed != self._current_version:
-            self._publish_external_restart(installed)
-            self._drain_once()
+        if self._current_version:
+            self.refresh_installed_version()
 
     def _monitor_loop(self) -> None:
         while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
@@ -978,6 +1010,15 @@ def main(args: list[str] | None = None) -> int:
                     restart_only=bool(options.restart_only),
                     installed_version=str(options.installed_version or ""),
                 )
+        elif options.restart_only:
+            result = {
+                "ok": True,
+                "previous_version": str(options.previous_version),
+                "installed_version": str(
+                    options.installed_version or options.previous_version
+                ),
+                "exit_code": 0,
+            }
         else:
             result = run_pip_upgrade(options.previous_version)
     except Exception as exc:

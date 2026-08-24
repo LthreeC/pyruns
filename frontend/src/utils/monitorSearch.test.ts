@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  splitTaskSearchSnippet,
   shouldDecorateTerminalSearch,
   TERMINAL_SEARCH_DECORATION_ROW_LIMIT,
   TERMINAL_SEARCH_HIGHLIGHT_LIMIT,
@@ -37,5 +38,13 @@ describe('monitor terminal search policy', () => {
       decorated: true,
       resultCount: TERMINAL_SEARCH_HIGHLIGHT_LIMIT,
     })).toBe(`${TERMINAL_SEARCH_HIGHLIGHT_LIMIT}+`)
+  })
+
+  it('splits task search highlights by Unicode code point offsets', () => {
+    expect(splitTaskSearchSnippet('😀 foo', 2, 5)).toEqual([
+      '😀 ',
+      'foo',
+      '',
+    ])
   })
 })

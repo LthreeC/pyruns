@@ -59,6 +59,7 @@ import {
 } from '@/utils/monitorSettings'
 import { configureReadOnlyTerminalInput } from '@/utils/monitorAccessibility'
 import {
+  splitTaskSearchSnippet,
   shouldDecorateTerminalSearch,
   TERMINAL_SEARCH_DEBOUNCE_MS,
   TERMINAL_SEARCH_HIGHLIGHT_LIMIT,
@@ -2246,8 +2247,11 @@ function SearchResultGroup({
 }
 
 function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
-  const start = Math.max(0, Math.min(match.snippet.length, Number(match.match_start) || 0))
-  const end = Math.max(start, Math.min(match.snippet.length, Number(match.match_end) || 0))
+  const [before, highlighted, after] = splitTaskSearchSnippet(
+    match.snippet,
+    match.match_start,
+    match.match_end,
+  )
   const label = TASK_SEARCH_FIELD_LABELS[match.field]
 
   return (
@@ -2256,11 +2260,11 @@ function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
         {label}{match.location ? `: ${match.location}` : ''}
       </span>
       <span className="truncate-2 block break-words text-2xs leading-4 text-txt-tertiary">
-        {match.snippet.slice(0, start)}
+        {before}
         <mark className="rounded-sm bg-amber-200/80 px-0.5 text-slate-950 dark:bg-amber-400/75 dark:text-slate-950">
-          {match.snippet.slice(start, end)}
+          {highlighted}
         </mark>
-        {match.snippet.slice(end)}
+        {after}
       </span>
     </span>
   )

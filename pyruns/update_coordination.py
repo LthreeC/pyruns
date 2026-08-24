@@ -405,9 +405,10 @@ class EnvironmentActivityLease:
                         "Pyruns is updating; new tasks are disabled until every UI restarts."
                     )
                 self.store.write_record("activities", self.activity_id, self._payload())
-        except PermissionError:
-            # A read-only installation cannot run the in-place updater either.
-            # Preserve ordinary CLI execution unless a readable live gate exists.
+        except (OSError, UpdateCoordinationError):
+            # Coordination is optional for ordinary task execution. Preserve a
+            # readable live update gate, but do not fail a task merely because
+            # the installation-level state cannot currently be changed.
             request = self.store.read_request_locked()
             if (
                 self.store.request_is_active(request)
@@ -428,7 +429,10 @@ class EnvironmentActivityLease:
         try:
             self._thread.start()
         except BaseException:
-            self.store.remove_record("activities", self.activity_id)
+            try:
+                self.store.remove_record("activities", self.activity_id)
+            except OSError:
+                pass
             self._started = False
             raise
         return self
@@ -448,7 +452,10 @@ class EnvironmentActivityLease:
         self._stop.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=2.0)
-        self.store.remove_record("activities", self.activity_id)
+        try:
+            self.store.remove_record("activities", self.activity_id)
+        except OSError:
+            pass
         self._started = False
 
     def __enter__(self) -> "EnvironmentActivityLease":

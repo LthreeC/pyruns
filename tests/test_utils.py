@@ -1653,6 +1653,8 @@ def test_parse_value_preserves_expected_scalar_and_collection_types():
         (False, False),
         ("[1, 2, 3]", [1, 2, 3]),
         ("hello world", "hello world"),
+        ("foo: bar", "foo: bar"),
+        ("", None),
         ("0.001 | 0.01 | 0.1", "0.001 | 0.01 | 0.1"),
     ]
     for value, expected in cases:
@@ -1670,6 +1672,12 @@ def test_parse_value_preserves_unresolved_interpolations(monkeypatch):
     assert parse_value(
         "['${oc.env:PYRUNS_TEST_SECRET}', '${missing.reference}']"
     ) == ["${oc.env:PYRUNS_TEST_SECRET}", "${missing.reference}"]
+
+
+def test_parse_value_preserves_multiline_text_that_looks_like_extra_yaml_keys():
+    value = "foo\nother: x"
+
+    assert parse_value(value) == value
 
 
 # ═══════════════════════════════════════════════════════════════

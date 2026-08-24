@@ -3308,6 +3308,21 @@ def test_config_set_does_not_resolve_environment_interpolations(tmp_path):
     assert "${oc.env:PYRUNS_TEST_SECRET}" in settings_text
 
 
+def test_config_set_rejects_multiline_value_with_extra_yaml_keys(tmp_path):
+    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
+
+    result = _run_cli(
+        tmp_path,
+        "config",
+        "set",
+        "conda_env",
+        "foo\nother: x",
+    )
+
+    assert result.returncode == 2
+    assert "single YAML value" in result.stderr
+
+
 def test_config_rejects_unknown_keys_and_wrong_types(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     unknown = _run_cli(tmp_path, "config", "get", "manager_max_workers")

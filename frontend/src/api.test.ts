@@ -8,6 +8,7 @@ import {
   getTasks,
   getSystemInfo,
   getWorkspace,
+  restartPyruns,
   subscribeUnauthorized,
   updatePyruns,
   updateEnv,
@@ -70,6 +71,8 @@ describe('API errors', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         version: '0.3.0',
+        installed_version: '0.3.0',
+        restart_required: false,
         instance_id: 'old-instance',
         update_supported: true,
         update_state: 'idle',
@@ -86,15 +89,25 @@ describe('API errors', () => {
         version: '0.3.0',
         state: 'restarting',
       }), { status: 202, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        instance_id: 'old-instance',
+        version: '0.3.0',
+        state: 'restarting',
+      }), { status: 202, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
 
     await getSystemInfo()
     await checkPyrunsUpdate()
     await updatePyruns()
+    await restartPyruns()
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/system/info', expect.any(Object))
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/system/update/check', expect.any(Object))
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/system/update', expect.objectContaining({
+      method: 'POST',
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/system/restart', expect.objectContaining({
       method: 'POST',
     }))
   })

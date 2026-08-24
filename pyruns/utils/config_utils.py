@@ -66,6 +66,15 @@ def to_container(value: Any, *, resolve: bool = False) -> Any:
     return value
 
 
+def parse_yaml_value(text: str) -> Any:
+    """Parse exactly one YAML value using the existing Pyruns scalar syntax."""
+
+    parsed = load_config_text(f"value: {str(text)}\n")
+    if not isinstance(parsed, DictConfig) or list(parsed.keys()) != ["value"]:
+        raise ValueError("expected a single YAML value")
+    return to_container(parsed, resolve=False)["value"]
+
+
 def _normalize_yaml_objects(value: Any) -> Any:
     """Convert Python date/time objects to stable ISO scalar strings."""
 
@@ -175,8 +184,7 @@ def parse_value(val_str: Any) -> Any:
     if not isinstance(val_str, str):
         return val_str
     try:
-        parsed = load_config_text(f"value: {val_str}\n")
-        return to_container(parsed, resolve=False)["value"]
+        return parse_yaml_value(val_str)
     except Exception:
         return val_str
 

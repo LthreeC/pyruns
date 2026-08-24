@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import sys
@@ -242,7 +243,42 @@ def test_activity_lease_rejects_starts_while_shared_gate_is_active(tmp_path):
         EnvironmentActivityLease("cli-runner", state_dir=str(state_dir)).start()
 
 
-def test_remote_nfs_leases_survive_brief_disconnects_and_expire(tmp_path):
+def test_activity_lease_disables_coordination_for_read_only_installation(
+    tmp_path,
+    monkeypatch,
+):
+    lease = EnvironmentActivityLease(
+        "cli-runner",
+        state_dir=str(tmp_path / "coordination"),
+    )
+
+    def read_only_lock(*_args, **_kwargs):
+        raise OSError(errno.EROFS, "read-only file system")
+
+    monkeypatch.setattr(lease.store, "locked", read_only_lock)
+
+    assert lease.start() is lease
+    assert lease._disabled is True
+
+
+def test_activity_lease_cleanup_is_best_effort(tmp_path, monkeypatch):
+    lease = EnvironmentActivityLease(
+        "cli-runner",
+        state_dir=str(tmp_path / "coordination"),
+    )
+    lease._started = True
+
+    def stale_record(*_args, **_kwargs):
+        raise OSError(errno.ESTALE, "stale file handle")
+
+    monkeypatch.setattr(lease.store, "remove_record", stale_record)
+
+    lease.close()
+
+    assert lease._started is False
+
+
+def test_remote_shared_leases_survive_brief_disconnects_and_expire(tmp_path):
     store = CoordinationStore(tmp_path / "coordination")
     instance_id = "f" * 32
     remote = process_record(record_id=instance_id, kind="ui")
@@ -271,7 +307,7 @@ def test_remote_nfs_leases_survive_brief_disconnects_and_expire(tmp_path):
         assert store.live_records_locked("instances") == []
 
 
-def test_external_install_version_change_restarts_shared_ui_when_idle(tmp_path, monkeypatch):
+def test_external_install_version_change_waits_for_manual_restart(tmp_path, monkeypatch):
     shutdowns: list[str] = []
     coordinator = self_update.UiUpdateCoordinator(
         lambda: shutdowns.append("shutdown"),
@@ -284,6 +320,15 @@ def test_external_install_version_change_restarts_shared_ui_when_idle(tmp_path, 
     coordinator._next_version_check = 0.0
     try:
         coordinator._monitor_tick()
+
+        assert coordinator.requested is False
+        assert coordinator.restart_required is True
+        assert coordinator.installed_version == "0.4.0"
+        assert coordinator.state == "restart_required"
+        assert shutdowns == []
+
+        assert coordinator.prepare_restart(_Runtime(0)) is True
+        coordinator.trigger_shutdown()
 
         assert coordinator.requested is True
         assert shutdowns == ["shutdown"]
@@ -474,6 +519,43 @@ def test_updater_main_removes_token_before_pip_and_relaunches(monkeypatch):
     assert observed["previous_version"] == "0.3.0"
     assert observed["relaunch"]["port"] == 8123
     assert observed["relaunch"]["token"] == "private-token"
+
+
+def test_restart_only_main_relaunches_without_running_pip(monkeypatch):
+    observed = {}
+    monkeypatch.setenv(self_update.UI_TOKEN_ENV, "private-token")
+
+    def unexpected_upgrade(*_args, **_kwargs):
+        raise AssertionError("a restart-only request must not run pip")
+
+    monkeypatch.setattr(self_update, "run_pip_upgrade", unexpected_upgrade)
+    monkeypatch.setattr(
+        self_update,
+        "relaunch_ui",
+        lambda **kwargs: observed.setdefault("relaunch", kwargs),
+    )
+
+    assert self_update.main(
+        [
+            "--port",
+            "8123",
+            "--previous-version",
+            "0.3.0",
+            "--restart-only",
+            "--installed-version",
+            "0.4.0",
+        ]
+    ) == 1
+    assert observed["relaunch"] == {
+        "port": 8123,
+        "token": "private-token",
+        "result": {
+            "ok": True,
+            "previous_version": "0.3.0",
+            "installed_version": "0.4.0",
+            "exit_code": 0,
+        },
+    }
 
 
 def test_waiter_main_uses_shared_result_without_running_upgrade(monkeypatch):

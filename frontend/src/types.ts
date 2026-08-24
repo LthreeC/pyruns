@@ -166,6 +166,8 @@ export interface UiUpdateResult {
 
 export interface SystemInfo {
   version: string
+  installed_version: string
+  restart_required: boolean
   instance_id: string
   update_supported: boolean
   update_state: 'idle' | 'restarting' | 'unavailable' | string

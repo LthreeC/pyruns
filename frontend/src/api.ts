@@ -271,6 +271,10 @@ export const updatePyruns = () => request<UiUpdateResponse>('/api/system/update'
   method: 'POST',
 })
 
+export const restartPyruns = () => request<UiUpdateResponse>('/api/system/restart', {
+  method: 'POST',
+})
+
 export const getLauncherScripts = () => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts')
 export const getLauncherConfigs = (script: string) =>
   request<LauncherConfigsResponse>(`/api/launcher/configs?script=${encodeURIComponent(script)}`)

@@ -102,15 +102,19 @@ def test_system_info_exposes_instance_and_disables_updates_without_coordinator(m
     info = client.get("/api/system/info")
     check = client.get("/api/system/update/check")
     update = client.post("/api/system/update")
+    restart = client.post("/api/system/restart")
 
     assert info.status_code == 200
     assert info.json()["version"] == __version__
     assert info.json()["instance_id"]
     assert info.json()["update_supported"] is False
     assert info.json()["update_state"] == "unavailable"
+    assert info.json()["installed_version"] == __version__
+    assert info.json()["restart_required"] is False
     assert info.json()["last_update"] is None
     assert check.status_code == 503
     assert update.status_code == 503
+    assert restart.status_code == 503
 
 
 def test_system_update_check_reports_latest_pypi_version(monkeypatch):
@@ -171,6 +175,36 @@ def test_system_update_requires_idle_runtime_then_gates_task_starts():
     assert "new tasks are disabled" in start.json()["detail"]
     assert info.json()["update_supported"] is True
     assert info.json()["update_state"] == "restarting"
+
+
+def test_system_restart_reports_external_version_and_requires_manual_request(monkeypatch):
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    shutdowns = []
+    runtime = _RouteRuntime({"active_task_count": 0})
+    coordinator = UiUpdateCoordinator(
+        lambda: shutdowns.append("shutdown"),
+        current_version="0.3.0",
+    )
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: "0.4.0")
+    client = TestClient(create_app(runtime, update_coordinator=coordinator))
+
+    info = client.get("/api/system/info")
+
+    assert info.status_code == 200
+    assert info.json()["version"] == __version__
+    assert info.json()["installed_version"] == "0.4.0"
+    assert info.json()["restart_required"] is True
+    assert info.json()["update_state"] == "restart_required"
+    assert coordinator.requested is False
+    assert shutdowns == []
+
+    response = client.post("/api/system/restart")
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "restarting"
+    assert coordinator.requested is True
+    assert shutdowns == ["shutdown"]
 
 
 def test_system_update_gates_generator_task_creation():
@@ -3058,6 +3092,58 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
     assert replacement["instance_id"]
     assert replacement["state_dir"]
     assert replacement["restart_only"] is False
+
+
+def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch):
+    from pyruns.web import app as web_app
+
+    events = []
+
+    class DummyRuntime:
+        settings = {"ui_port": 8099}
+
+        def active_task_count(self) -> int:
+            return 0
+
+        def shutdown(self) -> None:
+            events.append("runtime-shutdown")
+
+    def fake_run(app_target, **_kwargs):
+        events.append("server-run")
+        client = TestClient(app_target)
+        assert client.get("/?token=private-token", follow_redirects=False).status_code == 303
+        info = client.get("/api/system/info")
+        assert info.json()["restart_required"] is True
+        response = client.post("/api/system/restart")
+        assert response.status_code == 202
+
+    def fake_replace(**kwargs):
+        events.append(("replace", kwargs))
+
+    monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
+    monkeypatch.setattr(
+        web_app,
+        "find_available_port",
+        lambda port, host="127.0.0.1", max_attempts=100: port,
+    )
+    monkeypatch.setattr(
+        web_app.UiUpdateCoordinator,
+        "_installed_version",
+        staticmethod(lambda _fallback: "0.4.0"),
+    )
+    monkeypatch.setattr(web_app, "_request_server_shutdown", lambda: events.append("server-stop"))
+    monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
+    monkeypatch.setattr(web_app, "replace_process_with_updater", fake_replace)
+
+    web_app.main(open_browser=False, port=8123, access_token="private-token")
+
+    assert events[:3] == ["server-run", "server-stop", "runtime-shutdown"]
+    assert events[3][0] == "replace"
+    replacement = events[3][1]
+    assert replacement["restart_only"] is True
+    assert replacement["installed_version"] == "0.4.0"
+    assert replacement["request_id"]
+    assert replacement["state_dir"]
 
 
 def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):

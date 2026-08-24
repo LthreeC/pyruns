@@ -8,6 +8,8 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
   await page.route('**/api/system/info', route => route.fulfill({
     json: {
       version: restarted ? '0.4.0' : '0.3.0',
+      installed_version: restarted ? '0.4.0' : '0.3.0',
+      restart_required: false,
       instance_id: restarted ? 'new-instance' : 'old-instance',
       update_supported: true,
       update_state: 'idle',
@@ -79,6 +81,8 @@ test('update control reports the current PyPI release without restarting', async
   await page.route('**/api/system/info', route => route.fulfill({
     json: {
       version: '0.3.0',
+      installed_version: '0.3.0',
+      restart_required: false,
       instance_id: 'current-instance',
       update_supported: true,
       update_state: 'idle',
@@ -110,11 +114,64 @@ test('update control reports the current PyPI release without restarting', async
   expect(updateRequests).toBe(0)
 })
 
+test('external package change waits for a manual shared restart', async ({ page }) => {
+  let restarted = false
+  let restartRequests = 0
+  let updateChecks = 0
+
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: restarted ? '0.4.0' : '0.3.0',
+      installed_version: '0.4.0',
+      restart_required: !restarted,
+      instance_id: restarted ? 'restarted-instance' : 'stale-instance',
+      update_supported: true,
+      update_state: restarted ? 'idle' : 'restart_required',
+      last_update: null,
+    },
+  }))
+  await page.route('**/api/system/update/check', route => {
+    updateChecks += 1
+    return route.fulfill({ status: 500, json: { detail: 'Version check should not run' } })
+  })
+  await page.route('**/api/system/restart', route => {
+    restartRequests += 1
+    restarted = true
+    return route.fulfill({
+      status: 202,
+      json: {
+        ok: true,
+        instance_id: 'stale-instance',
+        version: '0.3.0',
+        state: 'restarting',
+      },
+    })
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const restartButton = page.getByRole('button', {
+    name: /Restart Pyruns to load installed version 0\.4\.0/,
+  })
+  await expect(restartButton).toBeVisible()
+  await restartButton.click()
+
+  const confirmation = page.getByRole('dialog', { name: 'Restart Pyruns to load v0.4.0?' })
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: 'Restart Interfaces' }).click()
+
+  await expect(page.getByRole('dialog', { name: 'Restarting Pyruns' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
+  expect(restartRequests).toBe(1)
+  expect(updateChecks).toBe(0)
+})
+
 test('a shared backend restart reloads a non-initiating interface', async ({ page }) => {
   let restarted = false
   await page.route('**/api/system/info', route => route.fulfill({
     json: {
       version: restarted ? '0.4.0' : '0.3.0',
+      installed_version: restarted ? '0.4.0' : '0.3.0',
+      restart_required: false,
       instance_id: restarted ? 'shared-new-instance' : 'shared-old-instance',
       update_supported: true,
       update_state: 'idle',

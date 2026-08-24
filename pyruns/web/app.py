@@ -1352,8 +1352,15 @@ def create_app(
     def get_system_info() -> dict[str, Any]:
         coordinator = app.state.update_coordinator
         update_supported = coordinator is not None and coordinator.supported
+        installed_version = __version__
+        restart_required = False
+        if coordinator is not None:
+            installed_version = coordinator.refresh_installed_version()
+            restart_required = coordinator.restart_required
         return {
             "version": __version__,
+            "installed_version": installed_version,
+            "restart_required": restart_required,
             "instance_id": app.state.instance_id,
             "update_supported": update_supported,
             "update_state": coordinator.state if update_supported else "unavailable",
@@ -1382,6 +1389,29 @@ def create_app(
             )
         try:
             ready = coordinator.prepare(get_runtime())
+        except ActiveTasksError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except UpdateCheckError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if ready:
+            background_tasks.add_task(coordinator.trigger_shutdown)
+        return {
+            "ok": True,
+            "instance_id": app.state.instance_id,
+            "version": __version__,
+            "state": coordinator.state,
+        }
+
+    @app.post("/api/system/restart", status_code=202)
+    def restart_pyruns(background_tasks: BackgroundTasks) -> dict[str, Any]:
+        coordinator = app.state.update_coordinator
+        if coordinator is None or not coordinator.supported:
+            raise HTTPException(
+                status_code=503,
+                detail="Full-process restarts are available only in the normal 'pyr ui' server.",
+            )
+        try:
+            ready = coordinator.prepare_restart(get_runtime())
         except ActiveTasksError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UpdateCheckError as exc:

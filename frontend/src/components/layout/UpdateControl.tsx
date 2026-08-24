@@ -19,12 +19,22 @@ const INSTANCE_POLL_MS = 5_000
 const SLOW_UPDATE_MS = 90_000
 const UPDATE_NOTICE_PREFIX = 'pyruns.update.notice.'
 
+type FullProcessOperation = 'update' | 'restart'
+
 function wait(milliseconds: number) {
   return new Promise(resolve => window.setTimeout(resolve, milliseconds))
 }
 
-function UpdateProgressDialog({ open, takingLong }: { open: boolean; takingLong: boolean }) {
+function UpdateProgressDialog({
+  operation,
+  takingLong,
+}: {
+  operation: FullProcessOperation | null
+  takingLong: boolean
+}) {
   const ref = useRef<HTMLDialogElement>(null)
+  const open = operation !== null
+  const restarting = operation === 'restart'
 
   useEffect(() => {
     const dialog = ref.current
@@ -52,12 +62,16 @@ function UpdateProgressDialog({ open, takingLong }: { open: boolean; takingLong:
           className="mx-auto h-7 w-7 animate-spin text-accent motion-reduce:animate-none"
         />
         <h2 id="pyruns-update-title" className="mt-4 text-base font-semibold text-txt-primary">
-          Updating Pyruns
+          {restarting ? 'Restarting Pyruns' : 'Updating Pyruns'}
         </h2>
         <p id="pyruns-update-detail" aria-live="polite" className="mt-2 text-sm leading-6 text-txt-secondary">
           {takingLong
-            ? 'The package update is still running. The terminal contains the current pip status.'
-            : 'Installing the package and restarting every interface that shares it...'}
+            ? restarting
+              ? 'The shared restart is still waiting. The terminal contains the current status.'
+              : 'The package update is still running. The terminal contains the current pip status.'
+            : restarting
+              ? 'Restarting every idle interface that shares this installation...'
+              : 'Installing the package and restarting every interface that shares it...'}
         </p>
         {takingLong && (
           <button
@@ -77,7 +91,7 @@ function UpdateProgressDialog({ open, takingLong }: { open: boolean; takingLong:
 export default function UpdateControl({ compact = false }: { compact?: boolean }) {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [checking, setChecking] = useState(false)
-  const [updating, setUpdating] = useState(false)
+  const [operation, setOperation] = useState<FullProcessOperation | null>(null)
   const [takingLong, setTakingLong] = useState(false)
   const instanceIdRef = useRef('')
   const runtimeDirty = useRuntimeStore(state => state.dirty)
@@ -167,7 +181,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
   }, [])
 
   const startUpdate = useCallback(async () => {
-    if (checking || updating) return
+    if (checking || operation) return
 
     setChecking(true)
     let versionCheck: UiVersionCheck
@@ -205,20 +219,48 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     })
     if (!confirmed) return
 
-    setUpdating(true)
+    setOperation('update')
     setTakingLong(false)
     try {
       const response = await api.updatePyruns()
       await waitForRestart(response.instance_id)
     } catch (error) {
-      setUpdating(false)
+      setOperation(null)
       notify({
         tone: 'error',
         title: 'Could not update Pyruns',
         detail: errorMessage(error),
       })
     }
-  }, [checking, hasUnsavedWork, notify, updating, waitForRestart])
+  }, [checking, hasUnsavedWork, notify, operation, waitForRestart])
+
+  const startRestart = useCallback(async () => {
+    if (checking || operation || !systemInfo?.restart_required) return
+
+    const targetVersion = systemInfo.installed_version || systemInfo.version
+    const confirmed = await requestConfirmation({
+      title: `Restart Pyruns to load v${targetVersion}?`,
+      description: hasUnsavedWork
+        ? `This interface is running v${systemInfo.version}, while v${targetVersion} is installed. Every interface sharing this installation will restart when idle, and unsaved drafts will be discarded.`
+        : `This interface is running v${systemInfo.version}, while v${targetVersion} is installed. Restart every interface sharing this installation when idle.`,
+      confirmLabel: 'Restart Interfaces',
+    })
+    if (!confirmed) return
+
+    setOperation('restart')
+    setTakingLong(false)
+    try {
+      const response = await api.restartPyruns()
+      await waitForRestart(response.instance_id)
+    } catch (error) {
+      setOperation(null)
+      notify({
+        tone: 'error',
+        title: 'Could not restart Pyruns',
+        detail: errorMessage(error),
+      })
+    }
+  }, [checking, hasUnsavedWork, notify, operation, systemInfo, waitForRestart])
 
   if (!systemInfo) {
     return (
@@ -230,37 +272,54 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
   }
   if (!systemInfo.update_supported) return null
 
-  const busy = checking || updating
+  const restartRequired = systemInfo.restart_required
+  const backendRestarting = systemInfo.update_state === 'restarting'
+  const busy = checking || operation !== null || backendRestarting
   const buttonLabel = checking
     ? 'Checking for Pyruns updates'
-    : updating
+    : operation === 'update'
       ? 'Updating Pyruns'
-      : `Check for Pyruns updates, installed version ${systemInfo.version}`
+      : operation === 'restart' || backendRestarting
+        ? 'Restarting Pyruns'
+        : restartRequired
+          ? `Restart Pyruns to load installed version ${systemInfo.installed_version}; this interface is running ${systemInfo.version}`
+          : `Check for Pyruns updates, installed version ${systemInfo.version}`
 
   return (
     <>
       <button
         type="button"
-        onClick={() => void startUpdate()}
+        onClick={() => void (restartRequired ? startRestart() : startUpdate())}
         disabled={busy}
         aria-label={buttonLabel}
         title={buttonLabel}
         className={clsx(
-          'flex h-10 flex-none items-center justify-center gap-1 rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-60',
+          'relative flex h-10 flex-none items-center justify-center gap-1 rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-60',
+          restartRequired && 'bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300',
           compact ? 'h-11 w-10 sm:h-11' : 'w-[78px] px-1.5',
         )}
       >
         {!compact && (
           <span className="min-w-0 truncate font-mono text-[10px] text-txt-secondary">
-            v{systemInfo.version}
+            v{restartRequired ? systemInfo.installed_version : systemInfo.version}
           </span>
         )}
         <RefreshCw
           aria-hidden="true"
-          className={clsx('h-3.5 w-3.5 flex-none', busy && 'animate-spin motion-reduce:animate-none')}
+          className={clsx(
+            'h-3.5 w-3.5 flex-none',
+            busy && 'animate-spin motion-reduce:animate-none',
+            restartRequired && !busy && 'text-amber-600 dark:text-amber-300',
+          )}
         />
+        {restartRequired && (
+          <span
+            aria-hidden="true"
+            className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-500"
+          />
+        )}
       </button>
-      <UpdateProgressDialog open={updating} takingLong={takingLong} />
+      <UpdateProgressDialog operation={operation} takingLong={takingLong} />
     </>
   )
 }
