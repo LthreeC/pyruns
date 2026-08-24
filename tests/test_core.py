@@ -5790,6 +5790,43 @@ def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypat
     assert Path(beta["dir"]).exists()
 
 
+def test_task_manager_reorder_rolls_back_partial_writes(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    alpha = generator.create_task("alpha", {"value": 1})
+    beta = generator.create_task("beta", {"value": 2})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    write_count = 0
+
+    def fail_second_write(task_dir, updater):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("shared filesystem write failed")
+        return update_task_info(task_dir, updater)
+
+    monkeypatch.setattr("pyruns.core.task_manager.update_task_info", fail_second_write)
+
+    with pytest.raises(OSError, match="shared filesystem write failed"):
+        manager.reorder_tasks([
+            {"name": "beta", "pinned": True},
+            {"name": "alpha", "pinned": False},
+        ])
+
+    assert write_count == 3
+    for task in (alpha, beta):
+        persisted = load_task_info(task["dir"], raise_error=True)
+        assert "task_order" not in persisted
+        assert persisted["pinned"] is False
+        current = manager.get_task(task["name"])
+        assert current["task_order"] is None
+        assert current["pinned"] is False
+
+
 def test_task_manager_delete_active_task_preserves_folder_when_trash_move_fails(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

@@ -2620,7 +2620,7 @@ function ParamRow({
   if (!editingRef.current) {
     originalTypeRef.current = inferredType
   }
-  const originalType = declaredType || originalTypeRef.current
+  const originalType = editingRef.current ? originalTypeRef.current : inferredType
   const treeParamRow = layoutMode === 'tree'
   const markDraftEdited = useContext(GeneratorDraftEditContext)
 

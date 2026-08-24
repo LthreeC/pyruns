@@ -1250,6 +1250,37 @@ test('generator preserves shell and uncommitted form drafts across navigation', 
   await expect(page.getByRole('textbox', { name: 'Task YAML editor' })).toContainText('epochs: 27')
 })
 
+test('generator preserves inferred parameter types without a template', async ({ page }) => {
+  await page.route('**/api/workspace', route => route.fulfill({
+    json: {
+      run_root: 'C:/pyruns-e2e/script-workspace',
+      working_root: 'C:/pyruns-e2e',
+      tasks_dir: 'C:/pyruns-e2e/script-workspace/tasks',
+      workspace_kind: 'script',
+      workspace_ready: true,
+      script_path: 'C:/pyruns-e2e/train.py',
+      script_name: 'train.py',
+      native_file_picker: false,
+      settings: {},
+      templates: [],
+    },
+  }))
+  await page.route('**/api/templates', route => route.fulfill({ json: { items: [] } }))
+
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'YAML', exact: true }).click()
+  const yamlEditor = page.getByRole('textbox', { name: 'Task YAML editor' })
+  await yamlEditor.fill('epochs: 10\n')
+
+  await page.getByRole('button', { name: 'Grid', exact: true }).click()
+  const epochs = page.getByRole('textbox', { name: 'epochs parameter value' })
+  await expect(epochs).toHaveValue('10')
+  await epochs.fill('27')
+  await page.getByRole('button', { name: 'YAML', exact: true }).click()
+
+  await expect(page.getByRole('textbox', { name: 'Task YAML editor' })).toContainText('epochs: 27')
+})
+
 test('manager applies and remembers the selected card order', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
   const baseTask = {
