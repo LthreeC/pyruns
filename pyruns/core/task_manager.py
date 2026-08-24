@@ -1470,95 +1470,98 @@ class TaskManager:
         if not normalized:
             return False, "No valid tasks were provided for reordering."
 
-        with self._lock:
-            updates: list[tuple[str, str, Optional[bool], int]] = []
-            for task_name, pinned_value, order in normalized:
-                target = self._resolve_identifier_locked(task_name)
-                if not target:
-                    return False, f"Task not found: {task_name}"
-                updates.append((task_name, target["dir"], pinned_value, order))
+        # A reorder spans multiple task files, so serialize the whole batch across
+        # UI processes that share this tasks directory.
+        with task_info_lock(self.tasks_dir):
+            with self._lock:
+                updates: list[tuple[str, str, Optional[bool], int]] = []
+                for task_name, pinned_value, order in normalized:
+                    target = self._resolve_identifier_locked(task_name)
+                    if not target:
+                        return False, f"Task not found: {task_name}"
+                    updates.append((task_name, target["dir"], pinned_value, order))
 
-        updated_info: dict[str, Dict[str, Any]] = {}
-        original_fields: dict[str, dict[str, tuple[bool, Any]]] = {}
-        try:
-            for task_name, task_dir, pinned_value, order in updates:
-                def _apply(
-                    task_info: Dict[str, Any],
-                    task_name: str = task_name,
-                    pinned_value: Optional[bool] = pinned_value,
-                    order: int = order,
-                ) -> None:
-                    changed_fields = ["task_order"]
-                    if pinned_value is not None:
-                        changed_fields.append("pinned")
-                    original_fields[task_name] = {
-                        field: (field in task_info, copy.deepcopy(task_info.get(field)))
-                        for field in changed_fields
-                    }
-                    task_info["task_order"] = order
-                    if pinned_value is not None:
-                        task_info["pinned"] = pinned_value
+            updated_info: dict[str, Dict[str, Any]] = {}
+            original_fields: dict[str, dict[str, tuple[bool, Any]]] = {}
+            try:
+                for task_name, task_dir, pinned_value, order in updates:
+                    def _apply(
+                        task_info: Dict[str, Any],
+                        task_name: str = task_name,
+                        pinned_value: Optional[bool] = pinned_value,
+                        order: int = order,
+                    ) -> None:
+                        changed_fields = ["task_order"]
+                        if pinned_value is not None:
+                            changed_fields.append("pinned")
+                        original_fields[task_name] = {
+                            field: (field in task_info, copy.deepcopy(task_info.get(field)))
+                            for field in changed_fields
+                        }
+                        task_info["task_order"] = order
+                        if pinned_value is not None:
+                            task_info["pinned"] = pinned_value
 
-                updated_info[task_name] = update_task_info(task_dir, _apply)
-        except Exception:
-            for task_name, task_dir, _, _ in reversed(updates):
-                if task_name not in updated_info:
-                    continue
-                expected_info = updated_info[task_name]
-                previous_fields = original_fields[task_name]
+                    updated_info[task_name] = update_task_info(task_dir, _apply)
+            except Exception:
+                for task_name, task_dir, _, _ in reversed(updates):
+                    if task_name not in updated_info:
+                        continue
+                    expected_info = updated_info[task_name]
+                    previous_fields = original_fields[task_name]
 
-                def _restore(
-                    task_info: Dict[str, Any],
-                    task_name: str = task_name,
-                    expected_info: Dict[str, Any] = expected_info,
-                    previous_fields: dict[str, tuple[bool, Any]] = previous_fields,
-                ) -> None:
-                    for field in previous_fields:
-                        if task_info.get(field) != expected_info.get(field):
-                            raise TaskStateConflict(
-                                f"Task changed while rolling back reorder: {task_name}"
-                            )
-                    for field, (existed, value) in previous_fields.items():
-                        if existed:
-                            task_info[field] = copy.deepcopy(value)
-                        else:
-                            task_info.pop(field, None)
+                    def _restore(
+                        task_info: Dict[str, Any],
+                        task_name: str = task_name,
+                        expected_info: Dict[str, Any] = expected_info,
+                        previous_fields: dict[str, tuple[bool, Any]] = previous_fields,
+                    ) -> None:
+                        for field in previous_fields:
+                            if task_info.get(field) != expected_info.get(field):
+                                raise TaskStateConflict(
+                                    f"Task changed while rolling back reorder: {task_name}"
+                                )
+                        for field, (existed, value) in previous_fields.items():
+                            if existed:
+                                task_info[field] = copy.deepcopy(value)
+                            else:
+                                task_info.pop(field, None)
 
-                try:
-                    updated_info[task_name] = update_task_info(task_dir, _restore)
-                except Exception as rollback_exc:
-                    logger.warning(
-                        "Could not roll back task reorder for %s: %s",
-                        task_name,
-                        rollback_exc,
-                    )
                     try:
-                        updated_info[task_name] = load_task_info(task_dir, raise_error=True)
-                    except Exception as refresh_exc:
-                        updated_info.pop(task_name, None)
+                        updated_info[task_name] = update_task_info(task_dir, _restore)
+                    except Exception as rollback_exc:
                         logger.warning(
-                            "Could not reload task after reorder failure for %s: %s",
+                            "Could not roll back task reorder for %s: %s",
                             task_name,
-                            refresh_exc,
+                            rollback_exc,
                         )
+                        try:
+                            updated_info[task_name] = load_task_info(task_dir, raise_error=True)
+                        except Exception as refresh_exc:
+                            updated_info.pop(task_name, None)
+                            logger.warning(
+                                "Could not reload task after reorder failure for %s: %s",
+                                task_name,
+                                refresh_exc,
+                            )
+
+                with self._lock:
+                    for task_name, info in updated_info.items():
+                        current = self._resolve_identifier_locked(task_name)
+                        if current:
+                            self._apply_info_to_task(current, info)
+                self.trigger_update()
+                raise
 
             with self._lock:
                 for task_name, info in updated_info.items():
                     current = self._resolve_identifier_locked(task_name)
                     if current:
                         self._apply_info_to_task(current, info)
-            self.trigger_update()
-            raise
-
-        with self._lock:
-            for task_name, info in updated_info.items():
-                current = self._resolve_identifier_locked(task_name)
-                if current:
-                    self._apply_info_to_task(current, info)
-            reordered = [
-                self.serialize_task(self._resolve_identifier_locked(task_name))
-                for task_name, _, _ in normalized
-            ]
+                reordered = [
+                    self.serialize_task(self._resolve_identifier_locked(task_name))
+                    for task_name, _, _ in normalized
+                ]
 
         self.trigger_update()
         return True, [task for task in reordered if task is not None]

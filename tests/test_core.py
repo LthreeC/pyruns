@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import weakref
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -5825,6 +5825,66 @@ def test_task_manager_reorder_rolls_back_partial_writes(tmp_path, monkeypatch):
         current = manager.get_task(task["name"])
         assert current["task_order"] is None
         assert current["pinned"] is False
+
+
+def test_task_manager_reorder_serializes_concurrent_batches(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    for name in ("alpha", "beta", "gamma"):
+        generator.create_task(name, {"value": name})
+
+    manager_a = TaskManager(
+        tasks_dir=str(tasks_dir),
+        lazy_scan=False,
+        owns_task_lifecycle=False,
+    )
+    manager_b = TaskManager(
+        tasks_dir=str(tasks_dir),
+        lazy_scan=False,
+        owns_task_lifecycle=False,
+    )
+
+    real_update_task_info = update_task_info
+    first_updates = threading.Barrier(2)
+    calls: list[int] = []
+    seen_threads: set[int] = set()
+    calls_lock = threading.Lock()
+
+    def coordinated_update(task_dir, updater):
+        thread_id = threading.get_ident()
+        with calls_lock:
+            calls.append(thread_id)
+            first_for_thread = thread_id not in seen_threads
+            seen_threads.add(thread_id)
+        if first_for_thread:
+            try:
+                first_updates.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                pass
+        return real_update_task_info(task_dir, updater)
+
+    monkeypatch.setattr("pyruns.core.task_manager.update_task_info", coordinated_update)
+    forward = [{"name": name} for name in ("alpha", "beta", "gamma")]
+    reverse = [{"name": name} for name in ("gamma", "beta", "alpha")]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [
+            pool.submit(manager_a.reorder_tasks, forward),
+            pool.submit(manager_b.reorder_tasks, reverse),
+        ]
+        outcomes = [result.result(timeout=5) for result in results]
+
+    assert all(ok for ok, _ in outcomes)
+    assert len(calls) == 6
+    assert len(set(calls)) == 2
+    assert sum(left != right for left, right in zip(calls, calls[1:])) == 1
+
+    persisted_order = tuple(
+        load_task_info(str(tasks_dir / name), raise_error=True)["task_order"]
+        for name in ("alpha", "beta", "gamma")
+    )
+    assert persisted_order in {(0, 1, 2), (2, 1, 0)}
 
 
 def test_task_manager_delete_active_task_preserves_folder_when_trash_move_fails(tmp_path, monkeypatch):
