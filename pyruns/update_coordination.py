@@ -56,19 +56,80 @@ def coordination_state_dir(path: str | os.PathLike[str] | None = None) -> str:
     return str(package_parent / ".pyruns-update")
 
 
-def _bounded_json(path: str) -> dict[str, Any] | None:
+def _bounded_json(
+    path: str,
+    *,
+    strict: bool = False,
+    allow_missing: bool = False,
+    missing_ok: bool = True,
+) -> dict[str, Any] | None:
+    """Read one bounded JSON object, optionally treating missing files as errors.
+
+    ``request.json`` is allowed to be absent when no update is pending.  A
+    record discovered by ``os.listdir`` is different: if it disappears before
+    it can be read, the directory view may be stale (particularly on NFS), so
+    callers can set ``missing_ok=False`` and fail closed.
+    """
+
     try:
         with open(path, "rb") as handle:
             raw = handle.read(UPDATE_MAX_JSON_BYTES + 1)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError:
+        if strict:
+            parent = os.path.dirname(path) or "."
+            try:
+                os.stat(parent)
+            except FileNotFoundError as parent_exc:
+                if not allow_missing:
+                    raise UpdateCoordinationError(
+                        f"Could not access shared Pyruns update state directory: {parent}"
+                    ) from parent_exc
+            except OSError as parent_exc:
+                raise UpdateCoordinationError(
+                    f"Could not access shared Pyruns update state directory: {parent}"
+                ) from parent_exc
+            if not missing_ok:
+                raise UpdateCoordinationError(
+                    f"Could not read shared Pyruns update state: {path}"
+                )
+        return None
+    except OSError as exc:
+        if strict:
+            raise UpdateCoordinationError(
+                f"Could not read shared Pyruns update state: {path}"
+            ) from exc
         return None
     if len(raw) > UPDATE_MAX_JSON_BYTES:
+        if strict:
+            raise UpdateCoordinationError(
+                f"Shared Pyruns update state exceeds {UPDATE_MAX_JSON_BYTES} bytes: {path}"
+            )
         return None
     try:
         payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        if strict:
+            raise UpdateCoordinationError(
+                f"Shared Pyruns update state is invalid: {path}"
+            ) from exc
         return None
-    return payload if isinstance(payload, dict) else None
+    if isinstance(payload, dict):
+        return payload
+    if strict:
+        raise UpdateCoordinationError(
+            f"Shared Pyruns update state is not a JSON object: {path}"
+        )
+    return None
+
+
+def _coordination_write_is_denied(exc: OSError) -> bool:
+    """Return whether storage is explicitly unavailable for writes."""
+
+    return exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS} or getattr(
+        exc,
+        "winerror",
+        None,
+    ) in {5, 19}
 
 
 def _atomic_write_json(path: str, payload: dict[str, Any]) -> None:
@@ -135,6 +196,11 @@ def _record_owner_is_alive(record: dict[str, Any]) -> bool | None:
 
 def _record_is_live(record: dict[str, Any], *, timeout: float) -> bool:
     owner_alive = _record_owner_is_alive(record)
+    if owner_alive is True:
+        # A local process identity is stronger than a heartbeat timestamp. A
+        # transient NFS/SMB write failure must not let an active task vanish
+        # from the update gate while its process is still running.
+        return True
     try:
         heartbeat = float(record.get("heartbeat_at", 0.0) or 0.0)
     except (TypeError, ValueError, OverflowError):
@@ -320,7 +386,7 @@ class CoordinationStore:
         path = self._lock_heartbeat_path(owner_id)
         if path is None:
             return None
-        payload = _bounded_json(path)
+        payload = _bounded_json(path, strict=True)
         if not isinstance(payload, dict) or str(payload.get("id", "") or "") != owner_id:
             return None
         try:
@@ -354,7 +420,7 @@ class CoordinationStore:
     def _lock_owner(snapshot: tuple[tuple[int, int, int, int], bytes]) -> dict[str, Any]:
         try:
             owner = json.loads(snapshot[1].decode("ascii"))
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             return {}
         return owner if isinstance(owner, dict) else {}
 
@@ -529,8 +595,17 @@ class CoordinationStore:
             if guard_fd is not None:
                 self._close_native_lock(guard_fd, native_guard)
 
-    def read_request_locked(self) -> dict[str, Any] | None:
-        return _bounded_json(self.request_path)
+    def read_request_locked(
+        self,
+        *,
+        strict: bool = True,
+        allow_missing: bool = False,
+    ) -> dict[str, Any] | None:
+        return _bounded_json(
+            self.request_path,
+            strict=strict,
+            allow_missing=allow_missing,
+        )
 
     @staticmethod
     def request_is_active(request: dict[str, Any] | None) -> bool:
@@ -541,6 +616,10 @@ class CoordinationStore:
         if not CoordinationStore.request_is_active(request):
             return False
         owner_alive = _record_owner_is_alive(request)
+        if owner_alive is True:
+            # Keep the gate while its local owner is alive even if a
+            # heartbeat write was delayed by a temporarily unavailable share.
+            return False
         try:
             heartbeat = float(request.get("heartbeat_at", 0.0) or 0.0)
         except (TypeError, ValueError, OverflowError):
@@ -620,14 +699,16 @@ class CoordinationStore:
         directory = self.instances_dir if group == "instances" else self.activities_dir
         try:
             names = os.listdir(directory)
-        except OSError:
-            return []
+        except OSError as exc:
+            raise UpdateCoordinationError(
+                f"Could not list shared Pyruns {group} records."
+            ) from exc
         live: list[dict[str, Any]] = []
         for name in names:
             if not name.endswith(".json"):
                 continue
             path = os.path.join(directory, name)
-            record = _bounded_json(path)
+            record = _bounded_json(path, strict=True, missing_ok=False)
             if record is not None and _record_is_live(
                 record,
                 timeout=UPDATE_LEASE_TIMEOUT_SECONDS,
@@ -673,11 +754,15 @@ class EnvironmentActivityLease:
                         "Pyruns is updating; new tasks are disabled until every UI restarts."
                     )
                 self.store.write_record("activities", self.activity_id, self._payload())
-        except (OSError, UpdateCoordinationError):
+        except UpdateCoordinationError:
+            raise
+        except OSError as exc:
             # Coordination is optional for ordinary task execution. Preserve a
-            # readable live update gate, but do not fail a task merely because
-            # the installation-level state cannot currently be changed.
-            request = self.store.read_request_locked()
+            # readable live update gate only when storage explicitly denies
+            # writes, as with a read-only package installation.
+            if not _coordination_write_is_denied(exc):
+                raise
+            request = self.store.read_request_locked(strict=True, allow_missing=True)
             if (
                 self.store.request_is_active(request)
                 and request is not None

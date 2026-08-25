@@ -23,6 +23,7 @@ from pyruns.update_coordination import (
     CoordinationStore,
     UpdateCoordinationError,
     UpdateInProgressError,
+    _coordination_write_is_denied,
     process_record,
 )
 
@@ -79,6 +80,7 @@ class UiUpdateCoordinator:
         self._instance_id = secrets.token_hex(16)
         self._store = CoordinationStore(state_dir) if shared else None
         self._coordination_error = ""
+        self._coordination_degraded = False
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
         self._next_version_check = 0.0
@@ -208,6 +210,26 @@ class UiUpdateCoordinator:
                 )
         except (OSError, UpdateCoordinationError, ValueError) as exc:
             self._coordination_error = str(exc)
+            if isinstance(exc, OSError) and _coordination_write_is_denied(exc):
+                try:
+                    request = self._store.read_request_locked(
+                        strict=True,
+                        allow_missing=True,
+                    )
+                except UpdateCoordinationError:
+                    request = None
+                    self._coordination_error = (
+                        "Shared update coordination could not be read safely."
+                    )
+                if (
+                    request is not None
+                    and self._store.request_is_active(request)
+                ):
+                    self._coordination_degraded = False
+                elif self._coordination_error != (
+                    "Shared update coordination could not be read safely."
+                ):
+                    self._coordination_degraded = True
             return
         self._monitor = threading.Thread(
             target=self._monitor_loop,
@@ -225,9 +247,13 @@ class UiUpdateCoordinator:
                 raise UpdateInProgressError(
                     "Pyruns is updating; new tasks are disabled until every UI restarts."
                 )
-            if self._store is None or self._coordination_error:
+            if self._store is None or self._coordination_degraded:
                 yield
                 return
+            if self._coordination_error:
+                raise UpdateInProgressError(
+                    "Could not coordinate this task start with the shared Pyruns installation."
+                )
             lock_context = self._store.locked()
             lock_acquired = False
             try:
@@ -428,8 +454,12 @@ class UiUpdateCoordinator:
         while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
             try:
                 self._monitor_tick()
-            except (OSError, RuntimeError, UpdateCoordinationError, ValueError):
-                continue
+            except (OSError, RuntimeError, TypeError, UpdateCoordinationError, ValueError) as exc:
+                with self._lock:
+                    self._coordination_error = str(exc) or (
+                        "Shared update coordination became unavailable."
+                    )
+                return
 
     def handoff(self) -> dict[str, Any]:
         """Stop monitoring and leave a waiter/updater lease for process replacement."""
@@ -515,7 +545,14 @@ def check_latest_version(current_version: str) -> dict[str, Any]:
         latest_version = str(payload["info"]["version"]).strip()
         current = Version(str(current_version))
         latest = Version(latest_version)
-    except (KeyError, TypeError, UnicodeError, ValueError, InvalidVersion) as exc:
+    except (
+        KeyError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        InvalidVersion,
+        RecursionError,
+    ) as exc:
         raise LatestVersionCheckError("PyPI returned invalid Pyruns version metadata.") from exc
     if not latest_version:
         raise LatestVersionCheckError("PyPI returned invalid Pyruns version metadata.")
@@ -534,7 +571,7 @@ def read_update_result() -> dict[str, Any] | None:
         return None
     try:
         payload = json.loads(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     if not isinstance(payload, dict) or not isinstance(payload.get("ok"), bool):
         return None

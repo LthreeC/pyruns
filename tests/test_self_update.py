@@ -147,6 +147,143 @@ def test_shared_update_refuses_remote_ui_and_cli_activity(tmp_path):
         owner.close(failed_handoff=True)
 
 
+def test_shared_update_fails_closed_when_record_directory_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    state_dir = tmp_path / "coordination"
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None,
+        state_dir=str(state_dir),
+        shared=True,
+        current_version="0.3.0",
+    )
+    activities_dir = os.path.abspath(str(state_dir / "activities"))
+    original_listdir = update_coordination.os.listdir
+
+    def unavailable(directory):
+        if os.path.abspath(os.fspath(directory)) == activities_dir:
+            raise OSError(errno.ESTALE, "stale file handle")
+        return original_listdir(directory)
+
+    monkeypatch.setattr(update_coordination.os, "listdir", unavailable)
+
+    with pytest.raises(self_update.UpdateCheckError, match="Could not coordinate"):
+        coordinator.prepare(_Runtime(0))
+
+    assert coordinator.requested is False
+    assert CoordinationStore(state_dir).read_request_locked() is None
+
+
+def test_ui_attach_failure_does_not_bypass_shared_task_guard(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None,
+        state_dir=str(state_dir),
+        shared=True,
+        current_version="0.3.0",
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError(errno.ESTALE, "stale file handle")
+
+    assert coordinator._store is not None
+    monkeypatch.setattr(coordinator._store, "ensure", unavailable)
+    coordinator.attach(_Runtime(0))
+
+    assert coordinator.supported is False
+    with pytest.raises(UpdateInProgressError, match="Could not coordinate"):
+        with coordinator.task_start_guard():
+            pass
+
+
+def test_ui_attach_allows_tasks_only_for_explicit_read_only_storage(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None,
+        state_dir=str(state_dir),
+        shared=True,
+        current_version="0.3.0",
+    )
+
+    def read_only(*_args, **_kwargs):
+        raise OSError(errno.EROFS, "read-only file system")
+
+    assert coordinator._store is not None
+    monkeypatch.setattr(coordinator._store, "ensure", read_only)
+    coordinator.attach(_Runtime(0))
+
+    assert coordinator.supported is False
+    with coordinator.task_start_guard():
+        pass
+
+
+def test_coordinated_update_does_not_run_pip_when_records_are_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    state_dir = tmp_path / "coordination"
+    store = CoordinationStore(state_dir)
+    owner_id = "a" * 32
+    request_id = "b" * 32
+    request = process_record(record_id=owner_id, kind="ui-update")
+    request.update(
+        {
+            "request_id": request_id,
+            "owner_instance_id": owner_id,
+            "operation": "upgrade",
+            "stage": "draining",
+            "previous_version": "0.3.0",
+        }
+    )
+    store.ensure()
+    with store.locked():
+        store.write_request_locked(request)
+
+    activities_dir = os.path.abspath(store.activities_dir)
+    original_listdir = update_coordination.os.listdir
+
+    def unavailable(directory):
+        if os.path.abspath(os.fspath(directory)) == activities_dir:
+            raise OSError(errno.ESTALE, "stale file handle")
+        return original_listdir(directory)
+
+    upgrades: list[str] = []
+    monkeypatch.setattr(update_coordination.os, "listdir", unavailable)
+    monkeypatch.setattr(
+        self_update,
+        "run_pip_upgrade",
+        lambda version: upgrades.append(version),
+    )
+
+    with pytest.raises(UpdateCoordinationError, match="activities records"):
+        self_update.run_coordinated_update(
+            state_dir=str(state_dir),
+            request_id=request_id,
+            instance_id=owner_id,
+            previous_version="0.3.0",
+        )
+
+    assert upgrades == []
+
+
+def test_strict_coordination_json_rejects_recursion_errors(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    store = CoordinationStore(state_dir)
+    store.ensure()
+    (state_dir / "request.json").write_text("{}", encoding="ascii")
+
+    def recursive_loads(*_args, **_kwargs):
+        raise RecursionError("JSON nesting is too deep")
+
+    monkeypatch.setattr(update_coordination.json, "loads", recursive_loads)
+
+    with pytest.raises(UpdateCoordinationError, match="invalid"):
+        store.read_request_locked()
+
+    assert store.read_request_locked(strict=False) is None
+
+
 def test_shared_task_guard_preserves_task_start_errors(tmp_path):
     coordinator = self_update.UiUpdateCoordinator(
         lambda: None,
@@ -265,6 +402,80 @@ def test_activity_lease_disables_coordination_for_read_only_installation(
     assert lease._disabled is True
 
 
+def test_activity_lease_fails_closed_when_coordination_lock_times_out(
+    tmp_path,
+    monkeypatch,
+):
+    lease = EnvironmentActivityLease(
+        "cli-runner",
+        state_dir=str(tmp_path / "coordination"),
+    )
+
+    def lock_timeout(*_args, **_kwargs):
+        raise UpdateCoordinationError("Timed out waiting for the shared Pyruns update lock.")
+
+    monkeypatch.setattr(lease.store, "locked", lock_timeout)
+
+    with pytest.raises(UpdateCoordinationError, match="Timed out"):
+        lease.start()
+
+    assert lease._disabled is False
+    assert lease._started is False
+
+
+def test_live_records_fail_closed_when_one_record_cannot_be_read(tmp_path, monkeypatch):
+    store = CoordinationStore(tmp_path / "coordination")
+    record_id = "f" * 32
+    store.write_record(
+        "activities",
+        record_id,
+        process_record(record_id=record_id, kind="cli-runner"),
+    )
+    record_path = os.path.abspath(store.record_path("activities", record_id))
+    original_open = open
+
+    def unavailable(path, *args, **kwargs):
+        if os.path.abspath(os.fspath(path)) == record_path:
+            raise OSError(errno.ESTALE, "stale file handle")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(update_coordination, "open", unavailable, raising=False)
+
+    with pytest.raises(UpdateCoordinationError, match="Could not read"):
+        store.live_records_locked("activities")
+
+
+def test_live_records_fail_closed_when_listed_record_disappears(tmp_path, monkeypatch):
+    store = CoordinationStore(tmp_path / "coordination")
+    record_id = "e" * 32
+    store.write_record(
+        "activities",
+        record_id,
+        process_record(record_id=record_id, kind="cli-runner"),
+    )
+    record_path = os.path.abspath(store.record_path("activities", record_id))
+    original_open = open
+
+    def disappeared(path, *args, **kwargs):
+        if os.path.abspath(os.fspath(path)) == record_path:
+            raise FileNotFoundError(errno.ENOENT, "record disappeared")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(update_coordination, "open", disappeared, raising=False)
+
+    with pytest.raises(UpdateCoordinationError, match="Could not read"):
+        store.live_records_locked("activities")
+
+
+def test_strict_request_read_rejects_missing_state_directory(tmp_path):
+    store = CoordinationStore(tmp_path / "missing-coordination")
+
+    with pytest.raises(UpdateCoordinationError, match="state directory"):
+        store.read_request_locked()
+
+    assert store.read_request_locked(strict=False) is None
+
+
 def test_activity_lease_cleanup_is_best_effort(tmp_path, monkeypatch):
     lease = EnvironmentActivityLease(
         "cli-runner",
@@ -309,6 +520,34 @@ def test_remote_shared_leases_survive_brief_disconnects_and_expire(tmp_path):
     store.write_record("instances", instance_id, remote)
     with store.locked():
         assert store.live_records_locked("instances") == []
+
+
+def test_local_live_process_keeps_activity_lease_when_heartbeat_is_old(tmp_path):
+    store = CoordinationStore(tmp_path / "coordination")
+    record_id = "d" * 32
+    record = process_record(record_id=record_id, kind="cli-runner")
+    record["heartbeat_at"] = time.time() - update_coordination.UPDATE_LEASE_TIMEOUT_SECONDS - 1
+    store.write_record("activities", record_id, record)
+
+    with store.locked():
+        live = store.live_records_locked("activities")
+
+    assert [item["id"] for item in live] == [record_id]
+
+
+def test_local_live_update_owner_is_not_recovered_from_old_heartbeat():
+    request = process_record(record_id="a" * 32, kind="ui-update")
+    request.update(
+        {
+            "request_id": "b" * 32,
+            "stage": "updating",
+            "heartbeat_at": time.time()
+            - update_coordination.UPDATE_REQUEST_TIMEOUT_SECONDS
+            - 1,
+        }
+    )
+
+    assert CoordinationStore.request_is_stale(request) is False
 
 
 def test_remote_legacy_coordination_lock_is_not_reclaimed_from_heartbeat(tmp_path):
