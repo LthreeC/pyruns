@@ -1,8 +1,10 @@
 import errno
 import json
 import os
+import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,7 @@ import pyruns.update_coordination as update_coordination
 from pyruns.update_coordination import (
     CoordinationStore,
     EnvironmentActivityLease,
+    UpdateCoordinationError,
     UpdateInProgressError,
     process_record,
 )
@@ -308,7 +311,7 @@ def test_remote_shared_leases_survive_brief_disconnects_and_expire(tmp_path):
         assert store.live_records_locked("instances") == []
 
 
-def test_remote_coordination_lock_heartbeat_prevents_reclaim(tmp_path):
+def test_remote_legacy_coordination_lock_is_not_reclaimed_from_heartbeat(tmp_path):
     store = CoordinationStore(tmp_path / "coordination")
     owner_id = "a" * 32
     owner = process_record(record_id=owner_id, kind="lock")
@@ -319,12 +322,9 @@ def test_remote_coordination_lock_heartbeat_prevents_reclaim(tmp_path):
         json.dump(owner, handle)
     os.utime(lock_path, (1, 1))
     store._write_lock_heartbeat(owner_id)
-
     snapshot = store._lock_snapshot(lock_path)
     assert snapshot is not None
     assert store._lock_is_stale(snapshot) is False
-
-    store._write_lock_heartbeat(owner_id)
     heartbeat_path = store._lock_heartbeat_path(owner_id)
     assert heartbeat_path is not None
     update_coordination._atomic_write_json(
@@ -337,6 +337,152 @@ def test_remote_coordination_lock_heartbeat_prevents_reclaim(tmp_path):
         },
     )
     assert store._lock_is_stale(snapshot) is True
+    assert store._lock_reclaimable_without_native(snapshot) is False
+    with pytest.raises(UpdateCoordinationError, match="Timed out"):
+        with store.locked(timeout=0.01):
+            pass
+
+
+def test_native_coordination_lock_blocks_stale_heartbeat_reclaim(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    holder = CoordinationStore(state_dir)
+    contender = CoordinationStore(state_dir)
+    release = threading.Event()
+    entered = threading.Event()
+    failures: list[BaseException] = []
+
+    monkeypatch.setattr(update_coordination, "UPDATE_LOCK_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(update_coordination, "_record_owner_is_alive", lambda _owner: None)
+
+    def hold_lock():
+        try:
+            with holder.locked():
+                entered.set()
+                assert release.wait(timeout=2.0)
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert entered.wait(timeout=2.0)
+    before = contender._lock_snapshot(contender.lock_path)
+    assert before is not None
+    try:
+        with pytest.raises(UpdateCoordinationError, match="Timed out"):
+            with contender.locked(timeout=0.05):
+                pass
+        assert contender._lock_snapshot(contender.lock_path) == before
+    finally:
+        release.set()
+        thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert failures == []
+    assert contender._lock_snapshot(contender.lock_path) is None
+    with contender.locked(timeout=0.2):
+        pass
+
+
+def test_orphaned_native_coordination_lock_is_reclaimed(tmp_path):
+    store = CoordinationStore(tmp_path / "coordination")
+    owner = process_record(record_id="b" * 32, kind="lock")
+    owner.update({"host": "remote-worker", "lock_protocol": 2})
+    store.ensure()
+    with open(store.lock_path, "w", encoding="ascii") as handle:
+        json.dump(owner, handle)
+
+    with store.locked(timeout=0.1):
+        assert os.path.exists(store.lock_path)
+
+
+def test_coordination_lock_without_native_guard_uses_legacy_protocol(
+    tmp_path,
+    monkeypatch,
+):
+    state_dir = tmp_path / "coordination"
+    holder = CoordinationStore(state_dir)
+    contender = CoordinationStore(state_dir)
+    release = threading.Event()
+    entered = threading.Event()
+    failures: list[BaseException] = []
+
+    monkeypatch.setattr(holder, "_acquire_native_guard", lambda _deadline: (None, False))
+    monkeypatch.setattr(update_coordination, "_record_owner_is_alive", lambda _owner: None)
+
+    def hold_lock():
+        try:
+            with holder.locked():
+                entered.set()
+                assert release.wait(timeout=2.0)
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert entered.wait(timeout=2.0)
+    try:
+        snapshot = contender._lock_snapshot(contender.lock_path)
+        assert snapshot is not None
+        assert "lock_protocol" not in contender._lock_owner(snapshot)
+        with pytest.raises(UpdateCoordinationError, match="Timed out"):
+            with contender.locked(timeout=0.05):
+                pass
+    finally:
+        release.set()
+        thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert failures == []
+
+
+def test_native_coordination_lock_is_released_after_owner_crash(tmp_path):
+    state_dir = tmp_path / "coordination"
+    script = (
+        "import os, sys; "
+        "from pyruns.update_coordination import CoordinationStore; "
+        "store = CoordinationStore(sys.argv[1]); "
+        "context = store.locked(timeout=1); context.__enter__(); "
+        "os._exit(0)"
+    )
+    subprocess.run(
+        [sys.executable, "-c", script, str(state_dir)],
+        check=True,
+        cwd=os.getcwd(),
+    )
+
+    with CoordinationStore(state_dir).locked(timeout=0.5):
+        pass
+
+
+def test_native_coordination_lock_serializes_threads(tmp_path):
+    state_dir = tmp_path / "coordination"
+    state_lock = threading.Lock()
+    active = 0
+    maximum = 0
+    failures: list[BaseException] = []
+
+    def worker() -> None:
+        nonlocal active, maximum
+        try:
+            with CoordinationStore(state_dir).locked(timeout=2.0):
+                with state_lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.02)
+                with state_lock:
+                    active -= 1
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3.0)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert maximum == 1
 
 
 def test_coordination_lock_heartbeat_is_removed_after_release(tmp_path, monkeypatch):
