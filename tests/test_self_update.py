@@ -2,6 +2,7 @@ import errno
 import json
 import os
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -305,6 +306,59 @@ def test_remote_shared_leases_survive_brief_disconnects_and_expire(tmp_path):
     store.write_record("instances", instance_id, remote)
     with store.locked():
         assert store.live_records_locked("instances") == []
+
+
+def test_remote_coordination_lock_heartbeat_prevents_reclaim(tmp_path):
+    store = CoordinationStore(tmp_path / "coordination")
+    owner_id = "a" * 32
+    owner = process_record(record_id=owner_id, kind="lock")
+    owner["host"] = "remote-worker"
+    lock_path = store.lock_path
+    store.ensure()
+    with open(lock_path, "w", encoding="ascii") as handle:
+        json.dump(owner, handle)
+    os.utime(lock_path, (1, 1))
+    store._write_lock_heartbeat(owner_id)
+
+    snapshot = store._lock_snapshot(lock_path)
+    assert snapshot is not None
+    assert store._lock_is_stale(snapshot) is False
+
+    store._write_lock_heartbeat(owner_id)
+    heartbeat_path = store._lock_heartbeat_path(owner_id)
+    assert heartbeat_path is not None
+    update_coordination._atomic_write_json(
+        heartbeat_path,
+        {
+            "id": owner_id,
+            "heartbeat_at": self_update.time.time()
+            - update_coordination.UPDATE_LOCK_STALE_SECONDS
+            - 1,
+        },
+    )
+    assert store._lock_is_stale(snapshot) is True
+
+
+def test_coordination_lock_heartbeat_is_removed_after_release(tmp_path, monkeypatch):
+    store = CoordinationStore(tmp_path / "coordination")
+    monkeypatch.setattr(update_coordination, "UPDATE_LOCK_HEARTBEAT_SECONDS", 0.1)
+    heartbeat_written = threading.Event()
+    write_heartbeat = store._write_lock_heartbeat
+
+    def observed_write(owner_id):
+        write_heartbeat(owner_id)
+        heartbeat_written.set()
+
+    monkeypatch.setattr(store, "_write_lock_heartbeat", observed_write)
+
+    with store.locked():
+        assert heartbeat_written.wait(timeout=2.0)
+        heartbeat_files = list(
+            (tmp_path / "coordination").glob("coordination.lock.*.heartbeat")
+        )
+        assert len(heartbeat_files) == 1
+
+    assert not heartbeat_files[0].exists()
 
 
 def test_external_install_version_change_waits_for_manual_restart(tmp_path, monkeypatch):

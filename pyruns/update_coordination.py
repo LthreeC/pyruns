@@ -27,6 +27,7 @@ UPDATE_LEASE_TIMEOUT_SECONDS = 60.0
 UPDATE_REQUEST_TIMEOUT_SECONDS = 180.0
 UPDATE_LOCK_TIMEOUT_SECONDS = 20.0
 UPDATE_LOCK_STALE_SECONDS = 30.0
+UPDATE_LOCK_HEARTBEAT_SECONDS = 5.0
 UPDATE_LOCK_POLL_SECONDS = 0.05
 UPDATE_MAX_JSON_BYTES = 64 * 1024
 UPDATE_HANDOFF_GRACE_SECONDS = 15.0
@@ -198,8 +199,48 @@ class CoordinationStore:
             return False
         return True
 
-    @staticmethod
-    def _lock_is_stale(snapshot: tuple[tuple[int, int, int, int], bytes]) -> bool:
+    def _lock_heartbeat_path(self, owner_id: str) -> str | None:
+        owner_id = str(owner_id or "").strip().lower()
+        if not owner_id or any(char not in "0123456789abcdef" for char in owner_id):
+            return None
+        return os.path.join(self.state_dir, f"{UPDATE_LOCK_FILENAME}.{owner_id}.heartbeat")
+
+    def _read_lock_heartbeat(self, owner: dict[str, Any]) -> float | None:
+        owner_id = str(owner.get("id", "") or "")
+        path = self._lock_heartbeat_path(owner_id)
+        if path is None:
+            return None
+        payload = _bounded_json(path)
+        if not isinstance(payload, dict) or str(payload.get("id", "") or "") != owner_id:
+            return None
+        try:
+            heartbeat = float(payload.get("heartbeat_at", 0.0) or 0.0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return heartbeat if heartbeat > 0 else None
+
+    def _write_lock_heartbeat(self, owner_id: str) -> None:
+        path = self._lock_heartbeat_path(owner_id)
+        if path is None:
+            return
+        _atomic_write_json(
+            path,
+            {
+                "id": str(owner_id),
+                "heartbeat_at": time.time(),
+            },
+        )
+
+    def _remove_lock_heartbeat(self, owner_id: str) -> None:
+        path = self._lock_heartbeat_path(owner_id)
+        if path is None:
+            return
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    def _lock_is_stale(self, snapshot: tuple[tuple[int, int, int, int], bytes]) -> bool:
         try:
             owner = json.loads(snapshot[1].decode("ascii"))
         except (UnicodeDecodeError, ValueError):
@@ -208,6 +249,9 @@ class CoordinationStore:
             owner_alive = _record_owner_is_alive(owner)
             if owner_alive is not None:
                 return not owner_alive
+            heartbeat = self._read_lock_heartbeat(owner)
+            if heartbeat is not None:
+                return time.time() - heartbeat >= UPDATE_LOCK_STALE_SECONDS
         age = max(0.0, time.time() - snapshot[0][2] / 1_000_000_000)
         return age >= UPDATE_LOCK_STALE_SECONDS
 
@@ -220,6 +264,7 @@ class CoordinationStore:
         owner = process_record(record_id=secrets.token_hex(16), kind="lock")
         owner["acquired_at"] = time.time()
         encoded = json.dumps(owner, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        owner_id = str(owner["id"])
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
         flags |= int(getattr(os, "O_BINARY", 0))
         flags |= int(getattr(os, "O_CLOEXEC", 0))
@@ -254,12 +299,44 @@ class CoordinationStore:
             finally:
                 os.close(fd)
             break
+
+        heartbeat_stop = threading.Event()
+        heartbeat_interval = max(0.1, float(UPDATE_LOCK_HEARTBEAT_SECONDS))
+
+        def heartbeat() -> None:
+            # Avoid an extra metadata write for the usual short critical section;
+            # renew longer holds well before the stale-lock threshold.
+            while not heartbeat_stop.wait(heartbeat_interval):
+                try:
+                    self._write_lock_heartbeat(owner_id)
+                except (OSError, ValueError):
+                    # The lock holder must not fail solely because a best-effort
+                    # lease refresh was unavailable. The lock mtime remains the
+                    # fallback stale signal for other processes.
+                    continue
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat,
+            name="pyruns-coordination-lock-heartbeat",
+            daemon=True,
+        )
         try:
-            yield
-        finally:
+            heartbeat_thread.start()
+        except BaseException:
+            heartbeat_stop.set()
             snapshot = self._lock_snapshot(self.lock_path)
             if snapshot is not None and snapshot[1] == encoded:
                 self._quarantine_lock(self.lock_path, snapshot)
+            raise
+        try:
+            yield
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=min(1.0, heartbeat_interval))
+            snapshot = self._lock_snapshot(self.lock_path)
+            if snapshot is not None and snapshot[1] == encoded:
+                self._quarantine_lock(self.lock_path, snapshot)
+            self._remove_lock_heartbeat(owner_id)
 
     def read_request_locked(self) -> dict[str, Any] | None:
         return _bounded_json(self.request_path)
