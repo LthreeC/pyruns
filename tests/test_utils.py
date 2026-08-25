@@ -904,6 +904,69 @@ def test_kill_process_nt(mock_run, mock_hidden_subprocess_kwargs):
     )
 
 
+def test_kill_process_nt_falls_back_to_snapshotted_tree(monkeypatch):
+    killed = []
+    create_times = {111: 1.0, 222: 2.0}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return create_times[self.pid]
+
+        def kill(self):
+            killed.append(self.pid)
+
+    class FakePsutil:
+        Process = FakeProcess
+
+    waits = iter([False, True])
+    monkeypatch.setattr(process_utils.os, "name", "nt", raising=False)
+    monkeypatch.setattr(process_utils, "_psutil", FakePsutil())
+    monkeypatch.setattr(
+        process_utils,
+        "_process_tree_identities",
+        lambda _pid: [(111, 1.0), (222, 2.0)],
+    )
+    monkeypatch.setattr(
+        process_utils,
+        "_wait_for_process_tree_exit",
+        lambda *_args, **_kwargs: next(waits),
+    )
+    monkeypatch.setattr(
+        process_utils.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 5})(),
+    )
+
+    assert kill_process(111) is True
+    assert killed == [222, 111]
+
+
+def test_windows_force_kill_skips_reused_process_identity(monkeypatch):
+    killed = []
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def create_time(self):
+            return 20.0 if self.pid == 222 else 1.0
+
+        def kill(self):
+            killed.append(self.pid)
+
+    class FakePsutil:
+        Process = FakeProcess
+
+    monkeypatch.setattr(process_utils, "_psutil", FakePsutil())
+
+    process_utils._force_kill_windows_process_tree([(111, 1.0), (222, 2.0)])
+
+    assert killed == [111]
+
+
 def test_kill_process_exception_caught():
     # Just to ensure it doesn't raise if the underlying call fails
     with patch("pyruns.utils.process_utils.os.name", "posix"):

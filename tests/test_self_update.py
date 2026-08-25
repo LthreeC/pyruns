@@ -493,6 +493,28 @@ def test_activity_lease_cleanup_is_best_effort(tmp_path, monkeypatch):
     assert lease._started is False
 
 
+def test_activity_lease_close_bounds_slow_heartbeat_join(tmp_path):
+    lease = EnvironmentActivityLease(
+        "cli-runner",
+        state_dir=str(tmp_path / "coordination"),
+    )
+    lease._started = True
+
+    class ThreadStub:
+        def __init__(self):
+            self.timeout = None
+
+        def join(self, *, timeout):
+            self.timeout = timeout
+
+    thread = ThreadStub()
+    lease._thread = thread
+    lease.close()
+
+    assert lease._started is False
+    assert thread.timeout == update_coordination._ACTIVITY_CLOSE_JOIN_SECONDS
+
+
 def test_remote_shared_leases_survive_brief_disconnects_and_expire(tmp_path):
     store = CoordinationStore(tmp_path / "coordination")
     instance_id = "f" * 32

@@ -8,6 +8,7 @@ import {
   getTasks,
   getSystemInfo,
   getWorkspace,
+  recoverSession,
   restartPyruns,
   subscribeUnauthorized,
   updatePyruns,
@@ -20,6 +21,38 @@ afterEach(() => {
 })
 
 describe('API errors', () => {
+  it('recovers a stale local UI session through the same-origin handoff', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ ok: true }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(recoverSession()).resolves.toBe(true)
+
+    expect(fetchMock).toHaveBeenCalledWith('/session/recover', expect.objectContaining({
+      method: 'POST',
+      credentials: 'same-origin',
+      body: '{}',
+    }))
+  })
+
+  it('shares one in-flight session recovery request', async () => {
+    let resolveResponse!: (response: Response) => void
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>(resolve => {
+      resolveResponse = resolve
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = recoverSession()
+    const second = recoverSession()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    resolveResponse(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    await expect(first).resolves.toBe(true)
+    await expect(second).resolves.toBe(true)
+  })
+
   it('sends the selected Manager card order to the task endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ items: [], total: 0, offset: 0, limit: 50, has_more: false }),

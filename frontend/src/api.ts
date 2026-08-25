@@ -40,6 +40,7 @@ type UnauthorizedListener = (error: ApiError) => void
 
 const unauthorizedListeners = new Set<UnauthorizedListener>()
 let authorizationEpoch = 0
+let sessionRecoveryPromise: Promise<boolean> | null = null
 
 export function beginAuthorizationAttempt() {
   authorizationEpoch += 1
@@ -50,6 +51,27 @@ export function subscribeUnauthorized(listener: UnauthorizedListener) {
   return () => {
     unauthorizedListeners.delete(listener)
   }
+}
+
+export function recoverSession(): Promise<boolean> {
+  if (sessionRecoveryPromise) {
+    return sessionRecoveryPromise
+  }
+  const pending = fetch('/session/recover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: '{}',
+  })
+    .then(response => response.ok)
+    .catch(() => false)
+  sessionRecoveryPromise = pending
+  void pending.finally(() => {
+    if (sessionRecoveryPromise === pending) {
+      sessionRecoveryPromise = null
+    }
+  })
+  return pending
 }
 
 function errorMessage(body: unknown, status: number) {

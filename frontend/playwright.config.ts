@@ -6,6 +6,7 @@ const localBrowser = browserExecutable ? { launchOptions: { executablePath: brow
 
 export default defineConfig({
   testDir: './e2e',
+  globalSetup: './e2e/global-setup.mjs',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
@@ -27,10 +28,4 @@ export default defineConfig({
       use: { ...devices['Pixel 7'], ...localBrowser },
     },
   ],
-  webServer: {
-    command: 'node e2e/start-server.mjs',
-    url: `http://127.0.0.1:${port}/`,
-    reuseExistingServer: false,
-    timeout: 30_000,
-  },
 })

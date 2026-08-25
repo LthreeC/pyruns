@@ -34,6 +34,7 @@ UPDATE_LOCK_POLL_SECONDS = 0.05
 UPDATE_LOCK_PROTOCOL = 2
 UPDATE_MAX_JSON_BYTES = 64 * 1024
 UPDATE_HANDOFF_GRACE_SECONDS = 15.0
+_ACTIVITY_CLOSE_JOIN_SECONDS = 0.05
 
 _LOCAL_HOST = socket.gethostname().strip().lower() or "unknown"
 
@@ -742,6 +743,12 @@ class EnvironmentActivityLease:
     def _payload(self) -> dict[str, Any]:
         return process_record(record_id=self.activity_id, kind=self.kind)
 
+    def _remove_record_best_effort(self) -> None:
+        try:
+            self.store.remove_record("activities", self.activity_id)
+        except OSError:
+            pass
+
     def start(self) -> "EnvironmentActivityLease":
         if self._started:
             return self
@@ -791,11 +798,18 @@ class EnvironmentActivityLease:
         return self
 
     def _heartbeat_loop(self) -> None:
-        while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
-            try:
-                self.store.write_record("activities", self.activity_id, self._payload())
-            except OSError:
-                pass
+        try:
+            while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
+                try:
+                    self.store.write_record("activities", self.activity_id, self._payload())
+                except OSError:
+                    pass
+        finally:
+            # Cleanup belongs to the heartbeat thread so a slow NFS/SMB write
+            # cannot make the caller wait in ``close``.  If the process exits
+            # while the filesystem is unavailable, the local PID check above
+            # lets the next updater discard this record safely.
+            self._remove_record_best_effort()
 
     def close(self) -> None:
         if self._disabled:
@@ -803,13 +817,18 @@ class EnvironmentActivityLease:
         if not self._started:
             return
         self._stop.set()
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=2.0)
-        try:
-            self.store.remove_record("activities", self.activity_id)
-        except OSError:
-            pass
+        thread = self._thread
         self._started = False
+        if thread is None:
+            self._remove_record_best_effort()
+        elif thread is not threading.current_thread():
+            try:
+                # A normal local heartbeat exits immediately.  Do not wait on
+                # a network filesystem operation beyond this small bound.
+                thread.join(timeout=_ACTIVITY_CLOSE_JOIN_SECONDS)
+            except RuntimeError:
+                # A thread that never started has no cleanup callback to run.
+                self._remove_record_best_effort()
 
     def __enter__(self) -> "EnvironmentActivityLease":
         return self.start()

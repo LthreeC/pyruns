@@ -23,7 +23,7 @@ import AppShell from '@/components/layout/AppShell'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ConfirmationHost from '@/components/shared/ConfirmationHost'
 import ToastHost from '@/components/shared/ToastHost'
-import { ApiError, beginAuthorizationAttempt, subscribeUnauthorized } from '@/api'
+import { ApiError, beginAuthorizationAttempt, recoverSession, subscribeUnauthorized } from '@/api'
 import {
   applyThemeClass,
   WorkspaceChangeRequiresDiscardError,
@@ -352,32 +352,54 @@ export default function App() {
     const attempt = ++connectionAttempt.current
     beginAuthorizationAttempt()
     setConnectionState({ status: 'connecting' })
+    let error: unknown
     try {
       await fetchWorkspace({ discardUnsavedChanges })
       if (attempt === connectionAttempt.current) {
         setHasConnected(true)
         setConnectionState({ status: 'ready' })
       }
-    } catch (error) {
-      if (attempt !== connectionAttempt.current) {
-        return
-      }
-      if (error instanceof ApiError && error.status === 401) {
-        setConnectionState({ status: 'unauthorized' })
-        return
-      }
-      if (error instanceof WorkspaceChangeRequiresDiscardError) {
-        setConnectionState({
-          status: 'workspace-changed',
-          unsavedChanges: error.unsavedChanges,
-        })
-        return
-      }
-      setConnectionState({
-        status: 'failed',
-        message: error instanceof Error ? error.message : 'Unknown connection error',
-      })
+      return
+    } catch (caught) {
+      error = caught
     }
+
+    if (attempt !== connectionAttempt.current) {
+      return
+    }
+    if (error instanceof ApiError && error.status === 401) {
+      if (await recoverSession() && attempt === connectionAttempt.current) {
+        beginAuthorizationAttempt()
+        try {
+          await fetchWorkspace({ discardUnsavedChanges })
+          if (attempt === connectionAttempt.current) {
+            setHasConnected(true)
+            setConnectionState({ status: 'ready' })
+          }
+          return
+        } catch (retryError) {
+          error = retryError
+        }
+      }
+    }
+    if (attempt !== connectionAttempt.current) {
+      return
+    }
+    if (error instanceof ApiError && error.status === 401) {
+      setConnectionState({ status: 'unauthorized' })
+      return
+    }
+    if (error instanceof WorkspaceChangeRequiresDiscardError) {
+      setConnectionState({
+        status: 'workspace-changed',
+        unsavedChanges: error.unsavedChanges,
+      })
+      return
+    }
+    setConnectionState({
+      status: 'failed',
+      message: error instanceof Error ? error.message : 'Unknown connection error',
+    })
   }, [fetchWorkspace])
 
   useEffect(() => {
@@ -386,7 +408,6 @@ export default function App() {
 
   useEffect(() => subscribeUnauthorized(() => {
     rememberAppFocus()
-    connectionAttempt.current += 1
     setConnectionState({ status: 'unauthorized' })
   }), [rememberAppFocus])
 

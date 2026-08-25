@@ -479,6 +479,62 @@ def test_local_api_requires_random_session_token_outside_test_bypass():
     assert "token=" not in str(authenticated.url)
 
 
+def test_session_recovery_accepts_only_the_previous_local_ui_token(tmp_path):
+    state_path = tmp_path / "session.json"
+    nonce = "1" * 32
+    first = _create_app(
+        _RouteRuntime({"get_workspace_info": {"instance": "first"}}),
+        access_token="first-token",
+        session_cookie_nonce=nonce,
+        session_state_path=str(state_path),
+        allow_test_client_bypass=False,
+    )
+    first_client = TestClient(first)
+    assert first_client.get(
+        "/?token=first-token",
+        follow_redirects=False,
+    ).status_code == 303
+
+    second = _create_app(
+        _RouteRuntime({"get_workspace_info": {"instance": "second"}}),
+        access_token="second-token",
+        session_cookie_nonce=nonce,
+        session_state_path=str(state_path),
+        allow_test_client_bypass=False,
+    )
+    second_client = TestClient(second)
+    second_client.cookies.update(first_client.cookies)
+
+    recovered = second_client.get("/api/workspace")
+    assert recovered.status_code == 200
+    assert recovered.json() == {"instance": "second"}
+    assert second_client.cookies.get(second.state.session_cookie_name) == "second-token"
+
+    explicit_recovery = TestClient(second)
+    explicit_recovery.cookies.update(first_client.cookies)
+    recovered = explicit_recovery.post(
+        "/session/recover",
+        headers={"Origin": "http://testserver"},
+    )
+    assert recovered.status_code == 200
+    assert recovered.json() == {"ok": True}
+    assert explicit_recovery.cookies.get(second.state.session_cookie_name) == "second-token"
+
+    forged = TestClient(second)
+    forged.cookies.set(second.state.session_cookie_name, "forged-token")
+    assert forged.post(
+        "/session/recover",
+        headers={"Origin": "http://testserver"},
+    ).status_code == 401
+    assert forged.post(
+        "/session/recover",
+        headers={
+            "Origin": "https://attacker.example",
+            "Sec-Fetch-Site": "cross-site",
+        },
+    ).status_code == 403
+
+
 def test_parallel_ui_instances_keep_independent_http_sessions():
     first_token = "first-instance-bootstrap-secret"
     second_token = "second-instance-bootstrap-secret"

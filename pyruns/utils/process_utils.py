@@ -12,6 +12,7 @@ from pyruns.utils import get_logger
 logger = get_logger(__name__)
 _POSIX_KILL_GRACE_SEC = 1.5
 _POSIX_KILL_POLL_SEC = 0.05
+_WINDOWS_TASKKILL_GRACE_SEC = 0.5
 _PROCESS_EXIT_TIMEOUT_SEC = 5.0
 _PROCESS_CREATE_TIME_TOLERANCE_SEC = 0.01
 
@@ -220,6 +221,29 @@ def _signal_posix_process_tree(
             pass
 
 
+def _force_kill_windows_process_tree(
+    identities: list[tuple[int, float | None]],
+) -> None:
+    """Force-kill one snapshotted Windows tree without following reused PIDs."""
+
+    if _psutil is None:
+        return
+    for process_pid, created_at in reversed(identities):
+        try:
+            process = _psutil.Process(process_pid)
+            if created_at is not None:
+                actual_create_time = float(process.create_time())
+                if (
+                    not math.isfinite(actual_create_time)
+                    or abs(actual_create_time - created_at)
+                    > _PROCESS_CREATE_TIME_TOLERANCE_SEC
+                ):
+                    continue
+            process.kill()
+        except Exception:
+            continue
+
+
 def kill_process(
     pid: int,
     expected_create_time: float | None = None,
@@ -258,10 +282,22 @@ def kill_process(
                 capture_output=True, timeout=5,
                 **hidden_subprocess_kwargs(),
             )
-            terminated = _wait_for_process_tree_exit(identities, timeout=timeout)
+            timeout_value = max(0.0, float(timeout))
+            started_waiting = time.monotonic()
+            initial_wait = min(timeout_value, _WINDOWS_TASKKILL_GRACE_SEC)
+            if _wait_for_process_tree_exit(identities, timeout=initial_wait):
+                return True
+
+            _force_kill_windows_process_tree(identities)
+            remaining = max(
+                0.0,
+                timeout_value - (time.monotonic() - started_waiting),
+            )
+            terminated = _wait_for_process_tree_exit(identities, timeout=remaining)
             if not terminated:
                 logger.warning(
-                    "Process tree rooted at PID %s survived taskkill (return code %s)",
+                    "Process tree rooted at PID %s survived Windows termination "
+                    "(taskkill return code %s)",
                     pid,
                     getattr(result, "returncode", "unknown"),
                 )

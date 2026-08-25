@@ -1080,6 +1080,31 @@ test('authentication failures show a recoverable session screen', async ({ page 
   await expect(page.getByRole('heading', { name: 'Session expired' })).toBeVisible()
 })
 
+test('a stale session cookie is recovered after the UI process restarts', async ({ page }) => {
+  let workspaceRequests = 0
+  let recoveryRequests = 0
+  await page.route('**/api/workspace', route => {
+    workspaceRequests += 1
+    if (workspaceRequests === 1) {
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'UI authentication required' }),
+      })
+    }
+    return route.continue()
+  })
+  await page.route('**/session/recover', route => {
+    recoveryRequests += 1
+    expect(route.request().method()).toBe('POST')
+    return route.continue()
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  expect(recoveryRequests).toBe(1)
+})
+
 test('template picker keeps the current option active when reopened', async ({ page }) => {
   await page.addInitScript(() => {
     const testWindow = window as typeof window & { __templateScrollTargets?: string[] }
