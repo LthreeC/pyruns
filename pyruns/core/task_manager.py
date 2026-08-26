@@ -72,6 +72,7 @@ _GPU_SCHEDULE_LOCK_TIMEOUT_SEC = 2.0
 _REACTIVE_DISK_REFRESH_INTERVAL_SEC = 1.0
 _NAMESPACE_OPERATION_KEY = "_namespace_operation"
 _NAMESPACE_OPERATION_LEASE_SEC = 60.0
+_VALID_TASK_STATUSES = {"pending", "queued", "running", "completed", "failed", "cancelled"}
 _GPU_QUEUE_RUN_RE = re.compile(r"\bRun #(\d+)\b")
 _GPU_WAIT_REASON_NORMALIZERS = (
     (re.compile(r"\bstabilizing\s+\d+(?:\.\d+)?/(\d+(?:\.\d+)?s)\b"), r"stabilizing /\1"),
@@ -100,6 +101,16 @@ def active_task_run_index(info: Dict[str, Any]) -> int:
         except (TypeError, ValueError, OverflowError):
             pass
     return queued
+
+
+def _validate_task_status_for_strict_refresh(info: Dict[str, Any], task_name: str) -> None:
+    """Reject metadata whose lifecycle state cannot prove whether a task is idle."""
+
+    status = str(info.get("status", "") or "").strip().lower()
+    if not status:
+        raise ValueError(f"Task metadata status is missing for {task_name}")
+    if status not in _VALID_TASK_STATUSES:
+        raise ValueError(f"Task metadata status is invalid for {task_name}: {status!r}")
 
 
 class TaskClaimConflict(RuntimeError):
@@ -479,7 +490,11 @@ class TaskManager:
         _ok, names = self._scan_task_dir_names()
         return names
 
-    def _scan_task_dir_names(self) -> tuple[bool, list[str]]:
+    def _scan_task_dir_names(
+        self,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[bool, list[str]]:
         """Try to list task folder names ordered by directory mtime."""
         if not self.tasks_dir:
             return True, []
@@ -508,12 +523,18 @@ class TaskManager:
             entries.sort(key=lambda x: x[1], reverse=True)
             return True, [name for name, _ in entries]
         except (OSError, ValueError) as exc:
+            if raise_on_error:
+                raise
             logger.debug("Could not list task directories under %s: %s", self.tasks_dir, exc)
             return False, []
 
-    def sync_task_dirs_from_disk(self) -> bool:
+    def sync_task_dirs_from_disk(self, *, raise_on_error: bool = False) -> bool:
         """Discover task folders created or removed by another Pyruns process."""
-        if not self.tasks_dir or not os.path.exists(self.tasks_dir):
+        if not self.tasks_dir and raise_on_error:
+            raise ValueError("Tasks directory is not configured")
+        if not self.tasks_dir or (
+            not raise_on_error and not os.path.exists(self.tasks_dir)
+        ):
             with self._lock:
                 had_tasks = bool(self.tasks)
                 self.tasks = []
@@ -524,7 +545,9 @@ class TaskManager:
                 self._disk_scan_complete = True
             return had_tasks
 
-        scan_ok, disk_names = self._scan_task_dir_names()
+        scan_ok, disk_names = self._scan_task_dir_names(
+            raise_on_error=raise_on_error,
+        )
         if not scan_ok:
             return False
 
@@ -539,14 +562,39 @@ class TaskManager:
 
         if len(new_names) > 8:
             with ThreadPoolExecutor(max_workers=min(16, len(new_names))) as pool:
-                results = list(pool.map(self._load_task_dir, new_names))
+                results = list(
+                    pool.map(
+                        lambda name: self._load_task_dir(
+                            name,
+                            raise_on_error=raise_on_error,
+                        ),
+                        new_names,
+                    )
+                )
             new_tasks = [task for task in results if task is not None]
         else:
             new_tasks = [
                 task
-                for task in (self._load_task_dir(name) for name in new_names)
+                for task in (
+                    self._load_task_dir(name, raise_on_error=raise_on_error)
+                    for name in new_names
+                )
                 if task is not None
             ]
+        if raise_on_error:
+            loaded_names = {
+                str(task.get("name", "") or "")
+                for task in new_tasks
+            }
+            missing_metadata = [
+                name
+                for name in new_names
+                if validate_task_name(name) is None and name not in loaded_names
+            ]
+            if missing_metadata:
+                raise FileNotFoundError(
+                    "Could not load task metadata for " + ", ".join(missing_metadata)
+                )
 
         changed = False
         with self._lock:
@@ -792,7 +840,12 @@ class TaskManager:
                 self.gpu_scheduler.release(task_name)
             self._recompute_processing_flag_locked()
 
-    def _load_task_dir(self, dir_name: str) -> Dict[str, Any] | None:
+    def _load_task_dir(
+        self,
+        dir_name: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Dict[str, Any] | None:
         """Load one task folder into the normalized task dict shape."""
         if validate_task_name(dir_name) is not None:
             return None
@@ -804,9 +857,13 @@ class TaskManager:
         metadata_error = ""
         try:
             info = load_task_info(task_dir, raise_error=True)
+            if raise_on_error:
+                _validate_task_status_for_strict_refresh(info, dir_name)
             if not info:
                 metadata_error = "Task metadata is empty"
         except Exception as exc:
+            if raise_on_error:
+                raise
             metadata_error = f"Could not load task metadata: {exc}"
             logger.error("Error loading info for %s: %s", dir_name, exc)
             info = {}
@@ -880,9 +937,14 @@ class TaskManager:
         force_all: bool = False,
         check_all: bool = False,
         discover: bool = False,
+        raise_on_error: bool = False,
     ) -> bool:
         """Refresh active or requested tasks from task_info.json files."""
-        has_changed = self.sync_task_dirs_from_disk() if discover else False
+        has_changed = (
+            self.sync_task_dirs_from_disk(raise_on_error=raise_on_error)
+            if discover
+            else False
+        )
 
         with self._lock:
             current = list(self.tasks)
@@ -925,7 +987,12 @@ class TaskManager:
                                     after = self._task_snapshot(existing)
                                     has_changed |= before != after
                     continue
-                info = load_task_info(task["dir"])
+                info = load_task_info(task["dir"], raise_error=raise_on_error)
+                if raise_on_error:
+                    _validate_task_status_for_strict_refresh(
+                        info,
+                        str(task.get("name", "") or ""),
+                    )
                 if not info:
                     continue
                 info = self._strip_queued_placeholder_run(info)
@@ -940,6 +1007,8 @@ class TaskManager:
                     after = self._task_snapshot(existing)
                 has_changed |= before != after
             except Exception as exc:
+                if raise_on_error:
+                    raise
                 logger.debug("refresh_from_disk skipped %s: %s", task.get("name"), exc)
 
         return has_changed

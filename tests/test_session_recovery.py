@@ -28,8 +28,9 @@ def test_session_recovery_does_not_cross_workspace_scopes(tmp_path):
 
 def test_session_recovery_previous_token_expires(monkeypatch, tmp_path):
     path = tmp_path / "session.json"
-    clock = iter((100.0, 100.0, 401.0))
-    monkeypatch.setattr("pyruns.web.session_recovery.time.time", lambda: next(clock))
+    clock = Mock()
+    clock.time.side_effect = (100.0, 100.0, 401.0)
+    monkeypatch.setattr("pyruns.web.session_recovery.time", clock)
     SessionRecovery(str(path), scope="workspace", token="first")
     second = SessionRecovery(str(path), scope="workspace", token="second")
 
@@ -38,8 +39,9 @@ def test_session_recovery_previous_token_expires(monkeypatch, tmp_path):
 
 def test_session_recovery_ignores_an_old_state_record(monkeypatch, tmp_path):
     path = tmp_path / "session.json"
-    clock = iter((100.0, 401.0))
-    monkeypatch.setattr("pyruns.web.session_recovery.time.time", lambda: next(clock))
+    clock = Mock()
+    clock.time.side_effect = (100.0, 401.0)
+    monkeypatch.setattr("pyruns.web.session_recovery.time", clock)
     SessionRecovery(str(path), scope="workspace", token="first")
     second = SessionRecovery(str(path), scope="workspace", token="second")
 

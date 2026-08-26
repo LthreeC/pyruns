@@ -133,7 +133,17 @@ class UiUpdateCoordinator:
 
     def _runtime_active_count(self, *, strict: bool) -> int:
         try:
-            return max(0, int(self._runtime.active_task_count()))
+            strict_counter = getattr(
+                type(self._runtime),
+                "strict_active_task_count",
+                None,
+            )
+            counter = (
+                self._runtime.strict_active_task_count
+                if strict and callable(strict_counter)
+                else self._runtime.active_task_count
+            )
+            return max(0, int(counter()))
         except Exception as exc:
             if strict:
                 raise UpdateCheckError(
@@ -230,7 +240,8 @@ class UiUpdateCoordinator:
                     "Shared update coordination could not be read safely."
                 ):
                     self._coordination_degraded = True
-            return
+            if self._coordination_degraded:
+                return
         self._monitor = threading.Thread(
             target=self._monitor_loop,
             name="pyruns-update-monitor",
@@ -286,10 +297,23 @@ class UiUpdateCoordinator:
                         pass
                 lock_context.__exit__(*sys.exc_info())
 
-    def prepare(self, runtime: Any) -> bool:
+    def prepare(self, runtime: Any, *, target_version: str = "") -> bool:
         """Publish an upgrade gate after every registered process is idle."""
 
-        return self._prepare_operation(runtime, operation="upgrade", target_version="")
+        target_version = str(target_version or "").strip()
+        if target_version:
+            try:
+                target = Version(target_version)
+                current = Version(self._current_version) if self._current_version else None
+            except InvalidVersion as exc:
+                raise UpdateCheckError("The requested Pyruns target version is invalid.") from exc
+            if current is not None and target <= current:
+                raise UpdateCheckError("The requested Pyruns target version is not newer.")
+        return self._prepare_operation(
+            runtime,
+            operation="upgrade",
+            target_version=target_version,
+        )
 
     def prepare_restart(self, runtime: Any) -> bool:
         """Publish a restart gate for an externally changed installation."""
@@ -410,7 +434,7 @@ class UiUpdateCoordinator:
         return value or fallback
 
     def _drain_once(self) -> None:
-        active_count = self._runtime_active_count(strict=False)
+        active_count = self._runtime_active_count(strict=True)
         self._write_instance(
             phase="draining",
             active_count=active_count,
@@ -459,7 +483,9 @@ class UiUpdateCoordinator:
                     self._coordination_error = str(exc) or (
                         "Shared update coordination became unavailable."
                     )
-                return
+            else:
+                with self._lock:
+                    self._coordination_error = ""
 
     def handoff(self) -> dict[str, Any]:
         """Stop monitoring and leave a waiter/updater lease for process replacement."""
@@ -597,6 +623,7 @@ def replace_process_with_updater(
     state_dir: str = "",
     restart_only: bool = False,
     installed_version: str = "",
+    target_version: str = "",
 ) -> None:
     """Replace the current UI process so package files are no longer in use."""
 
@@ -619,6 +646,8 @@ def replace_process_with_updater(
         command.append("--restart-only")
     if installed_version:
         command.extend(["--installed-version", str(installed_version)])
+    if target_version:
+        command.extend(["--target-version", str(target_version)])
     environment = os.environ.copy()
     environment[UI_TOKEN_ENV] = str(token)
     message = (
@@ -682,7 +711,11 @@ def _query_installed_version(fallback: str) -> str:
     return version_text if completed.returncode == 0 and version_text else fallback
 
 
-def run_pip_upgrade(previous_version: str) -> dict[str, Any]:
+def run_pip_upgrade(
+    previous_version: str,
+    *,
+    target_version: str = "",
+) -> dict[str, Any]:
     """Run the requested pip operation and return a relaunch-safe result."""
 
     command = [sys.executable, "-m", "pip", "install", "--upgrade", "pyruns"]
@@ -695,9 +728,27 @@ def run_pip_upgrade(previous_version: str) -> dict[str, Any]:
         print(f"[pyruns] Could not start pip: {exc}", file=sys.stderr, flush=True)
 
     installed_version = _query_installed_version(previous_version)
-    ok = exit_code == 0
+    try:
+        previous = Version(str(previous_version))
+        installed = Version(str(installed_version))
+        target = Version(str(target_version)) if target_version else None
+        reached_target = installed > previous and (target is None or installed >= target)
+    except InvalidVersion:
+        reached_target = False
+    ok = exit_code == 0 and reached_target
     if ok:
         print(f"[pyruns] Pyruns upgrade completed: {installed_version}", flush=True)
+    elif exit_code == 0:
+        expected = (
+            f"at least {target_version}"
+            if target_version
+            else f"newer than {previous_version}"
+        )
+        print(
+            f"[pyruns] pip completed, but installed Pyruns {installed_version}; expected {expected}.",
+            file=sys.stderr,
+            flush=True,
+        )
     else:
         print(
             f"[pyruns] Pyruns upgrade failed with exit code {exit_code}; restarting the available version.",
@@ -880,6 +931,7 @@ def run_coordinated_update(
     previous_version: str,
     restart_only: bool = False,
     installed_version: str = "",
+    target_version: str = "",
 ) -> dict[str, Any]:
     """Drain shared users, run pip once, and publish the result atomically."""
 
@@ -905,7 +957,10 @@ def run_coordinated_update(
                 "exit_code": 0,
             }
         else:
-            result = run_pip_upgrade(previous_version)
+            result = run_pip_upgrade(
+                previous_version,
+                target_version=target_version,
+            )
 
     with store.locked():
         updated = store.update_request_locked(
@@ -1010,6 +1065,7 @@ def _parse_args(args: list[str]) -> argparse.Namespace:
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--restart-only", action="store_true")
     parser.add_argument("--installed-version", default="")
+    parser.add_argument("--target-version", default="")
     return parser.parse_args(args)
 
 
@@ -1046,6 +1102,7 @@ def main(args: list[str] | None = None) -> int:
                     previous_version=options.previous_version,
                     restart_only=bool(options.restart_only),
                     installed_version=str(options.installed_version or ""),
+                    target_version=str(options.target_version or ""),
                 )
         elif options.restart_only:
             result = {
@@ -1057,7 +1114,10 @@ def main(args: list[str] | None = None) -> int:
                 "exit_code": 0,
             }
         else:
-            result = run_pip_upgrade(options.previous_version)
+            result = run_pip_upgrade(
+                options.previous_version,
+                target_version=str(options.target_version or ""),
+            )
     except Exception as exc:
         print(f"[pyruns] Update coordination failed: {exc}", file=sys.stderr, flush=True)
         result = {

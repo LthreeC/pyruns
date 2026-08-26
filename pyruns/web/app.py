@@ -254,6 +254,12 @@ class RuntimeUpdateRequest(RequestModel):
     gpu_scheduler: dict[str, Any] | None = None
 
 
+class SystemUpdateRequest(RequestModel):
+    """The release confirmed by the user before a full-process upgrade."""
+
+    target_version: str = Field(default="", max_length=64)
+
+
 class TaskRenameRequest(RequestModel):
     """Rename payload."""
 
@@ -1472,7 +1478,10 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/system/update", status_code=202)
-    def update_pyruns(background_tasks: BackgroundTasks) -> dict[str, Any]:
+    def update_pyruns(
+        background_tasks: BackgroundTasks,
+        payload: SystemUpdateRequest | None = None,
+    ) -> dict[str, Any]:
         coordinator = app.state.update_coordinator
         if coordinator is None or not coordinator.supported:
             raise HTTPException(
@@ -1480,7 +1489,10 @@ def create_app(
                 detail="Full-process updates are available only in the normal 'pyr ui' server.",
             )
         try:
-            ready = coordinator.prepare(get_runtime())
+            ready = coordinator.prepare(
+                get_runtime(),
+                target_version=payload.target_version if payload is not None else "",
+            )
         except ActiveTasksError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UpdateCheckError as exc:
@@ -1704,6 +1716,7 @@ def main(
             raise
         try:
             if handoff["role"] == "owner":
+                restart_only = handoff["operation"] == "restart"
                 replace_process_with_updater(
                     port=int(port),
                     token=token,
@@ -1711,8 +1724,13 @@ def main(
                     request_id=str(handoff["request_id"]),
                     instance_id=str(handoff["instance_id"]),
                     state_dir=str(handoff["state_dir"]),
-                    restart_only=handoff["operation"] == "restart",
-                    installed_version=str(handoff["target_version"]),
+                    restart_only=restart_only,
+                    installed_version=(
+                        str(handoff["target_version"]) if restart_only else ""
+                    ),
+                    target_version=(
+                        "" if restart_only else str(handoff["target_version"])
+                    ),
                 )
             else:
                 replace_process_with_waiter(

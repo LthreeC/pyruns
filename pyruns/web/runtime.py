@@ -462,10 +462,7 @@ class PyrunsRuntime:
             for task in tasks
         )
 
-    @_with_stable_workspace
-    def active_task_count(self) -> int:
-        """Synchronously count active work across every manager owned by this UI."""
-
+    def _active_task_count(self, *, force_all: bool) -> int:
         self.ensure_tasks_loaded(full_refresh=False)
         with self._lock:
             managers = list(dict.fromkeys(self._task_managers.values()))
@@ -474,7 +471,12 @@ class PyrunsRuntime:
 
         active_count = 0
         for manager in managers:
-            manager.refresh_from_disk(force_all=True, discover=True)
+            manager.refresh_from_disk(
+                force_all=force_all,
+                check_all=not force_all,
+                discover=True,
+                raise_on_error=force_all,
+            )
             manager_count = sum(
                 1
                 for task in manager.list_tasks(summary=True)
@@ -484,6 +486,18 @@ class PyrunsRuntime:
                 manager_count = 1
             active_count += manager_count
         return active_count
+
+    @_with_stable_workspace
+    def active_task_count(self) -> int:
+        """Count active work while skipping unchanged task metadata."""
+
+        return self._active_task_count(force_all=False)
+
+    @_with_stable_workspace
+    def strict_active_task_count(self) -> int:
+        """Re-read every task before an operation that requires a proven idle UI."""
+
+        return self._active_task_count(force_all=True)
 
     def _retire_task_manager_if_idle(self, manager_key: str, task_manager: TaskManager) -> None:
         """Stop and forget one non-current manager after its active work has finished."""

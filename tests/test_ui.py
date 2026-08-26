@@ -142,7 +142,7 @@ def test_react_update_control_requires_confirmation_and_full_instance_restart():
     assert "requestConfirmation({" in source
     assert "hasUnsavedWork" in source
     assert "api.checkPyrunsUpdate()" in source
-    assert "api.updatePyruns()" in source
+    assert "api.updatePyruns(versionCheck.latest_version)" in source
     assert "info.instance_id !== previousInstanceId" in source
     assert "info.instance_id !== instanceIdRef.current" in source
     assert "window.setInterval(() => void pollInstance(), INSTANCE_POLL_MS)" in source

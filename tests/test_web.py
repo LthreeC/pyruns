@@ -164,7 +164,10 @@ def test_system_update_requires_idle_runtime_then_gates_task_starts():
     coordinator = UiUpdateCoordinator(lambda: shutdowns.append("shutdown"))
     client = TestClient(create_app(runtime, update_coordinator=coordinator))
 
-    response = client.post("/api/system/update")
+    response = client.post(
+        "/api/system/update",
+        json={"target_version": "0.4.0"},
+    )
     start = client.post("/api/tasks/alpha/run")
     info = client.get("/api/system/info")
 
@@ -175,6 +178,7 @@ def test_system_update_requires_idle_runtime_then_gates_task_starts():
     assert "new tasks are disabled" in start.json()["detail"]
     assert info.json()["update_supported"] is True
     assert info.json()["update_state"] == "restarting"
+    assert coordinator.handoff()["target_version"] == "0.4.0"
 
 
 def test_system_restart_reports_external_version_and_requires_manual_request(monkeypatch):
@@ -275,7 +279,27 @@ def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
     )
     try:
         assert runtime.active_task_count() == 1
-        assert any(call == {"force_all": True, "discover": True} for call in refreshes)
+        assert any(
+            call
+            == {
+                "force_all": False,
+                "check_all": True,
+                "discover": True,
+                "raise_on_error": False,
+            }
+            for call in refreshes
+        )
+        assert runtime.strict_active_task_count() == 1
+        assert any(
+            call
+            == {
+                "force_all": True,
+                "check_all": False,
+                "discover": True,
+                "raise_on_error": True,
+            }
+            for call in refreshes
+        )
 
         manager.tasks[0]["status"] = "completed"
         assert runtime.active_task_count() == 0
@@ -3120,7 +3144,10 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
         events.append("server-run")
         client = TestClient(app_target)
         assert client.get("/?token=private-token", follow_redirects=False).status_code == 303
-        response = client.post("/api/system/update")
+        response = client.post(
+            "/api/system/update",
+            json={"target_version": "9999.0.0"},
+        )
         assert response.status_code == 202
 
     def fake_replace(**kwargs):
@@ -3148,6 +3175,8 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
     assert replacement["instance_id"]
     assert replacement["state_dir"]
     assert replacement["restart_only"] is False
+    assert replacement["target_version"] == "9999.0.0"
+    assert replacement["installed_version"] == ""
 
 
 def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch):

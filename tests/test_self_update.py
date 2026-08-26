@@ -79,6 +79,40 @@ def test_update_coordinator_fails_closed_when_idle_check_fails():
     assert coordinator.requested is False
 
 
+def test_update_coordinator_uses_strict_runtime_count_before_upgrade():
+    class Runtime:
+        def active_task_count(self):
+            return 0
+
+        def strict_active_task_count(self):
+            return 2
+
+    coordinator = self_update.UiUpdateCoordinator(lambda: None)
+
+    with pytest.raises(self_update.ActiveTasksError, match="2 queued or running tasks"):
+        coordinator.prepare(Runtime())
+
+    assert coordinator.requested is False
+
+
+def test_update_coordinator_uses_strict_runtime_count_before_shutdown():
+    shutdowns: list[str] = []
+
+    class Runtime:
+        def active_task_count(self):
+            return 0
+
+        def strict_active_task_count(self):
+            return 1
+
+    coordinator = self_update.UiUpdateCoordinator(lambda: shutdowns.append("shutdown"))
+    coordinator._runtime = Runtime()
+
+    coordinator._drain_once()
+
+    assert shutdowns == []
+
+
 def test_shared_coordinators_gate_every_ui_and_restart_followers(tmp_path):
     shutdowns: list[str] = []
     state_dir = tmp_path / "coordination"
@@ -191,10 +225,14 @@ def test_ui_attach_failure_does_not_bypass_shared_task_guard(tmp_path, monkeypat
     monkeypatch.setattr(coordinator._store, "ensure", unavailable)
     coordinator.attach(_Runtime(0))
 
-    assert coordinator.supported is False
-    with pytest.raises(UpdateInProgressError, match="Could not coordinate"):
-        with coordinator.task_start_guard():
-            pass
+    try:
+        assert coordinator.supported is False
+        assert coordinator._monitor is not None
+        with pytest.raises(UpdateInProgressError, match="Could not coordinate"):
+            with coordinator.task_start_guard():
+                pass
+    finally:
+        coordinator.close()
 
 
 def test_ui_attach_allows_tasks_only_for_explicit_read_only_storage(tmp_path, monkeypatch):
@@ -216,6 +254,55 @@ def test_ui_attach_allows_tasks_only_for_explicit_read_only_storage(tmp_path, mo
     assert coordinator.supported is False
     with coordinator.task_start_guard():
         pass
+
+
+def test_ui_monitor_recovers_after_temporary_coordination_error(tmp_path, monkeypatch):
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None,
+        state_dir=str(tmp_path / "coordination"),
+        shared=True,
+        current_version="0.3.0",
+    )
+    attempts = 0
+    observed_errors: list[bool] = []
+
+    class TwoTickStop:
+        def __init__(self) -> None:
+            self.waits = 0
+
+        def wait(self, _timeout: float) -> bool:
+            self.waits += 1
+            return self.waits > 2
+
+    def temporary_failure_then_success() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError(errno.ESTALE, "stale file handle")
+        observed_errors.append(not coordinator.supported)
+
+    monkeypatch.setattr(coordinator, "_stop", TwoTickStop())
+    monkeypatch.setattr(coordinator, "_monitor_tick", temporary_failure_then_success)
+
+    coordinator._monitor_loop()
+
+    assert attempts == 2
+    assert observed_errors == [True]
+    assert coordinator.supported is True
+
+
+def test_update_coordinator_rejects_invalid_or_older_target_versions():
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None,
+        current_version="0.3.0",
+    )
+
+    with pytest.raises(self_update.UpdateCheckError, match="invalid"):
+        coordinator.prepare(_Runtime(0), target_version="not-a-version")
+    with pytest.raises(self_update.UpdateCheckError, match="not newer"):
+        coordinator.prepare(_Runtime(0), target_version="0.2.0")
+
+    assert coordinator.requested is False
 
 
 def test_coordinated_update_does_not_run_pip_when_records_are_unavailable(
@@ -342,15 +429,23 @@ def test_coordinated_update_waits_for_handoff_then_publishes_to_waiter(tmp_path,
         "installed_version": "0.4.0",
         "exit_code": 0,
     }
+    upgrade_targets: list[tuple[str, str]] = []
+
+    def fake_upgrade(previous_version: str, *, target_version: str = ""):
+        upgrade_targets.append((previous_version, target_version))
+        return dict(result)
+
     monkeypatch.setattr(self_update.time, "sleep", release_follower)
-    monkeypatch.setattr(self_update, "run_pip_upgrade", lambda _version: dict(result))
+    monkeypatch.setattr(self_update, "run_pip_upgrade", fake_upgrade)
 
     assert self_update.run_coordinated_update(
         state_dir=str(state_dir),
         request_id=request_id,
         instance_id=owner_id,
         previous_version="0.3.0",
+        target_version="0.4.0",
     ) == result
+    assert upgrade_targets == [("0.3.0", "0.4.0")]
     assert sleeps
     assert store.read_request()["stage"] == "completed"
     assert self_update.wait_for_coordinated_update(
@@ -873,7 +968,7 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch):
 
     monkeypatch.setattr(self_update.subprocess, "run", fake_run)
 
-    result = self_update.run_pip_upgrade("0.3.0")
+    result = self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")
 
     assert calls[0][0] == [
         sys.executable,
@@ -892,6 +987,25 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("installed_version", ["0.3.0", "0.3.1"])
+def test_run_pip_upgrade_requires_confirmed_target(monkeypatch, installed_version):
+    def fake_run(command, **_kwargs):
+        if "pip" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(returncode=0, stdout=f"{installed_version}\n")
+
+    monkeypatch.setattr(self_update.subprocess, "run", fake_run)
+
+    result = self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")
+
+    assert result == {
+        "ok": False,
+        "previous_version": "0.3.0",
+        "installed_version": installed_version,
+        "exit_code": 0,
+    }
+
+
 def test_run_pip_upgrade_failure_keeps_relaunch_result(monkeypatch):
     def fake_run(command, **_kwargs):
         if "pip" in command:
@@ -900,7 +1014,7 @@ def test_run_pip_upgrade_failure_keeps_relaunch_result(monkeypatch):
 
     monkeypatch.setattr(self_update.subprocess, "run", fake_run)
 
-    result = self_update.run_pip_upgrade("0.3.0")
+    result = self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")
 
     assert result == {
         "ok": False,
@@ -923,6 +1037,7 @@ def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
         port=8123,
         token="private-token",
         previous_version="0.3.0",
+        target_version="0.4.0",
     )
     result = {
         "ok": True,
@@ -942,6 +1057,8 @@ def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
         "8123",
         "--previous-version",
         "0.3.0",
+        "--target-version",
+        "0.4.0",
     ]
     assert "private-token" not in updater_exec[1]
     assert updater_exec[2][self_update.UI_TOKEN_ENV] == "private-token"
@@ -964,10 +1081,16 @@ def test_updater_main_removes_token_before_pip_and_relaunches(monkeypatch):
     observed = {}
     monkeypatch.setenv(self_update.UI_TOKEN_ENV, "private-token")
 
-    def fake_upgrade(previous_version):
+    def fake_upgrade(previous_version, *, target_version=""):
         observed["pip_token"] = os.environ.get(self_update.UI_TOKEN_ENV)
         observed["previous_version"] = previous_version
-        return {"ok": True, "previous_version": previous_version, "installed_version": "0.4.0", "exit_code": 0}
+        observed["target_version"] = target_version
+        return {
+            "ok": True,
+            "previous_version": previous_version,
+            "installed_version": "0.4.0",
+            "exit_code": 0,
+        }
 
     def fake_relaunch(**kwargs):
         observed["relaunch"] = kwargs
@@ -975,9 +1098,19 @@ def test_updater_main_removes_token_before_pip_and_relaunches(monkeypatch):
     monkeypatch.setattr(self_update, "run_pip_upgrade", fake_upgrade)
     monkeypatch.setattr(self_update, "relaunch_ui", fake_relaunch)
 
-    assert self_update.main(["--port", "8123", "--previous-version", "0.3.0"]) == 1
+    assert self_update.main(
+        [
+            "--port",
+            "8123",
+            "--previous-version",
+            "0.3.0",
+            "--target-version",
+            "0.4.0",
+        ]
+    ) == 1
     assert observed["pip_token"] is None
     assert observed["previous_version"] == "0.3.0"
+    assert observed["target_version"] == "0.4.0"
     assert observed["relaunch"]["port"] == 8123
     assert observed["relaunch"]["token"] == "private-token"
 

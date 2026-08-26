@@ -289,8 +289,9 @@ export const getSystemInfo = () => request<SystemInfo>('/api/system/info')
 
 export const checkPyrunsUpdate = () => request<UiVersionCheck>('/api/system/update/check')
 
-export const updatePyruns = () => request<UiUpdateResponse>('/api/system/update', {
+export const updatePyruns = (targetVersion: string) => request<UiUpdateResponse>('/api/system/update', {
   method: 'POST',
+  body: JSON.stringify({ target_version: targetVersion }),
 })
 
 export const restartPyruns = () => request<UiUpdateResponse>('/api/system/restart', {

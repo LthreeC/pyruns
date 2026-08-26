@@ -132,13 +132,14 @@ describe('API errors', () => {
 
     await getSystemInfo()
     await checkPyrunsUpdate()
-    await updatePyruns()
+    await updatePyruns('0.4.0')
     await restartPyruns()
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/system/info', expect.any(Object))
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/system/update/check', expect.any(Object))
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/system/update', expect.objectContaining({
       method: 'POST',
+      body: JSON.stringify({ target_version: '0.4.0' }),
     }))
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/system/restart', expect.objectContaining({
       method: 'POST',

@@ -5730,6 +5730,64 @@ def test_task_manager_refresh_keeps_tasks_when_directory_scan_fails(tmp_path):
     assert [task["name"] for task in manager.list_tasks()] == ["alpha"]
 
 
+def test_task_manager_strict_refresh_fails_closed_on_disk_errors(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    generator.create_task("alpha", {"value": 1})
+
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+
+    with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("stale nfs handle")):
+        with pytest.raises(OSError, match="stale nfs handle"):
+            manager.refresh_from_disk(
+                force_all=True,
+                discover=True,
+                raise_on_error=True,
+            )
+
+    with patch(
+        "pyruns.core.task_manager.load_task_info",
+        side_effect=OSError("task metadata unavailable"),
+    ):
+        with pytest.raises(OSError, match="task metadata unavailable"):
+            manager.refresh_from_disk(
+                force_all=True,
+                discover=True,
+                raise_on_error=True,
+            )
+
+    broken_dir = tasks_dir / "broken"
+    broken_dir.mkdir()
+    (broken_dir / TASK_INFO_FILENAME).write_text("not json", encoding="utf-8")
+    with pytest.raises(ValueError):
+        manager.refresh_from_disk(
+            force_all=True,
+            discover=True,
+            raise_on_error=True,
+        )
+
+    (broken_dir / TASK_INFO_FILENAME).write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="metadata status is missing"):
+        manager.refresh_from_disk(
+            force_all=True,
+            discover=True,
+            raise_on_error=True,
+        )
+
+    (broken_dir / TASK_INFO_FILENAME).write_text(
+        json.dumps({"status": "unknown"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="metadata status is invalid"):
+        manager.refresh_from_disk(
+            force_all=True,
+            discover=True,
+            raise_on_error=True,
+        )
+
+
 def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

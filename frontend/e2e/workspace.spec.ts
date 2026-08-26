@@ -35,6 +35,7 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
   })
   await page.route('**/api/system/update', route => {
     updateRequests += 1
+    expect(route.request().postDataJSON()).toEqual({ target_version: '0.4.0' })
     restarted = true
     return route.fulfill({
       status: 202,

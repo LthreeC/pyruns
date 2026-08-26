@@ -118,10 +118,13 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
         detail: result.installed_version || info.version,
       })
     } else {
+      const detail = result.exit_code === 0
+        ? `pip completed without installing the confirmed release; version ${info.version} was restarted.`
+        : `pip exited with code ${result.exit_code}; version ${info.version} was restarted.`
       notify({
         tone: 'error',
         title: 'Pyruns update failed',
-        detail: `pip exited with code ${result.exit_code}; version ${info.version} was restarted.`,
+        detail,
       })
     }
   }, [notify])
@@ -222,7 +225,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     setOperation('update')
     setTakingLong(false)
     try {
-      const response = await api.updatePyruns()
+      const response = await api.updatePyruns(versionCheck.latest_version)
       await waitForRestart(response.instance_id)
     } catch (error) {
       setOperation(null)
