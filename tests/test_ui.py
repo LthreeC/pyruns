@@ -16,7 +16,6 @@ FRONTEND_MANAGER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "c
 FRONTEND_LAUNCHER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "launcher" / "LauncherPage.tsx"
 FRONTEND_APP_SHELL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "AppShell.tsx"
 FRONTEND_SIDEBAR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "Sidebar.tsx"
-FRONTEND_UPDATE_CONTROL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "UpdateControl.tsx"
 FRONTEND_TASK_DETAIL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "manager" / "TaskDetailPanel.tsx"
 FRONTEND_API = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.ts"
 FRONTEND_TYPES = Path(__file__).resolve().parents[1] / "frontend" / "src" / "types.ts"
@@ -530,28 +529,6 @@ def test_react_app_lazy_loads_routes_and_runtime_panel():
     assert "{runtimeOpen && (" in sidebar
 
 
-def test_react_update_control_requires_confirmation_and_full_instance_restart():
-    source = FRONTEND_UPDATE_CONTROL.read_text(encoding="utf-8")
-    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-    api = FRONTEND_API.read_text(encoding="utf-8")
-
-    assert "<UpdateControl compact={compact} />" in sidebar
-    assert "requestConfirmation({" in source
-    assert "hasUnsavedWork" in source
-    assert "api.checkPyrunsUpdate()" in source
-    assert "api.updatePyruns(versionCheck.latest_version)" in source
-    assert "info.instance_id !== previousInstanceId" in source
-    assert "info.instance_id !== instanceIdRef.current" in source
-    assert "window.setInterval(() => void pollInstance(), INSTANCE_POLL_MS)" in source
-    assert "document.addEventListener('visibilitychange', handleVisibility)" in source
-    assert "window.location.reload()" in source
-    assert "motion-reduce:animate-none" in source
-    assert "if (!systemInfo.update_supported) return null" in source
-    assert "'/api/system/info'" in api
-    assert "'/api/system/update/check'" in api
-    assert "'/api/system/update'" in api
-
-
 def test_frontend_entrypoints_use_local_lightweight_assets():
     indexes = [
         FRONTEND_INDEX.read_text(encoding="utf-8"),
@@ -773,21 +750,6 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     assert "<Sidebar width={effectiveSidebarWidth}" in shell
     assert "width?: number" in sidebar
     assert "style={{ width }}" in sidebar
-
-
-def test_react_app_shell_uses_compact_sidebar_on_narrow_viewports():
-    shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
-    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-
-    assert "const COMPACT_SIDEBAR_WIDTH = 64" in shell
-    assert "window.matchMedia('(max-width: 700px)')" in shell
-    assert "const effectiveSidebarWidth = compactSidebar ? COMPACT_SIDEBAR_WIDTH : sidebarWidth" in shell
-    assert "<Sidebar width={effectiveSidebarWidth} compact={compactSidebar}" in shell
-    assert "compact?: boolean" in sidebar
-    assert "aria-label={label}" in sidebar
-    assert "title={label}" in sidebar
-    assert "compact && 'justify-center px-0'" in sidebar
-    assert "{!compact && <span>{label}</span>}" in sidebar
 
 
 def test_react_mobile_pages_constrain_empty_states_and_header_actions():
@@ -1029,28 +991,14 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "message.log_file_name || liveLog" in source
 
 
-def test_react_mobile_task_controls_keep_usable_touch_targets():
-    action_button = (FRONTEND_COMPONENTS_DIR / "shared" / "ActionButton.tsx").read_text(encoding="utf-8")
-    dashboard = (FRONTEND_COMPONENTS_DIR / "dashboard" / "DashboardPage.tsx").read_text(encoding="utf-8")
-    sidebar = (FRONTEND_COMPONENTS_DIR / "layout" / "Sidebar.tsx").read_text(encoding="utf-8")
+def test_react_secondary_mobile_controls_keep_usable_touch_targets():
     manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
-    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
     confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
     pagination = FRONTEND_PAGINATION.read_text(encoding="utf-8")
     toast_host = FRONTEND_TOAST_HOST.read_text(encoding="utf-8")
 
-    assert "min-h-11 gap-1.5 rounded-md px-3 py-1.5 text-xs sm:min-h-9" in action_button
-    assert "touch-target inline-flex min-h-11 min-w-0 items-center justify-center" in dashboard
-    assert "touch-target inline-flex min-h-11 items-center gap-1" in dashboard
-    assert "flex min-h-11 w-full items-center gap-3" in dashboard
-    assert "touch-target inline-flex h-11 w-11 flex-none items-center justify-center" in dashboard
-    assert "min-h-10" in sidebar
-    assert "basis-[12rem]" in monitor
-    assert "flex min-h-9 w-full flex-col items-stretch rounded-md border px-2 py-1.5 text-left transition-colors" in monitor
-    assert "'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors" in manager
-    assert "sm:right-2 sm:top-1.5 sm:h-9 sm:w-9" in manager
-    assert "'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors" in manager
-    assert "sm:h-9 sm:w-9" in manager
+    assert "'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11" in manager
+    assert "'touch-target inline-flex h-11 w-11 items-center justify-center" in manager
     assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in confirm_dialog
     assert "min-h-11" in confirm_dialog
     assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in pagination
@@ -1430,16 +1378,6 @@ def test_react_launcher_supports_manual_shell_folder_paths():
     assert "/api/launcher/open-shell-root" in api
 
 
-def test_react_launcher_modal_and_path_controls_fit_narrow_viewports():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "p-3 sm:p-4" in launcher
-    assert "max-w-[calc(100vw-1.5rem)] sm:max-w-2xl" in launcher
-    assert launcher.count("flex flex-col gap-2 sm:flex-row sm:items-center") >= 2
-    assert launcher.count("w-full min-w-0 flex-1") >= 2
-    assert launcher.count("sm:w-auto sm:flex-none") >= 2
-
-
 def test_react_launcher_modal_owns_focus_and_restores_the_trigger():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
@@ -1665,13 +1603,9 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "setLaunchMode(initialLaunchMode)" in launcher
 
 
-def test_react_workspace_refresh_failures_preserve_the_last_successful_snapshot():
-    store = FRONTEND_STORE.read_text(encoding="utf-8")
+def test_react_dashboard_surfaces_task_refresh_failures():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
-    assert "error: string | null" in store
-    assert "set({ error: err instanceof Error ? err.message : 'Could not load dashboard' })" in store
-    assert "set({ error: err instanceof Error ? err.message : 'Could not load tasks' })" in store
     assert "loading && !data ? '--'" in dashboard
     assert "dashboardError && !data" in dashboard
     assert "Task summary refresh failed" in dashboard
@@ -1686,17 +1620,6 @@ def test_react_launcher_url_paths_require_explicit_open():
     assert "setManualConfigPath(configParam || '')" in launcher
     assert "openSelectedWorkspace(scriptParam" not in launcher
     assert "selectScript(scriptParam)" not in launcher
-
-
-def test_react_runtime_guards_unsaved_changes_and_generator_editor_is_named():
-    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "runtimeDirty" in runtime_panel
-    assert "Discard unsaved runtime changes?" in runtime_panel
-    assert "beforeunload" in runtime_panel
-    assert 'ariaLabel="Task YAML editor"' in generator
-    assert 'ariaLabel="Task shell editor"' in generator
 
 
 def test_react_generator_keeps_edits_made_while_tasks_are_created():

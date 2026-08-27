@@ -1818,7 +1818,17 @@ def test_exec_failure_propagates_nonzero(tmp_path):
 
 def test_exec_detach_returns_before_completion(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    started = time.monotonic()
+    release_file = tmp_path / "release-detached-task"
+    child_code = "\n".join([
+        "from pathlib import Path",
+        "import time",
+        f"release_file = Path({str(release_file)!r})",
+        "deadline = time.monotonic() + 15",
+        "while not release_file.exists():",
+        "    if time.monotonic() >= deadline:",
+        "        raise SystemExit(2)",
+        "    time.sleep(0.05)",
+    ])
     result = _run_cli(
         tmp_path,
         "exec",
@@ -1828,13 +1838,13 @@ def test_exec_detach_returns_before_completion(tmp_path):
         "--",
         sys.executable,
         "-c",
-        "import time; time.sleep(3); print('done')",
+        child_code,
     )
-    elapsed = time.monotonic() - started
     assert result.returncode == 0, result.stderr
-    assert elapsed < 2.5
     assert result.stdout.strip() == "detached"
     task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "detached"
+    assert load_task_info(str(task_dir))["status"] in {"queued", "running"}
+    release_file.touch()
     info = _wait_status(task_dir, {"completed", "failed"})
     assert info["status"] == "completed"
 

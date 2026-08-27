@@ -149,6 +149,20 @@ def _write_worker_task_info(task_dir: Path, name: str) -> str:
     return str(task_dir)
 
 
+def _write_fake_pyruns_package(
+    parent: Path,
+    *,
+    init_source: str = "__version__ = 'new-pyruns'\n",
+    core_source: str = "",
+) -> Path:
+    package = parent / "pyruns"
+    (package / "core").mkdir(parents=True)
+    (package / "__init__.py").write_text(init_source, encoding="utf-8")
+    (package / "core" / "__init__.py").write_text(core_source, encoding="utf-8")
+    (package / "core" / "executor.py").write_text("", encoding="utf-8")
+    return package
+
+
 def test_prepare_env_allows_child_to_import_current_pyruns_from_script_workdir(tmp_path, monkeypatch):
     """Experiment scripts run from their own cwd but still need pyruns APIs."""
     monkeypatch.delenv("PYTHONPATH", raising=False)
@@ -171,11 +185,7 @@ def test_prepare_env_isolates_current_pyruns_from_launcher_site_packages(tmp_pat
     """Task envs should get current pyruns without inheriting every launcher dependency."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_site_packages)
 
     launcher_shared = launcher_site_packages / "sharedpkg"
     launcher_shared.mkdir()
@@ -225,11 +235,7 @@ def test_prepare_env_keeps_current_pyruns_across_nested_imports(tmp_path, monkey
     """Nested user modules should repeatedly import the launcher pyruns, not the task env copy."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_site_packages)
 
     launcher_shared = launcher_site_packages / "sharedpkg"
     launcher_shared.mkdir()
@@ -323,11 +329,7 @@ def test_prepare_env_preloads_current_pyruns_when_project_shadows_package(tmp_pa
     """A project-local pyruns.py should not override the pyruns version that launched the server."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_site_packages)
 
     task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
     task_pyruns = task_site_packages / "pyruns"
@@ -407,11 +409,10 @@ def test_prepare_env_import_guard_is_lazy_for_scripts_without_pyruns(tmp_path, m
     """Scripts that do not import pyruns should not be forced to import pyruns at startup."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("import missing_pyruns_dependency\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(
+        launcher_site_packages,
+        init_source="import missing_pyruns_dependency\n",
+    )
 
     task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
     task_shared = task_site_packages / "sharedpkg"
@@ -449,14 +450,10 @@ def test_prepare_env_preserves_current_pyruns_distribution_metadata_when_isolate
     """The isolated package root should keep the launcher pyruns distribution version."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text(
-        "from importlib.metadata import version\n__version__ = version('pyruns')\n",
-        encoding="utf-8",
+    launcher_pyruns = _write_fake_pyruns_package(
+        launcher_site_packages,
+        init_source="from importlib.metadata import version\n__version__ = version('pyruns')\n",
     )
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
     dist_info = launcher_site_packages / "pyruns-9.8.7.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
@@ -491,11 +488,7 @@ def test_prepare_env_import_guard_applies_to_shell_task_python_children(tmp_path
     """Shell tasks that launch Python should inherit the same pyruns import protection."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_site_packages)
 
     task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
     task_shared = task_site_packages / "sharedpkg"
@@ -532,11 +525,10 @@ def test_prepare_env_import_guard_handles_package_shadow_submodules_and_reload(t
     """Project-local pyruns packages should not win for submodule imports or reloads."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("MARKER = 'launcher-core'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(
+        launcher_site_packages,
+        core_source="MARKER = 'launcher-core'\n",
+    )
 
     task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
     task_pyruns = task_site_packages / "pyruns"
@@ -600,11 +592,7 @@ def test_prepare_env_import_guard_is_active_for_user_sitecustomize_imports(tmp_p
     """User sitecustomize can import pyruns early without hitting task or project shadows."""
 
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_site_packages)
 
     task_site_packages = tmp_path / "task-env" / "Lib" / "site-packages"
     task_pyruns = task_site_packages / "pyruns"
@@ -653,11 +641,7 @@ def test_prepare_env_does_not_expose_source_root_sibling_packages(tmp_path, monk
     """Only pyruns should be exposed from the launcher source tree, not sibling packages."""
 
     launcher_source_root = tmp_path / "launcher-source"
-    launcher_pyruns = launcher_source_root / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_source_root)
 
     launcher_shared = launcher_source_root / "sharedpkg"
     launcher_shared.mkdir()
@@ -691,102 +675,67 @@ def test_prepare_env_does_not_expose_source_root_sibling_packages(tmp_path, monk
     assert str(launcher_source_root) not in env["PYTHONPATH"].split(os.pathsep)
 
 
-def test_prepare_env_refreshes_isolated_pyruns_root_when_package_files_change(tmp_path, monkeypatch):
-    """The isolated pyruns root should not reuse a stale copy after package files change."""
-
+@pytest.mark.parametrize(
+    ("relative_path", "sources", "probe", "expected"),
+    [
+        pytest.param(
+            "__init__.py",
+            ("__version__ = 'first-pyruns'\n", "__version__ = 'second-pyruns'\n"),
+            "import pyruns; print(pyruns.__version__)",
+            ("first-pyruns", "second-pyruns"),
+            id="package-root",
+        ),
+        pytest.param(
+            "core/config_manager.py",
+            ("MARKER = 'first-module'\n", "MARKER = 'second-module'\n"),
+            "from pyruns.core import config_manager; print(config_manager.MARKER)",
+            ("first-module", "second-module"),
+            id="nested-module",
+        ),
+    ],
+)
+def test_prepare_env_refreshes_isolated_pyruns_root_after_source_change(
+    tmp_path,
+    monkeypatch,
+    relative_path,
+    sources,
+    probe,
+    expected,
+):
     launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    init_file = launcher_pyruns / "__init__.py"
-    init_file.write_text("__version__ = 'first-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_site_packages)
+    changed_file = launcher_pyruns / relative_path
 
     monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
     monkeypatch.delenv("PYTHONPATH", raising=False)
     monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
 
-    env1 = _prepare_env(task_dir=str(tmp_path / "task1"), task_kind=TASK_KIND_CONFIG)
-    first = subprocess.run(
-        [sys.executable, "-c", "import pyruns; print(pyruns.__version__)"],
-        cwd=tmp_path,
-        env=env1,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert first.returncode == 0, first.stderr
-    assert first.stdout.strip() == "first-pyruns"
-
-    init_file.write_text("__version__ = 'second-pyruns'\n", encoding="utf-8")
-
-    env2 = _prepare_env(task_dir=str(tmp_path / "task2"), task_kind=TASK_KIND_CONFIG)
-    second = subprocess.run(
-        [sys.executable, "-c", "import pyruns; print(pyruns.__version__)"],
-        cwd=tmp_path,
-        env=env2,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert second.returncode == 0, second.stderr
-    assert second.stdout.strip() == "second-pyruns"
-
-
-def test_prepare_env_refreshes_isolated_pyruns_root_when_nested_module_changes(tmp_path, monkeypatch):
-    """The isolated copy should refresh when any Python module in pyruns changes."""
-
-    launcher_site_packages = tmp_path / "launcher" / "Lib" / "site-packages"
-    launcher_pyruns = launcher_site_packages / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    nested_module = launcher_pyruns / "core" / "config_manager.py"
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
-    nested_module.write_text("MARKER = 'first-module'\n", encoding="utf-8")
-
-    monkeypatch.setattr(executor, "__file__", str(launcher_pyruns / "core" / "executor.py"))
-    monkeypatch.delenv("PYTHONPATH", raising=False)
-    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
-
-    env1 = _prepare_env(task_dir=str(tmp_path / "task1"), task_kind=TASK_KIND_CONFIG)
-    first = subprocess.run(
-        [sys.executable, "-c", "from pyruns.core import config_manager; print(config_manager.MARKER)"],
-        cwd=tmp_path,
-        env=env1,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert first.returncode == 0, first.stderr
-    assert first.stdout.strip() == "first-module"
-
-    nested_module.write_text("MARKER = 'second-module'\n", encoding="utf-8")
-
-    env2 = _prepare_env(task_dir=str(tmp_path / "task2"), task_kind=TASK_KIND_CONFIG)
-    second = subprocess.run(
-        [sys.executable, "-c", "from pyruns.core import config_manager; print(config_manager.MARKER)"],
-        cwd=tmp_path,
-        env=env2,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert second.returncode == 0, second.stderr
-    assert second.stdout.strip() == "second-module"
+    for run_index, (source, output) in enumerate(
+        zip(sources, expected, strict=True),
+        start=1,
+    ):
+        changed_file.write_text(source, encoding="utf-8")
+        env = _prepare_env(
+            task_dir=str(tmp_path / f"task{run_index}"),
+            task_kind=TASK_KIND_CONFIG,
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == output
 
 
 def test_prepare_env_reuses_isolated_pyruns_root_for_same_package_fingerprint(tmp_path, monkeypatch):
     """Repeated task launches should not recopy pyruns when package files are unchanged."""
 
     launcher_source_root = tmp_path / "launcher-source"
-    launcher_pyruns = launcher_source_root / "pyruns"
-    (launcher_pyruns / "core").mkdir(parents=True)
-    (launcher_pyruns / "__init__.py").write_text("__version__ = 'new-pyruns'\n", encoding="utf-8")
-    (launcher_pyruns / "core" / "__init__.py").write_text("", encoding="utf-8")
-    (launcher_pyruns / "core" / "executor.py").write_text("", encoding="utf-8")
+    launcher_pyruns = _write_fake_pyruns_package(launcher_source_root)
 
     original_copytree = executor.shutil.copytree
     copy_sources: list[str] = []
