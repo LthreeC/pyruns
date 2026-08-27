@@ -167,6 +167,7 @@ export async function startE2EServer() {
         ...process.env,
         PYTHONPATH: pythonPath,
         PYTHONDONTWRITEBYTECODE: '1',
+        PYRUNS_UI_SESSION_STATE_DIR: resolve(runRoot, '.sessions'),
         __PYRUNS_ROOT__: runRoot,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

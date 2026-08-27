@@ -503,27 +503,36 @@ def test_local_api_requires_random_session_token_outside_test_bypass():
     assert "token=" not in str(authenticated.url)
 
 
-def test_session_recovery_accepts_only_the_previous_local_ui_token(tmp_path):
+def test_session_recovery_keeps_one_browser_session_across_ui_restarts(tmp_path):
     state_path = tmp_path / "session.json"
     nonce = "1" * 32
+    original_scope = "host\nport\noriginal-workspace"
     first = _create_app(
         _RouteRuntime({"get_workspace_info": {"instance": "first"}}),
         access_token="first-token",
         session_cookie_nonce=nonce,
         session_state_path=str(state_path),
+        session_scope_value=original_scope,
         allow_test_client_bypass=False,
     )
     first_client = TestClient(first)
-    assert first_client.get(
+    bootstrap = first_client.get(
         "/?token=first-token",
         follow_redirects=False,
-    ).status_code == 303
+    )
+    assert bootstrap.status_code == 303
+    persistent_token = first.state.session_recovery.cookie_token
+    assert persistent_token
+    assert persistent_token != "first-token"
+    assert first_client.cookies.get(first.state.session_cookie_name) == persistent_token
+    assert "Max-Age=34560000" in bootstrap.headers["set-cookie"]
 
     second = _create_app(
         _RouteRuntime({"get_workspace_info": {"instance": "second"}}),
         access_token="second-token",
         session_cookie_nonce=nonce,
         session_state_path=str(state_path),
+        session_scope_value=original_scope,
         allow_test_client_bypass=False,
     )
     second_client = TestClient(second)
@@ -532,7 +541,25 @@ def test_session_recovery_accepts_only_the_previous_local_ui_token(tmp_path):
     recovered = second_client.get("/api/workspace")
     assert recovered.status_code == 200
     assert recovered.json() == {"instance": "second"}
-    assert second_client.cookies.get(second.state.session_cookie_name) == "second-token"
+    assert second_client.cookies.get(second.state.session_cookie_name) == persistent_token
+    assert "Max-Age=34560000" in recovered.headers["set-cookie"]
+
+    third = _create_app(
+        _RouteRuntime({"get_workspace_info": {"instance": "third"}}),
+        access_token="third-token",
+        session_cookie_nonce=nonce,
+        session_state_path=str(state_path),
+        session_scope_value=original_scope,
+        allow_test_client_bypass=False,
+    )
+    third_client = TestClient(third)
+    third_client.cookies.update(first_client.cookies)
+    assert third_client.get("/api/workspace").json() == {"instance": "third"}
+    assert third_client.cookies.get(third.state.session_cookie_name) == persistent_token
+    assert third_client.get(
+        "/?token=first-token",
+        follow_redirects=False,
+    ).status_code == 401
 
     explicit_recovery = TestClient(second)
     explicit_recovery.cookies.update(first_client.cookies)
@@ -542,7 +569,12 @@ def test_session_recovery_accepts_only_the_previous_local_ui_token(tmp_path):
     )
     assert recovered.status_code == 200
     assert recovered.json() == {"ok": True}
-    assert explicit_recovery.cookies.get(second.state.session_cookie_name) == "second-token"
+    assert explicit_recovery.cookies.get(second.state.session_cookie_name) == persistent_token
+
+    state_path.unlink()
+    still_authenticated = second_client.get("/api/workspace")
+    assert still_authenticated.status_code == 200
+    assert still_authenticated.json() == {"instance": "second"}
 
     forged = TestClient(second)
     forged.cookies.set(second.state.session_cookie_name, "forged-token")
@@ -1223,6 +1255,8 @@ def test_main_limits_access_token_environment_to_reload_supervisor(monkeypatch):
 
     monkeypatch.delenv(web_app._UI_TOKEN_ENV, raising=False)
     monkeypatch.delenv(web_app._UI_COOKIE_NONCE_ENV, raising=False)
+    monkeypatch.delenv(web_app._UI_SESSION_STATE_ENV, raising=False)
+    monkeypatch.delenv(web_app._UI_SESSION_SCOPE_ENV, raising=False)
     monkeypatch.setattr(web_app, "PyrunsRuntime", lambda: DummyRuntime())
     monkeypatch.setattr(
         web_app,
@@ -1234,6 +1268,8 @@ def test_main_limits_access_token_environment_to_reload_supervisor(monkeypatch):
         captured["app_target"] = app_target
         captured["token"] = web_app.os.environ.get(web_app._UI_TOKEN_ENV)
         captured["cookie_nonce"] = web_app.os.environ.get(web_app._UI_COOKIE_NONCE_ENV)
+        captured["session_state"] = web_app.os.environ.get(web_app._UI_SESSION_STATE_ENV)
+        captured["session_scope"] = web_app.os.environ.get(web_app._UI_SESSION_SCOPE_ENV)
 
     monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
 
@@ -1243,8 +1279,12 @@ def test_main_limits_access_token_environment_to_reload_supervisor(monkeypatch):
     assert captured["token"] == "reload-secret"
     assert re.fullmatch(r"[0-9a-f]{32}", captured["cookie_nonce"])
     assert captured["cookie_nonce"] == web_app._session_cookie_nonce_for_port(8099)
+    assert captured["session_state"]
+    assert captured["session_scope"]
     assert web_app._UI_TOKEN_ENV not in web_app.os.environ
     assert web_app._UI_COOKIE_NONCE_ENV not in web_app.os.environ
+    assert web_app._UI_SESSION_STATE_ENV not in web_app.os.environ
+    assert web_app._UI_SESSION_SCOPE_ENV not in web_app.os.environ
 
 
 def test_main_explicit_busy_port_fails_instead_of_silently_incrementing(monkeypatch):
@@ -3126,13 +3166,15 @@ def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
     assert events == ["run", "shutdown"]
 
 
-def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
+def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch, tmp_path):
     from pyruns.web import app as web_app
 
     events = []
+    captured = {}
 
     class DummyRuntime:
         settings = {"ui_port": 8099}
+        root_dir = str(tmp_path / "initial-workspace")
 
         def active_task_count(self) -> int:
             return 0
@@ -3142,6 +3184,8 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
 
     def fake_run(app_target, **_kwargs):
         events.append("server-run")
+        captured["session_state"] = app_target.state.session_recovery.path
+        captured["session_scope"] = app_target.state.session_scope
         client = TestClient(app_target)
         assert client.get("/?token=private-token", follow_redirects=False).status_code == 303
         response = client.post(
@@ -3149,8 +3193,11 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
             json={"target_version": "9999.0.0"},
         )
         assert response.status_code == 202
+        app_target.state.runtime.root_dir = str(tmp_path / "switched-workspace")
 
     def fake_replace(**kwargs):
+        captured["handoff_state"] = web_app.os.environ.get(web_app._UI_SESSION_STATE_ENV)
+        captured["handoff_scope"] = web_app.os.environ.get(web_app._UI_SESSION_SCOPE_ENV)
         events.append(("replace", kwargs))
 
     monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
@@ -3162,6 +3209,8 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
     monkeypatch.setattr(web_app, "_request_server_shutdown", lambda: events.append("server-stop"))
     monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
     monkeypatch.setattr(web_app, "replace_process_with_updater", fake_replace)
+    monkeypatch.delenv(web_app._UI_SESSION_STATE_ENV, raising=False)
+    monkeypatch.delenv(web_app._UI_SESSION_SCOPE_ENV, raising=False)
 
     web_app.main(open_browser=False, port=8123, access_token="private-token")
 
@@ -3177,6 +3226,10 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch):
     assert replacement["restart_only"] is False
     assert replacement["target_version"] == "9999.0.0"
     assert replacement["installed_version"] == ""
+    assert captured["handoff_state"] == captured["session_state"]
+    assert captured["handoff_scope"] == captured["session_scope"]
+    assert web_app._UI_SESSION_STATE_ENV not in web_app.os.environ
+    assert web_app._UI_SESSION_SCOPE_ENV not in web_app.os.environ
 
 
 def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch):

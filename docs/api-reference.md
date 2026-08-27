@@ -122,8 +122,9 @@ with open(metrics_path, "w", encoding="utf-8") as f:
 
 这些接口是本机 Web UI 的内部控制面，不是公开远程 API。服务只监听 loopback；每次
 `pyr ui` 启动会生成随机令牌，首个 tokenized URL 请求将其交换为 `HttpOnly`、
-`SameSite=Strict` 会话 cookie。所有 `/api` HTTP 与 WebSocket 请求都必须携带该会话。
-请求体、分页、批量任务数、环境变量数和日志读取量都有硬上限。
+`SameSite=Strict` 的持久会话 cookie。该会话会在使用时续期，并在同一主机、端口和
+工作区的 UI 更新或重启后继续有效。所有 `/api` HTTP 与 WebSocket 请求都必须携带该
+会话。请求体、分页、批量任务数、环境变量数和日志读取量都有硬上限。
 
 主入口：
 

@@ -1026,6 +1026,8 @@ def test_run_pip_upgrade_failure_keeps_relaunch_result(monkeypatch):
 
 def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
     executions = []
+    monkeypatch.setenv("PYRUNS_UI_SESSION_STATE", "session-state.json")
+    monkeypatch.setenv("PYRUNS_UI_SESSION_SCOPE", "original-session-scope")
 
     def fake_execve(executable, command, environment):
         executions.append((executable, command, environment))
@@ -1062,6 +1064,8 @@ def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
     ]
     assert "private-token" not in updater_exec[1]
     assert updater_exec[2][self_update.UI_TOKEN_ENV] == "private-token"
+    assert updater_exec[2]["PYRUNS_UI_SESSION_STATE"] == "session-state.json"
+    assert updater_exec[2]["PYRUNS_UI_SESSION_SCOPE"] == "original-session-scope"
 
     server_exec = executions[1]
     assert server_exec[1] == [
@@ -1074,6 +1078,8 @@ def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
     ]
     assert server_exec[2][self_update.UI_PRODUCTION_RESTART_ENV] == "1"
     assert server_exec[2][self_update.UI_TOKEN_ENV] == "private-token"
+    assert server_exec[2]["PYRUNS_UI_SESSION_STATE"] == "session-state.json"
+    assert server_exec[2]["PYRUNS_UI_SESSION_SCOPE"] == "original-session-scope"
     assert json.loads(server_exec[2][self_update.UI_UPDATE_RESULT_ENV]) == result
 
 

@@ -14,7 +14,9 @@ pyr ui shell --no-browser
 ```
 
 服务只监听本机回环地址。启动时会生成新的随机访问令牌；浏览器首次打开完整 URL 后，
-服务器写入 `HttpOnly`、`SameSite=Strict` 会话 cookie，并重定向到不含令牌的干净地址。
+服务器写入持久的 `HttpOnly`、`SameSite=Strict` 会话 cookie，并重定向到不含令牌的
+干净地址。会话在使用时自动续期，并可跨同一主机、端口和工作区的正常更新或重启保留；
+只有清除浏览器数据或本地 `~/.pyruns/sessions` 状态后才需要重新打开最新 URL。
 `--no-browser` 会在终端打印完整访问 URL，请勿共享。Pyruns UI 不是面向公网或多用户的服务。
 
 ## 页面整体气质

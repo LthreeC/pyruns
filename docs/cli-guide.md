@@ -462,8 +462,10 @@ pyr dev train.py                        # 热更新开发模式
 ```
 
 UI 只监听本机回环地址，并为每次启动生成新的随机访问令牌。自动打开浏览器时会完成
-令牌到 `HttpOnly` 会话 cookie 的交换；使用 `--no-browser` 时必须复制终端打印的完整 URL。
-不要共享该 URL；Web UI 不是远程多用户服务。
+令牌到持久 `HttpOnly` 会话 cookie 的交换。会话在使用时续期，并可跨同一主机、端口和
+工作区的正常更新或重启保留；清除浏览器数据或本地 `~/.pyruns/sessions` 状态后需要重新
+打开最新 URL。使用 `--no-browser` 时必须复制终端打印的完整 URL。不要共享该 URL；
+Web UI 不是远程多用户服务。
 
 `ui` 和 `dev` 才负责启动 Web 服务。裸 `pyr` 与 `pyruns` 永远只显示帮助。UI 的目标直接写在 `ui` 后面；`-w` 只用于 `ls`、`run`、`show` 等任务工作区命令。长时间运行的 UI 命令不接受 `--json`。
 

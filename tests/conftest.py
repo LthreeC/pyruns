@@ -74,6 +74,14 @@ def _isolate_update_coordination_state(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("PYRUNS_UPDATE_STATE_DIR", str(state_dir))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ui_session_state(monkeypatch, tmp_path_factory):
+    """Keep persistent browser credentials out of the real user profile."""
+
+    state_dir = tmp_path_factory.mktemp("ui-session-state")
+    monkeypatch.setenv("PYRUNS_UI_SESSION_STATE_DIR", str(state_dir))
+
+
 @pytest.fixture()
 def tmp_path():
     """Workspace-local replacement for pytest's default tmp_path fixture."""

@@ -54,6 +54,8 @@ from pyruns.web.self_update import (
     replace_process_with_waiter,
 )
 from pyruns.web.session_recovery import (
+    SESSION_COOKIE_MAX_AGE_SECONDS,
+    SESSION_SCOPE_ENV,
     SESSION_STATE_ENV,
     SessionRecovery,
     default_session_state_path,
@@ -80,6 +82,7 @@ MAX_LOG_TAIL_LINES = MAX_MONITOR_SCROLLBACK
 MAX_LOG_RESPONSE_BYTES = MAX_MONITOR_CHUNK_SIZE
 _UI_SESSION_COOKIE_PREFIX = "pyruns_session_"
 _UI_SESSION_RECOVERY_PATH = "/session/recover"
+_UI_SESSION_SCOPE_ENV = SESSION_SCOPE_ENV
 _UI_SESSION_STATE_ENV = SESSION_STATE_ENV
 _UI_TOKEN_ENV = UI_TOKEN_ENV
 _UI_COOKIE_NONCE_ENV = "PYRUNS_UI_COOKIE_NONCE"
@@ -486,6 +489,7 @@ def _set_session_cookie(
     response.set_cookie(
         cookie_name,
         token,
+        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         samesite="strict",
         secure=scheme == "https",
@@ -499,6 +503,7 @@ def create_app(
     access_token: str | None = None,
     session_cookie_nonce: str | None = None,
     session_state_path: str | None = None,
+    session_scope_value: str | None = None,
     allow_test_client_bypass: bool = False,
     update_coordinator: UiUpdateCoordinator | None = None,
 ) -> FastAPI:
@@ -514,16 +519,23 @@ def create_app(
     app.state.session_cookie_name = _session_cookie_name(cookie_nonce)
     if session_state_path is None and reload_token:
         session_state_path = os.getenv(_UI_SESSION_STATE_ENV)
+    if session_scope_value is None and reload_token:
+        session_scope_value = os.getenv(_UI_SESSION_SCOPE_ENV)
     runtime_root = getattr(app.state.runtime, "root_dir", "")
     if not isinstance(runtime_root, (str, os.PathLike)):
         runtime_root = ""
+    resolved_session_scope = str(
+        session_scope_value
+        or session_scope(
+            cookie_nonce=str(cookie_nonce or ""),
+            workspace=str(runtime_root or ""),
+        )
+    )
+    app.state.session_scope = resolved_session_scope
     app.state.session_recovery = (
         SessionRecovery(
             session_state_path,
-            scope=session_scope(
-                cookie_nonce=str(cookie_nonce or ""),
-                workspace=str(runtime_root or ""),
-            ),
+            scope=resolved_session_scope,
             token=app.state.access_token,
         )
         if session_state_path
@@ -579,7 +591,12 @@ def create_app(
                 response,
                 request,
                 cookie_name=app.state.session_cookie_name,
-                token=app.state.access_token,
+                token=(
+                    app.state.session_recovery.cookie_token
+                    if app.state.session_recovery is not None
+                    and app.state.session_recovery.available
+                    else app.state.access_token
+                ),
             )
             return protect_response(response)
 
@@ -590,20 +607,14 @@ def create_app(
             and request.client.host == "testclient"
         )
         session_token = request.cookies.get(app.state.session_cookie_name, "")
-        recovered_session = False
-        if is_api and not test_client_bypass and not _token_matches(
-            session_token,
-            app.state.access_token,
-        ):
-            recovery = app.state.session_recovery
-            recovered_session = bool(
-                recovery is not None
-                and recovery.accepts_previous(session_token)
-            )
-            if not recovered_session:
-                response = json_error(401, "UI authentication required")
-                response.headers["WWW-Authenticate"] = "PyrunsToken"
-                return response
+        recovery = app.state.session_recovery
+        authenticated_session = _token_matches(session_token, app.state.access_token) or bool(
+            recovery is not None and recovery.accepts(session_token)
+        )
+        if is_api and not test_client_bypass and not authenticated_session:
+            response = json_error(401, "UI authentication required")
+            response.headers["WWW-Authenticate"] = "PyrunsToken"
+            return response
 
         if request.method in {"POST", "PUT", "PATCH"}:
             raw_length = request.headers.get("content-length")
@@ -624,12 +635,18 @@ def create_app(
                     return json_error(413, f"Request body exceeds {MAX_API_REQUEST_BYTES} bytes")
             request._body = bytes(body)
         response = await call_next(request)
-        if recovered_session:
+        if (
+            is_api
+            and not test_client_bypass
+            and authenticated_session
+            and recovery is not None
+            and recovery.available
+        ):
             _set_session_cookie(
                 response,
                 request,
                 cookie_name=app.state.session_cookie_name,
-                token=app.state.access_token,
+                token=recovery.cookie_token,
             )
         return protect_response(response)
 
@@ -684,7 +701,7 @@ def create_app(
             app.state.access_token,
         ) and not (
             app.state.session_recovery is not None
-            and app.state.session_recovery.accepts_previous(session_token)
+            and app.state.session_recovery.accepts(session_token)
         ):
             return 4401, "UI authentication required"
         return None
@@ -1418,7 +1435,7 @@ def create_app(
 
     @app.post(_UI_SESSION_RECOVERY_PATH)
     def recover_ui_session(request: Request) -> Response:
-        """Rotate a validated previous same-port session without exposing its token."""
+        """Restore a validated persistent local session without exposing its token."""
 
         fetch_site = str(request.headers.get("sec-fetch-site", "") or "").lower()
         if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
@@ -1430,7 +1447,7 @@ def create_app(
         session_token = str(request.cookies.get(app.state.session_cookie_name, "") or "")
         if recovery is None or not recovery.accepts(session_token):
             response = JSONResponse(
-                {"detail": "UI session recovery requires a valid previous session"},
+                {"detail": "UI session recovery requires a valid local session"},
                 status_code=401,
             )
             response.headers["WWW-Authenticate"] = "PyrunsToken"
@@ -1441,7 +1458,7 @@ def create_app(
             response,
             request,
             cookie_name=app.state.session_cookie_name,
-            token=app.state.access_token,
+            token=recovery.cookie_token,
         )
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -1585,6 +1602,8 @@ def main(
     start_path: str = "/",
     port: int | None = None,
     access_token: str | None = None,
+    session_state_path: str | None = None,
+    session_scope_value: str | None = None,
 ) -> None:
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
@@ -1599,13 +1618,15 @@ def main(
     previous_token = os.environ.get(_UI_TOKEN_ENV) if reload else None
     previous_cookie_nonce = os.environ.get(_UI_COOKIE_NONCE_ENV) if reload else None
     previous_session_state = os.environ.get(_UI_SESSION_STATE_ENV) if reload else None
+    previous_session_scope = os.environ.get(_UI_SESSION_SCOPE_ENV) if reload else None
     if reload:
         # Uvicorn's reload child creates the app from an import string and must
         # receive the token out of process. Normal single-process startup passes
         # it directly and must not expose it through the server environment.
         os.environ[_UI_TOKEN_ENV] = token
     server_returned = False
-    session_state_path = ""
+    resolved_session_state_path = str(session_state_path or "")
+    resolved_session_scope = str(session_scope_value or "")
     try:
         host = "127.0.0.1"
         explicit_port = port is not None
@@ -1632,18 +1653,28 @@ def main(
             runtime_root = getattr(runtime, "root_dir", "")
             if not isinstance(runtime_root, (str, os.PathLike)):
                 runtime_root = ""
-            session_state_path = default_session_state_path(
-                port=port,
-                workspace=str(runtime_root or ""),
-            )
+            if not resolved_session_scope:
+                resolved_session_scope = session_scope(
+                    cookie_nonce=cookie_nonce,
+                    workspace=str(runtime_root or ""),
+                )
+            if not resolved_session_state_path:
+                resolved_session_state_path = default_session_state_path(
+                    port=port,
+                    workspace=str(runtime_root or ""),
+                )
         except (OSError, RuntimeError, ValueError):
-            session_state_path = ""
+            resolved_session_state_path = ""
         if reload:
             os.environ[_UI_COOKIE_NONCE_ENV] = cookie_nonce
-            if session_state_path:
-                os.environ[_UI_SESSION_STATE_ENV] = session_state_path
+            if resolved_session_state_path:
+                os.environ[_UI_SESSION_STATE_ENV] = resolved_session_state_path
             else:
                 os.environ.pop(_UI_SESSION_STATE_ENV, None)
+            if resolved_session_scope:
+                os.environ[_UI_SESSION_SCOPE_ENV] = resolved_session_scope
+            else:
+                os.environ.pop(_UI_SESSION_SCOPE_ENV, None)
         url = f"http://{host}:{port}{start_path}"
         authenticated_url = _url_with_access_token(url, token)
         print(f"[pyruns] UI: {authenticated_url}", flush=True)
@@ -1666,7 +1697,8 @@ def main(
                 runtime,
                 access_token=token,
                 session_cookie_nonce=cookie_nonce,
-                session_state_path=session_state_path or None,
+                session_state_path=resolved_session_state_path or None,
+                session_scope_value=resolved_session_scope or None,
                 update_coordinator=update_coordinator,
             ),
             host=host,
@@ -1694,6 +1726,10 @@ def main(
                 os.environ.pop(_UI_SESSION_STATE_ENV, None)
             else:
                 os.environ[_UI_SESSION_STATE_ENV] = previous_session_state
+            if previous_session_scope is None:
+                os.environ.pop(_UI_SESSION_SCOPE_ENV, None)
+            else:
+                os.environ[_UI_SESSION_SCOPE_ENV] = previous_session_scope
         shutdown = getattr(runtime, "shutdown", None)
         try:
             if callable(shutdown):
@@ -1709,12 +1745,16 @@ def main(
                 failed_handoff=update_coordinator.requested,
             )
     if update_coordinator is not None and update_coordinator.requested:
+        inherited_session_state = os.environ.get(_UI_SESSION_STATE_ENV)
+        inherited_session_scope = os.environ.get(_UI_SESSION_SCOPE_ENV)
+        if resolved_session_state_path and resolved_session_scope:
+            os.environ[_UI_SESSION_STATE_ENV] = resolved_session_state_path
+            os.environ[_UI_SESSION_SCOPE_ENV] = resolved_session_scope
+        else:
+            os.environ.pop(_UI_SESSION_STATE_ENV, None)
+            os.environ.pop(_UI_SESSION_SCOPE_ENV, None)
         try:
             handoff = update_coordinator.handoff()
-        except BaseException:
-            update_coordinator.close(failed_handoff=True)
-            raise
-        try:
             if handoff["role"] == "owner":
                 restart_only = handoff["operation"] == "restart"
                 replace_process_with_updater(
@@ -1742,6 +1782,14 @@ def main(
                     state_dir=str(handoff["state_dir"]),
                 )
         finally:
+            if inherited_session_state is None:
+                os.environ.pop(_UI_SESSION_STATE_ENV, None)
+            else:
+                os.environ[_UI_SESSION_STATE_ENV] = inherited_session_state
+            if inherited_session_scope is None:
+                os.environ.pop(_UI_SESSION_SCOPE_ENV, None)
+            else:
+                os.environ[_UI_SESSION_SCOPE_ENV] = inherited_session_scope
             # os.execve() never returns. Reaching this path means handoff failed
             # or was replaced by a test double, so release the shared gate.
             update_coordinator.close(failed_handoff=True)
@@ -1776,6 +1824,15 @@ if __name__ == "__main__":
     main_port, main_open_browser = _parse_main_options(sys.argv[1:])
     production_restart = _env_truthy(UI_PRODUCTION_RESTART_ENV)
     restart_token = os.environ.pop(_UI_TOKEN_ENV, None) if production_restart else None
+    restart_session_state = (
+        os.environ.pop(_UI_SESSION_STATE_ENV, None) if production_restart else None
+    )
+    restart_session_scope = (
+        os.environ.pop(_UI_SESSION_SCOPE_ENV, None) if production_restart else None
+    )
+    if not restart_session_state or not restart_session_scope:
+        restart_session_state = None
+        restart_session_scope = None
     if production_restart:
         os.environ.pop(UI_PRODUCTION_RESTART_ENV, None)
     try:
@@ -1784,6 +1841,8 @@ if __name__ == "__main__":
             port=main_port,
             open_browser=main_open_browser,
             access_token=restart_token,
+            session_state_path=restart_session_state,
+            session_scope_value=restart_session_scope,
         )
     except RuntimeError as exc:
         print(f"pyruns: {exc}", file=sys.stderr)

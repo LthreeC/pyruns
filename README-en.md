@@ -380,9 +380,11 @@ Each form has one clear purpose:
 `-p, --port` chooses the listening port. `--no-browser` starts only the server and prints its URL, while `--browser` forces automatic browser opening.
 
 The UI listens only on the local loopback interface and generates a fresh private access token on
-every start. The first browser request exchanges that token for an `HttpOnly`, same-site session
-cookie and removes it from the address bar. With `--no-browser`, open the complete printed URL and
-do not share it; the Web UI is a local tool, not a remote multi-user service.
+every start. The first browser request exchanges that token for a persistent `HttpOnly`, same-site
+session cookie and removes it from the address bar. The cookie is renewed while in use and survives
+normal updates or restarts for the same host, port, and workspace. Clearing browser data or local
+`~/.pyruns/sessions` state requires opening the latest complete URL again. Do not share that URL;
+the Web UI is a local tool, not a remote multi-user service.
 
 Pyruns is not a code sandbox. Task commands and Python scripts inherit the current user's system
 permissions; run only scripts, configurations, and commands that you trust.

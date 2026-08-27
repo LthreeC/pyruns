@@ -272,7 +272,7 @@ pyr dev train.py
 
 Pass an exact existing workspace name/path, `shell`, or a Python script path directly after `ui`. `ui` and `dev` do not accept `-w` or `--json`. Use `--no-browser` for headless servers.
 
-The UI listens on loopback and prints a fresh tokenized URL on every start. The first browser request exchanges that token for an HttpOnly, SameSite session cookie and redirects to a clean URL. With `--no-browser`, open the complete printed URL and do not share it; this is a local UI, not a remote multi-user service.
+The UI listens on loopback and prints a fresh tokenized URL on every start. The first browser request exchanges that token for a persistent HttpOnly, SameSite session cookie and redirects to a clean URL. The cookie renews while in use and survives normal UI updates or restarts for the same host, port, and workspace. Clearing browser data or local `~/.pyruns/sessions` state requires opening the latest complete URL again. With `--no-browser`, do not share that URL; this is a local UI, not a remote multi-user service.
 
 ## Disk Layout
 
