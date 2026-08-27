@@ -123,6 +123,23 @@ def _mark_task_owned_by_manager(
         manager._recompute_processing_flag_locked()
 
 
+def _write_worker_task_info(task_dir: Path, name: str) -> str:
+    (task_dir / RUN_LOGS_DIR).mkdir(parents=True, exist_ok=True)
+    (task_dir / TASK_INFO_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": name,
+                "script": "script.py",
+                "status": "queued",
+                "start_times": [],
+                "finish_times": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(task_dir)
+
+
 def test_prepare_env_allows_child_to_import_current_pyruns_from_script_workdir(tmp_path, monkeypatch):
     """Experiment scripts run from their own cwd but still need pyruns APIs."""
     monkeypatch.delenv("PYTHONPATH", raising=False)
@@ -1276,38 +1293,21 @@ def test_prepare_env_applies_workspace_global_env_before_task_env(tmp_path, monk
     settings_path.write_text(
         "global_env:\n"
         "  TOKENIZERS_PARALLELISM: workspace\n"
+        "  WORKSPACE_VALUE: workspace\n"
         "  CUDA_VISIBLE_DEVICES: '0'\n",
-        encoding="utf-8",
-    )
-
-    env = _prepare_env(
-        extra_env={"CUDA_VISIBLE_DEVICES": "1"},
-        task_dir=str(task_dir),
-        task_kind=TASK_KIND_CONFIG,
-    )
-
-    assert env["TOKENIZERS_PARALLELISM"] == "workspace"
-    assert env["CUDA_VISIBLE_DEVICES"] == "1"
-
-
-def test_prepare_env_tracks_managed_values_for_wsl_forwarding(tmp_path, monkeypatch):
-    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
-    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
-    task_dir = workspace / "tasks" / "task1"
-    task_dir.mkdir(parents=True)
-    (workspace.parent / "_pyruns_settings.yaml").write_text(
-        "global_env:\n"
-        "  WORKSPACE_VALUE: workspace\n",
         encoding="utf-8",
     )
     wsl_env_keys = set()
 
     env = _prepare_env(
-        extra_env={"TASK_VALUE": "task"},
+        extra_env={"CUDA_VISIBLE_DEVICES": "1", "TASK_VALUE": "task"},
         task_dir=str(task_dir),
-        task_kind=TASK_KIND_SHELL,
+        task_kind=TASK_KIND_CONFIG,
         wsl_env_keys=wsl_env_keys,
     )
+
+    assert env["TOKENIZERS_PARALLELISM"] == "workspace"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
     executor._augment_wsl_env(
         [r"C:\Windows\System32\wsl.exe", "--exec", "/bin/bash", "/mnt/c/run.sh"],
         env,
@@ -1316,6 +1316,8 @@ def test_prepare_env_tracks_managed_values_for_wsl_forwarding(tmp_path, monkeypa
 
     entries = set(env["WSLENV"].split(":"))
     assert {
+        "CUDA_VISIBLE_DEVICES",
+        "TOKENIZERS_PARALLELISM",
         "WORKSPACE_VALUE",
         "TASK_VALUE",
         "PYTHONUNBUFFERED",
@@ -1428,37 +1430,26 @@ def test_build_command_argparse_uses_declared_flags_and_bool_actions(mock_extrac
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.parse_utils.extract_argparse_params")
-def test_build_command_argparse_groups_nargs_list_values(mock_extract, mock_detect):
-    mock_detect.return_value = ("argparse", None)
-    mock_extract.return_value = {
-        "layers": {"name": "--layers", "nargs": "+", "default": [64]},
-    }
-
-    cmd, _, _ = _build_command(None, "train.py", None, {"layers": [128, 256]})
-
-    assert cmd.count("--layers") == 1
-    index = cmd.index("--layers")
-    assert cmd[index:index + 3] == ["--layers", "128", "256"]
-
-
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-@patch("pyruns.utils.parse_utils.extract_argparse_params")
 def test_build_command_argparse_expands_omegaconf_list_values(mock_extract, mock_detect):
     mock_detect.return_value = ("argparse", None)
     mock_extract.return_value = {
         "dataset": {"name": "dataset", "default": "toy"},
         "layers": {"name": "--layers", "nargs": "+", "default": [64]},
         "tag": {"name": "--tag", "action": "append", "default": []},
+        "pair": {"name": "--pair", "action": "append", "nargs": 2, "default": []},
     }
     config = OmegaConf.create({
         "dataset": "toy",
         "layers": [128, 256],
         "tag": ["smoke", "nightly"],
+        "pair": [["train", "dev"], ["test", "holdout"]],
     })
 
     cmd, _, cleanup_paths = _build_command(None, "train.py", None, config)
 
-    assert cmd[-8:] == [
+    assert cmd == [
+        sys.executable,
+        "train.py",
         "toy",
         "--layers",
         "128",
@@ -1467,28 +1458,6 @@ def test_build_command_argparse_expands_omegaconf_list_values(mock_extract, mock
         "smoke",
         "--tag",
         "nightly",
-    ]
-    assert cleanup_paths == []
-
-
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-@patch("pyruns.utils.parse_utils.extract_argparse_params")
-def test_build_command_argparse_append_with_nargs_repeats_grouped_values(mock_extract, mock_detect):
-    mock_detect.return_value = ("argparse", None)
-    mock_extract.return_value = {
-        "pair": {"name": "--pair", "action": "append", "nargs": 2, "default": []},
-    }
-
-    cmd, _, _ = _build_command(
-        None,
-        "train.py",
-        None,
-        {"pair": [["train", "dev"], ["test", "holdout"]]},
-    )
-
-    assert cmd == [
-        sys.executable,
-        "train.py",
         "--pair",
         "train",
         "dev",
@@ -1496,43 +1465,26 @@ def test_build_command_argparse_append_with_nargs_repeats_grouped_values(mock_ex
         "test",
         "holdout",
     ]
+    assert cleanup_paths == []
 
 
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-@patch("pyruns.utils.parse_utils.extract_argparse_params")
-def test_build_command_argparse_boolean_optional_and_typed_bool(mock_extract, mock_detect):
-    mock_detect.return_value = ("argparse", None)
-    mock_extract.return_value = {
-        "compile": {
-            "name": "--compile",
-            "action": "argparse.BooleanOptionalAction",
-            "default": True,
-        },
-        "enabled": {
-            "name": "--enabled",
-            "type": "bool",
-            "default": True,
-        },
-    }
-
-    cmd, _, _ = _build_command(
-        None,
-        "train.py",
-        None,
-        {"compile": False, "enabled": False},
-    )
-
-    assert "--no-compile" in cmd
-    assert "--enabled" in cmd
-    assert cmd[cmd.index("--enabled") + 1] == ""
-
-
-def test_build_command_argparse_builtin_bool_type_executes_false_value(tmp_path):
-    script = tmp_path / "typed_bool.py"
+def test_build_command_argparse_actions_execute_with_expected_values(tmp_path):
+    script = tmp_path / "argparse_actions.py"
     script.write_text(
         "import argparse, json\n"
         "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--compile', action=argparse.BooleanOptionalAction, "
+        "default=True)\n"
         "parser.add_argument('--enabled', type=bool, default=True)\n"
+        "parser.add_argument('--fast', dest='mode', action='store_const', "
+        "const='fast', default='slow')\n"
+        "parser.add_argument('--labelled', dest='labels', action='append_const', "
+        "const='labelled', default=[])\n"
+        "parser.add_argument('--tag', action='append', default=[])\n"
+        "parser.add_argument('--feature', action=argparse.BooleanOptionalAction)\n"
+        "parser.add_argument('-v', '--verbose', action='count')\n"
+        "parser.add_argument('--optional-label', dest='optional_labels', "
+        "action='append_const', const='optional')\n"
         "args = parser.parse_args()\n"
         "print(json.dumps(vars(args), sort_keys=True))\n",
         encoding="utf-8",
@@ -1542,37 +1494,47 @@ def test_build_command_argparse_builtin_bool_type_executes_false_value(tmp_path)
         None,
         str(script),
         None,
-        OmegaConf.create({"enabled": False}),
+        OmegaConf.create(
+            {
+                "compile": False,
+                "enabled": False,
+                "mode": "fast",
+                "labels": ["labelled", "labelled"],
+                "tag": "grid",
+                "feature": None,
+                "verbose": None,
+                "optional_labels": None,
+            }
+        ),
     )
     result = subprocess.run(command, capture_output=True, text=True, check=False)
 
-    assert command[-2:] == ["--enabled", ""]
+    assert "--no-compile" in command
+    assert command[command.index("--enabled") + 1] == ""
+    assert command.count("--labelled") == 2
+    assert command[command.index("--tag") + 1] == "grid"
+    assert "--feature" not in command
+    assert "--verbose" not in command
+    assert "--optional-label" not in command
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"enabled": False}
-
-
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-@patch("pyruns.utils.parse_utils.extract_argparse_params")
-def test_build_command_argparse_count_action_repeats_flag(mock_extract, mock_detect):
-    mock_detect.return_value = ("argparse", None)
-    mock_extract.return_value = {
-        "verbose": {
-            "flags": ["-v", "--verbose"],
-            "name": "--verbose",
-            "action": "count",
-            "default": 0,
-        },
+    assert json.loads(result.stdout) == {
+        "compile": False,
+        "enabled": False,
+        "feature": None,
+        "labels": ["labelled", "labelled"],
+        "mode": "fast",
+        "optional_labels": None,
+        "tag": ["grid"],
+        "verbose": None,
     }
 
-    cmd, _, _ = _build_command(None, "train.py", None, {"verbose": 2})
-
-    assert cmd.count("--verbose") == 2
-    assert "2" not in cmd
-
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.parse_utils.extract_argparse_params")
-def test_build_command_argparse_serializes_const_actions(mock_extract, mock_detect):
+def test_build_command_argparse_serializes_const_and_accumulative_actions(
+    mock_extract,
+    mock_detect,
+):
     mock_detect.return_value = ("argparse", None)
     mock_extract.return_value = {
         "mode": {
@@ -1587,121 +1549,40 @@ def test_build_command_argparse_serializes_const_actions(mock_extract, mock_dete
             "const": "labelled",
             "default": [],
         },
+        "tag": {"name": "--tag", "action": "append", "default": ["base"]},
+        "verbose": {
+            "flags": ["-v", "--verbose"],
+            "name": "--verbose",
+            "action": "count",
+            "default": 1,
+        },
     }
 
     default_cmd, _, _ = _build_command(
         None,
         "train.py",
         None,
-        {"mode": "slow", "labels": []},
+        {"mode": "slow", "labels": [], "tag": ["base"], "verbose": 1},
     )
     selected_cmd, _, _ = _build_command(
         None,
         "train.py",
         None,
-        {"mode": "fast", "labels": ["labelled", "labelled"]},
+        {
+            "mode": "fast",
+            "labels": ["labelled", "labelled"],
+            "tag": ["base", "extra"],
+            "verbose": 3,
+        },
     )
 
     assert default_cmd == [sys.executable, "train.py"]
-    assert selected_cmd == [sys.executable, "train.py", "--fast", "--labelled", "--labelled"]
-
-
-def test_build_command_argparse_const_actions_execute_with_expected_values(tmp_path):
-    script = tmp_path / "const_actions.py"
-    script.write_text(
-        "import argparse, json\n"
-        "parser = argparse.ArgumentParser()\n"
-        "parser.add_argument('--fast', dest='mode', action='store_const', const='fast', default='slow')\n"
-        "parser.add_argument('--labelled', dest='labels', action='append_const', const='labelled', default=[])\n"
-        "args = parser.parse_args()\n"
-        "print(json.dumps(vars(args), sort_keys=True))\n",
-        encoding="utf-8",
-    )
-
-    command, _, _ = _build_command(
-        None,
-        str(script),
-        None,
-        OmegaConf.create({"mode": "fast", "labels": ["labelled", "labelled"]}),
-    )
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"labels": ["labelled", "labelled"], "mode": "fast"}
-
-
-def test_build_command_argparse_append_scalar_executes_one_occurrence(tmp_path):
-    script = tmp_path / "append_scalar.py"
-    script.write_text(
-        "import argparse, json\n"
-        "parser = argparse.ArgumentParser()\n"
-        "parser.add_argument('--tag', action='append', default=[])\n"
-        "args = parser.parse_args()\n"
-        "print(json.dumps(vars(args), sort_keys=True))\n",
-        encoding="utf-8",
-    )
-
-    command, _, _ = _build_command(
-        None,
-        str(script),
-        None,
-        OmegaConf.create({"tag": "grid"}),
-    )
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-
-    assert command[-2:] == ["--tag", "grid"]
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"tag": ["grid"]}
-
-
-def test_build_command_argparse_omits_implicit_none_action_defaults(tmp_path):
-    script = tmp_path / "none_defaults.py"
-    script.write_text(
-        "import argparse, json\n"
-        "parser = argparse.ArgumentParser()\n"
-        "parser.add_argument('--feature', action=argparse.BooleanOptionalAction)\n"
-        "parser.add_argument('-v', '--verbose', action='count')\n"
-        "parser.add_argument('--labelled', dest='labels', action='append_const', const='labelled')\n"
-        "args = parser.parse_args()\n"
-        "print(json.dumps(vars(args), sort_keys=True))\n",
-        encoding="utf-8",
-    )
-
-    command, _, _ = _build_command(
-        None,
-        str(script),
-        None,
-        OmegaConf.create({"feature": None, "verbose": None, "labels": None}),
-    )
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-
-    assert command == [sys.executable, str(script)]
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"feature": None, "labels": None, "verbose": None}
-
-
-@patch("pyruns.utils.parse_utils.detect_config_source_fast")
-@patch("pyruns.utils.parse_utils.extract_argparse_params")
-def test_build_command_argparse_accumulative_actions_apply_only_configured_delta(
-    mock_extract,
-    mock_detect,
-):
-    mock_detect.return_value = ("argparse", None)
-    mock_extract.return_value = {
-        "tag": {"name": "--tag", "action": "append", "default": ["base"]},
-        "verbose": {"name": "--verbose", "action": "count", "default": 1},
-    }
-
-    command, _, _ = _build_command(
-        None,
-        "train.py",
-        None,
-        {"tag": ["base", "extra"], "verbose": 3},
-    )
-
-    assert command == [
+    assert selected_cmd == [
         sys.executable,
         "train.py",
+        "--fast",
+        "--labelled",
+        "--labelled",
         "--tag",
         "extra",
         "--verbose",
@@ -2778,18 +2659,7 @@ def test_git_bytes_disables_optional_git_locks(monkeypatch):
 @patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     mock_detect.return_value = ("pyruns_load", None)
-    task_dir = str(tmp_path)
-    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
-    
-    task_info = {
-        "name": "TestTask",
-        "script": "script.py",
-        "status": "queued",
-        "start_times": [],
-        "finish_times": [],
-    }
-    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
-        json.dump(task_info, f)
+    task_dir = _write_worker_task_info(tmp_path, "TestTask")
         
     # Mock subprocess with PIPE-style stdout
     mock_proc = MagicMock()
@@ -2847,19 +2717,7 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
 @patch("pyruns.core.executor.subprocess.Popen")
 def test_run_duration_excludes_log_reader_drain_delay(mock_popen, _mock_emit, mock_detect, tmp_path, monkeypatch):
     mock_detect.return_value = ("pyruns_load", None)
-    task_dir = str(tmp_path)
-    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
-    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w", encoding="utf-8") as handle:
-        json.dump(
-            {
-                "name": "DurationTask",
-                "script": "script.py",
-                "status": "queued",
-                "start_times": [],
-                "finish_times": [],
-            },
-            handle,
-        )
+    task_dir = _write_worker_task_info(tmp_path, "DurationTask")
 
     clock = {"value": 100.0}
     monkeypatch.setattr(executor.time, "monotonic", lambda: clock["value"])
@@ -2907,20 +2765,7 @@ def test_run_task_worker_detaches_inherited_output_after_parent_exit(
 ):
     mock_detect.return_value = ("pyruns_load", None)
     monkeypatch.setattr(executor, "_OUTPUT_READER_DRAIN_TIMEOUT_SEC", 0.01)
-    task_dir = str(tmp_path)
-    os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
-    Path(task_dir, TASK_INFO_FILENAME).write_text(
-        json.dumps(
-            {
-                "name": "DetachedOutputTask",
-                "script": "script.py",
-                "status": "queued",
-                "start_times": [],
-                "finish_times": [],
-            }
-        ),
-        encoding="utf-8",
-    )
+    task_dir = _write_worker_task_info(tmp_path, "DetachedOutputTask")
 
     release_background_output = threading.Event()
     reader_finished = threading.Event()
@@ -2983,19 +2828,7 @@ def test_run_task_worker_drains_output_while_collecting_source_state(
 
     monkeypatch.setattr(executor, "_SOURCE_OUTPUT_SPOOL_MAX_BYTES", 1)
     mock_detect.return_value = ("pyruns_load", None)
-    task_dir = str(tmp_path)
-    os.makedirs(os.path.join(task_dir, "run_logs"), exist_ok=True)
-    with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
-        json.dump(
-            {
-                "name": "FastStartTask",
-                "script": "script.py",
-                "status": "queued",
-                "start_times": [],
-                "finish_times": [],
-            },
-            f,
-        )
+    task_dir = _write_worker_task_info(tmp_path, "FastStartTask")
 
     mock_proc = MagicMock()
     mock_proc.pid = 9999
@@ -3074,20 +2907,7 @@ def test_run_task_worker_drains_output_after_capture_storage_failure(
     monkeypatch,
 ):
     mock_detect.return_value = ("pyruns_load", None)
-    task_dir = str(tmp_path)
-    os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
-    Path(task_dir, TASK_INFO_FILENAME).write_text(
-        json.dumps(
-            {
-                "name": "CaptureFailureTask",
-                "script": "script.py",
-                "status": "queued",
-                "start_times": [],
-                "finish_times": [],
-            }
-        ),
-        encoding="utf-8",
-    )
+    task_dir = _write_worker_task_info(tmp_path, "CaptureFailureTask")
 
     output_drained = threading.Event()
     chunks = iter([b"x" * 4096, b""])
@@ -3147,20 +2967,7 @@ def test_run_task_worker_closes_capture_when_process_wait_fails(
     tmp_path,
 ):
     mock_detect.return_value = ("pyruns_load", None)
-    task_dir = str(tmp_path)
-    os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
-    Path(task_dir, TASK_INFO_FILENAME).write_text(
-        json.dumps(
-            {
-                "name": "WaitFailureTask",
-                "script": "script.py",
-                "status": "queued",
-                "start_times": [],
-                "finish_times": [],
-            }
-        ),
-        encoding="utf-8",
-    )
+    task_dir = _write_worker_task_info(tmp_path, "WaitFailureTask")
 
     terminated = threading.Event()
     output_closed = threading.Event()
