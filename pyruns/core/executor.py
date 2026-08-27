@@ -79,6 +79,7 @@ _PRIVATE_RUNTIME_ROOT_OWNER_PID = os.getpid()
 _SOURCE_STATE_GIT_TIMEOUT_SEC = 1.0
 _SOURCE_STATE_DIGEST_LEN = 12
 _SOURCE_OUTPUT_SPOOL_MAX_BYTES = 1024 * 1024
+_OUTPUT_READER_DRAIN_TIMEOUT_SEC = 5.0
 _CUDA_OOM_MARKERS = (
     "cuda out of memory",
     "torch.cuda.outofmemoryerror",
@@ -1566,6 +1567,8 @@ def run_task_worker(
     source_output_flush_lock = threading.Lock()
     source_output_flush: Callable[[], None] | None = None
     output_capture_errors: List[Exception] = []
+    output_detached = threading.Event()
+    output_lock = threading.Lock()
 
     def _owns_current_run(info: Dict[str, Any]) -> bool:
         if not runner_id:
@@ -1906,8 +1909,6 @@ def run_task_worker(
                     ) as pending,
                     open(current_log_path, "ab") as handle,
                 ):
-                    output_lock = threading.Lock()
-
                     def _append_output(text: str) -> None:
                         encoded = text.encode("utf-8")
                         if encoded:
@@ -1937,6 +1938,8 @@ def run_task_worker(
                         if not text:
                             return
                         with output_lock:
+                            if output_detached.is_set():
+                                return
                             if source_state_ready.is_set():
                                 _flush_pending()
                                 _append_output(text)
@@ -1949,6 +1952,8 @@ def run_task_worker(
                         if not source_state_ready.is_set():
                             return
                         with output_lock:
+                            if output_detached.is_set():
+                                return
                             _flush_pending()
 
                     try:
@@ -1967,7 +1972,11 @@ def run_task_worker(
                             if source_output_flush is _flush_when_source_ready:
                                 source_output_flush = None
             except Exception as exc:
-                output_capture_errors.append(exc)
+                with output_lock:
+                    if output_detached.is_set():
+                        logger.debug("Detached output drain stopped for %s: %s", name, exc)
+                        return
+                    output_capture_errors.append(exc)
                 logger.error("Task output capture failed for %s: %s", name, exc)
                 try:
                     for _chunk in iter(lambda: proc.stdout.read1(4096), b""):
@@ -1993,9 +2002,20 @@ def run_task_worker(
         if callable(close_output):
             close_output()
         _join_source_state()
-        reader_thread.join(timeout=5)
+        reader_thread.join(timeout=_OUTPUT_READER_DRAIN_TIMEOUT_SEC)
         if reader_thread.is_alive():
-            output_capture_errors.append(RuntimeError("output reader did not stop after process exit"))
+            # Descendants may keep stdout open after the tracked process exits.
+            # Stop task-log writes at a bounded, atomic point but keep draining.
+            if not output_lock.acquire(timeout=_OUTPUT_READER_DRAIN_TIMEOUT_SEC):
+                output_capture_errors.append(
+                    RuntimeError("output writer did not reach a safe detach point")
+                )
+            else:
+                try:
+                    if not output_capture_errors:
+                        output_detached.set()
+                finally:
+                    output_lock.release()
         if output_capture_errors:
             detail = "; ".join(
                 f"{type(error).__name__}: {error}"

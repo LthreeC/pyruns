@@ -2898,6 +2898,80 @@ def test_run_duration_excludes_log_reader_drain_delay(mock_popen, _mock_emit, mo
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_detaches_inherited_output_after_parent_exit(
+    mock_popen,
+    _mock_emit,
+    mock_detect,
+    tmp_path,
+    monkeypatch,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    monkeypatch.setattr(executor, "_OUTPUT_READER_DRAIN_TIMEOUT_SEC", 0.01)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
+    Path(task_dir, TASK_INFO_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "DetachedOutputTask",
+                "script": "script.py",
+                "status": "queued",
+                "start_times": [],
+                "finish_times": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    release_background_output = threading.Event()
+    reader_finished = threading.Event()
+    read_count = 0
+
+    def read_output(_size):
+        nonlocal read_count
+        read_count += 1
+        if read_count == 1:
+            return b"parent output\n"
+        if read_count == 2:
+            assert release_background_output.wait(2)
+            return b"background output\n"
+        reader_finished.set()
+        return b""
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.returncode = 0
+    mock_proc.wait.return_value = 0
+    mock_proc.poll.return_value = 0
+    mock_proc.stdout.read1.side_effect = read_output
+    mock_popen.return_value = mock_proc
+
+    try:
+        with patch(
+            "pyruns.core.executor._build_run_source_state",
+            return_value="git none | unknown | script none",
+        ):
+            result = run_task_worker(
+                task_dir=task_dir,
+                name="DetachedOutputTask",
+                created_at="now",
+                config={},
+                run_index=1,
+            )
+    finally:
+        release_background_output.set()
+
+    assert reader_finished.wait(1)
+    assert result["status"] == "completed"
+    assert load_task_info(task_dir)["status"] == "completed"
+    run_text = Path(task_dir, RUN_LOGS_DIR, "run1.log").read_text(encoding="utf-8")
+    assert "parent output" in run_text
+    assert "background output" not in run_text
+    assert run_text.rstrip().splitlines()[-1].startswith("[PYRUNS] Duration: ")
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_drains_output_while_collecting_source_state(
     mock_popen,
     mock_emit,
