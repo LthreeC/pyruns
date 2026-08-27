@@ -924,6 +924,7 @@ def test_kill_process_nt_falls_back_to_snapshotted_tree(monkeypatch):
     waits = iter([False, True])
     monkeypatch.setattr(process_utils.os, "name", "nt", raising=False)
     monkeypatch.setattr(process_utils, "_psutil", FakePsutil())
+    monkeypatch.setattr(process_utils, "hidden_subprocess_kwargs", lambda: {})
     monkeypatch.setattr(
         process_utils,
         "_process_tree_identities",

@@ -1269,14 +1269,19 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
         """Request cancellation from the runner that owns the task."""
-        task = self.require_task(task_name)
+        manager = self.task_manager
+        task = manager.get_task(task_name)
+        if task is None:
+            task = manager.load_task_by_name(task_name)
+        if task is None:
+            raise KeyError(task_name)
         task_dir = str(task.get("dir", "") or "")
         info = load_task_info(task_dir) if task_dir else {}
         status = str(info.get("status", "") or "").lower()
         if status not in {"queued", "running"}:
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
         self.invalidate_cache()
-        ok = self.task_manager.request_task_cancel(
+        ok = manager.request_task_cancel(
             task_name,
             expected_runner_id=str(info.get("runner_id", "") or ""),
             expected_run_index=active_task_run_index(info),

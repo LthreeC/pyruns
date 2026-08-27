@@ -647,10 +647,19 @@ def test_log_follow_sigint_stops_observing_without_stopping_the_task(tmp_path):
     task_dir = workspace / TASKS_DIR / "observe-sigint"
     deadline = time.monotonic() + 10
     info = load_task_info(str(task_dir))
-    while info.get("status") != "running" and time.monotonic() < deadline:
+    while (
+        (
+            info.get("status") != "running"
+            or not (info.get("pids") or [None])[-1]
+            or not (info.get("pid_create_times") or [None])[-1]
+        )
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.05)
         info = load_task_info(str(task_dir))
     assert info["status"] == "running"
+    assert info["pids"][-1]
+    assert info["pid_create_times"][-1]
 
     args = ["-w", "shell", "log", "observe-sigint", "--follow"]
     code = (

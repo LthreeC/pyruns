@@ -8,6 +8,7 @@
 .history/
 .ruff_cache/
 .pytest_cache/
+.pytest-run/
 .playwright-mcp/
 .pyruns-update/
 *.egg-info/

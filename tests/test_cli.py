@@ -486,6 +486,11 @@ def test_removed_json_scopes_are_rejected(args, tmp_path):
         (("--browser", "ui"), "--browser belongs to ui and dev"),
         (("--no-browser", "ui"), "--no-browser belongs to ui and dev"),
         (("-n", "5", "ls"), "unrecognized global option: -n"),
+        (("-w", "shell", "init"), "init does not use -w/--workspace"),
+        (("-w", "shell", "config", "list"), "config does not use -w/--workspace"),
+        (("-w", "shell", "metrics"), "metrics does not use -w/--workspace"),
+        (("-w", "shell", "dev", "train.py"), "dev does not use -w/--workspace"),
+        (("-w", "shell", "help"), "help does not use -w/--workspace"),
     ],
 )
 def test_command_options_before_command_have_actionable_errors(args, message, tmp_path):
@@ -675,24 +680,6 @@ def test_exec_argv_requires_the_standard_separator(tmp_path, capsys, monkeypatch
 
     assert "usage: pyr exec" in stderr
     assert "exec argv form requires '--' before COMMAND" in stderr
-    assert not (tmp_path / "_pyruns_").exists()
-
-
-@pytest.mark.parametrize(
-    ("args", "message"),
-    [
-        (("-w", "shell", "init"), "init does not use -w/--workspace"),
-        (("-w", "shell", "config", "list"), "config does not use -w/--workspace"),
-        (("-w", "shell", "metrics"), "metrics does not use -w/--workspace"),
-        (("-w", "shell", "dev", "train.py"), "dev does not use -w/--workspace"),
-        (("-w", "shell", "help"), "help does not use -w/--workspace"),
-    ],
-)
-def test_commands_reject_global_options_they_do_not_use(tmp_path, args, message):
-    result = _run_cli(tmp_path, *args)
-
-    assert result.returncode == 2
-    assert message in result.stderr
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -1983,27 +1970,68 @@ def test_exec_missing_program_preserves_workspace_shell_error(tmp_path):
     assert "Traceback:" not in error_text
 
 
-def test_exec_persists_exact_argv_and_creation_workdir(tmp_path):
+def test_exec_matches_direct_argv_environment_and_creation_workdir(tmp_path):
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     nested = tmp_path / "nested" / "deeper"
     nested.mkdir(parents=True)
-    code = "import json,os,sys; print(json.dumps([os.getcwd(), *sys.argv[1:]]))"
-    command = [sys.executable, "-c", code, "value with spaces", "x&y"]
+    code = (
+        "import json,os,sys; "
+        "print(json.dumps({'cwd':os.getcwd(),'argv':sys.argv[1:],"
+        "'marker':os.environ.get('PYRUNS_ENV_MARKER')},sort_keys=True))"
+    )
+    arguments = [
+        "value with spaces",
+        "x&y",
+        "%PATH%",
+        "$HOME",
+        'quote"value',
+        "trailing\\",
+        "\u4e2d\u6587\u53c2\u6570",
+    ]
+    command = [sys.executable, "-c", code, *arguments]
+    direct_env = _source_env()
+    direct_env["PYRUNS_ENV_MARKER"] = "same-env"
+    direct = subprocess.run(
+        command,
+        cwd=nested,
+        env=direct_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    assert direct.returncode == 0, direct.stdout + direct.stderr
+    direct_payload = json.loads(direct.stdout)
 
-    first = _run_cli(nested, "exec", "--name", "cwd-argv", "--", *command)
+    first = _run_cli(
+        nested,
+        "exec",
+        "--name",
+        "cwd-argv",
+        "--env",
+        "PYRUNS_ENV_MARKER=same-env",
+        "--",
+        *command,
+    )
     assert first.returncode == 0, first.stdout + first.stderr
     first_payload = next(
         json.loads(line)
         for line in first.stdout.splitlines()
-        if line.startswith('["')
+        if line.startswith("{")
     )
-    assert first_payload == [str(nested), "value with spaces", "x&y"]
+    assert first_payload == direct_payload == {
+        "argv": arguments,
+        "cwd": str(nested),
+        "marker": "same-env",
+    }
 
     workspace = nested / "_pyruns_" / "_shell_"
     task_dir = workspace / TASKS_DIR / "cwd-argv"
     info = load_task_info(str(task_dir))
     assert info["command_mode"] == "argv"
     assert info["cmd"] == command
+    assert info["env"] == {"PYRUNS_ENV_MARKER": "same-env"}
     assert Path(info["workdir"]) == nested
 
     rerun_cwd = tmp_path / "rerun"
@@ -2013,9 +2041,9 @@ def test_exec_persists_exact_argv_and_creation_workdir(tmp_path):
     rerun_payload = next(
         json.loads(line)
         for line in rerun.stdout.splitlines()
-        if line.startswith('["')
+        if line.startswith("{")
     )
-    assert rerun_payload == [str(nested), "value with spaces", "x&y"]
+    assert rerun_payload == direct_payload
 
 
 def test_exec_command_string_consumes_an_unquoted_tail_and_rejects_separator(tmp_path):

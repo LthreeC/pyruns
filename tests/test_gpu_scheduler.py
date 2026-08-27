@@ -637,62 +637,101 @@ def test_gpu_queue_log_block_uses_compact_title_and_final_assignment(tmp_path: P
     assert "=================" not in block
 
 
-def test_gpu_scheduler_config_parses_string_booleans_from_settings():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_enabled": "false",
-        "gpu_scheduler_respect_cuda_visible_devices": "off",
-    })
+def test_gpu_scheduler_config_normalizes_setting_variants():
+    def check(settings, **expected):
+        config = GpuSchedulerConfig.from_settings(settings)
+        actual = {key: getattr(config, key) for key in expected}
+        assert actual == expected
 
-    assert config.enabled is False
-    assert config.respect_cuda_visible_devices is False
-
-
-def test_gpu_scheduler_config_accepts_truthy_string_booleans():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_enabled": "yes",
-        "gpu_scheduler_respect_cuda_visible_devices": "on",
-    })
-
-    assert config.enabled is True
-    assert config.respect_cuda_visible_devices is True
-
-
-def test_gpu_scheduler_config_defaults_match_conservative_local_gpu_profile():
-    config = GpuSchedulerConfig.from_settings({})
-
-    assert config.enabled is False
-    assert config.task_mode == "single"
-    assert config.selection_mode == "auto"
-    assert config.gpus_per_task == 1
-    assert config.device_ids == []
-    assert config.memory_used_pct == 40.0
-    assert config.min_free_memory_gb == 40.0
-    assert config.compute_used_pct == 30.0
-    assert config.stable_seconds == 15.0
-    assert config.max_wait_seconds == 172800.0
-    assert config.max_tasks_per_gpu == 1
-    assert config.respect_cuda_visible_devices is True
-    assert config.require_same_gpu_model is False
-
-
-def test_gpu_scheduler_config_multi_mode_allows_one_gpu_when_limit_is_one():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_task_mode": "multi",
-        "gpu_scheduler_gpus_per_task": 1,
-    })
-
-    assert config.gpus_per_task == 1
-    assert config.required_gpu_count == 1
-
-
-def test_gpu_scheduler_config_clamps_percent_thresholds():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_memory_used_pct": 250,
-        "gpu_scheduler_compute_used_pct": -5,
-    })
-
-    assert config.memory_used_pct == 100.0
-    assert config.compute_used_pct == 0.0
+    check(
+        {
+            "gpu_scheduler_enabled": "false",
+            "gpu_scheduler_respect_cuda_visible_devices": "off",
+        },
+        enabled=False,
+        respect_cuda_visible_devices=False,
+    )
+    check(
+        {
+            "gpu_scheduler_enabled": "yes",
+            "gpu_scheduler_respect_cuda_visible_devices": "on",
+        },
+        enabled=True,
+        respect_cuda_visible_devices=True,
+    )
+    check(
+        {},
+        enabled=False,
+        task_mode="single",
+        selection_mode="auto",
+        gpus_per_task=1,
+        device_ids=[],
+        memory_used_pct=40.0,
+        min_free_memory_gb=40.0,
+        compute_used_pct=30.0,
+        stable_seconds=15.0,
+        max_wait_seconds=172800.0,
+        max_tasks_per_gpu=1,
+        respect_cuda_visible_devices=True,
+        require_same_gpu_model=False,
+    )
+    check(
+        {"gpu_scheduler_task_mode": "multi", "gpu_scheduler_gpus_per_task": 1},
+        gpus_per_task=1,
+        required_gpu_count=1,
+    )
+    check(
+        {
+            "gpu_scheduler_memory_used_pct": 250,
+            "gpu_scheduler_compute_used_pct": -5,
+        },
+        memory_used_pct=100.0,
+        compute_used_pct=0.0,
+    )
+    check(
+        {
+            "gpu_scheduler_enabled": "maybe",
+            "gpu_scheduler_selection_mode": "manual",
+            "gpu_scheduler_device_ids": ["0", "0", "x", 2],
+            "gpu_scheduler_gpus_per_task": "bad",
+            "gpu_scheduler_min_free_memory_gb": -4,
+            "gpu_scheduler_stable_seconds": 0,
+            "gpu_scheduler_max_wait_seconds": 0,
+            "gpu_scheduler_max_tasks_per_gpu": 0,
+            "gpu_scheduler_require_same_gpu_model": "yes",
+        },
+        enabled=False,
+        selection_mode="specified",
+        device_ids=[0, 2],
+        gpus_per_task=1,
+        min_free_memory_gb=0.0,
+        stable_seconds=1.0,
+        max_wait_seconds=1.0,
+        max_tasks_per_gpu=1,
+        require_same_gpu_model=True,
+    )
+    check({"gpu_scheduler_selection_mode": "random"}, selection_mode="auto")
+    check({"gpu_scheduler_min_free_memory_gb": "bad"}, min_free_memory_gb=40.0)
+    check({"gpu_scheduler_device_ids": "auto"}, device_ids=[])
+    check({"gpu_scheduler_device_ids": {"0": True}}, device_ids=[])
+    check(
+        {
+            "gpu_scheduler_gpus_per_task": "Infinity",
+            "gpu_scheduler_memory_used_pct": "NaN",
+            "gpu_scheduler_min_free_memory_gb": "Infinity",
+            "gpu_scheduler_compute_used_pct": "-Infinity",
+            "gpu_scheduler_stable_seconds": "Infinity",
+            "gpu_scheduler_max_wait_seconds": "NaN",
+            "gpu_scheduler_max_tasks_per_gpu": "Infinity",
+        },
+        gpus_per_task=1,
+        memory_used_pct=40.0,
+        min_free_memory_gb=40.0,
+        compute_used_pct=30.0,
+        stable_seconds=15.0,
+        max_wait_seconds=172800.0,
+        max_tasks_per_gpu=1,
+    )
 
 
 def test_gpu_device_normalizes_metric_fallbacks_and_zero_total_memory():
@@ -748,82 +787,6 @@ def test_gpu_scheduler_rejects_duplicate_cuda_visible_devices_and_reports_missin
     assert assigned.reason == "duplicate CUDA_VISIBLE_DEVICES entry '0'"
     assert missing.assignment is None
     assert missing.reason == "GPU 3 unavailable"
-
-
-def test_gpu_scheduler_config_parses_device_id_variants_and_invalid_values():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_enabled": "maybe",
-        "gpu_scheduler_selection_mode": "manual",
-        "gpu_scheduler_device_ids": ["0", "0", "x", 2],
-        "gpu_scheduler_gpus_per_task": "bad",
-        "gpu_scheduler_min_free_memory_gb": -4,
-        "gpu_scheduler_stable_seconds": 0,
-        "gpu_scheduler_max_wait_seconds": 0,
-        "gpu_scheduler_max_tasks_per_gpu": 0,
-        "gpu_scheduler_require_same_gpu_model": "yes",
-    })
-
-    assert config.enabled is False
-    assert config.selection_mode == "specified"
-    assert config.device_ids == [0, 2]
-    assert config.gpus_per_task == 1
-    assert config.min_free_memory_gb == 0.0
-    assert config.stable_seconds == 1.0
-    assert config.max_wait_seconds == 1.0
-    assert config.max_tasks_per_gpu == 1
-    assert config.require_same_gpu_model is True
-
-
-def test_gpu_scheduler_config_defaults_unknown_selection_mode_to_auto():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_selection_mode": "random",
-    })
-
-    assert config.selection_mode == "auto"
-
-
-def test_gpu_scheduler_config_uses_default_for_unparseable_min_free_memory():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_min_free_memory_gb": "bad",
-    })
-
-    assert config.min_free_memory_gb == 40.0
-
-
-def test_gpu_scheduler_config_parses_auto_device_pool_from_string():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_device_ids": "auto",
-    })
-
-    assert config.device_ids == []
-
-
-def test_gpu_scheduler_config_ignores_unsupported_device_pool_payloads():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_device_ids": {"0": True},
-    })
-
-    assert config.device_ids == []
-
-
-def test_gpu_scheduler_config_rejects_non_finite_numeric_settings():
-    config = GpuSchedulerConfig.from_settings({
-        "gpu_scheduler_gpus_per_task": "Infinity",
-        "gpu_scheduler_memory_used_pct": "NaN",
-        "gpu_scheduler_min_free_memory_gb": "Infinity",
-        "gpu_scheduler_compute_used_pct": "-Infinity",
-        "gpu_scheduler_stable_seconds": "Infinity",
-        "gpu_scheduler_max_wait_seconds": "NaN",
-        "gpu_scheduler_max_tasks_per_gpu": "Infinity",
-    })
-
-    assert config.gpus_per_task == 1
-    assert config.memory_used_pct == 40.0
-    assert config.min_free_memory_gb == 40.0
-    assert config.compute_used_pct == 30.0
-    assert config.stable_seconds == 15.0
-    assert config.max_wait_seconds == 172800.0
-    assert config.max_tasks_per_gpu == 1
 
 
 def test_gpu_scheduler_reports_memory_free_memory_and_compute_block_reasons():

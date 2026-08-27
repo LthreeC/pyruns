@@ -67,19 +67,20 @@ def _prevent_windows_test_console_windows(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_update_coordination_state(monkeypatch, tmp_path_factory):
-    """Keep installation-wide update leases isolated between tests."""
+def _isolate_process_state(monkeypatch, tmp_path):
+    """Keep installation-wide update and browser state outside the test workspace."""
 
-    state_dir = tmp_path_factory.mktemp("update-state")
-    monkeypatch.setenv("PYRUNS_UPDATE_STATE_DIR", str(state_dir))
-
-
-@pytest.fixture(autouse=True)
-def _isolate_ui_session_state(monkeypatch, tmp_path_factory):
-    """Keep persistent browser credentials out of the real user profile."""
-
-    state_dir = tmp_path_factory.mktemp("ui-session-state")
-    monkeypatch.setenv("PYRUNS_UI_SESSION_STATE_DIR", str(state_dir))
+    state_root = tmp_path.with_name(f"{tmp_path.name}-process-state")
+    update_dir = state_root / "update"
+    session_dir = state_root / "session"
+    update_dir.mkdir(parents=True)
+    session_dir.mkdir()
+    monkeypatch.setenv("PYRUNS_UPDATE_STATE_DIR", str(update_dir))
+    monkeypatch.setenv("PYRUNS_UI_SESSION_STATE_DIR", str(session_dir))
+    try:
+        yield
+    finally:
+        shutil.rmtree(state_root, ignore_errors=True)
 
 
 @pytest.fixture()

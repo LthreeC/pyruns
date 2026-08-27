@@ -56,13 +56,55 @@ def _task_info(task: dict) -> dict:
     return json.loads(info_path.read_text(encoding="utf-8"))
 
 
-def test_basic_argparse_example_runs_through_runtime(tmp_path):
+def _run_template_task(
+    workspace: str,
+    *,
+    name_prefix: str,
+    mode: str,
+    yaml_text: str = "",
+    shell_text: str = "",
+    env: dict[str, str] | None = None,
+) -> dict:
+    runtime = PyrunsRuntime(workspace)
+    try:
+        created = runtime.create_tasks_from_template(
+            name_prefix=name_prefix,
+            mode=mode,
+            yaml_text=yaml_text,
+            shell_text=shell_text,
+            append_timestamp=False,
+        )
+        task_name = created["items"][0]["name"]
+        if env:
+            runtime.update_task_env(task_name, env, {})
+        runtime.start_task(task_name)
+        return _wait_for_task(runtime, task_name)
+    finally:
+        runtime.shutdown()
+
+
+def test_basic_argparse_example_runs_directly_and_through_runtime(tmp_path):
     example = _copy_example(tmp_path, "1_argparse_script")
     script = example / "main.py"
+    arguments = "--lr 0.01 --epochs 1 --batch_size 16 --optimizer sgd".split()
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "ascii"
+    env["PYTHONPATH"] = str(EXAMPLES_DIR.parent)
+
+    direct = subprocess.run(
+        [sys.executable, str(script), *arguments],
+        cwd=script.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert direct.returncode == 0, direct.stdout + direct.stderr
 
     workspace = bootstrap_workspace(str(script))
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix="basic-argparse",
         mode="yaml",
         yaml_text="\n".join(
@@ -74,95 +116,22 @@ def test_basic_argparse_example_runs_through_runtime(tmp_path):
                 "",
             ]
         ),
-        append_timestamp=False,
     )
-    task_name = created["items"][0]["name"]
-    runtime.start_task(task_name)
-
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
+    log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "Starting training with SGD optimizer!",
+        "Hyperparameters: LR=0.01, Batch Size=16",
+        "Training complete.",
+    ):
+        assert marker in direct.stdout
+        assert marker in log_text
     info = _task_info(task)
     assert len(info[TRACKS_KEY][0]["loss"]) == 1
     assert info[RECORDS_KEY][0]["last_loss"] == 1.0
-
-
-def test_basic_argparse_example_runs_directly_with_strict_console_encoding():
-    script = EXAMPLES_DIR / "1_argparse_script" / "main.py"
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "ascii"
-    env["PYTHONPATH"] = str(EXAMPLES_DIR.parent)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            "--lr",
-            "0.01",
-            "--epochs",
-            "1",
-            "--batch_size",
-            "16",
-            "--optimizer",
-            "sgd",
-        ],
-        cwd=script.parent,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Training complete." in result.stdout
-
-
-def test_advanced_argparse_example_runs_directly_with_strict_console_encoding():
-    script = EXAMPLES_DIR / "4_advanced_argparse" / "main.py"
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "ascii"
-    env["PYTHONPATH"] = str(EXAMPLES_DIR.parent)
-    artifact_root = script.parent / "artifacts"
-    if artifact_root.exists():
-        shutil.rmtree(artifact_root)
-
-    try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "toy",
-                "--layers",
-                "8",
-                "16",
-                "--tag",
-                "smoke",
-                "--no-compile",
-                "--use-amp",
-                "--no-cache",
-                "-vv",
-                "--dropout",
-                "0.1",
-                "--device",
-                "cpu",
-                "--seed",
-                "7",
-            ],
-            cwd=script.parent,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-    finally:
-        if artifact_root.exists():
-            shutil.rmtree(artifact_root)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert '"compile": false' in result.stdout
-    assert "step=3" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -221,42 +190,69 @@ def test_pyruns_config_examples_run_through_runtime(tmp_path, script_name, confi
 
     workspace = bootstrap_workspace(str(script), str(config))
     save_setting_for_root(workspace, "gpu_scheduler_enabled", False)
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix=script.stem,
         mode="yaml",
         yaml_text=yaml_text,
-        append_timestamp=False,
     )
-    task_name = created["items"][0]["name"]
-    runtime.start_task(task_name)
-
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
 
 
-def test_advanced_argparse_example_runs_through_runtime(tmp_path):
+def test_advanced_argparse_example_runs_directly_and_through_runtime(tmp_path):
     example = _copy_example(tmp_path, "4_advanced_argparse")
     script = example / "main.py"
     config = example / "configs" / "quick.yaml"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONIOENCODING": "ascii",
+            "PYTHONPATH": str(EXAMPLES_DIR.parent),
+            "PYRUNS_EXAMPLE_ENV": "example-env-ok",
+        }
+    )
+    direct = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            *(
+                "toy --layers 32 64 128 --tag smoke --tag env-check "
+                "--no-compile --use-amp --no-cache -vv --dropout -1.0 "
+                "--device cpu --seed 7 --steps 3 --step-delay 0.005"
+            ).split(),
+        ],
+        cwd=script.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert direct.returncode == 0, direct.stdout + direct.stderr
+    shutil.rmtree(script.parent / "artifacts", ignore_errors=True)
 
     workspace = bootstrap_workspace(str(script), str(config))
     save_setting_for_root(workspace, "gpu_scheduler_enabled", False)
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix="advanced",
         mode="yaml",
         yaml_text=config.read_text(encoding="utf-8"),
-        append_timestamp=False,
+        env={"PYRUNS_EXAMPLE_ENV": "example-env-ok"},
     )
-    task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "example-env-ok"}, {})
-    runtime.start_task(task_name)
-
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
+    log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        '"compile": false',
+        '"env_marker": "example-env-ok"',
+        "step=3",
+    ):
+        assert marker in direct.stdout
+        assert marker in log_text
     info = _task_info(task)
     record = info[RECORDS_KEY][0]
     tracks = info[TRACKS_KEY][0]
@@ -305,18 +301,13 @@ def test_pyruns_load_nested_example_runs_through_runtime(tmp_path, config_name, 
     config = example / "configs" / config_name
 
     workspace = bootstrap_workspace(str(script), str(config))
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix="nested",
         mode="yaml",
         yaml_text=config.read_text(encoding="utf-8"),
-        append_timestamp=False,
+        env={"PYRUNS_EXAMPLE_ENV": "nested-env-ok"},
     )
-    task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "nested-env-ok"}, {})
-    runtime.start_task(task_name)
-
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
     info = _task_info(task)
@@ -341,28 +332,19 @@ def test_pyruns_load_nested_accelerate_example_runs_through_runtime(tmp_path):
 
     workspace = bootstrap_workspace(str(script), str(config))
     save_setting_for_root(workspace, "gpu_scheduler_enabled", False)
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix="accelerate-nested",
         mode="yaml",
         yaml_text=config.read_text(encoding="utf-8"),
-        append_timestamp=False,
-    )
-    task_name = created["items"][0]["name"]
-    runtime.update_task_env(
-        task_name,
-        {
+        env={
             "ACCEL_OFF": "1",
             "ACCEL_MP": "bf16",
             "ACCEL_PORT": "29501",
             "CUDA_VISIBLE_DEVICES": "",
             "PYRUNS_EXAMPLE_ENV": "accelerate-env-ok",
         },
-        {},
     )
-    runtime.start_task(task_name)
-
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
     info = _task_info(task)
@@ -420,16 +402,12 @@ def test_multi_script_project_train_and_eval_run_through_runtime(tmp_path):
         str(example / "train.py"),
         str(example / "configs" / "train_cpu.yaml"),
     )
-    train_runtime = PyrunsRuntime(train_workspace)
-    train_created = train_runtime.create_tasks_from_template(
+    train_task = _run_template_task(
+        train_workspace,
         name_prefix="multi-train",
         mode="yaml",
         yaml_text=(example / "configs" / "train_cpu.yaml").read_text(encoding="utf-8"),
-        append_timestamp=False,
     )
-    train_name = train_created["items"][0]["name"]
-    train_runtime.start_task(train_name)
-    train_task = _wait_for_task(train_runtime, train_name)
 
     assert train_task["status"] == "completed"
     train_info = _task_info(train_task)
@@ -441,16 +419,12 @@ def test_multi_script_project_train_and_eval_run_through_runtime(tmp_path):
         str(example / "evaluate.py"),
         str(example / "configs" / "eval.yaml"),
     )
-    eval_runtime = PyrunsRuntime(eval_workspace)
-    eval_created = eval_runtime.create_tasks_from_template(
+    eval_task = _run_template_task(
+        eval_workspace,
         name_prefix="multi-eval",
         mode="yaml",
         yaml_text=(example / "configs" / "eval.yaml").read_text(encoding="utf-8"),
-        append_timestamp=False,
     )
-    eval_name = eval_created["items"][0]["name"]
-    eval_runtime.start_task(eval_name)
-    eval_task = _wait_for_task(eval_runtime, eval_name)
 
     assert eval_task["status"] == "completed"
     eval_info = _task_info(eval_task)
@@ -477,18 +451,13 @@ def test_shell_workspace_runs_task_with_env_inherited_by_subprocess(tmp_path):
         f"shell_executable: {json.dumps(shell_executable)}\n",
         encoding="utf-8",
     )
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix="shell-env",
         mode="shell",
         shell_text=shell_text,
-        append_timestamp=False,
+        env={"PYRUNS_EXAMPLE_ENV": "shell-env-ok"},
     )
-    task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-env-ok"}, {})
-
-    runtime.start_task(task_name)
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
     log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
@@ -544,18 +513,13 @@ def test_shell_workspace_payload_examples_run_through_runtime(
     )
     payload_text = (EXAMPLES_DIR / "6_shell_workspace" / "payloads" / payload_name).read_text(encoding="utf-8")
 
-    runtime = PyrunsRuntime(workspace)
-    created = runtime.create_tasks_from_template(
+    task = _run_template_task(
+        workspace,
         name_prefix=f"{kind}-payload",
         mode="shell",
         shell_text=payload_text,
-        append_timestamp=False,
+        env={"PYRUNS_EXAMPLE_ENV": "shell-payload-ok"},
     )
-    task_name = created["items"][0]["name"]
-    runtime.update_task_env(task_name, {"PYRUNS_EXAMPLE_ENV": "shell-payload-ok"}, {})
-
-    runtime.start_task(task_name)
-    task = _wait_for_task(runtime, task_name)
 
     assert task["status"] == "completed"
     log_text = (Path(task["dir"]) / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
@@ -649,8 +613,11 @@ def test_example_batch_templates_are_form_mode_only(tmp_path):
         ]
     )
 
-    form_preview = runtime.preview_tasks_from_template(mode="form", yaml_text=yaml_text)
-    assert form_preview["count"] == 12
+    try:
+        form_preview = runtime.preview_tasks_from_template(mode="form", yaml_text=yaml_text)
+        assert form_preview["count"] == 12
 
-    with pytest.raises(ValueError, match="YAML mode does not support batch syntax"):
-        runtime.preview_tasks_from_template(mode="yaml", yaml_text=yaml_text)
+        with pytest.raises(ValueError, match="YAML mode does not support batch syntax"):
+            runtime.preview_tasks_from_template(mode="yaml", yaml_text=yaml_text)
+    finally:
+        runtime.shutdown()
