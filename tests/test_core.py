@@ -1290,6 +1290,40 @@ def test_prepare_env_applies_workspace_global_env_before_task_env(tmp_path, monk
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
 
 
+def test_prepare_env_tracks_managed_values_for_wsl_forwarding(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
+    task_dir = workspace / "tasks" / "task1"
+    task_dir.mkdir(parents=True)
+    (workspace.parent / "_pyruns_settings.yaml").write_text(
+        "global_env:\n"
+        "  WORKSPACE_VALUE: workspace\n",
+        encoding="utf-8",
+    )
+    wsl_env_keys = set()
+
+    env = _prepare_env(
+        extra_env={"TASK_VALUE": "task"},
+        task_dir=str(task_dir),
+        task_kind=TASK_KIND_SHELL,
+        wsl_env_keys=wsl_env_keys,
+    )
+    executor._augment_wsl_env(
+        [r"C:\Windows\System32\wsl.exe", "--exec", "/bin/bash", "/mnt/c/run.sh"],
+        env,
+        wsl_env_keys,
+    )
+
+    entries = set(env["WSLENV"].split(":"))
+    assert {
+        "WORKSPACE_VALUE",
+        "TASK_VALUE",
+        "PYTHONUNBUFFERED",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+    } <= entries
+
+
 def test_cli_terminal_runtime_skips_workspace_runtime_settings(tmp_path, monkeypatch):
     fake_conda = tmp_path / "conda"
     fake_conda.write_text("", encoding="utf-8")
@@ -1334,9 +1368,15 @@ def test_cli_terminal_runtime_skips_workspace_global_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    env = _prepare_env(task_dir=str(task_dir), task_kind=TASK_KIND_CONFIG)
+    wsl_env_keys = set()
+    env = _prepare_env(
+        task_dir=str(task_dir),
+        task_kind=TASK_KIND_CONFIG,
+        wsl_env_keys=wsl_env_keys,
+    )
 
     assert env["CUDA_VISIBLE_DEVICES"] == "terminal"
+    assert "CUDA_VISIBLE_DEVICES" not in wsl_env_keys
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -1484,7 +1524,31 @@ def test_build_command_argparse_boolean_optional_and_typed_bool(mock_extract, mo
 
     assert "--no-compile" in cmd
     assert "--enabled" in cmd
-    assert cmd[cmd.index("--enabled") + 1] == "False"
+    assert cmd[cmd.index("--enabled") + 1] == ""
+
+
+def test_build_command_argparse_builtin_bool_type_executes_false_value(tmp_path):
+    script = tmp_path / "typed_bool.py"
+    script.write_text(
+        "import argparse, json\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--enabled', type=bool, default=True)\n"
+        "args = parser.parse_args()\n"
+        "print(json.dumps(vars(args), sort_keys=True))\n",
+        encoding="utf-8",
+    )
+
+    command, _, _ = _build_command(
+        None,
+        str(script),
+        None,
+        OmegaConf.create({"enabled": False}),
+    )
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert command[-2:] == ["--enabled", ""]
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"enabled": False}
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -1504,6 +1568,173 @@ def test_build_command_argparse_count_action_repeats_flag(mock_extract, mock_det
 
     assert cmd.count("--verbose") == 2
     assert "2" not in cmd
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_serializes_const_actions(mock_extract, mock_detect):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "mode": {
+            "name": "--fast",
+            "action": "store_const",
+            "const": "fast",
+            "default": "slow",
+        },
+        "labels": {
+            "name": "--labelled",
+            "action": "append_const",
+            "const": "labelled",
+            "default": [],
+        },
+    }
+
+    default_cmd, _, _ = _build_command(
+        None,
+        "train.py",
+        None,
+        {"mode": "slow", "labels": []},
+    )
+    selected_cmd, _, _ = _build_command(
+        None,
+        "train.py",
+        None,
+        {"mode": "fast", "labels": ["labelled", "labelled"]},
+    )
+
+    assert default_cmd == [sys.executable, "train.py"]
+    assert selected_cmd == [sys.executable, "train.py", "--fast", "--labelled", "--labelled"]
+
+
+def test_build_command_argparse_const_actions_execute_with_expected_values(tmp_path):
+    script = tmp_path / "const_actions.py"
+    script.write_text(
+        "import argparse, json\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--fast', dest='mode', action='store_const', const='fast', default='slow')\n"
+        "parser.add_argument('--labelled', dest='labels', action='append_const', const='labelled', default=[])\n"
+        "args = parser.parse_args()\n"
+        "print(json.dumps(vars(args), sort_keys=True))\n",
+        encoding="utf-8",
+    )
+
+    command, _, _ = _build_command(
+        None,
+        str(script),
+        None,
+        OmegaConf.create({"mode": "fast", "labels": ["labelled", "labelled"]}),
+    )
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"labels": ["labelled", "labelled"], "mode": "fast"}
+
+
+def test_build_command_argparse_append_scalar_executes_one_occurrence(tmp_path):
+    script = tmp_path / "append_scalar.py"
+    script.write_text(
+        "import argparse, json\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--tag', action='append', default=[])\n"
+        "args = parser.parse_args()\n"
+        "print(json.dumps(vars(args), sort_keys=True))\n",
+        encoding="utf-8",
+    )
+
+    command, _, _ = _build_command(
+        None,
+        str(script),
+        None,
+        OmegaConf.create({"tag": "grid"}),
+    )
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert command[-2:] == ["--tag", "grid"]
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"tag": ["grid"]}
+
+
+def test_build_command_argparse_omits_implicit_none_action_defaults(tmp_path):
+    script = tmp_path / "none_defaults.py"
+    script.write_text(
+        "import argparse, json\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--feature', action=argparse.BooleanOptionalAction)\n"
+        "parser.add_argument('-v', '--verbose', action='count')\n"
+        "parser.add_argument('--labelled', dest='labels', action='append_const', const='labelled')\n"
+        "args = parser.parse_args()\n"
+        "print(json.dumps(vars(args), sort_keys=True))\n",
+        encoding="utf-8",
+    )
+
+    command, _, _ = _build_command(
+        None,
+        str(script),
+        None,
+        OmegaConf.create({"feature": None, "verbose": None, "labels": None}),
+    )
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+
+    assert command == [sys.executable, str(script)]
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"feature": None, "labels": None, "verbose": None}
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+def test_build_command_argparse_accumulative_actions_apply_only_configured_delta(
+    mock_extract,
+    mock_detect,
+):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {
+        "tag": {"name": "--tag", "action": "append", "default": ["base"]},
+        "verbose": {"name": "--verbose", "action": "count", "default": 1},
+    }
+
+    command, _, _ = _build_command(
+        None,
+        "train.py",
+        None,
+        {"tag": ["base", "extra"], "verbose": 3},
+    )
+
+    assert command == [
+        sys.executable,
+        "train.py",
+        "--tag",
+        "extra",
+        "--verbose",
+        "--verbose",
+    ]
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.parse_utils.extract_argparse_params")
+@pytest.mark.parametrize(
+    ("info", "value"),
+    [
+        ({"name": "--enabled", "action": "store_true", "default": True}, False),
+        ({"name": "--disabled", "action": "store_false", "default": False}, True),
+        ({"name": "--fast", "action": "store_const", "const": "fast", "default": "slow"}, "other"),
+        ({"name": "-s", "action": "argparse.BooleanOptionalAction"}, False),
+        ({"name": "-v", "action": "count"}, "bad"),
+        ({"name": "-v", "action": "count"}, 0),
+        ({"name": "--tag", "action": "append"}, []),
+        ({"name": "--labelled", "action": "append_const", "const": "labelled"}, []),
+    ],
+)
+def test_build_command_argparse_rejects_unrepresentable_action_values(
+    mock_extract,
+    mock_detect,
+    info,
+    value,
+):
+    mock_detect.return_value = ("argparse", None)
+    mock_extract.return_value = {"setting": info}
+
+    with pytest.raises(RuntimeError, match="cannot represent"):
+        _build_command(None, "train.py", None, {"setting": value})
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
@@ -2298,6 +2529,7 @@ def test_spawn_captured_process_hides_windows_console(monkeypatch, tmp_path):
     assert result is sentinel
     assert captured["command"] == ["powershell", "-File", "task.ps1"]
     assert captured["kwargs"]["creationflags"] == 0x08000000
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
     assert captured["kwargs"]["stdout"] is subprocess.PIPE
     assert captured["kwargs"]["stderr"] is subprocess.STDOUT
     assert captured["kwargs"]["shell"] is False
@@ -2391,7 +2623,7 @@ def test_build_command_argparse_handles_unusual_param_shapes_and_fallbacks(mock_
         "input": {"name": []},
         "cache": {"flags": ["--no-cache"], "action": "argparse.BooleanOptionalAction"},
         "short": {"flags": ["-s"], "action": "argparse.BooleanOptionalAction"},
-        "flag_bool": {"name": "--flag-bool"},
+        "flag_bool": {"name": "--flag-bool", "type": "bool", "default": True},
         "verbose": {"name": "-v", "action": "count"},
         "tag": {"name": "--tag"},
     }
@@ -2403,9 +2635,9 @@ def test_build_command_argparse_handles_unusual_param_shapes_and_fallbacks(mock_
         {
             "input": ["data-a", "data-b"],
             "cache": False,
-            "short": False,
+            "short": True,
             "flag_bool": False,
-            "verbose": "bad",
+            "verbose": None,
             "tag": ["a", "b"],
         },
     )
@@ -2413,9 +2645,9 @@ def test_build_command_argparse_handles_unusual_param_shapes_and_fallbacks(mock_
     assert cleanup_paths == []
     assert cmd[:3] == [sys.executable, "train.py", "data-a"]
     assert "data-b" in cmd
-    assert "--no-cache" in cmd
+    assert "--no-no-cache" in cmd
     assert "-s" in cmd
-    assert "--flag-bool" in cmd and "False" in cmd
+    assert "--flag-bool" in cmd and cmd[cmd.index("--flag-bool") + 1] == ""
     assert "-v" not in cmd
     assert cmd.count("--tag") == 2
 
@@ -2755,6 +2987,154 @@ def test_run_task_worker_drains_output_while_collecting_source_state(
     assert info["source_states"] == ["git late | clean | script late"]
     run_text = Path(task_dir, RUN_LOGS_DIR, "run1.log").read_text(encoding="utf-8")
     assert run_text.index("[PYRUNS] Source git late") < run_text.index("done")
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_drains_output_after_capture_storage_failure(
+    mock_popen,
+    _mock_emit,
+    mock_detect,
+    tmp_path,
+    monkeypatch,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
+    Path(task_dir, TASK_INFO_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "CaptureFailureTask",
+                "script": "script.py",
+                "status": "queued",
+                "start_times": [],
+                "finish_times": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output_drained = threading.Event()
+    chunks = iter([b"x" * 4096, b""])
+
+    def read_output(_size):
+        chunk = next(chunks)
+        if not chunk:
+            output_drained.set()
+        return chunk
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.returncode = 0
+    mock_proc.stdout.read1.side_effect = read_output
+
+    def wait_for_drain():
+        if not output_drained.wait(1):
+            raise RuntimeError("child remained blocked because output was not drained")
+        return 0
+
+    mock_proc.wait.side_effect = wait_for_drain
+    mock_popen.return_value = mock_proc
+
+    def fail_spool(*_args, **_kwargs):
+        raise OSError("capture spool unavailable")
+
+    monkeypatch.setattr(executor.tempfile, "SpooledTemporaryFile", fail_spool)
+    with patch("pyruns.core.executor._build_run_source_state", return_value="git none | unknown | script none"):
+        result = run_task_worker(
+            task_dir=task_dir,
+            name="CaptureFailureTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert output_drained.is_set()
+    assert result["status"] == "failed"
+    assert "output capture failed" in result["error"].lower()
+    assert load_task_info(task_dir)["status"] == "failed"
+    assert "capture spool unavailable" in Path(
+        task_dir,
+        RUN_LOGS_DIR,
+        ERROR_LOG_FILENAME,
+    ).read_text(encoding="utf-8")
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.kill_process")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_closes_capture_when_process_wait_fails(
+    mock_popen,
+    mock_kill,
+    _mock_emit,
+    mock_detect,
+    tmp_path,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = str(tmp_path)
+    os.makedirs(os.path.join(task_dir, RUN_LOGS_DIR), exist_ok=True)
+    Path(task_dir, TASK_INFO_FILENAME).write_text(
+        json.dumps(
+            {
+                "name": "WaitFailureTask",
+                "script": "script.py",
+                "status": "queued",
+                "start_times": [],
+                "finish_times": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    terminated = threading.Event()
+    output_closed = threading.Event()
+    output_finished = threading.Event()
+
+    def wait(timeout=None):
+        if timeout is None:
+            raise OSError("wait failed")
+        assert terminated.is_set()
+        return 1
+
+    def poll():
+        return 1 if terminated.is_set() else None
+
+    def read_output(_size):
+        assert output_closed.wait(1)
+        output_finished.set()
+        return b""
+
+    def kill(_pid, expected_create_time=None):
+        terminated.set()
+        return True
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.wait.side_effect = wait
+    mock_proc.poll.side_effect = poll
+    mock_proc.stdout.read1.side_effect = read_output
+    mock_proc.close_output.side_effect = output_closed.set
+    mock_popen.return_value = mock_proc
+    mock_kill.side_effect = kill
+
+    with patch(
+        "pyruns.core.executor._build_run_source_state",
+        return_value="git none | unknown | script none",
+    ):
+        result = run_task_worker(
+            task_dir=task_dir,
+            name="WaitFailureTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "wait failed"
+    assert output_finished.is_set()
+    mock_proc.close_output.assert_called_once_with()
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

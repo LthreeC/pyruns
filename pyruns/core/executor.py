@@ -641,6 +641,7 @@ def _prepare_env(
     task_kind: str = TASK_KIND_CONFIG,
     config_file: str = CONFIG_FILENAME,
     python_runtime: Optional[Dict[str, str]] = None,
+    wsl_env_keys: Optional[set[str]] = None,
 ) -> Dict[str, str]:
     """Build the subprocess environment."""
 
@@ -655,9 +656,10 @@ def _prepare_env(
         )
     else:
         env.pop(ENV_KEY_CONFIG, None)
-    env.update(_load_workspace_global_env(task_dir))
-    if extra_env:
-        env.update(normalize_environment(extra_env))
+    workspace_env = _load_workspace_global_env(task_dir)
+    task_env = normalize_environment(extra_env) if extra_env else {}
+    env.update(workspace_env)
+    env.update(task_env)
     # The Web UI bootstrap credential is process-private and must never become
     # part of a user task's environment, including through workspace overrides.
     env.pop("PYRUNS_UI_TOKEN", None)
@@ -665,6 +667,17 @@ def _prepare_env(
     pyruns_import_root = _current_pyruns_import_root()
     _prepend_pythonpath(env, pyruns_import_root)
     _prepend_pythonpath(env, _pyruns_sitecustomize_guard_root(pyruns_import_root))
+    if wsl_env_keys is not None:
+        wsl_env_keys.update(
+            {
+                "PYTHONIOENCODING",
+                "PYTHONUTF8",
+                "PYTHONUNBUFFERED",
+                *workspace_env.keys(),
+                *task_env.keys(),
+            }
+        )
+        wsl_env_keys.discard("PYRUNS_UI_TOKEN")
     return env
 
 
@@ -1089,6 +1102,7 @@ def _spawn_captured_process(
     return subprocess.Popen(
         command,
         shell=False,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=workdir,
@@ -1204,73 +1218,171 @@ def _build_command(
                     return normalized_flags[0]
                 return f"--{key}"
 
+            def _uses_builtin_bool_type(info: Dict[str, Any]) -> bool:
+                type_name = str(info.get("type", "") or "")
+                return type_name == "bool" or type_name.endswith(".bool")
+
+            def _argument_text(info: Dict[str, Any], value: Any, *, label: str) -> str:
+                if not _uses_builtin_bool_type(info):
+                    return str(value)
+                if not isinstance(value, bool):
+                    raise RuntimeError(
+                        f"argparse type bool for {label} cannot represent configured "
+                        f"value {value!r}"
+                    )
+                # argparse's bool converter treats every non-empty string as True.
+                return "1" if value else ""
+
             def _append_option(key: str, value: Any) -> None:
                 info = ap_params.get(key, {}) if isinstance(ap_params, dict) else {}
                 action = str(info.get("action", "") or "")
                 nargs = info.get("nargs")
                 flag = _option_flag_for_key(key)
+                default = info.get("default")
 
-                def _negative_bool_flag(raw_flag: str) -> str:
-                    if raw_flag.startswith("--no-"):
-                        return raw_flag
+                def _cannot_represent() -> None:
+                    raise RuntimeError(
+                        f"argparse action {action or 'store'} for {flag} cannot represent "
+                        f"configured value {value!r}; use a compatible argparse action or a shell task."
+                    )
+
+                def _appended_values() -> List[Any]:
+                    if not isinstance(value, (list, tuple, ListConfig)):
+                        _cannot_represent()
+                    desired = list(value)
+                    if default is None:
+                        if not desired:
+                            _cannot_represent()
+                        baseline: List[Any] = []
+                    elif isinstance(default, (list, tuple, ListConfig)):
+                        baseline = list(default)
+                    else:
+                        _cannot_represent()
+                    if desired[:len(baseline)] != baseline:
+                        _cannot_represent()
+                    return desired[len(baseline) :]
+
+                def _text(item: Any) -> str:
+                    return _argument_text(info, item, label=flag)
+
+                def _negative_bool_flag(raw_flag: str) -> str | None:
                     if raw_flag.startswith("--"):
                         return f"--no-{raw_flag[2:]}"
-                    return raw_flag
+                    return None
+
+                if action == "store_const":
+                    if value == default:
+                        return
+                    if value == info.get("const"):
+                        cmd_list.append(flag)
+                        return
+                    _cannot_represent()
+
+                if action == "append_const":
+                    if value == default:
+                        return
+                    additions = _appended_values()
+                    if any(item != info.get("const") for item in additions):
+                        _cannot_represent()
+                    cmd_list.extend([flag] * len(additions))
+                    return
+
+                if action == "count":
+                    if value == default:
+                        return
+                    if isinstance(value, bool) or not isinstance(value, (int, float)):
+                        _cannot_represent()
+                    if default is None:
+                        if not isinstance(value, int) or value == 0:
+                            _cannot_represent()
+                        repeat = value
+                    else:
+                        if isinstance(default, bool) or type(value) is not type(default):
+                            _cannot_represent()
+                        repeat_delta = value - default
+                        if isinstance(repeat_delta, int):
+                            repeat = repeat_delta
+                        elif isinstance(repeat_delta, float) and repeat_delta.is_integer():
+                            repeat = int(repeat_delta)
+                        else:
+                            _cannot_represent()
+                    if repeat < 0:
+                        _cannot_represent()
+                    cmd_list.extend([flag] * repeat)
+                    return
+
+                if action.endswith("BooleanOptionalAction") and value == default:
+                    return
 
                 if isinstance(value, bool):
                     if action.endswith("BooleanOptionalAction"):
-                        cmd_list.append(flag if value else _negative_bool_flag(flag))
+                        if value == default:
+                            return
+                        selected_flag = flag if value else _negative_bool_flag(flag)
+                        if selected_flag is None:
+                            _cannot_represent()
+                        cmd_list.append(selected_flag)
                     elif action == "store_false":
-                        if not value:
+                        if value == default:
+                            return
+                        if value is False:
                             cmd_list.append(flag)
+                        else:
+                            _cannot_represent()
                     elif action == "store_true":
-                        if value:
+                        if value == default:
+                            return
+                        if value is True:
                             cmd_list.append(flag)
+                        else:
+                            _cannot_represent()
                     elif key in ap_params:
+                        if value == default:
+                            return
+                        if not _uses_builtin_bool_type(info):
+                            _cannot_represent()
                         cmd_list.append(flag)
-                        cmd_list.append(str(value))
+                        cmd_list.append(_text(value))
                     elif value:
                         cmd_list.append(flag)
                     return
 
-                if isinstance(value, (list, ListConfig)):
+                if action.endswith("BooleanOptionalAction") or action in {"store_false", "store_true"}:
+                    _cannot_represent()
+
+                if action == "append" and value == default:
+                    return
+
+                if isinstance(value, (list, tuple, ListConfig)):
                     if action == "append":
-                        for item in value:
+                        for item in _appended_values():
                             cmd_list.append(flag)
                             if isinstance(item, (list, tuple, ListConfig)) and nargs not in (None, ""):
-                                cmd_list.extend(str(part) for part in item)
+                                cmd_list.extend(_text(part) for part in item)
                             else:
-                                cmd_list.append(str(item))
+                                cmd_list.append(_text(item))
                     elif nargs not in (None, ""):
                         cmd_list.append(flag)
-                        cmd_list.extend(str(item) for item in value)
+                        cmd_list.extend(_text(item) for item in value)
                     else:
                         for item in value:
                             cmd_list.append(flag)
-                            cmd_list.append(str(item))
-                    return
-
-                if action == "count":
-                    try:
-                        repeat = int(value)
-                    except (TypeError, ValueError):
-                        repeat = 0
-                    if repeat > 0:
-                        cmd_list.extend([flag] * repeat)
+                            cmd_list.append(_text(item))
                     return
 
                 if value is not None:
                     cmd_list.append(flag)
-                    cmd_list.append(str(value))
+                    cmd_list.append(_text(value))
 
             for key in positional_order:
                 if key in config and config[key] is not None:
                     value = config[key]
+                    info = ap_params.get(key, {}) if isinstance(ap_params, dict) else {}
                     if isinstance(value, (list, ListConfig)):
                         for item in value:
-                            cmd_list.append(str(item))
+                            cmd_list.append(_argument_text(info, item, label=key))
                     else:
-                        cmd_list.append(str(value))
+                        cmd_list.append(_argument_text(info, value, label=key))
 
             for key, value in config.items():
                 if key in positional_order:
@@ -1450,8 +1562,10 @@ def run_task_worker(
     heartbeat_thread: threading.Thread | None = None
     source_state_ready = threading.Event()
     source_state_thread: threading.Thread | None = None
+    reader_thread: threading.Thread | None = None
     source_output_flush_lock = threading.Lock()
     source_output_flush: Callable[[], None] | None = None
+    output_capture_errors: List[Exception] = []
 
     def _owns_current_run(info: Dict[str, Any]) -> bool:
         if not runner_id:
@@ -1619,15 +1733,18 @@ def run_task_worker(
         if not command:
             raise NotImplementedError("No command to run (simulation mode not implemented)")
 
+        wsl_env_keys: set[str] = set()
         env = _prepare_env(
             env_vars,
             task_dir=task_dir,
             task_kind=task_kind,
             config_file=config_file or CONFIG_FILENAME,
             python_runtime=python_runtime,
+            wsl_env_keys=wsl_env_keys,
         )
         env[ENV_KEY_RUN_INDEX] = str(run_index)
-        _augment_wsl_env(command, env, set((env_vars or {}).keys()) | {ENV_KEY_RUN_INDEX})
+        wsl_env_keys.add(ENV_KEY_RUN_INDEX)
+        _augment_wsl_env(command, env, wsl_env_keys)
 
         if workdir and not os.path.isdir(workdir):
             if str(meta_workdir or "").strip():
@@ -1685,7 +1802,7 @@ def run_task_worker(
             _augment_wsl_env(
                 command,
                 env,
-                set((env_vars or {}).keys()) | {ENV_KEY_RUN_INDEX},
+                wsl_env_keys,
             )
             logger.debug(
                 "Direct argv launch failed; retrying through workspace shell: %s",
@@ -1779,75 +1896,91 @@ def run_task_worker(
 
         def _tee_output() -> None:
             nonlocal source_output_flush
-            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            current_log_path = _get_log_path(task_dir, run_index)
-            with (
-                tempfile.SpooledTemporaryFile(
-                    max_size=_SOURCE_OUTPUT_SPOOL_MAX_BYTES,
-                    mode="w+b",
-                ) as pending,
-                open(current_log_path, "ab") as handle,
-            ):
-                output_lock = threading.Lock()
+            try:
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                current_log_path = _get_log_path(task_dir, run_index)
+                with (
+                    tempfile.SpooledTemporaryFile(
+                        max_size=_SOURCE_OUTPUT_SPOOL_MAX_BYTES,
+                        mode="w+b",
+                    ) as pending,
+                    open(current_log_path, "ab") as handle,
+                ):
+                    output_lock = threading.Lock()
 
-                def _append_output(text: str) -> None:
-                    encoded = text.encode("utf-8")
-                    if encoded:
-                        handle.write(encoded)
-                    handle.flush()
-                    normalized = normalize_log_newlines(text)
-                    if normalized:
-                        log_emitter.emit(
-                            name,
-                            normalized,
-                            offset=handle.tell(),
-                            log_file_name=os.path.basename(log_path),
-                            task_dir=task_dir,
-                        )
-
-                def _flush_pending() -> None:
-                    if pending.tell() == 0:
-                        return
-                    pending.seek(0)
-                    while header := pending.read(8):
-                        size = int.from_bytes(header, "big")
-                        _append_output(pending.read(size).decode("utf-8"))
-                    pending.seek(0)
-                    pending.truncate()
-
-                def _queue_or_append(text: str) -> None:
-                    if not text:
-                        return
-                    with output_lock:
-                        if source_state_ready.is_set():
-                            _flush_pending()
-                            _append_output(text)
-                            return
+                    def _append_output(text: str) -> None:
                         encoded = text.encode("utf-8")
-                        pending.write(len(encoded).to_bytes(8, "big"))
-                        pending.write(encoded)
+                        if encoded:
+                            handle.write(encoded)
+                        handle.flush()
+                        normalized = normalize_log_newlines(text)
+                        if normalized:
+                            log_emitter.emit(
+                                name,
+                                normalized,
+                                offset=handle.tell(),
+                                log_file_name=os.path.basename(log_path),
+                                task_dir=task_dir,
+                            )
 
-                def _flush_when_source_ready() -> None:
-                    if not source_state_ready.is_set():
-                        return
-                    with output_lock:
-                        _flush_pending()
+                    def _flush_pending() -> None:
+                        if pending.tell() == 0:
+                            return
+                        pending.seek(0)
+                        while header := pending.read(8):
+                            size = int.from_bytes(header, "big")
+                            _append_output(pending.read(size).decode("utf-8"))
+                        pending.seek(0)
+                        pending.truncate()
 
-                with source_output_flush_lock:
-                    source_output_flush = _flush_when_source_ready
-                    _flush_when_source_ready()
+                    def _queue_or_append(text: str) -> None:
+                        if not text:
+                            return
+                        with output_lock:
+                            if source_state_ready.is_set():
+                                _flush_pending()
+                                _append_output(text)
+                                return
+                            encoded = text.encode("utf-8")
+                            pending.write(len(encoded).to_bytes(8, "big"))
+                            pending.write(encoded)
+
+                    def _flush_when_source_ready() -> None:
+                        if not source_state_ready.is_set():
+                            return
+                        with output_lock:
+                            _flush_pending()
+
+                    try:
+                        with source_output_flush_lock:
+                            source_output_flush = _flush_when_source_ready
+                            _flush_when_source_ready()
+                        for chunk in iter(lambda: proc.stdout.read1(4096), b""):
+                            if not chunk:
+                                break
+                            _queue_or_append(decoder.decode(chunk))
+                        _queue_or_append(decoder.decode(b"", final=True))
+                        source_state_ready.wait()
+                        _flush_when_source_ready()
+                    finally:
+                        with source_output_flush_lock:
+                            if source_output_flush is _flush_when_source_ready:
+                                source_output_flush = None
+            except Exception as exc:
+                output_capture_errors.append(exc)
+                logger.error("Task output capture failed for %s: %s", name, exc)
                 try:
-                    for chunk in iter(lambda: proc.stdout.read1(4096), b""):
-                        if not chunk:
-                            break
-                        _queue_or_append(decoder.decode(chunk))
-                    _queue_or_append(decoder.decode(b"", final=True))
-                    source_state_ready.wait()
-                    _flush_when_source_ready()
-                finally:
-                    with source_output_flush_lock:
-                        if source_output_flush is _flush_when_source_ready:
-                            source_output_flush = None
+                    for _chunk in iter(lambda: proc.stdout.read1(4096), b""):
+                        pass
+                except Exception as drain_exc:
+                    output_capture_errors.append(drain_exc)
+                    logger.error("Task output drain failed for %s: %s", name, drain_exc)
+                    _terminate_started_process(
+                        proc,
+                        expected_create_time=process_create_time,
+                        task_name=name,
+                        run_index=run_index,
+                    )
 
         reader_thread = threading.Thread(target=_tee_output, daemon=True)
         reader_thread.start()
@@ -1861,6 +1994,14 @@ def run_task_worker(
             close_output()
         _join_source_state()
         reader_thread.join(timeout=5)
+        if reader_thread.is_alive():
+            output_capture_errors.append(RuntimeError("output reader did not stop after process exit"))
+        if output_capture_errors:
+            detail = "; ".join(
+                f"{type(error).__name__}: {error}"
+                for error in output_capture_errors
+            )
+            raise RuntimeError(f"Task output capture failed: {detail}") from output_capture_errors[0]
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
             status = "cancelled"
@@ -1986,8 +2127,16 @@ def run_task_worker(
             task_name=name,
             run_index=run_index,
         )
+        close_output = getattr(proc, "close_output", None) if proc is not None else None
+        if callable(close_output):
+            try:
+                close_output()
+            except Exception as close_exc:
+                logger.debug("Failed to close captured output for %s: %s", name, close_exc)
         _capture_process_metrics()
         _join_source_state()
+        if reader_thread is not None:
+            reader_thread.join(timeout=5)
 
         def _mark_error(info: Dict[str, Any]) -> None:
             if not _owns_current_run(info):
