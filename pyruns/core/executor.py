@@ -956,6 +956,13 @@ def _materialize_windows_shell_wrapper(
 ) -> Tuple[List[str], str, List[str]]:
     """Create a native Windows wrapper script around the stored shell task body."""
 
+    if _shell_executable_name(shell_path) in {"wsl", "wsl.exe"}:
+        return [
+            shell_path,
+            "--exec",
+            "/bin/bash",
+            _windows_posix_script_arg(shell_path, script_path),
+        ], task_dir, []
     if _is_posix_shell_executable(shell_path):
         return [shell_path, _windows_posix_script_arg(shell_path, script_path)], task_dir, []
 

@@ -677,25 +677,6 @@ def test_script_info_replace_failure_preserves_previous_file(tmp_path, monkeypat
     assert list(workspace.glob(f".{SCRIPT_INFO_FILENAME}.*.tmp")) == []
 
 
-def test_script_info_fsyncs_parent_after_atomic_replace(tmp_path, monkeypatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    synced: list[str] = []
-
-    monkeypatch.setattr(
-        launcher,
-        "_fsync_parent_directory",
-        lambda path: synced.append(path),
-    )
-
-    launcher._write_script_info(str(workspace), {"script_name": "train"})
-
-    script_info = workspace / SCRIPT_INFO_FILENAME
-    assert json.loads(script_info.read_text(encoding="utf-8"))["script_name"] == "train"
-    assert len(synced) == 1
-    assert Path(synced[0]) == script_info
-
-
 def test_active_marker_replace_failure_preserves_previous_file(tmp_path, monkeypatch):
     project_root = tmp_path / "_pyruns_"
     workspace = project_root / "train"
@@ -726,9 +707,13 @@ def test_active_marker_replace_failure_preserves_previous_file(tmp_path, monkeyp
     assert list(project_root.glob(f".{ACTIVE_WORKSPACE_FILENAME}.*.tmp")) == []
 
 
-def test_active_marker_fsyncs_parent_after_atomic_replace(tmp_path, monkeypatch):
-    project_root = tmp_path / "_pyruns_"
-    workspace = project_root / "train"
+@pytest.mark.parametrize("metadata_kind", ["script_info", "active_marker"])
+def test_workspace_metadata_fsyncs_parent_after_atomic_replace(
+    tmp_path,
+    monkeypatch,
+    metadata_kind,
+):
+    workspace = tmp_path / ("_pyruns_/train" if metadata_kind == "active_marker" else "workspace")
     workspace.mkdir(parents=True)
     synced: list[str] = []
 
@@ -738,9 +723,14 @@ def test_active_marker_fsyncs_parent_after_atomic_replace(tmp_path, monkeypatch)
         lambda path: synced.append(path),
     )
 
-    launcher.mark_workspace_active(str(workspace))
+    if metadata_kind == "script_info":
+        launcher._write_script_info(str(workspace), {"script_name": "train"})
+        target = workspace / SCRIPT_INFO_FILENAME
+        assert json.loads(target.read_text(encoding="utf-8"))["script_name"] == "train"
+    else:
+        launcher.mark_workspace_active(str(workspace))
+        target = workspace.parent / ACTIVE_WORKSPACE_FILENAME
+        assert target.read_text(encoding="utf-8") == "train"
 
-    marker = project_root / ACTIVE_WORKSPACE_FILENAME
-    assert marker.read_text(encoding="utf-8") == "train"
     assert len(synced) == 1
-    assert Path(synced[0]) == marker
+    assert Path(synced[0]) == target

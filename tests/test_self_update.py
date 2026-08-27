@@ -45,6 +45,26 @@ class _PyPIResponse:
         return self.payload[:limit]
 
 
+def _publish_update_request(
+    state_dir,
+    owner_id: str,
+    request_id: str,
+    **values,
+) -> CoordinationStore:
+    store = CoordinationStore(state_dir)
+    request = process_record(record_id=owner_id, kind="ui-update")
+    request.update({
+        "request_id": request_id,
+        "owner_instance_id": owner_id,
+        "previous_version": "0.3.0",
+        **values,
+    })
+    store.ensure()
+    with store.locked():
+        store.write_request_locked(request)
+    return store
+
+
 def test_update_coordinator_requires_idle_runtime_and_gates_new_starts():
     shutdowns = []
     active = self_update.UiUpdateCoordinator(lambda: shutdowns.append("active"))
@@ -310,22 +330,15 @@ def test_coordinated_update_does_not_run_pip_when_records_are_unavailable(
     monkeypatch,
 ):
     state_dir = tmp_path / "coordination"
-    store = CoordinationStore(state_dir)
     owner_id = "a" * 32
     request_id = "b" * 32
-    request = process_record(record_id=owner_id, kind="ui-update")
-    request.update(
-        {
-            "request_id": request_id,
-            "owner_instance_id": owner_id,
-            "operation": "upgrade",
-            "stage": "draining",
-            "previous_version": "0.3.0",
-        }
+    store = _publish_update_request(
+        state_dir,
+        owner_id,
+        request_id,
+        operation="upgrade",
+        stage="draining",
     )
-    store.ensure()
-    with store.locked():
-        store.write_request_locked(request)
 
     activities_dir = os.path.abspath(store.activities_dir)
     original_listdir = update_coordination.os.listdir
@@ -389,23 +402,16 @@ def test_shared_task_guard_preserves_task_start_errors(tmp_path):
 
 def test_coordinated_update_waits_for_handoff_then_publishes_to_waiter(tmp_path, monkeypatch):
     state_dir = tmp_path / "coordination"
-    store = CoordinationStore(state_dir)
     owner_id = "a" * 32
     follower_id = "b" * 32
     request_id = "c" * 32
-    request = process_record(record_id=owner_id, kind="ui-update")
-    request.update(
-        {
-            "request_id": request_id,
-            "owner_instance_id": owner_id,
-            "operation": "upgrade",
-            "stage": "draining",
-            "previous_version": "0.3.0",
-        }
+    store = _publish_update_request(
+        state_dir,
+        owner_id,
+        request_id,
+        operation="upgrade",
+        stage="draining",
     )
-    store.ensure()
-    with store.locked():
-        store.write_request_locked(request)
     follower = process_record(record_id=follower_id, kind="ui")
     follower.update(
         {
@@ -460,20 +466,13 @@ def test_coordinated_update_waits_for_handoff_then_publishes_to_waiter(tmp_path,
 
 def test_activity_lease_rejects_starts_while_shared_gate_is_active(tmp_path):
     state_dir = tmp_path / "coordination"
-    store = CoordinationStore(state_dir)
     owner_id = "d" * 32
-    request = process_record(record_id=owner_id, kind="ui-update")
-    request.update(
-        {
-            "request_id": "e" * 32,
-            "owner_instance_id": owner_id,
-            "stage": "updating",
-            "previous_version": "0.3.0",
-        }
+    _publish_update_request(
+        state_dir,
+        owner_id,
+        "e" * 32,
+        stage="updating",
     )
-    store.ensure()
-    with store.locked():
-        store.write_request_locked(request)
 
     with pytest.raises(UpdateInProgressError, match="new tasks are disabled"):
         EnvironmentActivityLease("cli-runner", state_dir=str(state_dir)).start()

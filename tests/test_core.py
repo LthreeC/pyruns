@@ -97,6 +97,15 @@ class _StaticGpuProvider:
         return list(self.devices)
 
 
+def _make_task_manager(tasks_dir: Path, *, lazy_scan=False, **kwargs) -> TaskManager:
+    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
+        return TaskManager(
+            tasks_dir=str(tasks_dir),
+            lazy_scan=lazy_scan,
+            **kwargs,
+        )
+
+
 def _mark_task_owned_by_manager(
     manager: TaskManager,
     task_name: str,
@@ -2166,6 +2175,22 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
     assert wsl_workdir == str(task_dir)
     assert wsl_cleanup_paths == []
 
+    modern_wsl_command, modern_wsl_workdir, modern_wsl_cleanup_paths = (
+        executor._materialize_windows_shell_wrapper(
+            str(task_dir),
+            r"C:\Users\me\project\_pyruns_\shell\tasks\task\run.sh",
+            r"C:\Windows\System32\wsl.exe",
+        )
+    )
+    assert modern_wsl_command == [
+        r"C:\Windows\System32\wsl.exe",
+        "--exec",
+        "/bin/bash",
+        "/mnt/c/Users/me/project/_pyruns_/shell/tasks/task/run.sh",
+    ]
+    assert modern_wsl_workdir == str(task_dir)
+    assert modern_wsl_cleanup_paths == []
+
     env = {ENV_KEY_CONFIG: r"C:\task\config.yaml", "PYRUNS_EXAMPLE_ENV": "ok", "WSLENV": "EXISTING"}
     executor._augment_wsl_env(
         [r"C:\Windows\System32\bash.exe", "/mnt/c/run.sh"],
@@ -3700,12 +3725,7 @@ def test_task_manager_uses_explicit_runner_token(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(
-            tasks_dir=str(tasks_dir),
-            lazy_scan=False,
-            runner_token="submission-token",
-        )
+    manager = _make_task_manager(tasks_dir, runner_token="submission-token")
 
     assert manager.runner_id.rsplit(":", 1)[-1] == "submission-token"
     manager.shutdown()
@@ -3716,8 +3736,7 @@ def test_task_manager_start_batch_tasks_uses_available_slots_immediately(tmp_pat
     generator = TaskGenerator(root_dir=str(tasks_dir))
     tasks = [generator.create_task(f"task-{idx}", {"value": idx}) for idx in range(5)]
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     submitted: list[tuple[str, int, bool]] = []
 
@@ -3748,8 +3767,7 @@ def test_task_manager_sync_status_does_not_revive_cancelled_queued_task(tmp_path
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("race-cancel", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         current = manager._tasks_by_name[task["name"]]
@@ -3775,8 +3793,7 @@ def test_task_manager_submit_after_delete_does_not_recreate_or_execute(tmp_path,
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("delete-race", {"value": 1})
     update_task_info(task["dir"], lambda info: info.update({"status": "queued"}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     picked, run_index = manager._pick_queued_task()
     assert picked is not None
@@ -3840,8 +3857,7 @@ def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path,
         lambda pid, expected_create_time=None: killed.append(pid) or True,
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.get_task("expired")["status"] == "failed"
     assert manager.cancel_task("expired") is False
@@ -3877,8 +3893,7 @@ def test_task_manager_does_not_fail_runner_that_renews_during_stale_reconciliati
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=None)
+    manager = _make_task_manager(tasks_dir, lazy_scan=None)
 
     stale_info = load_task_info(str(task_dir))
     mark_failed = manager._mark_failed_on_disk
@@ -3910,8 +3925,7 @@ def test_task_manager_start_task_now_skips_active_task(tmp_path, monkeypatch):
     generator = TaskGenerator(root_dir=str(tasks_dir))
     task = generator.create_task("runner", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         active = manager._tasks_by_name[task["name"]]
@@ -3949,8 +3963,7 @@ def test_task_manager_plain_queued_pick_computes_next_run_from_history(tmp_path)
         }),
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     picked, run_index = manager._pick_queued_task()
 
@@ -3966,8 +3979,7 @@ def test_task_manager_start_batch_tasks_skips_active_tasks(tmp_path, monkeypatch
     generator = TaskGenerator(root_dir=str(tasks_dir))
     tasks = [generator.create_task(f"task-{idx}", {"value": idx}) for idx in range(3)]
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         active = manager._tasks_by_name[tasks[0]["name"]]
@@ -4018,8 +4030,7 @@ def test_task_manager_run_now_does_not_consume_batch_slots(tmp_path, monkeypatch
         def shutdown(self, **kwargs):
             pass
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     monkeypatch.setattr(task_manager_module, "ThreadPoolExecutor", CapturingExecutor)
 
@@ -4062,8 +4073,7 @@ def test_task_manager_gpu_auto_queues_and_writes_queue_log_before_assignment(tmp
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-wait", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     submitted = []
     monkeypatch.setattr(manager, "_submit_task", lambda *args, **kwargs: submitted.append((args, kwargs)))
@@ -4108,8 +4118,7 @@ def test_task_manager_gpu_batch_run_waits_each_selected_task(tmp_path, monkeypat
     generator = TaskGenerator(root_dir=str(tasks_dir))
     tasks = [generator.create_task(f"gpu-batch-{idx}", {"lr": idx}) for idx in range(3)]
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     submitted = []
     monkeypatch.setattr(manager, "_submit_task", lambda *args, **kwargs: submitted.append((args, kwargs)))
@@ -4167,8 +4176,7 @@ def test_task_manager_gpu_auto_assigns_cuda_env_when_queued_task_is_picked(tmp_p
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-run", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     now = [100.0]
     manager.gpu_scheduler = GpuResourceScheduler(
@@ -4250,8 +4258,7 @@ def test_task_manager_gpu_scheduler_respects_foreign_running_assignment(tmp_path
     )
     update_task_info(local["dir"], lambda info: info.update({"status": "queued"}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     now = [100.0]
     manager.gpu_scheduler = GpuResourceScheduler(
@@ -4292,8 +4299,7 @@ def test_task_manager_gpu_scheduler_respects_undiscovered_foreign_assignment(tmp
     generator = TaskGenerator(root_dir=str(tasks_dir))
     local = generator.create_task("local-gpu", {"lr": 0.2})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     remote = generator.create_task("remote-gpu", {"lr": 0.1})
     update_task_info(
@@ -4358,8 +4364,7 @@ def test_task_manager_gpu_claim_failure_restores_disk_state(tmp_path, monkeypatc
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("claim-race", {"lr": 0.1})
     update_task_info(task["dir"], lambda info: info.update({"status": "queued"}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     now = [100.0]
     manager.gpu_scheduler = GpuResourceScheduler(
@@ -4409,8 +4414,7 @@ def test_task_manager_gpu_wait_does_not_advance_public_run_index_until_assignmen
         }),
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager.start_batch_tasks([task["name"]], max_workers=1)
 
@@ -4460,8 +4464,7 @@ def test_task_manager_gpu_auto_independent_task_can_bypass_full_batch_slots(tmp_
     batch_task = generator.create_task("batch-wait", {"lr": 0.1})
     run_now_task = generator.create_task("run-now", {"lr": 0.2})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager.max_workers = 1
     manager._mark_running_locked("already-running", counts_for_batch=True)
@@ -4531,8 +4534,7 @@ def test_task_manager_gpu_independent_submit_does_not_consume_batch_slots(tmp_pa
         def shutdown(self, **kwargs):
             pass
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     monkeypatch.setattr(task_manager_module, "ThreadPoolExecutor", CapturingExecutor)
     manager.max_workers = 1
@@ -4591,8 +4593,7 @@ def test_task_manager_start_task_now_queues_gpu_task_as_independent(tmp_path, mo
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("run-now-gpu", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     submitted = []
     monkeypatch.setattr(manager, "_submit_task", lambda *args, **kwargs: submitted.append((args, kwargs)))
@@ -4610,8 +4611,7 @@ def test_task_manager_clears_stale_gpu_schedule_env_before_plain_rerun(tmp_path,
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-stale-env", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         target = manager._tasks_by_name[task["name"]]
@@ -4644,8 +4644,7 @@ def test_task_manager_plain_rerun_does_not_create_gpu_wait_state(tmp_path, final
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("plain-rerun", {"lr": 0.1})
     update_task_info(task["dir"], lambda info: info.update({"status": final_status, "run_index": 1}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.rerun_task(task["name"]) is True
 
@@ -4661,8 +4660,7 @@ def test_task_manager_on_task_done_clears_gpu_schedule_state(tmp_path):
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-done", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         target = manager._tasks_by_name[task["name"]]
@@ -4707,8 +4705,7 @@ def test_task_manager_gpu_auto_respects_existing_cuda_visible_devices_in_task_en
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-fixed", {"lr": 0.1})
     update_task_info(str(Path(task["dir"])), lambda info: info.update({"env": {"CUDA_VISIBLE_DEVICES": "1,2"}}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     now = [200.0]
     manager.gpu_scheduler = GpuResourceScheduler(
@@ -4753,8 +4750,7 @@ def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path)
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-timeout", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager.start_batch_tasks([task["name"]], max_workers=1)
     with manager._lock:
@@ -4795,8 +4791,7 @@ def test_task_manager_gpu_wait_timeout_preserves_task_claimed_by_foreign_runner(
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-timeout-race", {"lr": 0.1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager.start_batch_tasks([task["name"]], max_workers=1)
     with manager._lock:
@@ -4862,8 +4857,7 @@ def test_task_manager_queued_placeholder_run_slot_is_trimmed_before_next_assignm
         }),
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     queued = manager.get_task(task["name"])
     assert queued["status"] == "queued"
@@ -4904,8 +4898,7 @@ def test_task_manager_cancel_queued_task_does_not_create_run_slot(tmp_path):
         }),
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.cancel_task(task["name"]) is True
 
@@ -5035,8 +5028,7 @@ def test_task_manager_cancel_task_persists_reason_before_verified_termination(tm
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     events = []
@@ -5087,8 +5079,7 @@ def test_task_manager_cancel_task_fails_closed_when_task_info_is_busy(tmp_path, 
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     killed = []
@@ -5128,8 +5119,7 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     monkeypatch.setattr(
@@ -5172,8 +5162,7 @@ def test_task_manager_cancel_task_does_not_finalize_or_kill_a_reused_pid(tmp_pat
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "reused", task_dir)
 
     monkeypatch.setattr(
@@ -5227,8 +5216,7 @@ def test_task_manager_cancel_task_refreshes_completed_disk_state(tmp_path):
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     update_task_info(
         str(task_dir),
@@ -5275,8 +5263,7 @@ def test_task_manager_cancel_foreign_live_runner_preserves_owner_and_gpu(tmp_pat
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.cancel_task("foreign") is False
     info = load_task_info(str(task_dir))
@@ -5302,8 +5289,7 @@ def test_task_manager_shutdown_does_not_recreate_deleted_owned_task(
         lambda _pid, _created_at: True,
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=None)
+    manager = _make_task_manager(tasks_dir, lazy_scan=None)
 
     save_task_info(
         str(task_dir),
@@ -5365,8 +5351,7 @@ def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypat
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     lock_checks = []
@@ -5415,8 +5400,7 @@ def test_task_manager_delete_running_task_stays_put_when_process_survives(tmp_pa
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
     monkeypatch.setattr(
         "pyruns.core.task_manager.kill_process",
@@ -5452,8 +5436,7 @@ def test_task_manager_delete_active_task_fails_closed_when_task_info_is_busy(tmp
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("busy")))
 
@@ -5486,8 +5469,7 @@ def test_task_manager_delete_completed_disk_state_does_not_mark_failed(tmp_path)
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     update_task_info(
         str(task_dir),
@@ -5535,8 +5517,7 @@ def test_task_manager_delete_foreign_live_runner_preserves_task(tmp_path):
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.delete_tasks(["foreign"]) == []
     assert task_dir.exists()
@@ -5597,8 +5578,7 @@ def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_pa
         "pyruns.core.task_manager.kill_process",
         lambda pid, expected_create_time=None: killed.append(pid) or True,
     )
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", running_dir, pids=[111, 222])
 
     manager._cleanup_on_shutdown()
@@ -5615,8 +5595,7 @@ def test_task_manager_shutdown_cleanup_ignores_malformed_in_memory_tasks(tmp_pat
     tasks_dir.mkdir()
 
     monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda pid: None)
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager.tasks = [{}, {"name": "missing-status"}, None]
 
@@ -5630,8 +5609,7 @@ def test_task_manager_shutdown_does_not_overwrite_newer_final_disk_status(tmp_pa
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("finished-elsewhere", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         manager._tasks_by_name[task["name"]]["status"] = "running"
@@ -5650,8 +5628,7 @@ def test_task_manager_shutdown_does_not_overwrite_new_run_claimed_during_cleanup
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("reclaimed", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, task["name"], Path(task["dir"]))
     monkeypatch.setattr(manager, "_current_process_identity", lambda _info: (None, None))
 
@@ -5711,8 +5688,7 @@ def test_task_manager_shutdown_unregisters_atexit_callback(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager_ref = weakref.ref(manager)
     manager.shutdown()
@@ -5847,8 +5823,7 @@ def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
     missing_info_dir = tasks_dir / "missing-info"
     missing_info_dir.mkdir()
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager._load_task_dir("missing-info") is None
 
@@ -5915,8 +5890,7 @@ def test_task_manager_refresh_discovers_external_added_and_removed_tasks(tmp_pat
     generator = TaskGenerator(root_dir=str(tasks_dir))
     alpha = generator.create_task("alpha", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     generator.create_task("beta", {"value": 2})
     shutil.rmtree(alpha["dir"])
@@ -5934,8 +5908,7 @@ def test_task_manager_add_tasks_upserts_existing_name(tmp_path):
     generator = TaskGenerator(root_dir=str(tasks_dir))
     alpha = generator.create_task("alpha", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         manager._tasks_by_name["alpha"]["script"] = "train.py"
@@ -5959,8 +5932,7 @@ def test_task_manager_refresh_keeps_discovered_tasks_in_disk_order(tmp_path):
     base = time.time()
     os.utime(newest["dir"], (base + 30, base + 30))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     older = generator.create_task("older", {"value": 1})
     middle = generator.create_task("middle", {"value": 2})
@@ -5978,8 +5950,7 @@ def test_task_manager_refresh_keeps_tasks_when_directory_scan_fails(tmp_path):
     generator = TaskGenerator(root_dir=str(tasks_dir))
     generator.create_task("alpha", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("stale nfs handle")):
         assert manager.refresh_from_disk(check_all=True, discover=True) is False
@@ -5993,8 +5964,7 @@ def test_task_manager_strict_refresh_fails_closed_on_disk_errors(tmp_path):
     generator = TaskGenerator(root_dir=str(tasks_dir))
     generator.create_task("alpha", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("stale nfs handle")):
         with pytest.raises(OSError, match="stale nfs handle"):
@@ -6052,8 +6022,7 @@ def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypat
     alpha = generator.create_task("alpha", {"value": 1})
     beta = generator.create_task("beta", {"value": 2})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.set_task_pinned("missing") == (False, "Task not found")
     ok, pinned = manager.set_task_pinned("alpha")
@@ -6112,8 +6081,7 @@ def test_task_manager_reorder_rolls_back_partial_writes(tmp_path, monkeypatch):
     alpha = generator.create_task("alpha", {"value": 1})
     beta = generator.create_task("beta", {"value": 2})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     write_count = 0
 
@@ -6237,8 +6205,7 @@ def test_task_manager_delete_active_task_preserves_folder_when_trash_move_fails(
     monkeypatch.setattr("pyruns.core.task_manager.os.rename", lambda src, dst: (_ for _ in ()).throw(OSError("move failed")))
     monkeypatch.setattr("pyruns.core.task_manager.time.sleep", lambda delay: None)
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
 
     def settle(*_args, **_kwargs):
@@ -6288,8 +6255,7 @@ def test_task_manager_keeps_live_foreign_runner_running(tmp_path, monkeypatch):
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: False)
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager.get_task("remote")["status"] == "running"
 
@@ -6319,8 +6285,7 @@ def test_task_manager_refresh_expires_foreign_runner_even_when_mtime_unchanged(t
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: False)
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     task = manager.get_task("remote")
     assert task["status"] == "running"
@@ -6359,8 +6324,7 @@ def test_task_manager_does_not_submit_when_foreign_runner_owns_lease(tmp_path, m
         },
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     submitted = []
 
@@ -6388,8 +6352,7 @@ def test_task_manager_start_batch_sync_conflict_keeps_foreign_runner_without_sub
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     update_task_info(
         task["dir"],
@@ -6428,8 +6391,7 @@ def test_task_manager_expected_run_rejects_completed_race_without_run_two(
     tasks_dir.mkdir()
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("race", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     def complete_first_run(info):
         slot = ensure_run_slot(info, 1)
@@ -6475,8 +6437,7 @@ def test_task_manager_gpu_queue_sync_conflict_skips_wait_log_and_clears_transien
     )
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("gpu-race", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     update_task_info(
         task["dir"],
@@ -6513,8 +6474,7 @@ def test_task_manager_rerun_returns_false_when_queue_sync_conflicts_with_foreign
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     update_task_info(task["dir"], lambda info: info.update({"status": "completed", "run_index": 1}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     update_task_info(
         task["dir"],
@@ -6552,8 +6512,7 @@ def test_task_manager_rejects_run_history_overflow_before_changing_state(
     )
     before = load_task_info(task["dir"], raise_error=True)
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with pytest.raises(ValueError, match="reached the run history limit"):
         if entrypoint == "batch":
@@ -6573,8 +6532,7 @@ def test_task_manager_rejects_starts_after_shutdown(tmp_path, monkeypatch):
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("stopped", {"value": 1})
     update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     manager.shutdown()
     monkeypatch.setattr(
@@ -6596,8 +6554,7 @@ def test_task_manager_shutdown_waits_for_start_lifecycle_section(tmp_path, monke
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     start_entered = threading.Event()
     release_start = threading.Event()
@@ -6647,8 +6604,7 @@ def test_task_manager_does_not_claim_or_queue_creation_rollback_tombstone(tmp_pa
         }),
     )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         current = manager._tasks_by_name[task["name"]]
@@ -6878,8 +6834,7 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
     generator = TaskGenerator(root_dir=str(tasks_dir))
     task = generator.create_task("alpha", {"value": 1})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         target = manager._tasks_by_name["alpha"]
@@ -7070,8 +7025,7 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
     generator.create_task("running", {"value": 2})
     generator.create_task("remote", {"value": 3})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     with manager._lock:
         manager._tasks_by_name["queued"]["status"] = "queued"
@@ -7146,8 +7100,7 @@ def test_task_manager_scan_async_and_disk_discovery_edge_paths(tmp_path, monkeyp
     generator.create_task("keep", {"value": 1})
     stale = generator.create_task("stale", {"value": 2})
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     callbacks = []
 
@@ -7229,8 +7182,7 @@ def test_log_writers_reject_symlinked_run_logs_directory(tmp_path):
             detail_lines=["do not write outside"],
         )
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
     try:
         task = {"name": "safe", "dir": str(task_dir), "run_index": 1}
         manager._append_gpu_queue_log(task, "Queued", ["waiting"])
@@ -7307,8 +7259,7 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     task_dir.mkdir()
     task = {"name": "task", "dir": str(task_dir), "run_index": 1}
 
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     assert manager._format_duration(3660) == "1.0h"
     assert manager._format_duration(120) == "2m"
@@ -7425,8 +7376,7 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
 def test_task_manager_gpu_wait_log_interval_uses_stable_window(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     task = {"name": "task", "dir": str(tasks_dir / "task"), "run_index": 1}
     config = GpuSchedulerConfig(enabled=True, stable_seconds=15)
@@ -7462,8 +7412,7 @@ def test_task_manager_gpu_wait_refresh_labels_stabilizing_candidates():
 def test_task_manager_gpu_wait_log_interval_ignores_reason_changes_until_stable_window(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
-    with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
-        manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
+    manager = _make_task_manager(tasks_dir)
 
     task = {"name": "task", "dir": str(tasks_dir / "task"), "run_index": 1}
     config = GpuSchedulerConfig(enabled=True, stable_seconds=15)

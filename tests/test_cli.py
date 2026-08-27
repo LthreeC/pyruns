@@ -1538,31 +1538,85 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows Bash or WSL")
 def test_exec_runs_sh_file_on_windows_when_bash_is_available(tmp_path):
-    from pyruns.utils.shell_runtime import build_script_file_argv
+    wsl = shutil.which("wsl.exe")
+    if not wsl:
+        pytest.skip("wsl.exe is unavailable")
 
-    workspace = bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    script = tmp_path / "run check.sh"
-    script.write_text(
-        "#!/bin/sh\nprintf 'script=%s|%s\\n' \"$1\" \"$2\"\n",
+    project = tmp_path / "workspace with spaces"
+    project.mkdir()
+    workspace = Path(bootstrap_shell_workspace(str(project / "_pyruns_")))
+    settings = workspace.parent / "_pyruns_settings.yaml"
+    settings.write_text(
+        "shell_mode: custom\n"
+        f"shell_executable: {json.dumps(wsl)}\n",
         encoding="utf-8",
     )
-    try:
-        build_script_file_argv(str(script), [], workspace)
-    except RuntimeError as exc:
-        pytest.skip(str(exc))
+    script = project / "run check.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf 'cwd=%s\\n' \"$PWD\"\n"
+        "printf 'script=%s|%s\\n' \"$1\" \"$2\"\n"
+        "printf 'env=%s\\n' \"$PYRUNS_SCRIPT_ENV\"\n",
+        encoding="utf-8",
+    )
+    translated = subprocess.run(
+        [wsl, "wslpath", "-a", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    ).stdout.strip()
+    direct_env = _source_env()
+    direct_env["PYRUNS_SCRIPT_ENV"] = "wsl-env-ok"
+    direct_env["WSLENV"] = "PYRUNS_SCRIPT_ENV"
+    direct = subprocess.run(
+        [wsl, "--exec", "/bin/bash", translated, "value with spaces", "x&y"],
+        cwd=project,
+        env=direct_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert direct.returncode == 0, direct.stdout + direct.stderr
 
     result = _run_cli(
-        tmp_path,
+        project,
         "exec",
         "--name",
         "direct-windows-sh",
+        "--env",
+        "PYRUNS_SCRIPT_ENV=wsl-env-ok",
         "--",
         str(script),
         "value with spaces",
         "x&y",
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "script=value with spaces|x&y" in result.stdout
+    markers = [
+        f"cwd={translated.rsplit('/', 1)[0]}",
+        "script=value with spaces|x&y",
+        "env=wsl-env-ok",
+    ]
+    assert all(marker in direct.stdout for marker in markers)
+    assert all(marker in result.stdout for marker in markers)
+
+    rerun_cwd = tmp_path / "rerun elsewhere"
+    rerun_cwd.mkdir()
+    rerun = _run_cli(
+        rerun_cwd,
+        "-w",
+        str(workspace),
+        "run",
+        "direct-windows-sh",
+    )
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert all(marker in rerun.stdout for marker in markers)
+    info = load_task_info(str(workspace / TASKS_DIR / "direct-windows-sh"))
+    assert info["exit_codes"] == [0, 0]
+    assert info["env"] == {"PYRUNS_SCRIPT_ENV": "wsl-env-ok"}
+    assert Path(info["workdir"]) == project
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires PowerShell and cmd.exe")

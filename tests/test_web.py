@@ -2601,6 +2601,47 @@ def test_run_root_switch_endpoint_reloads_workspace(tmp_path):
     assert tasks["items"][0]["name"] == "task-b"
 
 
+def _assert_workspace_switch_waits(
+    runtime,
+    workspace: Path,
+    operation,
+    entered: threading.Event,
+    release: threading.Event,
+    message: str,
+) -> None:
+    switched = threading.Event()
+    errors: list[BaseException] = []
+
+    def capture(callback, finished=None):
+        try:
+            callback()
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+        finally:
+            if finished is not None:
+                finished.set()
+
+    operation_thread = threading.Thread(target=capture, args=(operation,))
+    switch_thread = threading.Thread(
+        target=capture,
+        args=(lambda: runtime.change_run_root(str(workspace)), switched),
+    )
+    try:
+        operation_thread.start()
+        assert entered.wait(2)
+        switch_thread.start()
+        assert not switched.wait(0.5), message
+    finally:
+        release.set()
+        operation_thread.join(timeout=5)
+        switch_thread.join(timeout=5)
+        runtime.shutdown()
+
+    assert not operation_thread.is_alive()
+    assert not switch_thread.is_alive()
+    assert errors == []
+
+
 def test_workspace_switch_waits_for_in_flight_task_start(tmp_path, monkeypatch):
     workspace_a = _make_workspace(tmp_path, "main")
     workspace_b = _make_workspace(tmp_path, "alt")
@@ -2609,9 +2650,7 @@ def test_workspace_switch_waits_for_in_flight_task_start(tmp_path, monkeypatch):
     runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
     entered = threading.Event()
     release = threading.Event()
-    switched = threading.Event()
     started_in: list[str] = []
-    errors: list[BaseException] = []
     original_require_task = runtime.require_task
 
     def blocked_require_task(task_name, *, refresh=True):
@@ -2625,38 +2664,16 @@ def test_workspace_switch_waits_for_in_flight_task_start(tmp_path, monkeypatch):
         started_in.append(str(Path(manager.tasks_dir).parent))
         return True
 
-    def start_task():
-        try:
-            runtime.start_task("same-name")
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-
-    def switch_workspace():
-        try:
-            runtime.change_run_root(str(workspace_b))
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-        finally:
-            switched.set()
-
     monkeypatch.setattr(runtime, "require_task", blocked_require_task)
     monkeypatch.setattr(TaskManager, "start_task_now", record_start)
-    start_thread = threading.Thread(target=start_task)
-    switch_thread = threading.Thread(target=switch_workspace)
-    try:
-        start_thread.start()
-        assert entered.wait(2)
-        switch_thread.start()
-        assert not switched.wait(0.5), "workspace changed while task start was in flight"
-    finally:
-        release.set()
-        start_thread.join(timeout=5)
-        switch_thread.join(timeout=5)
-        runtime.shutdown()
-
-    assert not start_thread.is_alive()
-    assert not switch_thread.is_alive()
-    assert errors == []
+    _assert_workspace_switch_waits(
+        runtime,
+        workspace_b,
+        lambda: runtime.start_task("same-name"),
+        entered,
+        release,
+        "workspace changed while task start was in flight",
+    )
     assert started_in == [str(workspace_a)]
 
 
@@ -2668,9 +2685,7 @@ def test_workspace_switch_waits_for_in_flight_runtime_update(tmp_path, monkeypat
     runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
     entered = threading.Event()
     release = threading.Event()
-    switched = threading.Event()
     saved_batches: list[tuple[str, dict[str, object]]] = []
-    errors: list[BaseException] = []
 
     def blocked_save(root, values):
         saved_batches.append((str(Path(root)), dict(values)))
@@ -2678,42 +2693,20 @@ def test_workspace_switch_waits_for_in_flight_runtime_update(tmp_path, monkeypat
         if not release.wait(5):
             raise TimeoutError("runtime update test did not release")
 
-    def update_runtime():
-        try:
-            runtime.update_runtime_settings({
-                "python_executable": "python-a",
-                "conda_env": "env-a",
-            })
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-
-    def switch_workspace():
-        try:
-            runtime.change_run_root(str(workspace_b))
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-        finally:
-            switched.set()
-
     monkeypatch.setattr(runtime_module, "save_settings_for_root", blocked_save)
     monkeypatch.setattr(runtime_module, "load_settings", lambda root: {})
     monkeypatch.setattr(runtime, "get_runtime_info", lambda refresh_providers=False: {"ok": True})
-    update_thread = threading.Thread(target=update_runtime)
-    switch_thread = threading.Thread(target=switch_workspace)
-    try:
-        update_thread.start()
-        assert entered.wait(2)
-        switch_thread.start()
-        assert not switched.wait(0.5), "workspace changed while runtime settings were being saved"
-    finally:
-        release.set()
-        update_thread.join(timeout=5)
-        switch_thread.join(timeout=5)
-        runtime.shutdown()
-
-    assert not update_thread.is_alive()
-    assert not switch_thread.is_alive()
-    assert errors == []
+    _assert_workspace_switch_waits(
+        runtime,
+        workspace_b,
+        lambda: runtime.update_runtime_settings({
+            "python_executable": "python-a",
+            "conda_env": "env-a",
+        }),
+        entered,
+        release,
+        "workspace changed while runtime settings were being saved",
+    )
     assert saved_batches == [(
         str(workspace_a),
         {"python_executable": "python-a", "conda_env": "env-a"},
@@ -2727,9 +2720,7 @@ def test_workspace_switch_waits_for_in_flight_task_creation(tmp_path, monkeypatc
     generator = runtime.task_generator
     entered = threading.Event()
     release = threading.Event()
-    switched = threading.Event()
     added_in: list[str] = []
-    errors: list[BaseException] = []
 
     def blocked_create(configs, name_prefix, *, task_kind=TASK_KIND_CONFIG):
         entered.set()
@@ -2746,43 +2737,21 @@ def test_workspace_switch_waits_for_in_flight_task_creation(tmp_path, monkeypatc
     def record_add(manager, tasks):
         added_in.append(str(Path(manager.tasks_dir).parent))
 
-    def create_task():
-        try:
-            runtime.create_tasks_from_template(
-                name_prefix="created",
-                mode="yaml",
-                yaml_text="lr: 0.1\n",
-                append_timestamp=False,
-            )
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-
-    def switch_workspace():
-        try:
-            runtime.change_run_root(str(workspace_b))
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-        finally:
-            switched.set()
-
     monkeypatch.setattr(generator, "create_tasks", blocked_create)
     monkeypatch.setattr(TaskManager, "add_tasks", record_add)
-    create_thread = threading.Thread(target=create_task)
-    switch_thread = threading.Thread(target=switch_workspace)
-    try:
-        create_thread.start()
-        assert entered.wait(2)
-        switch_thread.start()
-        assert not switched.wait(0.5), "workspace changed while tasks were being created"
-    finally:
-        release.set()
-        create_thread.join(timeout=5)
-        switch_thread.join(timeout=5)
-        runtime.shutdown()
-
-    assert not create_thread.is_alive()
-    assert not switch_thread.is_alive()
-    assert errors == []
+    _assert_workspace_switch_waits(
+        runtime,
+        workspace_b,
+        lambda: runtime.create_tasks_from_template(
+            name_prefix="created",
+            mode="yaml",
+            yaml_text="lr: 0.1\n",
+            append_timestamp=False,
+        ),
+        entered,
+        release,
+        "workspace changed while tasks were being created",
+    )
     assert added_in == [str(workspace_a)]
 
 
@@ -2794,9 +2763,7 @@ def test_workspace_switch_waits_for_in_flight_workspace_read(tmp_path, monkeypat
     runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
     entered = threading.Event()
     release = threading.Event()
-    switched = threading.Event()
     responses: list[dict] = []
-    errors: list[BaseException] = []
     original_load_script_info = runtime_module.load_script_info
     call_count = 0
 
@@ -2809,37 +2776,15 @@ def test_workspace_switch_waits_for_in_flight_workspace_read(tmp_path, monkeypat
                 raise TimeoutError("workspace read test did not release")
         return original_load_script_info(root)
 
-    def read_workspace():
-        try:
-            responses.append(runtime.get_workspace_info())
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-
-    def switch_workspace():
-        try:
-            runtime.change_run_root(str(workspace_b))
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-        finally:
-            switched.set()
-
     monkeypatch.setattr(runtime_module, "load_script_info", blocked_load_script_info)
-    read_thread = threading.Thread(target=read_workspace)
-    switch_thread = threading.Thread(target=switch_workspace)
-    try:
-        read_thread.start()
-        assert entered.wait(2)
-        switch_thread.start()
-        assert not switched.wait(0.5), "workspace changed while metadata was being assembled"
-    finally:
-        release.set()
-        read_thread.join(timeout=5)
-        switch_thread.join(timeout=5)
-        runtime.shutdown()
-
-    assert not read_thread.is_alive()
-    assert not switch_thread.is_alive()
-    assert errors == []
+    _assert_workspace_switch_waits(
+        runtime,
+        workspace_b,
+        lambda: responses.append(runtime.get_workspace_info()),
+        entered,
+        release,
+        "workspace changed while metadata was being assembled",
+    )
     assert Path(responses[0]["run_root"]) == workspace_a
     assert responses[0]["script_name"] == "main"
 
@@ -2854,9 +2799,7 @@ def test_workspace_switch_waits_for_in_flight_log_read(tmp_path, monkeypatch):
     runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
     entered = threading.Event()
     release = threading.Event()
-    switched = threading.Event()
     responses: list[dict] = []
-    errors: list[BaseException] = []
     original_get_log_options = runtime_module.get_log_options
 
     def blocked_get_log_options(task_dir):
@@ -2865,37 +2808,15 @@ def test_workspace_switch_waits_for_in_flight_log_read(tmp_path, monkeypatch):
             raise TimeoutError("log read test did not release")
         return original_get_log_options(task_dir)
 
-    def read_log():
-        try:
-            responses.append(runtime.get_task_logs("same-name", tail_lines=20))
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-
-    def switch_workspace():
-        try:
-            runtime.change_run_root(str(workspace_b))
-        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
-            errors.append(exc)
-        finally:
-            switched.set()
-
     monkeypatch.setattr(runtime_module, "get_log_options", blocked_get_log_options)
-    read_thread = threading.Thread(target=read_log)
-    switch_thread = threading.Thread(target=switch_workspace)
-    try:
-        read_thread.start()
-        assert entered.wait(2)
-        switch_thread.start()
-        assert not switched.wait(0.5), "workspace changed while a log response was being assembled"
-    finally:
-        release.set()
-        read_thread.join(timeout=5)
-        switch_thread.join(timeout=5)
-        runtime.shutdown()
-
-    assert not read_thread.is_alive()
-    assert not switch_thread.is_alive()
-    assert errors == []
+    _assert_workspace_switch_waits(
+        runtime,
+        workspace_b,
+        lambda: responses.append(runtime.get_task_logs("same-name", tail_lines=20)),
+        entered,
+        release,
+        "workspace changed while a log response was being assembled",
+    )
     assert responses[0]["content"].splitlines() == ["workspace-a"]
 
 
@@ -4217,23 +4138,38 @@ def test_pin_notes_env_and_rename_endpoints(tmp_path):
     assert client.get("/api/tasks/alpha-renamed").status_code == 200
 
 
-def test_notes_endpoint_rejects_stale_write_without_overwriting_disk(tmp_path):
+@pytest.mark.parametrize(
+    ("endpoint", "field", "first_value", "stale_value"),
+    [
+        ("notes", "notes", "first", "stale"),
+        ("env", "env", {"FIRST": "1"}, {"STALE": "1"}),
+    ],
+)
+def test_task_metadata_endpoint_rejects_stale_write_without_overwriting_disk(
+    tmp_path,
+    endpoint,
+    field,
+    first_value,
+    stale_value,
+):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
+    expected_field = f"expected_{field}"
+    empty_value = {} if field == "env" else ""
 
     first = client.patch(
-        "/api/tasks/alpha/notes",
-        json={"notes": "first", "expected_notes": ""},
+        f"/api/tasks/alpha/{endpoint}",
+        json={field: first_value, expected_field: empty_value},
     )
     stale = client.patch(
-        "/api/tasks/alpha/notes",
-        json={"notes": "stale", "expected_notes": ""},
+        f"/api/tasks/alpha/{endpoint}",
+        json={field: stale_value, expected_field: empty_value},
     )
     blind = client.patch(
-        "/api/tasks/alpha/notes",
-        json={"notes": "blind"},
+        f"/api/tasks/alpha/{endpoint}",
+        json={field: stale_value},
     )
 
     assert first.status_code == 200
@@ -4241,34 +4177,7 @@ def test_notes_endpoint_rejects_stale_write_without_overwriting_disk(tmp_path):
     assert "changed" in stale.json()["detail"]
     assert blind.status_code == 422
     task_dir = workspace / TASKS_DIR / "alpha"
-    assert load_task_info(str(task_dir))["notes"] == "first"
-
-
-def test_env_endpoint_rejects_stale_write_without_overwriting_disk(tmp_path):
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha")
-    runtime = _build_runtime(workspace)
-    client = TestClient(create_app(runtime))
-
-    first = client.patch(
-        "/api/tasks/alpha/env",
-        json={"env": {"FIRST": "1"}, "expected_env": {}},
-    )
-    stale = client.patch(
-        "/api/tasks/alpha/env",
-        json={"env": {"STALE": "1"}, "expected_env": {}},
-    )
-    blind = client.patch(
-        "/api/tasks/alpha/env",
-        json={"env": {"BLIND": "1"}},
-    )
-
-    assert first.status_code == 200
-    assert stale.status_code == 409
-    assert "changed" in stale.json()["detail"]
-    assert blind.status_code == 422
-    task_dir = workspace / TASKS_DIR / "alpha"
-    assert load_task_info(str(task_dir))["env"] == {"FIRST": "1"}
+    assert load_task_info(str(task_dir))[field] == first_value
 
 
 @pytest.mark.parametrize(

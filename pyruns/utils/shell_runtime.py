@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import ntpath
+import os
 import shutil
 import subprocess
 import tempfile
@@ -35,6 +35,7 @@ _SHELL_DISPLAY_NAMES = {
     "sh": "Shell",
     "zsh": "Zsh",
     "fish": "Fish",
+    "wsl": "WSL Bash",
 }
 
 _SHELL_KIND_ALIASES = {
@@ -53,6 +54,8 @@ _SHELL_KIND_ALIASES = {
     "zsh.exe": "zsh",
     "fish": "fish",
     "fish.exe": "fish",
+    "wsl": "wsl",
+    "wsl.exe": "wsl",
 }
 _CMD_META_CHARS = frozenset("&|<>^()%!")
 
@@ -103,7 +106,7 @@ def normalize_shell_mode(value: Any) -> str:
 def classify_shell_executable(candidate: str) -> tuple[str, str]:
     """Return ``(kind, display_name)`` for a shell executable path or name."""
 
-    name = os.path.basename(str(candidate or "")).strip().lower()
+    name = ntpath.basename(str(candidate or "")).strip().lower()
     kind = _SHELL_KIND_ALIASES.get(name, "unknown")
     display = _SHELL_DISPLAY_NAMES.get(kind, name or "Unknown shell")
     return kind, display
@@ -147,7 +150,10 @@ def _windows_path_to_wsl_path(path: str) -> str:
 def _windows_posix_script_arg(executable: str, script_path: str) -> str:
     """Return the script argument a Windows POSIX shell can open."""
 
-    if _is_windows_wsl_bash_executable(executable):
+    if (
+        _is_windows_wsl_bash_executable(executable)
+        or classify_shell_executable(executable)[0] == "wsl"
+    ):
         return _windows_path_to_wsl_path(script_path)
     return str(script_path or "").replace("\\", "/")
 
@@ -200,6 +206,10 @@ def _probe_shell_executable(executable: str, kind: str) -> bool:
         ]
     elif normalized_kind == "cmd":
         command = [executable, "/d", "/c", "exit", "/b", "0"]
+    elif normalized_kind == "wsl":
+        if os.name != "nt":
+            return False
+        command = [executable, "--exec", "/bin/bash", "-c", "exit 0"]
     elif normalized_kind in {"bash", "sh", "zsh", "fish"}:
         if os.name == "nt":
             return _probe_windows_posix_script_execution(executable)
@@ -396,17 +406,30 @@ def build_script_file_argv(
     if extension == ".sh":
         executable = (
             runtime_executable
-            if runtime_available and runtime_kind in {"bash", "sh"}
+            if runtime_available and runtime_kind in {"bash", "sh", "wsl"}
             else _resolve_available_shell(["bash"], "bash")
             or _resolve_available_shell(["sh"], "sh")
+            or (
+                _resolve_available_shell(["wsl.exe"], "wsl")
+                if os.name == "nt"
+                else ""
+            )
         )
         if not executable:
-            raise RuntimeError(".sh scripts require an available Bash or sh executable")
+            raise RuntimeError(".sh scripts require an available Bash, sh, or WSL executable")
         executable_script = (
             _windows_posix_script_arg(executable, script_path)
             if os.name == "nt"
             else script_path
         )
+        if os.name == "nt" and classify_shell_executable(executable)[0] == "wsl":
+            return [
+                executable,
+                "--exec",
+                "/bin/bash",
+                executable_script,
+                *script_args,
+            ]
         if os.name == "nt" and _is_windows_wsl_bash_executable(executable):
             wsl_executable = _resolve_candidate_path("wsl.exe")
             if not wsl_executable:

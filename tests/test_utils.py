@@ -2432,7 +2432,8 @@ def test_safe_read_log_handles_missing_complete_and_partial_lines(tmp_path):
     assert offset == len("line1\nline2\npartial")
 
 
-def test_logger_configuration_can_disable_or_attach_file_handler(tmp_path, monkeypatch):
+@pytest.fixture
+def isolated_library_logger():
     from pyruns.utils import log_utils
 
     root_logger = logging.getLogger(log_utils.get_library_root())
@@ -2444,24 +2445,8 @@ def test_logger_configuration_can_disable_or_attach_file_handler(tmp_path, monke
     try:
         for handler in list(root_logger.handlers):
             root_logger.removeHandler(handler)
-
-        monkeypatch.setattr(log_utils, "_LIBRARY_ROOT_LOGGER", None)
-        monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: False if key == "log_enabled" else default)
-
-        log_utils.configure_project_root_logger()
-        disabled = log_utils._LIBRARY_ROOT_LOGGER
-        assert disabled.level > 50
-
-        monkeypatch.setattr(log_utils, "_LIBRARY_ROOT_LOGGER", None)
-        monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: "DEBUG" if key == "log_level" else default)
-        logger = log_utils.get_logger("__main__")
-        assert logger.name.endswith(".__main__")
-        assert log_utils._LIBRARY_ROOT_LOGGER.handlers
-
-        log_file = tmp_path / "pyruns.log"
-        log_utils.attach_file_handler(str(log_file))
-        log_utils._LIBRARY_ROOT_LOGGER.debug("written")
-        assert log_file.exists()
+        log_utils._LIBRARY_ROOT_LOGGER = None
+        yield log_utils, root_logger
     finally:
         for handler in list(root_logger.handlers):
             root_logger.removeHandler(handler)
@@ -2473,14 +2458,36 @@ def test_logger_configuration_can_disable_or_attach_file_handler(tmp_path, monke
         log_utils._LIBRARY_ROOT_LOGGER = original_library_logger
 
 
-def test_logger_configuration_is_idempotent_during_settings_import(monkeypatch):
-    from pyruns.utils import log_utils
+def test_logger_configuration_can_disable_or_attach_file_handler(
+    tmp_path,
+    monkeypatch,
+    isolated_library_logger,
+):
+    log_utils, _root_logger = isolated_library_logger
 
-    root_logger = logging.getLogger(log_utils.get_library_root())
-    original_handlers = list(root_logger.handlers)
-    original_level = root_logger.level
-    original_propagate = root_logger.propagate
-    original_library_logger = log_utils._LIBRARY_ROOT_LOGGER
+    monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: False if key == "log_enabled" else default)
+
+    log_utils.configure_project_root_logger()
+    disabled = log_utils._LIBRARY_ROOT_LOGGER
+    assert disabled.level > 50
+
+    log_utils._LIBRARY_ROOT_LOGGER = None
+    monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: "DEBUG" if key == "log_level" else default)
+    logger = log_utils.get_logger("__main__")
+    assert logger.name.endswith(".__main__")
+    assert log_utils._LIBRARY_ROOT_LOGGER.handlers
+
+    log_file = tmp_path / "pyruns.log"
+    log_utils.attach_file_handler(str(log_file))
+    log_utils._LIBRARY_ROOT_LOGGER.debug("written")
+    assert log_file.exists()
+
+
+def test_logger_configuration_is_idempotent_during_settings_import(
+    monkeypatch,
+    isolated_library_logger,
+):
+    log_utils, root_logger = isolated_library_logger
     reentered = False
 
     def reentrant_setting(key, default=None):
@@ -2490,31 +2497,17 @@ def test_logger_configuration_is_idempotent_during_settings_import(monkeypatch):
             log_utils.configure_project_root_logger()
         return True if key == "log_enabled" else default
 
-    try:
-        for handler in list(root_logger.handlers):
-            root_logger.removeHandler(handler)
+    monkeypatch.setattr("pyruns.utils.settings.get", reentrant_setting)
 
-        monkeypatch.setattr(log_utils, "_LIBRARY_ROOT_LOGGER", None)
-        monkeypatch.setattr("pyruns.utils.settings.get", reentrant_setting)
+    log_utils.configure_project_root_logger()
 
-        log_utils.configure_project_root_logger()
-
-        console_handlers = [
-            handler
-            for handler in root_logger.handlers
-            if bool(getattr(handler, "_pyruns_console_handler", False))
-        ]
-        assert reentered is True
-        assert len(console_handlers) == 1
-    finally:
-        for handler in list(root_logger.handlers):
-            root_logger.removeHandler(handler)
-            handler.close()
-        for handler in original_handlers:
-            root_logger.addHandler(handler)
-        root_logger.setLevel(original_level)
-        root_logger.propagate = original_propagate
-        log_utils._LIBRARY_ROOT_LOGGER = original_library_logger
+    console_handlers = [
+        handler
+        for handler in root_logger.handlers
+        if bool(getattr(handler, "_pyruns_console_handler", False))
+    ]
+    assert reentered is True
+    assert len(console_handlers) == 1
 
 
 def test_console_logger_ignores_only_an_already_closed_output_stream(capsys):
@@ -3023,6 +3016,10 @@ def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatc
     assert shell_runtime.normalize_shell_mode("custom") == shell_runtime.SHELL_MODE_CUSTOM
     assert shell_runtime.normalize_shell_mode("anything") == shell_runtime.SHELL_MODE_FOLLOW
     assert shell_runtime.classify_shell_executable("pwsh.exe") == ("powershell", "PowerShell")
+    assert shell_runtime.classify_shell_executable(r"C:\Windows\System32\wsl.exe") == (
+        "wsl",
+        "WSL Bash",
+    )
     assert shell_runtime.classify_shell_executable("unknown-shell") == ("unknown", "unknown-shell")
     assert shell_runtime._resolve_candidate_path("") == ""
     assert shell_runtime._resolve_candidate_path(str(tmp_path / "missing.exe")) == ""
@@ -3074,6 +3071,40 @@ def test_shell_runtime_windows_posix_script_arg_distinguishes_wsl_and_git_bash()
         r"C:\Program Files\Git\bin\bash.exe",
         script_path,
     ) == "C:/Users/me/project with spaces/run.sh"
+    assert shell_runtime._windows_posix_script_arg(
+        r"C:\Windows\System32\wsl.exe",
+        script_path,
+    ) == "/mnt/c/Users/me/project with spaces/run.sh"
+
+
+def test_shell_runtime_builds_modern_wsl_script_fallback(monkeypatch):
+    import pyruns.utils.shell_runtime as shell_runtime
+
+    wsl = r"C:\Windows\System32\wsl.exe"
+    monkeypatch.setattr(shell_runtime.os, "name", "nt")
+    monkeypatch.setattr(
+        shell_runtime,
+        "get_shell_runtime_for_workspace",
+        lambda _root: {"terminal_kind": "powershell", "executable": "pwsh", "available": True},
+    )
+    monkeypatch.setattr(
+        shell_runtime,
+        "_resolve_available_shell",
+        lambda _candidates, kind: wsl if kind == "wsl" else "",
+    )
+
+    assert shell_runtime.build_script_file_argv(
+        r"C:\project with spaces\run.sh",
+        ["space value", "$HOME"],
+        "workspace",
+    ) == [
+        wsl,
+        "--exec",
+        "/bin/bash",
+        "/mnt/c/project with spaces/run.sh",
+        "space value",
+        "$HOME",
+    ]
 
 
 def test_shell_runtime_workspace_and_follow_fallback_branches(tmp_path, monkeypatch):

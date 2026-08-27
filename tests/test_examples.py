@@ -464,10 +464,6 @@ def test_shell_workspace_runs_task_with_env_inherited_by_subprocess(tmp_path):
     assert "shell_env_marker=shell-env-ok" in log_text
 
 
-def _probe_shell(shell_executable: str, kind: str) -> bool:
-    return _probe_shell_executable(shell_executable, kind)
-
-
 @pytest.mark.parametrize(
     ("kind", "candidates", "payload_name", "expected_markers"),
     [
@@ -501,7 +497,7 @@ def test_shell_workspace_payload_examples_run_through_runtime(
     shell_executable = next((path for name in candidates if (path := shutil.which(name))), "")
     if not shell_executable:
         pytest.skip(f"No {kind} executable is available.")
-    if not _probe_shell(shell_executable, kind):
+    if not _probe_shell_executable(shell_executable, kind):
         pytest.skip(f"{kind} executable exists but cannot start a no-op command.")
 
     workspace = bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
