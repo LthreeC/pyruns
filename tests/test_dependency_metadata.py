@@ -67,7 +67,7 @@ def _walk_json(value):
         yield value
 
 
-def test_python_runtime_dependencies_do_not_include_legacy_nicegui():
+def test_python_runtime_dependency_contract():
     pyproject = _load_pyproject()
     dependencies = {item.lower() for item in pyproject["project"]["dependencies"]}
     package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
@@ -75,21 +75,11 @@ def test_python_runtime_dependencies_do_not_include_legacy_nicegui():
     assert not any(item.startswith("nicegui") for item in dependencies)
     assert "exclude" not in package_find
     assert any(item.startswith("pydantic") for item in dependencies)
-
-
-def test_python_runtime_dependencies_include_websocket_server_support():
-    dependencies = {item.lower() for item in _load_pyproject()["project"]["dependencies"]}
-
     assert (
         any(item.startswith("websockets>=12,<16") for item in dependencies)
         or any(item.startswith("wsproto>=") for item in dependencies)
         or any(item.startswith("uvicorn[standard]>=") for item in dependencies)
     )
-
-
-def test_windows_runtime_declares_native_conpty_support():
-    dependencies = {item.lower() for item in _load_pyproject()["project"]["dependencies"]}
-
     assert any(
         item.startswith("pywinpty>=2.0.15") and "sys_platform == 'win32'" in item
         for item in dependencies
@@ -222,21 +212,17 @@ def test_examples_extra_declares_hydra_dependencies():
     assert 'pip install "pyruns[examples]"' in examples_readme
 
 
-def test_root_package_metadata_marks_docs_workspace_private():
+def test_docs_workspace_and_pages_workflow_contract():
     package_json = _load_json(ROOT / "package.json")
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
 
     assert package_json["name"] == "pyruns-docs-workspace"
     assert package_json["private"] is True
-
-
-def test_pages_workflow_uploads_docs_vitepress_dist():
-    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
-
     assert "npm run docs:build" in workflow
     assert "path: docs/.vitepress/dist" in workflow
 
 
-def test_frontend_dependencies_do_not_include_unused_editor_or_terminal_addons():
+def test_frontend_dependency_contract():
     package_json = _load_json(ROOT / "frontend" / "package.json")
     package_lock = _load_json(ROOT / "frontend" / "package-lock.json")
     dependencies = {
@@ -247,12 +233,6 @@ def test_frontend_dependencies_do_not_include_unused_editor_or_terminal_addons()
 
     assert "@codemirror/lang-json" not in dependencies
     assert "@xterm/addon-web-links" not in dependencies
-
-
-def test_frontend_dependencies_include_terminal_search_addon():
-    package_json = _load_json(ROOT / "frontend" / "package.json")
-    package_lock = _load_json(ROOT / "frontend" / "package-lock.json")
-
     assert "@xterm/addon-search" in package_json["dependencies"]
     assert "node_modules/@xterm/addon-search" in package_lock["packages"]
 
@@ -279,26 +259,17 @@ def test_built_static_index_references_existing_assets():
         assert (ROOT / "pyruns" / "web" / "static" / ref.removeprefix("/")).exists(), ref
 
 
-def test_package_workflow_cleans_build_and_checks_wheel_static_assets():
-    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
-
-    assert "rm -rf build .tmp-dist" in workflow
-    assert "python scripts/check_wheel_static.py .tmp-dist/*.whl" in workflow
-
-
-def test_frontend_workflow_checks_committed_static_assets():
-    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
-
-    assert "python scripts/check_frontend_static.py" in workflow.split("npm --prefix frontend ci", 1)[1]
-
-
-def test_frontend_e2e_server_remains_managed_and_ci_run_is_bounded():
+def test_ci_build_and_e2e_contract():
     workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
     server = (ROOT / "frontend" / "e2e" / "start-server.mjs").read_text(encoding="utf-8")
+    frontend_workflow = workflow.split("npm --prefix frontend ci", 1)[1]
     e2e_step = workflow.split("- name: Run browser end-to-end tests", 1)[1].split(
         "- name: Build docs", 1
     )[0]
 
+    assert "rm -rf build .tmp-dist" in workflow
+    assert "python scripts/check_wheel_static.py .tmp-dist/*.whl" in workflow
+    assert "python scripts/check_frontend_static.py" in frontend_workflow
     assert "timeout-minutes: 10" in e2e_step
     assert "detached:" not in server
     assert "process.kill(-child.pid" not in server

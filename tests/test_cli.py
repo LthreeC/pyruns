@@ -1369,35 +1369,171 @@ def test_exec_missing_script_file_reports_clear_error(tmp_path):
     ).exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="requires a native POSIX shell")
-def test_exec_runs_sh_file_without_executable_bit_and_can_rerun(tmp_path):
-    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    script_dir = tmp_path / "scripts with spaces"
-    script_dir.mkdir()
-    script = script_dir / "run check.sh"
-    script.write_text(
-        "#!/bin/sh\nprintf 'script=%s|%s\\n' \"$1\" \"$2\"\n",
-        encoding="utf-8",
-    )
+_NATIVE_SCRIPT_CASES = (
+    [("powershell", ".ps1"), ("cmd", ".cmd"), ("cmd", ".bat")]
+    if os.name == "nt"
+    else [("sh", ".sh")]
+)
 
-    result = _run_cli(
-        tmp_path,
+
+def _native_script_contract(
+    kind: str,
+    script: Path,
+    arguments: list[str],
+) -> tuple[str, list[str] | str]:
+    if kind == "sh":
+        executable = shutil.which("sh") or shutil.which("bash")
+        if not executable:
+            pytest.skip("No native sh or Bash executable is available")
+        text = (
+            "#!/bin/sh\n"
+            "[ \"$1\" = fail ] && exit 7\n"
+            "printf 'cwd=%s\\n' \"$PWD\"\n"
+            "printf 'script=%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\n"
+            "printf 'env=%s\\n' \"$PYRUNS_SCRIPT_ENV\"\n"
+        )
+        return text, [executable, str(script), *arguments]
+
+    if kind == "powershell":
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if not executable:
+            pytest.skip("PowerShell is unavailable")
+        text = (
+            "param([string]$First, [string]$Second, [string]$Third)\n"
+            "if ($First -eq 'fail') { exit 7 }\n"
+            'Write-Output "cwd=$((Get-Location).Path)"\n'
+            'Write-Output "script=$First|$Second|$Third"\n'
+            'Write-Output "env=$env:PYRUNS_SCRIPT_ENV"\n'
+        )
+        return text, [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            *arguments,
+        ]
+
+    executable = os.environ.get("COMSPEC") or shutil.which("cmd.exe")
+    if not executable:
+        pytest.skip("cmd.exe is unavailable")
+    text = (
+        "@echo off\n"
+        "if \"%~1\"==\"fail\" exit /b 7\n"
+        "setlocal DisableDelayedExpansion\n"
+        "set \"first=%~1\"\n"
+        "set \"second=%~2\"\n"
+        "set \"third=%~3\"\n"
+        "setlocal EnableDelayedExpansion\n"
+        "echo cwd=!CD!\n"
+        "echo script=!first!^|!second!^|!third!\n"
+        "echo env=!PYRUNS_SCRIPT_ENV!\n"
+    )
+    quoted_command = " ".join(f'"{value}"' for value in [str(script), *arguments])
+    return text, f'{subprocess.list2cmdline([executable])} /d /s /v:off /c "{quoted_command}"'
+
+
+def _script_contract_lines(output: str) -> list[str]:
+    return [
+        line.strip()
+        for line in output.splitlines()
+        if line.startswith(("cwd=", "script=", "env="))
+    ]
+
+
+@pytest.mark.parametrize(("kind", "suffix"), _NATIVE_SCRIPT_CASES)
+def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suffix):
+    project = tmp_path / "workspace with spaces"
+    project.mkdir()
+    bootstrap_shell_workspace(str(project / "_pyruns_"))
+    script_dir = project / "scripts with spaces"
+    script_dir.mkdir()
+    script = script_dir / f"run check{suffix}"
+    literal_variable = "%PYRUNS_UNDEFINED_ARG%" if kind == "cmd" else "dollar$HOME"
+    arguments = ["value with spaces", "x&y", literal_variable]
+    script_text, direct_command = _native_script_contract(kind, script, arguments)
+    script.write_text(script_text, encoding="utf-8")
+
+    direct_env = _source_env()
+    direct_env.pop("PYRUNS_UNDEFINED_ARG", None)
+    direct_env["PYRUNS_SCRIPT_ENV"] = "persisted-env"
+    direct_options = {
+        "cwd": project,
+        "env": direct_env,
+        "stdin": subprocess.DEVNULL,
+        "capture_output": True,
+        "text": True,
+        "timeout": 20,
+        "creationflags": subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    }
+    direct = subprocess.run(direct_command, **direct_options)
+    assert direct.returncode == 0, direct.stdout + direct.stderr
+    direct_lines = _script_contract_lines(direct.stdout)
+    assert direct_lines == [
+        f"cwd={project}",
+        f"script=value with spaces|x&y|{literal_variable}",
+        "env=persisted-env",
+    ]
+
+    task_name = f"direct-{kind}"
+    first = _run_cli(
+        project,
         "exec",
         "--name",
-        "direct-sh",
+        task_name,
+        "--env",
+        "PYRUNS_SCRIPT_ENV=persisted-env",
         "--",
-        str(script.relative_to(tmp_path)),
-        "value with spaces",
-        "x&y",
+        str(script.relative_to(project)),
+        *arguments,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "script=value with spaces|x&y" in result.stdout
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert _script_contract_lines(first.stdout) == direct_lines
 
-    rerun = _run_cli(tmp_path, "-w", "shell", "run", "direct-sh")
+    rerun_cwd = tmp_path / "rerun elsewhere"
+    rerun_cwd.mkdir()
+    workspace = project / "_pyruns_" / "_shell_"
+    rerun = _run_cli(rerun_cwd, "-w", str(workspace), "run", task_name)
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
-    assert "script=value with spaces|x&y" in rerun.stdout
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "direct-sh"
-    assert len(load_task_info(str(task_dir))["start_times"]) == 2
+    assert _script_contract_lines(rerun.stdout) == direct_lines
+
+    task_dir = workspace / TASKS_DIR / task_name
+    info = load_task_info(str(task_dir))
+    assert info["exit_codes"] == [0, 0]
+    assert info["env"] == {"PYRUNS_SCRIPT_ENV": "persisted-env"}
+    assert Path(info["workdir"]) == project
+    assert Path(info["script"]) == script
+    assert all("script none" not in state for state in info["source_states"])
+
+    _, direct_failure_command = _native_script_contract(kind, script, ["fail"])
+    direct_failure = subprocess.run(direct_failure_command, **direct_options)
+    assert direct_failure.returncode == 7
+
+    failure_name = f"fail-{kind}"
+    first_failure = _run_cli(
+        project,
+        "exec",
+        "--name",
+        failure_name,
+        "--",
+        str(script.relative_to(project)),
+        "fail",
+    )
+    assert first_failure.returncode == 1
+    rerun_failure = _run_cli(
+        rerun_cwd,
+        "-w",
+        str(workspace),
+        "run",
+        failure_name,
+    )
+    assert rerun_failure.returncode == 1
+    failure_info = load_task_info(str(workspace / TASKS_DIR / failure_name))
+    assert failure_info["status"] == "failed"
+    assert failure_info["exit_codes"] == [7, 7]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows Bash or WSL")
@@ -1427,40 +1563,6 @@ def test_exec_runs_sh_file_on_windows_when_bash_is_available(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "script=value with spaces|x&y" in result.stdout
-
-@pytest.mark.skipif(os.name != "nt", reason="requires PowerShell")
-def test_exec_runs_powershell_file_with_arguments_and_can_rerun(tmp_path):
-    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    script_dir = tmp_path / "scripts with spaces"
-    script_dir.mkdir()
-    script = script_dir / "run check.ps1"
-    script.write_text(
-        "param([string]$First, [string]$Second)\n"
-        'Write-Output "script=$First|$Second"\n',
-        encoding="utf-8",
-    )
-
-    result = _run_cli(
-        tmp_path,
-        "exec",
-        "--name",
-        "direct-ps1",
-        "--",
-        str(script.relative_to(tmp_path)),
-        "value with spaces",
-        "x&y",
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "script=value with spaces|x&y" in result.stdout
-
-    rerun = _run_cli(tmp_path, "-w", "shell", "run", "direct-ps1")
-    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
-    assert "script=value with spaces|x&y" in rerun.stdout
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "direct-ps1"
-    info = load_task_info(str(task_dir))
-    assert len(info["start_times"]) == 2
-    assert Path(info["script"]) == script
-    assert all("script none" not in state for state in info["source_states"])
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires PowerShell and cmd.exe")
@@ -1551,62 +1653,6 @@ def test_powershell_shell_expression_flushes_formatted_object_output(tmp_path):
     ).read_text(encoding="utf-8")
     assert str(tmp_path) in log_text
     assert "flush-object-123" in log_text
-
-
-@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
-@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
-def test_exec_runs_windows_command_file_with_arguments(tmp_path, suffix):
-    project = tmp_path / "workspace with spaces"
-    project.mkdir()
-    bootstrap_shell_workspace(str(project / "_pyruns_"))
-    script_dir = project / "scripts with spaces"
-    script_dir.mkdir()
-    script = script_dir / f"run check{suffix}"
-    script.write_text(
-        "@echo off\n"
-        "setlocal DisableDelayedExpansion\n"
-        "set \"first=%~1\"\n"
-        "set \"second=%~2\"\n"
-        "set \"third=%~3\"\n"
-        "setlocal EnableDelayedExpansion\n"
-        "echo script=!first!^|!second!^|!third!\n",
-        encoding="utf-8",
-    )
-
-    result = _run_cli(
-        project,
-        "exec",
-        "--name",
-        f"direct-{suffix[1:]}",
-        "--",
-        str(script.relative_to(project)),
-        "value with spaces",
-        "x&y",
-        "%PATH%",
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "script=value with spaces|x&y|%PATH%" in result.stdout
-
-
-@pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")
-@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
-def test_exec_preserves_windows_command_file_exit_code(tmp_path, suffix):
-    bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
-    script = tmp_path / f"fail{suffix}"
-    script.write_text("@echo off\nexit /b 7\n", encoding="utf-8")
-
-    result = _run_cli(
-        tmp_path,
-        "exec",
-        "--name",
-        f"fail-{suffix[1:]}",
-        "--",
-        str(script),
-    )
-
-    assert result.returncode == 1
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / f"fail-{suffix[1:]}"
-    assert load_task_info(str(task_dir))["exit_codes"][-1] == 7
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires cmd.exe")

@@ -39,17 +39,13 @@ from pyruns.update_coordination import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_cli_submission_guard_rejects_before_command_body_during_update(tmp_path, monkeypatch):
-    from pyruns.cli import commands
-
-    state_dir = tmp_path / "update-state"
-    monkeypatch.setenv(UPDATE_STATE_DIR_ENV, str(state_dir))
+def _publish_active_update_request(state_dir: Path, owner_char: str, request_char: str) -> None:
     store = CoordinationStore(state_dir)
-    owner_id = "a" * 32
+    owner_id = owner_char * 32
     request = process_record(record_id=owner_id, kind="ui-update")
     request.update(
         {
-            "request_id": "b" * 32,
+            "request_id": request_char * 32,
             "owner_instance_id": owner_id,
             "stage": "updating",
             "previous_version": "0.3.0",
@@ -58,6 +54,14 @@ def test_cli_submission_guard_rejects_before_command_body_during_update(tmp_path
     store.ensure()
     with store.locked():
         store.write_request_locked(request)
+
+
+def test_cli_submission_guard_rejects_before_command_body_during_update(tmp_path, monkeypatch):
+    from pyruns.cli import commands
+
+    state_dir = tmp_path / "update-state"
+    monkeypatch.setenv(UPDATE_STATE_DIR_ENV, str(state_dir))
+    _publish_active_update_request(state_dir, "a", "b")
 
     entered = False
     with pytest.raises(commands.CliError, match="new tasks are disabled"):
@@ -72,20 +76,7 @@ def test_cli_add_is_blocked_before_task_creation_during_update(tmp_path, monkeyp
 
     state_dir = tmp_path / "update-state"
     monkeypatch.setenv(UPDATE_STATE_DIR_ENV, str(state_dir))
-    store = CoordinationStore(state_dir)
-    owner_id = "c" * 32
-    request = process_record(record_id=owner_id, kind="ui-update")
-    request.update(
-        {
-            "request_id": "d" * 32,
-            "owner_instance_id": owner_id,
-            "stage": "updating",
-            "previous_version": "0.3.0",
-        }
-    )
-    store.ensure()
-    with store.locked():
-        store.write_request_locked(request)
+    _publish_active_update_request(state_dir, "c", "d")
 
     created = False
 

@@ -52,7 +52,8 @@ def test_script_info_rejects_simulated_reparse_workspace_before_io(tmp_path, mon
     assert not list(workspace.glob(f".{SCRIPT_INFO_FILENAME}.*.tmp"))
 
 
-def test_script_info_revalidates_workspace_after_creation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("target_name", [SCRIPT_INFO_FILENAME, CONFIG_DEFAULT_FILENAME])
+def test_workspace_is_revalidated_after_creation(tmp_path, monkeypatch, target_name):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     real_validate = info_io.validate_workspace_directory
     calls = 0
@@ -71,11 +72,14 @@ def test_script_info_revalidates_workspace_after_creation(tmp_path, monkeypatch)
     )
 
     with pytest.raises(ValueError, match="simulated reparse after create"):
-        info_io.save_script_info(str(workspace), {"script_name": "train"})
+        if target_name == SCRIPT_INFO_FILENAME:
+            info_io.save_script_info(str(workspace), {"script_name": "train"})
+        else:
+            pyruns.ensure_config_default(str(workspace))
 
     assert workspace.is_dir()
-    assert not (workspace / SCRIPT_INFO_FILENAME).exists()
-    assert not list(workspace.glob(f".{SCRIPT_INFO_FILENAME}.*.tmp"))
+    assert not (workspace / target_name).exists()
+    assert not list(workspace.glob(f".{target_name}.*.tmp"))
 
 
 def test_bootstrap_rejects_simulated_reparse_workspace_before_initialization(
@@ -169,31 +173,6 @@ def test_settings_rejects_simulated_reparse_lock_before_write(tmp_path, monkeypa
     assert settings_path.read_text(encoding="utf-8") == original
     assert lock_path.read_text(encoding="utf-8") == "keep"
     assert not list(managed_root.glob(f".{SETTINGS_FILENAME}.*.tmp"))
-
-
-def test_ensure_config_default_revalidates_workspace_after_creation(tmp_path, monkeypatch):
-    workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
-    real_validate = info_io.validate_workspace_directory
-    calls = 0
-
-    def simulate_reparse_after_create(path):
-        nonlocal calls
-        calls += 1
-        real_validate(path)
-        if calls == 2:
-            raise ValueError("simulated reparse after create")
-
-    monkeypatch.setattr(
-        info_io,
-        "validate_workspace_directory",
-        simulate_reparse_after_create,
-    )
-
-    with pytest.raises(ValueError, match="simulated reparse after create"):
-        pyruns.ensure_config_default(str(workspace))
-
-    assert workspace.is_dir()
-    assert not (workspace / CONFIG_DEFAULT_FILENAME).exists()
 
 
 def test_artifact_dir_rejects_simulated_reparse_directory_before_write(
