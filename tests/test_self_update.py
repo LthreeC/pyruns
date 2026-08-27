@@ -518,9 +518,24 @@ def test_activity_lease_fails_closed_when_coordination_lock_times_out(
     assert lease._started is False
 
 
-def test_live_records_fail_closed_when_one_record_cannot_be_read(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("record_id", "error"),
+    [
+        pytest.param("f" * 32, OSError(errno.ESTALE, "stale file handle"), id="stale"),
+        pytest.param(
+            "e" * 32,
+            FileNotFoundError(errno.ENOENT, "record disappeared"),
+            id="disappeared",
+        ),
+    ],
+)
+def test_live_records_fail_closed_when_record_is_unavailable(
+    tmp_path,
+    monkeypatch,
+    record_id,
+    error,
+):
     store = CoordinationStore(tmp_path / "coordination")
-    record_id = "f" * 32
     store.write_record(
         "activities",
         record_id,
@@ -531,32 +546,10 @@ def test_live_records_fail_closed_when_one_record_cannot_be_read(tmp_path, monke
 
     def unavailable(path, *args, **kwargs):
         if os.path.abspath(os.fspath(path)) == record_path:
-            raise OSError(errno.ESTALE, "stale file handle")
+            raise error
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(update_coordination, "open", unavailable, raising=False)
-
-    with pytest.raises(UpdateCoordinationError, match="Could not read"):
-        store.live_records_locked("activities")
-
-
-def test_live_records_fail_closed_when_listed_record_disappears(tmp_path, monkeypatch):
-    store = CoordinationStore(tmp_path / "coordination")
-    record_id = "e" * 32
-    store.write_record(
-        "activities",
-        record_id,
-        process_record(record_id=record_id, kind="cli-runner"),
-    )
-    record_path = os.path.abspath(store.record_path("activities", record_id))
-    original_open = open
-
-    def disappeared(path, *args, **kwargs):
-        if os.path.abspath(os.fspath(path)) == record_path:
-            raise FileNotFoundError(errno.ENOENT, "record disappeared")
-        return original_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(update_coordination, "open", disappeared, raising=False)
 
     with pytest.raises(UpdateCoordinationError, match="Could not read"):
         store.live_records_locked("activities")

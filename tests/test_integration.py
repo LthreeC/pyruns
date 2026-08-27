@@ -197,9 +197,7 @@ class TestEndToEndBatchFlow:
         assert stripped["fixed"] == "hello"
 
 
-# ═══════════════════════════════════════════════════════════════
 #  record
-# ═══════════════════════════════════════════════════════════════
 
 
 class TestAddMonitor:

@@ -976,9 +976,7 @@ def test_config_manager_rejects_oversized_config(tmp_path):
         ConfigManager().read(str(path))
 
 
-# ═══════════════════════════════════════════════════════════════
 #  SystemMonitor
-# ═══════════════════════════════════════════════════════════════
 
 @patch("pyruns.core.system_metrics.psutil")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
@@ -1163,9 +1161,7 @@ def test_system_monitor_retries_after_gpu_disable_cooldown(mock_subprocess, mock
     assert monitor._gpu_available is True
 
 
-# ═══════════════════════════════════════════════════════════════
 #  Executor
-# ═══════════════════════════════════════════════════════════════
 
 
 def test_prepare_env_prefers_current_python_executable_on_path(monkeypatch):
@@ -7997,14 +7993,10 @@ def test_run_task_worker_late_stop_summary_is_not_overwritten_by_completed(
     assert "reason=cancelled_by_user" in content
     assert "reason=exit_code 0" not in content
 
-# ═══════════════════════════════════════════════════════════════
 #  TaskGenerator — task creation and file writing
-# ═══════════════════════════════════════════════════════════════
 
 
-# ═══════════════════════════════════════════════════════════════
 #  create_task_object
-# ═══════════════════════════════════════════════════════════════
 
 class TestCreateTaskObject:
     def test_python_task_fields_and_created_at_format(self):
@@ -8030,9 +8022,7 @@ class TestCreateTaskObject:
         assert obj["config_text"] == "echo hello\n"
 
 
-# ═══════════════════════════════════════════════════════════════
 #  TaskGenerator.create_task
-# ═══════════════════════════════════════════════════════════════
 
 class TestTaskGeneratorCreateTask:
     def test_create_task_writes_expected_files_and_metadata(self, tmp_path):
@@ -8152,9 +8142,7 @@ class TestTaskGeneratorCreateTask:
             gen.create_task("bad/name", {"x": 1})
 
 
-# ═══════════════════════════════════════════════════════════════
 #  TaskGenerator.create_tasks (batch)
-# ═══════════════════════════════════════════════════════════════
 
 class TestTaskGeneratorCreateTasks:
     def test_single_and_batch_names_are_complete_and_unique(self, tmp_path):
@@ -8225,9 +8213,7 @@ class TestTaskGeneratorCreateTasks:
         )
         assert any("secret_choice: public" in text for text in config_texts)
 
-# ═══════════════════════════════════════════════════════════════
 #  Report — CSV and JSON export
-# ═══════════════════════════════════════════════════════════════
 
 
 def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=None):

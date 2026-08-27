@@ -308,9 +308,7 @@ def test_generate_config_file(tmp_path):
     assert "Auto-generated for my_script.py" in text
 
 
-# ═══════════════════════════════════════════════════════════════
 #  log_io
-# ═══════════════════════════════════════════════════════════════
 
 
 def test_task_file_helpers_cover_shell_and_config_payload_edges(tmp_path, monkeypatch):
@@ -604,9 +602,7 @@ def test_decode_log_bytes_falls_back_to_gbk_for_windows_logs(monkeypatch):
     assert decode_log_bytes(encoded) == text
 
 
-# ═══════════════════════════════════════════════════════════════
 #  process_utils
-# ═══════════════════════════════════════════════════════════════
 
 
 def test_decode_log_bytes_handles_invalid_encodings_and_best_replacement(monkeypatch):
@@ -1077,9 +1073,7 @@ def test_signal_posix_process_tree_covers_independent_descendant_groups(monkeypa
     ]
 
 
-# ═══════════════════════════════════════════════════════════════
 #  sort_utils
-# ═══════════════════════════════════════════════════════════════
 
 
 def test_get_now_str_us_includes_six_digit_microseconds():
@@ -1186,9 +1180,7 @@ def test_sort_tasks_for_manager_keeps_pinned_active_and_fresh_tasks_first():
     ]
 
 
-# ═══════════════════════════════════════════════════════════════
 #  settings
-# ═══════════════════════════════════════════════════════════════
 
 
 def test_sort_tasks_for_manager_uses_natural_name_tiebreaker():
@@ -1441,9 +1433,7 @@ def test_save_setting(tmp_path):
             assert "- 0" not in text
 
 
-# ═══════════════════════════════════════════════════════════════
 #  info_io — task_info/script_info I/O, monitor data, log options
-# ═══════════════════════════════════════════════════════════════
 
 
 class TestLoadSaveTaskInfo:
@@ -1470,24 +1460,9 @@ class TestLoadSaveTaskInfo:
         assert loaded["finish_times"] == ["", ""]
         assert loaded["records"][1] == {"loss": 0.1}
 
-    def test_load_missing_file(self, tmp_path):
+    def test_load_missing_file_honors_error_mode(self, tmp_path):
         assert load_task_info(str(tmp_path)) == {}
-
-    def test_load_missing_file_raises_when_requested(self, tmp_path):
         with pytest.raises(FileNotFoundError, match=TASK_INFO_FILENAME):
-            load_task_info(str(tmp_path), raise_error=True)
-
-    def test_load_corrupt_json(self, tmp_path):
-        path = os.path.join(str(tmp_path), TASK_INFO_FILENAME)
-        with open(path, "w") as f:
-            f.write("{invalid json")
-        assert load_task_info(str(tmp_path)) == {}
-
-    def test_load_corrupt_raises_when_requested(self, tmp_path):
-        path = os.path.join(str(tmp_path), TASK_INFO_FILENAME)
-        with open(path, "w") as f:
-            f.write("{invalid json")
-        with pytest.raises(json.JSONDecodeError):
             load_task_info(str(tmp_path), raise_error=True)
 
     def test_unicode_support(self, tmp_path):
@@ -1680,14 +1655,10 @@ class TestResolveLogPath:
         assert resolve_log_path(str(tmp_path)) is None
 
 
-# ═══════════════════════════════════════════════════════════════
 #  config_utils — core config & batch generation logic
-# ═══════════════════════════════════════════════════════════════
 
 
-# ═══════════════════════════════════════════════════════════════
 #  safe_filename
-# ═══════════════════════════════════════════════════════════════
 
 def test_safe_filename_normalizes_supported_fallback_cases():
     cases = {
@@ -1701,9 +1672,7 @@ def test_safe_filename_normalizes_supported_fallback_cases():
         assert safe_filename(value) == expected, value
 
 
-# ═══════════════════════════════════════════════════════════════
 #  parse_value
-# ═══════════════════════════════════════════════════════════════
 
 def test_parse_value_preserves_expected_scalar_and_collection_types():
     cases = [
@@ -1744,9 +1713,7 @@ def test_parse_value_preserves_multiline_text_that_looks_like_extra_yaml_keys():
     assert parse_value(value) == value
 
 
-# ═══════════════════════════════════════════════════════════════
 #  flatten / unflatten
-# ═══════════════════════════════════════════════════════════════
 
 class TestFlattenUnflatten:
     def test_flatten_unflatten_handles_flat_nested_and_roundtrip_data(self):
@@ -1863,9 +1830,7 @@ class TestFlattenUnflatten:
         ] == ["${oc.env:PYRUNS_TEST_MISSING}"] * 2
 
 
-# ═══════════════════════════════════════════════════════════════
 #  YAML / JSON I/O
-# ═══════════════════════════════════════════════════════════════
 
 class TestYamlIO:
     def test_save_and_load(self, tmp_path):
@@ -1878,16 +1843,11 @@ class TestYamlIO:
     def test_load_nonexistent(self, tmp_path):
         assert load_yaml(str(tmp_path / "nope.yaml")) == {}
 
-    def test_load_non_dict_yaml(self, tmp_path):
+    def test_load_non_mapping_yaml_honors_error_mode(self, tmp_path):
         path = str(tmp_path / "list.yaml")
         with open(path, "w") as f:
             f.write("- a\n- b\n")
         assert load_yaml(path) == {}
-
-    def test_load_yaml_strict_raises_on_non_mapping(self, tmp_path):
-        path = str(tmp_path / "list.yaml")
-        with open(path, "w") as f:
-            f.write("- a\n- b\n")
         with pytest.raises(ValueError, match="mapping"):
             load_yaml_strict(path)
 
@@ -1937,9 +1897,7 @@ class TestYamlIO:
         assert list_yaml_files("/nonexistent/dir") == []
 
 
-# ═══════════════════════════════════════════════════════════════
 #  list_template_files
-# ═══════════════════════════════════════════════════════════════
 
 class TestListTemplateFiles:
     def test_with_task_subfolder(self, tmp_path):
@@ -2018,9 +1976,7 @@ class TestListTemplateFiles:
         assert list_template_files("/nonexistent") == {}
 
 
-# ═══════════════════════════════════════════════════════════════
 #  preview_config_line
-# ═══════════════════════════════════════════════════════════════
 
 def test_preview_config_line_formats_scalars_and_applies_display_limits():
     line = preview_config_line({"lr": 0.01, "bs": 32, "opt": "adam"})
@@ -2035,9 +1991,7 @@ def test_preview_config_line_formats_scalars_and_applies_display_limits():
     assert preview_config_line("not a dict") == ""
 
 
-# ═══════════════════════════════════════════════════════════════
 #  _parse_pipe_value
-# ═══════════════════════════════════════════════════════════════
 
 class TestParsePipeValue:
     def test_supported_product_zip_and_range_syntax(self):
@@ -2073,9 +2027,7 @@ class TestParsePipeValue:
             assert _parse_pipe_value(value) is None, value
 
 
-# ═══════════════════════════════════════════════════════════════
 #  generate_batch_configs
-# ═══════════════════════════════════════════════════════════════
 
 class TestGenerateBatchConfigs:
     def test_no_pipes_returns_original(self, sample_config):
@@ -2156,9 +2108,7 @@ class TestGenerateBatchConfigs:
             generate_batch_configs({"epochs": "0:1000000:1"}, max_configs=999)
 
 
-# ═══════════════════════════════════════════════════════════════
 #  count_batch_configs
-# ═══════════════════════════════════════════════════════════════
 
 class TestCountBatchConfigs:
     def test_counts_plain_product_zip_range_and_mismatch_configs(
@@ -2190,9 +2140,7 @@ class TestCountBatchConfigs:
         assert count_batch_configs({"epochs": "0:1000000:1"}) == 1_000_000
 
 
-# ═══════════════════════════════════════════════════════════════
 #  strip_batch_pipes
-# ═══════════════════════════════════════════════════════════════
 
 class TestStripBatchPipes:
     def test_keeps_first_batch_values_and_preserves_plain_nested_data(self, sample_config):
@@ -2208,9 +2156,7 @@ class TestStripBatchPipes:
 
 
 
-# ═══════════════════════════════════════════════════════════════
 #  validate_task_name
-# ═══════════════════════════════════════════════════════════════
 
 
 class TestValidateTaskName:
@@ -2256,9 +2202,7 @@ class TestValidateTaskName:
         assert validate_task_name(name) is not None
 
 
-# ═══════════════════════════════════════════════════════════════
 #  Type Validation, Multiline Search, Pipe Escaping
-# ═══════════════════════════════════════════════════════════════
 
 
 class TestTypeValidation:

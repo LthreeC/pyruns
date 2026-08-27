@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 
 FRONTEND_GENERATOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "generator" / "GeneratorPage.tsx"
 FRONTEND_APP = Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx"
@@ -29,37 +31,446 @@ FRONTEND_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "index.html"
 STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static" / "index.html"
 
 
-def test_react_generator_pin_promotes_params_without_duplicates():
-    source = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "function PinnedParameters" in source
-    assert "Pinned Parameters" in source
-    assert 'title="Pinned Parameters"' in source
-    assert "count={rows.length}" in source
-    assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in source
-    assert "collectPinnedRows(data, pinnedParams" in source
-    assert "const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey))" in source
-    assert ".filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))" in source
-    assert "if (pinnedRowKeys.has(fullKey))" in source
-
-
-def test_react_polling_hook_prevents_overlapping_async_ticks():
-    source = FRONTEND_POLLING.read_text(encoding="utf-8")
-
-    assert "callback: () => void | Promise<void>" in source
-    assert "inFlightRef" in source
-    assert "if (inFlightRef.current) {" in source
-    assert "Promise.resolve(result)" in source
-
-
-def test_react_ui_column_preferences_are_clamped():
-    source = FRONTEND_STORE.read_text(encoding="utf-8")
-
-    assert "function clampInteger" in source
-    assert "readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8)" in source
-    assert "readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8)" in source
-    assert "const next = clampInteger(n, 5, 1, 8)" in source
-    assert "const next = clampInteger(n, 5, 2, 8)" in source
+@pytest.mark.parametrize(
+    ("source_path", "markers"),
+    [
+        pytest.param(FRONTEND_GENERATOR, (
+            'function PinnedParameters',
+            'Pinned Parameters',
+            'title="Pinned Parameters"',
+            'count={rows.length}',
+            'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"',
+            'collectPinnedRows(data, pinnedParams',
+            'const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey))',
+            ".filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))",
+            'if (pinnedRowKeys.has(fullKey))',
+            'function readCompactGeneratorLayout()',
+            "window.matchMedia('(max-width: 700px)')",
+            'const generatorBodyClassName = clsx(',
+            "compactGeneratorLayout ? 'flex-col overflow-y-auto' : 'overflow-hidden'",
+            "compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1'",
+            "compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle'",
+            'style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}',
+            'flex flex-col gap-2 border-b',
+            'min-[701px]:flex-row',
+            'w-full min-w-0 min-[701px]:w-auto min-[701px]:min-w-[280px]',
+            'const [outlineCollapsed, setOutlineCollapsed] = useState(readCompactGeneratorLayout)',
+            'if (query.matches)',
+            'setOutlineCollapsed(true)',
+            'interface PreviewSnapshot',
+            'const previewRequestSeqRef = useRef(0)',
+            'const snapshot: PreviewSnapshot',
+            'snapshot.inputKey !== generationInputKeyRef.current',
+            'setPreviewSnapshot(snapshot)',
+            'doCreate(previewSnapshot?.payload || currentGenerationPayload)',
+            'setPreviewSnapshot(current => current?.inputKey === generationInputKey ? current : null)',
+            'GENERATOR_SETTINGS_WIDTH_STORAGE_KEY',
+            'clampGeneratorSettingsWidth',
+            'readStoredGeneratorSettingsWidth',
+            'startGeneratorSettingsResize',
+            'generatorBodyRef',
+            'pendingGeneratorSettingsWidthRef',
+            'generatorSettingsResizeFrameRef',
+            'window.requestAnimationFrame(applyPendingGeneratorSettingsWidth)',
+            'window.cancelAnimationFrame(generatorSettingsResizeFrameRef.current)',
+            "window.addEventListener('pointercancel', stopResize, { once: true })",
+            "window.removeEventListener('pointercancel', stopResize)",
+            'localStorage.setItem(GENERATOR_SETTINGS_WIDTH_STORAGE_KEY',
+            'aria-label="Resize generator settings panel"',
+            'cursor-col-resize',
+            'type GenerationStatus',
+            "generationStatus === 'creating'",
+            'Writing task folders...',
+            'function CreatedTaskSummary',
+            'Open in Manager',
+            'Loader2',
+            'depth={depth + 1}',
+            'treeSection',
+            'treeConnector',
+            'border-l border-dashed border-border-strong/60',
+            "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'",
+            "!treeSection && depth > 0 && 'border-l-2 border-border pl-3'",
+            'aria-expanded={open}',
+            'title={`${prefix} (${Object.keys(data).length} fields)`}',
+            "type FormLayoutMode = 'grid' | 'tree'",
+            "type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'",
+            "['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]",
+            'handleDisplayModeChange',
+            'formLayoutMode',
+            'setFormLayoutMode',
+            'Grid',
+            'Tree',
+            'YAML',
+            'Expand all',
+            'Collapse all',
+            'treeOpenSignal',
+            'setOpen(openSignalValue)',
+            'const effectiveColumns = Math.max(1, columns)',
+            'buildColumnGridStyle(effectiveColumns)',
+            'repeat(${columns}, minmax(20rem, 1fr))',
+            "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'",
+            "const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'",
+            'onSetAllSections={setAllTreeSections}',
+            'hasNestedSections && (',
+            'outlineSections.length > 1 && (',
+            '<SectionExpandControls onSetAllSections={onSetAllSections} />',
+            'layoutMode={formLayoutMode}',
+            'min-w-[280px]',
+            'flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto',
+            'function buildColumnGridStyle(columns: number)',
+            "const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'",
+            'function TreeParameterExplorer',
+            'function RootSectionOverview',
+            'function SearchResultRows',
+            'collectTreeSections(data)',
+            'collectParamRows(data, declaredTypeMap, batchParams)',
+            'Outline',
+            'outlineCollapsed',
+            'setOutlineCollapsed(false)',
+            'Search path or value',
+            'Search results',
+            'No matching parameters.',
+            'TREE_OUTLINE_WIDTH_STORAGE_KEY',
+            'clampTreeOutlineWidth',
+            'readStoredTreeOutlineWidth',
+            'startOutlineResize',
+            'pendingOutlineWidthRef',
+            'outlineResizeFrameRef',
+            'gridTemplateColumns: `${outlineWidth}px 4px minmax(0,1fr)`',
+            'aria-label="Resize parameter outline"',
+            'grid-cols-[minmax(0,1fr)]',
+            'columns={1}',
+            'onClick={() => onSelectPath(section.path)}',
+            'function TemplatePicker',
+            'templateFilter',
+            'filteredOptions',
+            'Search templates',
+            'No matching templates',
+            'role="listbox"',
+            'lastWorkspaceDefaultKeyRef',
+            'workspaceDefaultKey',
+            'workspaceDefaultChanged',
+            "defaultTemplate = templates.find(template => pathLeaf(template.value) === 'config_default.yaml')",
+            'workspace?.config_default_source',
+            'workspace?.config_default_source_name',
+            'loadTemplateWithFeedback(defaultTemplateValue)',
+            'function ShellRuntimePanel',
+            'Shell Runtime',
+            'Resolved file',
+            'Workspace folder',
+            'getShellConfigFilename',
+        ), id='generator'),
+        pytest.param(FRONTEND_POLLING, (
+            'callback: () => void | Promise<void>',
+            'inFlightRef',
+            'if (inFlightRef.current) {',
+            'Promise.resolve(result)',
+        ), id='polling'),
+        pytest.param(FRONTEND_STORE, (
+            'function clampInteger',
+            'readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8)',
+            'readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8)',
+            'const next = clampInteger(n, 5, 1, 8)',
+            'const next = clampInteger(n, 5, 2, 8)',
+            'let launcherRequestSeq = 0',
+            'const requestId = ++launcherRequestSeq',
+            'if (requestId !== launcherRequestSeq)',
+            'let runtimeRequestSeq = 0',
+            'let dashboardRequestSeq = 0',
+            'let generatorTemplateRequestSeq = 0',
+            'const requestId = ++runtimeRequestSeq',
+            'requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()',
+            'const requestId = ++dashboardRequestSeq',
+            'requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()',
+            'const requestId = ++generatorTemplateRequestSeq',
+            'requestId !== generatorTemplateRequestSeq',
+            'draftVersion !== generatorDraftVersion',
+            '|| workspaceKey !== currentWorkspaceKey()',
+            'workspaceEpoch',
+            'function resetWorkspaceScopedState',
+            'dashboardRequestSeq += 1',
+            'generatorTemplateRequestSeq += 1',
+            'tasks: []',
+            'data: null',
+            "selectedTemplate: ''",
+            'workspaceKey === currentWorkspaceKey()',
+        ), id='store'),
+        pytest.param(FRONTEND_DASHBOARD, (
+            'const refreshDashboard = useCallback(() => {',
+            'if (dashboardRefreshPromiseRef.current)',
+            'const refreshPromise = Promise.allSettled([',
+            'api.getMetrics(false)',
+            'api.getMetrics(true)',
+            "setMetricsError('')",
+            "errorMessage(metricsResult.reason, 'System metrics unavailable.')",
+            'Metrics refresh failed. Showing last values.',
+            'System metrics unavailable.',
+            'flex min-h-full w-full flex-col',
+            'const workspaceKindLabel',
+            'Shell Workspace',
+            'border border-border-default bg-surface-raised',
+            'Start New Task',
+            'Recent Tasks',
+            'GPU & System',
+            'ResourceTile',
+            'h-full overflow-y-auto bg-surface-base',
+            'flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised',
+            '<div className="p-3">',
+            'w-full rounded-md border border-border-subtle',
+            'flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised',
+            'min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto',
+            'Quick status glance.',
+            'queuedCount',
+            'pendingCount',
+            "gpuCount > 1 && 'md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'",
+            'wide={gpuCount === 1}',
+            'metrics.gpus.map(gpu =>',
+            'key={gpuKey(gpu)}',
+            'aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}',
+            'title={gpu.name}',
+            "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'",
+            'max-h-[calc(100dvh-2rem)]',
+            'flex-col overflow-hidden rounded-md',
+            'min-h-0 flex-1 overflow-y-auto px-5 py-4',
+            'overflow-x-auto rounded-md border border-border-subtle',
+            'min-w-[640px]',
+            'role="dialog"',
+            'aria-modal="true"',
+            'aria-labelledby="gpu-detail-title"',
+            'id="gpu-detail-title"',
+            'Close GPU details',
+            'RefreshCw',
+            'manualRefreshing',
+            'const handleManualRefresh = useCallback(async () => {',
+            'Dashboard refreshed',
+            'Task summary and system metrics are up to date.',
+            'Refresh dashboard now',
+            'Free VRAM',
+            'Proc VRAM',
+            'Avg/proc',
+            'formatPercent',
+        ), id='dashboard'),
+        pytest.param(FRONTEND_APP, (
+            'useLocation',
+            'useNavigate',
+            "location.pathname === '/launcher'",
+            "setShowLauncher(searchParams.get('launcher') === '1' || location.pathname === '/launcher')",
+            '<Route path="launcher" element={<DashboardPage />} />',
+            "navigate('/', { replace: true })",
+            'document.title',
+            'route-heading',
+            'path="*"',
+            'Page not found',
+        ), id='app'),
+        pytest.param(FRONTEND_LAUNCHER, (
+            'LAUNCH_HISTORY_LIMIT = 50',
+            "'pyruns.launcher.history.python'",
+            "'pyruns.launcher.history.shell'",
+            "'pyruns.launcher.history.yaml'",
+            'function readLaunchHistory',
+            'function writeLaunchHistory',
+            'const nextHistory = writeLaunchHistory(kind, path)',
+            'function RecentPathList',
+            'recentPaths={launchHistory.python}',
+            'recentPaths={launchHistory.shell}',
+            'recentPaths={launchHistory.yaml}',
+            'onRecentPathOpen={openPythonPath}',
+            'onRecentPathOpen={openShellPath}',
+            'onRecentPathOpen={handleSelectConfig}',
+            'kind="yaml"',
+            'Recent YAML',
+            'max-h-60 space-y-1 overflow-y-auto',
+            'launchMode',
+            'const scriptPathReady = manualScriptPath.trim().length > 0',
+            'const shellPathReady = manualShellRootPath.trim().length > 0',
+            'pathReady={scriptPathReady}',
+            'pathReady={shellPathReady}',
+            'disabled={!pathReady}',
+            'Select Script Path',
+            'Open Folder Path',
+            'const openPythonPath = useCallback(async (path: string)',
+            "setError('')",
+            'await selectScript(scriptPath)',
+            'const handleSelectConfig = useCallback(async (configPath: string)',
+            'selectConfig(configPath)',
+            'onClick={() => void handleSelectConfig(config.path)}',
+            'function ConfigActionPanel',
+            'configPathReady',
+            "api.validateLauncherPath('config', debouncedConfigPath, selectedScript)",
+            'validation={configValidation}',
+            'PathValidationHint id={validationId} validation={validation} pathValue={pathValue}',
+            'validatedPath: string',
+            'scriptValidation.validatedPath === manualScriptPath.trim()',
+            'configValidation.validatedPath === manualConfigPath.trim()',
+            'shellValidation.validatedPath === manualShellRootPath.trim()',
+            'validation.validatedPath !== currentPath',
+            'role="status"',
+            'aria-live="polite"',
+            "aria-pressed={launchMode === 'python'}",
+            "aria-pressed={launchMode === 'shell'}",
+            'Python script path',
+            'Shell workspace folder path',
+            'YAML config path',
+            'function LaunchChoiceTabs',
+            'function ModeActionPanel',
+            "launchMode === 'python'",
+            "launchMode === 'shell'",
+            'Browse Script',
+            'Browse & Open Folder',
+            'requiresConfigTemplate',
+            'Choose a YAML config',
+            'This script needs a YAML config before first launch.',
+            'pyruns will save it as config_default.yaml',
+            'Choose or enter a YAML config path first.',
+            'Path to YAML config',
+        ), id='launcher'),
+        pytest.param(FRONTEND_SIDEBAR, (
+            'border-l-2 border-accent',
+            'bg-accent/10 text-accent',
+            'workspaceModeLabel',
+            'Workspace',
+            'runtimeLabel',
+            'SlidersHorizontal',
+            'rounded-md px-2 py-2',
+        ), id='sidebar'),
+        pytest.param(FRONTEND_MONITOR, (
+            'function readCompactMonitorLayout()',
+            "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'",
+            "window.matchMedia('(max-width: 700px)')",
+            "compactMonitorLayout ? 'flex-col' : 'flex-row'",
+            "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'",
+            '? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }',
+            ': { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}',
+            'className="flex-none border-b border-border-subtle px-2.5 py-2"',
+            'className="min-h-0 flex-1 overflow-y-auto px-2 py-2"',
+            'className="flex-none border-t border-border-subtle px-2.5 py-2"',
+            '{!compactMonitorLayout && (',
+            'selectedTaskSnapshot',
+            'selectedTaskFromList',
+            'api.getTask(selectedTaskName, false)',
+            'title="Current Task"',
+            '!sidebarSearchActive',
+            'if (!selectedTaskName || selectedTaskFromList)',
+            '/not found/i.test(errorMessage(error))',
+            'selectedTaskName: null',
+            'Math.min(35, Math.max(10, sidebarWidthRaw))',
+            'MONITOR_SIDEBAR_WIDTH_STORAGE_KEY',
+            'clampMonitorSidebarWidth',
+            'startMonitorSidebarResize',
+            'pointermove',
+            "window.addEventListener('pointercancel', stopResize, { once: true })",
+            "window.removeEventListener('pointercancel', stopResize)",
+            'pendingMonitorSidebarWidthRef',
+            'monitorResizeFrameRef',
+            'window.requestAnimationFrame(applyPendingMonitorSidebarWidth)',
+            'window.cancelAnimationFrame(monitorResizeFrameRef.current)',
+            'localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY',
+            'aria-label="Resize monitor sidebar"',
+            'resizeMonitorSidebarByKeyboard',
+            'aria-valuenow={Math.round(monitorSidebarWidthPct)}',
+            "event.key === 'Home'",
+            "event.key === 'End'",
+            'cursor-col-resize',
+            'window.requestAnimationFrame(() => xtermRef.current?.focus())',
+            'closeTerminalSearch(false)',
+            'aria-live="polite"',
+            'aria-atomic="true"',
+            'Passes current thresholds',
+            'useMemo',
+            'const selectedTaskFromList = useMemo(',
+            'monitorTasks.find(task => task.name === selectedTaskName)',
+            'taskRefreshInFlightRef',
+            'taskRefreshQueuedRef',
+            'TASK_EVENT_REFRESH_DEBOUNCE_MS',
+            'refreshMonitorSnapshotRef.current()',
+            'const filteredTasks = monitorTasks',
+            'const pinnedTasks = useMemo(',
+            'const otherTasks = useMemo(',
+            'const allExportSelected = useMemo(',
+            'taskActionPending',
+            'if (!selectedTaskName || !selectedTask || taskActionPending) return',
+            'disabled={taskActionPending !== null}',
+            'setTaskActionPending(null)',
+            "streamStatus === 'reconnecting'",
+            'incremental polling remains active while reconnecting',
+            'screenReaderMode: true',
+            'aria-label={`Read-only logs for ${selectedTaskName}`}',
+        ), id='monitor'),
+        pytest.param(FRONTEND_APP_SHELL, (
+            'w-screen max-w-full',
+            'className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none"',
+        ), id='app-shell'),
+        pytest.param(FRONTEND_MANAGER, (
+            'repeat(auto-fill, minmax(min(100%, max(15rem',
+            'const renderedColumnCount = grid',
+            'window.getComputedStyle(grid).gridTemplateColumns',
+            'columns={columns}',
+            'const TaskCard = memo(function TaskCard',
+            '[content-visibility:auto]',
+            'setDetailTask(current => {',
+            'const refreshed = tasks.find(task => task.name === current.name)',
+            '...refreshed,',
+            'config: current.config',
+            'config_text: current.config_text',
+            '}, [tasks])',
+        ), id='manager'),
+        pytest.param(FRONTEND_TASK_DETAIL, (
+            'TASK_DETAIL_WIDTH_STORAGE_KEY',
+            'clampPanelWidth',
+            'Math.max(0, window.innerWidth - 8)',
+            'min-w-0 max-w-[calc(100vw-8px)]',
+            'startPanelResize',
+            'pointermove',
+            "window.addEventListener('pointercancel', stopResize, { once: true })",
+            "window.removeEventListener('pointercancel', stopResize)",
+            'pendingPanelWidthRef',
+            'panelResizeFrameRef',
+            'window.requestAnimationFrame(applyPendingPanelWidth)',
+            'window.cancelAnimationFrame(panelResizeFrameRef.current)',
+            'localStorage.setItem(TASK_DETAIL_WIDTH_STORAGE_KEY',
+            'aria-label="Resize task detail panel"',
+            'cursor-col-resize',
+            'style={{ width: panelWidth }}',
+            'suppressNextCloseRef',
+            'backdropPointerStartedRef',
+            'function handlePanelBackdropClick',
+            'backdropPointerStartedRef.current && event.target === event.currentTarget',
+            'w-5 -translate-x-2.5',
+            'group-hover:bg-accent/45',
+            'window.innerWidth - 8',
+            'max-w-[calc(100vw-8px)]',
+            'const MAX_PANEL_WIDTH = 2400',
+            'useState(() => buildEnvPairs(task))',
+            'const taskRequestSeqRef = useRef(0)',
+            'const currentTaskNameRef = useRef(task.name)',
+            'requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName',
+            'role="dialog"',
+            'aria-labelledby="task-detail-title"',
+            "window.addEventListener('keydown', handleKeyDown)",
+            'previousFocusRef',
+            'role="tablist"',
+            'role="tab"',
+            'role="tabpanel"',
+            'function isShellTask(task: Task)',
+            "return task.task_kind === 'shell'",
+            "return isShellTask(task) ? 'shell' : 'python'",
+        ), id='task-detail'),
+        pytest.param(FRONTEND_SEARCH_INPUT, (
+            "ariaLabel = 'Search'",
+            'aria-label={ariaLabel}',
+            'aria-label="Clear search"',
+            'title="Clear search"',
+            'inline-flex h-11 w-11',
+            'items-center justify-center',
+            'sm:h-7 sm:w-7',
+            'focus:ring-2 focus:ring-accent/25',
+        ), id='search-input'),
+    ],
+)
+def test_react_source_contracts(source_path, markers):
+    source = source_path.read_text(encoding="utf-8")
+    missing = [marker for marker in markers if marker not in source]
+    assert not missing, f"{source_path.name} is missing source contracts: {missing}"
 
 
 def test_react_task_fetch_ignores_stale_responses():
@@ -93,20 +504,6 @@ def test_react_task_detail_displays_source_state_in_run_history():
     assert "task.source_states?.length ?? 0" in source
     assert "source: task.source_states?.[index] || ''" in source
     assert ">Source</span>" in source
-
-
-def test_react_dashboard_polling_waits_for_network_work():
-    source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-
-    assert "const refreshDashboard = useCallback(() => {" in source
-    assert "if (dashboardRefreshPromiseRef.current)" in source
-    assert "const refreshPromise = Promise.allSettled([" in source
-    assert "api.getMetrics(false)" in source
-    assert "api.getMetrics(true)" in source
-    assert "setMetricsError('')" in source
-    assert "errorMessage(metricsResult.reason, 'System metrics unavailable.')" in source
-    assert "Metrics refresh failed. Showing last values." in source
-    assert "System metrics unavailable." in source
 
 
 def test_react_app_lazy_loads_routes_and_runtime_panel():
@@ -174,39 +571,6 @@ def test_frontend_entrypoints_use_local_lightweight_assets():
     assert '<link rel="icon" type="image/svg+xml" href="/pyruns.svg" />' in indexes[0]
     assert icon.exists()
     assert "<svg" in icon.read_text(encoding="utf-8")
-
-
-def test_react_app_supports_direct_launcher_route():
-    source = FRONTEND_APP.read_text(encoding="utf-8")
-
-    assert "useLocation" in source
-    assert "useNavigate" in source
-    assert "location.pathname === '/launcher'" in source
-    assert "setShowLauncher(searchParams.get('launcher') === '1' || location.pathname === '/launcher')" in source
-    assert '<Route path="launcher" element={<DashboardPage />} />' in source
-    assert "navigate('/', { replace: true })" in source
-
-
-def test_react_launcher_keeps_separate_recent_paths():
-    source = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "LAUNCH_HISTORY_LIMIT = 50" in source
-    assert "'pyruns.launcher.history.python'" in source
-    assert "'pyruns.launcher.history.shell'" in source
-    assert "'pyruns.launcher.history.yaml'" in source
-    assert "function readLaunchHistory" in source
-    assert "function writeLaunchHistory" in source
-    assert "const nextHistory = writeLaunchHistory(kind, path)" in source
-    assert "function RecentPathList" in source
-    assert "recentPaths={launchHistory.python}" in source
-    assert "recentPaths={launchHistory.shell}" in source
-    assert "recentPaths={launchHistory.yaml}" in source
-    assert "onRecentPathOpen={openPythonPath}" in source
-    assert "onRecentPathOpen={openShellPath}" in source
-    assert "onRecentPathOpen={handleSelectConfig}" in source
-    assert "kind=\"yaml\"" in source
-    assert "Recent YAML" in source
-    assert "max-h-60 space-y-1 overflow-y-auto" in source
 
 
 def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
@@ -286,28 +650,6 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "Could not rename task" in task_detail
 
 
-def test_react_dashboard_uses_full_width_clear_workspace_layout():
-    source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-
-    assert "flex min-h-full w-full flex-col" in source
-    assert "const workspaceKindLabel" in source
-    assert "Shell Workspace" in source
-    assert "border border-border-default bg-surface-raised" in source
-    assert "Start New Task" in source
-    assert "Recent Tasks" in source
-    assert "GPU & System" in source
-    assert "ResourceTile" in source
-    assert "h-full overflow-y-auto bg-surface-base" in source
-    assert "flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
-    assert '<div className="p-3">' in source
-    assert "w-full rounded-md border border-border-subtle" in source
-    assert "flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised" in source
-    assert "min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto" in source
-    assert "Quick status glance." in source
-    assert "queuedCount" in source
-    assert "pendingCount" in source
-
-
 def test_react_dashboard_keeps_workspace_chrome_compact():
     source = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
@@ -331,18 +673,6 @@ def test_react_workspace_chrome_distinguishes_uninitialized_roots():
     assert "Workspace needed" in sidebar
 
 
-def test_react_sidebar_active_workspace_state_is_visually_clear():
-    source = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-
-    assert "border-l-2 border-accent" in source
-    assert "bg-accent/10 text-accent" in source
-    assert "workspaceModeLabel" in source
-    assert "Workspace" in source
-    assert "runtimeLabel" in source
-    assert "SlidersHorizontal" in source
-    assert "rounded-md px-2 py-2" in source
-
-
 def test_react_gpu_process_dialog_shows_process_owner():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
@@ -355,65 +685,6 @@ def test_react_gpu_process_dialog_shows_process_owner():
     assert "process.memory_mb == null || gpu.mem_total <= 0" in dashboard
     assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
-
-
-def test_react_dashboard_gpu_cards_handle_multi_gpu_density():
-    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-
-    assert "gpuCount > 1 && 'md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'" in dashboard
-    assert "wide={gpuCount === 1}" in dashboard
-    assert "metrics.gpus.map(gpu =>" in dashboard
-    assert "key={gpuKey(gpu)}" in dashboard
-    assert "aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}" in dashboard
-    assert "title={gpu.name}" in dashboard
-    assert '<div className="p-3">' in dashboard
-    assert "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'" in dashboard
-
-
-def test_react_gpu_process_dialog_is_viewport_bounded_and_scrollable():
-    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-
-    assert "max-h-[calc(100dvh-2rem)]" in dashboard
-    assert "flex-col overflow-hidden rounded-md" in dashboard
-    assert "min-h-0 flex-1 overflow-y-auto px-5 py-4" in dashboard
-    assert "overflow-x-auto rounded-md border border-border-subtle" in dashboard
-    assert "min-w-[640px]" in dashboard
-    assert 'role="dialog"' in dashboard
-    assert 'aria-modal="true"' in dashboard
-    assert 'aria-labelledby="gpu-detail-title"' in dashboard
-    assert 'id="gpu-detail-title"' in dashboard
-    assert "Close GPU details" in dashboard
-
-
-def test_react_dashboard_supports_manual_refresh_and_richer_gpu_details():
-    dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-
-    assert "RefreshCw" in dashboard
-    assert "manualRefreshing" in dashboard
-    assert "const handleManualRefresh = useCallback(async () => {" in dashboard
-    assert "Dashboard refreshed" in dashboard
-    assert "Task summary and system metrics are up to date." in dashboard
-    assert "Refresh dashboard now" in dashboard
-    assert "Free VRAM" in dashboard
-    assert "Proc VRAM" in dashboard
-    assert "Avg/proc" in dashboard
-    assert "formatPercent" in dashboard
-
-
-def test_react_monitor_uses_readable_sidebar_on_narrow_viewports():
-    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "function readCompactMonitorLayout()" in source
-    assert "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'" in source
-    assert "window.matchMedia('(max-width: 700px)')" in source
-    assert "compactMonitorLayout ? 'flex-col' : 'flex-row'" in source
-    assert "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'" in source
-    assert "? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }" in source
-    assert ": { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}" in source
-    assert 'className="flex-none border-b border-border-subtle px-2.5 py-2"' in source
-    assert 'className="min-h-0 flex-1 overflow-y-auto px-2 py-2"' in source
-    assert 'className="flex-none border-t border-border-subtle px-2.5 py-2"' in source
-    assert "{!compactMonitorLayout && (" in source
 
 
 def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
@@ -445,19 +716,6 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert 'ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"' in monitor
     assert "!event.shiftKey && key === 'f'" in monitor
     assert "MIN_MONITOR_SIDEBAR_WIDTH_PX = 240" in monitor
-
-
-def test_react_monitor_preserves_selection_and_clears_only_after_confirmed_deletion():
-    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "selectedTaskSnapshot" in monitor
-    assert "selectedTaskFromList" in monitor
-    assert "api.getTask(selectedTaskName, false)" in monitor
-    assert 'title="Current Task"' in monitor
-    assert "!sidebarSearchActive" in monitor
-    assert "if (!selectedTaskName || selectedTaskFromList)" in monitor
-    assert "/not found/i.test(errorMessage(error))" in monitor
-    assert "selectedTaskName: null" in monitor
 
 
 def test_react_monitor_merges_run_action_response_before_next_poll():
@@ -532,13 +790,6 @@ def test_react_app_shell_uses_compact_sidebar_on_narrow_viewports():
     assert "{!compact && <span>{label}</span>}" in sidebar
 
 
-def test_react_app_shell_allows_pages_to_scroll_without_horizontal_growth():
-    shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
-
-    assert "w-screen max-w-full" in shell
-    assert 'className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none"' in shell
-
-
 def test_react_mobile_pages_constrain_empty_states_and_header_actions():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
@@ -555,17 +806,6 @@ def test_react_mobile_pages_constrain_empty_states_and_header_actions():
     assert "touch-target inline-flex min-h-11 min-w-0" in dashboard
     assert "max-w-full flex-col items-center justify-center gap-3 px-4 py-20 text-center" in empty_state
     assert "max-w-full break-words" in empty_state
-
-
-def test_react_manager_responsively_caps_card_columns_without_viewport_state():
-    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
-
-    assert "repeat(auto-fill, minmax(min(100%, max(15rem" in manager
-    assert "const renderedColumnCount = grid" in manager
-    assert "window.getComputedStyle(grid).gridTemplateColumns" in manager
-    assert "columns={columns}" in manager
-    assert "const TaskCard = memo(function TaskCard" in manager
-    assert "[content-visibility:auto]" in manager
 
 
 def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_locks():
@@ -616,60 +856,6 @@ def test_react_manager_batch_run_sends_only_worker_count():
     assert "execution_mode" not in api
 
 
-def test_react_generator_stacks_editor_and_settings_on_narrow_viewports():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "function readCompactGeneratorLayout()" in generator
-    assert "window.matchMedia('(max-width: 700px)')" in generator
-    assert "const generatorBodyClassName = clsx(" in generator
-    assert "compactGeneratorLayout ? 'flex-col overflow-y-auto' : 'overflow-hidden'" in generator
-    assert "compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1'" in generator
-    assert "compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle'" in generator
-    assert "style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}" in generator
-
-
-def test_react_generator_keeps_compact_toolbar_and_tree_content_usable():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "flex flex-col gap-2 border-b" in generator
-    assert "min-[701px]:flex-row" in generator
-    assert "w-full min-w-0 min-[701px]:w-auto min-[701px]:min-w-[280px]" in generator
-    assert "const [outlineCollapsed, setOutlineCollapsed] = useState(readCompactGeneratorLayout)" in generator
-    assert "if (query.matches)" in generator
-    assert "setOutlineCollapsed(true)" in generator
-
-
-def test_react_generator_batch_confirmation_uses_the_previewed_payload():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "interface PreviewSnapshot" in generator
-    assert "const previewRequestSeqRef = useRef(0)" in generator
-    assert "const snapshot: PreviewSnapshot" in generator
-    assert "snapshot.inputKey !== generationInputKeyRef.current" in generator
-    assert "setPreviewSnapshot(snapshot)" in generator
-    assert "doCreate(previewSnapshot?.payload || currentGenerationPayload)" in generator
-    assert "setPreviewSnapshot(current => current?.inputKey === generationInputKey ? current : null)" in generator
-
-
-def test_react_generator_settings_panel_can_be_resized():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "GENERATOR_SETTINGS_WIDTH_STORAGE_KEY" in generator
-    assert "clampGeneratorSettingsWidth" in generator
-    assert "readStoredGeneratorSettingsWidth" in generator
-    assert "startGeneratorSettingsResize" in generator
-    assert "generatorBodyRef" in generator
-    assert "pendingGeneratorSettingsWidthRef" in generator
-    assert "generatorSettingsResizeFrameRef" in generator
-    assert "window.requestAnimationFrame(applyPendingGeneratorSettingsWidth)" in generator
-    assert "window.cancelAnimationFrame(generatorSettingsResizeFrameRef.current)" in generator
-    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in generator
-    assert "window.removeEventListener('pointercancel', stopResize)" in generator
-    assert "localStorage.setItem(GENERATOR_SETTINGS_WIDTH_STORAGE_KEY" in generator
-    assert 'aria-label="Resize generator settings panel"' in generator
-    assert "cursor-col-resize" in generator
-
-
 def test_react_icon_only_buttons_have_accessible_names():
     task_detail = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
     confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
@@ -688,52 +874,6 @@ def test_react_icon_only_buttons_have_accessible_names():
     assert "aria-label={label}" in manager
     assert 'aria-label="Previous page"' in pagination
     assert 'aria-label="Next page"' in pagination
-
-
-def test_react_task_detail_panel_can_be_resized_from_left_edge():
-    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
-
-    assert "TASK_DETAIL_WIDTH_STORAGE_KEY" in source
-    assert "clampPanelWidth" in source
-    assert "Math.max(0, window.innerWidth - 8)" in source
-    assert "min-w-0 max-w-[calc(100vw-8px)]" in source
-    assert "startPanelResize" in source
-    assert "pointermove" in source
-    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in source
-    assert "window.removeEventListener('pointercancel', stopResize)" in source
-    assert "pendingPanelWidthRef" in source
-    assert "panelResizeFrameRef" in source
-    assert "window.requestAnimationFrame(applyPendingPanelWidth)" in source
-    assert "window.cancelAnimationFrame(panelResizeFrameRef.current)" in source
-    assert "localStorage.setItem(TASK_DETAIL_WIDTH_STORAGE_KEY" in source
-    assert "aria-label=\"Resize task detail panel\"" in source
-    assert "cursor-col-resize" in source
-    assert "style={{ width: panelWidth }}" in source
-    assert "suppressNextCloseRef" in source
-    assert "backdropPointerStartedRef" in source
-    assert "function handlePanelBackdropClick" in source
-    assert "backdropPointerStartedRef.current && event.target === event.currentTarget" in source
-    assert "w-5 -translate-x-2.5" in source
-    assert "group-hover:bg-accent/45" in source
-    assert "window.innerWidth - 8" in source
-    assert "max-w-[calc(100vw-8px)]" in source
-    assert "const MAX_PANEL_WIDTH = 2400" in source
-    assert "useState(() => buildEnvPairs(task))" in source
-
-
-def test_react_task_detail_guards_async_updates_and_traps_modal_focus():
-    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
-
-    assert "const taskRequestSeqRef = useRef(0)" in source
-    assert "const currentTaskNameRef = useRef(task.name)" in source
-    assert "requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName" in source
-    assert 'role="dialog"' in source
-    assert 'aria-labelledby="task-detail-title"' in source
-    assert "window.addEventListener('keydown', handleKeyDown)" in source
-    assert "previousFocusRef" in source
-    assert 'role="tablist"' in source
-    assert 'role="tab"' in source
-    assert 'role="tabpanel"' in source
 
 
 def test_react_confirm_dialog_is_labelled_and_scrolls_on_short_viewports():
@@ -785,28 +925,6 @@ def test_react_task_detail_env_editor_handles_edits_feedback_and_errors():
     assert "onClick={requestClose}" in source
     assert "} catch (err) {" in source
     assert "setEnvSaveError(errorMessage(err))" in source
-
-
-def test_react_manager_keeps_open_task_detail_synced_after_list_refresh():
-    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
-
-    assert "setDetailTask(current => {" in manager
-    assert "const refreshed = tasks.find(task => task.name === current.name)" in manager
-    assert "...refreshed," in manager
-    assert "config: current.config" in manager
-    assert "config_text: current.config_text" in manager
-    assert "}, [tasks])" in manager
-
-
-def test_react_generator_shows_creation_progress_and_result_actions():
-    source = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "type GenerationStatus" in source
-    assert "generationStatus === 'creating'" in source
-    assert "Writing task folders..." in source
-    assert "function CreatedTaskSummary" in source
-    assert "Open in Manager" in source
-    assert "Loader2" in source
 
 
 def test_react_manager_cards_support_drag_pin_and_search_match_labels():
@@ -879,14 +997,6 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in manager
 
 
-def test_react_task_detail_uses_python_shell_task_mode_labels():
-    source = FRONTEND_TASK_DETAIL.read_text(encoding="utf-8")
-
-    assert "function isShellTask(task: Task)" in source
-    assert "return task.task_kind === 'shell'" in source
-    assert "return isShellTask(task) ? 'shell' : 'python'" in source
-
-
 def test_react_theme_uses_more_readable_base_type_and_muted_text():
     css = FRONTEND_THEME_CSS.read_text(encoding="utf-8")
     tailwind = FRONTEND_TAILWIND.read_text(encoding="utf-8")
@@ -897,30 +1007,6 @@ def test_react_theme_uses_more_readable_base_type_and_muted_text():
     assert "font-size: 14px;" in css
     assert "'2xs': ['12px', '16px']" in tailwind
     assert "xs: ['13px', '18px']" in tailwind
-
-
-def test_react_monitor_sidebar_can_be_resized_from_split_handle():
-    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "Math.min(35, Math.max(10, sidebarWidthRaw))" in source
-    assert "MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
-    assert "clampMonitorSidebarWidth" in source
-    assert "startMonitorSidebarResize" in source
-    assert "pointermove" in source
-    assert "window.addEventListener('pointercancel', stopResize, { once: true })" in source
-    assert "window.removeEventListener('pointercancel', stopResize)" in source
-    assert "pendingMonitorSidebarWidthRef" in source
-    assert "monitorResizeFrameRef" in source
-    assert "window.requestAnimationFrame(applyPendingMonitorSidebarWidth)" in source
-    assert "window.cancelAnimationFrame(monitorResizeFrameRef.current)" in source
-    assert "localStorage.setItem(MONITOR_SIDEBAR_WIDTH_STORAGE_KEY" in source
-    assert "aria-label=\"Resize monitor sidebar\"" in source
-    assert "resizeMonitorSidebarByKeyboard" in source
-    assert "aria-valuenow={Math.round(monitorSidebarWidthPct)}" in source
-    assert "event.key === 'Home'" in source
-    assert "event.key === 'End'" in source
-    assert "cursor-col-resize" in source
-    assert ": { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}" in source
 
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
@@ -1104,31 +1190,6 @@ def test_react_monitor_uses_realtime_task_events_and_preserves_current_selection
     assert "await selectTask(currentTaskName)" in monitor
 
 
-def test_react_monitor_restores_terminal_focus_and_announces_search_count():
-    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "window.requestAnimationFrame(() => xtermRef.current?.focus())" in monitor
-    assert "closeTerminalSearch(false)" in monitor
-    assert 'aria-live="polite"' in monitor
-    assert 'aria-atomic="true"' in monitor
-    assert "Passes current thresholds" in monitor
-
-def test_react_monitor_memoizes_task_list_derivations_and_coalesces_task_events():
-    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "useMemo" in source
-    assert "const selectedTaskFromList = useMemo(" in source
-    assert "monitorTasks.find(task => task.name === selectedTaskName)" in source
-    assert "taskRefreshInFlightRef" in source
-    assert "taskRefreshQueuedRef" in source
-    assert "TASK_EVENT_REFRESH_DEBOUNCE_MS" in source
-    assert "refreshMonitorSnapshotRef.current()" in source
-    assert "const filteredTasks = monitorTasks" in source
-    assert "const pinnedTasks = useMemo(" in source
-    assert "const otherTasks = useMemo(" in source
-    assert "const allExportSelected = useMemo(" in source
-
-
 def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
@@ -1189,19 +1250,6 @@ def test_react_monitor_supports_configurable_terminal_line_height():
     assert "fitAddonRef.current?.fit()" in source
     assert "monitor_line_height" in settings_source
     assert "DEFAULT_MONITOR_LINE_HEIGHT" in settings_source
-
-
-def test_react_search_input_clear_button_is_accessible():
-    source = FRONTEND_SEARCH_INPUT.read_text(encoding="utf-8")
-
-    assert "ariaLabel = 'Search'" in source
-    assert "aria-label={ariaLabel}" in source
-    assert 'aria-label="Clear search"' in source
-    assert 'title="Clear search"' in source
-    assert "inline-flex h-11 w-11" in source
-    assert "items-center justify-center" in source
-    assert "sm:h-7 sm:w-7" in source
-    assert "focus:ring-2 focus:ring-accent/25" in source
 
 
 def test_react_code_editor_focuses_from_blank_editor_area():
@@ -1278,18 +1326,6 @@ def test_monitor_surfaces_structured_gpu_wait_and_bounded_log_tail_state():
     assert "tail_truncated?: boolean" in types
     assert "Showing the latest" in monitor
     assert "New output continues live." in monitor
-
-
-def test_monitor_prevents_duplicate_task_actions_and_exposes_stream_state():
-    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "taskActionPending" in monitor
-    assert "if (!selectedTaskName || !selectedTask || taskActionPending) return" in monitor
-    assert "disabled={taskActionPending !== null}" in monitor
-    assert "setTaskActionPending(null)" in monitor
-    assert 'aria-live="polite"' in monitor
-    assert "streamStatus === 'reconnecting'" in monitor
-    assert "incremental polling remains active while reconnecting" in monitor
 
 
 def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
@@ -1455,19 +1491,6 @@ def test_react_modals_avoid_expensive_backdrop_blur():
     assert "backdrop-blur" not in launcher
 
 
-def test_react_launcher_manual_path_buttons_are_clear_and_disabled_when_empty():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "launchMode" in launcher
-    assert "const scriptPathReady = manualScriptPath.trim().length > 0" in launcher
-    assert "const shellPathReady = manualShellRootPath.trim().length > 0" in launcher
-    assert "pathReady={scriptPathReady}" in launcher
-    assert "pathReady={shellPathReady}" in launcher
-    assert "disabled={!pathReady}" in launcher
-    assert "Select Script Path" in launcher
-    assert "Open Folder Path" in launcher
-
-
 def test_react_launcher_route_parameters_prefill_without_opening_workspace():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
 
@@ -1478,30 +1501,6 @@ def test_react_launcher_route_parameters_prefill_without_opening_workspace():
     assert "openSelectedWorkspace(scriptParam, configParam)" not in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
     assert "<LaunchChoiceTabs launchMode={launchMode} busy={loading} onChange={handleLaunchModeChange}" in launcher
-
-
-def test_react_launcher_fetch_does_not_clobber_newer_selection():
-    store = FRONTEND_STORE.read_text(encoding="utf-8")
-
-    assert "let launcherRequestSeq = 0" in store
-    assert "const requestId = ++launcherRequestSeq" in store
-    assert "if (requestId !== launcherRequestSeq)" in store
-
-
-def test_react_shared_stores_ignore_stale_async_responses():
-    store = FRONTEND_STORE.read_text(encoding="utf-8")
-
-    assert "let runtimeRequestSeq = 0" in store
-    assert "let dashboardRequestSeq = 0" in store
-    assert "let generatorTemplateRequestSeq = 0" in store
-    assert "const requestId = ++runtimeRequestSeq" in store
-    assert "requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()" in store
-    assert "const requestId = ++dashboardRequestSeq" in store
-    assert "requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()" in store
-    assert "const requestId = ++generatorTemplateRequestSeq" in store
-    assert "requestId !== generatorTemplateRequestSeq" in store
-    assert "draftVersion !== generatorDraftVersion" in store
-    assert "|| workspaceKey !== currentWorkspaceKey()" in store
 
 
 def test_react_launcher_deduplicates_open_and_only_closes_after_success():
@@ -1543,17 +1542,6 @@ def test_react_launcher_tracks_load_scripts_that_require_yaml_template():
     assert "requiresConfigTemplate: false" in store
 
 
-def test_react_launcher_clears_stale_error_after_valid_script_or_config_selection():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "const openPythonPath = useCallback(async (path: string)" in launcher
-    assert "setError('')" in launcher
-    assert "await selectScript(scriptPath)" in launcher
-    assert "const handleSelectConfig = useCallback(async (configPath: string)" in launcher
-    assert "selectConfig(configPath)" in launcher
-    assert "onClick={() => void handleSelectConfig(config.path)}" in launcher
-
-
 def test_react_launcher_browses_and_opens_yaml_config():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
@@ -1570,83 +1558,6 @@ def test_react_launcher_browses_and_opens_yaml_config():
     assert "Path to YAML config" in launcher
 
 
-def test_react_launcher_config_step_uses_path_picker_panel():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "function ConfigActionPanel" in launcher
-    assert "configPathReady" in launcher
-    assert "api.validateLauncherPath('config', debouncedConfigPath, selectedScript)" in launcher
-    assert "validation={configValidation}" in launcher
-    assert "PathValidationHint id={validationId} validation={validation} pathValue={pathValue}" in launcher
-
-
-def test_react_launcher_validation_is_bound_to_the_current_labelled_path():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "validatedPath: string" in launcher
-    assert "scriptValidation.validatedPath === manualScriptPath.trim()" in launcher
-    assert "configValidation.validatedPath === manualConfigPath.trim()" in launcher
-    assert "shellValidation.validatedPath === manualShellRootPath.trim()" in launcher
-    assert "validation.validatedPath !== currentPath" in launcher
-    assert 'role="status"' in launcher
-    assert 'aria-live="polite"' in launcher
-    assert 'aria-pressed={launchMode === \'python\'}' in launcher
-    assert 'aria-pressed={launchMode === \'shell\'}' in launcher
-    assert "Python script path" in launcher
-    assert "Shell workspace folder path" in launcher
-    assert "YAML config path" in launcher
-
-
-def test_react_generator_nested_form_uses_tree_depth_guides():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "depth={depth + 1}" in generator
-    assert "treeSection" in generator
-    assert "treeConnector" in generator
-    assert "border-l border-dashed border-border-strong/60" in generator
-    assert "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'" in generator
-    assert "!treeSection && depth > 0 && 'border-l-2 border-border pl-3'" in generator
-    assert "aria-expanded={open}" in generator
-    assert "title={`${prefix} (${Object.keys(data).length} fields)`}" in generator
-
-
-def test_react_generator_has_tree_layout_and_expand_controls():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "type FormLayoutMode = 'grid' | 'tree'" in generator
-    assert "type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'" in generator
-    assert "['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]" in generator
-    assert "handleDisplayModeChange" in generator
-    assert "formLayoutMode" in generator
-    assert "setFormLayoutMode" in generator
-    assert "Grid" in generator
-    assert "Tree" in generator
-    assert "YAML" in generator
-    assert "Expand all" in generator
-    assert "Collapse all" in generator
-    assert "treeOpenSignal" in generator
-    assert "setOpen(openSignalValue)" in generator
-    assert "const effectiveColumns = Math.max(1, columns)" in generator
-    assert "buildColumnGridStyle(effectiveColumns)" in generator
-    assert "repeat(${columns}, minmax(20rem, 1fr))" in generator
-    assert "const contentClassName = layoutMode === 'tree' ? 'space-y-1.5' : 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
-    assert "const childSectionClassName = layoutMode === 'tree' ? 'w-full' : 'col-span-full'" in generator
-    assert "onSetAllSections={setAllTreeSections}" in generator
-    assert "hasNestedSections && (" in generator
-    assert "outlineSections.length > 1 && (" in generator
-    assert "<SectionExpandControls onSetAllSections={onSetAllSections} />" in generator
-    assert "layoutMode={formLayoutMode}" in generator
-    assert "min-w-[280px]" in generator
-    assert "flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto" in generator
-
-
-def test_react_generator_grid_mode_keeps_sibling_fields_on_one_row():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "function buildColumnGridStyle(columns: number)" in generator
-    assert "const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'" in generator
-
-
 def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
 
@@ -1658,34 +1569,6 @@ def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
     type_position = generator.index("PARAM_TYPE_STYLES[originalType]", grid_row_start)
     input_position = generator.index('<div className="min-w-0 w-full">', grid_row_start)
     assert name_position < type_position < input_position
-
-
-def test_react_generator_tree_mode_uses_outline_explorer():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "function TreeParameterExplorer" in generator
-    assert "function RootSectionOverview" in generator
-    assert "function SearchResultRows" in generator
-    assert "collectTreeSections(data)" in generator
-    assert "collectParamRows(data, declaredTypeMap, batchParams)" in generator
-    assert "Outline" in generator
-    assert "outlineCollapsed" in generator
-    assert "setOutlineCollapsed(true)" in generator
-    assert "setOutlineCollapsed(false)" in generator
-    assert "Search path or value" in generator
-    assert "Search results" in generator
-    assert "No matching parameters." in generator
-    assert "TREE_OUTLINE_WIDTH_STORAGE_KEY" in generator
-    assert "clampTreeOutlineWidth" in generator
-    assert "readStoredTreeOutlineWidth" in generator
-    assert "startOutlineResize" in generator
-    assert "pendingOutlineWidthRef" in generator
-    assert "outlineResizeFrameRef" in generator
-    assert "gridTemplateColumns: `${outlineWidth}px 4px minmax(0,1fr)`" in generator
-    assert 'aria-label="Resize parameter outline"' in generator
-    assert "grid-cols-[minmax(0,1fr)]" in generator
-    assert "columns={1}" in generator
-    assert "onClick={() => onSelectPath(section.path)}" in generator
 
 
 def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
@@ -1730,18 +1613,6 @@ def test_react_generator_shell_mode_loads_existing_shell_tasks():
     assert "/api/generator/pick-shell-file" in api
 
 
-def test_react_generator_template_picker_supports_search():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "function TemplatePicker" in generator
-    assert "templateFilter" in generator
-    assert "filteredOptions" in generator
-    assert "Search templates" in generator
-    assert "No matching templates" in generator
-    assert 'role="listbox"' in generator
-    assert 'aria-expanded={open}' in generator
-
-
 def test_react_generator_shows_imported_default_config_source():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
@@ -1752,18 +1623,6 @@ def test_react_generator_shows_imported_default_config_source():
     assert "pathLeaf(selectedTemplate) === 'config_default.yaml'" in generator
     assert "max-w-full select-text items-start" in generator
     assert "whitespace-normal break-all font-mono" in generator
-
-
-def test_react_generator_reloads_default_when_imported_yaml_changes():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "lastWorkspaceDefaultKeyRef" in generator
-    assert "workspaceDefaultKey" in generator
-    assert "workspaceDefaultChanged" in generator
-    assert "defaultTemplate = templates.find(template => pathLeaf(template.value) === 'config_default.yaml')" in generator
-    assert "workspace?.config_default_source" in generator
-    assert "workspace?.config_default_source_name" in generator
-    assert "loadTemplateWithFeedback(defaultTemplateValue)" in generator
 
 
 def test_react_generator_keeps_workspace_default_selected_after_create():
@@ -1790,27 +1649,6 @@ def test_react_batch_preview_uses_readable_summary_and_structured_rows():
     assert "size?: 'md' | 'lg'" in dialog
 
 
-def test_react_shell_mode_has_runtime_status_panel():
-    generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-
-    assert "function ShellRuntimePanel" in generator
-    assert "Shell Runtime" in generator
-    assert "Resolved file" in generator
-    assert "Workspace folder" in generator
-    assert "getShellConfigFilename" in generator
-
-
-def test_react_launcher_exposes_direct_mode_actions():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "function LaunchChoiceTabs" in launcher
-    assert "function ModeActionPanel" in launcher
-    assert "launchMode === 'python'" in launcher
-    assert "launchMode === 'shell'" in launcher
-    assert "Browse Script" in launcher
-    assert "Browse & Open Folder" in launcher
-
-
 def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
     app = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
@@ -1825,30 +1663,6 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "const modeParam = searchParams.get('mode')" in launcher
     assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "setLaunchMode(initialLaunchMode)" in launcher
-
-
-def test_react_launcher_config_step_explains_required_yaml_selection():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "requiresConfigTemplate" in launcher
-    assert "Choose a YAML config" in launcher
-    assert "This script needs a YAML config before first launch." in launcher
-    assert "pyruns will save it as config_default.yaml" in launcher
-    assert "Choose or enter a YAML config path first." in launcher
-    assert "Path to YAML config" in launcher
-
-
-def test_react_workspace_switch_invalidates_all_scoped_state():
-    store = FRONTEND_STORE.read_text(encoding="utf-8")
-
-    assert "workspaceEpoch" in store
-    assert "function resetWorkspaceScopedState" in store
-    assert "dashboardRequestSeq += 1" in store
-    assert "generatorTemplateRequestSeq += 1" in store
-    assert "tasks: []" in store
-    assert "data: null" in store
-    assert "selectedTemplate: ''" in store
-    assert "workspaceKey === currentWorkspaceKey()" in store
 
 
 def test_react_workspace_refresh_failures_preserve_the_last_successful_snapshot():
@@ -1930,19 +1744,3 @@ def test_react_runtime_reload_preserves_dirty_draft_until_success():
     assert "void loadRuntime(true)" in refresh_panel
     assert "runtimeLoadSeqRef.current += 1" in source
     assert "if (loadSeq === runtimeLoadSeqRef.current)" in source
-
-
-def test_react_terminal_log_enables_screen_reader_mode():
-    monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
-
-    assert "screenReaderMode: true" in monitor
-    assert 'aria-label={`Read-only logs for ${selectedTaskName}`}' in monitor
-
-
-def test_react_routes_have_titles_focus_and_not_found_page():
-    app = FRONTEND_APP.read_text(encoding="utf-8")
-
-    assert "document.title" in app
-    assert "route-heading" in app
-    assert 'path="*"' in app
-    assert "Page not found" in app

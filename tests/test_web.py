@@ -842,25 +842,17 @@ def test_api_rejects_unknown_fields_and_resource_limit_overrides(monkeypatch):
     assert oversized_expected_env.status_code == 400
 
 
-def test_log_websocket_rejects_cross_origin_browser_clients():
+@pytest.mark.parametrize(
+    "endpoint",
+    ["/api/tasks/alpha/logs/stream", "/api/tasks/events"],
+    ids=["task-log", "task-events"],
+)
+def test_websocket_rejects_cross_origin_browser_clients(endpoint):
     client = TestClient(create_app(_RouteRuntime()))
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
-            "/api/tasks/alpha/logs/stream",
-            headers={"Origin": "https://attacker.example", "Host": "testserver"},
-        ):
-            pass
-
-    assert exc_info.value.code == 4403
-
-
-def test_task_event_websocket_rejects_cross_origin_browser_clients():
-    client = TestClient(create_app(_RouteRuntime()))
-
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            "/api/tasks/events",
+            endpoint,
             headers={"Origin": "https://attacker.example", "Host": "testserver"},
         ):
             pass
@@ -2539,27 +2531,18 @@ def test_launcher_pick_config_path_reports_cancelled_yaml_selection(tmp_path):
     assert response.json()["detail"] == "No YAML config selected."
 
 
-def test_launcher_open_endpoint_rejects_non_python_script_path(tmp_path):
+@pytest.mark.parametrize("target_kind", ["file", "directory"])
+def test_launcher_open_endpoint_rejects_non_python_target(tmp_path, target_kind):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
-    not_script = tmp_path / "notes.txt"
-    not_script.write_text("not a script\n", encoding="utf-8")
+    target = tmp_path / ("notes.txt" if target_kind == "file" else "configs")
+    if target_kind == "file":
+        target.write_text("not a script\n", encoding="utf-8")
+    else:
+        target.mkdir()
 
-    response = client.post("/api/launcher/open", json={"script_path": str(not_script)})
-
-    assert response.status_code == 400
-    assert "Python script" in response.json()["detail"]
-
-
-def test_launcher_open_endpoint_rejects_directory_script_path(tmp_path):
-    workspace = _make_workspace(tmp_path, "main")
-    runtime = _build_runtime(workspace)
-    client = TestClient(create_app(runtime))
-    directory_path = tmp_path / "configs"
-    directory_path.mkdir()
-
-    response = client.post("/api/launcher/open", json={"script_path": str(directory_path)})
+    response = client.post("/api/launcher/open", json={"script_path": str(target)})
 
     assert response.status_code == 400
     assert "Python script" in response.json()["detail"]
