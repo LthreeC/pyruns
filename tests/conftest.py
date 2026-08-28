@@ -67,13 +67,13 @@ def _prevent_windows_test_console_windows(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_process_state(monkeypatch, tmp_path):
+def _isolate_process_state(monkeypatch, tmp_path_factory):
     """Keep installation-wide update and browser state outside the test workspace."""
 
-    state_root = tmp_path.with_name(f"{tmp_path.name}-process-state")
+    state_root = tmp_path_factory.mktemp("process-state")
     update_dir = state_root / "update"
     session_dir = state_root / "session"
-    update_dir.mkdir(parents=True)
+    update_dir.mkdir()
     session_dir.mkdir()
     monkeypatch.setenv("PYRUNS_UPDATE_STATE_DIR", str(update_dir))
     monkeypatch.setenv("PYRUNS_UI_SESSION_STATE_DIR", str(session_dir))
