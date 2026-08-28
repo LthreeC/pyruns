@@ -172,6 +172,116 @@ def test_shared_coordinators_gate_every_ui_and_restart_followers(tmp_path):
         owner.close(failed_handoff=True)
 
 
+def test_owner_handoff_refreshes_request_after_slow_runtime_shutdown(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    owner = self_update.UiUpdateCoordinator(
+        lambda: None,
+        state_dir=str(state_dir),
+        shared=True,
+        current_version="0.3.0",
+    )
+    owner.attach(_Runtime(0))
+    try:
+        assert owner.prepare(_Runtime(0)) is True
+        store = CoordinationStore(state_dir)
+        with store.locked():
+            request = store.read_request_locked()
+        assert request is not None
+        initial_heartbeat = float(request["heartbeat_at"])
+
+        now = initial_heartbeat + update_coordination.UPDATE_HANDOFF_GRACE_SECONDS + 1
+        monkeypatch.setattr(self_update.time, "time", lambda: now)
+        owner.handoff()
+
+        monkeypatch.setattr(
+            update_coordination,
+            "_record_owner_is_alive",
+            lambda _record: False,
+        )
+        with store.locked():
+            active = store.active_request_locked(recover=True)
+        assert active is not None
+        assert active["request_id"] == request["request_id"]
+        assert active["heartbeat_at"] == now
+    finally:
+        owner.close(failed_handoff=True)
+
+
+@pytest.mark.parametrize("legacy_0_3_0", [False, True])
+def test_original_updater_resumes_owner_exit_recovery(tmp_path, legacy_0_3_0):
+    state_dir = tmp_path / "coordination"
+    owner_id = "a" * 32
+    request_id = "b" * 32
+    store = _publish_update_request(
+        state_dir,
+        owner_id,
+        request_id,
+        operation="upgrade",
+        stage="draining",
+    )
+    with store.locked():
+        request = store.read_request_locked()
+        assert request is not None
+        recovered = store.recover_stale_request_locked(request)
+        if legacy_0_3_0:
+            recovered.pop("recovery_reason")
+            store.write_request_locked(recovered)
+
+    self_update._wait_for_update_participants(
+        store,
+        request_id=request_id,
+        instance_id=owner_id,
+        previous_version="0.3.0",
+    )
+
+    with store.locked():
+        resumed = store.read_request_locked()
+    assert resumed is not None
+    assert resumed["stage"] == "draining"
+    assert resumed["owner_instance_id"] == owner_id
+    assert "error" not in resumed
+    assert "result" not in resumed
+
+
+def test_updater_does_not_resume_terminal_or_foreign_request(tmp_path):
+    state_dir = tmp_path / "coordination"
+    owner_id = "a" * 32
+    request_id = "b" * 32
+    store = _publish_update_request(
+        state_dir,
+        owner_id,
+        request_id,
+        operation="upgrade",
+        stage="draining",
+    )
+    with store.locked():
+        request = store.read_request_locked()
+        assert request is not None
+        store.recover_stale_request_locked(request)
+
+    with pytest.raises(UpdateCoordinationError, match="no longer active"):
+        self_update._wait_for_update_participants(
+            store,
+            request_id=request_id,
+            instance_id="c" * 32,
+            previous_version="0.3.0",
+        )
+
+    with store.locked():
+        completed = store.read_request_locked()
+        assert completed is not None
+        completed.pop("recovery_reason", None)
+        completed["error"] = "pip failed"
+        store.write_request_locked(completed)
+    with pytest.raises(UpdateCoordinationError, match="no longer active"):
+        self_update._wait_for_update_participants(
+            store,
+            request_id=request_id,
+            instance_id=owner_id,
+            previous_version="0.3.0",
+        )
+
+
 def test_shared_update_refuses_remote_ui_and_cli_activity(tmp_path):
     state_dir = tmp_path / "coordination"
     owner = self_update.UiUpdateCoordinator(
@@ -1207,6 +1317,7 @@ def test_waiter_main_uses_shared_result_without_running_upgrade(monkeypatch):
 def test_incomplete_waiter_arguments_never_run_upgrade(monkeypatch):
     observed = {}
     monkeypatch.setenv(self_update.UI_TOKEN_ENV, "private-token")
+    monkeypatch.setattr(self_update, "_query_installed_version", lambda _fallback: "0.3.0")
 
     def unexpected_upgrade(*_args, **_kwargs):
         raise AssertionError("an incomplete waiter must not run pip")

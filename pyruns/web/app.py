@@ -422,6 +422,10 @@ def find_available_port(start_port: int, *, host: str = "127.0.0.1", max_attempt
     stop = min(65535, start + max(0, int(max_attempts)))
     for port in range(start, stop + 1):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            if os.name != "nt":
+                # Match Uvicorn's POSIX listener so a just-released port is not
+                # rejected only because earlier HTTP connections are in TIME_WAIT.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind((host, port))
             except OSError:

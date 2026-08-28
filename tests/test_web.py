@@ -981,6 +981,9 @@ def test_find_available_port_handles_invalid_or_exhausted_ranges():
     class BusySocket:
         calls = []
 
+        def setsockopt(self, *_args):
+            pass
+
         def __enter__(self):
             return self
 
@@ -1000,6 +1003,42 @@ def test_find_available_port_handles_invalid_or_exhausted_ranges():
         with pytest.raises(RuntimeError):
             web_app.find_available_port(70000, host="127.0.0.1", max_attempts=0)
         assert BusySocket.calls == [("127.0.0.1", web_app.DEFAULT_UI_PORT)]
+
+
+@pytest.mark.parametrize(
+    ("os_name", "expected_options"),
+    [
+        ("posix", [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]),
+        ("nt", []),
+    ],
+)
+def test_find_available_port_matches_platform_listener_reuse(
+    monkeypatch,
+    os_name,
+    expected_options,
+):
+    from pyruns.web import app as web_app
+
+    class ProbeSocket:
+        options = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def setsockopt(self, *option):
+            self.options.append(option)
+
+        def bind(self, _address):
+            pass
+
+    monkeypatch.setattr(web_app.os, "name", os_name)
+    monkeypatch.setattr(web_app.socket, "socket", lambda *_args, **_kwargs: ProbeSocket())
+
+    assert web_app.find_available_port(8123, max_attempts=0) == 8123
+    assert ProbeSocket.options == expected_options
 
 
 def test_parse_main_options_handles_browser_flags_and_invalid_ports(capsys):

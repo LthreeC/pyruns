@@ -491,6 +491,7 @@ class UiUpdateCoordinator:
         """Stop monitoring and leave a waiter/updater lease for process replacement."""
 
         self._stop_monitor()
+        self._heartbeat_request_if_owner()
         phase = "handoff"
         self._write_instance(
             phase=phase,
@@ -832,17 +833,24 @@ def _wait_for_update_participants(
             request = store.read_request_locked()
             if request is None or str(request.get("request_id", "") or "") != request_id:
                 raise UpdateCoordinationError("The shared Pyruns update request disappeared.")
-            if not store.request_is_active(request):
-                raise UpdateCoordinationError("The shared Pyruns update request is no longer active.")
             owner = process_record(record_id=instance_id, kind="ui-update")
-            store.update_request_locked(
+            ownership = {
+                "stage": "draining",
+                "heartbeat_at": time.time(),
+                "host": owner["host"],
+                "pid": owner["pid"],
+                "process_create_time": owner["process_create_time"],
+            }
+            if store.request_is_active(request):
+                store.update_request_locked(request_id, **ownership)
+            elif store.resume_recovered_request_locked(
                 request_id,
-                stage="draining",
-                heartbeat_at=time.time(),
-                host=owner["host"],
-                pid=owner["pid"],
-                process_create_time=owner["process_create_time"],
-            )
+                instance_id,
+                **ownership,
+            ) is None:
+                raise UpdateCoordinationError(
+                    "The shared Pyruns update request is no longer active."
+                )
             store.write_record(
                 "instances",
                 instance_id,

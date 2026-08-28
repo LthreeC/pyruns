@@ -33,7 +33,11 @@ UPDATE_LOCK_HEARTBEAT_SECONDS = 5.0
 UPDATE_LOCK_POLL_SECONDS = 0.05
 UPDATE_LOCK_PROTOCOL = 2
 UPDATE_MAX_JSON_BYTES = 64 * 1024
-UPDATE_HANDOFF_GRACE_SECONDS = 15.0
+UPDATE_HANDOFF_GRACE_SECONDS = 60.0
+UPDATE_RECOVERY_OWNER_EXITED = "owner-exited"
+UPDATE_RECOVERY_OWNER_EXITED_ERROR = (
+    "The update owner exited before coordination completed."
+)
 _ACTIVITY_CLOSE_JOIN_SECONDS = 0.05
 
 _LOCAL_HOST = socket.gethostname().strip().lower() or "unknown"
@@ -646,7 +650,8 @@ class CoordinationStore:
                 "heartbeat_at": time.time(),
                 "completed_at": time.time(),
                 "result": result,
-                "error": "The update owner exited before coordination completed.",
+                "error": UPDATE_RECOVERY_OWNER_EXITED_ERROR,
+                "recovery_reason": UPDATE_RECOVERY_OWNER_EXITED,
             }
         )
         _atomic_write_json(self.request_path, recovered)
@@ -679,6 +684,52 @@ class CoordinationStore:
         updated.update(changes)
         _atomic_write_json(self.request_path, updated)
         return updated
+
+    def resume_recovered_request_locked(
+        self,
+        request_id: str,
+        owner_instance_id: str,
+        **changes: Any,
+    ) -> dict[str, Any] | None:
+        """Resume only an auto-recovered request for its original updater."""
+
+        request = self.read_request_locked()
+        result = request.get("result") if request is not None else None
+        recovery_reason = (
+            str(request.get("recovery_reason", "") or "") if request else ""
+        )
+        recovered_for_owner_exit = bool(
+            request
+            and (
+                (
+                    recovery_reason == UPDATE_RECOVERY_OWNER_EXITED
+                    and isinstance(result, dict)
+                    and result.get("ok") is False
+                )
+                or (
+                    not recovery_reason
+                    and str(request.get("error", "") or "")
+                    == UPDATE_RECOVERY_OWNER_EXITED_ERROR
+                    and isinstance(result, dict)
+                    and result.get("ok") is False
+                )
+            )
+        )
+        if (
+            request is None
+            or str(request.get("request_id", "") or "") != str(request_id)
+            or str(request.get("owner_instance_id", "") or "")
+            != str(owner_instance_id)
+            or str(request.get("stage", "") or "") != "completed"
+            or not recovered_for_owner_exit
+        ):
+            return None
+        resumed = dict(request)
+        for key in ("completed_at", "result", "error", "recovery_reason"):
+            resumed.pop(key, None)
+        resumed.update(changes)
+        _atomic_write_json(self.request_path, resumed)
+        return resumed
 
     def record_path(self, group: str, record_id: str) -> str:
         if not record_id or any(char not in "0123456789abcdef" for char in record_id.lower()):
