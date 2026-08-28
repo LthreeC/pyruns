@@ -1538,9 +1538,13 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows Bash or WSL")
 def test_exec_runs_sh_file_on_windows_when_bash_is_available(tmp_path):
+    from pyruns.utils import shell_runtime
+
     wsl = shutil.which("wsl.exe")
     if not wsl:
         pytest.skip("wsl.exe is unavailable")
+    if not shell_runtime._probe_shell_executable(wsl, "wsl"):
+        pytest.skip("WSL has no runnable Bash distribution")
 
     project = tmp_path / "workspace with spaces"
     project.mkdir()
@@ -1559,14 +1563,7 @@ def test_exec_runs_sh_file_on_windows_when_bash_is_available(tmp_path):
         "printf 'env=%s\\n' \"$PYRUNS_SCRIPT_ENV\"\n",
         encoding="utf-8",
     )
-    translated = subprocess.run(
-        [wsl, "wslpath", "-a", str(script)],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    ).stdout.strip()
+    translated = shell_runtime._windows_path_to_wsl_path(str(script))
     direct_env = _source_env()
     direct_env["PYRUNS_SCRIPT_ENV"] = "wsl-env-ok"
     direct_env["WSLENV"] = "PYRUNS_SCRIPT_ENV"
@@ -2196,7 +2193,7 @@ def test_windows_legacy_command_line_recovery_preserves_shell_quotes():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
-def test_exec_powershell_shell_expression_preserves_host_colors(tmp_path):
+def test_exec_powershell_shell_expression_preserves_sgr_colors(tmp_path):
     import importlib.util
 
     if importlib.util.find_spec("winpty") is None:
@@ -2206,9 +2203,13 @@ def test_exec_powershell_shell_expression_preserves_host_colors(tmp_path):
         tmp_path,
         "exec",
         "--name",
-        "host-color",
+        "sgr-color",
         "-c",
-        "Write-Host 'red-text' -ForegroundColor Red",
+        (
+            "$esc=[char]27; "
+            "[Console]::Write(\"${esc}[2J${esc}[38;5;9mred-text"
+            "${esc}[0m${esc}]0;pyruns-title`a\")"
+        ),
         timeout=30,
     )
 
@@ -2222,7 +2223,7 @@ def test_exec_powershell_shell_expression_preserves_host_colors(tmp_path):
         / "_pyruns_"
         / "_shell_"
         / TASKS_DIR
-        / "host-color"
+        / "sgr-color"
         / RUN_LOGS_DIR
         / "run1.log"
     ).read_text(encoding="utf-8")
