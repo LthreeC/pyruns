@@ -163,7 +163,7 @@ summary::-webkit-details-marker {
 }
 .generator-code-editor {
   height: 100%;
-  min-height: max(32rem, calc(100dvh - 15rem));
+  min-height: 0;
 }
 .runtime-env-editor {
   height: min(12rem, calc(100dvh - 18rem));

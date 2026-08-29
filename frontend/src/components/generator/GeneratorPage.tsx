@@ -1162,12 +1162,6 @@ export default function GeneratorPage() {
             </span>
           )}
 
-          {dirty && (
-            <span className="inline-flex items-center rounded-md bg-amber-500/10 px-2 py-1 text-2xs font-medium text-amber-700 dark:text-amber-300">
-              Unsaved
-            </span>
-          )}
-
           {showImportedConfigSource && (
             <span
               className="inline-flex min-w-0 max-w-full select-text items-start gap-1 rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-2xs text-txt-secondary"

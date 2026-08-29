@@ -291,10 +291,11 @@ export default function CodeTextEditor({
           <WrapText className="h-3.5 w-3.5" />
         </button>
       )}
-      <div className="min-h-0 flex-1 cursor-text" onMouseDown={focusEditorFromBlankArea}>
+      <div className="relative min-h-0 flex-1 cursor-text overflow-hidden" onMouseDown={focusEditorFromBlankArea}>
         <CodeMirror
           value={value}
           height="100%"
+          className="absolute inset-0 overflow-hidden"
           theme={theme}
           extensions={extensions}
           onCreateEditor={view => { editorViewRef.current = view }}

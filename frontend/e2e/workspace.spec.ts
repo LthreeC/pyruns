@@ -1204,7 +1204,9 @@ test('template list load failure has a retry that clears the error', async ({ pa
   expect(attempts).toBe(2)
 })
 
-test('generator preserves shell and uncommitted form drafts across navigation', async ({ page }) => {
+test('generator keeps shell scripts scrollable and preserves drafts across navigation', async ({ page, isMobile }) => {
+  const viewport = { width: isMobile ? 375 : 1024, height: isMobile ? 568 : 480 }
+  await page.setViewportSize(viewport)
   let activeWorkspace: Record<string, unknown> = {
     run_root: 'C:/pyruns-e2e/shell-workspace',
     working_root: 'C:/pyruns-e2e',
@@ -1243,6 +1245,19 @@ test('generator preserves shell and uncommitted form drafts across navigation', 
   await page.goto('/generator?token=pyruns-e2e-access-token')
   const shellEditor = page.getByRole('textbox', { name: 'Task shell editor' })
   await expect(shellEditor).toBeVisible()
+  const longShellScript = Array.from({ length: 160 }, (_, index) => `echo line-${index + 1}`).join('\n')
+  await shellEditor.fill(longShellScript)
+  await expect(page.getByText('Unsaved', { exact: true })).toHaveCount(0)
+  const shellScrollport = page.locator('.generator-code-editor .cm-scroller')
+  await shellScrollport.evaluate(element => { element.scrollTop = 0 })
+  await shellScrollport.hover()
+  await page.mouse.wheel(0, 640)
+  await expect.poll(() => shellScrollport.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  if (!isMobile) {
+    const editorBox = await page.locator('.generator-code-editor').boundingBox()
+    if (!editorBox) throw new Error('Shell editor must have a stable layout box')
+    expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height + 0.5)
+  }
   await shellEditor.fill('echo shell-draft-kept')
 
   await page.getByRole('link', { name: 'Manager' }).click()
