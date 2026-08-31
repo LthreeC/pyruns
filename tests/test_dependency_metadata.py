@@ -6,6 +6,7 @@ import subprocess
 import zipfile
 
 import pytest
+import yaml
 
 try:
     import tomllib
@@ -33,6 +34,10 @@ def _load_pyproject():
 
 def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_workflow(name: str):
+    return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
 
 
 def _load_static_checker():
@@ -260,17 +265,24 @@ def test_built_static_index_references_existing_assets():
 
 
 def test_ci_build_and_e2e_contract():
-    workflow = (ROOT / ".github" / "workflows" / "python-app.yml").read_text(encoding="utf-8")
+    workflow = _load_workflow("python-app.yml")
     server = (ROOT / "frontend" / "e2e" / "start-server.mjs").read_text(encoding="utf-8")
-    frontend_workflow = workflow.split("npm --prefix frontend ci", 1)[1]
-    e2e_step = workflow.split("- name: Run browser end-to-end tests", 1)[1].split(
-        "- name: Build docs", 1
-    )[0]
+    frontend_steps = workflow["jobs"]["frontend"]["steps"]
+    browser_steps = workflow["jobs"]["browser"]["steps"]
+    package_steps = workflow["jobs"]["package"]["steps"]
+    frontend_commands = "\n".join(str(step.get("run", "")) for step in frontend_steps)
+    package_commands = "\n".join(str(step.get("run", "")) for step in package_steps)
+    e2e_steps = [
+        step
+        for step in [*frontend_steps, *browser_steps]
+        if "npm run test:e2e" in str(step.get("run", ""))
+    ]
 
-    assert "rm -rf build .tmp-dist" in workflow
-    assert "python scripts/check_wheel_static.py .tmp-dist/*.whl" in workflow
-    assert "python scripts/check_frontend_static.py" in frontend_workflow
-    assert "timeout-minutes: 10" in e2e_step
+    assert "rm -rf build .tmp-dist" in package_commands
+    assert "python scripts/check_wheel_static.py .tmp-dist/*.whl" in package_commands
+    assert "python scripts/check_frontend_static.py" in frontend_commands
+    assert len(e2e_steps) == 2
+    assert all(step.get("timeout-minutes") == 10 for step in e2e_steps)
     assert "detached:" not in server
     assert "process.kill(-child.pid" not in server
     assert "windowsHide: true" in server
