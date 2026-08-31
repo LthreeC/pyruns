@@ -285,17 +285,22 @@ export const getMetrics = (includeProcesses = false) => request<SystemMetrics>(
   `/api/system/metrics?include_processes=${includeProcesses ? 'true' : 'false'}`,
 )
 
-export const getSystemInfo = () => request<SystemInfo>('/api/system/info')
+export const getSystemInfo = (signal?: AbortSignal) => request<SystemInfo>('/api/system/info', { signal })
 
-export const checkPyrunsUpdate = () => request<UiVersionCheck>('/api/system/update/check')
+export const checkPyrunsUpdate = (signal?: AbortSignal) => request<UiVersionCheck>(
+  '/api/system/update/check',
+  { signal },
+)
 
-export const updatePyruns = (targetVersion: string) => request<UiUpdateResponse>('/api/system/update', {
+export const updatePyruns = (targetVersion: string, signal?: AbortSignal) => request<UiUpdateResponse>('/api/system/update', {
   method: 'POST',
   body: JSON.stringify({ target_version: targetVersion }),
+  signal,
 })
 
-export const restartPyruns = () => request<UiUpdateResponse>('/api/system/restart', {
+export const restartPyruns = (signal?: AbortSignal) => request<UiUpdateResponse>('/api/system/restart', {
   method: 'POST',
+  signal,
 })
 
 export const getLauncherScripts = () => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts')

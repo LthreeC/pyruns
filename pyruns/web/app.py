@@ -1794,8 +1794,8 @@ def main(
                 os.environ.pop(_UI_SESSION_SCOPE_ENV, None)
             else:
                 os.environ[_UI_SESSION_SCOPE_ENV] = inherited_session_scope
-            # os.execve() never returns. Reaching this path means handoff failed
-            # or was replaced by a test double, so release the shared gate.
+            # Process replacement stays here while active. Reaching this path
+            # means handoff ended or was replaced by a test double.
             update_coordinator.close(failed_handoff=True)
     elif update_coordinator is not None:
         update_coordinator.close()

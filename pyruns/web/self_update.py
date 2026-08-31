@@ -34,6 +34,12 @@ UI_UPDATE_RESULT_ENV = "PYRUNS_UI_UPDATE_RESULT"
 PYPI_PROJECT_JSON_URL = "https://pypi.org/pypi/pyruns/json"
 PYPI_CHECK_TIMEOUT_SECONDS = 5.0
 PYPI_MAX_RESPONSE_BYTES = 1_048_576
+UPDATE_PARTICIPANT_WAIT_SECONDS = 60.0
+UPDATE_STATUS_REPORT_SECONDS = 5.0
+PIP_UPGRADE_TIMEOUT_SECONDS = 300.0
+COORDINATED_UPDATE_WAIT_SECONDS = 420.0
+INSTALLED_VERSION_QUERY_TIMEOUT_SECONDS = 15.0
+_WINDOWS_PROCESS_REPLACEMENT = os.name == "nt"
 
 
 class ActiveTasksError(RuntimeError):
@@ -614,6 +620,20 @@ def read_update_result() -> dict[str, Any] | None:
     }
 
 
+def _replace_current_process(command: list[str], environment: dict[str, str]) -> None:
+    """Run a replacement interpreter without losing its inherited terminal."""
+
+    if _WINDOWS_PROCESS_REPLACEMENT:
+        # Windows has no reliable in-place exec here; waiting keeps `pyr ui`
+        # attached to the replacement process and preserves its terminal output.
+        try:
+            exit_code = subprocess.call(command, env=environment)
+        except OSError as exc:
+            raise RuntimeError(f"Could not start the replacement Pyruns process: {exc}") from exc
+        raise SystemExit(exit_code)
+    os.execve(sys.executable, command, environment)
+
+
 def replace_process_with_updater(
     *,
     port: int,
@@ -657,7 +677,7 @@ def replace_process_with_updater(
         else "[pyruns] Every Pyruns UI is idle; starting the shared installation upgrade."
     )
     print(message, flush=True)
-    os.execve(sys.executable, command, environment)
+    _replace_current_process(command, environment)
 
 
 def replace_process_with_waiter(
@@ -690,7 +710,7 @@ def replace_process_with_waiter(
     environment = os.environ.copy()
     environment[UI_TOKEN_ENV] = str(token)
     print("[pyruns] Waiting for the shared Pyruns installation to finish updating.", flush=True)
-    os.execve(sys.executable, command, environment)
+    _replace_current_process(command, environment)
 
 
 def _query_installed_version(fallback: str) -> str:
@@ -705,8 +725,9 @@ def _query_installed_version(fallback: str) -> str:
             check=False,
             capture_output=True,
             text=True,
+            timeout=INSTALLED_VERSION_QUERY_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return fallback
     version_text = str(completed.stdout or "").strip()
     return version_text if completed.returncode == 0 and version_text else fallback
@@ -722,8 +743,20 @@ def run_pip_upgrade(
     command = [sys.executable, "-m", "pip", "install", "--upgrade", "pyruns"]
     print(f"[pyruns] Running: {subprocess.list2cmdline(command)}", flush=True)
     try:
-        completed = subprocess.run(command, check=False)
+        completed = subprocess.run(
+            command,
+            check=False,
+            timeout=PIP_UPGRADE_TIMEOUT_SECONDS,
+        )
         exit_code = int(completed.returncode)
+    except subprocess.TimeoutExpired:
+        exit_code = 124
+        print(
+            f"[pyruns] pip did not finish within {PIP_UPGRADE_TIMEOUT_SECONDS:g} seconds; "
+            "restarting the available version.",
+            file=sys.stderr,
+            flush=True,
+        )
     except OSError as exc:
         exit_code = 1
         print(f"[pyruns] Could not start pip: {exc}", file=sys.stderr, flush=True)
@@ -828,6 +861,8 @@ def _wait_for_update_participants(
 ) -> None:
     """Wait until every live UI is a waiter and every CLI runner has exited."""
 
+    deadline = time.monotonic() + UPDATE_PARTICIPANT_WAIT_SECONDS
+    next_report = 0.0
     while True:
         with store.locked():
             request = store.read_request_locked()
@@ -874,7 +909,28 @@ def _wait_for_update_participants(
             ]
         if not blockers and not activities:
             return
-        time.sleep(0.2)
+        now = time.monotonic()
+        blocked = [*blockers, *activities]
+        details = ", ".join(
+            f"{item.get('kind', 'process')}@{item.get('host', 'unknown')} "
+            f"pid={item.get('pid', '?')} phase={item.get('phase', 'active')}"
+            for item in blocked[:8]
+        )
+        if len(blocked) > 8:
+            details = f"{details}, and {len(blocked) - 8} more"
+        if now >= next_report:
+            print(
+                f"[pyruns] Waiting for {len(blocked)} shared Pyruns process"
+                f"{'es' if len(blocked) != 1 else ''}: {details}",
+                flush=True,
+            )
+            next_report = now + UPDATE_STATUS_REPORT_SECONDS
+        if now >= deadline:
+            raise UpdateCoordinationError(
+                f"Timed out after {UPDATE_PARTICIPANT_WAIT_SECONDS:g} seconds waiting for "
+                f"shared Pyruns processes to stop: {details}"
+            )
+        time.sleep(min(0.2, max(0.0, deadline - now)))
 
 
 class _CoordinationHeartbeat:
@@ -915,7 +971,7 @@ class _CoordinationHeartbeat:
                 continue
 
     def __enter__(self) -> "_CoordinationHeartbeat":
-        _heartbeat_coordinated_process(
+        active = _heartbeat_coordinated_process(
             self.store,
             request_id=self.request_id,
             instance_id=self.instance_id,
@@ -923,6 +979,10 @@ class _CoordinationHeartbeat:
             version=self.previous_version,
             stage=self.stage,
         )
+        if not active:
+            raise UpdateCoordinationError(
+                "The shared Pyruns update request is no longer active."
+            )
         self.thread.start()
         return self
 
@@ -994,7 +1054,11 @@ def wait_for_coordinated_update(
     """Keep a follower lease alive until the updater publishes completion."""
 
     store = CoordinationStore(state_dir)
+    deadline = time.monotonic() + COORDINATED_UPDATE_WAIT_SECONDS
+    next_report = time.monotonic() + UPDATE_STATUS_REPORT_SECONDS
     while True:
+        request_read = False
+        request = None
         try:
             _heartbeat_coordinated_process(
                 store,
@@ -1004,10 +1068,12 @@ def wait_for_coordinated_update(
                 version=previous_version,
             )
             request = store.read_request()
+            request_read = True
         except (OSError, UpdateCoordinationError, ValueError):
-            time.sleep(0.2)
-            continue
-        if request is None or str(request.get("request_id", "") or "") != request_id:
+            pass
+        if request_read and (
+            request is None or str(request.get("request_id", "") or "") != request_id
+        ):
             result = {
                 "ok": False,
                 "previous_version": str(previous_version),
@@ -1015,7 +1081,11 @@ def wait_for_coordinated_update(
                 "exit_code": 1,
             }
             break
-        if str(request.get("stage", "") or "") == "completed":
+        if (
+            request_read
+            and request is not None
+            and str(request.get("stage", "") or "") == "completed"
+        ):
             raw_result = request.get("result")
             if isinstance(raw_result, dict) and isinstance(raw_result.get("ok"), bool):
                 try:
@@ -1040,6 +1110,24 @@ def wait_for_coordinated_update(
                     "exit_code": 1,
                 }
             break
+        now = time.monotonic()
+        if now >= deadline:
+            print(
+                f"[pyruns] Shared Pyruns update did not finish within "
+                f"{COORDINATED_UPDATE_WAIT_SECONDS:g} seconds; restarting the available version.",
+                file=sys.stderr,
+                flush=True,
+            )
+            result = {
+                "ok": False,
+                "previous_version": str(previous_version),
+                "installed_version": _query_installed_version(previous_version),
+                "exit_code": 124,
+            }
+            break
+        if now >= next_report:
+            print("[pyruns] Still waiting for the shared Pyruns update to finish.", flush=True)
+            next_report = now + UPDATE_STATUS_REPORT_SECONDS
         time.sleep(0.2)
     store.remove_record("instances", instance_id)
     return result
@@ -1060,7 +1148,7 @@ def relaunch_ui(*, port: int, token: str, result: dict[str, Any]) -> None:
     environment[UI_PRODUCTION_RESTART_ENV] = "1"
     environment[UI_TOKEN_ENV] = str(token)
     environment[UI_UPDATE_RESULT_ENV] = json.dumps(result, ensure_ascii=True)
-    os.execve(sys.executable, command, environment)
+    _replace_current_process(command, environment)
 
 
 def _parse_args(args: list[str]) -> argparse.Namespace:

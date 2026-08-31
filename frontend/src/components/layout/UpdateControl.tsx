@@ -15,14 +15,35 @@ import {
 import type { SystemInfo, UiVersionCheck } from '@/types'
 
 const RESTART_POLL_MS = 500
+const RESTART_REQUEST_TIMEOUT_MS = 5_000
+const UPDATE_CHECK_TIMEOUT_MS = 10_000
+const UPDATE_START_TIMEOUT_MS = 30_000
 const INSTANCE_POLL_MS = 5_000
 const SLOW_UPDATE_MS = 90_000
+const UPDATE_RESTART_TIMEOUT_MS = 480_000
 const UPDATE_NOTICE_PREFIX = 'pyruns.update.notice.'
 
 type FullProcessOperation = 'update' | 'restart'
 
 function wait(milliseconds: number) {
   return new Promise(resolve => window.setTimeout(resolve, milliseconds))
+}
+
+async function requestWithTimeout<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  milliseconds: number,
+  timeoutMessage: string,
+) {
+  const controller = new AbortController()
+  const requestTimeout = window.setTimeout(() => controller.abort(), milliseconds)
+  try {
+    return await request(controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(timeoutMessage)
+    throw error
+  } finally {
+    window.clearTimeout(requestTimeout)
+  }
 }
 
 function UpdateProgressDialog({
@@ -120,7 +141,9 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     } else {
       const detail = result.exit_code === 0
         ? `pip completed without installing the confirmed release; version ${info.version} was restarted.`
-        : `pip exited with code ${result.exit_code}; version ${info.version} was restarted.`
+        : result.exit_code === 124
+          ? `The update timed out; version ${info.version} was restarted.`
+          : `pip exited with code ${result.exit_code}; version ${info.version} was restarted.`
       notify({
         tone: 'error',
         title: 'Pyruns update failed',
@@ -136,7 +159,11 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
       if (!active || polling) return
       polling = true
       try {
-        const info = await api.getSystemInfo()
+        const info = await requestWithTimeout(
+          signal => api.getSystemInfo(signal),
+          RESTART_REQUEST_TIMEOUT_MS,
+          'Pyruns status check timed out.',
+        )
         if (!active) return
         if (instanceIdRef.current && info.instance_id !== instanceIdRef.current) {
           window.location.reload()
@@ -166,10 +193,14 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
 
   const waitForRestart = useCallback(async (previousInstanceId: string) => {
     const startedAt = Date.now()
-    while (true) {
+    while (Date.now() - startedAt < UPDATE_RESTART_TIMEOUT_MS) {
       await wait(RESTART_POLL_MS)
       try {
-        const info = await api.getSystemInfo()
+        const info = await requestWithTimeout(
+          signal => api.getSystemInfo(signal),
+          RESTART_REQUEST_TIMEOUT_MS,
+          'Pyruns status check timed out.',
+        )
         if (info.instance_id !== previousInstanceId) {
           window.location.reload()
           return
@@ -181,6 +212,9 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
         setTakingLong(true)
       }
     }
+    throw new Error(
+      'Pyruns did not restart within 8 minutes. Check the terminal status, then try again.',
+    )
   }, [])
 
   const startUpdate = useCallback(async () => {
@@ -189,7 +223,11 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     setChecking(true)
     let versionCheck: UiVersionCheck
     try {
-      versionCheck = await api.checkPyrunsUpdate()
+      versionCheck = await requestWithTimeout(
+        signal => api.checkPyrunsUpdate(signal),
+        UPDATE_CHECK_TIMEOUT_MS,
+        'The Pyruns update check did not respond within 10 seconds. Try again.',
+      )
     } catch (error) {
       notify({
         tone: 'error',
@@ -225,7 +263,11 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     setOperation('update')
     setTakingLong(false)
     try {
-      const response = await api.updatePyruns(versionCheck.latest_version)
+      const response = await requestWithTimeout(
+        signal => api.updatePyruns(versionCheck.latest_version, signal),
+        UPDATE_START_TIMEOUT_MS,
+        'Pyruns did not acknowledge the update request within 30 seconds. Try again.',
+      )
       await waitForRestart(response.instance_id)
     } catch (error) {
       setOperation(null)
@@ -253,7 +295,11 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     setOperation('restart')
     setTakingLong(false)
     try {
-      const response = await api.restartPyruns()
+      const response = await requestWithTimeout(
+        signal => api.restartPyruns(signal),
+        UPDATE_START_TIMEOUT_MS,
+        'Pyruns did not acknowledge the restart request within 30 seconds. Try again.',
+      )
       await waitForRestart(response.instance_id)
     } catch (error) {
       setOperation(null)

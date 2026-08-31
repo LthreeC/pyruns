@@ -282,6 +282,35 @@ def test_updater_does_not_resume_terminal_or_foreign_request(tmp_path):
         )
 
 
+def test_updater_times_out_with_blocking_process_details(tmp_path, monkeypatch, capsys):
+    owner_id = "a" * 32
+    request_id = "b" * 32
+    store = _publish_update_request(
+        tmp_path / "coordination",
+        owner_id,
+        request_id,
+        operation="upgrade",
+        stage="draining",
+    )
+    blocker = process_record(record_id="c" * 32, kind="ui")
+    blocker.update({"host": "remote-worker", "phase": "serving", "request_id": ""})
+    store.write_record("instances", blocker["id"], blocker)
+    monkeypatch.setattr(self_update, "UPDATE_PARTICIPANT_WAIT_SECONDS", 0.0)
+
+    with pytest.raises(UpdateCoordinationError, match="remote-worker"):
+        self_update._wait_for_update_participants(
+            store,
+            request_id=request_id,
+            instance_id=owner_id,
+            previous_version="0.3.0",
+        )
+
+    output = capsys.readouterr().out
+    assert "Waiting for 1 shared Pyruns process" in output
+    assert "remote-worker" in output
+    assert "phase=serving" in output
+
+
 def test_shared_update_refuses_remote_ui_and_cli_activity(tmp_path):
     state_dir = tmp_path / "coordination"
     owner = self_update.UiUpdateCoordinator(
@@ -572,6 +601,55 @@ def test_coordinated_update_waits_for_handoff_then_publishes_to_waiter(tmp_path,
     ) == result
     with store.locked():
         assert store.live_records_locked("instances") == []
+
+
+def test_coordinated_waiter_times_out_and_restarts_available_version(tmp_path, monkeypatch):
+    owner_id = "a" * 32
+    waiter_id = "b" * 32
+    request_id = "c" * 32
+    _publish_update_request(
+        tmp_path / "coordination",
+        owner_id,
+        request_id,
+        operation="upgrade",
+        stage="updating",
+    )
+    monkeypatch.setattr(self_update, "COORDINATED_UPDATE_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(self_update, "_query_installed_version", lambda _fallback: "0.3.0")
+
+    result = self_update.wait_for_coordinated_update(
+        state_dir=str(tmp_path / "coordination"),
+        request_id=request_id,
+        instance_id=waiter_id,
+        previous_version="0.3.0",
+    )
+
+    assert result == {
+        "ok": False,
+        "previous_version": "0.3.0",
+        "installed_version": "0.3.0",
+        "exit_code": 124,
+    }
+
+
+def test_update_never_starts_after_coordination_request_is_lost(monkeypatch):
+    monkeypatch.setattr(
+        self_update,
+        "_heartbeat_coordinated_process",
+        lambda *_args, **_kwargs: False,
+    )
+    heartbeat = self_update._CoordinationHeartbeat(
+        CoordinationStore("unused-coordination-state"),
+        request_id="request-id",
+        instance_id="instance-id",
+        previous_version="0.3.3",
+        stage="updating",
+    )
+
+    with pytest.raises(UpdateCoordinationError, match="no longer active"):
+        heartbeat.__enter__()
+
+    assert not heartbeat.thread.is_alive()
 
 
 def test_activity_lease_rejects_starts_while_shared_gate_is_active(tmp_path):
@@ -1080,7 +1158,10 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch):
         "--upgrade",
         "pyruns",
     ]
-    assert calls[0][1] == {"check": False}
+    assert calls[0][1] == {
+        "check": False,
+        "timeout": self_update.PIP_UPGRADE_TIMEOUT_SECONDS,
+    }
     assert result == {
         "ok": True,
         "previous_version": "0.3.0",
@@ -1126,8 +1207,27 @@ def test_run_pip_upgrade_failure_keeps_relaunch_result(monkeypatch):
     }
 
 
+def test_run_pip_upgrade_timeout_keeps_relaunch_result(monkeypatch):
+    def fake_run(command, **_kwargs):
+        if "pip" in command:
+            raise subprocess.TimeoutExpired(command, self_update.PIP_UPGRADE_TIMEOUT_SECONDS)
+        return SimpleNamespace(returncode=0, stdout="0.3.0\n")
+
+    monkeypatch.setattr(self_update.subprocess, "run", fake_run)
+
+    result = self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")
+
+    assert result == {
+        "ok": False,
+        "previous_version": "0.3.0",
+        "installed_version": "0.3.0",
+        "exit_code": 124,
+    }
+
+
 def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
     executions = []
+    monkeypatch.setattr(self_update, "_WINDOWS_PROCESS_REPLACEMENT", False)
     monkeypatch.setenv("PYRUNS_UI_SESSION_STATE", "session-state.json")
     monkeypatch.setenv("PYRUNS_UI_SESSION_SCOPE", "original-session-scope")
 
@@ -1183,6 +1283,30 @@ def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
     assert server_exec[2]["PYRUNS_UI_SESSION_STATE"] == "session-state.json"
     assert server_exec[2]["PYRUNS_UI_SESSION_SCOPE"] == "original-session-scope"
     assert json.loads(server_exec[2][self_update.UI_UPDATE_RESULT_ENV]) == result
+
+
+def test_windows_process_replacement_runs_child_in_inherited_terminal(monkeypatch):
+    calls = []
+    monkeypatch.setattr(self_update, "_WINDOWS_PROCESS_REPLACEMENT", True)
+    monkeypatch.setattr(
+        self_update.subprocess,
+        "call",
+        lambda command, **kwargs: calls.append((command, kwargs)) or 7,
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        self_update._replace_current_process(
+            ["python-test", "-m", "pyruns.web.self_update"],
+            {"PYRUNS_TEST": "1"},
+        )
+
+    assert raised.value.code == 7
+    assert calls == [
+        (
+            ["python-test", "-m", "pyruns.web.self_update"],
+            {"env": {"PYRUNS_TEST": "1"}},
+        )
+    ]
 
 
 def test_updater_main_removes_token_before_pip_and_relaunches(monkeypatch):
