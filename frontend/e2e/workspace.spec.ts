@@ -75,17 +75,25 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
 
 test('update wait exits with a retryable error when the backend never restarts', async ({ page }) => {
   await page.clock.install({ time: new Date('2026-08-31T00:00:00Z') })
-  await page.route('**/api/system/info', route => route.fulfill({
-    json: {
-      version: '0.3.3',
-      installed_version: '0.3.3',
-      restart_required: false,
-      instance_id: 'stuck-instance',
-      update_supported: true,
-      update_state: 'idle',
-      last_update: null,
-    },
-  }))
+  let updateStarted = false
+  let resolveRestartPoll!: () => void
+  const restartPoll = new Promise<void>(resolve => {
+    resolveRestartPoll = resolve
+  })
+  await page.route('**/api/system/info', route => {
+    if (updateStarted) resolveRestartPoll()
+    return route.fulfill({
+      json: {
+        version: '0.3.3',
+        installed_version: '0.3.3',
+        restart_required: false,
+        instance_id: 'stuck-instance',
+        update_supported: true,
+        update_state: 'idle',
+        last_update: null,
+      },
+    })
+  })
   await page.route('**/api/system/update/check', route => route.fulfill({
     json: {
       current_version: '0.3.3',
@@ -93,15 +101,18 @@ test('update wait exits with a retryable error when the backend never restarts',
       update_available: true,
     },
   }))
-  await page.route('**/api/system/update', route => route.fulfill({
-    status: 202,
-    json: {
-      ok: true,
-      instance_id: 'stuck-instance',
-      version: '0.3.3',
-      state: 'restarting',
-    },
-  }))
+  await page.route('**/api/system/update', route => {
+    updateStarted = true
+    return route.fulfill({
+      status: 202,
+      json: {
+        ok: true,
+        instance_id: 'stuck-instance',
+        version: '0.3.3',
+        state: 'restarting',
+      },
+    })
+  })
 
   await page.goto('/?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.3/ }).click()
@@ -111,7 +122,9 @@ test('update wait exits with a retryable error when the backend never restarts',
   const progress = page.getByRole('dialog', { name: 'Updating Pyruns' })
   await expect(progress).toBeVisible()
 
-  await page.clock.fastForward(481_000)
+  await page.clock.fastForward(500)
+  await restartPoll
+  await page.clock.fastForward(480_500)
 
   await expect(progress).toBeHidden()
   await expect(page.getByText('Could not update Pyruns')).toBeVisible()
