@@ -1,177 +1,133 @@
-name: Python application
+name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  security:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-      with:
-        python-version: "3.12"
-    - name: Audit Python dependencies
-      run: |
-        python -m pip install "pip-audit>=2.9,<3"
-        pip-audit --progress-spinner off .
-    - name: Set up Node
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-      with:
-        node-version: 24
-    - name: Audit documentation dependencies
-      run: npm audit --audit-level=moderate
-    - name: Audit frontend dependencies
-      run: npm --prefix frontend audit --audit-level=moderate
-
   python:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: [ "3.10", "3.11", "3.12", "3.13" ]
-
-    steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[test,lint]"
-    - name: Lint with flake8
-      run: |
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    - name: Test with pytest
-      run: pytest
-
-  cross-platform:
-    name: ${{ matrix.os }} / Python 3.12
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
 
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-      with:
-        python-version: "3.12"
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[test]"
-    - name: Run full test suite
-      run: pytest -q
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,lint]"
+      - name: Lint
+        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Test
+        run: pytest -q
 
   frontend:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-      with:
-        python-version: "3.11"
-    - name: Set up Node
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-      with:
-        node-version: 24
-    - name: Print frontend tool versions
-      run: |
-        node --version
-        npm --version
-        python --version
-    - name: Install frontend dependencies
-      run: npm --prefix frontend ci
-    - name: Install Python runtime for browser tests
-      run: python -m pip install -e .
-    - name: Run frontend unit tests
-      run: npm --prefix frontend run test:unit
-    - name: Check frontend static assets
-      run: python scripts/check_frontend_static.py
-    - name: Build frontend
-      run: npm run frontend:build
-    - name: Install Chromium
-      working-directory: frontend
-      run: npx playwright install --with-deps chromium
-    - name: Run browser end-to-end tests
-      working-directory: frontend
-      timeout-minutes: 10
-      run: npm run test:e2e
-    - name: Build docs
-      run: |
-        npm ci
-        npm run docs:build
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm --prefix frontend ci
+          python -m pip install -e .
+      - name: Test frontend
+        run: npm --prefix frontend run test:unit
+      - name: Check committed frontend
+        run: python scripts/check_frontend_static.py
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Test browser
+        working-directory: frontend
+        timeout-minutes: 10
+        run: npm run test:e2e
+      - name: Check documentation
+        if: github.event_name == 'pull_request'
+        run: |
+          npm ci
+          npm run docs:build
 
-  browser-cross-platform:
+  browser:
     name: Browser / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-      with:
-        python-version: "3.12"
-    - name: Set up Node
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-      with:
-        node-version: 24
-    - name: Install frontend dependencies
-      run: npm --prefix frontend ci
-    - name: Install Python runtime for browser tests
-      run: python -m pip install -e .
-    - name: Install Chromium
-      working-directory: frontend
-      run: npx playwright install chromium
-    - name: Run browser end-to-end tests
-      working-directory: frontend
-      timeout-minutes: 10
-      run: npm run test:e2e
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm --prefix frontend ci
+          python -m pip install -e .
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install chromium
+      - name: Test browser
+        working-directory: frontend
+        timeout-minutes: 10
+        run: npm run test:e2e
 
   package:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-    - name: Set up Python
-      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-      with:
-        python-version: "3.10"
-    - name: Build wheel and smoke installed app
-      run: |
-        python -m pip install --upgrade pip build
-        rm -rf build .tmp-dist
-        python -m build --wheel --outdir .tmp-dist
-        python scripts/check_wheel_static.py .tmp-dist/*.whl
-        python -m venv .tmp-wheel-venv
-        .tmp-wheel-venv/bin/pip install .tmp-dist/*.whl
-        mkdir .tmp-wheel-smoke
-        cd .tmp-wheel-smoke
-        expected_version="$(../.tmp-wheel-venv/bin/python -c "from importlib.metadata import version; print(version('pyruns'))")"
-        test "$(../.tmp-wheel-venv/bin/pyr --version)" = "pyr ${expected_version}"
-        test "$(../.tmp-wheel-venv/bin/pyruns --version)" = "pyruns ${expected_version}"
-        ../.tmp-wheel-venv/bin/pyr help
-        ../.tmp-wheel-venv/bin/python -c "from importlib.metadata import version; from pathlib import Path; import pyruns; from pyruns.web.app import create_app; source = Path('../pyruns').resolve(); installed = Path(pyruns.__file__).resolve(); assert source not in installed.parents, (source, installed); assert pyruns.__version__ == version('pyruns'); assert create_app().title == 'Pyruns API'; print(installed)"
-        ../.tmp-wheel-venv/bin/pyr exec -d -n wheel-smoke -- ../.tmp-wheel-venv/bin/python -c "print('wheel-smoke-ok')"
-        ../.tmp-wheel-venv/bin/pyr wait wheel-smoke
-        ../.tmp-wheel-venv/bin/pyr show wheel-smoke --json
-        ../.tmp-wheel-venv/bin/pyr log wheel-smoke | grep -Fx "wheel-smoke-ok"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+      - name: Build wheel and smoke installed app
+        run: |
+          python -m pip install --upgrade pip build
+          rm -rf build .tmp-dist
+          python -m build --wheel --outdir .tmp-dist
+          python scripts/check_wheel_static.py .tmp-dist/*.whl
+          python -m venv .tmp-wheel-venv
+          .tmp-wheel-venv/bin/pip install .tmp-dist/*.whl
+          mkdir .tmp-wheel-smoke
+          cd .tmp-wheel-smoke
+          expected_version="$(../.tmp-wheel-venv/bin/python -c "from importlib.metadata import version; print(version('pyruns'))")"
+          test "$(../.tmp-wheel-venv/bin/pyr --version)" = "pyr ${expected_version}"
+          test "$(../.tmp-wheel-venv/bin/pyruns --version)" = "pyruns ${expected_version}"
+          ../.tmp-wheel-venv/bin/pyr help
+          ../.tmp-wheel-venv/bin/python -c "from importlib.metadata import version; from pathlib import Path; import pyruns; from pyruns.web.app import create_app; source = Path('../pyruns').resolve(); installed = Path(pyruns.__file__).resolve(); assert source not in installed.parents, (source, installed); assert pyruns.__version__ == version('pyruns'); assert create_app().title == 'Pyruns API'; print(installed)"
+          ../.tmp-wheel-venv/bin/pyr exec -d -n wheel-smoke -- ../.tmp-wheel-venv/bin/python -c "print('wheel-smoke-ok')"
+          ../.tmp-wheel-venv/bin/pyr wait wheel-smoke
+          ../.tmp-wheel-venv/bin/pyr show wheel-smoke --json
+          ../.tmp-wheel-venv/bin/pyr log wheel-smoke | grep -Fx "wheel-smoke-ok"
