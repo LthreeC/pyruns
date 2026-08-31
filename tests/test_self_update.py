@@ -603,6 +603,77 @@ def test_coordinated_update_waits_for_handoff_then_publishes_to_waiter(tmp_path,
         assert store.live_records_locked("instances") == []
 
 
+def test_coordinated_restart_accepts_stopped_follower_handoff(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    owner_id = "a" * 32
+    follower_id = "b" * 32
+    request_id = "c" * 32
+    store = _publish_update_request(
+        state_dir,
+        owner_id,
+        request_id,
+        operation="restart",
+        stage="draining",
+    )
+    follower = process_record(record_id=follower_id, kind="ui")
+    follower.update(
+        {
+            "phase": "handoff",
+            "active_count": 0,
+            "request_id": request_id,
+            "version": "0.3.0",
+        }
+    )
+    store.write_record("instances", follower_id, follower)
+    monkeypatch.setattr(
+        self_update.time,
+        "sleep",
+        lambda _seconds: pytest.fail("a stopped restart follower must not block completion"),
+    )
+
+    relaunches = []
+    monkeypatch.setattr(
+        self_update,
+        "relaunch_ui",
+        lambda **kwargs: relaunches.append(kwargs),
+    )
+
+    self_update.restart_ui_after_handoff(
+        port=8123,
+        token="owner-token",
+        state_dir=str(state_dir),
+        request_id=request_id,
+        instance_id=owner_id,
+        previous_version="0.3.0",
+        installed_version="0.4.0",
+        owner=True,
+    )
+
+    result = {
+        "ok": True,
+        "previous_version": "0.3.0",
+        "installed_version": "0.4.0",
+        "exit_code": 0,
+    }
+    assert relaunches == [{"port": 8123, "token": "owner-token", "result": result}]
+    assert store.read_request()["stage"] == "completed"
+    self_update.restart_ui_after_handoff(
+        port=8124,
+        token="follower-token",
+        state_dir=str(state_dir),
+        request_id=request_id,
+        instance_id=follower_id,
+        previous_version="0.3.0",
+        installed_version="0.4.0",
+        owner=False,
+    )
+    assert relaunches[-1] == {
+        "port": 8124,
+        "token": "follower-token",
+        "result": result,
+    }
+
+
 def test_coordinated_waiter_times_out_and_restarts_available_version(tmp_path, monkeypatch):
     owner_id = "a" * 32
     waiter_id = "b" * 32

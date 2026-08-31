@@ -52,6 +52,7 @@ from pyruns.web.self_update import (
     read_update_result,
     replace_process_with_updater,
     replace_process_with_waiter,
+    restart_ui_after_handoff,
 )
 from pyruns.web.session_recovery import (
     SESSION_COOKIE_MAX_AGE_SECONDS,
@@ -1759,8 +1760,18 @@ def main(
             os.environ.pop(_UI_SESSION_SCOPE_ENV, None)
         try:
             handoff = update_coordinator.handoff()
-            if handoff["role"] == "owner":
-                restart_only = handoff["operation"] == "restart"
+            if handoff["operation"] == "restart":
+                restart_ui_after_handoff(
+                    port=int(port),
+                    token=token,
+                    previous_version=__version__,
+                    request_id=str(handoff["request_id"]),
+                    instance_id=str(handoff["instance_id"]),
+                    state_dir=str(handoff["state_dir"]),
+                    installed_version=str(handoff["target_version"]),
+                    owner=handoff["role"] == "owner",
+                )
+            elif handoff["role"] == "owner":
                 replace_process_with_updater(
                     port=int(port),
                     token=token,
@@ -1768,13 +1779,9 @@ def main(
                     request_id=str(handoff["request_id"]),
                     instance_id=str(handoff["instance_id"]),
                     state_dir=str(handoff["state_dir"]),
-                    restart_only=restart_only,
-                    installed_version=(
-                        str(handoff["target_version"]) if restart_only else ""
-                    ),
-                    target_version=(
-                        "" if restart_only else str(handoff["target_version"])
-                    ),
+                    restart_only=False,
+                    installed_version="",
+                    target_version=str(handoff["target_version"]),
                 )
             else:
                 replace_process_with_waiter(

@@ -3198,8 +3198,8 @@ def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch
         response = client.post("/api/system/restart")
         assert response.status_code == 202
 
-    def fake_replace(**kwargs):
-        events.append(("replace", kwargs))
+    def fake_restart(**kwargs):
+        events.append(("restart", kwargs))
 
     monkeypatch.setattr(web_app, "PyrunsRuntime", DummyRuntime)
     monkeypatch.setattr(
@@ -3214,17 +3214,17 @@ def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch
     )
     monkeypatch.setattr(web_app, "_request_server_shutdown", lambda: events.append("server-stop"))
     monkeypatch.setattr(web_app.uvicorn, "run", fake_run)
-    monkeypatch.setattr(web_app, "replace_process_with_updater", fake_replace)
+    monkeypatch.setattr(web_app, "restart_ui_after_handoff", fake_restart)
 
     web_app.main(open_browser=False, port=8123, access_token="private-token")
 
     assert events[:3] == ["server-run", "server-stop", "runtime-shutdown"]
-    assert events[3][0] == "replace"
-    replacement = events[3][1]
-    assert replacement["restart_only"] is True
-    assert replacement["installed_version"] == "0.4.0"
-    assert replacement["request_id"]
-    assert replacement["state_dir"]
+    assert events[3][0] == "restart"
+    restart = events[3][1]
+    assert restart["owner"] is True
+    assert restart["installed_version"] == "0.4.0"
+    assert restart["request_id"]
+    assert restart["state_dir"]
 
 
 def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):

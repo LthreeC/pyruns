@@ -858,11 +858,13 @@ def _wait_for_update_participants(
     request_id: str,
     instance_id: str,
     previous_version: str,
+    restart_only: bool = False,
 ) -> None:
-    """Wait until every live UI is a waiter and every CLI runner has exited."""
+    """Wait until every live UI has stopped and every CLI runner has exited."""
 
     deadline = time.monotonic() + UPDATE_PARTICIPANT_WAIT_SECONDS
     next_report = 0.0
+    stopped_phases = {"handoff", "waiting"} if restart_only else {"waiting"}
     while True:
         with store.locked():
             request = store.read_request_locked()
@@ -904,7 +906,7 @@ def _wait_for_update_participants(
                 if str(item.get("id", "") or "") != instance_id
                 and not (
                     str(item.get("request_id", "") or "") == request_id
-                    and str(item.get("phase", "") or "") == "waiting"
+                    and str(item.get("phase", "") or "") in stopped_phases
                 )
             ]
         if not blockers and not activities:
@@ -1009,6 +1011,7 @@ def run_coordinated_update(
         request_id=request_id,
         instance_id=instance_id,
         previous_version=previous_version,
+        restart_only=restart_only,
     )
     with _CoordinationHeartbeat(
         store,
@@ -1151,6 +1154,88 @@ def relaunch_ui(*, port: int, token: str, result: dict[str, Any]) -> None:
     _replace_current_process(command, environment)
 
 
+def _coordination_failure_result(previous_version: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "previous_version": str(previous_version),
+        "installed_version": _query_installed_version(previous_version),
+        "exit_code": 1,
+    }
+
+
+def _finish_failed_coordination(
+    *,
+    state_dir: str,
+    request_id: str,
+    instance_id: str,
+    result: dict[str, Any],
+    error: str,
+) -> None:
+    store = CoordinationStore(state_dir)
+    try:
+        with store.locked():
+            store.update_request_locked(
+                request_id,
+                stage="completed",
+                heartbeat_at=time.time(),
+                completed_at=time.time(),
+                result=result,
+                error=error,
+            )
+        store.remove_record("instances", instance_id)
+    except (OSError, UpdateCoordinationError, ValueError):
+        pass
+
+
+def restart_ui_after_handoff(
+    *,
+    port: int,
+    token: str,
+    previous_version: str,
+    request_id: str,
+    instance_id: str,
+    state_dir: str,
+    installed_version: str,
+    owner: bool,
+) -> None:
+    """Finish a restart in loaded code, then launch the on-disk version."""
+
+    print(
+        "[pyruns] Coordinating the shared Pyruns interface restart."
+        if owner
+        else "[pyruns] Waiting for the shared Pyruns interface restart.",
+        flush=True,
+    )
+    try:
+        if owner:
+            result = run_coordinated_update(
+                state_dir=state_dir,
+                request_id=request_id,
+                instance_id=instance_id,
+                previous_version=previous_version,
+                restart_only=True,
+                installed_version=installed_version,
+            )
+        else:
+            result = wait_for_coordinated_update(
+                state_dir=state_dir,
+                request_id=request_id,
+                instance_id=instance_id,
+                previous_version=previous_version,
+            )
+    except Exception as exc:
+        print(f"[pyruns] Restart coordination failed: {exc}", file=sys.stderr, flush=True)
+        result = _coordination_failure_result(previous_version)
+        _finish_failed_coordination(
+            state_dir=state_dir,
+            request_id=request_id,
+            instance_id=instance_id,
+            result=result,
+            error=str(exc),
+        )
+    relaunch_ui(port=port, token=token, result=result)
+
+
 def _parse_args(args: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m pyruns.web.self_update")
     parser.add_argument("--port", required=True, type=int)
@@ -1216,27 +1301,15 @@ def main(args: list[str] | None = None) -> int:
             )
     except Exception as exc:
         print(f"[pyruns] Update coordination failed: {exc}", file=sys.stderr, flush=True)
-        result = {
-            "ok": False,
-            "previous_version": str(options.previous_version),
-            "installed_version": _query_installed_version(options.previous_version),
-            "exit_code": 1,
-        }
+        result = _coordination_failure_result(options.previous_version)
         if options.request_id and options.instance_id and options.state_dir:
-            store = CoordinationStore(options.state_dir)
-            try:
-                with store.locked():
-                    store.update_request_locked(
-                        options.request_id,
-                        stage="completed",
-                        heartbeat_at=time.time(),
-                        completed_at=time.time(),
-                        result=result,
-                        error=str(exc),
-                    )
-                store.remove_record("instances", options.instance_id)
-            except (OSError, UpdateCoordinationError, ValueError):
-                pass
+            _finish_failed_coordination(
+                state_dir=options.state_dir,
+                request_id=options.request_id,
+                instance_id=options.instance_id,
+                result=result,
+                error=str(exc),
+            )
     relaunch_ui(port=options.port, token=token, result=result)
     return 1
 
