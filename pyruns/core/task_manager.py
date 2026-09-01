@@ -645,10 +645,6 @@ class TaskManager:
         runner_id = str(info.get("runner_id", "") or "")
         return bool(runner_id and runner_id != self.runner_id and self._lease_active(info))
 
-    def _is_local_or_legacy_runner(self, info: Dict[str, Any]) -> bool:
-        runner_host = str(info.get("runner_host", "") or "").lower()
-        return not runner_host or runner_host == self.runner_host
-
     def _is_current_runner(self, info: Dict[str, Any]) -> bool:
         return str(info.get("runner_id", "") or "") == self.runner_id
 
@@ -660,10 +656,20 @@ class TaskManager:
         return self._is_current_runner(info)
 
     def _running_info_has_live_owner(self, info: Dict[str, Any]) -> bool:
+        """Keep running state unless this host can prove its process exited.
+
+        A lease is only a heartbeat, not proof that a child process stopped.
+        In particular, another host cannot inspect the PID behind a shared
+        NFS task record, and an absent legacy host field is equally
+        inconclusive.
+        """
+
         pid, created_at = self._current_process_identity(info)
         foreign_runner_live = self._is_foreign_live_runner(info)
-        current_runner_live = bool(
-            self._is_current_runner(info)
+        runner_host = str(info.get("runner_host", "") or "").strip().lower()
+        owner_may_be_remote = not runner_host or runner_host != self.runner_host
+        local_process_live = bool(
+            not owner_may_be_remote
             and pid
             and (
                 process_identity_matches(pid, created_at)
@@ -671,7 +677,7 @@ class TaskManager:
                 else is_pid_running(pid)
             )
         )
-        return bool(foreign_runner_live or current_runner_live)
+        return bool(foreign_runner_live or owner_may_be_remote or local_process_live)
 
     def _fail_unowned_running_info_if_needed(
         self,
@@ -698,7 +704,7 @@ class TaskManager:
             updated = load_task_info(task_dir) or info
             return updated, False
         updated = load_task_info(task_dir) or info
-        logger.warning("%s: running lease is not trusted or process is gone; marked failed", task_name)
+        logger.warning("%s: local process identity is no longer live; marked failed", task_name)
         return updated, True
 
     @staticmethod
@@ -2515,7 +2521,6 @@ class TaskManager:
                         task_env.update(candidate.get("env", {}) or {})
 
                     if wall_now >= deadline_at:
-                        self.gpu_scheduler.release(task_name)
                         try:
                             self._mark_failed_on_disk(
                                 candidate,
@@ -2526,6 +2531,9 @@ class TaskManager:
                                     f"max_wait={self._format_duration(max_wait)}",
                                 ],
                                 expected_statuses={"queued"},
+                                require_no_live_owner=True,
+                                expected_runner_id=str(candidate.get("runner_id", "") or ""),
+                                expected_run_index=active_task_run_index(candidate),
                             )
                         except (TaskClaimConflict, TaskStateConflict) as exc:
                             logger.info(
@@ -2537,6 +2545,7 @@ class TaskManager:
                             if latest:
                                 self._refresh_memory_task_from_disk_info(task_name, candidate["dir"], latest)
                         else:
+                            self.gpu_scheduler.release(task_name)
                             timeout_log = (candidate, run_index, waited, max_wait)
                         break
 
@@ -2725,7 +2734,14 @@ class TaskManager:
                 self.runner_host,
                 self.lease_seconds,
             )
-            future.add_done_callback(lambda fut, tid=target["name"]: self._on_task_done(fut, tid))
+            future.add_done_callback(
+                lambda fut, tid=target["name"], rid=self.runner_id, run=run_index: self._on_task_done(
+                    fut,
+                    tid,
+                    expected_runner_id=rid,
+                    expected_run_index=run,
+                )
+            )
             logger.debug(
                 "Submitted task %s to %s executor (batch_running=%d/%d, local_running=%d)",
                 target["name"],
@@ -2735,25 +2751,49 @@ class TaskManager:
                 len(self._running_ids),
             )
         except Exception as exc:
-            self.gpu_scheduler.release(target["name"])
+            try:
+                self._mark_failed_on_disk(
+                    target,
+                    reason="submission_error",
+                    detail_lines=[
+                        f"exception={type(exc).__name__}: {exc}",
+                        f"independent={independent}",
+                    ],
+                    expected_statuses={"running"},
+                    expected_runner_id=self.runner_id,
+                    expected_run_index=run_index,
+                )
+            except (TaskClaimConflict, TaskStateConflict):
+                pass
+            latest = load_task_info(target["dir"])
+            release_gpu = False
             with self._lock:
-                self._clear_running_locked(target["name"])
-                self._clear_gpu_schedule_state(target)
-                target["status"] = "failed"
+                current = self._resolve_identifier_locked(target["name"])
+                if current and latest:
+                    self._apply_info_to_task(current, latest)
+                if (
+                    current
+                    and active_task_run_index(current) == run_index
+                    and str(current.get("status", "") or "").lower()
+                    not in {"queued", "running"}
+                ):
+                    self._clear_running_locked(target["name"])
+                    self._clear_gpu_schedule_state(current)
+                    release_gpu = True
                 self._recompute_processing_flag_locked()
-            self._mark_failed_on_disk(
-                target,
-                reason="submission_error",
-                detail_lines=[
-                    f"exception={type(exc).__name__}: {exc}",
-                    f"independent={independent}",
-                ],
-            )
+            if release_gpu:
+                self.gpu_scheduler.release(target["name"])
             logger.error("Failed to submit task %s: %s", target["name"], exc)
 
-    def _on_task_done(self, future: Future, task_id: str) -> None:
+    def _on_task_done(
+        self,
+        future: Future,
+        task_id: str,
+        *,
+        expected_runner_id: str,
+        expected_run_index: int,
+    ) -> None:
         """Handle worker completion and pull final state from disk."""
-        self.gpu_scheduler.release(task_id)
         worker_error = None
         try:
             exc = future.exception()
@@ -2763,44 +2803,73 @@ class TaskManager:
         except Exception:
             pass
 
-        need_mark_failed = False
-        task_ref = None
         with self._lock:
-            self._clear_running_locked(task_id)
             task = self._tasks_by_name.get(task_id)
             if not task:
-                self._recompute_processing_flag_locked()
-                self.trigger_update()
                 return
+            task_dir = str(task.get("dir", "") or "")
 
+        try:
+            info = load_task_info(task_dir)
+        except Exception:
+            info = None
+
+        if info:
+            info = self._strip_queued_placeholder_run(info)
+            disk_status = str(info.get("status", "") or "").lower()
+            same_run = active_task_run_index(info) == expected_run_index
+            same_active_owner = (
+                disk_status not in {"queued", "running"}
+                or str(info.get("runner_id", "") or "") == expected_runner_id
+            )
+            same_generation = same_run and same_active_owner
+        else:
+            disk_status = ""
+            same_generation = False
+
+        if worker_error and same_generation and disk_status in {"queued", "running"}:
             try:
-                info = load_task_info(task["dir"])
-                if info:
-                    info = self._strip_queued_placeholder_run(info)
-                    self._apply_info_to_task(task, info)
-            except Exception:
+                self._mark_failed_on_disk(
+                    {
+                        "name": task_id,
+                        "dir": task_dir,
+                        "run_index": expected_run_index,
+                    },
+                    reason="worker_exception",
+                    detail_lines=[f"exception={type(worker_error).__name__}: {worker_error}"],
+                    expected_statuses={disk_status},
+                    expected_runner_id=expected_runner_id,
+                    expected_run_index=expected_run_index,
+                )
+            except (TaskClaimConflict, TaskStateConflict):
                 pass
+            try:
+                info = load_task_info(task_dir)
+            except Exception:
+                info = None
 
-            self._clear_gpu_schedule_state(task)
-            if worker_error and task["status"] in ("running", "queued"):
-                task["status"] = "failed"
-                need_mark_failed = True
-                task_ref = task
-
+        release_gpu = False
+        with self._lock:
+            current = self._tasks_by_name.get(task_id)
+            if current and self._same_task_dir(current.get("dir"), task_dir) and info:
+                self._apply_info_to_task(current, info)
+                current_status = str(current.get("status", "") or "").lower()
+                if (
+                    active_task_run_index(current) == expected_run_index
+                    and current_status not in {"queued", "running"}
+                ):
+                    self._clear_running_locked(task_id)
+                    self._clear_gpu_schedule_state(current)
+                    release_gpu = True
             self._recompute_processing_flag_locked()
 
-        # Disk I/O outside the lock to avoid potential deadlock
-        if need_mark_failed and task_ref:
-            self._mark_failed_on_disk(
-                task_ref,
-                reason="worker_exception",
-                detail_lines=[f"exception={type(worker_error).__name__}: {worker_error}"],
-            )
+        if release_gpu:
+            self.gpu_scheduler.release(task_id)
 
         self.trigger_update()
 
     def _cleanup_on_shutdown(self) -> None:
-        """Fail any queued/running tasks when the app is shutting down."""
+        """Stop active tasks owned by this manager when the app shuts down."""
         with self._shutdown_lock:
             if self._shutdown_cleanup_done or self._shutdown_cleanup_in_progress:
                 return
@@ -2839,6 +2908,9 @@ class TaskManager:
             task_name = str(task.get("name", ""))
             disk_info = load_task_info(task["dir"])
             if not disk_info and not os.path.isdir(task["dir"]):
+                if not self._is_current_runner(task):
+                    continue
+                termination_verified = status != "running"
                 if status == "running":
                     pid, created_at = self._current_process_identity(task)
                     if pid and created_at is not None and self._should_kill_task_process(task):
@@ -2850,12 +2922,21 @@ class TaskManager:
                                     pid_value,
                                     task_name,
                                 )
-                                kill_process(
-                                    pid_value,
-                                    expected_create_time=created_at,
+                                termination_verified = bool(
+                                    kill_process(
+                                        pid_value,
+                                        expected_create_time=created_at,
+                                    )
                                 )
                         except Exception as exc:
                             logger.warning("Failed to kill pid %s on shutdown cleanup: %s", pid, exc)
+                if not termination_verified:
+                    logger.warning(
+                        "Shutdown cleanup kept deleted task %s active because process termination "
+                        "was not verified",
+                        task_name,
+                    )
+                    continue
                 with self._lock:
                     current = self._resolve_identifier_locked(task_name)
                     if current:
@@ -2867,13 +2948,35 @@ class TaskManager:
             disk_status = str((disk_info or {}).get("status", status) or "").lower()
             if disk_info and disk_status not in {"queued", "running"}:
                 continue
-            if disk_info and self._is_foreign_live_runner(disk_info):
+            # Every UI sees the same task records on a shared workspace, but
+            # shutdown may only stop and finalize work claimed by this
+            # TaskManager. An expired foreign lease does not transfer process
+            # ownership to the observer that happens to be shutting down.
+            if disk_info and not self._is_current_runner(disk_info):
                 continue
             expected_runner_id = str((disk_info or {}).get("runner_id", "") or "")
             expected_run_index = active_task_run_index(disk_info or {})
             termination_verified = True
             if disk_status == "running":
                 pid, created_at = self._current_process_identity(disk_info or {})
+                if not pid:
+                    try:
+                        self._persist_pending_stop_summary(
+                            task,
+                            event="stopped",
+                            reason="system_shutdown",
+                            detail_lines=["detail=Shutdown requested before the child PID was published."],
+                            lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                            expected_statuses={"running"},
+                            require_current_runner=True,
+                            expected_runner_id=expected_runner_id,
+                            expected_run_index=expected_run_index,
+                        )
+                    except (TaskClaimConflict, TaskStateConflict, TimeoutError) as exc:
+                        logger.warning("Could not defer shutdown stop for %s: %s", task_name, exc)
+                        continue
+                    changed = True
+                    continue
                 if pid and self._should_kill_task_process(disk_info or {}):
                     try:
                         logger.info(
@@ -2915,8 +3018,12 @@ class TaskManager:
 
             with self._lock:
                 current = self._resolve_identifier_locked(task_name)
-                if current:
-                    current["status"] = "failed"
+                if (
+                    current
+                    and active_task_run_index(current) == expected_run_index
+                    and str(current.get("status", "") or "").lower()
+                    not in {"queued", "running"}
+                ):
                     self._clear_running_locked(task_name)
                     self.gpu_scheduler.release(task_name)
                     changed = True
@@ -2956,8 +3063,9 @@ class TaskManager:
             if executor is None:
                 continue
             try:
-                executor.shutdown(wait=False, cancel_futures=True)
-            except TypeError:
+                # Claimed workers must run long enough to consume a pending
+                # pre-spawn stop request; cancelling their Future would leave
+                # the task permanently running without a child PID.
                 executor.shutdown(wait=False)
             except Exception as exc:
                 logger.debug("Executor shutdown failed: %s", exc)
@@ -3562,7 +3670,7 @@ class TaskManager:
                 continue
             if str(info.get("status", "") or "").lower() != "running":
                 continue
-            if not (self._is_current_runner(info) or self._is_foreign_live_runner(info)):
+            if not (self._is_current_runner(info) or self._running_info_has_live_owner(info)):
                 continue
             gpu_ids = self._gpu_ids_from_assignment(info.get("_gpu_assignment"))
             if gpu_ids:
@@ -3981,8 +4089,13 @@ class TaskManager:
                 raise TaskStateConflict(f"expected {sorted(expected_statuses)}, found {original_status!r}")
             if require_current_runner and not self._is_current_runner(task_info):
                 raise TaskClaimConflict("task already owned by another runner")
-            if require_no_live_owner and self._running_info_has_live_owner(task_info):
-                raise TaskClaimConflict("task is owned by a live runner")
+            if require_no_live_owner:
+                if original_status == "queued":
+                    has_live_owner = self._is_foreign_live_runner(task_info)
+                else:
+                    has_live_owner = self._running_info_has_live_owner(task_info)
+                if has_live_owner:
+                    raise TaskClaimConflict("task is owned by a live runner")
             if expected_runner_id is not None and (
                 str(task_info.get("runner_id", "") or "") != expected_runner_id
             ):

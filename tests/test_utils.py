@@ -1494,11 +1494,17 @@ class TestLoadSaveTaskInfo:
     def test_update_retries_transient_replace_permission_error(self, tmp_path):
         task_dir = str(tmp_path)
         save_task_info(task_dir, {"name": "retry-test", "status": "pending"})
+        from pyruns.utils import info_io
+
         real_replace = os.replace
         calls = {"count": 0}
+        transient_failures = 6
 
         def flaky_replace(src, dst):
-            if os.path.basename(dst) == TASK_INFO_FILENAME and calls["count"] == 0:
+            if (
+                os.path.basename(dst) == TASK_INFO_FILENAME
+                and calls["count"] < transient_failures
+            ):
                 calls["count"] += 1
                 raise PermissionError("temporarily locked")
             return real_replace(src, dst)
@@ -1509,8 +1515,10 @@ class TestLoadSaveTaskInfo:
         with patch("pyruns.utils.info_io.os.replace", side_effect=flaky_replace), patch("pyruns.utils.info_io.time.sleep") as sleep:
             updated = update_task_info(task_dir, mark_completed)
 
-        assert calls["count"] == 1
-        sleep.assert_called()
+        assert transient_failures > 5
+        assert transient_failures < info_io._REPLACE_RETRY_COUNT
+        assert calls["count"] == transient_failures
+        assert sleep.call_count == transient_failures
         assert updated["status"] == "completed"
         assert load_task_info(task_dir)["status"] == "completed"
 

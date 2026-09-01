@@ -2990,6 +2990,69 @@ def test_run_task_worker_closes_capture_when_process_wait_fails(
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")
 @patch("pyruns.utils.events.log_emitter.emit")
+@patch("pyruns.core.executor.kill_process")
+@patch("pyruns.core.executor.subprocess.Popen")
+def test_run_task_worker_waits_for_process_that_survives_internal_error(
+    mock_popen,
+    mock_kill,
+    _mock_emit,
+    mock_detect,
+    tmp_path,
+    monkeypatch,
+):
+    mock_detect.return_value = ("pyruns_load", None)
+    task_dir = _write_worker_task_info(tmp_path, "SurvivingTask")
+    alive = True
+    observations = []
+
+    mock_proc = MagicMock()
+    mock_proc.pid = 9123
+    mock_proc.stdout.read1.return_value = b""
+
+    def poll():
+        return None if alive else 7
+
+    wait_calls = 0
+
+    def wait(timeout=None):
+        nonlocal alive, wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            raise OSError("wait failed")
+        info = load_task_info(task_dir)
+        observations.append((info["status"], info["pids"][0]))
+        alive = False
+        mock_proc.returncode = 7
+        return 7
+
+    mock_proc.poll.side_effect = poll
+    mock_proc.wait.side_effect = wait
+    mock_popen.return_value = mock_proc
+    mock_kill.return_value = False
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: 1000.0)
+
+    with patch(
+        "pyruns.core.executor._build_run_source_state",
+        return_value="git none | unknown | script none",
+    ):
+        result = run_task_worker(
+            task_dir=task_dir,
+            name="SurvivingTask",
+            created_at="now",
+            config={},
+            run_index=1,
+        )
+
+    assert observations == [("running", 9123)]
+    assert result["status"] == "failed"
+    assert load_task_info(task_dir)["status"] == "failed"
+    error_text = Path(task_dir, RUN_LOGS_DIR, ERROR_LOG_FILENAME).read_text(encoding="utf-8")
+    assert "child_process_terminated=False" in error_text
+    assert "child_process_survived_termination=True" in error_text
+
+
+@patch("pyruns.utils.parse_utils.detect_config_source_fast")
+@patch("pyruns.utils.events.log_emitter.emit")
 @patch("pyruns.core.executor.subprocess.Popen")
 def test_run_task_worker_posix_starts_child_in_new_session(mock_popen, mock_emit, mock_detect, tmp_path):
     mock_detect.return_value = ("pyruns_load", None)
@@ -3773,7 +3836,16 @@ def test_task_manager_submit_after_delete_does_not_recreate_or_execute(tmp_path,
     assert manager.get_task(task["name"]) is None
 
 
-def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("process_live", "expected_status"),
+    [(True, "running"), (False, "failed")],
+)
+def test_task_manager_expired_local_lease_uses_process_identity(
+    tmp_path,
+    monkeypatch,
+    process_live,
+    expected_status,
+):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task_dir = tasks_dir / "expired"
@@ -3789,7 +3861,8 @@ def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path,
             "run_index": 1,
             "start_times": ["2026-03-20_00-00-01"],
             "finish_times": [""],
-            "pids": [os.getpid()],
+            "pids": [12345],
+            "pid_create_times": [1000.0],
             "records": [],
             "tracks": [],
             "runner_id": "old-runner",
@@ -3800,7 +3873,10 @@ def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path,
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
 
     killed: list[int] = []
-    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.process_identity_matches",
+        lambda pid, created_at: process_live and pid == 12345 and created_at == 1000.0,
+    )
     monkeypatch.setattr(
         "pyruns.core.task_manager.kill_process",
         lambda pid, expected_create_time=None: killed.append(pid) or True,
@@ -3808,7 +3884,7 @@ def test_task_manager_expired_lease_with_live_pid_is_failed_not_killed(tmp_path,
 
     manager = _make_task_manager(tasks_dir)
 
-    assert manager.get_task("expired")["status"] == "failed"
+    assert manager.get_task("expired")["status"] == expected_status
     assert manager.cancel_task("expired") is False
     assert killed == []
 
@@ -3836,11 +3912,12 @@ def test_task_manager_does_not_fail_runner_that_renews_during_stale_reconciliati
             "records": [],
             "tracks": [],
             "runner_id": "other-host:123:abcdef",
-            "runner_host": "other-host",
+            "runner_host": socket.gethostname().lower(),
             "lease_until": time.time() - 60,
         },
     )
     save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda _pid: False)
 
     manager = _make_task_manager(tasks_dir, lazy_scan=None)
 
@@ -4614,14 +4691,24 @@ def test_task_manager_on_task_done_clears_gpu_schedule_state(tmp_path):
     with manager._lock:
         target = manager._tasks_by_name[task["name"]]
         target["status"] = "running"
+        target["run_index"] = 1
         target["_scheduled_env"] = {"CUDA_VISIBLE_DEVICES": "0"}
         target["_gpu_assignment"] = {"gpu_ids": [0]}
         target["_queued_independent"] = True
         manager._mark_running_locked(task["name"], counts_for_batch=False)
+    update_task_info(
+        task["dir"],
+        lambda info: info.update({"status": "completed", "run_index": 1}),
+    )
 
     future = Future()
     future.set_result({"status": "completed"})
-    manager._on_task_done(future, task["name"])
+    manager._on_task_done(
+        future,
+        task["name"],
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
 
     refreshed = manager.get_task(task["name"])
     assert "_scheduled_env" not in refreshed
@@ -4723,7 +4810,7 @@ def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path)
     assert "reason=gpu_wait_timeout" in error_text
 
 
-def test_task_manager_gpu_wait_timeout_preserves_task_claimed_by_foreign_runner(tmp_path):
+def test_task_manager_gpu_wait_timeout_preserves_task_when_foreign_runner_renews(tmp_path, monkeypatch):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     tasks_dir = workspace / TASKS_DIR
     tasks_dir.mkdir(parents=True)
@@ -4743,34 +4830,42 @@ def test_task_manager_gpu_wait_timeout_preserves_task_claimed_by_foreign_runner(
     manager = _make_task_manager(tasks_dir)
 
     manager.start_batch_tasks([task["name"]], max_workers=1)
-    with manager._lock:
-        manager._tasks_by_name[task["name"]]["_gpu_wait_started_at"] = time.monotonic() - 10
-
+    foreign_runner = "other-host:4321:abcdef"
     update_task_info(
         task["dir"],
         lambda info: info.update(
             {
-                "status": "running",
-                "run_index": 1,
-                "runner_id": "other-host:4321:abcdef",
+                "runner_id": foreign_runner,
                 "runner_host": "other-host",
-                "lease_until": time.time() + 60,
-                "pids": [4321],
+                "lease_until": time.time() - 60,
             }
         ),
     )
+    manager.refresh_from_disk(check_all=True)
+    with manager._lock:
+        manager._tasks_by_name[task["name"]]["_gpu_wait_started_at"] = time.monotonic() - 10
+
+    original_mark_failed = manager._mark_failed_on_disk
+
+    def renew_before_timeout(task_ref, **kwargs):
+        update_task_info(
+            task["dir"],
+            lambda info: info.update({"lease_until": time.time() + 60}),
+        )
+        return original_mark_failed(task_ref, **kwargs)
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", renew_before_timeout)
 
     target, run_index = manager._pick_queued_task()
 
     assert target is None
     assert run_index == 1
     refreshed = manager.get_task(task["name"])
-    assert refreshed["status"] == "running"
-    assert refreshed["run_index"] == 1
-    assert refreshed["runner_id"] == "other-host:4321:abcdef"
+    assert refreshed["status"] == "queued"
+    assert refreshed["runner_id"] == foreign_runner
     info = load_task_info(task["dir"])
-    assert info["status"] == "running"
-    assert info["runner_id"] == "other-host:4321:abcdef"
+    assert info["status"] == "queued"
+    assert info["runner_id"] == foreign_runner
     queue_text = (Path(task["dir"]) / RUN_LOGS_DIR / "queue.log").read_text(encoding="utf-8")
     assert "GPU WAIT TIMEOUT" not in queue_text
     assert not (Path(task["dir"]) / RUN_LOGS_DIR / ERROR_LOG_FILENAME).exists()
@@ -5483,8 +5578,12 @@ def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_pa
     tasks_dir.mkdir()
     running_dir = tasks_dir / "runner"
     queued_dir = tasks_dir / "queued"
+    prestart_dir = tasks_dir / "prestart"
+    missing_dir = tasks_dir / "missing"
     running_dir.mkdir()
     queued_dir.mkdir()
+    prestart_dir.mkdir()
+    missing_dir.mkdir()
 
     save_task_info(
         str(running_dir),
@@ -5520,23 +5619,89 @@ def test_task_manager_shutdown_cleanup_kills_only_running_task_latest_pid(tmp_pa
         },
     )
     save_yaml(str(queued_dir / CONFIG_FILENAME), {"lr": 0.02})
+    save_task_info(
+        str(prestart_dir),
+        {
+            "name": "prestart",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": [""],
+            "finish_times": [""],
+            "pids": [None],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(prestart_dir / CONFIG_FILENAME), {"lr": 0.03})
+    save_task_info(
+        str(missing_dir),
+        {
+            "name": "missing",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": [""],
+            "finish_times": [""],
+            "pids": [444],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(missing_dir / CONFIG_FILENAME), {"lr": 0.04})
 
     killed: list[int] = []
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    monkeypatch.setattr(
-        "pyruns.core.task_manager.kill_process",
-        lambda pid, expected_create_time=None: killed.append(pid) or True,
-    )
+    def kill_for_shutdown(pid, expected_create_time=None):
+        killed.append(pid)
+        return pid != 444
+
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", kill_for_shutdown)
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", running_dir, pids=[111, 222])
+    _mark_task_owned_by_manager(manager, "missing", missing_dir, pids=[444])
+    update_task_info(
+        str(queued_dir),
+        lambda info: info.update(
+            {
+                "runner_id": manager.runner_id,
+                "runner_host": manager.runner_host,
+                "lease_heartbeat": time.time(),
+                "lease_until": time.time() + 60,
+            }
+        ),
+    )
+    update_task_info(
+        str(prestart_dir),
+        lambda info: info.update(
+            {
+                "runner_id": manager.runner_id,
+                "runner_host": manager.runner_host,
+                "lease_heartbeat": time.time(),
+                "lease_until": time.time() + 60,
+            }
+        ),
+    )
+    manager.refresh_from_disk(task_ids=["prestart"], force_all=True)
+    with manager._lock:
+        manager._mark_running_locked("prestart", counts_for_batch=True)
+    shutil.rmtree(missing_dir)
 
     manager._cleanup_on_shutdown()
 
-    assert killed == [222]
+    assert sorted(killed) == [222, 444]
     running_info = json.loads((running_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
     queued_info = json.loads((queued_dir / TASK_INFO_FILENAME).read_text(encoding="utf-8"))
+    prestart_info = load_task_info(str(prestart_dir))
     assert running_info["status"] == "failed"
     assert queued_info["status"] == "failed"
+    assert prestart_info["status"] == "running"
+    assert prestart_info["_pending_stop_summary"]["reason"] == "system_shutdown"
+    assert manager.get_task("missing")["status"] == "running"
 
 
 def test_task_manager_shutdown_cleanup_ignores_malformed_in_memory_tasks(tmp_path, monkeypatch):
@@ -5579,11 +5744,16 @@ def test_task_manager_shutdown_does_not_overwrite_new_run_claimed_during_cleanup
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, task["name"], Path(task["dir"]))
-    monkeypatch.setattr(manager, "_current_process_identity", lambda _info: (None, None))
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.kill_process",
+        lambda _pid, expected_create_time=None: True,
+    )
 
     original_mark_failed = manager._mark_failed_on_disk
 
-    def claim_new_run_before_terminal_write(task_ref, **kwargs):
+    def claim_new_run_after_terminal_write(task_ref, **kwargs):
+        original_mark_failed(task_ref, **kwargs)
+
         def _claim(info):
             info["status"] = "running"
             info["run_index"] = 2
@@ -5592,10 +5762,13 @@ def test_task_manager_shutdown_does_not_overwrite_new_run_claimed_during_cleanup
             info["lease_heartbeat"] = time.time()
             info["lease_until"] = time.time() + 60
 
-        update_task_info(task["dir"], _claim)
-        return original_mark_failed(task_ref, **kwargs)
+        updated = update_task_info(task["dir"], _claim)
+        with manager._lock:
+            current = manager._tasks_by_name[task["name"]]
+            manager._apply_info_to_task(current, updated)
+            manager._mark_running_locked(task["name"], counts_for_batch=True)
 
-    monkeypatch.setattr(manager, "_mark_failed_on_disk", claim_new_run_before_terminal_write)
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", claim_new_run_after_terminal_write)
 
     manager._cleanup_on_shutdown()
 
@@ -5603,6 +5776,7 @@ def test_task_manager_shutdown_does_not_overwrite_new_run_claimed_during_cleanup
     assert info["status"] == "running"
     assert info["run_index"] == 2
     assert info["runner_id"] == "other-host:5252:new-run"
+    assert manager.get_task(task["name"])["status"] == "running"
 
 
 def test_foreign_queued_runner_lease_survives_observer_shutdown(tmp_path):
@@ -6209,7 +6383,7 @@ def test_task_manager_keeps_live_foreign_runner_running(tmp_path, monkeypatch):
     assert manager.get_task("remote")["status"] == "running"
 
 
-def test_task_manager_refresh_expires_foreign_runner_even_when_mtime_unchanged(tmp_path, monkeypatch):
+def test_task_manager_refresh_keeps_expired_remote_runner_when_mtime_unchanged(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task_dir = tasks_dir / "remote"
@@ -6241,13 +6415,20 @@ def test_task_manager_refresh_expires_foreign_runner_even_when_mtime_unchanged(t
     original_mtime_ns = task["_mtime_ns"]
 
     update_task_info(str(task_dir), lambda info: info.update({"lease_until": time.time() - 60}))
+    expired_mtime_ns = (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns
     with manager._lock:
-        manager._tasks_by_name["remote"]["_mtime_ns"] = (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns
+        manager._tasks_by_name["remote"]["_mtime_ns"] = expired_mtime_ns
 
-    assert manager.refresh_from_disk() is True
+    assert manager.refresh_from_disk() is False
     refreshed = manager.get_task("remote")
-    assert refreshed["status"] == "failed"
+    assert refreshed["status"] == "running"
+    assert refreshed["_mtime_ns"] == expired_mtime_ns
     assert refreshed["_mtime_ns"] >= original_mtime_ns
+    assert load_task_info(str(task_dir))["status"] == "running"
+
+    manager._cleanup_on_shutdown()
+
+    assert load_task_info(str(task_dir))["status"] == "running"
 
 
 def test_task_manager_does_not_submit_when_foreign_runner_owns_lease(tmp_path, monkeypatch):
@@ -6813,24 +6994,79 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
 
     manager._executor = FailingExecutor()
     monkeypatch.setattr(manager, "_ensure_executor", lambda: None)
-    monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: task.update(marked_failed=kwargs))
     manager._submit_task(picked, 3, independent=False)
     assert picked["status"] == "failed"
-    assert picked["marked_failed"]["reason"] == "submission_error"
 
+    manager.runner_id = "local-runner"
+    update_task_info(
+        task["dir"],
+        lambda info: info.update(
+            {
+                "status": "running",
+                "run_index": 4,
+                "runner_id": manager.runner_id,
+                "runner_host": manager.runner_host,
+            }
+        ),
+    )
     with manager._lock:
+        manager._apply_info_to_task(picked, load_task_info(task["dir"]))
         picked["status"] = "running"
         manager._mark_running_locked("alpha", counts_for_batch=True)
 
-    failed_marks = []
-    monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: failed_marks.append(kwargs))
     future = Future()
     future.set_exception(RuntimeError("worker failed"))
-    manager._on_task_done(future, "alpha")
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=4,
+    )
 
-    assert failed_marks[0]["reason"] == "worker_exception"
     assert manager.get_task("alpha")["status"] == "failed"
     assert "alpha" not in manager._batch_running_ids
+
+
+def test_task_manager_old_worker_callback_does_not_clear_new_run(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("restarted", {"value": 1})
+    manager = _make_task_manager(tasks_dir)
+
+    def start_new_run(info):
+        info.update(
+            {
+                "status": "running",
+                "run_index": 2,
+                "runner_id": manager.runner_id,
+                "runner_host": manager.runner_host,
+                "_gpu_assignment": {"gpu_ids": [1]},
+            }
+        )
+
+    updated = update_task_info(task["dir"], start_new_run)
+    with manager._lock:
+        current = manager._tasks_by_name[task["name"]]
+        manager._apply_info_to_task(current, updated)
+        manager._mark_running_locked(task["name"], counts_for_batch=True)
+
+    released = []
+    monkeypatch.setattr(manager.gpu_scheduler, "release", released.append)
+    old_future = Future()
+    old_future.set_exception(RuntimeError("old worker failed"))
+
+    manager._on_task_done(
+        old_future,
+        task["name"],
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    current = manager.get_task(task["name"])
+    assert current["status"] == "running"
+    assert current["run_index"] == 2
+    assert task["name"] in manager._running_ids
+    assert released == []
 
 
 def test_task_manager_shutdown_retries_cleanup_before_unregistering_atexit(tmp_path, monkeypatch):
@@ -7014,23 +7250,37 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
     assert manager._executor is not old_executor
 
     foreign_info = {
+        "status": "running",
+        "run_index": 1,
         "runner_id": "remote-runner",
         "runner_host": "other",
         "lease_until": time.time() + 60,
     }
     local_info = {
+        "status": "running",
         "runner_id": manager.runner_id,
         "runner_host": manager.runner_host,
         "lease_until": time.time() + 60,
     }
-    monkeypatch.setattr("pyruns.core.task_manager.load_task_info", lambda task_dir: foreign_info if str(task_dir).endswith("remote") else local_info)
+
+    def fake_load_task_info(task_dir):
+        name = Path(task_dir).name
+        if name == "remote":
+            return foreign_info
+        return {**local_info, "run_index": 2 if name == "queued" else 1}
+
+    monkeypatch.setattr("pyruns.core.task_manager.load_task_info", fake_load_task_info)
     killed = []
     monkeypatch.setattr(
         "pyruns.core.task_manager.kill_process",
         lambda pid, expected_create_time=None: killed.append(pid) or True,
     )
     monkeypatch.setattr(manager, "_current_process_identity", lambda info: (4321, 1000.0))
-    monkeypatch.setattr(manager, "_mark_failed_on_disk", lambda task, **kwargs: task.update(cleaned=kwargs))
+    monkeypatch.setattr(
+        manager,
+        "_mark_failed_on_disk",
+        lambda task, **kwargs: task.update(status="failed", cleaned=kwargs),
+    )
 
     manager._cleanup_on_shutdown()
     manager._cleanup_on_shutdown()

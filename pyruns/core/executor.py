@@ -1667,6 +1667,73 @@ def run_task_worker(
         create_times[slot] = process_create_time
         info["pid_create_times"] = create_times
 
+    def _terminate_and_wait_for_started_process(reason: str) -> tuple[bool, bool]:
+        """Do not publish a terminal state while the owned child is alive."""
+
+        nonlocal heartbeat_thread, reader_thread
+        terminated = _terminate_started_process(
+            proc,
+            expected_create_time=process_create_time,
+            task_name=name,
+            run_index=run_index,
+        )
+        survived = bool(not terminated and proc is not None and proc.poll() is None)
+        if not survived:
+            return terminated, False
+
+        def _mark_surviving(info: Dict[str, Any]) -> None:
+            if not _owns_current_run(info):
+                return
+            slot = ensure_run_slot(info, run_index)
+            info["status"] = "running"
+            info["progress"] = 0.0
+            info["run_statuses"][slot] = "running"
+            if start_str and not info["start_times"][slot]:
+                info["start_times"][slot] = start_str
+            _store_process_identity(info, slot)
+            _set_runner_lease(
+                info,
+                runner_id=runner_id,
+                runner_host=runner_host,
+                lease_seconds=lease_seconds,
+            )
+
+        try:
+            update_task_info(task_dir, _mark_surviving)
+        except Exception as state_exc:
+            logger.warning("Could not persist surviving process identity for %s: %s", name, state_exc)
+
+        if runner_id and heartbeat_thread is None:
+            heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+            heartbeat_thread.start()
+
+        if reader_thread is None or not reader_thread.is_alive():
+            def _drain_output() -> None:
+                stream = getattr(proc, "stdout", None)
+                read_chunk = getattr(stream, "read1", None) or getattr(stream, "read", None)
+                try:
+                    while callable(read_chunk) and read_chunk(65536):
+                        pass
+                except Exception:
+                    pass
+
+            reader_thread = threading.Thread(target=_drain_output, daemon=True)
+            reader_thread.start()
+
+        logger.warning(
+            "Child process for %s run #%d survived %s; waiting for its real exit",
+            name,
+            run_index,
+            reason,
+        )
+        try:
+            proc.wait()
+        except Exception as wait_exc:
+            logger.warning("Could not wait directly for surviving process %s: %s", name, wait_exc)
+        while proc.poll() is None:
+            time.sleep(0.1)
+        return False, True
+
     def _finish_stopped_run(
         summary: Dict[str, Any],
         *,
@@ -1828,15 +1895,11 @@ def run_task_worker(
 
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
+            process_terminated, _survived = _terminate_and_wait_for_started_process("stop request")
             return _finish_stopped_run(
                 stop_summary,
                 process_started=True,
-                process_terminated=_terminate_started_process(
-                    proc,
-                    expected_create_time=process_create_time,
-                    task_name=name,
-                    run_index=run_index,
-                ),
+                process_terminated=process_terminated,
             )
 
         start_str = get_now_str()
@@ -1876,11 +1939,8 @@ def run_task_worker(
 
         update_task_info(task_dir, _mark_started)
         if runner_id and not started_state_applied:
-            child_process_terminated = _terminate_started_process(
-                proc,
-                expected_create_time=process_create_time,
-                task_name=name,
-                run_index=run_index,
+            child_process_terminated, _survived = _terminate_and_wait_for_started_process(
+                "task ownership change"
             )
             logger.info(
                 "Stopped %s run #%d because task ownership changed after process launch",
@@ -2148,11 +2208,8 @@ def run_task_worker(
     except Exception as exc:
         traceback_text = traceback.format_exc()
         end_str = get_now_str()
-        child_process_terminated = _terminate_started_process(
-            proc,
-            expected_create_time=process_create_time,
-            task_name=name,
-            run_index=run_index,
+        child_process_terminated, child_process_survived = _terminate_and_wait_for_started_process(
+            "internal-error termination"
         )
         close_output = getattr(proc, "close_output", None) if proc is not None else None
         if callable(close_output):
@@ -2189,6 +2246,7 @@ def run_task_worker(
             f"workdir={workdir!r}",
             f"task_dir={task_dir!r}",
             f"child_process_terminated={child_process_terminated}",
+            f"child_process_survived_termination={child_process_survived}",
         ]
         _append_error_summary(
             task_dir,

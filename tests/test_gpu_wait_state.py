@@ -325,25 +325,45 @@ def test_reservation_sync_skips_unchanged_locally_queued_task_files(tmp_path, mo
                 "runner_id": manager.runner_id,
                 "lease_until": time.time() + 60,
             },
+            {
+                "name": "remote",
+                "dir": str(tasks_dir / "remote"),
+                "status": "running",
+                "runner_id": "other-host:123:expired",
+                "runner_host": "other-host",
+                "lease_until": time.time() - 60,
+            },
         ]
         manager._rebuild_indexes_locked()
 
-    monkeypatch.setattr(manager, "_scan_task_dir_names", lambda: (True, ["queued", "running", "unknown"]))
+    monkeypatch.setattr(
+        manager,
+        "_scan_task_dir_names",
+        lambda: (True, ["queued", "running", "remote", "unknown"]),
+    )
     loaded = []
 
     def fake_load(task_dir):
         name = str(task_dir).replace("\\", "/").rsplit("/", 1)[-1]
         loaded.append(name)
+        remote = name == "remote"
         return {
             "status": "running",
-            "runner_id": manager.runner_id,
-            "lease_until": time.time() + 60,
-            "_gpu_assignment": {"gpu_ids": [0 if name == "running" else 1]},
+            "runner_id": "other-host:123:expired" if remote else manager.runner_id,
+            "runner_host": "other-host" if remote else manager.runner_host,
+            "lease_until": time.time() - 60 if remote else time.time() + 60,
+            "_gpu_assignment": {
+                "gpu_ids": [0 if name == "running" else 2 if remote else 1]
+            },
         }
 
     monkeypatch.setattr("pyruns.core.task_manager.load_task_info", fake_load)
 
     manager._sync_gpu_reservations_from_running_tasks()
 
-    assert loaded == ["running", "unknown"]
-    assert manager.gpu_scheduler._reservations == {"running": [0], "unknown": [1]}
+    assert loaded == ["running", "remote", "unknown"]
+    assert manager.gpu_scheduler._reservations == {
+        "running": [0],
+        "remote": [2],
+        "unknown": [1],
+    }
