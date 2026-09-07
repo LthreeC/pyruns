@@ -2149,6 +2149,10 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
             {
                 "records": [{"loss": index} for index in range(20)],
                 "tracks": [{"loss": list(range(20))}],
+                "launch_command": "python train.py --lr 0.01",
+                "launch_workdir": "/workspace",
+                "launch_started_at": 1773748800.0,
+                "launch_run_index": 1,
             }
         ),
     )
@@ -2185,6 +2189,10 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
     assert full_item["config"]
     assert full_item["records"]
     assert full_item["tracks"]
+    assert full_item["launch_command"] == "python train.py --lr 0.01"
+    assert full_item["launch_workdir"] == "/workspace"
+    assert full_item["launch_started_at"] == 1773748800.0
+    assert full_item["launch_run_index"] == 1
     assert summary_item["config"] == {}
     assert summary_item["config_text"] == ""
     assert summary_item["records"] == []
@@ -2202,6 +2210,10 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
     assert compact_item["notes"] == ""
     assert compact_item["env"] == {}
     assert compact_item["start_times"] == []
+    assert compact_item["launch_command"] is None
+    assert compact_item["launch_workdir"] is None
+    assert compact_item["launch_started_at"] is None
+    assert compact_item["launch_run_index"] is None
     assert len(compact.content) * 5 < len(summary.content)
     assert matched.json()["status_counts"] == {
         "pending": 0,

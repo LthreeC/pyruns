@@ -2661,6 +2661,10 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     assert len(info["start_times"]) == 1
     assert len(info["finish_times"]) == 1
     assert info["pids"] == [9999]
+    assert info["launch_command"]
+    assert info["launch_workdir"]
+    assert isinstance(info["launch_started_at"], float)
+    assert info["launch_run_index"] == 1
     assert info["exit_codes"] == [0]
     assert len(info["durations"]) == 1
     assert info["durations"][0] >= 0

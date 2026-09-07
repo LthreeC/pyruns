@@ -40,6 +40,15 @@ export interface TaskSearchMatch {
   match_end: number
 }
 
+export interface TaskGpuAssignment {
+  task_name?: string
+  run_index?: number
+  gpu_ids?: number[]
+  cuda_visible_devices?: string
+  env?: Record<string, string>
+  waited_seconds?: number
+}
+
 export interface Task {
   name: string
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -60,6 +69,8 @@ export interface Task {
   durations?: (number | null)[]
   exit_codes?: (number | null)[]
   source_states?: string[]
+  run_statuses?: string[]
+  pid_create_times?: (number | null)[]
   progress: number
   run_index: number
   preview_text: string
@@ -69,6 +80,21 @@ export interface Task {
   records: any[]
   tracks: any[]
   gpu_wait?: GPUWaitStatus | null
+  script?: string | null
+  command_mode?: string | null
+  cmd?: string | string[] | null
+  workdir?: string | null
+  shell_executable?: string | null
+  shell_kind?: string | null
+  runner_id?: string | null
+  runner_host?: string | null
+  lease_until?: number | string | null
+  queued_at?: string | number | null
+  launch_command?: string | null
+  launch_workdir?: string | null
+  launch_started_at?: number | null
+  launch_run_index?: number | null
+  _gpu_assignment?: TaskGpuAssignment | null
   _load_error?: string
 }
 

@@ -19,6 +19,7 @@ import {
   Download,
   FileDown,
   LoaderCircle,
+  PanelRightOpen,
   Pin,
   Play,
   RefreshCw,
@@ -43,6 +44,7 @@ import StatusBadge from '@/components/shared/StatusBadge'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
+import CopyButton from '@/components/shared/CopyButton'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
@@ -93,6 +95,10 @@ const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'log',
   'env',
   'cmd',
+  'launch_command',
+  'launch_workdir',
+  'launch_started_at',
+  'launch_run_index',
   'start_times',
   'finish_times',
   'pids',
@@ -1823,9 +1829,16 @@ export default function MonitorPage() {
                 </ActionButton>
               )}
 
-              <ActionButton variant="accentTint" onClick={() => openDetailTask(selectedTask)}>
+              <ActionButton icon={<PanelRightOpen className="h-3.5 w-3.5" />} variant="accentTint" onClick={() => openDetailTask(selectedTask)}>
                 View Details
               </ActionButton>
+
+              <CopyButton
+                value={logContent}
+                label="Copy current log"
+                size="md"
+                className="border border-border-subtle bg-surface-overlay/70"
+              />
 
               {availableLogs.length > 1 && (
                 <div className="relative">

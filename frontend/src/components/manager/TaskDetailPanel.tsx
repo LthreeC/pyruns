@@ -10,15 +10,18 @@ import {
 } from 'react'
 import {
   X, FileText, Settings, StickyNote, Variable, Save, Pencil, Check, Plus, Loader2, AlertCircle, CheckCircle2,
+  ChevronDown,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
+import CopyButton from '@/components/shared/CopyButton'
 import { useTaskDetailDraftStore, useToastStore } from '@/store'
 import type { Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
+import { formatElapsedDuration, formatStoredCommand, parseTaskTimestampMillis } from '@/utils/taskRuntime'
 import * as api from '@/api'
 
 interface Props {
@@ -37,7 +40,7 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const TASK_DETAIL_WIDTH_STORAGE_KEY = 'pyruns.taskDetailPanelWidth'
 const DEFAULT_PANEL_WIDTH = 720
 const MIN_PANEL_WIDTH = 420
-const MAX_PANEL_WIDTH = 2400
+const MAX_PANEL_WIDTH = 960
 let nextEnvPairId = 0
 
 function clampPanelWidth(value: number) {
@@ -988,7 +991,34 @@ function formatScalarValue(value: unknown): string {
 }
 
 function formatDurationSeconds(value: number | null | undefined): string {
-  return typeof value === 'number' ? `${value.toFixed(3)}s` : '(none)'
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(3)}s` : '(none)'
+}
+
+function formatRunDuration(
+  value: number | null | undefined,
+  start: string | number | null | undefined,
+  finish: string | number | null | undefined,
+): string {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return formatDurationSeconds(value)
+  }
+
+  const startMillis = parseTaskTimestampMillis(start)
+  const finishMillis = parseTaskTimestampMillis(finish)
+  if (startMillis === null || finishMillis === null || finishMillis < startMillis) {
+    return '(none)'
+  }
+
+  return formatDurationSeconds((finishMillis - startMillis) / 1000)
+}
+
+function formatTimestampValue(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '(none)'
+  if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
+    const millis = parseTaskTimestampMillis(value)
+    return millis === null ? String(value) : new Date(millis).toLocaleString()
+  }
+  return String(value)
 }
 
 function formatRecordValue(value: unknown): string {
@@ -1014,8 +1044,8 @@ function buildRunEntries(task: Task) {
     task.durations?.length ?? 0,
     task.exit_codes?.length ?? 0,
     task.source_states?.length ?? 0,
+    task.run_statuses?.length ?? 0,
     task.records?.length ?? 0,
-    task.run_index || 0
   )
 
   return Array.from({ length: totalRuns }, (_, index) => ({
@@ -1026,16 +1056,87 @@ function buildRunEntries(task: Task) {
     duration: task.durations?.[index],
     exitCode: task.exit_codes?.[index],
     source: task.source_states?.[index] || '',
+    status: task.run_statuses?.[index] || '',
     record: task.records?.[index],
+    recordText: formatRecordValue(task.records?.[index]),
   }))
 }
 
+function gpuAssignmentLabel(task: Task): string {
+  const assignment = task._gpu_assignment
+  const assigned = assignment?.gpu_ids?.length
+    ? assignment.gpu_ids.join(',')
+    : assignment?.env?.PYRUNS_ASSIGNED_GPUS || task.env?.PYRUNS_ASSIGNED_GPUS || ''
+  const visible = assignment?.cuda_visible_devices
+    || assignment?.env?.CUDA_VISIBLE_DEVICES
+    || task.env?.CUDA_VISIBLE_DEVICES
+    || ''
+  if (assigned && visible && assigned !== visible) {
+    return `GPU ${assigned} | CUDA_VISIBLE_DEVICES=${visible}`
+  }
+  if (assigned) return `GPU ${assigned}`
+  if (visible) return `CUDA_VISIBLE_DEVICES=${visible}`
+  return ''
+}
+
+function InfoValueRow({
+  label,
+  value,
+  copyLabel,
+}: {
+  label: string
+  value: string
+  copyLabel?: string
+}) {
+  return (
+    <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 border-b border-border-subtle py-2">
+      <span className="text-xs text-txt-tertiary">{label}</span>
+      <div className="min-w-0 break-all font-mono text-xs text-txt-primary">
+        {value}
+        {copyLabel && value !== '(none)' && <CopyButton value={value} label={copyLabel} className="ml-1.5 -my-1 align-middle" />}
+      </div>
+    </div>
+  )
+}
+
+function RunMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 bg-surface-raised px-2.5 py-2">
+      <dt className="text-2xs uppercase tracking-[0.12em] text-txt-tertiary">{label}</dt>
+      <dd className="mt-1 truncate font-mono text-xs font-medium tabular-nums text-txt-primary" title={value}>
+        {value}
+      </dd>
+    </div>
+  )
+}
+
 function InfoTab({ task }: { task: Task }) {
+  const runs = buildRunEntries(task)
+  const [openRunIndexes, setOpenRunIndexes] = useState<Set<number>>(
+    () => new Set(),
+  )
+  const previousRunTaskRef = useRef(task.name)
+  useEffect(() => {
+    const taskChanged = previousRunTaskRef.current !== task.name
+    if (taskChanged) {
+      setOpenRunIndexes(new Set<number>())
+    }
+    previousRunTaskRef.current = task.name
+  }, [task.name])
+
+  const live = task.status === 'running' || task.status === 'queued'
+  const [nowMillis, setNowMillis] = useState(Date.now)
+  useEffect(() => {
+    setNowMillis(Date.now())
+    if (!live) return
+    const interval = window.setInterval(() => setNowMillis(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [live, task.name])
+
   const rows: [string, string][] = [
-    ['Status', task.status],
     ['Created', task.created_at],
     ['Mode', getTaskMode(task)],
-    ['Run Index', String(task.run_index || 1)],
+    ['Recorded Runs', String(runs.length)],
     ['Directory', task.dir],
   ]
 
@@ -1043,16 +1144,108 @@ function InfoTab({ task }: { task: Task }) {
     rows.push(['Load Error', task._load_error])
   }
 
-  const runs = buildRunEntries(task)
+  const queuedRunIndex = Number(task.gpu_wait?.run_index || 0)
+  const displayedRunIndex = task.status === 'queued'
+    ? Math.max(1, queuedRunIndex || (task.run_index > runs.length ? task.run_index : runs.length + 1))
+    : task.status === 'running'
+      ? Math.max(1, task.run_index || runs.length)
+      : runs.length
+  const displayedRun = displayedRunIndex > 0 ? runs[displayedRunIndex - 1] : undefined
+  const launchMatchesRun = Boolean(
+    task.launch_command
+    && (!task.launch_run_index || task.launch_run_index === displayedRunIndex),
+  )
+  const runStartMillis = task.status === 'queued'
+    ? parseTaskTimestampMillis(task.gpu_wait?.started_at ?? task.queued_at)
+    : launchMatchesRun
+      ? parseTaskTimestampMillis(task.launch_started_at)
+      : parseTaskTimestampMillis(displayedRun?.start)
+  const elapsedSeconds = runStartMillis === null ? null : Math.max(0, (nowMillis - runStartMillis) / 1000)
+  const durationLabel = task.status === 'queued' ? 'Waited' : task.status === 'running' ? 'Elapsed' : 'Duration'
+  const durationValue = live
+    ? elapsedSeconds === null ? '(none)' : formatElapsedDuration(elapsedSeconds)
+    : formatRunDuration(displayedRun?.duration, displayedRun?.start, displayedRun?.finish)
+  const displayedStatus = task.status === 'queued' || task.status === 'running'
+    ? task.status
+    : displayedRun?.status || task.status
+  const displayedStart = task.status === 'queued'
+    ? formatTimestampValue(task.queued_at ?? task.gpu_wait?.started_at)
+    : formatScalarValue(displayedRun?.start)
+  const running = task.status === 'running'
+  const gpuLabel = running ? gpuAssignmentLabel(task) : ''
+  const currentMetrics = live && displayedRunIndex > 0
+    ? [
+        ['Run', `#${displayedRunIndex}`],
+        ['Status', displayedStatus],
+        ['Started', displayedStart],
+        [durationLabel, durationValue],
+        ['PID', formatScalarValue(displayedRun?.pid)],
+        ...(gpuLabel ? [['GPU', gpuLabel]] : []),
+      ]
+    : []
+  const configuredCommand = formatStoredCommand(task.cmd)
+  const command = launchMatchesRun ? String(task.launch_command) : configuredCommand
+  const commandLabel = launchMatchesRun
+    ? 'Launch Command'
+    : Array.isArray(task.cmd)
+      ? 'Configured argv'
+      : 'Configured Command'
+  const executionWorkdir = launchMatchesRun ? task.launch_workdir : task.workdir
+  const shell = [task.shell_kind, task.shell_executable].filter(Boolean).join(' | ')
+  const executionRows: [string, string, string?][] = [
+    ...(executionWorkdir ? [['Working Directory', executionWorkdir, 'Copy working directory'] as [string, string, string]] : []),
+    ...(task.script ? [['Script', task.script, 'Copy script path'] as [string, string, string]] : []),
+    ...(shell ? [['Shell', shell, 'Copy shell information'] as [string, string, string]] : []),
+    ...(task.command_mode ? [['Command Mode', task.command_mode] as [string, string]] : []),
+    ...(running && task.runner_host ? [['Runner Host', task.runner_host, 'Copy runner host'] as [string, string, string]] : []),
+    ...(running && task.runner_id ? [['Runner ID', task.runner_id, 'Copy runner ID'] as [string, string, string]] : []),
+    ...(running && task.lease_until ? [['Lease Until', formatTimestampValue(task.lease_until)] as [string, string]] : []),
+  ]
 
   return (
     <div className="space-y-5">
-      <section className="space-y-2">
-        {rows.map(([label, value]) => (
-          <div key={label} className="grid grid-cols-[88px_minmax(0,1fr)] gap-3 border-b border-border-subtle py-2">
-            <span className="text-xs text-txt-tertiary">{label}</span>
-            <span className="break-all font-mono text-xs text-txt-primary">{value}</span>
+      {currentMetrics.length > 0 && (
+        <section className="space-y-2" aria-labelledby="task-current-run-heading">
+          <div id="task-current-run-heading" className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
+            {task.status === 'running' ? 'Current Run' : 'Scheduled Run'}
           </div>
+          <dl className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-px overflow-hidden rounded-md border border-border-subtle bg-border-subtle">
+            {currentMetrics.map(([label, value]) => <RunMetric key={label} label={label} value={value} />)}
+          </dl>
+        </section>
+      )}
+
+      <section className="space-y-2">
+        <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Task</div>
+        {rows.map(([label, value]) => (
+          <InfoValueRow
+            key={label}
+            label={label}
+            value={value}
+            copyLabel={label === 'Directory' ? 'Copy task directory' : undefined}
+          />
+        ))}
+      </section>
+
+      <section className="space-y-2" aria-labelledby="task-execution-heading">
+        <div id="task-execution-heading" className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Execution</div>
+        {command ? (
+          <div className="space-y-1.5 border-b border-border-subtle pb-3">
+            <div className="text-xs text-txt-tertiary">{commandLabel}</div>
+            <div className="relative">
+              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/70 p-3 pr-12 font-mono text-xs leading-relaxed text-txt-primary">
+                {command}
+              </pre>
+              <CopyButton value={command} label={`Copy ${commandLabel.toLowerCase()}`} className="absolute right-2 top-2 bg-surface-raised/80" />
+            </div>
+          </div>
+        ) : (
+          <div className="border-b border-border-subtle py-2 text-xs text-txt-secondary">
+            Launch command was not recorded for this run.
+          </div>
+        )}
+        {executionRows.map(([label, value, copyLabel]) => (
+          <InfoValueRow key={label} label={label} value={value} copyLabel={copyLabel} />
         ))}
       </section>
 
@@ -1063,11 +1256,32 @@ function InfoTab({ task }: { task: Task }) {
             No runs recorded yet.
           </div>
         ) : (
-          <div className="space-y-3">
+          <div>
             {runs.map(run => (
-              <div key={run.index} className="border-t border-border-subtle pt-3">
-                <div className="mb-2 text-xs font-medium text-txt-primary">Run #{run.index}</div>
-                <div className="space-y-1.5">
+              <details
+                key={run.index}
+                open={openRunIndexes.has(run.index)}
+                onToggle={event => {
+                  const isOpen = event.currentTarget.open
+                  setOpenRunIndexes(current => {
+                    const next = new Set(current)
+                    if (isOpen) {
+                      next.add(run.index)
+                    } else {
+                      next.delete(run.index)
+                    }
+                    return next
+                  })
+                }}
+                className="group border-t border-border-subtle [content-visibility:auto] [contain-intrinsic-size:48px]"
+              >
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
+                  <span className="font-medium text-txt-primary">Run #{run.index}</span>
+                  <span className="text-txt-tertiary">{run.status || (run.index === task.run_index ? task.status : '')}</span>
+                  <span className="ml-auto font-mono tabular-nums text-txt-secondary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
+                  <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="space-y-1.5 pb-3">
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Start</span>
                     <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.start)}</span>
@@ -1082,7 +1296,7 @@ function InfoTab({ task }: { task: Task }) {
                   </div>
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Duration</span>
-                    <span className="break-all font-mono text-xs text-txt-primary">{formatDurationSeconds(run.duration)}</span>
+                    <span className="break-all font-mono text-xs text-txt-primary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
                   </div>
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Exit Code</span>
@@ -1090,18 +1304,26 @@ function InfoTab({ task }: { task: Task }) {
                   </div>
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Source</span>
-                    <pre className="overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/60 p-2 font-mono text-xs leading-relaxed text-txt-primary">
-                      {formatScalarValue(run.source)}
-                    </pre>
+                    <div className="relative min-w-0">
+                      <pre className="overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/60 p-2 pr-11 font-mono text-xs leading-relaxed text-txt-primary">
+                        {formatScalarValue(run.source)}
+                      </pre>
+                      {run.source && <CopyButton value={run.source} label={`Copy source state for run ${run.index}`} className="absolute right-1.5 top-1.5 bg-surface-raised/80" />}
+                    </div>
                   </div>
                   <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
                     <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Record</span>
-                    <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-surface-overlay/60 p-2 font-mono text-xs leading-relaxed text-txt-primary">
-                      {formatRecordValue(run.record)}
-                    </pre>
+                    <div className="relative min-w-0">
+                      <pre className="overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/60 p-2 pr-11 font-mono text-xs leading-relaxed text-txt-primary">
+                        {run.recordText}
+                      </pre>
+                      {run.recordText !== '(empty)' && (
+                        <CopyButton value={run.recordText} label={`Copy record for run ${run.index}`} className="absolute right-1.5 top-1.5 bg-surface-raised/80" />
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              </details>
             ))}
           </div>
         )}
@@ -1121,12 +1343,16 @@ function ConfigTab({ task }: { task: Task }) {
       : '(empty)'
 
   return (
-    <div className="space-y-2">
-      <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Payload File</div>
-      <div className="font-mono text-xs text-txt-primary">{task.config_file}</div>
-      <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-surface-overlay p-4 font-mono text-xs leading-relaxed text-txt-primary">
+    <section className="space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Configuration</div>
+        {content !== '(empty)' && (
+          <CopyButton value={content} label="Copy configuration" size="xs" />
+        )}
+      </div>
+      <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-surface-overlay p-3 pr-10 font-mono text-xs leading-relaxed text-txt-primary">
         {content}
       </pre>
-    </div>
+    </section>
   )
 }

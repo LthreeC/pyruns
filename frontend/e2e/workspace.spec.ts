@@ -731,8 +731,13 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')
   await expect(page.getByRole('textbox', { name: 'Environment variable value' })).toHaveValue('review')
   await page.getByRole('tab', { name: 'Info' }).click()
+  await page.getByText('Run #1', { exact: true }).click()
   await expect(page.getByText('2026-08-09T00:01:00Z')).toBeVisible()
   await expect(page.getByText('1234')).toBeVisible()
+  await page.getByRole('tab', { name: 'Script' }).click()
+  await expect(page.getByText('Payload File', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Copy payload path' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Copy configuration' })).toBeVisible()
 
   expect(browserErrors).toEqual([])
 })

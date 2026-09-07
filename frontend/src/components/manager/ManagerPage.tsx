@@ -342,6 +342,7 @@ export default function ManagerPage() {
       }
 
       return {
+        ...current,
         ...refreshed,
         config: current.config,
         config_text: current.config_text,

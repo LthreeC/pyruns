@@ -1891,7 +1891,13 @@ def run_task_worker(
                 env=env,
             )
         process_started_at = time.monotonic()
+        process_started_epoch = time.time()
         process_create_time = get_process_create_time(proc.pid)
+        launch_command = (
+            subprocess.list2cmdline([str(part) for part in command])
+            if _is_windows()
+            else shlex.join(str(part) for part in command)
+        )
 
         stop_summary = _consume_pending_stop_summary(task_dir, run_index)
         if stop_summary:
@@ -1928,6 +1934,10 @@ def run_task_worker(
             info["progress"] = 0.0
             info["run_statuses"][slot] = "running"
             info["start_times"][slot] = start_str
+            info["launch_command"] = launch_command
+            info["launch_workdir"] = os.path.abspath(workdir or os.getcwd())
+            info["launch_started_at"] = process_started_epoch
+            info["launch_run_index"] = int(run_index)
             _store_process_identity(info, slot)
             _set_runner_lease(
                 info,

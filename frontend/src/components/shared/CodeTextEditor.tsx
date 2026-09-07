@@ -15,6 +15,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { tags as t } from '@lezer/highlight'
 import { WrapText } from 'lucide-react'
 import clsx from 'clsx'
+import CopyButton from '@/components/shared/CopyButton'
 
 type CodeEditorLanguage = 'yaml' | 'shell'
 type CodeEditorTheme = 'light' | 'dark'
@@ -253,10 +254,17 @@ export default function CodeTextEditor({
       )}
     >
       {!compactToolbar && (
-        <div className="flex h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/25 px-2.5">
+        <div className="flex min-h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/25 px-2.5">
           <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
             {language === 'yaml' ? 'YAML' : 'Shell'}
           </span>
+          <CopyButton
+            value={value}
+            label={`Copy ${language === 'yaml' ? 'YAML' : 'shell'} content`}
+            size="xs"
+            onMouseDown={event => event.preventDefault()}
+            className="ml-auto"
+          />
           <button
             type="button"
             onMouseDown={event => event.preventDefault()}
@@ -265,7 +273,7 @@ export default function CodeTextEditor({
             aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
             title={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
             className={clsx(
-              'ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
+              'touch-target inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
               wrap
                 ? 'bg-accent/10 text-accent'
                 : 'text-txt-tertiary hover:bg-surface-raised hover:text-txt-primary',
@@ -276,20 +284,29 @@ export default function CodeTextEditor({
         </div>
       )}
       {compactToolbar && (
-        <button
-          type="button"
-          onMouseDown={event => event.preventDefault()}
-          onClick={() => setWrap(current => !current)}
-          aria-pressed={wrap}
-          aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
-          title={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
-          className={clsx(
-            'absolute right-1.5 top-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/95 text-txt-tertiary shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
-            wrap ? 'text-accent' : 'hover:bg-surface-overlay hover:text-txt-primary',
-          )}
-        >
-          <WrapText className="h-3.5 w-3.5" />
-        </button>
+        <div className="absolute right-1.5 top-1.5 z-10 flex gap-1.5">
+          <CopyButton
+            value={value}
+            label={`Copy ${language === 'yaml' ? 'YAML' : 'shell'} content`}
+            size="xs"
+            onMouseDown={event => event.preventDefault()}
+            className="border border-border-subtle bg-surface-raised/95 shadow-sm"
+          />
+          <button
+            type="button"
+            onMouseDown={event => event.preventDefault()}
+            onClick={() => setWrap(current => !current)}
+            aria-pressed={wrap}
+            aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
+            title={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}
+            className={clsx(
+              'touch-target inline-flex h-6 w-6 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/95 text-txt-tertiary shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-accent/25',
+              wrap ? 'text-accent' : 'hover:bg-surface-overlay hover:text-txt-primary',
+            )}
+          >
+            <WrapText className="h-3.5 w-3.5" />
+          </button>
+        </div>
       )}
       <div className="relative min-h-0 flex-1 cursor-text overflow-hidden" onMouseDown={focusEditorFromBlankArea}>
         <CodeMirror

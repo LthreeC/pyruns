@@ -18,6 +18,7 @@ import clsx from 'clsx'
 import { useDashboardStore, useMonitorStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import StatusBadge from '@/components/shared/StatusBadge'
+import CopyButton from '@/components/shared/CopyButton'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import { errorMessage } from '@/utils/errors'
 import type { GPUMetric, Task, SystemMetrics } from '@/types'
@@ -683,7 +684,10 @@ function GpuProcessDialog({
             <div id="gpu-detail-title" className="mt-1 truncate text-base font-semibold text-txt-primary">
               GPU {gpu.index} | {gpu.name}
             </div>
-            <div id="gpu-detail-description" className="mt-1 truncate font-mono text-2xs text-txt-tertiary">{gpu.uuid}</div>
+            <div className="mt-1 flex min-w-0 items-center gap-1">
+              <div id="gpu-detail-description" className="min-w-0 flex-1 truncate font-mono text-2xs text-txt-tertiary" title={gpu.uuid}>{gpu.uuid || 'UUID unavailable'}</div>
+              {gpu.uuid && <CopyButton value={gpu.uuid} label="Copy GPU UUID" className="-my-1" />}
+            </div>
           </div>
           <button
             ref={closeButtonRef}

@@ -438,7 +438,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'group-hover:bg-accent/45',
             'window.innerWidth - 8',
             'max-w-[calc(100vw-8px)]',
-            'const MAX_PANEL_WIDTH = 2400',
+            'const MAX_PANEL_WIDTH = 960',
             'useState(() => buildEnvPairs(task))',
             'const taskRequestSeqRef = useRef(0)',
             'const currentTaskNameRef = useRef(task.name)',
