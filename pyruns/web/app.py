@@ -1556,8 +1556,21 @@ def create_app(
         }
 
     @app.get("/api/system/metrics")
-    def get_metrics(include_processes: bool = False) -> dict[str, Any]:
-        return get_runtime().get_metrics(include_processes=include_processes)
+    def get_metrics(
+        include_processes: bool = False,
+        detail: bool = False,
+    ) -> dict[str, Any]:
+        return get_runtime().get_metrics(
+            include_processes=include_processes,
+            detail=detail,
+        )
+
+    @app.get("/api/system/processes/{pid}")
+    def get_process_details(pid: int) -> dict[str, Any]:
+        try:
+            return get_runtime().get_process_details(pid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if dist_dir is not None:
 

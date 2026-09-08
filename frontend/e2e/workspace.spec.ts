@@ -250,7 +250,7 @@ test('a shared backend restart reloads a non-initiating interface', async ({ pag
   await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
 })
 
-test('launcher, navigation, and theme work without browser errors', async ({ page }) => {
+test('launcher, navigation, and theme work without browser errors', async ({ page }, testInfo) => {
   const browserErrors: string[] = []
   page.on('console', message => {
     if (message.type() === 'error') browserErrors.push(message.text())
@@ -289,13 +289,36 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
   const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks' })
   await expect(monitorSearch).toHaveJSProperty('tagName', 'INPUT')
   expect(await monitorSearch.evaluate(element => element.scrollHeight <= element.clientHeight)).toBe(true)
+  for (const theme of ['light', 'dark']) {
+    const toggle = page.getByRole('button', { name: theme === 'light' ? 'Light Mode' : 'Dark Mode' })
+    if (await toggle.isVisible()) await toggle.click()
+    for (const [link, ready] of [
+      ['Home', page.getByRole('heading', { name: 'Dashboard', exact: true })],
+      ['Generator', page.getByRole('textbox', { name: 'Task Prefix' })],
+      ['Manager', managerSearch],
+      ['Monitor', monitorSearch],
+    ] as const) {
+      await page.getByRole('link', { name: link, exact: true }).click()
+      await expect(ready).toBeVisible()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await page.screenshot({ path: testInfo.outputPath(`${link}-${theme}.png`) })
+    }
+  }
   expect(browserErrors).toEqual([])
 })
 
-test('GPU card opens detailed device and process information', async ({ page }) => {
+test('GPU card opens detailed device and process information', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
   let detailRequests = 0
+  let processDetailRequests = 0
+  let releaseProcessDetails!: () => void
+  const processDetailsReady = new Promise<void>(resolve => {
+    releaseProcessDetails = resolve
+  })
   await page.route('**/api/system/metrics**', route => {
-    const includeProcesses = new URL(route.request().url()).searchParams.get('include_processes') === 'true'
+    const searchParams = new URL(route.request().url()).searchParams
+    const includeProcesses = searchParams.get('include_processes') === 'true'
+    const includeDetail = searchParams.get('detail') === 'true'
     if (includeProcesses) detailRequests += 1
     return route.fulfill({
       json: {
@@ -309,38 +332,56 @@ test('GPU card opens detailed device and process information', async ({ page }) 
           util: 75,
           mem_used: 8192,
           mem_total: 24576,
-          mem_util: 42,
-          mem_free: 16384,
-          temperature_c: 67,
-          fan_speed_pct: 35,
-          power_draw_w: 210.5,
-          power_limit_w: 575,
-          performance_state: 'P2',
-          compute_mode: 'Default',
-          graphics_clock_mhz: 2520,
-          memory_clock_mhz: 14001,
-          pci_bus_id: '00000000:2B:00.0',
-          driver_version: '590.12',
+          ...(includeDetail ? {
+            mem_util: 42,
+            mem_free: 16384,
+            temperature_c: 67,
+            fan_speed_pct: 35,
+            power_draw_w: 210.5,
+            power_limit_w: 575,
+            performance_state: 'P2',
+            compute_mode: 'Default',
+            graphics_clock_mhz: 2520,
+            memory_clock_mhz: 14001,
+            pci_bus_id: '00000000:2B:00.0',
+            driver_version: '590.12',
+          } : {}),
           processes: includeProcesses
             ? [{
                 pid: 4321,
-                user: 'researcher',
                 name: '/usr/bin/python',
                 memory_mb: 4096,
-                process_name: 'python',
-                status: 'sleeping',
-                executable: '/usr/bin/python',
-                command_line: 'python train.py --epochs 10',
-                command_line_truncated: false,
-                working_directory: '/workspace',
-                created_at: 1_725_000_000,
-                host_memory_mb: 1536,
-                host_memory_percent: 6.25,
-                thread_count: 12,
-                parent_pid: 1000,
               }]
             : [],
         }],
+      },
+    })
+  })
+  await page.route('**/api/system/processes/4321', async route => {
+    processDetailRequests += 1
+    if (processDetailRequests === 2) {
+      return route.fulfill({
+        status: 503,
+        json: { detail: 'Process metadata is temporarily unavailable.' },
+      })
+    }
+    await processDetailsReady
+    return route.fulfill({
+      json: {
+        pid: 4321,
+        available: true,
+        user: 'researcher',
+        process_name: 'python',
+        status: 'sleeping',
+        executable: '/usr/bin/python',
+        command_line: 'python train.py --epochs 10',
+        command_line_truncated: false,
+        working_directory: '/workspace',
+        created_at: 1_725_000_000,
+        host_memory_mb: 1536,
+        host_memory_percent: 6.25,
+        thread_count: 12,
+        parent_pid: 1000,
       },
     })
   })
@@ -359,26 +400,46 @@ test('GPU card opens detailed device and process information', async ({ page }) 
   await expect(dialog.getByText('67 °C')).toBeVisible()
   await expect(dialog.getByText('00000000:2B:00.0')).toBeVisible()
   await expect(dialog.getByText('python')).toBeVisible()
-  await expect(dialog.getByText('researcher')).toBeVisible()
   await expect.poll(() => detailRequests).toBe(1)
+  expect(processDetailRequests).toBe(0)
+  await expect(dialog.getByText('python train.py --epochs 10')).toBeHidden()
 
-  const processRow = dialog.getByRole('button', { name: /details for process 4321 python/ })
+  const processRow = dialog.getByRole('button', { name: /details for process 4321 .*python/ })
   await processRow.click()
   await expect(processRow).toHaveAttribute('aria-expanded', 'true')
+  await expect(dialog.getByText('Loading process details...')).toBeVisible()
+  expect(processDetailRequests).toBe(1)
+  releaseProcessDetails()
   await expect(dialog.getByText('python train.py --epochs 10')).toBeVisible()
+  await expect(dialog.getByText('researcher')).toBeVisible()
   await expect(dialog.getByText('/workspace')).toBeVisible()
   await expect(dialog.getByText('1.5 GB (6.3% RAM)')).toBeVisible()
   await expect(dialog.getByRole('button', { name: 'Copy command line for PID 4321' })).toBeVisible()
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  const command = dialog.getByText('python train.py --epochs 10')
+  const commandBox = await command.boundingBox()
+  const dialogBox = await dialog.boundingBox()
+  expect(commandBox!.x + commandBox!.width).toBeLessThanOrEqual(dialogBox!.x + dialogBox!.width)
+  await command.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('gpu-process-details.png') })
+  await processRow.click()
+  await processRow.click()
+  await expect(dialog.getByText('python train.py --epochs 10')).toBeVisible()
+  expect(processDetailRequests).toBe(1)
 
   await page.clock.install()
   await page.evaluate(() => {
     const originalFetch = window.fetch.bind(window)
     const testWindow = window as typeof window & {
       __gpuDetailsAborts: number
+      __processDetailsAborts: number
       __stallNextGpuDetails: boolean
+      __stallNextProcessDetails: boolean
     }
     testWindow.__gpuDetailsAborts = 0
+    testWindow.__processDetailsAborts = 0
     testWindow.__stallNextGpuDetails = true
+    testWindow.__stallNextProcessDetails = false
     window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string'
         ? input
@@ -390,6 +451,20 @@ test('GPU card opens detailed device and process information', async ({ page }) 
         return new Promise<Response>((_resolve, reject) => {
           const abort = () => {
             testWindow.__gpuDetailsAborts += 1
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          }
+          if (init?.signal?.aborted) {
+            abort()
+          } else {
+            init?.signal?.addEventListener('abort', abort, { once: true })
+          }
+        })
+      }
+      if (testWindow.__stallNextProcessDetails && url.includes('/api/system/processes/4321')) {
+        testWindow.__stallNextProcessDetails = false
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => {
+            testWindow.__processDetailsAborts += 1
             reject(new DOMException('The operation was aborted.', 'AbortError'))
           }
           if (init?.signal?.aborted) {
@@ -414,6 +489,13 @@ test('GPU card opens detailed device and process information', async ({ page }) 
   await expect.poll(() => detailRequests).toBe(2)
   await expect(dialog.getByRole('alert')).toBeHidden()
 
+  await processRow.click()
+  await expect(dialog.getByRole('alert')).toContainText('Process metadata is temporarily unavailable.')
+  expect(processDetailRequests).toBe(2)
+  await dialog.getByRole('button', { name: 'Retry' }).click()
+  await expect(dialog.getByText('python train.py --epochs 10')).toBeVisible()
+  expect(processDetailRequests).toBe(3)
+
   await page.evaluate(() => {
     const testWindow = window as typeof window & { __stallNextGpuDetails: boolean }
     testWindow.__stallNextGpuDetails = true
@@ -431,6 +513,90 @@ test('GPU card opens detailed device and process information', async ({ page }) 
   await gpuCard.click()
   await expect(dialog).toBeVisible()
   await expect.poll(() => detailRequests).toBe(3)
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & { __stallNextProcessDetails: boolean }
+    testWindow.__stallNextProcessDetails = true
+  })
+  await processRow.click()
+  await expect(dialog.getByText('Loading process details...')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Close GPU details' }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => (
+    window as typeof window & { __processDetailsAborts: number }
+  ).__processDetailsAborts)).toBe(1)
+})
+
+test('runtime GPU preview cancels hidden requests and recovers from timeout', async ({ page }) => {
+  await page.clock.install()
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window)
+    const state = { requests: 0, aborts: 0, stall: true }
+    Object.assign(window, { gpuPreviewTest: state })
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/api/system/metrics')) {
+        state.requests += 1
+        if (state.stall) {
+          return new Promise<Response>((_resolve, reject) => {
+            const abort = () => {
+              state.aborts += 1
+              reject(new DOMException('Aborted', 'AbortError'))
+            }
+            if (init?.signal?.aborted) abort()
+            else init?.signal?.addEventListener('abort', abort, { once: true })
+          })
+        }
+      }
+      return originalFetch(input, init)
+    }) as typeof window.fetch
+  })
+  await page.route('**/api/system/metrics**', route => route.fulfill({ json: {
+    cpu_percent: 5, mem_percent: 10,
+    gpus: [{ id: 0, index: 0, name: 'Test GPU', uuid: 'GPU-TEST', util: 5, mem_used: 100, mem_total: 24576, processes: [] }],
+  } }))
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click()
+  const panel = page.getByRole('dialog', { name: 'Runtime settings' })
+  const previewState = () => page.evaluate(() => (window as typeof window & {
+    gpuPreviewTest: { requests: number; aborts: number; stall: boolean }
+  }).gpuPreviewTest)
+  expect((await previewState()).requests).toBe(0)
+  await panel.getByRole('tab', { name: 'GPU', exact: true }).click()
+  await expect.poll(async () => (await previewState()).requests).toBe(1)
+  await panel.getByRole('tab', { name: 'Env', exact: true }).click()
+  await expect.poll(async () => (await previewState()).aborts).toBe(1)
+  await panel.getByRole('tab', { name: 'GPU', exact: true }).click()
+  await expect.poll(async () => (await previewState()).requests).toBe(2)
+  await page.clock.fastForward(10_001)
+  await expect(panel.getByRole('alert')).toContainText('GPU preview timed out.')
+  await page.evaluate(() => { (window as typeof window & { gpuPreviewTest: { stall: boolean } }).gpuPreviewTest.stall = false })
+  await panel.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(panel.getByRole('alert')).toBeHidden()
+  await expect(panel.getByRole('button', { name: /GPU 0 · Test GPU/ })).toBeVisible()
+  await page.route('**/api/system/metrics**', route => route.fulfill({ status: 503, json: { detail: 'Preview unavailable' } }))
+  await panel.getByRole('button', { name: 'Reload runtime' }).click()
+  await expect(panel.getByRole('alert')).toContainText('Showing the last available GPU values.')
+  await expect(panel.getByRole('button', { name: /GPU 0 · Test GPU/ })).toBeVisible()
+})
+
+test('long error notifications remain readable while focused', async ({ page }, testInfo) => {
+  await page.clock.install()
+  const detail = 'Cannot contact the package index. '.repeat(25) + 'Check the connection and retry.'
+  await page.route('**/api/system/update/check', route => route.fulfill({ status: 503, json: { detail } }))
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: /Check for Pyruns updates/ }).click()
+  const notification = page.getByRole('alert').filter({ hasText: detail })
+  const content = notification.locator('[aria-label="Notification details"]')
+  await expect(content).toHaveText(detail)
+  expect(await notification.evaluate(element => getComputedStyle(element).pointerEvents)).toBe('none')
+  await notification.getByRole('button', { name: 'Expand notification details' }).click()
+  expect(await content.evaluate(element => getComputedStyle(element).overflowY)).toBe('auto')
+  await content.focus()
+  await page.clock.fastForward(10_000)
+  await expect(notification).toBeVisible()
+  await content.press('End')
+  await page.screenshot({ path: testInfo.outputPath('notification-details.png') })
+  await notification.getByRole('button', { name: 'Dismiss notification' }).click()
+  await expect(notification).toBeHidden()
 })
 
 test('monitor terminal search stays responsive with a large scrollback buffer', async ({ page }) => {

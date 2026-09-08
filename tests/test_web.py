@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import psutil
@@ -4684,13 +4684,58 @@ def test_logs_websocket_stream_uses_bounded_queue():
 def test_metrics_endpoint_returns_sampler_payload(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    runtime.metrics_sampler.sample = lambda: {"cpu_percent": 10.0, "mem_percent": 20.0, "gpus": []}
+    runtime.metrics_sampler.sample = MagicMock(return_value={
+        "cpu_percent": 10.0,
+        "mem_percent": 20.0,
+        "gpus": [],
+    })
     client = TestClient(create_app(runtime))
 
     response = client.get("/api/system/metrics")
 
     assert response.status_code == 200
     assert response.json()["cpu_percent"] == 10.0
+    runtime.metrics_sampler.sample.assert_called_once_with(
+        include_processes=False,
+        detail=False,
+    )
+
+    response = client.get(
+        "/api/system/metrics?include_processes=true&detail=true"
+    )
+
+    assert response.status_code == 200
+    runtime.metrics_sampler.sample.assert_called_with(
+        include_processes=True,
+        detail=True,
+    )
+
+
+def test_process_details_endpoint_reads_only_requested_pid(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    runtime.metrics_sampler.get_process_details = MagicMock(return_value={
+        "pid": 4321,
+        "available": True,
+        "user": "researcher",
+    })
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/system/processes/4321")
+
+    assert response.status_code == 200
+    assert response.json()["pid"] == 4321
+    runtime.metrics_sampler.get_process_details.assert_called_once_with(4321)
+
+
+def test_process_details_endpoint_rejects_invalid_pid(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    client = TestClient(create_app(_build_runtime(workspace)))
+
+    response = client.get("/api/system/processes/0")
+
+    assert response.status_code == 400
+    assert "positive integer" in response.json()["detail"]
 
 
 def test_runtime_helper_edges_and_conda_error_paths(tmp_path, monkeypatch):

@@ -156,7 +156,7 @@ summary::-webkit-details-marker {
 .cm-editor .cm-gutters { background: var(--surface-raised) !important; border-right: 1px solid var(--border-subtle) !important; }
 .cm-editor .cm-activeLineGutter { background: var(--surface-overlay) !important; }
 .code-text-editor {
-  border-radius: 0.5rem;
+  border-radius: 0.375rem;
   border: 1px solid var(--border-subtle);
   background: var(--surface-raised);
   overflow: hidden;

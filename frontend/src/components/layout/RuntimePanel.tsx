@@ -29,6 +29,7 @@ type RuntimePage = 'python' | 'env' | 'gpu'
 type RuntimeDirtyPages = Record<RuntimePage, boolean>
 type RuntimePageRevisions = Record<RuntimePage, number>
 const RUNTIME_PAGES: RuntimePage[] = ['python', 'env', 'gpu']
+const GPU_PREVIEW_TIMEOUT_MS = 10_000
 type PythonRuntimeMode = 'follow' | 'conda' | 'python'
 type GpuTaskMode = 'single' | 'multi'
 type GpuSelectionMode = 'auto' | 'specified'
@@ -238,6 +239,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const runtimeLoadSeqRef = useRef(0)
   const runtimeSaveSeqRef = useRef(0)
   const gpuMetricsLoadSeqRef = useRef(0)
+  const gpuMetricsControllerRef = useRef<AbortController | null>(null)
   const runtimeDirtyPagesRef = useRef<RuntimeDirtyPages>(cleanRuntimeDirtyPages())
   const runtimePageRevisionsRef = useRef<RuntimePageRevisions>(initialRuntimePageRevisions())
   const notify = useToastStore(state => state.notify)
@@ -526,24 +528,36 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }
 
   const loadGpuMetrics = async (showFeedback = false) => {
+    gpuMetricsControllerRef.current?.abort()
+    const controller = new AbortController()
+    gpuMetricsControllerRef.current = controller
     const loadSeq = gpuMetricsLoadSeqRef.current + 1
     gpuMetricsLoadSeqRef.current = loadSeq
+    let timedOut = false
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, GPU_PREVIEW_TIMEOUT_MS)
     setGpuMetricsLoading(true)
+    setGpuMetricsError('')
     try {
-      const next = await api.getMetrics(false)
+      const next = await api.getMetrics({}, controller.signal)
       if (loadSeq === gpuMetricsLoadSeqRef.current) {
         setGpuMetrics(next)
         setGpuMetricsError('')
       }
     } catch (err) {
-      const message = errorMessage(err, 'GPU readiness preview is unavailable.')
-      if (loadSeq === gpuMetricsLoadSeqRef.current) {
-        setGpuMetricsError(message)
-      }
+      if (loadSeq !== gpuMetricsLoadSeqRef.current || (controller.signal.aborted && !timedOut)) return
+      const message = timedOut
+        ? 'GPU preview timed out. Check the connection and retry.'
+        : errorMessage(err, 'GPU readiness preview is unavailable.')
+      setGpuMetricsError(message)
       if (showFeedback) {
         notify({ tone: 'error', title: 'Could not refresh GPU preview', detail: message })
       }
     } finally {
+      window.clearTimeout(timeoutId)
+      if (gpuMetricsControllerRef.current === controller) gpuMetricsControllerRef.current = null
       if (loadSeq === gpuMetricsLoadSeqRef.current) {
         setGpuMetricsLoading(false)
       }
@@ -568,6 +582,11 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       return
     }
     void loadGpuMetrics()
+    return () => {
+      gpuMetricsLoadSeqRef.current += 1
+      gpuMetricsControllerRef.current?.abort()
+      gpuMetricsControllerRef.current = null
+    }
   }, [activePage, open])
 
   useEffect(() => {
@@ -1219,17 +1238,21 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               </label>
             </div>
 
-            <div className="overflow-hidden rounded-md border border-border-subtle">
-              {gpuMetricsError && !gpuMetrics ? (
-                <div className="flex items-center justify-between gap-3 px-3 py-3 text-xs text-txt-secondary">
-                  <span>GPU preview unavailable. Saved rules will still apply.</span>
-                  <button type="button" onClick={() => void loadGpuMetrics(true)} className="touch-target font-medium text-accent hover:text-accent-hover">Retry</button>
+            {gpuMetricsError && (
+              <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                <div className="min-w-0 break-words">
+                  <p>{gpuMetricsError}</p>
+                  <p className="mt-1">{gpuMetrics ? 'Showing the last available GPU values.' : 'GPU preview unavailable.'} Saved rules will still apply.</p>
                 </div>
-              ) : gpuMetricsLoading && !gpuMetrics ? (
+                <button type="button" onClick={() => void loadGpuMetrics(true)} disabled={gpuMetricsLoading} className="touch-target flex-none rounded-md px-2 py-1 font-medium text-accent hover:bg-surface-overlay disabled:opacity-50">Retry</button>
+              </div>
+            )}
+            <div className="overflow-hidden rounded-md border border-border-subtle" aria-busy={gpuMetricsLoading}>
+              {gpuMetricsLoading && !gpuMetrics ? (
                 <div className="flex items-center gap-2 px-3 py-3 text-xs text-txt-tertiary">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking GPUs…
                 </div>
-              ) : gpuPreviewRows.length === 0 ? (
+              ) : gpuMetricsError && !gpuMetrics ? null : gpuPreviewRows.length === 0 ? (
                 <div className="px-3 py-3 text-xs text-txt-tertiary">
                   {gpuSelectionMode === 'specified' ? 'No configured GPU indices were found.' : 'No NVIDIA GPUs detected.'}
                 </div>

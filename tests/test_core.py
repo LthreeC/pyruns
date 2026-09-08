@@ -944,12 +944,6 @@ def test_system_monitor_sample(mock_subprocess, mock_psutil):
     mock_mem = MagicMock()
     mock_mem.percent = 60.0
     mock_psutil.virtual_memory.return_value = mock_mem
-    mock_psutil.Process.side_effect = [
-        MagicMock(username=MagicMock(return_value="alice")),
-        MagicMock(username=MagicMock(return_value="bob")),
-        MagicMock(username=MagicMock(return_value="carol")),
-    ]
-    
     # Setup GPU + process mocks
     mock_subprocess.side_effect = [
         (
@@ -981,15 +975,17 @@ def test_system_monitor_sample(mock_subprocess, mock_psutil):
     assert gpus[0]["mem_used"] == 4000.0
     assert gpus[0]["mem_total"] == 8000.0
     assert [proc["pid"] for proc in gpus[0]["processes"]] == [1234, 9999]
-    assert [proc["user"] for proc in gpus[0]["processes"]] == ["alice", "bob"]
     
     assert gpus[1]["index"] == 1
     assert gpus[1]["name"] == "NVIDIA RTX 4080"
     assert gpus[1]["util"] == 90.0
     assert gpus[1]["processes"][0]["name"] == "train.py"
-    assert gpus[1]["processes"][0]["user"] == "carol"
-    
-    assert monitor._gpu_cache == gpus
+    mock_psutil.Process.assert_not_called()
+
+    assert monitor._gpu_cache == [
+        {key: value for key, value in gpu.items() if key != "processes"}
+        for gpu in gpus
+    ]
 
 
 @patch("pyruns.core.system_metrics.psutil")
@@ -1062,22 +1058,22 @@ def test_system_monitor_gpu_process_query_failure_still_returns_gpu_summary(mock
     assert gpus[0]["processes"] == []
 
 
-@patch("pyruns.core.system_metrics.psutil.Process")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
-def test_system_monitor_gpu_process_user_falls_back_to_unknown(mock_subprocess, mock_process):
+def test_system_monitor_gpu_process_summary_does_not_read_process_metadata(mock_subprocess):
     mock_subprocess.return_value = b"GPU-AAA, 1234, python.exe, 2048\n"
-    mock_process.side_effect = psutil.AccessDenied(pid=1234)
 
     monitor = SystemMonitor()
     processes = monitor._get_gpu_processes()
 
-    assert processes["GPU-AAA"][0]["user"] == "unknown"
+    assert processes["GPU-AAA"][0] == {
+        "pid": 1234,
+        "name": "python.exe",
+        "memory_mb": 2048.0,
+    }
 
 
-@patch("pyruns.core.system_metrics.psutil.Process")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
-def test_system_monitor_gpu_csv_parser_handles_quoted_names(mock_subprocess, mock_process):
-    mock_process.return_value.username.return_value = "alice"
+def test_system_monitor_gpu_csv_parser_handles_quoted_names(mock_subprocess):
     mock_subprocess.side_effect = [
         b'0, "NVIDIA, RTX 4090", GPU-AAA, 45.0, 4000.0, 8000.0\n',
         b'GPU-AAA, 1234, "python, train.py", 2048\n',

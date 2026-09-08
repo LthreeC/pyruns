@@ -2,6 +2,8 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 
@@ -26,20 +28,20 @@ def test_metrics_skip_gpu_process_query_until_details_are_requested(
         **hidden_subprocess_kwargs(),
     }
     assert metrics["gpus"][0]["processes"] == []
+    assert "temperature_c" not in metrics["gpus"][0]
+    fields = mock_check_output.call_args.args[0][1]
+    assert fields == f"--query-gpu={SystemMonitor._GPU_SUMMARY_FIELDS}"
     mock_psutil.Process.assert_not_called()
 
 
 @patch("pyruns.core.system_metrics.psutil")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
-def test_metrics_keep_unavailable_process_memory_unknown(
+def test_gpu_process_summary_keeps_unavailable_memory_unknown(
     mock_check_output,
     mock_psutil,
 ):
     mock_psutil.cpu_percent.return_value = 12.0
     mock_psutil.virtual_memory().percent = 34.0
-    mock_psutil.Process.return_value = MagicMock(
-        username=MagicMock(return_value="researcher")
-    )
     mock_check_output.side_effect = [
         b"0, NVIDIA RTX 5090, GPU-AAA, 5.0, 1024.0, 24576.0\n",
         b"GPU-AAA, 1234, python.exe, [N/A]\n",
@@ -49,17 +51,16 @@ def test_metrics_keep_unavailable_process_memory_unknown(
 
     process = metrics["gpus"][0]["processes"][0]
     assert process["memory_mb"] is None
-    assert process["user"] == "researcher"
+    assert process == {
+        "pid": 1234,
+        "name": "python.exe",
+        "memory_mb": None,
+    }
+    mock_psutil.Process.assert_not_called()
 
 
-@patch("pyruns.core.system_metrics.psutil")
-@patch("pyruns.core.system_metrics.subprocess.check_output")
-def test_metrics_expose_bounded_os_process_details_once_per_pid(
-    mock_check_output,
-    mock_psutil,
-):
-    mock_psutil.cpu_percent.return_value = 12.0
-    mock_psutil.virtual_memory().percent = 34.0
+@patch("pyruns.core.system_metrics.psutil.Process")
+def test_process_details_expose_bounded_os_metadata(mock_process):
     os_process = MagicMock()
     os_process.username.return_value = "researcher"
     os_process.name.return_value = "python"
@@ -72,36 +73,26 @@ def test_metrics_expose_bounded_os_process_details_once_per_pid(
     os_process.memory_percent.return_value = 6.25
     os_process.num_threads.return_value = 12
     os_process.ppid.return_value = 1000
-    mock_psutil.Process.return_value = os_process
-    mock_check_output.side_effect = [
-        (
-            b"0, NVIDIA RTX 5090, GPU-AAA, 75, 8192, 24576\n"
-            b"1, NVIDIA RTX 5090, GPU-BBB, 25, 4096, 24576\n"
-        ),
-        (
-            b"GPU-AAA, 1234, /usr/bin/python, 4096\n"
-            b"GPU-BBB, 1234, /usr/bin/python, 4096\n"
-        ),
-    ]
+    mock_process.return_value = os_process
 
-    gpus = SystemMonitor().sample(include_processes=True)["gpus"]
+    details = SystemMonitor.get_process_details(1234)
 
-    process = gpus[0]["processes"][0]
-    assert process["user"] == "researcher"
-    assert process["process_name"] == "python"
-    assert process["status"] == "sleeping"
-    assert process["executable"] == "/usr/bin/python"
-    assert "train.py" in process["command_line"]
-    assert "--epochs" in process["command_line"]
-    assert process["command_line_truncated"] is False
-    assert process["working_directory"] == "/workspace"
-    assert process["created_at"] == 1_725_000_000.0
-    assert process["host_memory_mb"] == 1536.0
-    assert process["host_memory_percent"] == 6.25
-    assert process["thread_count"] == 12
-    assert process["parent_pid"] == 1000
-    assert gpus[1]["processes"][0]["process_name"] == "python"
-    mock_psutil.Process.assert_called_once_with(1234)
+    assert details["pid"] == 1234
+    assert details["available"] is True
+    assert details["user"] == "researcher"
+    assert details["process_name"] == "python"
+    assert details["status"] == "sleeping"
+    assert details["executable"] == "/usr/bin/python"
+    assert "train.py" in details["command_line"]
+    assert "--epochs" in details["command_line"]
+    assert details["command_line_truncated"] is False
+    assert details["working_directory"] == "/workspace"
+    assert details["created_at"] == 1_725_000_000.0
+    assert details["host_memory_mb"] == 1536.0
+    assert details["host_memory_percent"] == 6.25
+    assert details["thread_count"] == 12
+    assert details["parent_pid"] == 1000
+    mock_process.assert_called_once_with(1234)
 
 
 @patch("pyruns.core.system_metrics.psutil.Process")
@@ -119,6 +110,22 @@ def test_process_details_bound_abnormally_long_command_lines(mock_process):
     assert details["command_line_truncated"] is True
 
 
+@patch("pyruns.core.system_metrics.psutil.Process")
+def test_process_details_report_when_process_has_exited(mock_process):
+    mock_process.side_effect = ProcessLookupError("process exited")
+
+    details = SystemMonitor.get_process_details(1234)
+
+    assert details["pid"] == 1234
+    assert details["available"] is False
+    assert details["command_line"] == ""
+
+
+def test_process_details_reject_invalid_pid():
+    with pytest.raises(ValueError, match="positive integer"):
+        SystemMonitor.get_process_details(0)
+
+
 @patch("pyruns.core.system_metrics.psutil")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
 def test_metrics_expose_detailed_gpu_device_fields(
@@ -133,7 +140,10 @@ def test_metrics_expose_detailed_gpu_device_fields(
         b"00000000:2B:00.0, 590.12\n"
     )
 
-    gpu = SystemMonitor().sample(include_processes=False)["gpus"][0]
+    gpu = SystemMonitor().sample(
+        include_processes=False,
+        detail=True,
+    )["gpus"][0]
 
     assert gpu == {
         "id": 0,
@@ -174,14 +184,56 @@ def test_metrics_fall_back_when_driver_rejects_detailed_query(
         b"0, NVIDIA RTX 4090, GPU-AAA, 45, 4000, 8000\n",
     ]
 
-    gpu = SystemMonitor().sample(include_processes=False)["gpus"][0]
+    monitor = SystemMonitor(gpu_ttl_sec=60)
+    gpu = monitor.sample(
+        include_processes=False,
+        detail=True,
+    )["gpus"][0]
+    cached_gpu = monitor.sample(
+        include_processes=False,
+        detail=True,
+    )["gpus"][0]
 
     assert gpu["name"] == "NVIDIA RTX 4090"
-    assert gpu["temperature_c"] is None
-    assert gpu["driver_version"] == ""
+    assert "temperature_c" not in gpu
+    assert "driver_version" not in gpu
+    assert cached_gpu == gpu
+    assert mock_check_output.call_count == 2
     assert mock_check_output.call_args_list[1].args[0][1] == (
         f"--query-gpu={SystemMonitor._GPU_SUMMARY_FIELDS}"
     )
+
+
+@patch("pyruns.core.system_metrics.psutil")
+@patch("pyruns.core.system_metrics.subprocess.check_output")
+def test_summary_and_detail_gpu_snapshots_use_separate_query_depth(
+    mock_check_output,
+    mock_psutil,
+):
+    mock_psutil.cpu_percent.return_value = 12.0
+    mock_psutil.virtual_memory().percent = 34.0
+    mock_check_output.side_effect = [
+        b"0, NVIDIA RTX 5090, GPU-AAA, 5, 1024, 24576\n",
+        (
+            b"0, NVIDIA RTX 5090, GPU-AAA, 5, 1024, 24576, 4, "
+            b"23552, 45, 20, 100, 575, P8, Default, 300, 405, "
+            b"00000000:2B:00.0, 590.12\n"
+        ),
+    ]
+    monitor = SystemMonitor(gpu_ttl_sec=60)
+
+    summary = monitor.sample(include_processes=False, detail=False)
+    detailed = monitor.sample(include_processes=False, detail=True)
+    cached_summary = monitor.sample(include_processes=False, detail=False)
+
+    assert "temperature_c" not in summary["gpus"][0]
+    assert detailed["gpus"][0]["temperature_c"] == 45.0
+    assert "temperature_c" not in cached_summary["gpus"][0]
+    assert [call.args[0][1] for call in mock_check_output.call_args_list] == [
+        f"--query-gpu={SystemMonitor._GPU_SUMMARY_FIELDS}",
+        f"--query-gpu={SystemMonitor._GPU_DETAIL_FIELDS}",
+    ]
+    mock_psutil.Process.assert_not_called()
 
 
 @patch("pyruns.core.system_metrics.time.monotonic")

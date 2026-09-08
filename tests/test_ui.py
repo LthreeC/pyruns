@@ -198,8 +198,9 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'const refreshDashboard = useCallback(() => {',
             'if (dashboardRefreshPromiseRef.current)',
             'const refreshPromise = Promise.allSettled([',
-            'api.getMetrics(false)',
-            'api.getMetrics(true, controller.signal)',
+            'api.getMetrics()',
+            '{ includeProcesses: true, detail: true }',
+            'api.getGpuProcessDetails(process.pid, controller.signal)',
             'GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000',
             'gpuDetailsAbortControllerRef.current?.abort()',
             'GPU process details timed out. Check the connection and retry.',
@@ -234,8 +235,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'max-h-[calc(100dvh-2rem)]',
             'flex-col overflow-hidden rounded-md',
             'min-h-0 flex-1 space-y-5 overflow-y-auto',
-            'overflow-x-auto rounded-md border border-border-subtle',
-            'min-w-[700px]',
             'role="dialog"',
             'aria-modal="true"',
             'aria-labelledby="gpu-detail-title"',
@@ -609,7 +608,7 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "ToastHost" in app
     assert "pointer-events-none fixed bottom-3 right-3" in toast_host
     assert "flex-col-reverse" in toast_host
-    assert "pointer-events-none flex w-[min(380px,calc(100vw-2rem))]" in toast_host
+    assert "expanded ? 'pointer-events-auto' : 'pointer-events-none'" in toast_host
     assert "pointer-events-auto inline-flex h-11 w-11" in toast_host
     assert "focus-visible:ring-2 focus-visible:ring-accent/35" in toast_host
     assert "text-emerald-700 dark:text-emerald-300" in toast_host
@@ -660,17 +659,28 @@ def test_react_gpu_process_dialog_shows_process_owner():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
-    assert "user: string" in types
-    assert "command_line?: string" in types
-    assert "host_memory_mb?: number | null" in types
-    assert "grid-cols-[80px_132px_minmax(0,1fr)_112px_72px_24px]" in dashboard
-    assert "<span>User</span>" in dashboard
-    assert "process.user || 'unknown'" in dashboard
-    assert "<span className=\"text-right\">Share</span>" in dashboard
+    process_summary = types[
+        types.index("export interface GPUProcessInfo"):
+        types.index("export interface GPUProcessDetails")
+    ]
+    process_details = types[
+        types.index("export interface GPUProcessDetails"):
+        types.index("export interface GPUMetric")
+    ]
+    assert "user:" not in process_summary
+    assert "command_line:" not in process_summary
+    assert "host_memory_mb:" not in process_summary
+    assert "user: string" in process_details
+    assert "command_line: string" in process_details
+    assert "host_memory_mb: number | null" in process_details
+    assert 'min-w-[700px]' not in dashboard
+    assert "processDetails?.user || '--'" in dashboard
     assert "process.memory_mb == null || gpu.mem_total <= 0" in dashboard
     assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
-    assert "<GpuProcessMetadata process={process} />" in dashboard
+    assert "<GpuProcessMetadata" in dashboard
+    assert "state={processDetailsState}" in dashboard
+    assert "Loading process details..." in dashboard
     assert "Copy command line for PID" in dashboard
 
 

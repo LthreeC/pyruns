@@ -31,11 +31,21 @@ class SystemMonitor:
         "clocks.current.graphics,clocks.current.memory,pci.bus_id,"
         "driver_version"
     )
+    _GPU_SUMMARY_KEYS = (
+        "id",
+        "index",
+        "name",
+        "uuid",
+        "util",
+        "mem_used",
+        "mem_total",
+    )
 
     def __init__(self, *, gpu_ttl_sec: float = 1.5) -> None:
         self._gpu_cache: List[Dict[str, Any]] = []
         self._gpu_cache_at: float = 0.0
         self._gpu_cache_valid: bool = False
+        self._gpu_cache_has_details: bool = False
         self._gpu_process_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._gpu_process_cache_at: float = 0.0
         self._gpu_process_cache_valid: bool = False
@@ -51,13 +61,22 @@ class SystemMonitor:
         self._gpu_disabled_at: float = 0.0
         self._gpu_retry_sec: float = 30.0
 
-    def sample(self, *, include_processes: bool = True) -> Dict[str, Any]:
+    def sample(
+        self,
+        *,
+        include_processes: bool = True,
+        detail: bool | None = None,
+    ) -> Dict[str, Any]:
         """Collect system metrics."""
 
+        include_detail = include_processes if detail is None else bool(detail)
         return {
             "cpu_percent": psutil.cpu_percent(),
             "mem_percent": psutil.virtual_memory().percent,
-            "gpus": self._get_gpu_metrics(include_processes=include_processes),
+            "gpus": self._get_gpu_metrics(
+                include_processes=include_processes,
+                detail=include_detail,
+            ),
         }
 
     @staticmethod
@@ -160,6 +179,7 @@ class SystemMonitor:
         """Return bounded, best-effort OS metadata for one GPU process."""
 
         details: Dict[str, Any] = {
+            "available": False,
             "user": "unknown",
             "process_name": "",
             "status": "",
@@ -177,6 +197,7 @@ class SystemMonitor:
             return details
         try:
             process = psutil.Process(pid)
+            details["available"] = True
             with process.oneshot():
                 username = cls._bounded_process_text(
                     cls._read_process_value(process, "username")
@@ -242,6 +263,14 @@ class SystemMonitor:
             pass
         return details
 
+    @classmethod
+    def get_process_details(cls, pid: int) -> Dict[str, Any]:
+        """Return detailed metadata for one process on explicit request."""
+
+        if isinstance(pid, bool) or pid <= 0:
+            raise ValueError("Process ID must be a positive integer.")
+        return {"pid": pid, **cls._process_details(pid)}
+
     @staticmethod
     def _parse_csv_rows(output: str) -> List[List[str]]:
         """Parse NVIDIA CSV without assuming names contain no commas."""
@@ -268,25 +297,32 @@ class SystemMonitor:
             **hidden_subprocess_kwargs(),
         ).decode("utf-8", errors="replace").strip()
 
-    def _query_gpu_snapshot(self) -> str:
-        """Query detailed GPU rows, falling back for older NVIDIA drivers."""
+    def _query_gpu_snapshot(self, *, detail: bool) -> tuple[str, bool]:
+        """Query GPU rows and report whether detailed fields were returned."""
 
-        fields = (
-            self._GPU_DETAIL_FIELDS
-            if self._gpu_detail_query_supported
-            else self._GPU_SUMMARY_FIELDS
-        )
+        if not detail or not self._gpu_detail_query_supported:
+            return (
+                self._query_nvidia_smi(
+                    self._GPU_SUMMARY_FIELDS,
+                    scope="gpu",
+                ),
+                False,
+            )
         try:
-            return self._query_nvidia_smi(fields, scope="gpu")
+            return (
+                self._query_nvidia_smi(
+                    self._GPU_DETAIL_FIELDS,
+                    scope="gpu",
+                ),
+                True,
+            )
         except subprocess.CalledProcessError:
-            if not self._gpu_detail_query_supported:
-                raise
             result = self._query_nvidia_smi(
                 self._GPU_SUMMARY_FIELDS,
                 scope="gpu",
             )
             self._gpu_detail_query_supported = False
-            return result
+            return result, False
 
     def _get_gpu_processes(self) -> Dict[str, List[Dict[str, Any]]]:
         """Return GPU processes keyed by GPU UUID."""
@@ -300,7 +336,6 @@ class SystemMonitor:
             return {}
 
         processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
-        details_by_pid: Dict[int, Dict[str, Any]] = {}
         for parts in self._parse_csv_rows(out):
             if len(parts) < 4:
                 continue
@@ -310,11 +345,8 @@ class SystemMonitor:
                 continue
 
             pid = self._coerce_int(pid_raw, default=-1)
-            if pid not in details_by_pid:
-                details_by_pid[pid] = self._process_details(pid)
             process_info = {
                 "pid": pid,
-                **details_by_pid[pid],
                 "name": process_name or "unknown",
                 "memory_mb": self._coerce_optional_float(memory_raw),
             }
@@ -337,6 +369,7 @@ class SystemMonitor:
         *,
         now: float,
         include_processes: bool,
+        refresh_processes: bool = True,
     ) -> List[Dict[str, Any]]:
         """Attach optional, separately cached process data to GPU rows."""
 
@@ -345,11 +378,14 @@ class SystemMonitor:
             cache_expired = (
                 now - self._gpu_process_cache_at >= self._gpu_ttl_sec
             )
-            if not self._gpu_process_cache_valid or cache_expired:
+            if refresh_processes and (
+                not self._gpu_process_cache_valid or cache_expired
+            ):
                 self._gpu_process_cache = self._get_gpu_processes()
                 self._gpu_process_cache_at = now
                 self._gpu_process_cache_valid = True
-            processes_by_uuid = self._gpu_process_cache
+            if self._gpu_process_cache_valid:
+                processes_by_uuid = self._gpu_process_cache
 
         result = [
             {
@@ -360,21 +396,26 @@ class SystemMonitor:
             }
             for gpu in gpus
         ]
-        if include_processes:
-            # Preserve the legacy observable cache shape for callers that ask
-            # for details, while include_processes=False still strips them.
-            self._gpu_cache = result
         return result
 
     @staticmethod
     def _copy_cached_gpu_rows(
         gpus: List[Dict[str, Any]],
+        *,
+        detail: bool = True,
     ) -> List[Dict[str, Any]]:
         """Return well-formed cached rows without another GPU query."""
 
         return [
             {
-                **gpu,
+                **(
+                    gpu
+                    if detail
+                    else {
+                        key: gpu.get(key)
+                        for key in SystemMonitor._GPU_SUMMARY_KEYS
+                    }
+                ),
                 "processes": list(gpu.get("processes") or []),
             }
             for gpu in gpus
@@ -384,32 +425,51 @@ class SystemMonitor:
         self,
         *,
         include_processes: bool = True,
+        detail: bool | None = None,
     ) -> List[Dict[str, Any]]:
         """Return cached GPU metrics and load process details on demand."""
 
+        include_detail = include_processes if detail is None else bool(detail)
         now = time.monotonic()
         cache_fresh = now - self._gpu_cache_at < self._gpu_ttl_sec
-        if self._gpu_cache_valid and cache_fresh:
-            return self._attach_gpu_processes(
+        cache_satisfies_request = (
+            not include_detail
+            or self._gpu_cache_has_details
+            or not self._gpu_detail_query_supported
+        )
+        if (
+            self._gpu_cache_valid
+            and cache_fresh
+            and cache_satisfies_request
+        ):
+            cached_gpus = self._copy_cached_gpu_rows(
                 self._gpu_cache,
+                detail=include_detail,
+            )
+            return self._attach_gpu_processes(
+                cached_gpus,
                 now=now,
                 include_processes=include_processes,
             )
 
         if not self._gpu_available:
             if now - self._gpu_disabled_at < self._gpu_retry_sec:
-                if include_processes:
-                    return self._copy_cached_gpu_rows(self._gpu_cache)
                 return self._attach_gpu_processes(
-                    self._gpu_cache,
+                    self._copy_cached_gpu_rows(
+                        self._gpu_cache,
+                        detail=include_detail,
+                    ),
                     now=now,
                     include_processes=include_processes,
+                    refresh_processes=False,
                 )
             self._gpu_available = True
             self._gpu_fail_count = 0
 
         try:
-            out = self._query_gpu_snapshot()
+            out, has_details = self._query_gpu_snapshot(
+                detail=include_detail,
+            )
             gpus: List[Dict[str, Any]] = []
             for parts in self._parse_csv_rows(out):
                 if len(parts) < 6:
@@ -426,48 +486,54 @@ class SystemMonitor:
                     "util": self._coerce_float(parts[3], default=0.0),
                     "mem_used": self._coerce_float(parts[4], default=0.0),
                     "mem_total": self._coerce_float(parts[5], default=0.0),
-                    "mem_util": self._coerce_optional_float(
-                        parts[6] if len(parts) > 6 else ""
-                    ),
-                    "mem_free": self._coerce_optional_float(
-                        parts[7] if len(parts) > 7 else ""
-                    ),
-                    "temperature_c": self._coerce_optional_float(
-                        parts[8] if len(parts) > 8 else ""
-                    ),
-                    "fan_speed_pct": self._coerce_optional_float(
-                        parts[9] if len(parts) > 9 else ""
-                    ),
-                    "power_draw_w": self._coerce_optional_float(
-                        parts[10] if len(parts) > 10 else ""
-                    ),
-                    "power_limit_w": self._coerce_optional_float(
-                        parts[11] if len(parts) > 11 else ""
-                    ),
-                    "performance_state": self._coerce_optional_text(
-                        parts[12] if len(parts) > 12 else ""
-                    ),
-                    "compute_mode": self._coerce_optional_text(
-                        parts[13] if len(parts) > 13 else ""
-                    ),
-                    "graphics_clock_mhz": self._coerce_optional_float(
-                        parts[14] if len(parts) > 14 else ""
-                    ),
-                    "memory_clock_mhz": self._coerce_optional_float(
-                        parts[15] if len(parts) > 15 else ""
-                    ),
-                    "pci_bus_id": self._coerce_optional_text(
-                        parts[16] if len(parts) > 16 else ""
-                    ),
-                    "driver_version": self._coerce_optional_text(
-                        parts[17] if len(parts) > 17 else ""
-                    ),
                 }
+                if has_details:
+                    gpu_info.update(
+                        {
+                            "mem_util": self._coerce_optional_float(
+                                parts[6] if len(parts) > 6 else ""
+                            ),
+                            "mem_free": self._coerce_optional_float(
+                                parts[7] if len(parts) > 7 else ""
+                            ),
+                            "temperature_c": self._coerce_optional_float(
+                                parts[8] if len(parts) > 8 else ""
+                            ),
+                            "fan_speed_pct": self._coerce_optional_float(
+                                parts[9] if len(parts) > 9 else ""
+                            ),
+                            "power_draw_w": self._coerce_optional_float(
+                                parts[10] if len(parts) > 10 else ""
+                            ),
+                            "power_limit_w": self._coerce_optional_float(
+                                parts[11] if len(parts) > 11 else ""
+                            ),
+                            "performance_state": self._coerce_optional_text(
+                                parts[12] if len(parts) > 12 else ""
+                            ),
+                            "compute_mode": self._coerce_optional_text(
+                                parts[13] if len(parts) > 13 else ""
+                            ),
+                            "graphics_clock_mhz": self._coerce_optional_float(
+                                parts[14] if len(parts) > 14 else ""
+                            ),
+                            "memory_clock_mhz": self._coerce_optional_float(
+                                parts[15] if len(parts) > 15 else ""
+                            ),
+                            "pci_bus_id": self._coerce_optional_text(
+                                parts[16] if len(parts) > 16 else ""
+                            ),
+                            "driver_version": self._coerce_optional_text(
+                                parts[17] if len(parts) > 17 else ""
+                            ),
+                        }
+                    )
                 gpus.append(gpu_info)
 
             self._gpu_cache = gpus
             self._gpu_cache_at = now
             self._gpu_cache_valid = True
+            self._gpu_cache_has_details = has_details
             self._gpu_fail_count = 0
             self._gpu_disabled_at = 0.0
             return self._attach_gpu_processes(
@@ -480,10 +546,12 @@ class SystemMonitor:
             if self._gpu_fail_count >= self._gpu_max_fails:
                 self._gpu_available = False
                 self._gpu_disabled_at = now
-            if include_processes:
-                return self._copy_cached_gpu_rows(self._gpu_cache)
             return self._attach_gpu_processes(
-                self._gpu_cache,
+                self._copy_cached_gpu_rows(
+                    self._gpu_cache,
+                    detail=include_detail,
+                ),
                 now=now,
                 include_processes=include_processes,
+                refresh_processes=False,
             )

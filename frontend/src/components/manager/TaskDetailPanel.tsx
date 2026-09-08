@@ -803,7 +803,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 }}
                 placeholder="Add notes..."
                 aria-label="Task notes"
-                className="min-h-[220px] flex-1 resize-none rounded-lg border border-border-subtle bg-surface-overlay p-3 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
+                className="min-h-[220px] flex-1 resize-none rounded-md border border-border-subtle bg-surface-overlay p-3 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
               />
               {notesFeedback && (
                 <div

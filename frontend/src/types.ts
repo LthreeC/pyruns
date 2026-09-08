@@ -293,20 +293,25 @@ export interface TaskEventMessage {
 
 export interface GPUProcessInfo {
   pid: number
-  user: string
   name: string
   memory_mb: number | null
-  process_name?: string
-  status?: string
-  executable?: string
-  command_line?: string
-  command_line_truncated?: boolean
-  working_directory?: string
-  created_at?: number | null
-  host_memory_mb?: number | null
-  host_memory_percent?: number | null
-  thread_count?: number | null
-  parent_pid?: number | null
+}
+
+export interface GPUProcessDetails {
+  pid: number
+  available: boolean
+  user: string
+  process_name: string
+  status: string
+  executable: string
+  command_line: string
+  command_line_truncated: boolean
+  working_directory: string
+  created_at: number | null
+  host_memory_mb: number | null
+  host_memory_percent: number | null
+  thread_count: number | null
+  parent_pid: number | null
 }
 
 export interface GPUMetric {

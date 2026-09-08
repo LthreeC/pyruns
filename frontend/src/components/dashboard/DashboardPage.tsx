@@ -27,7 +27,7 @@ import CopyButton from '@/components/shared/CopyButton'
 import { formatElapsedDuration } from '@/utils/taskRuntime'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import { errorMessage } from '@/utils/errors'
-import type { GPUMetric, GPUProcessInfo, Task, SystemMetrics } from '@/types'
+import type { GPUMetric, GPUProcessDetails, GPUProcessInfo, Task, SystemMetrics } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
 
@@ -39,10 +39,17 @@ const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string
 ]
 
 const GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000
+const PROCESS_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 
 interface DashboardRefreshResult {
   dashboardOk: boolean
   metricsOk: boolean
+}
+
+interface ProcessDetailLoadState {
+  loading: boolean
+  data: GPUProcessDetails | null
+  error: string
 }
 
 export default function DashboardPage() {
@@ -72,7 +79,7 @@ export default function DashboardPage() {
     const requestId = ++metricsRefreshSeqRef.current
     const refreshPromise = Promise.allSettled([
       fetch(),
-      api.getMetrics(false),
+      api.getMetrics(),
     ]).then(([dashboardResult, metricsResult]) => {
       if (requestId === metricsRefreshSeqRef.current) {
         if (metricsResult.status === 'fulfilled') {
@@ -116,7 +123,10 @@ export default function DashboardPage() {
     setGpuDetailsLoading(true)
     setGpuDetailsError('')
     try {
-      const details = await api.getMetrics(true, controller.signal)
+      const details = await api.getMetrics(
+        { includeProcesses: true, detail: true },
+        controller.signal,
+      )
       const matchingGpu = details.gpus.find(item => gpuKey(item) === gpuKey(gpu))
       if (!matchingGpu) {
         throw new Error('This GPU is no longer available.')
@@ -622,11 +632,110 @@ function GpuProcessDialog({
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const [expandedProcessKey, setExpandedProcessKey] = useState<string | null>(null)
+  const [processDetailsByKey, setProcessDetailsByKey] = useState<Record<string, ProcessDetailLoadState>>({})
+  const processDetailsControllersRef = useRef<Map<string, AbortController>>(new Map())
   const selectedGpuKey = gpu ? gpuKey(gpu) : ''
 
   useEffect(() => {
+    for (const controller of processDetailsControllersRef.current.values()) {
+      controller.abort()
+    }
+    processDetailsControllersRef.current.clear()
     setExpandedProcessKey(null)
-  }, [selectedGpuKey])
+    setProcessDetailsByKey({})
+  }, [gpu, loading])
+
+  useEffect(() => () => {
+    for (const controller of processDetailsControllersRef.current.values()) {
+      controller.abort()
+    }
+    processDetailsControllersRef.current.clear()
+  }, [])
+
+  const loadProcessDetails = useCallback(async (process: GPUProcessInfo, rowKey: string) => {
+    if (processDetailsControllersRef.current.has(rowKey)) {
+      return
+    }
+    const controller = new AbortController()
+    processDetailsControllersRef.current.set(rowKey, controller)
+    let timedOut = false
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, PROCESS_DETAILS_REQUEST_TIMEOUT_MS)
+    setProcessDetailsByKey(current => ({
+      ...current,
+      [rowKey]: { loading: true, data: null, error: '' },
+    }))
+    try {
+      const details = await api.getGpuProcessDetails(process.pid, controller.signal)
+      if (processDetailsControllersRef.current.get(rowKey) !== controller) {
+        return
+      }
+      setProcessDetailsByKey(current => ({
+        ...current,
+        [rowKey]: { loading: false, data: details, error: '' },
+      }))
+    } catch (err) {
+      if (
+        processDetailsControllersRef.current.get(rowKey) !== controller
+        || (controller.signal.aborted && !timedOut)
+      ) {
+        return
+      }
+      setProcessDetailsByKey(current => ({
+        ...current,
+        [rowKey]: {
+          loading: false,
+          data: null,
+          error: timedOut
+            ? 'Process details timed out. Check the connection and retry.'
+            : errorMessage(err, 'Process details are unavailable.'),
+        },
+      }))
+    } finally {
+      window.clearTimeout(timeoutId)
+      if (processDetailsControllersRef.current.get(rowKey) === controller) {
+        processDetailsControllersRef.current.delete(rowKey)
+      }
+    }
+  }, [])
+
+  const toggleProcessDetails = useCallback((process: GPUProcessInfo, rowKey: string) => {
+    if (loading) return
+    if (expandedProcessKey === rowKey) {
+      setExpandedProcessKey(null)
+      const controller = processDetailsControllersRef.current.get(rowKey)
+      if (controller) {
+        controller.abort()
+        processDetailsControllersRef.current.delete(rowKey)
+        setProcessDetailsByKey(current => {
+          const next = { ...current }
+          delete next[rowKey]
+          return next
+        })
+      }
+      return
+    }
+
+    if (expandedProcessKey) {
+      const previousController = processDetailsControllersRef.current.get(expandedProcessKey)
+      if (previousController) {
+        previousController.abort()
+        processDetailsControllersRef.current.delete(expandedProcessKey)
+        setProcessDetailsByKey(current => {
+          const next = { ...current }
+          delete next[expandedProcessKey]
+          return next
+        })
+      }
+    }
+    setExpandedProcessKey(rowKey)
+    const state = processDetailsByKey[rowKey]
+    if (!state?.data && !state?.loading) {
+      void loadProcessDetails(process, rowKey)
+    }
+  }, [expandedProcessKey, loadProcessDetails, loading, processDetailsByKey])
 
   useEffect(() => {
     if (!gpu) {
@@ -634,7 +743,9 @@ function GpuProcessDialog({
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return
       if (event.key === 'Escape') {
+        event.preventDefault()
         onClose()
         return
       }
@@ -650,10 +761,11 @@ function GpuProcessDialog({
       }
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
+      const outsideDialog = !dialogRef.current.contains(document.activeElement)
+      if (event.shiftKey && (document.activeElement === first || outsideDialog)) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && (document.activeElement === last || outsideDialog)) {
         event.preventDefault()
         first.focus()
       }
@@ -665,7 +777,7 @@ function GpuProcessDialog({
       window.clearTimeout(focusTimer)
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [gpu, onClose])
+  }, [selectedGpuKey, onClose])
 
   if (!gpu) {
     return null
@@ -808,43 +920,52 @@ function GpuProcessDialog({
               No GPU processes are currently reported by NVIDIA for this GPU.
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-md border border-border-subtle">
-              <div className="min-w-[700px]">
-                <div className="grid grid-cols-[80px_132px_minmax(0,1fr)_112px_72px_24px] gap-3 border-b border-border-subtle bg-surface-overlay/70 px-4 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary">
+            <div className="overflow-hidden rounded-md border border-border-subtle">
+              <div>
+                <div className="grid grid-cols-[56px_minmax(0,1fr)_64px_16px] gap-2 border-b border-border-subtle bg-surface-overlay/70 px-3 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary sm:grid-cols-[72px_96px_minmax(0,1fr)_80px_48px_16px] sm:gap-3 sm:px-4">
                   <span>PID</span>
-                  <span>User</span>
+                  <span className="hidden sm:block">User</span>
                   <span>Process</span>
                   <span className="text-right">VRAM</span>
-                  <span className="text-right">Share</span>
+                  <span className="hidden text-right sm:block">Share</span>
                   <span aria-hidden="true" />
                 </div>
                 {sortedProcesses.map(process => {
                   const rowKey = gpuProcessKey(process)
                   const expanded = expandedProcessKey === rowKey
-                  const displayName = process.process_name?.trim() || process.name
+                  const processDetailsState = processDetailsByKey[rowKey]
+                  const processDetails = processDetailsState?.data
+                  const displayName = processDetails?.process_name?.trim() || process.name
                   return (
                     <div key={rowKey} className="border-b border-border-subtle/80 last:border-b-0">
                       <button
                         type="button"
+                        disabled={loading}
                         aria-expanded={expanded}
                         aria-label={`${expanded ? 'Hide' : 'View'} details for process ${process.pid} ${displayName}`}
-                        onClick={() => setExpandedProcessKey(expanded ? null : rowKey)}
-                        className="grid min-h-11 w-full grid-cols-[80px_132px_minmax(0,1fr)_112px_72px_24px] items-center gap-3 px-4 py-3 text-left text-sm transition-colors hover:bg-surface-overlay/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+                        onClick={() => toggleProcessDetails(process, rowKey)}
+                        className="grid min-h-11 w-full grid-cols-[56px_minmax(0,1fr)_64px_16px] items-center gap-x-2 gap-y-0.5 px-3 py-3 text-left text-xs transition-colors hover:bg-surface-overlay/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50 sm:grid-cols-[72px_96px_minmax(0,1fr)_80px_48px_16px] sm:gap-3 sm:px-4 sm:text-sm"
                       >
-                        <span className="font-mono text-txt-secondary">{process.pid >= 0 ? process.pid : '--'}</span>
-                        <span className="truncate font-mono text-xs text-txt-secondary" title={process.user || 'unknown'}>
-                          {process.user || 'unknown'}
+                        <span className="row-span-2 truncate font-mono text-txt-secondary sm:row-span-1" title={String(process.pid)}>{process.pid >= 0 ? process.pid : '--'}</span>
+                        <span className="col-start-2 row-start-2 truncate font-mono text-xs text-txt-secondary sm:col-auto sm:row-auto" title={processDetails?.user || 'Load details to view'}>
+                          {processDetails?.user || '--'}
                         </span>
-                        <span className="truncate text-txt-primary" title={process.name}>{displayName}</span>
-                        <span className="text-right font-mono text-txt-secondary">{formatMemory(process.memory_mb)}</span>
-                        <span className="text-right font-mono text-txt-tertiary">
+                        <span className="col-start-2 row-start-1 truncate text-txt-primary sm:col-auto sm:row-auto" title={process.name}>{displayName}</span>
+                        <span className="row-span-2 text-right font-mono text-txt-secondary sm:row-span-1">{formatMemory(process.memory_mb)}</span>
+                        <span className="hidden text-right font-mono text-txt-tertiary sm:block">
                           {process.memory_mb == null || gpu.mem_total <= 0
                             ? '--'
                             : formatPercent((process.memory_mb / gpu.mem_total) * 100)}
                         </span>
-                        <ChevronDown className={clsx('h-4 w-4 text-txt-tertiary transition-transform', expanded && 'rotate-180')} />
+                        <ChevronDown className={clsx('row-span-2 h-4 w-4 text-txt-tertiary transition-transform sm:row-span-1', expanded && 'rotate-180')} />
                       </button>
-                      {expanded && <GpuProcessMetadata process={process} />}
+                      {expanded && (
+                        <GpuProcessMetadata
+                          process={process}
+                          state={processDetailsState}
+                          onRetry={() => void loadProcessDetails(process, rowKey)}
+                        />
+                      )}
                     </div>
                   )
                 })}
@@ -887,34 +1008,62 @@ function DetailMetric({
   )
 }
 
-function GpuProcessMetadata({ process }: { process: GPUProcessInfo }) {
-  const startedAt = formatProcessStartedAt(process.created_at)
-  const runtime = formatProcessRuntime(process.created_at)
-  const hostMemory = process.host_memory_mb == null
+function GpuProcessMetadata({
+  process,
+  state,
+  onRetry,
+}: {
+  process: GPUProcessInfo
+  state?: ProcessDetailLoadState
+  onRetry: () => void
+}) {
+  if (!state || state.loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 border-t border-border-subtle/80 bg-surface-overlay/30 px-4 py-6 text-xs text-txt-tertiary" aria-live="polite">
+        <RefreshCw className="h-3.5 w-3.5 motion-safe:animate-spin" /> Loading process details...
+      </div>
+    )
+  }
+
+  if (state.error || !state.data?.available) {
+    return (
+      <div role="alert" className="flex items-center justify-between gap-3 border-t border-border-subtle/80 bg-surface-overlay/30 px-4 py-4 text-xs text-txt-secondary">
+        <span>{state.error || 'This process is no longer available on the host.'}</span>
+        <button type="button" onClick={onRetry} className="touch-target inline-flex min-h-11 flex-none items-center rounded-md px-2 font-medium text-accent hover:text-accent-hover sm:min-h-0">
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  const details = state.data
+  const startedAt = formatProcessStartedAt(details.created_at)
+  const runtime = formatProcessRuntime(details.created_at)
+  const hostMemory = details.host_memory_mb == null
     ? 'Not available'
-    : `${formatMemory(process.host_memory_mb)}${
-      process.host_memory_percent == null
+    : `${formatMemory(details.host_memory_mb)}${
+      details.host_memory_percent == null
         ? ''
-        : ` (${formatOptionalMetric(process.host_memory_percent, '%')} RAM)`
+        : ` (${formatOptionalMetric(details.host_memory_percent, '%')} RAM)`
     }`
 
   return (
     <div className="border-t border-border-subtle/80 bg-surface-overlay/30 px-4 py-3">
       <dl className="grid grid-cols-2 gap-x-5 gap-y-3 lg:grid-cols-6">
-        <ProcessDetail label="Status" value={formatProcessStatus(process.status)} />
+        <ProcessDetail label="Status" value={formatProcessStatus(details.status)} />
         <ProcessDetail label="Host RAM" value={hostMemory} mono />
         <ProcessDetail label="Started" value={startedAt} />
         <ProcessDetail label="Runtime" value={runtime} mono />
-        <ProcessDetail label="Parent PID" value={formatOptionalInteger(process.parent_pid)} mono />
-        <ProcessDetail label="Threads" value={formatOptionalInteger(process.thread_count)} mono />
+        <ProcessDetail label="Parent PID" value={formatOptionalInteger(details.parent_pid)} mono />
+        <ProcessDetail label="Threads" value={formatOptionalInteger(details.thread_count)} mono />
       </dl>
       <div className="mt-3 grid gap-3 border-t border-border-subtle/80 pt-3 lg:grid-cols-2">
-        <ProcessTextDetail label="Executable" value={process.executable} copyLabel={`Copy executable path for PID ${process.pid}`} />
-        <ProcessTextDetail label="Working directory" value={process.working_directory} copyLabel={`Copy working directory for PID ${process.pid}`} />
+        <ProcessTextDetail label="Executable" value={details.executable} copyLabel={`Copy executable path for PID ${process.pid}`} />
+        <ProcessTextDetail label="Working directory" value={details.working_directory} copyLabel={`Copy working directory for PID ${process.pid}`} />
         <ProcessTextDetail label="GPU-reported process" value={process.name} copyLabel={`Copy GPU process path for PID ${process.pid}`} />
         <ProcessTextDetail
-          label={process.command_line_truncated ? 'Command line (truncated)' : 'Command line'}
-          value={process.command_line}
+          label={details.command_line_truncated ? 'Command line (truncated)' : 'Command line'}
+          value={details.command_line}
           copyLabel={`Copy command line for PID ${process.pid}`}
           wide
         />

@@ -2353,7 +2353,10 @@ def cmd_config(context: Any, args: Any, workspace: str) -> int:
 
 
 def cmd_metrics(context: Any) -> int:
-    metrics = SystemMonitor().sample()
+    metrics = SystemMonitor().sample(
+        include_processes=False,
+        detail=False,
+    )
     memory = psutil.virtual_memory()
     payload = {
         "cpu_percent": float(metrics.get("cpu_percent", 0) or 0),

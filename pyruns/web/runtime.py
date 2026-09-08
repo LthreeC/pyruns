@@ -1625,12 +1625,22 @@ class PyrunsRuntime:
             "tail_limit_bytes": tail_limit_bytes,
         }
 
-    def get_metrics(self, *, include_processes: bool = False) -> Dict[str, Any]:
-        """Return metrics, optionally including the more expensive GPU process list."""
-        try:
-            return self.metrics_sampler.sample(include_processes=include_processes)
-        except TypeError:
-            return self.metrics_sampler.sample()
+    def get_metrics(
+        self,
+        *,
+        include_processes: bool = False,
+        detail: bool = False,
+    ) -> Dict[str, Any]:
+        """Return summary metrics with optional GPU and process details."""
+        return self.metrics_sampler.sample(
+            include_processes=include_processes,
+            detail=detail,
+        )
+
+    def get_process_details(self, pid: int) -> Dict[str, Any]:
+        """Return OS metadata for one explicitly selected process."""
+
+        return self.metrics_sampler.get_process_details(pid)
 
     @_with_stable_workspace
     def open_shell_workspace(self) -> Dict[str, Any]:

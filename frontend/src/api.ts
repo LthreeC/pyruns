@@ -9,6 +9,7 @@ import type {
   TemplateContent,
   WorkspaceInfo,
   SystemMetrics,
+  GPUProcessDetails,
   ScriptCandidate,
   ConfigCandidate,
   LauncherConfigsResponse,
@@ -281,8 +282,16 @@ export function createLogStream(taskName: string, options: {
   return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream${query ? `?${query}` : ''}`)
 }
 
-export const getMetrics = (includeProcesses = false, signal?: AbortSignal) => request<SystemMetrics>(
-  `/api/system/metrics?include_processes=${includeProcesses ? 'true' : 'false'}`,
+export const getMetrics = (
+  options: { includeProcesses?: boolean; detail?: boolean } = {},
+  signal?: AbortSignal,
+) => request<SystemMetrics>(
+  `/api/system/metrics?include_processes=${options.includeProcesses ? 'true' : 'false'}&detail=${options.detail ? 'true' : 'false'}`,
+  { signal },
+)
+
+export const getGpuProcessDetails = (pid: number, signal?: AbortSignal) => request<GPUProcessDetails>(
+  `/api/system/processes/${encodeURIComponent(String(pid))}`,
   { signal },
 )
 
