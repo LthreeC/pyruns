@@ -801,19 +801,19 @@ interface DashboardState {
   data: Dashboard | null
   loading: boolean
   error: string | null
-  fetch: () => Promise<void>
+  fetch: (signal?: AbortSignal) => Promise<void>
 }
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   data: null,
   loading: false,
   error: null,
-  async fetch() {
+  async fetch(signal) {
     const requestId = ++dashboardRequestSeq
     const workspaceKey = currentWorkspaceKey()
     set({ loading: true, error: null })
     try {
-      const d = await api.getDashboard()
+      const d = await api.getDashboard(true, 6, signal)
       if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ data: d, error: null })
       }

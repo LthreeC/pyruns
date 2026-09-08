@@ -75,6 +75,7 @@ const MIN_MONITOR_SIDEBAR_WIDTH = 10
 const MAX_MONITOR_SIDEBAR_WIDTH = 35
 const MIN_MONITOR_SIDEBAR_WIDTH_PX = 240
 const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'
+const COMPACT_MONITOR_QUERY = '(max-width: 559px), (max-width: 700px) and (min-height: 500px)'
 const QUEUE_LOG_NAME = 'queue.log'
 const RUN_LOG_PATTERN = /^run\d+\.log$/
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
@@ -157,7 +158,11 @@ function readCompactMonitorLayout() {
   if (typeof window === 'undefined') {
     return false
   }
-  return window.matchMedia('(max-width: 700px)').matches
+  return window.matchMedia(COMPACT_MONITOR_QUERY).matches
+}
+
+function isMonitorPageHidden() {
+  return document.visibilityState === 'hidden'
 }
 
 export function appendedMonitorLogDelta(previous: string, next: string): string | null {
@@ -366,6 +371,10 @@ export default function MonitorPage() {
   const refreshMonitorSnapshotRef = useRef(refreshMonitorSnapshot)
   refreshMonitorSnapshotRef.current = refreshMonitorSnapshot
   const runTaskSnapshotRefresh = useCallback(async () => {
+    if (isMonitorPageHidden()) {
+      taskRefreshQueuedRef.current = true
+      return
+    }
     if (taskRefreshInFlightRef.current) {
       taskRefreshQueuedRef.current = true
       return
@@ -380,12 +389,16 @@ export default function MonitorPage() {
         } catch {
           // The store exposes the degraded state; the fallback poll will retry.
         }
-      } while (taskRefreshQueuedRef.current)
+      } while (taskRefreshQueuedRef.current && !isMonitorPageHidden())
     } finally {
       taskRefreshInFlightRef.current = false
     }
   }, [])
   const scheduleTaskSnapshotRefresh = useCallback(() => {
+    if (isMonitorPageHidden()) {
+      taskRefreshQueuedRef.current = true
+      return
+    }
     if (taskRefreshTimerRef.current !== null) {
       return
     }
@@ -402,7 +415,7 @@ export default function MonitorPage() {
     generationKey: workspaceKey,
   })
   usePolling(
-    refreshMonitorSnapshot,
+    runTaskSnapshotRefresh,
     taskEventStatus === 'live' ? TASK_EVENT_FALLBACK_POLL_MS : TASK_EVENT_DEGRADED_POLL_MS,
     Boolean(workspaceKey),
     false,
@@ -624,7 +637,7 @@ export default function MonitorPage() {
       return
     }
 
-    const query = window.matchMedia('(max-width: 700px)')
+    const query = window.matchMedia(COMPACT_MONITOR_QUERY)
     const handleChange = () => setCompactMonitorLayout(query.matches)
     handleChange()
     query.addEventListener('change', handleChange)

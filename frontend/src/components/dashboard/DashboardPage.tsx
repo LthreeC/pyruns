@@ -38,6 +38,7 @@ const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string
   { key: 'failed', label: 'Failed', icon: XCircle, color: 'text-rose-700 dark:text-rose-300' },
 ]
 
+const DASHBOARD_REQUEST_TIMEOUT_MS = 10_000
 const GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 const PROCESS_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 
@@ -67,6 +68,7 @@ export default function DashboardPage() {
   const gpuDetailsAbortControllerRef = useRef<AbortController | null>(null)
   const metricsRefreshSeqRef = useRef(0)
   const dashboardRefreshPromiseRef = useRef<Promise<DashboardRefreshResult> | null>(null)
+  const dashboardRefreshControllerRef = useRef<AbortController | null>(null)
   const [manualRefreshing, setManualRefreshing] = useState(false)
   const refreshIntervalRaw = Number(workspace?.settings?.header_refresh_interval ?? 3)
   const refreshIntervalSec = Number.isFinite(refreshIntervalRaw) ? Math.max(1, refreshIntervalRaw) : 3
@@ -77,9 +79,14 @@ export default function DashboardPage() {
     }
 
     const requestId = ++metricsRefreshSeqRef.current
+    const controller = new AbortController()
+    dashboardRefreshControllerRef.current = controller
+    const timeoutId = window.setTimeout(() => {
+      controller.abort(new DOMException('Dashboard refresh timed out. Check the connection and retry.', 'TimeoutError'))
+    }, DASHBOARD_REQUEST_TIMEOUT_MS)
     const refreshPromise = Promise.allSettled([
-      fetch(),
-      api.getMetrics(),
+      fetch(controller.signal),
+      api.getMetrics({}, controller.signal),
     ]).then(([dashboardResult, metricsResult]) => {
       if (requestId === metricsRefreshSeqRef.current) {
         if (metricsResult.status === 'fulfilled') {
@@ -96,6 +103,10 @@ export default function DashboardPage() {
       }
     })
     const trackedPromise: Promise<DashboardRefreshResult> = refreshPromise.finally(() => {
+      window.clearTimeout(timeoutId)
+      if (dashboardRefreshControllerRef.current === controller) {
+        dashboardRefreshControllerRef.current = null
+      }
       if (dashboardRefreshPromiseRef.current === trackedPromise) {
         dashboardRefreshPromiseRef.current = null
       }
@@ -174,7 +185,10 @@ export default function DashboardPage() {
   const handleManualRefresh = useCallback(async () => {
     setManualRefreshing(true)
     try {
-      const result = await refreshDashboard()
+      const pending = refreshDashboard()
+      const controller = dashboardRefreshControllerRef.current
+      const result = await pending
+      if (controller?.signal.aborted && controller.signal.reason?.name !== 'TimeoutError') return
       if (result.dashboardOk && result.metricsOk) {
         notify({
           tone: 'success',
@@ -201,15 +215,7 @@ export default function DashboardPage() {
 
   usePolling(async () => {
     await refreshDashboard()
-  }, refreshIntervalSec * 1000, true, true)
-
-  useEffect(() => () => {
-    gpuDetailsRequestSeqRef.current += 1
-    gpuDetailsAbortControllerRef.current?.abort()
-    gpuDetailsAbortControllerRef.current = null
-    metricsRefreshSeqRef.current += 1
-    dashboardRefreshPromiseRef.current = null
-  }, [])
+  }, refreshIntervalSec * 1000, true, false)
 
   useEffect(() => {
     metricsRefreshSeqRef.current += 1
@@ -222,7 +228,17 @@ export default function DashboardPage() {
     setActiveGpu(null)
     setGpuDetailsLoading(false)
     setGpuDetailsError('')
+    setManualRefreshing(false)
     void refreshDashboard()
+    return () => {
+      metricsRefreshSeqRef.current += 1
+      dashboardRefreshControllerRef.current?.abort()
+      dashboardRefreshControllerRef.current = null
+      dashboardRefreshPromiseRef.current = null
+      gpuDetailsRequestSeqRef.current += 1
+      gpuDetailsAbortControllerRef.current?.abort()
+      gpuDetailsAbortControllerRef.current = null
+    }
   }, [refreshDashboard, workspace?.run_root])
 
   const summary = data?.summary

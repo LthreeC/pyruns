@@ -5937,7 +5937,50 @@ def test_task_manager_api_snapshots_stay_consistent_during_locked_gpu_updates(tm
         assert snapshot["gpu_wait"]["generation"] == 0
 
     capture(lambda: manager.list_tasks(summary=True)[0])
+    capture(lambda: manager.get_task_summary_page()[0][0])
     capture(lambda: manager.get_task("snapshot-race"))
+
+
+@pytest.mark.parametrize("sort_mode", [
+    "priority", "manual", "activity_desc", "activity_asc", "name_asc", "name_desc",
+])
+def test_task_summary_page_preserves_filter_order_counts_and_detachment(tmp_path, sort_mode):
+    from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
+
+    manager = TaskManager(tasks_dir=str(tmp_path), lazy_scan=None, owns_task_lifecycle=False)
+    manager.tasks = [
+        {
+            "name": name, "status": status, "pinned": pinned, "task_order": order,
+            "created_at": "2026-09-08T00:00:00", "notes": "keep draft",
+            "search_text": "", "env": {"CUDA_VISIBLE_DEVICES": "0"},
+            "start_times": ["2026-09-07T00:00:00", f"2026-09-08T00:0{index}:00"],
+            "finish_times": (), "config": {"hidden_in_summary": True},
+        }
+        for index, (name, status, pinned, order) in enumerate([
+            ("task10", "pending", False, None), ("task2", "running", False, 2),
+            ("pinned", "completed", True, 0), ("failed", "failed", False, 1),
+            ("queued", "queued", True, None),
+        ])
+    ]
+    baseline = manager.list_tasks(summary=True)
+    for query, status, offset, limit in [
+        ("", "All", 1, 2), ("keep\ntask", "All", 0, 1),
+        ("", "running", 0, 0), ("hidden_in_summary", "All", 0, 5),
+        ("", "All", 99, 5), ("", "All", 0, 0),
+    ]:
+        expected = sort_tasks_for_manager(filter_tasks(baseline, query, status), sort_mode)
+        with patch.object(manager, "_snapshot_task_for_api", wraps=manager._snapshot_task_for_api) as copy_task:
+            items, total, counts = manager.get_task_summary_page(
+                query=query, status=status, offset=offset, limit=limit, sort_mode=sort_mode,
+            )
+        assert items == (expected[offset:offset + limit] if limit else expected[offset:])
+        assert total == len(expected)
+        assert counts == {"pending": 1, "queued": 1, "running": 1, "completed": 1, "failed": 1, "cancelled": 0}
+        assert copy_task.call_count == len(items)
+        if items:
+            items[0]["env"]["CUDA_VISIBLE_DEVICES"] = "changed"
+            items[0]["start_times"].clear()
+            assert all(task["env"]["CUDA_VISIBLE_DEVICES"] == "0" and task["start_times"] for task in manager.tasks)
 
 
 def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):

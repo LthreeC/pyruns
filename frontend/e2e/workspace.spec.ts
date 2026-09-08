@@ -599,7 +599,7 @@ test('long error notifications remain readable while focused', async ({ page }, 
   await expect(notification).toBeHidden()
 })
 
-test('monitor terminal search stays responsive with a large scrollback buffer', async ({ page }) => {
+test('monitor terminal search stays responsive with a large scrollback buffer', async ({ page }, testInfo) => {
   const lineCount = 12_050
   const logContent = Array.from(
     { length: lineCount },
@@ -673,6 +673,16 @@ test('monitor terminal search stays responsive with a large scrollback buffer', 
   await expect(searchForm.getByRole('status')).toHaveText('Match', { timeout: 3_000 })
   await page.keyboard.press('F3')
   await expect(searchForm.getByRole('status')).toHaveText('Match')
+  for (const size of [{ width: 375, height: 667 }, { width: 667, height: 375 }]) {
+    await page.setViewportSize(size)
+    await expect.poll(async () => (await terminal.boundingBox())?.height ?? 0).toBeGreaterThan(120)
+    const terminalBox = (await terminal.boundingBox())!
+    const searchBox = (await searchForm.boundingBox())!
+    expect(searchBox.y + searchBox.height).toBeLessThanOrEqual(terminalBox.y + terminalBox.height)
+    expect(searchBox.x + searchBox.width).toBeLessThanOrEqual(terminalBox.x + terminalBox.width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath(`monitor-search-${size.width}.png`) })
+  }
   await page.keyboard.press('Escape')
   await expect(search).toBeHidden()
   await expect(page.getByRole('textbox', { name: 'Read-only task log output' })).toBeFocused()

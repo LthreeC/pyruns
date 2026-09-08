@@ -154,8 +154,8 @@ export const previewTasks = (payload: {
   template_value?: string
 }) => request<GeneratorPreview>('/api/generator/preview', { method: 'POST', body: JSON.stringify(payload) })
 
-export const getDashboard = (refresh = true, recentLimit = 6) =>
-  request<Dashboard>(`/api/dashboard?refresh=${refresh}&recent_limit=${recentLimit}`)
+export const getDashboard = (refresh = true, recentLimit = 6, signal?: AbortSignal) =>
+  request<Dashboard>(`/api/dashboard?refresh=${refresh}&recent_limit=${recentLimit}`, { signal })
 
 export const getTasks = (params: {
   query?: string

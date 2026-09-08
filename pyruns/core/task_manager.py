@@ -57,6 +57,7 @@ from pyruns.utils.settings import load_settings
 from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
+from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
     build_task_search_result,
@@ -414,6 +415,65 @@ class TaskManager:
                 summary=False,
             )
         return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
+
+    def get_task_summary_page(
+        self,
+        *,
+        query: str = "",
+        status: str = "All",
+        offset: int = 0,
+        limit: int = 50,
+        sort_mode: str = "priority",
+    ) -> tuple[List[Dict[str, Any]], int, Dict[str, int]]:
+        """Select a page under the lock, copying payloads only for its tasks."""
+        safe_offset = max(0, int(offset))
+        safe_limit = max(0, int(limit))
+        with self._lock:
+            # Filtering and ordering only read these fields. Keep their source
+            # references inside the lock so the page and counts agree, without
+            # copying every task's environment and complete run history.
+            candidates = [
+                {
+                    "name": task.get("name", ""),
+                    "status": task.get("status", "pending"),
+                    "notes": task.get("notes", ""),
+                    "search_text": task.get("search_text", ""),
+                    **{
+                        key: task.get(key)
+                        for key in ("pinned", "task_order", "created_at")
+                    },
+                    **{
+                        key: list((task.get(key) or [])[-1:])
+                        for key in ("start_times", "finish_times")
+                    },
+                    "_task": task,
+                }
+                for task in self.tasks if task is not None
+            ]
+            status_counts = dict.fromkeys(
+                ("pending", "queued", "running", "completed", "failed", "cancelled"),
+                0,
+            )
+            for task in candidates:
+                task_status = str(task["status"] or "pending").lower()
+                status_counts[task_status] = status_counts.get(task_status, 0) + 1
+            ordered = sort_tasks_for_manager(
+                filter_tasks(candidates, query, status), sort_mode,
+            )
+            total = len(ordered)
+            selected = (
+                ordered[safe_offset:safe_offset + safe_limit]
+                if safe_limit else ordered[safe_offset:]
+            )
+            snapshots = [
+                self._snapshot_task_for_api(task["_task"], summary=True)
+                for task in selected
+            ]
+        return (
+            [self.serialize_task(snapshot, summary=True) for snapshot in snapshots],
+            total,
+            status_counts,
+        )
 
     def get_task_search_results(
         self,

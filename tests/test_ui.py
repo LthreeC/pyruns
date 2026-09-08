@@ -198,7 +198,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'const refreshDashboard = useCallback(() => {',
             'if (dashboardRefreshPromiseRef.current)',
             'const refreshPromise = Promise.allSettled([',
-            'api.getMetrics()',
+            'api.getMetrics({}, controller.signal)',
             '{ includeProcesses: true, detail: true }',
             'api.getGpuProcessDetails(process.pid, controller.signal)',
             'GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000',
@@ -340,7 +340,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
         pytest.param(FRONTEND_MONITOR, (
             'function readCompactMonitorLayout()',
             "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'",
-            "window.matchMedia('(max-width: 700px)')",
+            'window.matchMedia(COMPACT_MONITOR_QUERY)',
             "compactMonitorLayout ? 'flex-col' : 'flex-row'",
             "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'",
             '? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }',

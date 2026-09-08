@@ -1150,24 +1150,25 @@ class PyrunsRuntime:
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh)
-        all_tasks = self.task_manager.list_tasks(summary=summary)
-        status_counts = {
-            "pending": 0,
-            "queued": 0,
-            "running": 0,
-            "completed": 0,
-            "failed": 0,
-            "cancelled": 0,
-        }
-        for task in all_tasks:
-            task_status = str(task.get("status", "pending") or "pending").lower()
-            status_counts[task_status] = status_counts.get(task_status, 0) + 1
-        tasks = filter_tasks(all_tasks, query, status)
-        ordered = sort_tasks_for_manager(tasks, sort_mode)
-
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))
-        items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
+        if summary:
+            items, total, status_counts = self.task_manager.get_task_summary_page(
+                query=query, status=status, offset=safe_offset,
+                limit=safe_limit, sort_mode=sort_mode,
+            )
+        else:
+            all_tasks = self.task_manager.list_tasks()
+            status_counts = dict.fromkeys(
+                ("pending", "queued", "running", "completed", "failed", "cancelled"),
+                0,
+            )
+            for task in all_tasks:
+                task_status = str(task.get("status", "pending") or "pending").lower()
+                status_counts[task_status] = status_counts.get(task_status, 0) + 1
+            ordered = sort_tasks_for_manager(filter_tasks(all_tasks, query, status), sort_mode)
+            total = len(ordered)
+            items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
         if summary:
             if query.strip() and items:
                 results_by_name = self.task_manager.get_task_search_results(
@@ -1189,7 +1190,6 @@ class PyrunsRuntime:
                     )
                 items = enriched_items
             items = _cap_summary_task_payloads(items)
-        total = len(ordered)
         has_more = (safe_offset + len(items)) < total
         return TaskPage(
             items=items,
@@ -1205,20 +1205,13 @@ class PyrunsRuntime:
         """Return lightweight dashboard data for the Home page."""
 
         page = self.list_tasks(limit=max(1, recent_limit), refresh=refresh, summary=True)
-        all_tasks = self.task_manager.list_tasks(summary=True) if self._tasks_loaded else []
         summary = {
-            "total": len(all_tasks),
-            "running": 0,
-            "queued": 0,
-            "completed": 0,
-            "failed": 0,
-            "cancelled": 0,
-            "pending": 0,
+            "total": page.total,
+            **{
+                status: page.status_counts.get(status, 0)
+                for status in ("running", "queued", "completed", "failed", "cancelled", "pending")
+            },
         }
-        for task in all_tasks:
-            status = str(task.get("status", "pending")).lower()
-            if status in summary:
-                summary[status] += 1
         active_task = next(
             (
                 task
