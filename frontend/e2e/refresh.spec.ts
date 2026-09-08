@@ -75,36 +75,53 @@ test('hidden monitor coalesces task changes into one visible refresh', async ({ 
   const now = new Date()
   await page.clock.install({ time: now })
   await page.clock.pauseAt(new Date(now.getTime() + 100))
-  let reads = 0
-  await page.route('**/api/tasks?*', route => {
-    reads++
-    return route.fulfill({ json: { items: [], total: 0, offset: 0, limit: 200, has_more: false, status_counts: emptyCounts } })
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    const state = { reads: 0 }
+    Object.assign(window, { monitorRefreshTest: state })
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith('/api/tasks?')) state.reads++
+      return original(input, init)
+    }) as typeof window.fetch
   })
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [], total: 0, offset: 0, limit: 200, has_more: false, status_counts: emptyCounts,
+  } }))
   let sendEvent!: (value: string) => void
   await page.routeWebSocket('**/api/tasks/events', socket => {
     sendEvent = value => socket.send(value)
-    socket.send(JSON.stringify({ type: 'ready' }))
   })
+  const reads = () => page.evaluate(() => (window as typeof window & {
+    monitorRefreshTest: { reads: number }
+  }).monitorRefreshTest.reads)
   const visibility = (value: 'visible' | 'hidden') => page.evaluate(state => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
     document.dispatchEvent(new Event('visibilitychange'))
+    // Capture at fetch invocation, atomically with hiding, so a request started
+    // while visible cannot arrive late at a route handler and count as hidden.
+    return (window as typeof window & { monitorRefreshTest: { reads: number } }).monitorRefreshTest.reads
   }, value)
   await page.goto('/monitor?token=pyruns-e2e-access-token')
-  await expect(page.getByRole('textbox', { name: 'Search monitor tasks' })).toBeVisible()
-  await page.clock.runFor(200)
-  const before = reads
+  await expect(page.getByText('No tasks', { exact: true })).toBeVisible()
+  await expect.poll(() => Boolean(sendEvent)).toBe(true)
+  sendEvent(JSON.stringify({ type: 'ready' }))
+  await expect(page.getByRole('status', { name: 'Task list updates live', exact: true })).toBeVisible()
+  // Reproduce the CI ordering: the 120 ms startup debounce fires during the
+  // final 50 ms of visibility, after the old test recorded its baseline.
+  await page.clock.runFor(100)
   sendEvent(JSON.stringify({ type: 'changed' }))
   await page.clock.runFor(50)
-  await visibility('hidden')
+  const before = await visibility('hidden')
+  expect(before).toBe(2)
   for (let index = 0; index < 3; index++) {
     sendEvent(JSON.stringify({ type: 'changed' }))
     await page.clock.runFor(300)
   }
   await page.clock.runFor(60_001)
-  expect(reads).toBe(before)
+  expect(await reads()).toBe(before)
   await visibility('visible')
   await page.clock.runFor(200)
-  await expect.poll(() => reads).toBe(before + 1)
+  await expect.poll(reads).toBe(before + 1)
   await page.clock.runFor(500)
-  expect(reads).toBe(before + 1)
+  expect(await reads()).toBe(before + 1)
 })
