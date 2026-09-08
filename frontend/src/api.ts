@@ -281,8 +281,9 @@ export function createLogStream(taskName: string, options: {
   return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream${query ? `?${query}` : ''}`)
 }
 
-export const getMetrics = (includeProcesses = false) => request<SystemMetrics>(
+export const getMetrics = (includeProcesses = false, signal?: AbortSignal) => request<SystemMetrics>(
   `/api/system/metrics?include_processes=${includeProcesses ? 'true' : 'false'}`,
+  { signal },
 )
 
 export const getSystemInfo = (signal?: AbortSignal) => request<SystemInfo>('/api/system/info', { signal })

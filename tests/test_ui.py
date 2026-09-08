@@ -199,7 +199,10 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'if (dashboardRefreshPromiseRef.current)',
             'const refreshPromise = Promise.allSettled([',
             'api.getMetrics(false)',
-            'api.getMetrics(true)',
+            'api.getMetrics(true, controller.signal)',
+            'GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000',
+            'gpuDetailsAbortControllerRef.current?.abort()',
+            'GPU process details timed out. Check the connection and retry.',
             "setMetricsError('')",
             "errorMessage(metricsResult.reason, 'System metrics unavailable.')",
             'Metrics refresh failed. Showing last values.',
@@ -225,14 +228,14 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'wide={gpuCount === 1}',
             'metrics.gpus.map(gpu =>',
             'key={gpuKey(gpu)}',
-            'aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}',
+            'aria-label={`View details for GPU ${gpu.index} ${gpu.name}`}',
             'title={gpu.name}',
             "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'",
             'max-h-[calc(100dvh-2rem)]',
             'flex-col overflow-hidden rounded-md',
-            'min-h-0 flex-1 overflow-y-auto px-5 py-4',
+            'min-h-0 flex-1 space-y-5 overflow-y-auto',
             'overflow-x-auto rounded-md border border-border-subtle',
-            'min-w-[640px]',
+            'min-w-[700px]',
             'role="dialog"',
             'aria-modal="true"',
             'aria-labelledby="gpu-detail-title"',
@@ -244,9 +247,12 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'Dashboard refreshed',
             'Task summary and system metrics are up to date.',
             'Refresh dashboard now',
-            'Free VRAM',
-            'Proc VRAM',
-            'Avg/proc',
+            'Live metrics',
+            'Device information',
+            'GPU processes',
+            'Refresh GPU details',
+            'gpu.temperature_c',
+            'gpu.pci_bus_id',
             'formatPercent',
         ), id='dashboard'),
         pytest.param(FRONTEND_APP, (
@@ -655,13 +661,17 @@ def test_react_gpu_process_dialog_shows_process_owner():
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "user: string" in types
-    assert "grid-cols-[88px_132px_minmax(0,1fr)_120px_88px]" in dashboard
+    assert "command_line?: string" in types
+    assert "host_memory_mb?: number | null" in types
+    assert "grid-cols-[80px_132px_minmax(0,1fr)_112px_72px_24px]" in dashboard
     assert "<span>User</span>" in dashboard
     assert "process.user || 'unknown'" in dashboard
     assert "<span className=\"text-right\">Share</span>" in dashboard
     assert "process.memory_mb == null || gpu.mem_total <= 0" in dashboard
     assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
+    assert "<GpuProcessMetadata process={process} />" in dashboard
+    assert "Copy command line for PID" in dashboard
 
 
 def test_react_monitor_pages_and_searches_task_list_without_limit_zero():

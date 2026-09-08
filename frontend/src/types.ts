@@ -296,6 +296,17 @@ export interface GPUProcessInfo {
   user: string
   name: string
   memory_mb: number | null
+  process_name?: string
+  status?: string
+  executable?: string
+  command_line?: string
+  command_line_truncated?: boolean
+  working_directory?: string
+  created_at?: number | null
+  host_memory_mb?: number | null
+  host_memory_percent?: number | null
+  thread_count?: number | null
+  parent_pid?: number | null
 }
 
 export interface GPUMetric {
@@ -306,6 +317,18 @@ export interface GPUMetric {
   util: number
   mem_used: number
   mem_total: number
+  mem_util?: number | null
+  mem_free?: number | null
+  temperature_c?: number | null
+  fan_speed_pct?: number | null
+  power_draw_w?: number | null
+  power_limit_w?: number | null
+  performance_state?: string
+  compute_mode?: string
+  graphics_clock_mhz?: number | null
+  memory_clock_mhz?: number | null
+  pci_bus_id?: string
+  driver_version?: string
   processes: GPUProcessInfo[]
 }
 

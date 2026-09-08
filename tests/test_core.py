@@ -1007,9 +1007,9 @@ def test_system_monitor_gpu_error(mock_subprocess, mock_psutil):
     monitor._gpu_cache = cached_gpus
     
     metrics = monitor.sample()
-    
-    # Error should return cache
-    assert metrics["gpus"] == cached_gpus
+
+    # Error should return a well-formed copy of the cached device snapshot.
+    assert metrics["gpus"] == [{**cached_gpus[0], "processes": []}]
 
 
 @patch("pyruns.core.system_metrics.subprocess.check_output")

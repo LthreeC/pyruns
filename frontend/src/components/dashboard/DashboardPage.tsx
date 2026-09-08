@@ -4,24 +4,30 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  ChevronDown,
   ChevronRight,
   CheckCircle2,
   Cpu,
+  Fan,
+  Gauge,
   Layers,
   MemoryStick,
   RefreshCw,
+  Thermometer,
   Wand2,
   X,
   XCircle,
+  Zap,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useDashboardStore, useMonitorStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import StatusBadge from '@/components/shared/StatusBadge'
 import CopyButton from '@/components/shared/CopyButton'
+import { formatElapsedDuration } from '@/utils/taskRuntime'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import { errorMessage } from '@/utils/errors'
-import type { GPUMetric, Task, SystemMetrics } from '@/types'
+import type { GPUMetric, GPUProcessInfo, Task, SystemMetrics } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
 
@@ -31,6 +37,8 @@ const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string
   { key: 'completed', label: 'Completed', icon: CheckCircle2, color: 'text-emerald-700 dark:text-emerald-300' },
   { key: 'failed', label: 'Failed', icon: XCircle, color: 'text-rose-700 dark:text-rose-300' },
 ]
+
+const GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 
 interface DashboardRefreshResult {
   dashboardOk: boolean
@@ -49,6 +57,7 @@ export default function DashboardPage() {
   const [gpuDetailsError, setGpuDetailsError] = useState('')
   const gpuDialogTriggerRef = useRef<HTMLElement | null>(null)
   const gpuDetailsRequestSeqRef = useRef(0)
+  const gpuDetailsAbortControllerRef = useRef<AbortController | null>(null)
   const metricsRefreshSeqRef = useRef(0)
   const dashboardRefreshPromiseRef = useRef<Promise<DashboardRefreshResult> | null>(null)
   const [manualRefreshing, setManualRefreshing] = useState(false)
@@ -95,11 +104,19 @@ export default function DashboardPage() {
   }, [navigate, notify])
 
   const loadGpuDetails = useCallback(async (gpu: GPUMetric) => {
+    gpuDetailsAbortControllerRef.current?.abort()
+    const controller = new AbortController()
+    gpuDetailsAbortControllerRef.current = controller
     const requestId = ++gpuDetailsRequestSeqRef.current
+    let timedOut = false
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, GPU_DETAILS_REQUEST_TIMEOUT_MS)
     setGpuDetailsLoading(true)
     setGpuDetailsError('')
     try {
-      const details = await api.getMetrics(true)
+      const details = await api.getMetrics(true, controller.signal)
       const matchingGpu = details.gpus.find(item => gpuKey(item) === gpuKey(gpu))
       if (!matchingGpu) {
         throw new Error('This GPU is no longer available.')
@@ -112,8 +129,14 @@ export default function DashboardPage() {
       if (requestId !== gpuDetailsRequestSeqRef.current) {
         return
       }
-      setGpuDetailsError(errorMessage(err, 'GPU process details are unavailable.'))
+      setGpuDetailsError(timedOut
+        ? 'GPU process details timed out. Check the connection and retry.'
+        : errorMessage(err, 'GPU process details are unavailable.'))
     } finally {
+      window.clearTimeout(timeoutId)
+      if (gpuDetailsAbortControllerRef.current === controller) {
+        gpuDetailsAbortControllerRef.current = null
+      }
       if (requestId === gpuDetailsRequestSeqRef.current) {
         setGpuDetailsLoading(false)
       }
@@ -128,6 +151,8 @@ export default function DashboardPage() {
 
   const closeGpuDetails = useCallback(() => {
     gpuDetailsRequestSeqRef.current += 1
+    gpuDetailsAbortControllerRef.current?.abort()
+    gpuDetailsAbortControllerRef.current = null
     setActiveGpu(null)
     setGpuDetailsLoading(false)
     setGpuDetailsError('')
@@ -170,6 +195,8 @@ export default function DashboardPage() {
 
   useEffect(() => () => {
     gpuDetailsRequestSeqRef.current += 1
+    gpuDetailsAbortControllerRef.current?.abort()
+    gpuDetailsAbortControllerRef.current = null
     metricsRefreshSeqRef.current += 1
     dashboardRefreshPromiseRef.current = null
   }, [])
@@ -177,6 +204,8 @@ export default function DashboardPage() {
   useEffect(() => {
     metricsRefreshSeqRef.current += 1
     gpuDetailsRequestSeqRef.current += 1
+    gpuDetailsAbortControllerRef.current?.abort()
+    gpuDetailsAbortControllerRef.current = null
     dashboardRefreshPromiseRef.current = null
     setMetrics(null)
     setMetricsError('')
@@ -275,7 +304,7 @@ export default function DashboardPage() {
             <div className="shrink-0 flex flex-wrap items-start justify-between gap-2 border-b border-border-subtle px-4 py-3">
               <div>
                 <h2 className="text-sm font-medium text-txt-primary">GPU & System</h2>
-                <p className="mt-1 text-2xs text-txt-tertiary">Refreshes every {refreshIntervalSec}s. GPU process details load only when opened.</p>
+                <p className="mt-1 text-2xs text-txt-tertiary">Refreshes every {refreshIntervalSec}s. Process details load on demand.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-2xs">
                 <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>
@@ -519,7 +548,7 @@ function GpuMetricCard({
     <button
       type="button"
       onClick={event => onClick(event.currentTarget)}
-      aria-label={`Inspect GPU ${gpu.index} ${gpu.name}`}
+      aria-label={`View details for GPU ${gpu.index} ${gpu.name}`}
       className={clsx(
         'w-full rounded-md border border-border-subtle bg-surface-raised px-4 py-4 text-left transition-colors hover:border-accent/25 hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]',
@@ -549,8 +578,8 @@ function GpuMetricCard({
         <span className="tabular-nums">
           {formatMemory(gpu.mem_used)} / {formatMemory(gpu.mem_total)}
         </span>
-        <span className="inline-flex items-center gap-1 whitespace-nowrap">
-          Details
+        <span className="inline-flex min-h-7 items-center gap-1 whitespace-nowrap rounded-md bg-accent/10 px-2 font-medium text-accent">
+          View details
           <ChevronRight className="h-3 w-3" />
         </span>
       </div>
@@ -592,6 +621,12 @@ function GpuProcessDialog({
   const backdropPointerStartedRef = useRef(false)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const [expandedProcessKey, setExpandedProcessKey] = useState<string | null>(null)
+  const selectedGpuKey = gpu ? gpuKey(gpu) : ''
+
+  useEffect(() => {
+    setExpandedProcessKey(null)
+  }, [selectedGpuKey])
 
   useEffect(() => {
     if (!gpu) {
@@ -651,6 +686,7 @@ function GpuProcessDialog({
   const averageProcessMemory = knownMemoryProcesses.length
     ? processMemoryTotal / knownMemoryProcesses.length
     : null
+  const reportedMemoryFree = gpu.mem_free == null ? memoryFree : Math.max(0, gpu.mem_free)
 
   return (
     <div
@@ -678,7 +714,7 @@ function GpuProcessDialog({
         }}
         onClick={event => event.stopPropagation()}
       >
-        <div className="shrink-0 flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
+        <div className="shrink-0 flex items-start justify-between gap-4 border-b border-border-subtle px-4 py-3 sm:px-5 sm:py-4">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-[0.18em] text-txt-tertiary">GPU Detail</div>
             <div id="gpu-detail-title" className="mt-1 truncate text-base font-semibold text-txt-primary">
@@ -689,27 +725,74 @@ function GpuProcessDialog({
               {gpu.uuid && <CopyButton value={gpu.uuid} label="Copy GPU UUID" className="-my-1" />}
             </div>
           </div>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            onClick={onClose}
-            aria-label="Close GPU details"
-            className="touch-target inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 sm:h-9 sm:w-9"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex flex-none items-center gap-1">
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={loading}
+              aria-label="Refresh GPU details"
+              title="Refresh GPU details"
+              className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50 sm:h-9 sm:w-9"
+            >
+              <RefreshCw className={clsx('h-4 w-4', loading && 'motion-safe:animate-spin')} />
+            </button>
+            <button
+              ref={closeButtonRef}
+              type="button"
+              onClick={onClose}
+              aria-label="Close GPU details"
+              className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 sm:h-9 sm:w-9"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
-        <div className="shrink-0 grid grid-cols-1 gap-3 border-b border-border-subtle px-5 py-4 sm:grid-cols-2 lg:grid-cols-6">
-          <DetailChip label="Compute" value={`${gpu.util.toFixed(0)}%`} tone="emerald" />
-          <DetailChip label="VRAM" value={`${formatMemory(gpu.mem_used)} / ${formatMemory(gpu.mem_total)}`} tone="sky" />
-          <DetailChip label="Free VRAM" value={formatMemory(memoryFree)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
-          <DetailChip label="Proc VRAM" value={knownMemoryProcesses.length ? formatMemory(processMemoryTotal) : '--'} tone={processMemoryTotal ? 'sky' : 'slate'} />
-          <DetailChip label="Avg/proc" value={averageProcessMemory == null ? '--' : formatMemory(averageProcessMemory)} tone={processMemoryTotal ? 'sky' : 'slate'} />
-          <DetailChip label="Processes" value={loading ? '--' : String(gpu.processes.length)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
-        </div>
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-5">
+          <section aria-labelledby="gpu-live-metrics-title">
+            <h3 id="gpu-live-metrics-title" className="mb-2 flex items-center gap-2 text-xs font-semibold text-txt-primary">
+              <Gauge className="h-3.5 w-3.5 text-txt-tertiary" />
+              Live metrics
+            </h3>
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border-subtle bg-border-subtle lg:grid-cols-4">
+              <DetailMetric label="Compute" value={`${gpu.util.toFixed(0)}%`} tone="emerald" />
+              <DetailMetric label="Memory I/O" value={formatOptionalMetric(gpu.mem_util, '%')} tone="sky" />
+              <DetailMetric label="VRAM used" value={`${formatMemory(gpu.mem_used)} / ${formatMemory(gpu.mem_total)}`} tone="sky" />
+              <DetailMetric label="VRAM free" value={formatMemory(reportedMemoryFree)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
+              <DetailMetric label="Temperature" value={formatOptionalMetric(gpu.temperature_c, ' °C')} tone={(gpu.temperature_c ?? 0) >= 80 ? 'amber' : 'slate'} icon={Thermometer} />
+              <DetailMetric label="Power" value={formatPower(gpu.power_draw_w, gpu.power_limit_w)} tone="slate" icon={Zap} />
+              <DetailMetric label="Fan" value={formatOptionalMetric(gpu.fan_speed_pct, '%')} tone="slate" icon={Fan} />
+              <DetailMetric label="Processes" value={loading ? '--' : String(gpu.processes.length)} tone={gpu.processes.length ? 'emerald' : 'slate'} />
+            </div>
+          </section>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <section aria-labelledby="gpu-device-information-title">
+            <h3 id="gpu-device-information-title" className="mb-2 flex items-center gap-2 text-xs font-semibold text-txt-primary">
+              <Cpu className="h-3.5 w-3.5 text-txt-tertiary" />
+              Device information
+            </h3>
+            <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border-subtle bg-border-subtle lg:grid-cols-4">
+              <DeviceDetail label="GPU index" value={String(gpu.index)} mono />
+              <DeviceDetail label="PCI bus" value={gpu.pci_bus_id} mono />
+              <DeviceDetail label="Driver" value={gpu.driver_version} mono />
+              <DeviceDetail label="Performance state" value={gpu.performance_state} mono />
+              <DeviceDetail label="Compute mode" value={gpu.compute_mode} />
+              <DeviceDetail label="Graphics clock" value={formatOptionalMetric(gpu.graphics_clock_mhz, ' MHz')} mono />
+              <DeviceDetail label="Memory clock" value={formatOptionalMetric(gpu.memory_clock_mhz, ' MHz')} mono />
+              <DeviceDetail label="Process VRAM" value={knownMemoryProcesses.length ? `${formatMemory(processMemoryTotal)} total | ${formatMemory(averageProcessMemory)} avg` : ''} mono />
+            </dl>
+          </section>
+
+          <section aria-labelledby="gpu-processes-title">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 id="gpu-processes-title" className="flex items-center gap-2 text-xs font-semibold text-txt-primary">
+                <Activity className="h-3.5 w-3.5 text-txt-tertiary" />
+                GPU processes
+              </h3>
+              <span className="text-2xs tabular-nums text-txt-tertiary" aria-live="polite">
+                {loading ? 'Refreshing' : `${gpu.processes.length} reported`}
+              </span>
+            </div>
           {error && (
             <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
               <span>{error}</span>
@@ -726,61 +809,161 @@ function GpuProcessDialog({
             </div>
           ) : (
             <div className="overflow-x-auto rounded-md border border-border-subtle">
-              <div className="min-w-[640px]">
-                <div className="grid grid-cols-[88px_132px_minmax(0,1fr)_120px_88px] gap-3 border-b border-border-subtle bg-surface-overlay/70 px-4 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary">
+              <div className="min-w-[700px]">
+                <div className="grid grid-cols-[80px_132px_minmax(0,1fr)_112px_72px_24px] gap-3 border-b border-border-subtle bg-surface-overlay/70 px-4 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary">
                   <span>PID</span>
                   <span>User</span>
                   <span>Process</span>
                   <span className="text-right">VRAM</span>
                   <span className="text-right">Share</span>
+                  <span aria-hidden="true" />
                 </div>
-                {sortedProcesses.map(process => (
-                  <div
-                    key={`${process.pid}-${process.name}`}
-                    className="grid grid-cols-[88px_132px_minmax(0,1fr)_120px_88px] gap-3 border-b border-border-subtle/80 px-4 py-3 text-sm last:border-b-0"
-                  >
-                    <span className="font-mono text-txt-secondary">{process.pid >= 0 ? process.pid : '--'}</span>
-                    <span className="truncate font-mono text-xs text-txt-secondary" title={process.user || 'unknown'}>
-                      {process.user || 'unknown'}
-                    </span>
-                    <span className="truncate text-txt-primary" title={process.name}>{process.name}</span>
-                    <span className="text-right font-mono text-txt-secondary">{formatMemory(process.memory_mb)}</span>
-                    <span className="text-right font-mono text-txt-tertiary">
-                      {process.memory_mb == null || gpu.mem_total <= 0
-                        ? '--'
-                        : formatPercent((process.memory_mb / gpu.mem_total) * 100)}
-                    </span>
-                  </div>
-                ))}
+                {sortedProcesses.map(process => {
+                  const rowKey = gpuProcessKey(process)
+                  const expanded = expandedProcessKey === rowKey
+                  const displayName = process.process_name?.trim() || process.name
+                  return (
+                    <div key={rowKey} className="border-b border-border-subtle/80 last:border-b-0">
+                      <button
+                        type="button"
+                        aria-expanded={expanded}
+                        aria-label={`${expanded ? 'Hide' : 'View'} details for process ${process.pid} ${displayName}`}
+                        onClick={() => setExpandedProcessKey(expanded ? null : rowKey)}
+                        className="grid min-h-11 w-full grid-cols-[80px_132px_minmax(0,1fr)_112px_72px_24px] items-center gap-3 px-4 py-3 text-left text-sm transition-colors hover:bg-surface-overlay/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+                      >
+                        <span className="font-mono text-txt-secondary">{process.pid >= 0 ? process.pid : '--'}</span>
+                        <span className="truncate font-mono text-xs text-txt-secondary" title={process.user || 'unknown'}>
+                          {process.user || 'unknown'}
+                        </span>
+                        <span className="truncate text-txt-primary" title={process.name}>{displayName}</span>
+                        <span className="text-right font-mono text-txt-secondary">{formatMemory(process.memory_mb)}</span>
+                        <span className="text-right font-mono text-txt-tertiary">
+                          {process.memory_mb == null || gpu.mem_total <= 0
+                            ? '--'
+                            : formatPercent((process.memory_mb / gpu.mem_total) * 100)}
+                        </span>
+                        <ChevronDown className={clsx('h-4 w-4 text-txt-tertiary transition-transform', expanded && 'rotate-180')} />
+                      </button>
+                      {expanded && <GpuProcessMetadata process={process} />}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
+          </section>
         </div>
       </div>
     </div>
   )
 }
 
-function DetailChip({
+function DetailMetric({
   label,
   value,
   tone,
+  icon: Icon,
 }: {
   label: string
   value: string
   tone: 'emerald' | 'sky' | 'amber' | 'slate'
+  icon?: ElementType
 }) {
   const toneClass = {
-    emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-    sky: 'bg-sky-500/10 text-sky-700 dark:text-sky-300',
-    amber: 'bg-amber-500/10 text-amber-800 dark:text-amber-300',
-    slate: 'bg-surface-overlay text-txt-secondary',
+    emerald: 'text-emerald-700 dark:text-emerald-300',
+    sky: 'text-sky-700 dark:text-sky-300',
+    amber: 'text-amber-800 dark:text-amber-300',
+    slate: 'text-txt-secondary',
   }[tone]
 
   return (
-    <div className={clsx('rounded-md px-3 py-3', toneClass)}>
-      <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold">{value}</div>
+    <div className="min-w-0 bg-surface-raised px-3 py-3">
+      <div className="flex items-center gap-1.5 text-2xs text-txt-tertiary">
+        {Icon && <Icon className="h-3 w-3 flex-none" />}
+        <span>{label}</span>
+      </div>
+      <div className={clsx('mt-1 truncate text-sm font-semibold tabular-nums', toneClass)} title={value}>{value}</div>
+    </div>
+  )
+}
+
+function GpuProcessMetadata({ process }: { process: GPUProcessInfo }) {
+  const startedAt = formatProcessStartedAt(process.created_at)
+  const runtime = formatProcessRuntime(process.created_at)
+  const hostMemory = process.host_memory_mb == null
+    ? 'Not available'
+    : `${formatMemory(process.host_memory_mb)}${
+      process.host_memory_percent == null
+        ? ''
+        : ` (${formatOptionalMetric(process.host_memory_percent, '%')} RAM)`
+    }`
+
+  return (
+    <div className="border-t border-border-subtle/80 bg-surface-overlay/30 px-4 py-3">
+      <dl className="grid grid-cols-2 gap-x-5 gap-y-3 lg:grid-cols-6">
+        <ProcessDetail label="Status" value={formatProcessStatus(process.status)} />
+        <ProcessDetail label="Host RAM" value={hostMemory} mono />
+        <ProcessDetail label="Started" value={startedAt} />
+        <ProcessDetail label="Runtime" value={runtime} mono />
+        <ProcessDetail label="Parent PID" value={formatOptionalInteger(process.parent_pid)} mono />
+        <ProcessDetail label="Threads" value={formatOptionalInteger(process.thread_count)} mono />
+      </dl>
+      <div className="mt-3 grid gap-3 border-t border-border-subtle/80 pt-3 lg:grid-cols-2">
+        <ProcessTextDetail label="Executable" value={process.executable} copyLabel={`Copy executable path for PID ${process.pid}`} />
+        <ProcessTextDetail label="Working directory" value={process.working_directory} copyLabel={`Copy working directory for PID ${process.pid}`} />
+        <ProcessTextDetail label="GPU-reported process" value={process.name} copyLabel={`Copy GPU process path for PID ${process.pid}`} />
+        <ProcessTextDetail
+          label={process.command_line_truncated ? 'Command line (truncated)' : 'Command line'}
+          value={process.command_line}
+          copyLabel={`Copy command line for PID ${process.pid}`}
+          wide
+        />
+      </div>
+    </div>
+  )
+}
+
+function ProcessDetail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-2xs text-txt-tertiary">{label}</dt>
+      <dd className={clsx('mt-0.5 truncate text-xs text-txt-primary', mono && 'font-mono')} title={value}>{value}</dd>
+    </div>
+  )
+}
+
+function ProcessTextDetail({
+  label,
+  value,
+  copyLabel,
+  wide = false,
+}: {
+  label: string
+  value?: string
+  copyLabel: string
+  wide?: boolean
+}) {
+  const copyValue = value?.trim() || ''
+  const displayValue = copyValue || 'Not available'
+  return (
+    <div className={clsx('min-w-0', wide && 'lg:col-span-2')}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-2xs text-txt-tertiary">{label}</div>
+        {copyValue && <CopyButton value={copyValue} label={copyLabel} size="xs" />}
+      </div>
+      <div className="mt-0.5 whitespace-pre-wrap break-all font-mono text-xs leading-5 text-txt-primary">{displayValue}</div>
+    </div>
+  )
+}
+
+function DeviceDetail({ label, value, mono = false }: { label: string; value?: string; mono?: boolean }) {
+  const displayValue = value?.trim() || 'Not reported'
+  return (
+    <div className="min-w-0 bg-surface-raised px-3 py-2.5">
+      <dt className="text-2xs text-txt-tertiary">{label}</dt>
+      <dd className={clsx('mt-0.5 truncate text-xs text-txt-primary', mono && 'font-mono')} title={displayValue}>
+        {displayValue}
+      </dd>
     </div>
   )
 }
@@ -795,6 +978,39 @@ function SummaryPill({ children }: { children: ReactNode }) {
 
 function gpuKey(gpu: GPUMetric): string {
   return gpu.uuid || `${gpu.id}`
+}
+
+function gpuProcessKey(process: GPUProcessInfo): string {
+  return `${process.pid}-${process.name}`
+}
+
+function formatProcessStatus(value: string | null | undefined): string {
+  const status = value?.trim()
+  if (!status) {
+    return 'Not available'
+  }
+  return status.replace(/_/g, ' ')
+}
+
+function formatProcessStartedAt(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return 'Not available'
+  }
+  const date = new Date(value * 1000)
+  return Number.isNaN(date.getTime()) ? 'Not available' : date.toLocaleString()
+}
+
+function formatProcessRuntime(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return 'Not available'
+  }
+  return formatElapsedDuration(Math.max(0, Date.now() / 1000 - value))
+}
+
+function formatOptionalInteger(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) || value < 0
+    ? 'Not available'
+    : Math.floor(value).toLocaleString()
 }
 
 function formatMemory(memoryMb: number | null | undefined): string {
@@ -815,4 +1031,22 @@ function formatPercent(value: number): string {
     return '0%'
   }
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}%`
+}
+
+function formatOptionalMetric(value: number | null | undefined, suffix: string): string {
+  if (value == null || !Number.isFinite(value)) {
+    return 'Not reported'
+  }
+  const formatted = Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(1).replace(/\.0$/, '')
+  return `${formatted}${suffix}`
+}
+
+function formatPower(draw: number | null | undefined, limit: number | null | undefined): string {
+  if (draw == null || !Number.isFinite(draw)) {
+    return 'Not reported'
+  }
+  const drawText = formatOptionalMetric(draw, ' W')
+  return limit == null || !Number.isFinite(limit)
+    ? drawText
+    : `${drawText} / ${formatOptionalMetric(limit, ' W')}`
 }

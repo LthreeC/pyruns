@@ -292,6 +292,147 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
   expect(browserErrors).toEqual([])
 })
 
+test('GPU card opens detailed device and process information', async ({ page }) => {
+  let detailRequests = 0
+  await page.route('**/api/system/metrics**', route => {
+    const includeProcesses = new URL(route.request().url()).searchParams.get('include_processes') === 'true'
+    if (includeProcesses) detailRequests += 1
+    return route.fulfill({
+      json: {
+        cpu_percent: 18,
+        mem_percent: 42,
+        gpus: [{
+          id: 0,
+          index: 0,
+          name: 'NVIDIA RTX 5090',
+          uuid: 'GPU-DETAIL-AAA',
+          util: 75,
+          mem_used: 8192,
+          mem_total: 24576,
+          mem_util: 42,
+          mem_free: 16384,
+          temperature_c: 67,
+          fan_speed_pct: 35,
+          power_draw_w: 210.5,
+          power_limit_w: 575,
+          performance_state: 'P2',
+          compute_mode: 'Default',
+          graphics_clock_mhz: 2520,
+          memory_clock_mhz: 14001,
+          pci_bus_id: '00000000:2B:00.0',
+          driver_version: '590.12',
+          processes: includeProcesses
+            ? [{
+                pid: 4321,
+                user: 'researcher',
+                name: '/usr/bin/python',
+                memory_mb: 4096,
+                process_name: 'python',
+                status: 'sleeping',
+                executable: '/usr/bin/python',
+                command_line: 'python train.py --epochs 10',
+                command_line_truncated: false,
+                working_directory: '/workspace',
+                created_at: 1_725_000_000,
+                host_memory_mb: 1536,
+                host_memory_percent: 6.25,
+                thread_count: 12,
+                parent_pid: 1000,
+              }]
+            : [],
+        }],
+      },
+    })
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const gpuCard = page.getByRole('button', { name: 'View details for GPU 0 NVIDIA RTX 5090' })
+  await expect(gpuCard).toBeVisible()
+  await expect(gpuCard.getByText('View details')).toBeVisible()
+  await gpuCard.click()
+
+  const dialog = page.getByRole('dialog', { name: 'GPU 0 | NVIDIA RTX 5090' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Live metrics' })).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Device information' })).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'GPU processes' })).toBeVisible()
+  await expect(dialog.getByText('67 °C')).toBeVisible()
+  await expect(dialog.getByText('00000000:2B:00.0')).toBeVisible()
+  await expect(dialog.getByText('python')).toBeVisible()
+  await expect(dialog.getByText('researcher')).toBeVisible()
+  await expect.poll(() => detailRequests).toBe(1)
+
+  const processRow = dialog.getByRole('button', { name: /details for process 4321 python/ })
+  await processRow.click()
+  await expect(processRow).toHaveAttribute('aria-expanded', 'true')
+  await expect(dialog.getByText('python train.py --epochs 10')).toBeVisible()
+  await expect(dialog.getByText('/workspace')).toBeVisible()
+  await expect(dialog.getByText('1.5 GB (6.3% RAM)')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Copy command line for PID 4321' })).toBeVisible()
+
+  await page.clock.install()
+  await page.evaluate(() => {
+    const originalFetch = window.fetch.bind(window)
+    const testWindow = window as typeof window & {
+      __gpuDetailsAborts: number
+      __stallNextGpuDetails: boolean
+    }
+    testWindow.__gpuDetailsAborts = 0
+    testWindow.__stallNextGpuDetails = true
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url
+      if (testWindow.__stallNextGpuDetails && url.includes('/api/system/metrics?include_processes=true')) {
+        testWindow.__stallNextGpuDetails = false
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => {
+            testWindow.__gpuDetailsAborts += 1
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          }
+          if (init?.signal?.aborted) {
+            abort()
+          } else {
+            init?.signal?.addEventListener('abort', abort, { once: true })
+          }
+        })
+      }
+      return originalFetch(input, init)
+    }) as typeof window.fetch
+  })
+
+  const refreshDetails = dialog.getByRole('button', { name: 'Refresh GPU details' })
+  await refreshDetails.click()
+  await expect(refreshDetails).toBeDisabled()
+  await page.clock.fastForward(10_000)
+  await expect(dialog.getByRole('alert')).toContainText('GPU process details timed out. Check the connection and retry.')
+  await expect(refreshDetails).toBeEnabled()
+
+  await dialog.getByRole('button', { name: 'Retry' }).click()
+  await expect.poll(() => detailRequests).toBe(2)
+  await expect(dialog.getByRole('alert')).toBeHidden()
+
+  await page.evaluate(() => {
+    const testWindow = window as typeof window & { __stallNextGpuDetails: boolean }
+    testWindow.__stallNextGpuDetails = true
+  })
+  await refreshDetails.click()
+  await expect(refreshDetails).toBeDisabled()
+  await dialog.getByRole('button', { name: 'Close GPU details' }).click()
+  await expect(dialog).toBeHidden()
+  await expect.poll(() => page.evaluate(() => (
+    window as typeof window & { __gpuDetailsAborts: number }
+  ).__gpuDetailsAborts)).toBe(2)
+  await page.clock.runFor(20)
+  await expect(gpuCard).toBeFocused()
+
+  await gpuCard.click()
+  await expect(dialog).toBeVisible()
+  await expect.poll(() => detailRequests).toBe(3)
+})
+
 test('monitor terminal search stays responsive with a large scrollback buffer', async ({ page }) => {
   const lineCount = 12_050
   const logContent = Array.from(
