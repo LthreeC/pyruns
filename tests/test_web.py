@@ -2291,6 +2291,177 @@ def test_compact_task_search_returns_field_context_without_scanning_logs(tmp_pat
     assert log_response.json()["items"] == []
 
 
+def test_full_log_search_finds_history_outside_terminal_tail_and_opens_context(tmp_path):
+    from pyruns._config import RUN_LOGS_DIR
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="early-token\n" + "ordinary output\n" * 350_000 + "late-token\n")
+    log_dir = workspace / TASKS_DIR / "alpha" / RUN_LOGS_DIR
+    (log_dir / "run2.log").write_text("historical-token\n", encoding="utf-8")
+    (log_dir / "error.log").write_text("error-token\n", encoding="utf-8")
+    (log_dir / "queue.log").write_text("queue-token\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    for query, filename in [("early-token", "run1.log"), ("late-token", "run1.log"),
+                            ("historical-token", "run2.log"), ("error-token", "error.log"),
+                            ("queue-token", "queue.log")]:
+        response = client.get("/api/tasks", params={"query": query, "include_logs": True, "compact": True})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert payload["search_errors"] == []
+        match = payload["items"][0]["search_matches"][0]
+        assert match["log_file"] == filename
+        assert match["snippet"][match["match_start"]:match["match_end"]] == query
+        context = client.get("/api/tasks/alpha/logs", params={
+            "log_file_name": filename, "offset": match["offset"],
+            "log_identity": match["log_identity"], "chunk_size": 32768,
+        }).json()
+        assert query in context["content"]
+    page = runtime.search_tasks(query="alpha\nhistorical-token", cancelled=threading.Event())
+    assert page.total == 1
+    assert {match["field"] for match in page.items[0]["search_matches"]} == {"name", "log"}
+
+
+@pytest.mark.parametrize("prefix,token,suffix,query", [
+    ("x" * 16380, "cross-boundary-token", "\r\n", "cross-boundary-token"),
+    ("中" * 16383, "😀测试", "\n", "😀测试"),
+    ("x" * 16381, "to\x1b[31mken\x1b[0m", "\n", "token"),
+    ("x" * 16380, "loss   :   42", "\rnext\n", "loss:42"),
+    ("\t", "İstanbul", "\n", "i̇stanbul"),
+], ids=["ascii", "unicode", "ansi", "colon-spaces", "unicode-lower"])
+def test_log_search_chunk_boundaries_unicode_ansi_and_normalization(tmp_path, prefix, token, suffix, query):
+    from pyruns.utils.log_search import LogSearch
+
+    path = tmp_path / "run1.log"
+    path.write_text(prefix + token + suffix, encoding="utf-8", newline="")
+    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, [query], threading.Event())
+    assert result["match_count"] == 1
+    match = result["matches"][0]
+    assert match["line"] == 1
+    assert len(match["snippet"]) <= 180
+    from pyruns.utils.sort_utils import normalize_task_search_text
+    assert normalize_task_search_text(match["snippet"][match["match_start"]:match["match_end"]]) == query
+    with path.open("rb") as handle:
+        handle.seek(match["offset"])
+        context = handle.read(32768).decode("utf-8", errors="replace")
+    assert token in context
+
+
+@pytest.mark.parametrize("payload,expected", [("a" * 100_000, 100_000 // 3), ("aaa\n" * 100_000, 100_000)], ids=["long-line", "many-lines"])
+def test_log_search_counts_long_lines_without_duplicate_overlap_and_cancels(tmp_path, payload, expected):
+    from concurrent.futures import CancelledError
+    from pyruns.utils.log_search import LogSearch
+
+    path = tmp_path / "run1.log"
+    path.write_text(payload, encoding="utf-8")
+    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, ["aaa"], threading.Event())
+    assert result["match_count"] == expected
+    assert len(result["matches"]) == 24
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(CancelledError):
+        LogSearch._search_file(str(path), path.name, path.stat().st_size, ["absent"], cancelled)
+
+
+@pytest.mark.parametrize("encoding", ["gbk", "invalid-utf8"])
+def test_log_search_preserves_byte_positions_for_locale_and_invalid_bytes(tmp_path, monkeypatch, encoding):
+    from pyruns.utils import log_search
+
+    path = tmp_path / "run1.log"
+    if encoding == "gbk":
+        monkeypatch.setattr(log_search, "_log_decode_candidates", lambda: ["utf-8", "gbk"])
+        token = "测试"
+        payload = b"ASCII header\n" * 10000 + token.encode("gbk")
+    else:
+        monkeypatch.setattr(log_search, "_log_decode_candidates", lambda: ["utf-8"])
+        token = "token"
+        payload = b"\xff" * 2000 + token.encode()
+    path.write_bytes(payload)
+    result = log_search.LogSearch._search_file(str(path), path.name, len(payload), [token], threading.Event())
+    assert result["match_count"] == 1
+    match = result["matches"][0]
+    assert match["snippet"][match["match_start"]:match["match_end"]] == token
+    assert 0 <= payload.index(token.encode("gbk" if encoding == "gbk" else "utf-8")) - match["offset"] <= 256
+
+
+def test_log_search_cache_invalidates_for_append_rewrite_and_read_error(tmp_path, monkeypatch):
+    from pyruns._config import RUN_LOGS_DIR
+    from pyruns.utils.log_search import LogSearch
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="token\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    path = task_dir / RUN_LOGS_DIR / "run1.log"
+    search = LogSearch()
+    event = threading.Event()
+    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
+        assert search.search(str(task_dir), "token", event)["match_count"] == 1
+        assert search.search(str(task_dir), "token", event)["match_count"] == 1
+        assert scan.call_count == 1
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("token\n")
+        assert search.search(str(task_dir), "token", event)["match_count"] == 2
+        path.write_text("gone\n", encoding="utf-8")
+        assert search.search(str(task_dir), "token", event)["match_count"] == 0
+        assert scan.call_count == 3
+    monkeypatch.setattr(search, "_search_file", MagicMock(side_effect=PermissionError("denied")))
+    assert search.search(str(task_dir), "uncached", event)["errors"] == ["Could not read run1.log"]
+
+
+def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="token\n")
+    runtime = _build_runtime(workspace)
+    entered = threading.Event()
+    release = threading.Event()
+    scan = runtime._log_search.search
+
+    def slow_scan(*args):
+        entered.set()
+        assert release.wait(5)
+        return scan(*args)
+
+    with patch.object(runtime._log_search, "search", side_effect=slow_scan) as mocked:
+        client = TestClient(create_app(runtime))
+        assert client.get("/api/tasks", params={"include_logs": True}).status_code == 200
+        assert not mocked.called
+        with ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(runtime.search_tasks, query="token", cancelled=threading.Event())
+            try:
+                assert entered.wait(5)
+                assert runtime._workspace_lock.acquire(timeout=1)
+                runtime._workspace_lock.release()
+                assert runtime.get_task("alpha", refresh=False)["name"] == "alpha"
+            finally:
+                release.set()
+            assert pending.result(timeout=5).total == 1
+
+
+def test_disconnect_cancels_full_log_scan(tmp_path):
+    import asyncio
+
+    runtime = _build_runtime(_make_workspace(tmp_path, "main"))
+    stopped = threading.Event()
+
+    def scan(*, cancelled, **kwargs):
+        assert cancelled.wait(5)
+        stopped.set()
+
+    class Disconnected:
+        async def is_disconnected(self):
+            return True
+
+    with patch.object(runtime, "search_tasks", side_effect=scan):
+        app = create_app(runtime)
+        endpoint = next(route.endpoint for route in app.routes if route.path == "/api/tasks" and "GET" in route.methods)
+        response = asyncio.run(endpoint(request=Disconnected(), query="needle", include_logs=True))
+        assert response.status_code == 499
+        assert stopped.wait(1)
+
+
 def test_tasks_endpoint_exposes_persisted_structured_gpu_wait_state(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "gpu-wait", status="queued")

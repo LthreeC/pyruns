@@ -126,8 +126,30 @@ describe('workspace-scoped stores', () => {
     await useTaskStore.getState().fetchTasks()
 
     expect(setItem).toHaveBeenCalledWith('pyruns_manager_sort', 'activity_asc')
-    expect(api.getTasks).toHaveBeenCalledWith(expect.objectContaining({ sort: 'activity_asc' }))
+    expect(api.getTasks).toHaveBeenCalledWith(expect.objectContaining({ sort: 'activity_asc' }), undefined)
     expect(useTaskStore.getState().sortMode).toBe('activity_asc')
+  })
+
+  it.each(['manager', 'monitor'] as const)('cancels superseded %s log searches and ignores their results', async view => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const old = deferred<any>()
+    const latest = deferred<any>()
+    vi.mocked(api.getTasks).mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise)
+    const fetch = (query: string) => {
+      if (view === 'monitor') return useTaskStore.getState().fetchMonitorTasks({ query })
+      useTaskStore.getState().setQuery(query)
+      return useTaskStore.getState().fetchTasks()
+    }
+    const pendingOld = fetch('old')
+    const oldSignal = vi.mocked(api.getTasks).mock.calls[0][1]!
+    expect(oldSignal.aborted).toBe(false)
+    const pendingLatest = fetch('latest')
+    expect(oldSignal.aborted).toBe(true)
+    latest.resolve({ items: [{ name: 'latest' }], total: 1, has_more: false })
+    await pendingLatest
+    old.resolve({ items: [{ name: 'old' }], total: 1, has_more: false })
+    await pendingOld
+    expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'latest' }])
   })
 
   it('preserves the current generator draft after a template load failure', async () => {

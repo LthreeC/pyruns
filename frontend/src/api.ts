@@ -166,7 +166,8 @@ export const getTasks = (params: {
   summary?: boolean
   compact?: boolean
   sort?: TaskSortMode
-} = {}) => {
+  includeLogs?: boolean
+} = {}, signal?: AbortSignal) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
   if (params.status && params.status !== 'All') sp.set('status', params.status)
@@ -176,7 +177,8 @@ export const getTasks = (params: {
   if (params.summary != null) sp.set('summary', String(params.summary))
   if (params.compact != null) sp.set('compact', String(params.compact))
   if (params.sort) sp.set('sort', params.sort)
-  return request<TaskPage>(`/api/tasks?${sp}`)
+  if (params.includeLogs) sp.set('include_logs', 'true')
+  return request<TaskPage>(`/api/tasks?${sp}`, { signal })
 }
 
 export const getTask = (name: string, refresh = true) =>
@@ -257,7 +259,7 @@ export const getTaskLogs = (name: string, options: {
   tailBytes?: number
   tailLines?: number
   chunkSize?: number
-} = {}) => {
+} = {}, signal?: AbortSignal) => {
   const sp = new URLSearchParams()
   if (options.logFileName) sp.set('log_file_name', options.logFileName)
   if (options.offset != null) sp.set('offset', String(options.offset))
@@ -265,7 +267,7 @@ export const getTaskLogs = (name: string, options: {
   if (options.tailBytes != null) sp.set('tail_bytes', String(options.tailBytes))
   if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
   if (options.chunkSize != null) sp.set('chunk_size', String(options.chunkSize))
-  return request<TaskLogs>(`/api/tasks/${encodeURIComponent(name)}/logs?${sp}`)
+  return request<TaskLogs>(`/api/tasks/${encodeURIComponent(name)}/logs?${sp}`, { signal })
 }
 
 export function createLogStream(taskName: string, options: {

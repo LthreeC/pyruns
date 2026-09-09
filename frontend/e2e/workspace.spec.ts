@@ -1038,11 +1038,11 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(monitorSidebar.getByText('5 matches in 1 task', { exact: true })).toBeVisible()
   const nameMatch = monitorSidebar.getByRole('button', { name: /View Name match in alpha:/ })
   const notesMatch = monitorSidebar.getByRole('button', { name: /View Notes match in alpha at Line 2:/ })
-  await expect(nameMatch.getByText('Name', { exact: true })).toBeVisible()
+  await expect(monitorSidebar.getByText('Name', { exact: true })).toBeVisible()
   await expect(nameMatch.locator('mark')).toHaveText('alpha')
-  await expect(notesMatch.getByText('Notes: Line 2', { exact: true })).toBeVisible()
+  await expect(monitorSidebar.getByText('Notes: Line 2', { exact: true })).toBeVisible()
   await expect(notesMatch.locator('mark')).toHaveText('alpha')
-  await expect(monitorSidebar.getByText('+3 more matches in this task', { exact: true })).toBeVisible()
+  await expect(monitorSidebar.getByText('Showing 2 of 5 matches', { exact: true })).toBeVisible()
 
   await page.getByRole('tab', { name: 'Env' }).click()
   await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')
@@ -1057,6 +1057,109 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(page.getByRole('button', { name: 'Copy configuration' })).toBeVisible()
 
   expect(browserErrors).toEqual([])
+})
+
+test('Monitor and Manager group full log matches and load context only on demand', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  let contextRequests = 0
+  let searchRequests = 0
+  let missingLog = false
+  let emptyIdentity = false
+  const task = {
+    name: 'search-demo', status: 'completed', task_kind: 'shell', dir: '/tmp/search-demo',
+    config_file: '/tmp/search-demo/task.sh', config_text: 'echo training', created_at: '',
+    run_index: 2, pinned: false, notes: '', preview_text: 'echo training',
+    search_matches: [
+      { field: 'log', location: 'run1.log:42', log_file: 'run1.log', line: 42, offset: 1024,
+        log_identity: 'fixture-log', snippet: 'step 42: needle found in old history', match_start: 9, match_end: 15 },
+      { field: 'log', location: 'run2.log:3', log_file: 'run2.log', line: 3, offset: 0,
+        log_identity: 'fixture-log', snippet: 'needle in second run', match_start: 0, match_end: 6 },
+    ], search_match_count: 2,
+  }
+  await page.route('**/api/tasks?*', route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get('query')) {
+      expect(params.get('include_logs')).toBe('true')
+      searchRequests++
+    }
+    return route.fulfill({ json: { items: [task], total: 1, offset: 0, limit: 50, has_more: false } })
+  })
+  await page.route('**/api/tasks/search-demo?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/search-demo/logs?*', route => {
+    const params = new URL(route.request().url()).searchParams
+    const context = params.get('chunk_size') === '32768'
+    if (context) {
+      contextRequests++
+      expect(params.get('log_file_name')).toBe('run1.log')
+      expect(params.get('offset')).toBe('1024')
+      expect(params.get('log_identity')).toBe('fixture-log')
+    }
+    return route.fulfill({ json: {
+      task_name: task.name, selected_log: context ? 'run1.log' : 'run2.log',
+      available_logs: missingLog ? [] : ['run1.log', 'run2.log'], content: context ? 'before\nneedle found in old history\nafter\n'.repeat(30) : 'latest output\n',
+      offset: 32768, log_identity: emptyIdentity ? '' : 'fixture-log', reset: false,
+    } })
+  })
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  for (const view of ['Monitor', 'Manager']) {
+    if (view === 'Manager') await page.getByRole('link', { name: 'Manager', exact: true }).click()
+    await page.getByRole('textbox', { name: view === 'Monitor' ? 'Search monitor tasks' : 'Search tasks', exact: true }).fill('needle')
+    const group = page.getByLabel('Matches in search-demo', { exact: true })
+    const match = group.getByRole('button', { name: /View Log match in search-demo at run1.log:42/ })
+    await expect(match.locator('mark')).toHaveText('needle')
+    if (view === 'Monitor') await page.clock.install()
+    const searchesBeforeIdle = searchRequests
+    await page.clock.fastForward(60_001)
+    expect(searchRequests).toBe(searchesBeforeIdle)
+    const refreshedSearch = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return url.pathname === '/api/tasks' && url.searchParams.get('query') === 'needle'
+    })
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await refreshedSearch
+    await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible()
+    expect(searchRequests).toBe(searchesBeforeIdle + 1)
+    const source = group.locator('summary').filter({ hasText: 'run1.log' })
+    await source.click()
+    await expect(match).toBeHidden()
+    await source.click()
+    expect(contextRequests).toBe(view === 'Monitor' ? 0 : 1)
+    await page.screenshot({ path: testInfo.outputPath(`${view}-search.png`) })
+    await match.click()
+    const dialog = page.getByRole('dialog', { name: 'Log match in search-demo' })
+    await expect(dialog.getByLabel('Log context', { exact: true })).toContainText('needle found in old history')
+    await expect(dialog.getByRole('button', { name: 'Copy log context' })).toBeEnabled()
+    await page.screenshot({ path: testInfo.outputPath(`${view}-context.png`) })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(match).toBeFocused()
+  }
+  expect(contextRequests).toBe(2)
+  expect(searchRequests).toBe(4)
+  await page.getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  if (isMobile) await page.setViewportSize({ width: 667, height: 375 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.evaluate(() => { document.documentElement.style.fontSize = '20px' })
+  await page.screenshot({ path: testInfo.outputPath('Manager-search-dark.png') })
+  missingLog = true
+  await page.getByRole('button', { name: /View Log match in search-demo at run1.log:42/ }).click()
+  const dialog = page.getByRole('dialog', { name: 'Log match in search-demo' })
+  await expect(dialog.getByRole('alert')).toContainText('This log changed')
+  await expect(dialog.getByRole('button', { name: 'Copy log context' })).toBeDisabled()
+  missingLog = false
+  emptyIdentity = true
+  await dialog.getByRole('button', { name: 'Retry', exact: true }).click()
+  const content = dialog.getByLabel('Log context', { exact: true })
+  await expect(content).toContainText('needle found in old history')
+  expect(await content.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('Manager-context-dark.png') })
+  await dialog.getByRole('button', { name: 'Close log preview' }).click()
+  await expect(dialog).toBeHidden()
+  expect(errors).toEqual([])
 })
 
 test('task detail conflicts and session recovery preserve local drafts', async ({ page }) => {

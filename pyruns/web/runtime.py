@@ -10,7 +10,8 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from concurrent.futures import CancelledError
 from functools import wraps
 from typing import Any, Callable, Dict, List
 
@@ -69,10 +70,11 @@ from pyruns.utils.info_io import (
     validate_workspace_directory,
 )
 from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
+from pyruns.utils.log_search import LogSearch
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
-from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
+from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager, task_search_needles
 from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
     build_task_preview_and_search,
@@ -359,6 +361,7 @@ class TaskPage:
     limit: int
     has_more: bool
     status_counts: Dict[str, int]
+    search_errors: List[str] = field(default_factory=list)
 
 
 class PyrunsRuntime:
@@ -397,6 +400,7 @@ class PyrunsRuntime:
         self._metrics_sampler: SystemMonitor | None = None
         self._tasks_loaded = False
         self._last_full_refresh_time = 0.0
+        self._log_search = LogSearch()
         self._conda_envs_cache: Dict[str, Any] | None = None
         self.reload(root_dir)
 
@@ -1199,6 +1203,56 @@ class PyrunsRuntime:
             has_more=has_more,
             status_counts=status_counts,
         )
+
+    def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", cancelled):
+        """Search metadata and all log files without holding task/workspace locks during I/O."""
+        while not self._log_search.slots.acquire(timeout=0.1):
+            if cancelled.is_set():
+                raise CancelledError()
+        try:
+            if cancelled.is_set():
+                raise CancelledError()
+            with self._workspace_lock:
+                epoch = self._workspace_epoch
+                self.ensure_tasks_loaded(full_refresh=False)
+                manager = self.task_manager
+                tasks = manager.list_tasks(summary=True)
+            counts = dict.fromkeys(("pending", "queued", "running", "completed", "failed", "cancelled"), 0)
+            for task in tasks:
+                task_status = str(task.get("status") or "pending").lower()
+                counts[task_status] = counts.get(task_status, 0) + 1
+            ordered = sort_tasks_for_manager(filter_tasks(tasks, "", status), sort_mode)
+            needles = task_search_needles(query)
+            total = 0
+            selected = []
+            errors = []
+            for task in ordered:
+                if cancelled.is_set():
+                    raise CancelledError()
+                found = {needle for needle in needles if filter_tasks([task], needle)}
+                logs = self._log_search.search(task["dir"], query, cancelled)
+                errors.extend(f"{task['name']}: {message}" for message in logs["errors"] if len(errors) < 8)
+                if not all(needle in found or needle in logs["found"] for needle in needles):
+                    continue
+                if offset <= total < offset + limit:
+                    task["_log_search_result"] = logs
+                    selected.append(task)
+                total += 1
+            metadata = manager.get_task_search_results([task["name"] for task in selected], query)
+            items = []
+            for task in selected:
+                logs = task.pop("_log_search_result")
+                context = metadata.get(task["name"], {"matches": [], "match_count": 0})
+                task["search_matches"] = context["matches"] + logs["matches"]
+                task["search_match_count"] = context["match_count"] + logs["match_count"]
+                items.append(task)
+            with self._workspace_lock:
+                if epoch != self._workspace_epoch:
+                    raise WorkspaceChangedError("Workspace changed during search; search again.")
+            return TaskPage(_cap_summary_task_payloads(items), total, offset, limit,
+                            offset + len(items) < total, counts, errors)
+        finally:
+            self._log_search.slots.release()
 
     @_with_stable_workspace
     def get_dashboard(self, *, refresh: bool = True, recent_limit: int = 6) -> Dict[str, Any]:

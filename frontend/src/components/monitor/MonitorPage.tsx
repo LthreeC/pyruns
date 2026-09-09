@@ -40,6 +40,7 @@ import {
 } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
+import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
@@ -48,7 +49,7 @@ import CopyButton from '@/components/shared/CopyButton'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
-import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
+import type { GPUWaitStatus, LogStreamMessage, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
@@ -61,7 +62,6 @@ import {
 } from '@/utils/monitorSettings'
 import { configureReadOnlyTerminalInput } from '@/utils/monitorAccessibility'
 import {
-  splitTaskSearchSnippet,
   shouldDecorateTerminalSearch,
   TERMINAL_SEARCH_DEBOUNCE_MS,
   TERMINAL_SEARCH_HIGHLIGHT_LIMIT,
@@ -83,12 +83,6 @@ const LOG_STREAM_FLUSH_MS = 50
 const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
 const TASK_EVENT_FALLBACK_POLL_MS = 60_000
 const TASK_EVENT_DEGRADED_POLL_MS = 5_000
-const TASK_SEARCH_FIELD_LABELS: Record<TaskSearchMatch['field'], string> = {
-  name: 'Name',
-  notes: 'Notes',
-  config: 'Config',
-  script: 'Script',
-}
 // Keep this aligned with the fields blanked by the server's compact Monitor payload.
 const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'config',
@@ -322,8 +316,8 @@ export default function MonitorPage() {
     }),
     [fetchMonitorTasks, sidebarQuery, workspaceKey],
   )
-  const refreshDetachedSelectedTask = useCallback(async () => {
-    if (!selectedTaskName || selectedTaskFromList) {
+  const refreshDetachedSelectedTask = useCallback(async (duringSearch = false) => {
+    if (!selectedTaskName || (selectedTaskFromList && !duringSearch)) {
       return
     }
     const requestedWorkspaceKey = workspaceKey
@@ -335,6 +329,7 @@ export default function MonitorPage() {
       ) {
         selectedTaskSnapshotWorkspaceKeyRef.current = requestedWorkspaceKey
         setSelectedTaskSnapshot(task)
+        if (duringSearch) useTaskStore.getState().upsertMonitorTask(task)
       }
     } catch (error) {
       if (
@@ -358,6 +353,10 @@ export default function MonitorPage() {
     }
   }, [selectedTaskFromList, selectedTaskName, workspaceKey])
   const refreshMonitorSnapshot = useCallback(async () => {
+    if (sidebarQuery.trim()) {
+      await refreshDetachedSelectedTask(true)
+      return
+    }
     await Promise.all([
       fetchMonitorTasks({
         query: sidebarQuery,
@@ -606,6 +605,7 @@ export default function MonitorPage() {
         detail: errorMessage(err),
       })
     })
+    return () => useTaskStore.getState().cancelMonitorSearch()
   }, [notify, refreshMonitorTasks])
 
   useEffect(() => {
@@ -1587,16 +1587,20 @@ export default function MonitorPage() {
           <SearchInput
             value={sidebarQuery}
             onChange={setSidebarQuery}
-            placeholder="Search name, notes, config, scripts"
+            placeholder="Search tasks and full logs"
             ariaLabel="Search monitor tasks"
             ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
             debounceMs={250}
             inputRef={sidebarSearchInputRef}
           />
+          {sidebarSearchActive && <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
+            <span>{monitorLoading ? 'Searching tasks and full logs…' : 'Includes full log files'}</span>
+            <button type="button" className="touch-target rounded px-2 py-1 text-accent hover:bg-accent/5" onClick={() => monitorLoading ? useTaskStore.getState().cancelMonitorSearch() : void refreshMonitorTasks().catch(() => {})}>{monitorLoading ? 'Cancel' : 'Refresh'}</button>
+          </div>}
           {monitorError && (
             <div className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-500/20 bg-rose-500/8 px-2 py-1.5 text-2xs text-rose-700 dark:text-rose-300" role="alert">
               <WifiOff className="mt-0.5 h-3 w-3 flex-none" />
-              <span className="min-w-0 flex-1">Task updates are delayed. Retrying automatically.</span>
+              <span className="min-w-0 flex-1">{sidebarSearchActive ? monitorError : 'Task updates are delayed. Retrying automatically.'}</span>
             </div>
           )}
         </div>
@@ -2216,7 +2220,6 @@ function SearchResultGroup({
 }) {
   const matches = task.search_matches ?? []
   const matchCount = Math.max(matches.length, task.search_match_count ?? 0)
-  const hiddenMatchCount = Math.max(0, matchCount - matches.length)
   const action = exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'
   const [expanded, setExpanded] = useState(true)
 
@@ -2247,54 +2250,11 @@ function SearchResultGroup({
           {matchCount.toLocaleString()}
         </span>
       </summary>
-      <ul className="list-none pb-1 pl-5" aria-label={`Matches in ${task.name}`}>
-        {matches.map((match, index) => (
-          <li key={`${match.field}-${match.location}-${match.match_start}-${index}`}>
-            <button
-              type="button"
-              onClick={onClick}
-              aria-current={!exportMode && active ? 'true' : undefined}
-              aria-pressed={exportMode ? exportSelected : undefined}
-              aria-label={`${action} ${TASK_SEARCH_FIELD_LABELS[match.field]} match in ${task.name}${match.location ? ` at ${match.location}` : ''}: ${match.snippet}`}
-              className="block w-full border-l border-border-subtle px-2 py-1.5 text-left transition-colors hover:border-accent/50 hover:bg-surface-overlay focus:outline-none focus-visible:border-accent focus-visible:bg-surface-overlay focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
-            >
-              <SearchMatchContext match={match} />
-            </button>
-          </li>
-        ))}
-        {hiddenMatchCount > 0 && (
-          <li className="border-l border-border-subtle px-2 py-1 text-2xs text-txt-tertiary">
-            +{hiddenMatchCount.toLocaleString()} more match{hiddenMatchCount === 1 ? '' : 'es'} in this task
-          </li>
-        )}
-      </ul>
+      <TaskSearchMatches task={task} onSelect={onClick} action={action} exportMode={exportMode} />
     </details>
   )
 }
 
-function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
-  const [before, highlighted, after] = splitTaskSearchSnippet(
-    match.snippet,
-    match.match_start,
-    match.match_end,
-  )
-  const label = TASK_SEARCH_FIELD_LABELS[match.field]
-
-  return (
-    <span className="block min-w-0">
-      <span className="block truncate text-2xs font-medium text-accent">
-        {label}{match.location ? `: ${match.location}` : ''}
-      </span>
-      <span className="truncate-2 block break-words text-2xs leading-4 text-txt-tertiary">
-        {before}
-        <mark className="rounded-sm bg-amber-200/80 px-0.5 text-slate-950 dark:bg-amber-400/75 dark:text-slate-950">
-          {highlighted}
-        </mark>
-        {after}
-      </span>
-    </span>
-  )
-}
 
 function StatusDot({ status }: { status: TaskStatus }) {
   const colors: Record<TaskStatus, string> = {

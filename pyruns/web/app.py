@@ -22,6 +22,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Web
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from pyruns import __version__
 from pyruns._config import (
@@ -880,7 +881,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/tasks")
-    def get_tasks(
+    async def get_tasks(
+        request: Request,
         query: str = Query(default="", max_length=MAX_QUERY_CHARS),
         status: str = Query(default="All", max_length=32),
         offset: int = Query(default=0, ge=0),
@@ -888,6 +890,7 @@ def create_app(
         refresh: bool = True,
         summary: bool = False,
         compact: bool = False,
+        include_logs: bool = False,
         sort: Literal[
             "priority",
             "manual",
@@ -897,15 +900,32 @@ def create_app(
             "name_desc",
         ] = "priority",
     ) -> dict[str, Any]:
-        page = get_runtime().list_tasks(
-            query=query,
-            status=status,
-            offset=offset,
-            limit=limit,
-            refresh=refresh,
-            summary=summary,
-            sort_mode=sort,
-        )
+        runtime = get_runtime()
+        if include_logs and query.strip():
+            cancelled = threading.Event()
+            pending = asyncio.create_task(asyncio.to_thread(
+                runtime.search_tasks, query=query, status=status, offset=offset,
+                limit=limit, sort_mode=sort, cancelled=cancelled,
+            ))
+            try:
+                while not pending.done():
+                    await asyncio.wait({pending}, timeout=0.1)
+                    if await request.is_disconnected():
+                        cancelled.set()
+                        pending.cancel()
+                        return Response(status_code=499)
+                page = await pending
+            except WorkspaceChangedError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            finally:
+                cancelled.set()
+                if not pending.done():
+                    pending.cancel()
+        else:
+            page = await run_in_threadpool(
+                runtime.list_tasks, query=query, status=status, offset=offset,
+                limit=limit, refresh=refresh, summary=summary, sort_mode=sort,
+            )
         items = [_compact_monitor_task(item) for item in page.items] if compact else page.items
         return {
             "items": items,
@@ -914,6 +934,7 @@ def create_app(
             "limit": page.limit,
             "has_more": page.has_more,
             "status_counts": page.status_counts,
+            "search_errors": page.search_errors,
         }
 
     @app.post("/api/tasks/reorder")

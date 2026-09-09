@@ -30,7 +30,7 @@ export interface GPUWaitStatus {
   devices?: GPUWaitDeviceStatus[]
 }
 
-export type TaskSearchField = 'name' | 'notes' | 'config' | 'script'
+export type TaskSearchField = 'name' | 'notes' | 'config' | 'script' | 'log'
 
 export interface TaskSearchMatch {
   field: TaskSearchField
@@ -38,6 +38,10 @@ export interface TaskSearchMatch {
   snippet: string
   match_start: number
   match_end: number
+  log_file?: string
+  log_identity?: string
+  line?: number
+  offset?: number
 }
 
 export interface TaskGpuAssignment {
@@ -99,6 +103,7 @@ export interface Task {
 }
 
 export interface TaskPage {
+  search_errors?: string[]
   items: Task[]
   total: number
   offset: number

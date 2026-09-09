@@ -97,6 +97,8 @@ function currentWorkspaceKey() {
 }
 
 function resetWorkspaceScopedState(nextWorkspaceKey: string) {
+  taskSearchController?.abort()
+  monitorSearchController?.abort()
   taskRequestSeq += 1
   monitorTaskRequestSeq += 1
   monitorRequestSeq += 1
@@ -532,6 +534,8 @@ function currentMonitorScrollback() {
 }
 
 interface TaskState {
+  cancelTaskSearch: () => void
+  cancelMonitorSearch: () => void
   tasks: Task[]
   monitorWorkspaceKey: string
   monitorTasks: Task[]
@@ -574,7 +578,24 @@ interface TaskState {
   setSelectedIds: (ids: Set<string>) => void
 }
 
+let taskSearchController: AbortController | null = null
+let monitorSearchController: AbortController | null = null
+
 export const useTaskStore = create<TaskState>((set, get) => ({
+  cancelTaskSearch() {
+    const wasSearching = Boolean(taskSearchController && get().loading)
+    taskSearchController?.abort()
+    taskSearchController = null
+    taskRequestSeq += 1
+    set({ loading: false, ...(wasSearching ? { error: 'Search cancelled. Refresh to search again.' } : {}) })
+  },
+  cancelMonitorSearch() {
+    const wasSearching = Boolean(monitorSearchController && get().monitorLoading)
+    monitorSearchController?.abort()
+    monitorSearchController = null
+    monitorTaskRequestSeq += 1
+    set({ monitorLoading: false, ...(wasSearching ? { monitorError: 'Search cancelled. Refresh to search again.' } : {}) })
+  },
   tasks: [],
   monitorWorkspaceKey: '',
   monitorTasks: [],
@@ -599,6 +620,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8),
   setQuery(q) {
     if (q !== get().query) {
+      taskSearchController?.abort()
       taskRequestSeq += 1
       set({ query: q, offset: 0, selectedIds: new Set() })
     }
@@ -628,6 +650,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({ columns: next })
   },
   async fetchTasks() {
+    taskSearchController?.abort()
+    const controller = get().query.trim() ? new AbortController() : null
+    taskSearchController = controller
     const requestId = ++taskRequestSeq
     const workspaceKey = currentWorkspaceKey()
     const { query, statusFilter, sortMode, offset, limit } = get()
@@ -644,7 +669,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
     set({ loading: true, error: null })
     try {
-      const page = await api.getTasks({ query, status: statusFilter, sort: sortMode, offset, limit, summary: true })
+      const page = await api.getTasks({ query, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true }, controller?.signal)
       if (!isCurrentRequest()) {
         return
       }
@@ -662,12 +687,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             offset: nextOffset,
             limit,
             summary: true,
-          })
+            includeLogs: true,
+          }, controller?.signal)
           if (!isCurrentRequest()) {
             return
           }
           set({
             tasks: retryPage.items,
+            error: retryPage.search_errors?.length ? `Search incomplete: ${retryPage.search_errors.join('; ')}` : null,
             total: retryPage.total,
             statusCounts: retryPage.status_counts ?? null,
             hasMore: retryPage.has_more,
@@ -681,6 +708,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         requestedOffset = 0
         set({
           tasks: page.items,
+          error: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : null,
           total: page.total,
           statusCounts: page.status_counts ?? null,
           hasMore: page.has_more,
@@ -699,6 +727,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         statusCounts: page.status_counts ?? null,
         hasMore: page.has_more,
         selectedIds: visibleSelection,
+        error: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : null,
       })
     } catch (err) {
       if (isCurrentRequest()) {
@@ -711,6 +740,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
   async fetchMonitorTasks(options = {}) {
+    if (String(options.workspaceKey ?? currentWorkspaceKey()) !== currentWorkspaceKey()) return
+    monitorSearchController?.abort()
+    const controller = String(options.query ?? get().monitorQuery).trim() ? new AbortController() : null
+    monitorSearchController = controller
     const requestId = ++monitorTaskRequestSeq
     const current = get()
     const workspaceKey = String(options.workspaceKey ?? currentWorkspaceKey())
@@ -734,7 +767,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         refresh: options.refresh ?? true,
         summary: true,
         compact: true,
-      })
+        includeLogs: true,
+      }, controller?.signal)
       if (
         requestId !== monitorTaskRequestSeq
         || workspaceKey !== currentWorkspaceKey()
@@ -748,7 +782,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         monitorHasMore: page.has_more,
         monitorLoadedLimit: nextLimit,
         monitorStatusCounts: page.status_counts ?? null,
-        monitorError: '',
+        monitorError: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : '',
       })
     } catch (error) {
       if (
@@ -778,7 +812,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       const exists = state.monitorTasks.some(item => item.name === task.name)
       return {
         monitorTasks: exists
-          ? state.monitorTasks.map(item => item.name === task.name ? task : item)
+          ? state.monitorTasks.map(item => item.name === task.name ? { ...item, ...task } : item)
           : state.monitorQuery
             ? state.monitorTasks
             : [task, ...state.monitorTasks],

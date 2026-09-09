@@ -17,6 +17,7 @@ import clsx from 'clsx'
 import { useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
+import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import Pagination from '@/components/shared/Pagination'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
@@ -76,11 +77,6 @@ const MANAGER_METRIC_STYLES: Record<ManagerMetricTone, string> = {
   amber: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300',
   emerald: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300',
   rose: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300',
-}
-
-interface TaskSearchMatch {
-  label: string
-  detail: string
 }
 
 interface DropIntent {
@@ -237,10 +233,11 @@ export default function ManagerPage() {
   const hasActive = statusCounts
     ? statusCounts.running + statusCounts.queued > 0
     : tasks.some(task => task.status === 'running' || task.status === 'queued')
-  usePolling(fetchTasks, hasActive ? 3000 : 10000, true, false)
+  usePolling(fetchTasks, hasActive ? 3000 : 10000, !query.trim(), false)
 
   useEffect(() => {
     void fetchTasks()
+    return () => useTaskStore.getState().cancelTaskSearch()
   }, [query, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch])
 
   useEffect(() => {
@@ -856,9 +853,21 @@ export default function ManagerPage() {
             <SearchInput
               value={query}
               onChange={setQuery}
-              placeholder="Search tasks..."
+              placeholder="Search tasks and full logs"
               ariaLabel="Search tasks"
             />
+            {query.trim() && (
+              <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
+                <span>{loading ? 'Searching tasks and full logs…' : 'Includes names, notes, config, scripts and full log files'}</span>
+                <button
+                  type="button"
+                  className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5"
+                  onClick={() => loading ? useTaskStore.getState().cancelTaskSearch() : void fetchTasks()}
+                >
+                  {loading ? 'Cancel' : 'Refresh'}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
@@ -1315,7 +1324,6 @@ const TaskCard = memo(function TaskCard({
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
   const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
   const cardDescription = task._load_error || task.preview_text || 'No preview available.'
-  const searchMatches = useMemo(() => getTaskSearchMatches(task, query), [task, query])
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
   const taskPending = Boolean(pendingAction)
   const gpuWait = task.status === 'queued' ? task.gpu_wait : null
@@ -1434,19 +1442,6 @@ const TaskCard = memo(function TaskCard({
           <span className="truncate" title={folderName}>{folderName}</span>
         </div>
 
-        {searchMatches.length > 0 && (
-          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-2xs text-txt-secondary" title={searchMatches.map(match => `${match.label}: ${match.detail}`).join('\n')}>
-            <Search className="h-3 w-3 flex-none text-accent" />
-            <span className="flex-none text-txt-tertiary">Matched in</span>
-            <div className="flex min-w-0 flex-wrap gap-1">
-              {searchMatches.slice(0, 3).map(match => (
-                <span key={match.label} className="rounded-md bg-accent/8 px-1.5 py-0.5 font-medium text-accent">
-                  {match.label}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
 
         {task._load_error && (
           <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs font-medium text-rose-700 dark:text-rose-300" title={task._load_error}>
@@ -1456,6 +1451,9 @@ const TaskCard = memo(function TaskCard({
         )}
       </div>
 
+      {query.trim() && <div className="mx-3 mb-2 border-t border-border-subtle pt-1">
+        <TaskSearchMatches task={task} onSelect={() => onCardClick(task)} exportMode={selectMode} action={selectMode ? 'Select' : 'View'} />
+      </div>}
       {!selectMode && (
         <div className="mx-3 flex items-center justify-between gap-2 border-t border-border-subtle pb-2 pt-1.5">
           <div className="flex items-center gap-0.5" aria-label={`Reorder ${task.name}`}>
@@ -1657,71 +1655,6 @@ function DropIndicator({ placement, axis }: { placement: DragPlacement; axis: 'h
   )
 }
 
-function normalizeSearchValue(value: unknown) {
-  return String(value ?? '').toLowerCase().replace(/\s*:\s*/g, ':')
-}
-
-function getSearchNeedles(query: string) {
-  return query
-    .split('\n')
-    .map(line => normalizeSearchValue(line.trim()))
-    .filter(Boolean)
-}
-
-function flattenTaskConfig(value: unknown, prefix = ''): string[] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return []
-  }
-
-  const rows: string[] = []
-  for (const [key, childValue] of Object.entries(value as Record<string, unknown>)) {
-    if (key.startsWith('_meta')) {
-      continue
-    }
-    const fullKey = prefix ? `${prefix}.${key}` : key
-    if (childValue && typeof childValue === 'object' && !Array.isArray(childValue)) {
-      rows.push(...flattenTaskConfig(childValue, fullKey))
-    } else {
-      rows.push(`${fullKey}: ${String(childValue ?? '')}`)
-      const shortKey = fullKey.split('.').pop()
-      if (shortKey && shortKey !== fullKey) {
-        rows.push(`${shortKey}: ${String(childValue ?? '')}`)
-      }
-    }
-  }
-  return rows
-}
-
-function fieldHasNeedle(text: string, needles: string[]) {
-  const normalized = normalizeSearchValue(text)
-  return needles.some(needle => normalized.includes(needle))
-}
-
-function getTaskSearchMatches(task: Task, query: string): TaskSearchMatch[] {
-  const needles = getSearchNeedles(query)
-  if (needles.length === 0) {
-    return []
-  }
-
-  const envText = Object.entries(task.env || {})
-    .map(([key, value]) => `${key}: ${value}`)
-    .join('\n')
-  const configText = task.task_kind === 'shell'
-    ? task.config_text || task.preview_text || task.search_text || ''
-    : flattenTaskConfig(task.config || {}).join('\n') || task.search_text || task.preview_text || ''
-
-  const fields: TaskSearchMatch[] = [
-    { label: 'Name', detail: task.name },
-    { label: 'Notes', detail: task.notes || '' },
-    { label: 'Env', detail: envText },
-    {
-      label: task.task_kind === 'shell' ? 'Script' : 'Config',
-      detail: configText,
-    },
-  ]
-
-  return fields.filter(field => field.detail && fieldHasNeedle(field.detail, needles))
-}
 
 function getActionButton(task: Task) {
   if (task._load_error) {

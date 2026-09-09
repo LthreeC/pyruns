@@ -354,7 +354,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'api.getTask(selectedTaskName, false)',
             'title="Current Task"',
             '!sidebarSearchActive',
-            'if (!selectedTaskName || selectedTaskFromList)',
+            'if (!selectedTaskName || (selectedTaskFromList && !duringSearch))',
             '/not found/i.test(errorMessage(error))',
             'selectedTaskName: null',
             'Math.min(35, Math.max(10, sidebarWidthRaw))',
@@ -709,7 +709,7 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "<SearchResultGroup" in monitor
     assert "task.search_match_count" in monitor
     assert "searchResultSummary" in monitor
-    assert "TASK_SEARCH_FIELD_LABELS" in monitor
+    assert "<TaskSearchMatches" in monitor
     assert 'ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"' in monitor
     assert "!event.shiftKey && key === 'f'" in monitor
     assert "MIN_MONITOR_SIDEBAR_WIDTH_PX = 240" in monitor
@@ -723,7 +723,7 @@ def test_react_monitor_merges_run_action_response_before_next_poll():
     assert "task = (await api.runTask(currentTaskName)).task" in monitor
     assert "task = (await api.cancelTask(currentTaskName)).task" in monitor
     assert "monitorTasks: exists" in store
-    assert "? state.monitorTasks.map(item => item.name === task.name ? task : item)" in store
+    assert "? state.monitorTasks.map(item => item.name === task.name ? { ...item, ...task } : item)" in store
     assert ": [task, ...state.monitorTasks]" in store
 
 
@@ -952,7 +952,7 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "summary?: boolean" in api
     assert "sp.set('summary', String(params.summary))" in api
     assert "sp.set('compact', String(params.compact))" in api
-    assert "api.getTasks({ query, status: statusFilter, sort: sortMode, offset, limit, summary: true })" in store
+    assert "includeLogs: true" in store
     assert "page.items.length === 0" in store
     assert "Math.floor((page.total - 1) / limit) * limit" in store
     assert "retryPage = await api.getTasks" in store
@@ -963,15 +963,13 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "limit: 0" not in monitor_fetch
     assert "api.getTask(task.name).then(fullTask" in manager
     assert "api.getTask(task.name).then(fullTask" in monitor
-    assert "task.search_text || task.preview_text || ''" in manager
     assert "dropIndicator" in manager
     assert "shadow-[0_0_0_3px_rgba(20,184,166,0.16)]" in manager
     assert "scale-[0.985]" in manager
     assert "transition-[border-color,box-shadow,background-color,opacity,transform]" in manager
     assert "data-task-card={task.name}" in manager
     assert "data-task-card-pinned={task.pinned ? 'true' : 'false'}" in manager
-    assert "getTaskSearchMatches(task, query)" in manager
-    assert "Matched in" in manager
+    assert "<TaskSearchMatches" in manager
     assert "Drop here to pin" in manager
     assert 'title="Pinned Tasks"' in manager
     assert "count={pinnedTasks.length}" in manager
