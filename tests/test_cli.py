@@ -116,16 +116,24 @@ def _run_cli(
 ) -> subprocess.CompletedProcess[str]:
     env = _source_env()
     env.update(env_overrides or {})
-    return subprocess.run(
-        _source_cli(*args),
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    try:
+        return subprocess.run(
+            _source_cli(*args),
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        pytest.fail(
+            f"CLI {args!r} timed out after {timeout}s.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            pytrace=False,
+        )
 
 
 def _run_named_cli(
@@ -1479,6 +1487,9 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
     ]
 
     task_name = f"direct-{kind}"
+    # This checks behavior, including runner/shell startup and log draining;
+    # busy CI hosts need more headroom than a single native command.
+    run_timeout = 60
     first = _run_cli(
         project,
         "exec",
@@ -1489,6 +1500,7 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
         "--",
         str(script.relative_to(project)),
         *arguments,
+        timeout=run_timeout,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     assert _script_contract_lines(first.stdout) == direct_lines
@@ -1496,7 +1508,7 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
     rerun_cwd = tmp_path / "rerun elsewhere"
     rerun_cwd.mkdir()
     workspace = project / "_pyruns_" / "_shell_"
-    rerun = _run_cli(rerun_cwd, "-w", str(workspace), "run", task_name)
+    rerun = _run_cli(rerun_cwd, "-w", str(workspace), "run", task_name, timeout=run_timeout)
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
     assert _script_contract_lines(rerun.stdout) == direct_lines
 
@@ -1521,6 +1533,7 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
         "--",
         str(script.relative_to(project)),
         "fail",
+        timeout=run_timeout,
     )
     assert first_failure.returncode == 1
     rerun_failure = _run_cli(
@@ -1529,6 +1542,7 @@ def test_exec_script_file_matches_direct_execution_and_rerun(tmp_path, kind, suf
         str(workspace),
         "run",
         failure_name,
+        timeout=run_timeout,
     )
     assert rerun_failure.returncode == 1
     failure_info = load_task_info(str(workspace / TASKS_DIR / failure_name))
