@@ -340,6 +340,7 @@ export interface GPUMetric {
   pci_bus_id?: string
   driver_version?: string
   processes: GPUProcessInfo[]
+  processes_error?: string
 }
 
 export interface SystemMetrics {

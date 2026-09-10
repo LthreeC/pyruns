@@ -1005,7 +1005,10 @@ def test_system_monitor_gpu_error(mock_subprocess, mock_psutil):
     metrics = monitor.sample()
 
     # Error should return a well-formed copy of the cached device snapshot.
-    assert metrics["gpus"] == [{**cached_gpus[0], "processes": []}]
+    assert metrics["gpus"] == [{
+        **cached_gpus[0], "processes": [],
+        "processes_error": "Could not query NVIDIA processes: nvidia-smi failed",
+    }]
 
 
 @patch("pyruns.core.system_metrics.subprocess.check_output")

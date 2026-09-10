@@ -19,6 +19,7 @@ class SystemMonitor:
     """Collect CPU, RAM, and optional GPU utilization metrics."""
 
     _GPU_QUERY_TIMEOUT_SEC = 1.0
+    _GPU_PROCESS_QUERY_TIMEOUT_SEC = 5.0
     _PROCESS_COMMAND_LIMIT = 16_384
     _PROCESS_TEXT_LIMIT = 4_096
     _GPU_SUMMARY_FIELDS = (
@@ -293,7 +294,9 @@ class SystemMonitor:
                 f"{query_flag}={fields}",
                 "--format=csv,noheader,nounits",
             ],
-            timeout=self._GPU_QUERY_TIMEOUT_SEC,
+            timeout=(self._GPU_QUERY_TIMEOUT_SEC if scope == "gpu"
+                     else self._GPU_PROCESS_QUERY_TIMEOUT_SEC),
+            stderr=subprocess.PIPE,
             **hidden_subprocess_kwargs(),
         ).decode("utf-8", errors="replace").strip()
 
@@ -327,18 +330,15 @@ class SystemMonitor:
     def _get_gpu_processes(self) -> Dict[str, List[Dict[str, Any]]]:
         """Return GPU processes keyed by GPU UUID."""
 
-        try:
-            out = self._query_nvidia_smi(
-                "gpu_uuid,pid,process_name,used_memory",
-                scope="compute",
-            )
-        except Exception:
-            return {}
+        out = self._query_nvidia_smi(
+            "gpu_uuid,pid,process_name,used_memory",
+            scope="compute",
+        )
 
         processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
         for parts in self._parse_csv_rows(out):
             if len(parts) < 4:
-                continue
+                raise ValueError("NVIDIA returned an unrecognized GPU process response.")
 
             gpu_uuid, pid_raw, process_name, memory_raw = parts[:4]
             if not gpu_uuid:
@@ -374,6 +374,7 @@ class SystemMonitor:
         """Attach optional, separately cached process data to GPU rows."""
 
         processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
+        process_error = ""
         if include_processes:
             cache_expired = (
                 now - self._gpu_process_cache_at >= self._gpu_ttl_sec
@@ -381,11 +382,26 @@ class SystemMonitor:
             if refresh_processes and (
                 not self._gpu_process_cache_valid or cache_expired
             ):
-                self._gpu_process_cache = self._get_gpu_processes()
-                self._gpu_process_cache_at = now
-                self._gpu_process_cache_valid = True
+                try:
+                    processes = self._get_gpu_processes()
+                except subprocess.TimeoutExpired:
+                    process_error = (
+                        "NVIDIA process query timed out after "
+                        f"{self._GPU_PROCESS_QUERY_TIMEOUT_SEC:g}s. Retry to refresh."
+                    )
+                except Exception as exc:
+                    detail = getattr(exc, "stderr", None) or getattr(exc, "output", None) or str(exc)
+                    if isinstance(detail, bytes):
+                        detail = detail.decode("utf-8", errors="replace")
+                    process_error = f"Could not query NVIDIA processes: {str(detail).strip()[:512]}"
+                else:
+                    self._gpu_process_cache = processes
+                    self._gpu_process_cache_at = now
+                    self._gpu_process_cache_valid = True
             if self._gpu_process_cache_valid:
                 processes_by_uuid = self._gpu_process_cache
+            elif not refresh_processes:
+                process_error = "GPU process data is unavailable because NVIDIA device discovery failed."
 
         result = [
             {
@@ -393,6 +409,7 @@ class SystemMonitor:
                 "processes": list(
                     processes_by_uuid.get(str(gpu.get("uuid", "")), [])
                 ),
+                **({"processes_error": process_error} if process_error else {}),
             }
             for gpu in gpus
         ]
@@ -461,7 +478,7 @@ class SystemMonitor:
                     ),
                     now=now,
                     include_processes=include_processes,
-                    refresh_processes=False,
+                    refresh_processes=bool(self._gpu_cache),
                 )
             self._gpu_available = True
             self._gpu_fail_count = 0
@@ -553,5 +570,5 @@ class SystemMonitor:
                 ),
                 now=now,
                 include_processes=include_processes,
-                refresh_processes=False,
+                refresh_processes=bool(self._gpu_cache),
             )

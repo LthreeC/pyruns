@@ -25,6 +25,7 @@ def test_metrics_skip_gpu_process_query_until_details_are_requested(
     assert mock_check_output.call_count == 1
     assert mock_check_output.call_args.kwargs == {
         "timeout": SystemMonitor._GPU_QUERY_TIMEOUT_SEC,
+        "stderr": subprocess.PIPE,
         **hidden_subprocess_kwargs(),
     }
     assert metrics["gpus"][0]["processes"] == []
@@ -239,7 +240,7 @@ def test_summary_and_detail_gpu_snapshots_use_separate_query_depth(
 @patch("pyruns.core.system_metrics.time.monotonic")
 @patch("pyruns.core.system_metrics.psutil")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
-def test_detail_request_keeps_process_shape_when_gpu_refresh_fails(
+def test_detail_request_reads_processes_when_gpu_refresh_fails(
     mock_check_output,
     mock_psutil,
     mock_monotonic,
@@ -250,6 +251,7 @@ def test_detail_request_keeps_process_shape_when_gpu_refresh_fails(
     mock_check_output.side_effect = [
         b"0, NVIDIA RTX 5090, GPU-AAA, 5.0, 1024.0, 24576.0\n",
         OSError("nvidia-smi temporarily unavailable"),
+        b"GPU-AAA, 1234, python, 2048\n",
     ]
     monitor = SystemMonitor(gpu_ttl_sec=1.5)
 
@@ -258,4 +260,52 @@ def test_detail_request_keeps_process_shape_when_gpu_refresh_fails(
 
     assert summary_gpu["processes"] == []
     assert detail_gpu["uuid"] == "GPU-AAA"
-    assert detail_gpu["processes"] == []
+    assert detail_gpu["processes"][0]["pid"] == 1234
+    assert "processes_error" not in detail_gpu
+
+
+@pytest.mark.parametrize("failure", [
+    subprocess.TimeoutExpired("nvidia-smi", 5),
+    subprocess.CalledProcessError(1, "nvidia-smi", stderr=b"Insufficient Permissions"),
+    OSError("nvidia-smi temporarily unavailable"),
+])
+@pytest.mark.parametrize("has_previous", [False, True])
+def test_gpu_process_query_failure_is_visible_and_retry_recovers(failure, has_previous):
+    monitor = SystemMonitor(gpu_ttl_sec=0)
+    device = b"0, NVIDIA RTX 5090, GPU-AAA, 75, 8192, 24576\n"
+    processes = b"GPU-AAA, 1234, python, 2048\n"
+    with patch("pyruns.core.system_metrics.subprocess.check_output") as query:
+        if has_previous:
+            query.side_effect = [device, processes]
+            monitor.sample()
+        query.side_effect = [device, failure]
+        failed = monitor.sample()["gpus"][0]
+        assert failed["processes_error"]
+        assert [process["pid"] for process in failed["processes"]] == ([1234] if has_previous else [])
+        query.side_effect = [device, processes]
+        recovered = monitor.sample()["gpus"][0]
+        assert "processes_error" not in recovered
+        assert recovered["processes"][0]["pid"] == 1234
+        query.side_effect = [device, b""]
+        empty = monitor.sample()["gpus"][0]
+        assert "processes_error" not in empty
+        assert empty["processes"] == []
+
+
+def test_unrecognized_gpu_process_response_is_not_a_successful_empty_list():
+    with patch("pyruns.core.system_metrics.subprocess.check_output") as query:
+        query.side_effect = [
+            b"0, NVIDIA RTX 5090, GPU-AAA, 75, 8192, 24576\n",
+            b"[Not Supported]\n",
+        ]
+        gpu = SystemMonitor().sample()["gpus"][0]
+        assert "unrecognized" in gpu["processes_error"]
+
+
+def test_gpu_process_query_has_separate_on_demand_timeout():
+    with patch("pyruns.core.system_metrics.subprocess.check_output", return_value=b"") as query:
+        monitor = SystemMonitor()
+        monitor._get_gpu_processes()
+        assert query.call_args.kwargs["timeout"] == 5
+        monitor.sample(include_processes=False)
+        assert query.call_args.kwargs["timeout"] == 1

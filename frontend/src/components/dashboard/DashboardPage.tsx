@@ -815,6 +815,7 @@ function GpuProcessDialog({
     ? processMemoryTotal / knownMemoryProcesses.length
     : null
   const reportedMemoryFree = gpu.mem_free == null ? memoryFree : Math.max(0, gpu.mem_free)
+  const processError = error || gpu.processes_error || ''
 
   return (
     <div
@@ -890,7 +891,7 @@ function GpuProcessDialog({
               <DetailMetric label="Temperature" value={formatOptionalMetric(gpu.temperature_c, ' °C')} tone={(gpu.temperature_c ?? 0) >= 80 ? 'amber' : 'slate'} icon={Thermometer} />
               <DetailMetric label="Power" value={formatPower(gpu.power_draw_w, gpu.power_limit_w)} tone="slate" icon={Zap} />
               <DetailMetric label="Fan" value={formatOptionalMetric(gpu.fan_speed_pct, '%')} tone="slate" icon={Fan} />
-              <DetailMetric label="Processes" value={loading ? '--' : String(gpu.processes.length)} tone={gpu.processes.length ? 'emerald' : 'slate'} />
+              <DetailMetric label="Processes" value={loading || processError ? '--' : String(gpu.processes.length)} tone={gpu.processes.length ? 'emerald' : 'slate'} />
             </div>
           </section>
 
@@ -918,13 +919,13 @@ function GpuProcessDialog({
                 GPU processes
               </h3>
               <span className="text-2xs tabular-nums text-txt-tertiary" aria-live="polite">
-                {loading ? 'Refreshing' : `${gpu.processes.length} reported`}
+                {loading ? 'Refreshing' : processError ? 'Unavailable' : `${gpu.processes.length} reported`}
               </span>
             </div>
-          {error && (
+          {processError && (
             <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
-              <span>{error}</span>
-              <button type="button" onClick={onRetry} className="touch-target inline-flex min-h-11 flex-none items-center rounded-md px-2 font-medium text-accent hover:text-accent-hover sm:min-h-0">Retry</button>
+              <span>{processError}{gpu.processes.length > 0 && ' Showing the last successful process list.'}</span>
+              <button type="button" onClick={onRetry} disabled={loading} className="touch-target inline-flex min-h-11 flex-none items-center rounded-md px-2 font-medium text-accent hover:text-accent-hover disabled:cursor-wait disabled:opacity-50 sm:min-h-0">Retry</button>
             </div>
           )}
           {loading && gpu.processes.length === 0 ? (
@@ -933,7 +934,9 @@ function GpuProcessDialog({
             </div>
           ) : gpu.processes.length === 0 ? (
             <div className="rounded-md bg-surface-overlay/60 px-4 py-8 text-center text-sm text-txt-tertiary">
-              No GPU processes are currently reported by NVIDIA for this GPU.
+              {processError
+                ? 'The GPU process list could not be refreshed.'
+                : 'No compute processes are currently reported by NVIDIA for this GPU.'}
             </div>
           ) : (
             <div className="overflow-hidden rounded-md border border-border-subtle">

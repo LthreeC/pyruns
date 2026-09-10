@@ -526,6 +526,57 @@ test('GPU card opens detailed device and process information', async ({ page, is
   ).__processDetailsAborts)).toBe(1)
 })
 
+test('GPU process query failures are distinct from an empty list and can recover', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  let processError = 'NVIDIA process query timed out after 5s. Retry to refresh.'
+  let processes: { pid: number; name: string; memory_mb: number }[] = []
+  let detailRequests = 0
+  let releaseRetry!: () => void
+  const retryReady = new Promise<void>(resolve => { releaseRetry = resolve })
+  await page.route('**/api/system/metrics**', async route => {
+    const includeProcesses = new URL(route.request().url()).searchParams.get('include_processes') === 'true'
+    if (includeProcesses) detailRequests += 1
+    if (includeProcesses && detailRequests === 2) await retryReady
+    return route.fulfill({ json: {
+      cpu_percent: 10, mem_percent: 20,
+      gpus: [{
+        id: 0, index: 0, uuid: 'GPU-TEST', name: 'Test GPU', util: 70,
+        mem_used: 8192, mem_total: 24576,
+        processes: includeProcesses ? processes : [],
+        ...(includeProcesses && processError ? { processes_error: processError } : {}),
+      }],
+    } })
+  })
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'View details for GPU 0 Test GPU' }).click()
+  const dialog = page.getByRole('dialog', { name: 'GPU 0 | Test GPU' })
+  await expect(dialog.getByRole('alert')).toContainText(processError)
+  await expect(dialog.getByText('No compute processes', { exact: false })).toHaveCount(0)
+  await expect(dialog.getByText('0 reported')).toHaveCount(0)
+  await page.screenshot({ path: testInfo.outputPath('gpu-query-failure.png') })
+  processError = ''
+  processes = [{ pid: 4321, name: 'python', memory_mb: 2048 }]
+  const retry = dialog.getByRole('button', { name: 'Retry', exact: true })
+  await retry.click()
+  await expect(retry).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: 'Refresh GPU details' })).toBeDisabled()
+  releaseRetry()
+  await expect(dialog.getByRole('alert')).toHaveCount(0)
+  const row = dialog.getByRole('button', { name: /details for process 4321/ })
+  await expect(row).toBeVisible()
+  processError = 'Could not query NVIDIA processes: Insufficient Permissions'
+  await dialog.getByRole('button', { name: 'Refresh GPU details' }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Showing the last successful process list.')
+  await expect(row).toBeVisible()
+  processError = ''
+  processes = []
+  await dialog.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toHaveCount(0)
+  await expect(dialog.getByText('No compute processes', { exact: false })).toBeVisible()
+  await expect(row).toHaveCount(0)
+  expect(detailRequests).toBe(4)
+})
+
 test('runtime GPU preview cancels hidden requests and recovers from timeout', async ({ page }) => {
   await page.clock.install()
   await page.addInitScript(() => {
