@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import clsx from 'clsx'
 
-type ActionButtonVariant = 'primary' | 'success' | 'danger' | 'ghost' | 'accentTint'
+type ActionButtonVariant = 'primary' | 'success' | 'danger' | 'secondary' | 'ghost' | 'accentTint'
 type ActionButtonSize = 'sm' | 'md'
 
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -15,6 +15,7 @@ const VARIANT_STYLES: Record<ActionButtonVariant, string> = {
   primary: 'bg-accent text-white hover:bg-accent-hover',
   success: 'bg-emerald-700 text-white hover:bg-emerald-800',
   danger: 'bg-rose-700 text-white hover:bg-rose-800',
+  secondary: 'border border-border bg-surface-raised text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
   ghost: 'bg-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
   accentTint: 'bg-accent/8 text-accent hover:bg-accent/12',
 }

@@ -2422,7 +2422,14 @@ def test_windows_terminal_capture_forces_native_conpty(monkeypatch, tmp_path):
 
     fake_process = MagicMock()
     fake_process.pid = 1234
-    spawn = MagicMock(return_value=fake_process)
+    monkeypatch.setenv("PYWINPTY_BACKEND", "1")
+
+    def native_spawn(*args, backend=None, **kwargs):
+        # Match pywinpty's fallback: numeric zero would select legacy WinPTY.
+        assert int(backend or os.environ.get("PYWINPTY_BACKEND")) == 0
+        return fake_process
+
+    spawn = MagicMock(side_effect=native_spawn)
     monkeypatch.setitem(
         sys.modules,
         "winpty",
@@ -2435,13 +2442,19 @@ def test_windows_terminal_capture_forces_native_conpty(monkeypatch, tmp_path):
     adapter = terminal_capture._spawn_windows_conpty(
         ["powershell", "-File", "task.ps1"],
         cwd=str(tmp_path),
-        env={"PATH": "test"},
+        env={"PATH": "test", "LINES": "60"},
     )
 
     assert adapter.pid == 1234
-    assert spawn.call_args.kwargs["backend"] == 0
+    assert spawn.call_args.kwargs["backend"] == "0"
+    assert spawn.call_args.kwargs["dimensions"] == (60, 160)
+    assert os.environ["PYWINPTY_BACKEND"] == "1"
     assert spawn.call_args.kwargs["env"]["TERM"] == "xterm-256color"
     assert spawn.call_args.kwargs["env"]["COLORTERM"] == "truecolor"
+    fake_process.read.side_effect = [
+        "\x1b[K\r\n" * 59 + "\x1b[K\x1b[H", "next\r\n",
+    ]
+    assert adapter.stdout.read1(8192) == b"next\r\n"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires a POSIX PTY")
@@ -3073,6 +3086,7 @@ def test_run_task_worker_posix_starts_child_in_new_session(mock_popen, mock_emit
     with (
         patch("pyruns.core.executor._is_windows", return_value=False),
         patch("pyruns.core.executor._build_run_source_state", return_value=""),
+        patch("pyruns.core.run_environment.SystemMonitor._query_nvidia_smi", return_value=""),
     ):
         res = run_task_worker(
             task_dir=task_dir,
@@ -3357,6 +3371,7 @@ def test_run_task_worker_missing_argv_command_retries_through_workspace_shell(
     monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: None)
     monkeypatch.setattr(executor, "_build_run_source_state", lambda **kwargs: {})
+    monkeypatch.setattr(SystemMonitor, "_query_nvidia_smi", lambda *args, **kwargs: "")
 
     result = executor.run_task_worker(
         task_dir=str(task_dir),
@@ -8513,6 +8528,70 @@ class TestBuildExportCSV:
         assert row["name"].startswith("'=")
         assert row["note"] == "'+cmd"
         assert "'=dangerous-header" in row
+
+
+def test_run_environment_collection_does_not_delay_log_stream(tmp_path, monkeypatch):
+    task_dir = _write_worker_task_info(tmp_path, "environment-stream")
+    monkeypatch.setattr(executor, "_build_command", lambda *a, **k: ([sys.executable], task_dir, []))
+    monkeypatch.setattr(executor, "_build_run_source_state", lambda **kwargs: "git test | clean")
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: None)
+    process = MagicMock(pid=99999, returncode=0)
+    process.stdout.read1.side_effect = [b"training started\r\n", b""]
+    process.wait.return_value = 0
+    monkeypatch.setattr(executor, "_spawn_captured_process", lambda *a, **k: process)
+    output_emitted = threading.Event()
+    streamed_during_collection = []
+
+    def collect(*args, **kwargs):
+        # Simulate a GPU query waiting while the command produces output.
+        streamed_during_collection.append(output_emitted.wait(2))
+        return {"host": "gpu-server"}
+
+    def emit(_name, text, **kwargs):
+        if "training started" in text:
+            output_emitted.set()
+
+    monkeypatch.setattr(executor, "collect_run_environment", collect)
+    monkeypatch.setattr(executor.log_emitter, "emit", emit)
+    result = executor.run_task_worker(task_dir, "environment-stream", "now", {}, run_index=1)
+
+    assert result["status"] == "completed"
+    assert streamed_during_collection == [True]
+    assert load_task_info(task_dir)["run_environments"] == [{"host": "gpu-server"}]
+
+
+def test_run_environment_survives_rerun_and_runner_cleanup(tmp_path, monkeypatch):
+    from pyruns.core import executor
+
+    task_dir = _write_worker_task_info(tmp_path, "environment-history")
+    monkeypatch.setattr(executor, "_build_command", lambda *a, **k: ([sys.executable, "-c", "pass"], task_dir, []))
+    monkeypatch.setattr(executor, "_build_run_source_state", lambda **kwargs: "git test | clean")
+    environments = [{"host": "server-one"}, {"host": "server-two"}]
+    captured = []
+
+    def collect(command, env, workdir, **kwargs):
+        captured.append({"command": command, **kwargs})
+        return environments[len(captured) - 1]
+
+    monkeypatch.setattr(executor, "collect_run_environment", collect)
+    for run_index in (1, 2):
+        def claim(info):
+            ensure_run_slot(info, run_index)
+            info["runner_id"] = "test-runner"
+            info["runner_host"] = "current-host"
+            info["_gpu_assignment"] = {"gpu_ids": [run_index]}
+        update_task_info(task_dir, claim)
+        result = executor.run_task_worker(
+            task_dir, "environment-history", "now", {}, run_index=run_index,
+            runner_id="test-runner", runner_host="current-host",
+        )
+        assert result["status"] == "completed"
+
+    info = load_task_info(task_dir)
+    assert info["run_environments"] == environments
+    assert "runner_host" not in info
+    assert "_gpu_assignment" not in info
+    assert [entry["assigned_gpu_ids"] for entry in captured] == [[1], [2]]
 
 
 def test_run_history_normalization_aligns_process_and_source_metadata():

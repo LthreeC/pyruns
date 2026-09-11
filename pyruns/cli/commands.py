@@ -514,6 +514,7 @@ def _selected_run_record(
         "duration_seconds": value_at("durations"),
         "exit_code": value_at("exit_codes"),
         "source_state": value_at("source_states") or None,
+        "environment": value_at("run_environments") or None,
         "record": value_at("records") or {},
         "track": value_at("tracks") or {},
         "log": (
@@ -631,6 +632,7 @@ def _task_record(
                 "durations": info.get("durations", task.get("durations", [])) or [],
                 "exit_codes": info.get("exit_codes", task.get("exit_codes", [])) or [],
                 "source_states": info.get("source_states", task.get("source_states", [])) or [],
+                "run_environments": info.get("run_environments", task.get("run_environments", [])) or [],
                 "records": info.get("records", task.get("records", [])) or [],
                 "tracks": info.get("tracks", task.get("tracks", [])) or [],
                 "env": info.get("env", task.get("env", {})) or {},

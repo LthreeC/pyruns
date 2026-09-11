@@ -100,6 +100,7 @@ const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'durations',
   'exit_codes',
   'source_states',
+  'run_environments',
   'records',
   'tracks',
   'notes',
@@ -1781,7 +1782,7 @@ export default function MonitorPage() {
       )}
 
       <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" style={{ background: '#0A0A0B' }}>
-        <div className="flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-raised px-4 py-2.5">
           {selectedTask ? (
             <>
               <StatusBadge status={selectedTask.status as TaskStatus} />
@@ -1789,7 +1790,7 @@ export default function MonitorPage() {
                 <div className="truncate text-sm font-medium text-txt-primary" title={selectedTask.name}>
                   {selectedTask.name}
                 </div>
-                <div className="truncate text-2xs text-txt-tertiary" title={selectedLog || liveLogName || 'latest log'}>
+                <div className="truncate text-xs text-txt-secondary" title={selectedLog || liveLogName || 'latest log'}>
                   {selectedLog || liveLogName || 'latest log'}
                 </div>
               </div>
@@ -1846,15 +1847,14 @@ export default function MonitorPage() {
                 </ActionButton>
               )}
 
-              <ActionButton icon={<PanelRightOpen className="h-3.5 w-3.5" />} variant="accentTint" onClick={() => openDetailTask(selectedTask)}>
+              <ActionButton icon={<PanelRightOpen className="h-3.5 w-3.5" />} variant="secondary" onClick={() => openDetailTask(selectedTask)}>
                 View Details
               </ActionButton>
 
               <CopyButton
                 value={logContent}
                 label="Copy current log"
-                size="md"
-                className="border border-border-subtle bg-surface-overlay/70"
+                text="Copy log"
               />
 
               {availableLogs.length > 1 && (
@@ -1865,7 +1865,7 @@ export default function MonitorPage() {
                     title="Select log file"
                     aria-label="Select task log file"
                     disabled={loading}
-                    className="touch-input appearance-none rounded-md border border-border-subtle bg-surface-overlay px-2 py-1.5 pr-6 text-2xs text-txt-primary outline-none transition-colors focus:border-border"
+                    className="touch-input h-11 max-w-40 appearance-none rounded-md border border-border bg-surface-raised px-3 pr-7 text-xs text-txt-primary transition-colors hover:bg-surface-overlay sm:h-9"
                   >
                     {availableLogs.map(log => (
                       <option key={log} value={log}>{log}</option>

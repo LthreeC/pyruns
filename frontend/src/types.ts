@@ -53,6 +53,18 @@ export interface TaskGpuAssignment {
   waited_seconds?: number
 }
 
+export interface RunEnvironment {
+  host: string
+  system: string
+  launcher: string
+  conda_env?: string
+  cuda_visible_devices: string | null
+  assigned_gpu_ids: number[]
+  gpu_scope: 'assigned' | 'visible' | 'detected' | 'disabled'
+  gpu_status: 'ok' | 'unavailable'
+  gpus: { index: number; uuid: string; name: string; memory_total_mb: number | null }[]
+}
+
 export interface Task {
   name: string
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -73,6 +85,7 @@ export interface Task {
   durations?: (number | null)[]
   exit_codes?: (number | null)[]
   source_states?: string[]
+  run_environments?: (RunEnvironment | null)[]
   run_statuses?: string[]
   pid_create_times?: (number | null)[]
   progress: number

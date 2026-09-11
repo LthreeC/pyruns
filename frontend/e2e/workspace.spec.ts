@@ -1099,13 +1099,13 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')
   await expect(page.getByRole('textbox', { name: 'Environment variable value' })).toHaveValue('review')
   await page.getByRole('tab', { name: 'Info' }).click()
-  await page.getByText('Run #1', { exact: true }).click()
+  await page.getByRole('region', { name: 'Run History', exact: true }).locator('summary').filter({ hasText: 'Run #1' }).click()
   await expect(page.getByText('2026-08-09T00:01:00Z')).toBeVisible()
   await expect(page.getByText('1234')).toBeVisible()
   await page.getByRole('tab', { name: 'Script' }).click()
   await expect(page.getByText('Payload File', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy payload path' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Copy configuration' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Copy script' })).toBeVisible()
 
   expect(browserErrors).toEqual([])
 })
@@ -1436,6 +1436,7 @@ test('task detail only offers replacement after loading the newer value', async 
   await expect(notes).toHaveValue('local draft')
   await expect(page.getByRole('button', { name: 'Replace Notes' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Save Notes' })).toBeVisible()
+  await expect(page.getByText('Could not load newer notes', { exact: true })).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Save Notes' }).click()
   await expect(page.getByText('Another editor saved newer notes. Your draft is unchanged.')).toBeVisible()
@@ -1456,6 +1457,7 @@ test('task detail only offers replacement after loading the newer value', async 
   await expect(envValue).toHaveValue('draft')
   await expect(page.getByRole('button', { name: 'Replace Env' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible()
+  await expect(page.getByText('Could not load newer environment', { exact: true })).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(page.getByText('Another editor saved newer environment variables. Your draft is unchanged.')).toBeVisible()

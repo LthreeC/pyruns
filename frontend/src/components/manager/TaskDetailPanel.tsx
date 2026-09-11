@@ -17,8 +17,9 @@ import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CopyButton from '@/components/shared/CopyButton'
+import ActionButton from '@/components/shared/ActionButton'
 import { useTaskDetailDraftStore, useToastStore } from '@/store'
-import type { Task } from '@/types'
+import type { RunEnvironment, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { formatElapsedDuration, formatStoredCommand, parseTaskTimestampMillis } from '@/utils/taskRuntime'
@@ -135,6 +136,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState(task.name)
   const [notesDirty, setNotesDirty] = useState(false)
+  const [notesSaved, setNotesSaved] = useState(false)
   const [notesConflict, setNotesConflict] = useState(false)
   const [notesSaveError, setNotesSaveError] = useState('')
   const [envDirty, setEnvDirty] = useState(false)
@@ -213,6 +215,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     setSaving(false)
     setRenaming(false)
     setNotesDirty(false)
+    setNotesSaved(false)
     setNotesConflict(false)
     setNotesSaveError('')
     setEnvDirty(false)
@@ -344,6 +347,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     const draftRevision = notesDraftRevisionRef.current
     const expectedNotes = notesBaseRef.current
     setSaving(true)
+    setNotesSaved(false)
     setNotesSaveError('')
     try {
       const response = await api.updateNotes(taskName, notes, expectedNotes)
@@ -356,9 +360,9 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
       if (notesDraftRevisionRef.current === draftRevision) {
         setNotes(savedNotes)
         setNotesDirty(false)
+        setNotesSaved(true)
       }
       onRefresh()
-      notify({ tone: 'success', title: 'Notes saved', detail: taskName })
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
       if (err instanceof api.ApiError && err.status === 409) {
@@ -371,30 +375,19 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
           setNotesConflict(false)
           setNotesSaveError('Newer notes exist, but their latest version could not be loaded. Your draft is safe. Retry Save Notes before replacing anything.')
           onRefresh()
-          notify({
-            tone: 'error',
-            title: 'Could not load newer notes',
-            detail: 'Your draft was kept. Retry Save Notes to check the latest version.',
-          })
           return
         }
         setNotesConflict(true)
         setNotesSaveError('')
         onRefresh()
-        notify({
-          tone: 'error',
-          title: 'Notes changed elsewhere',
-          detail: 'Your draft was kept. Saving it again will replace the newer notes.',
-        })
         return
       }
       const message = errorMessage(err)
       setNotesSaveError(`Could not save notes. Your draft is safe. ${message}`)
-      notify({ tone: 'error', title: 'Could not save notes', detail: message })
     } finally {
       if (requestId === taskRequestSeqRef.current) setSaving(false)
     }
-  }, [task.name, notes, onTaskUpdated, onRefresh, notify])
+  }, [task.name, notes, onTaskUpdated, onRefresh])
 
   const handleSaveEnv = useCallback(async () => {
     const validationMessage = getEnvValidationMessage(envPairs)
@@ -442,22 +435,12 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
           setEnvSaveStatus('error')
           setEnvSaveError('Newer environment variables exist, but their latest version could not be loaded. Your draft is safe. Retry Save before replacing anything.')
           onRefresh()
-          notify({
-            tone: 'error',
-            title: 'Could not load newer environment',
-            detail: 'Your draft was kept. Retry Save to check the latest version.',
-          })
           return
         }
         setEnvConflict(true)
         setEnvSaveStatus('error')
         setEnvSaveError('')
         onRefresh()
-        notify({
-          tone: 'error',
-          title: 'Environment changed elsewhere',
-          detail: 'Your draft was kept. Saving it again will replace the newer environment.',
-        })
         return
       }
       if (envDraftRevisionRef.current !== draftRevision) return
@@ -466,7 +449,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     } finally {
       if (requestId === taskRequestSeqRef.current) setSaving(false)
     }
-  }, [task.name, envPairs, onTaskUpdated, onRefresh, notify])
+  }, [task.name, envPairs, onTaskUpdated, onRefresh])
 
   function requestClose() {
     if (hasUnsavedChanges) {
@@ -628,7 +611,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     <>
       <div className="fixed inset-0 z-50 flex justify-end">
         <div
-          className="absolute inset-0 bg-black/30"
+          className="absolute inset-0 bg-black/40"
           onPointerDown={event => {
             backdropPointerStartedRef.current = event.target === event.currentTarget
           }}
@@ -772,7 +755,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 panelRef.current?.querySelector<HTMLElement>(`#task-detail-tab-${nextTab}`)?.focus()
               }}
               className={clsx(
-                'touch-target flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-xs transition-colors sm:min-h-0 sm:gap-1.5 sm:px-3 sm:py-1.5',
+                'touch-target flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-xs font-medium transition-colors sm:min-h-9 sm:gap-1.5 sm:px-3 sm:py-1.5',
                 tab === key
                   ? 'bg-surface-overlay text-txt-primary'
                   : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
@@ -785,25 +768,29 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
         </div>
 
         <div
+          key={tab}
           id={`task-detail-panel-${tab}`}
           role="tabpanel"
           aria-labelledby={`task-detail-tab-${tab}`}
-          className="flex-1 overflow-y-auto p-4"
+          className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"
         >
           {tab === 'info' && <InfoTab task={task} />}
           {tab === 'config' && <ConfigTab task={task} />}
           {tab === 'notes' && (
-            <div className="flex h-full flex-col gap-3">
+            <div className="flex min-h-full flex-col gap-3">
+              <label htmlFor="task-notes" className="text-sm font-semibold text-txt-primary">Notes</label>
               <textarea
+                id="task-notes"
                 value={notes}
                 onChange={event => {
                   notesDraftRevisionRef.current += 1
                   setNotes(event.target.value)
                   setNotesDirty(true)
+                  setNotesSaved(false)
                 }}
                 placeholder="Add notes..."
                 aria-label="Task notes"
-                className="min-h-[220px] flex-1 resize-none rounded-md border border-border-subtle bg-surface-overlay p-3 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border"
+                className="min-h-[220px] flex-1 resize-y rounded-lg border border-border bg-surface-base p-3 text-sm leading-relaxed text-txt-primary placeholder:text-txt-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
               />
               {notesFeedback && (
                 <div
@@ -818,29 +805,36 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                   {notesFeedback}
                 </div>
               )}
-              <button
-                type="button"
-                onClick={() => void handleSaveNotes()}
-                disabled={saving}
-                className="touch-target min-h-11 self-end rounded-md border border-border-subtle px-3 py-2 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay disabled:opacity-50"
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  <Save className="h-3.5 w-3.5" />
-                  {notesConflict ? 'Replace Notes' : 'Save Notes'}
-                </span>
-              </button>
+              <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle bg-surface-raised py-3">
+                <span role="status" className="text-xs text-txt-secondary">{notesFeedback ? '' : notesDirty ? 'Unsaved changes' : notesSaved ? 'Saved' : ''}</span>
+                <ActionButton
+                  onClick={() => void handleSaveNotes()}
+                  disabled={saving || !notesDirty}
+                  variant="primary"
+                  icon={saving ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                >
+                  {saving ? 'Saving...' : notesConflict ? 'Replace Notes' : 'Save Notes'}
+                </ActionButton>
+              </div>
             </div>
           )}
           {tab === 'env' && (
             <div className="flex flex-col gap-3">
-              <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_44px] gap-2 px-0.5 text-2xs font-medium text-txt-tertiary sm:grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_44px]">
-                <span>Key</span>
-                <span>Value</span>
-                <span className="sr-only">Actions</span>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-txt-primary">Environment Variables</h3>
+                <p className="text-xs leading-5 text-txt-secondary">Task overrides applied on the next run.</p>
               </div>
 
+              {envPairs.length > 0 && (
+                <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,3fr)_36px] gap-2 px-0.5 text-xs font-medium text-txt-secondary sm:grid">
+                  <span>Key</span>
+                  <span>Value</span>
+                  <span className="sr-only">Actions</span>
+                </div>
+              )}
+
               {envPairs.length === 0 && (
-                <div className="rounded-md border border-dashed border-border-subtle px-3 py-5 text-center text-xs text-txt-tertiary">
+                <div className="rounded-lg border border-dashed border-border bg-surface-base px-3 py-6 text-center text-xs text-txt-secondary">
                   No environment variables
                 </div>
               )}
@@ -852,42 +846,50 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                   || Boolean(normalizedKey && !ENV_NAME_PATTERN.test(normalizedKey))
 
                 return (
-                <div key={pair.id} className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_44px] items-center gap-2 sm:grid-cols-[minmax(120px,2fr)_minmax(160px,3fr)_44px]">
-                  <input
-                    ref={node => { envKeyInputRefs.current[pair.id] = node }}
-                    value={pair.key}
-                    onChange={event => {
-                      setEnvPairs(current => current.map(envPair => (
-                        envPair.id === pair.id ? { ...envPair, key: event.target.value } : envPair
-                      )))
-                      markEnvDirty()
-                    }}
-                    placeholder="KEY"
-                    aria-label="Environment variable key"
-                    className={clsx(
-                      'touch-input min-h-11 min-w-0 w-full rounded-md border bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors sm:min-h-0',
-                      keyHasError ? 'border-rose-400/70 focus:border-rose-400' : 'border-border-subtle focus:border-border',
-                    )}
-                  />
-                  <input
-                    value={pair.value}
-                    onChange={event => {
-                      setEnvPairs(current => current.map(envPair => (
-                        envPair.id === pair.id ? { ...envPair, value: event.target.value } : envPair
-                      )))
-                      markEnvDirty()
-                    }}
-                    placeholder="value"
-                    aria-label="Environment variable value"
-                    className="touch-input min-h-11 min-w-0 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-xs font-mono text-txt-primary outline-none transition-colors focus:border-border sm:min-h-0"
-                  />
+                <div key={pair.id} className="grid grid-cols-[minmax(0,1fr)_44px] items-start gap-2 rounded-lg border border-border bg-surface-base p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)_36px] sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
+                  <label className="min-w-0 space-y-1">
+                    <span className="text-xs font-medium text-txt-secondary sm:hidden">Key</span>
+                    <input
+                      ref={node => { envKeyInputRefs.current[pair.id] = node }}
+                      value={pair.key}
+                      onChange={event => {
+                        setEnvPairs(current => current.map(envPair => (
+                          envPair.id === pair.id ? { ...envPair, key: event.target.value } : envPair
+                        )))
+                        markEnvDirty()
+                      }}
+                      placeholder="KEY"
+                      aria-label="Environment variable key"
+                      aria-invalid={Boolean(keyHasError)}
+                      aria-describedby={keyHasError ? 'task-env-feedback' : undefined}
+                      className={clsx(
+                        'touch-input min-h-11 min-w-0 w-full rounded-md border bg-surface-base px-2.5 py-1.5 font-mono text-xs text-txt-primary placeholder:text-txt-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:min-h-9',
+                        keyHasError ? 'border-rose-400' : 'border-border',
+                      )}
+                    />
+                  </label>
+                  <label className="col-start-1 row-start-2 min-w-0 space-y-1 sm:col-auto sm:row-auto">
+                    <span className="text-xs font-medium text-txt-secondary sm:hidden">Value</span>
+                    <input
+                      value={pair.value}
+                      onChange={event => {
+                        setEnvPairs(current => current.map(envPair => (
+                          envPair.id === pair.id ? { ...envPair, value: event.target.value } : envPair
+                        )))
+                        markEnvDirty()
+                      }}
+                      placeholder="value"
+                      aria-label="Environment variable value"
+                      className="touch-input min-h-11 min-w-0 w-full rounded-md border border-border bg-surface-base px-2.5 py-1.5 font-mono text-xs text-txt-primary placeholder:text-txt-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:min-h-9"
+                    />
+                  </label>
                   <button
                     type="button"
                     onClick={() => {
                       setEnvPairs(current => current.filter(envPair => envPair.id !== pair.id))
                       markEnvDirty()
                     }}
-                    className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-400/35 dark:hover:text-rose-300"
+                    className="touch-target col-start-2 row-start-1 inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50 dark:hover:text-rose-300 sm:col-auto sm:row-auto sm:h-9 sm:w-9"
                     title="Remove variable"
                     aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}
                   >
@@ -897,61 +899,43 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 )
               })}
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
+              <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle bg-surface-raised py-3">
+                <ActionButton
                   onClick={addEnvPair}
-                  className="touch-target inline-flex min-h-11 items-center gap-1.5 rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/35"
+                  variant="secondary"
+                  icon={<Plus className="h-3.5 w-3.5" />}
                   aria-label="Add environment variable"
                 >
-                  <Plus className="h-3.5 w-3.5" />
                   Add variable
-                </button>
-                <div className="flex-1" />
-                <button
-                  type="button"
+                </ActionButton>
+                <ActionButton
                   onClick={() => void handleSaveEnv()}
                   disabled={envSaveDisabled}
                   title={envSaveTitle}
-                  className={clsx(
-                    'touch-target inline-flex min-h-11 items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed',
-                    envSaveStatus === 'saved' && !envDirty
-                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                      : envSaveDisabled
-                        ? 'border-border-subtle text-txt-secondary opacity-60'
-                        : 'border-accent bg-accent text-white hover:bg-accent-hover',
-                  )}
+                  variant={envSaveStatus === 'saved' && !envDirty ? 'secondary' : 'primary'}
+                  className={envSaveStatus === 'saved' && !envDirty ? 'disabled:!opacity-100' : undefined}
+                  icon={saving
+                    ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                    : envSaveStatus === 'saved'
+                      ? <CheckCircle2 className="h-3.5 w-3.5" />
+                      : <Save className="h-3.5 w-3.5" />}
                 >
-                  {saving ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : envSaveStatus === 'saved' ? (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  ) : (
-                    <Save className="h-3.5 w-3.5" />
-                  )}
                   {envSaveButtonLabel}
-                </button>
+                </ActionButton>
               </div>
 
-              <div className="min-h-5 text-2xs">
+              <div id="task-env-feedback" role={envFeedback ? 'alert' : 'status'} className="text-xs">
                 {envFeedback ? (
                   <span className={clsx(
-                    'inline-flex items-center gap-1.5',
-                    envFeedbackIsError ? 'text-rose-700 dark:text-rose-300' : 'text-txt-tertiary',
+                    'inline-flex items-start gap-1.5 [overflow-wrap:anywhere]',
+                    envFeedbackIsError ? 'text-rose-700 dark:text-rose-300' : 'text-txt-secondary',
                   )}>
-                    <AlertCircle className="h-3.5 w-3.5" />
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     {envFeedback}
                   </span>
                 ) : envDirty ? (
                   <span className="text-amber-700 dark:text-amber-300">Unsaved changes</span>
-                ) : envSaveStatus === 'saved' ? (
-                  <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Saved
-                  </span>
-                ) : (
-                  <span className="text-txt-tertiary">No changes</span>
-                )}
+                ) : null}
               </div>
             </div>
           )}
@@ -1044,6 +1028,7 @@ function buildRunEntries(task: Task) {
     task.durations?.length ?? 0,
     task.exit_codes?.length ?? 0,
     task.source_states?.length ?? 0,
+    task.run_environments?.length ?? 0,
     task.run_statuses?.length ?? 0,
     task.records?.length ?? 0,
   )
@@ -1056,6 +1041,7 @@ function buildRunEntries(task: Task) {
     duration: task.durations?.[index],
     exitCode: task.exit_codes?.[index],
     source: task.source_states?.[index] || '',
+    environment: task.run_environments?.[index],
     status: task.run_statuses?.[index] || '',
     record: task.records?.[index],
     recordText: formatRecordValue(task.records?.[index]),
@@ -1083,17 +1069,28 @@ function InfoValueRow({
   label,
   value,
   copyLabel,
+  detail,
+  mono = false,
 }: {
   label: string
   value: string
   copyLabel?: string
+  detail?: string
+  mono?: boolean
 }) {
   return (
-    <div className="grid grid-cols-[104px_minmax(0,1fr)] gap-3 border-b border-border-subtle py-2">
-      <span className="text-xs text-txt-tertiary">{label}</span>
-      <div className="min-w-0 break-all font-mono text-xs text-txt-primary">
-        {value}
-        {copyLabel && value !== '(none)' && <CopyButton value={value} label={copyLabel} className="ml-1.5 -my-1 align-middle" />}
+    <div className="grid grid-cols-[88px_minmax(0,1fr)] items-start gap-3 border-b border-border-subtle py-2.5 last:border-b-0 sm:grid-cols-[112px_minmax(0,1fr)]">
+      <span className="text-xs font-medium leading-6 text-txt-secondary">{label}</span>
+      <div className="flex min-w-0 items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className={clsx('whitespace-pre-wrap text-xs leading-6 text-txt-primary [overflow-wrap:anywhere]', mono && 'font-mono')}>
+            {value}
+          </div>
+          {detail && <div className="mt-0.5 whitespace-pre-wrap font-mono text-2xs leading-5 text-txt-secondary [overflow-wrap:anywhere]">{detail}</div>}
+        </div>
+        {copyLabel && value !== '(none)' && (
+          <CopyButton value={[value, detail].filter(Boolean).join('\n')} label={copyLabel} size="xs" />
+        )}
       </div>
     </div>
   )
@@ -1101,13 +1098,58 @@ function InfoValueRow({
 
 function RunMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 bg-surface-raised px-2.5 py-2">
-      <dt className="text-2xs uppercase tracking-[0.12em] text-txt-tertiary">{label}</dt>
-      <dd className="mt-1 truncate font-mono text-xs font-medium tabular-nums text-txt-primary" title={value}>
+    <div className="min-w-0 bg-surface-raised px-3 py-2.5">
+      <dt className="text-xs text-txt-secondary">{label}</dt>
+      <dd className="mt-1 break-words text-xs font-medium tabular-nums text-txt-primary" title={value}>
         {value}
       </dd>
     </div>
   )
+}
+
+function RunEnvironmentRows({ environment }: { environment?: RunEnvironment | null }) {
+  if (!environment) {
+    return <div className="py-2 text-xs text-txt-secondary">Environment was not recorded for this run.</div>
+  }
+  const groups = new Map<string, number[]>()
+  for (const gpu of environment.gpus) {
+    const capacity = gpu.memory_total_mb != null && gpu.memory_total_mb > 0
+      ? ` · ${(gpu.memory_total_mb / 1024).toFixed(0)} GiB`
+      : ''
+    const label = `${gpu.name}${capacity}`
+    groups.set(label, [...(groups.get(label) || []), gpu.index])
+  }
+  const devices = [...groups].map(([label, indexes]) =>
+    `${indexes.length} × ${label} · GPU ${indexes.join(', ')}`,
+  ).join('\n')
+  const scope = { assigned: 'Assigned', visible: 'Visible', detected: 'Detected', disabled: 'Disabled' }[environment.gpu_scope]
+  let gpuValue = environment.gpu_scope === 'disabled'
+    ? 'No visible CUDA GPUs'
+    : environment.gpu_status !== 'ok'
+      ? 'GPU information unavailable'
+      : devices ? `${scope}: ${devices}` : 'No NVIDIA GPUs detected'
+  if (environment.gpu_status !== 'ok' && environment.assigned_gpu_ids.length) {
+    gpuValue += ` · Assigned GPU ${environment.assigned_gpu_ids.join(', ')}`
+  }
+  const visibility = environment.cuda_visible_devices != null
+    ? `CUDA_VISIBLE_DEVICES=${environment.cuda_visible_devices || '(empty)'}`
+    : 'CUDA visibility unrestricted'
+  const rows = [
+    ['Host', environment.host],
+    ['System', environment.system],
+    ['GPU', gpuValue],
+    ['Launcher', [environment.launcher, environment.conda_env && `Conda: ${environment.conda_env}`].filter(Boolean).join(' · ')],
+  ]
+  return <>{rows.map(([label, value]) => (
+    <InfoValueRow
+      key={label}
+      label={label}
+      value={value || 'Not recorded'}
+      detail={label === 'GPU' ? visibility : undefined}
+      mono={label === 'Launcher'}
+      copyLabel={value ? `Copy ${label.toLowerCase()}` : undefined}
+    />
+  ))}</>
 }
 
 function InfoTab({ task }: { task: Task }) {
@@ -1196,67 +1238,91 @@ function InfoTab({ task }: { task: Task }) {
     ...(executionWorkdir ? [['Working Directory', executionWorkdir, 'Copy working directory'] as [string, string, string]] : []),
     ...(task.script ? [['Script', task.script, 'Copy script path'] as [string, string, string]] : []),
     ...(shell ? [['Shell', shell, 'Copy shell information'] as [string, string, string]] : []),
-    ...(task.command_mode ? [['Command Mode', task.command_mode] as [string, string]] : []),
+    ...(task.command_mode && task.command_mode !== getTaskMode(task) ? [['Command Mode', task.command_mode] as [string, string]] : []),
     ...(running && task.runner_host ? [['Runner Host', task.runner_host, 'Copy runner host'] as [string, string, string]] : []),
     ...(running && task.runner_id ? [['Runner ID', task.runner_id, 'Copy runner ID'] as [string, string, string]] : []),
     ...(running && task.lease_until ? [['Lease Until', formatTimestampValue(task.lease_until)] as [string, string]] : []),
   ]
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {currentMetrics.length > 0 && (
         <section className="space-y-2" aria-labelledby="task-current-run-heading">
-          <div id="task-current-run-heading" className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
+          <h3 id="task-current-run-heading" className="text-sm font-semibold text-txt-primary">
             {task.status === 'running' ? 'Current Run' : 'Scheduled Run'}
-          </div>
+          </h3>
           <dl className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-px overflow-hidden rounded-md border border-border-subtle bg-border-subtle">
             {currentMetrics.map(([label, value]) => <RunMetric key={label} label={label} value={value} />)}
           </dl>
         </section>
       )}
 
-      <section className="space-y-2">
-        <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Task</div>
-        {rows.map(([label, value]) => (
-          <InfoValueRow
-            key={label}
-            label={label}
-            value={value}
-            copyLabel={label === 'Directory' ? 'Copy task directory' : undefined}
-          />
-        ))}
+      <section className="space-y-2" aria-labelledby="task-overview-heading">
+        <h3 id="task-overview-heading" className="text-sm font-semibold text-txt-primary">Task</h3>
+        <div className="rounded-lg border border-border px-3">
+          {rows.map(([label, value]) => (
+            <InfoValueRow
+              key={label}
+              label={label}
+              value={value}
+              mono={label === 'Directory'}
+              copyLabel={label === 'Directory' ? 'Copy task directory' : undefined}
+            />
+          ))}
+        </div>
       </section>
 
+      {(displayedRunIndex > 0 || live) && (
+        <section className="space-y-2" aria-label="Run environment">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-txt-primary">Run Environment</h3>
+            {displayedRunIndex > 0 && <span className="rounded-md bg-surface-overlay px-2 py-1 text-xs font-medium text-txt-secondary">Run #{displayedRunIndex}</span>}
+          </div>
+          <div className="rounded-lg border border-border px-3">
+            {task.status === 'queued' ? (
+              <div className="py-3 text-xs text-txt-secondary">Environment will be recorded when this run starts.</div>
+            ) : <RunEnvironmentRows environment={displayedRun?.environment} />}
+          </div>
+          {displayedRun?.environment && task.status !== 'queued' && (
+            <p className="text-xs leading-5 text-txt-secondary">Recorded at launch · GPUs reflect assignment or visibility.</p>
+          )}
+        </section>
+      )}
+
       <section className="space-y-2" aria-labelledby="task-execution-heading">
-        <div id="task-execution-heading" className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Execution</div>
+        <h3 id="task-execution-heading" className="text-sm font-semibold text-txt-primary">Execution</h3>
         {command ? (
-          <div className="space-y-1.5 border-b border-border-subtle pb-3">
-            <div className="text-xs text-txt-tertiary">{commandLabel}</div>
-            <div className="relative">
-              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/70 p-3 pr-12 font-mono text-xs leading-relaxed text-txt-primary">
-                {command}
-              </pre>
-              <CopyButton value={command} label={`Copy ${commandLabel.toLowerCase()}`} className="absolute right-2 top-2 bg-surface-raised/80" />
+          <div className="overflow-hidden rounded-lg border border-border bg-surface-base">
+            <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-overlay px-3 py-1.5">
+              <span className="text-xs font-medium text-txt-secondary">{commandLabel}</span>
+              <CopyButton value={command} label={`Copy ${commandLabel.toLowerCase()}`} size="xs" />
             </div>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-xs leading-relaxed text-txt-primary">
+              {command}
+            </pre>
           </div>
         ) : (
           <div className="border-b border-border-subtle py-2 text-xs text-txt-secondary">
             Launch command was not recorded for this run.
           </div>
         )}
-        {executionRows.map(([label, value, copyLabel]) => (
-          <InfoValueRow key={label} label={label} value={value} copyLabel={copyLabel} />
-        ))}
+        {executionRows.length > 0 && (
+          <div className="rounded-lg border border-border px-3">
+            {executionRows.map(([label, value, copyLabel]) => (
+              <InfoValueRow key={label} label={label} value={value} copyLabel={copyLabel} mono={['Working Directory', 'Script', 'Shell', 'Runner ID'].includes(label)} />
+            ))}
+          </div>
+        )}
       </section>
 
-      <section className="space-y-2">
-        <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Run History</div>
+      <section className="space-y-2" aria-labelledby="task-history-heading">
+        <h3 id="task-history-heading" className="text-sm font-semibold text-txt-primary">Run History</h3>
         {runs.length === 0 ? (
           <div className="px-0.5 py-2 text-xs text-txt-secondary">
             No runs recorded yet.
           </div>
         ) : (
-          <div>
+          <div className="overflow-hidden rounded-lg border border-border">
             {runs.map(run => (
               <details
                 key={run.index}
@@ -1273,55 +1339,27 @@ function InfoTab({ task }: { task: Task }) {
                     return next
                   })
                 }}
-                className="group border-t border-border-subtle [content-visibility:auto] [contain-intrinsic-size:48px]"
+                className="group border-b border-border-subtle last:border-b-0 [content-visibility:auto] [contain-intrinsic-size:48px]"
               >
-                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-surface-overlay focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
                   <span className="font-medium text-txt-primary">Run #{run.index}</span>
-                  <span className="text-txt-tertiary">{run.status || (run.index === task.run_index ? task.status : '')}</span>
-                  <span className="ml-auto font-mono tabular-nums text-txt-secondary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
-                  <ChevronDown className="h-3.5 w-3.5 text-txt-tertiary transition-transform group-open:rotate-180" />
+                  <span className="text-txt-secondary">{run.status || (run.index === task.run_index ? task.status : '')}</span>
+                  <span className="ml-auto tabular-nums text-txt-secondary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
+                  <ChevronDown className="h-3.5 w-3.5 text-txt-secondary transition-transform group-open:rotate-180" />
                 </summary>
-                <div className="space-y-1.5 pb-3">
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Start</span>
-                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.start)}</span>
-                  </div>
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Finish</span>
-                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.finish)}</span>
-                  </div>
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">PID</span>
-                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.pid)}</span>
-                  </div>
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Duration</span>
-                    <span className="break-all font-mono text-xs text-txt-primary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
-                  </div>
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Exit Code</span>
-                    <span className="break-all font-mono text-xs text-txt-primary">{formatScalarValue(run.exitCode)}</span>
-                  </div>
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Source</span>
-                    <div className="relative min-w-0">
-                      <pre className="overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/60 p-2 pr-11 font-mono text-xs leading-relaxed text-txt-primary">
-                        {formatScalarValue(run.source)}
-                      </pre>
-                      {run.source && <CopyButton value={run.source} label={`Copy source state for run ${run.index}`} className="absolute right-1.5 top-1.5 bg-surface-raised/80" />}
+                <div className="border-t border-border-subtle px-3 pb-2">
+                  <InfoValueRow label="Start" value={formatScalarValue(run.start)} />
+                  <InfoValueRow label="Finish" value={formatScalarValue(run.finish)} />
+                  <InfoValueRow label="PID" value={formatScalarValue(run.pid)} />
+                  <InfoValueRow label="Exit Code" value={formatScalarValue(run.exitCode)} />
+                  {run.source && <InfoValueRow label="Source" value={run.source} mono copyLabel={`Copy source state for run ${run.index}`} />}
+                  {run.index !== displayedRunIndex && (
+                    <div className="my-3 rounded-md border border-border bg-surface-base px-3">
+                      <h4 className="border-b border-border-subtle py-2.5 text-xs font-semibold text-txt-primary">Environment</h4>
+                      <RunEnvironmentRows environment={run.environment} />
                     </div>
-                  </div>
-                  <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-                    <span className="text-2xs uppercase tracking-[0.14em] text-txt-tertiary">Record</span>
-                    <div className="relative min-w-0">
-                      <pre className="overflow-auto whitespace-pre-wrap break-all rounded-md bg-surface-overlay/60 p-2 pr-11 font-mono text-xs leading-relaxed text-txt-primary">
-                        {run.recordText}
-                      </pre>
-                      {run.recordText !== '(empty)' && (
-                        <CopyButton value={run.recordText} label={`Copy record for run ${run.index}`} className="absolute right-1.5 top-1.5 bg-surface-raised/80" />
-                      )}
-                    </div>
-                  </div>
+                  )}
+                  {run.recordText !== '(empty)' && <InfoValueRow label="Record" value={run.recordText} mono copyLabel={`Copy record for run ${run.index}`} />}
                 </div>
               </details>
             ))}
@@ -1340,19 +1378,23 @@ function ConfigTab({ task }: { task: Task }) {
     ? task.config_text
     : Object.keys(normalizedConfig).length > 0
       ? yamlStringify(normalizedConfig)
-      : '(empty)'
+      : ''
+  const shell = isShellTask(task)
+  const title = shell ? 'Script' : 'Configuration'
 
   return (
-    <section className="space-y-1.5">
-      <div className="flex items-center gap-1.5">
-        <div className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">Configuration</div>
-        {content !== '(empty)' && (
-          <CopyButton value={content} label="Copy configuration" size="xs" />
+    <section className="overflow-hidden rounded-lg border border-border bg-surface-base" aria-label={title}>
+      <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-overlay px-3 py-2">
+        <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
+        {content && (
+          <CopyButton value={content} label={shell ? 'Copy script' : 'Copy configuration'} size="xs" />
         )}
       </div>
-      <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-surface-overlay p-3 pr-10 font-mono text-xs leading-relaxed text-txt-primary">
-        {content}
-      </pre>
+      {content ? (
+        <pre className="whitespace-pre-wrap p-3 font-mono text-xs leading-relaxed text-txt-primary [overflow-wrap:anywhere]">
+          {content}
+        </pre>
+      ) : <p className="p-3 text-xs text-txt-secondary">No {shell ? 'script' : 'configuration'} recorded for this task.</p>}
     </section>
   )
 }

@@ -47,6 +47,7 @@ _RUN_HISTORY_KEYS = (
     "durations",
     "exit_codes",
     "source_states",
+    "run_environments",
     "records",
     "tracks",
 )
@@ -582,6 +583,7 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
     meta["durations"] = list(meta.get("durations", []) or [])
     meta["exit_codes"] = list(meta.get("exit_codes", []) or [])
     meta["source_states"] = list(meta.get("source_states", []) or [])
+    meta["run_environments"] = list(meta.get("run_environments", []) or [])
     meta["records"] = list(meta.get("records", []) or [])
     meta["tracks"] = list(meta.get("tracks", []) or [])
 
@@ -601,6 +603,8 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
         meta["exit_codes"].append(None)
     while len(meta["source_states"]) < target:
         meta["source_states"].append("")
+    while len(meta["run_environments"]) < target:
+        meta["run_environments"].append(None)
     while len(meta["records"]) < target:
         meta["records"].append({})
     while len(meta["tracks"]) < target:
@@ -741,6 +745,7 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
     durations = list(meta.get("durations", []) or [])
     exit_codes = list(meta.get("exit_codes", []) or [])
     source_states = list(meta.get("source_states", []) or [])
+    run_environments = list(meta.get("run_environments", []) or [])
     records = list(meta.get("records", []) or [])
     tracks = list(meta.get("tracks", []) or [])
 
@@ -760,6 +765,8 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
         exit_codes.append(None)
     while len(source_states) < total:
         source_states.append("")
+    while len(run_environments) < total:
+        run_environments.append(None)
     while len(records) < total:
         records.append({})
     while len(tracks) < total:
@@ -773,6 +780,7 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
     meta["durations"] = durations[:total]
     meta["exit_codes"] = exit_codes[:total]
     meta["source_states"] = source_states[:total]
+    meta["run_environments"] = run_environments[:total]
     meta["records"] = records[:total]
     meta["tracks"] = tracks[:total]
     meta["run_index"] = total

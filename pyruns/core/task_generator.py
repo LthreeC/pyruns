@@ -123,6 +123,7 @@ def create_task_object(
         "durations": [],
         "exit_codes": [],
         "source_states": [],
+        "run_environments": [],
         "records": [],
         "tracks": [],
         "notes": "",
@@ -607,6 +608,7 @@ class TaskGenerator:
                     "durations": [],
                     "exit_codes": [],
                     "source_states": [],
+                    "run_environments": [],
                     "records": [],
                     "tracks": [],
                 }

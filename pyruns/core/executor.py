@@ -40,6 +40,7 @@ from pyruns._config import (
     TRACKS_KEY,
 )
 from pyruns.core.gpu_scheduler import CUDA_VISIBLE_DEVICES, PYRUNS_ASSIGNED_GPUS
+from pyruns.core.run_environment import collect_run_environment
 from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import (
@@ -1636,6 +1637,26 @@ def run_task_worker(
             with source_output_flush_lock:
                 if source_output_flush is not None:
                     source_output_flush()
+
+        # GPU inventory may be slow; release live output before collecting it.
+        # Keep it in this thread so finalization still saves the run snapshot.
+        try:
+            assignment = task_meta.get("_gpu_assignment") or {}
+            environment = collect_run_environment(
+                command, env, workdir,
+                assigned_gpu_ids=assignment.get("gpu_ids"),
+                conda_env=python_runtime.get("conda_env", "")
+                if python_runtime.get("mode") == "conda" else "",
+            )
+
+            def _store_environment(info: Dict[str, Any]) -> None:
+                if _owns_current_run(info):
+                    slot = ensure_run_slot(info, run_index)
+                    info["run_environments"][slot] = environment
+
+            update_task_info(task_dir, _store_environment)
+        except Exception as exc:
+            logger.debug("Failed to collect run environment for %s: %s", name, exc)
 
     def _join_source_state() -> None:
         if (

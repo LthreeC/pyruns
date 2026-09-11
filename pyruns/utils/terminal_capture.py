@@ -18,6 +18,7 @@ class _SgrOutputFilter:
     def __init__(self) -> None:
         self._pending = b""
         self._sgr_needs_reset = False
+        self._line_open = False
 
     def feed(self, data: bytes) -> bytes:
         source = self._pending + bytes(data)
@@ -26,8 +27,17 @@ class _SgrOutputFilter:
         index = 0
         while index < len(source):
             if source[index] != _ESC:
-                output.append(source[index])
-                index += 1
+                end = source.find(b"\x1b", index)
+                if end < 0:
+                    end = len(source)
+                text = source[index:end]
+                output.extend(text)
+                tail = text.rsplit(b"\n", 1)[-1].strip(b"\r")
+                if b"\n" in text:
+                    self._line_open = bool(tail)
+                elif tail:
+                    self._line_open = True
+                index = end
                 continue
             if index + 1 >= len(source):
                 self._pending = source[index:]
@@ -69,6 +79,13 @@ class _SgrOutputFilter:
             index += 2
         return bytes(output)
 
+    def end_line(self) -> bytes:
+        """Separate text from the next screen without adding empty lines."""
+        if not self._line_open:
+            return b""
+        self._line_open = False
+        return b"\r\n"
+
     def finish(self) -> bytes:
         self._pending = b""
         if not self._sgr_needs_reset:
@@ -77,10 +94,64 @@ class _SgrOutputFilter:
         return b"\x1b[0m"
 
 
+class _ConPtyOutputFilter:
+    """Remove ConPTY's full-screen erase sweep before filtering ANSI controls.
+
+    Conda's Windows console handoff can erase every row and return home.
+    Stripping just the escape codes turns that redraw into a screen of blank
+    log lines. Match the complete sweep, including the final cursor return;
+    ordinary newlines and incomplete/nonmatching sweeps remain intact.
+    """
+
+    def __init__(self, rows: int) -> None:
+        self._sgr = _SgrOutputFilter()
+        self._sweep = b"\x1b[K\r\n" * (rows - 1) + b"\x1b[K\x1b[H"
+        self._candidate = bytearray()
+
+    def feed(self, data: bytes) -> bytes:
+        output = bytearray()
+        index = 0
+        while index < len(data):
+            if not self._candidate:
+                escape = data.find(b"\x1b[K", index)
+                if escape < 0:
+                    # Pass ordinary text and colors through as one block. Only
+                    # retain a split erase-line prefix for the next read.
+                    end = len(data)
+                    if data.endswith(b"\x1b[") and end - index >= 2:
+                        end -= 2
+                    elif data.endswith(b"\x1b"):
+                        end -= 1
+                    output.extend(self._sgr.feed(data[index:end]))
+                    self._candidate.extend(data[end:])
+                    break
+                output.extend(self._sgr.feed(data[index:escape]))
+                self._candidate.extend(b"\x1b[K")
+                index = escape + 3
+                continue
+
+            if data[index] == self._sweep[len(self._candidate)]:
+                self._candidate.append(data[index])
+                index += 1
+                if len(self._candidate) == len(self._sweep):
+                    self._candidate.clear()
+                    output.extend(self._sgr.end_line())
+            else:
+                output.extend(self._sgr.feed(bytes(self._candidate)))
+                self._candidate.clear()
+                # Reconsider the mismatching byte: it may start an escape.
+        return bytes(output)
+
+    def finish(self) -> bytes:
+        pending = self._sgr.feed(bytes(self._candidate))
+        self._candidate.clear()
+        return pending + self._sgr.finish()
+
+
 class _WindowsPtyStdout:
-    def __init__(self, process: Any) -> None:
+    def __init__(self, process: Any, rows: int) -> None:
         self._process = process
-        self._filter = _SgrOutputFilter()
+        self._filter = _ConPtyOutputFilter(rows)
 
     def read1(self, size: int) -> bytes:
         while True:
@@ -130,11 +201,11 @@ class _PosixPtyStdout:
 class WindowsConPtyProcessAdapter:
     """Expose the Popen subset used by the task worker for pywinpty ConPTY."""
 
-    def __init__(self, process: Any, args: Sequence[str]) -> None:
+    def __init__(self, process: Any, args: Sequence[str], rows: int) -> None:
         self._process = process
         self.args = list(args)
         self.pid = int(process.pid)
-        self.stdout = _WindowsPtyStdout(process)
+        self.stdout = _WindowsPtyStdout(process, rows)
         self._returncode: int | None = None
         self._output_closed = False
 
@@ -230,14 +301,17 @@ def _spawn_windows_conpty(
 ) -> WindowsConPtyProcessAdapter:
     from winpty import Backend, PtyProcess
 
+    dimensions = _terminal_dimensions(env)
     process = PtyProcess.spawn(
         list(command),
         cwd=cwd,
         env=_terminal_env(env),
-        dimensions=_terminal_dimensions(env),
-        backend=Backend.ConPTY,
+        dimensions=dimensions,
+        # pywinpty 2.x treats numeric zero as an unset backend and can then
+        # select legacy WinPTY from the parent environment. "0" stays explicit.
+        backend=str(int(Backend.ConPTY)),
     )
-    return WindowsConPtyProcessAdapter(process, command)
+    return WindowsConPtyProcessAdapter(process, command, dimensions[0])
 
 
 def _spawn_posix_pty(

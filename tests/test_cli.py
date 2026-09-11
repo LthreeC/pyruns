@@ -1825,6 +1825,10 @@ def test_exec_failure_propagates_nonzero(tmp_path):
     assert detail["selected_run"]["exit_code"] == 7
     assert detail["selected_run"]["duration_seconds"] == info["durations"][0]
     assert detail["selected_run"]["source_state"] == info["source_states"][0]
+    assert detail["run_environments"] == info["run_environments"]
+    assert detail["selected_run"]["environment"] == info["run_environments"][0]
+    assert detail["selected_run"]["environment"]["host"]
+    assert detail["selected_run"]["environment"]["launcher"] == sys.executable
 
 
 def test_exec_detach_returns_before_completion(tmp_path):

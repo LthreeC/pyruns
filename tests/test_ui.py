@@ -503,11 +503,11 @@ def test_react_task_detail_displays_source_state_in_run_history():
     assert "task.exit_codes?.length ?? 0" in source
     assert "duration: task.durations?.[index]" in source
     assert "exitCode: task.exit_codes?.[index]" in source
-    assert ">Duration</span>" in source
-    assert ">Exit Code</span>" in source
+    assert "[durationLabel, durationValue]" in source
+    assert 'label="Exit Code" value={formatScalarValue(run.exitCode)}' in source
     assert "task.source_states?.length ?? 0" in source
     assert "source: task.source_states?.[index] || ''" in source
-    assert ">Source</span>" in source
+    assert 'label="Source"' in source
 
 
 def test_react_app_lazy_loads_routes_and_runtime_panel():
@@ -628,7 +628,8 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "Could not load task details" in monitor
     assert "Workspace env saved" in runtime_panel
     assert "Could not save runtime" in runtime_panel
-    assert "Notes saved" in task_detail
+    assert "notesSaved ? 'Saved'" in task_detail
+    assert "Could not save notes" in task_detail
     assert "Could not rename task" in task_detail
 
 
@@ -893,7 +894,7 @@ def test_react_task_detail_env_editor_handles_edits_feedback_and_errors():
     assert "? 'Replace Env'" in source
     assert "envSaveStatus === 'error'" in source
     assert "err instanceof api.ApiError && err.status === 409" in source
-    assert "Your draft was kept. Saving it again will replace the newer environment." in source
+    assert "Another editor saved newer environment variables. Your draft is unchanged." in source
     assert "aria-label=\"Add environment variable\"" in source
     assert "setPendingEnvFocusId(pair.id)" in source
     assert "aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}" in source
