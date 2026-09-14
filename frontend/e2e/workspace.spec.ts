@@ -350,6 +350,7 @@ test('GPU card opens detailed device and process information', async ({ page, is
             ? [{
                 pid: 4321,
                 name: '/usr/bin/python',
+                user: 'researcher',
                 memory_mb: 4096,
               }]
             : [],
@@ -402,6 +403,7 @@ test('GPU card opens detailed device and process information', async ({ page, is
   await expect(dialog.getByText('python')).toBeVisible()
   await expect.poll(() => detailRequests).toBe(1)
   expect(processDetailRequests).toBe(0)
+  await expect(dialog.getByText('researcher')).toBeVisible()
   await expect(dialog.getByText('python train.py --epochs 10')).toBeHidden()
 
   const processRow = dialog.getByRole('button', { name: /details for process 4321 .*python/ })
@@ -876,7 +878,9 @@ test('launcher stays open while switching and ignores launch-history storage fai
   await page.goto('/launcher?token=pyruns-e2e-access-token')
   const launcher = page.getByRole('dialog', { name: 'Launch Workspace' })
   await launcher.getByRole('button', { name: 'Shell' }).click()
-  await launcher.getByRole('textbox').fill('.')
+  // Use the test server's temporary workspace, not local project data under cwd.
+  const workspace = await (await page.request.get('/api/workspace')).json()
+  await launcher.getByRole('textbox').fill(workspace.run_root)
   const openButton = launcher.getByRole('button', { name: 'Open Folder Path' })
   await expect(openButton).toBeEnabled()
   await openButton.click()
@@ -1180,13 +1184,29 @@ test('Monitor and Manager group full log matches and load context only on demand
     await page.screenshot({ path: testInfo.outputPath(`${view}-search.png`) })
     await match.click()
     const dialog = page.getByRole('dialog', { name: 'Log match in search-demo' })
-    await expect(dialog.getByLabel('Log context', { exact: true })).toContainText('needle found in old history')
-    await expect(dialog.getByRole('button', { name: 'Copy log context' })).toBeEnabled()
-    await page.screenshot({ path: testInfo.outputPath(`${view}-context.png`) })
+    if (view === 'Monitor') {
+      await expect(dialog).toBeHidden()
+      await expect(page.getByLabel('Selected log match')).toContainText('run1.log:42')
+      const terminal = page.getByRole('region', { name: 'Read-only logs for search-demo' })
+      await expect(terminal).toContainText('needle found in old history')
+      if (isMobile) {
+        await expect(page.getByLabel('Task monitor sidebar')).toBeHidden()
+        expect((await terminal.boundingBox())!.height).toBeGreaterThan(200)
+      }
+      await expect(page.getByRole('combobox', { name: 'Select task log file' })).toHaveValue('run1.log')
+      await page.screenshot({ path: testInfo.outputPath(`${view}-context.png`) })
+      await page.getByRole('button', { name: 'Back to latest log' }).click()
+      await expect(page.getByLabel('Selected log match')).toBeHidden()
+      await expect(terminal).toContainText('latest output')
+    } else {
+      await expect(dialog.getByLabel('Log context', { exact: true })).toContainText('needle found in old history')
+      await expect(dialog.getByRole('button', { name: 'Copy log context' })).toBeEnabled()
+      await page.screenshot({ path: testInfo.outputPath(`${view}-context.png`) })
+      await page.keyboard.press('Escape')
+      await expect(dialog).toBeHidden()
+      await expect(match).toBeFocused()
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-    await page.keyboard.press('Escape')
-    await expect(dialog).toBeHidden()
-    await expect(match).toBeFocused()
   }
   expect(contextRequests).toBe(2)
   expect(searchRequests).toBe(4)
@@ -1211,6 +1231,60 @@ test('Monitor and Manager group full log matches and load context only on demand
   await dialog.getByRole('button', { name: 'Close log preview' }).click()
   await expect(dialog).toBeHidden()
   expect(errors).toEqual([])
+})
+
+test('Monitor search holds a running log at the match and resumes live output', async ({ page, isMobile }) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  let logReads = 0
+  let connections = 0
+  let sendLog!: (value: string) => void
+  const task = {
+    name: 'running-search', status: 'running', run_index: 1, task_kind: 'shell',
+    search_matches: [{ field: 'log', log_file: 'run1.log', location: 'run1.log:42', line: 42,
+      offset: 1024, log_identity: 'same-log', snippet: 'needle history', match_start: 0, match_end: 6 }],
+  }
+  await page.route('**/api/workspace', async route => {
+    const response = await route.fetch()
+    const workspace = await response.json()
+    await route.fulfill({ json: { ...workspace, settings: { ...workspace.settings, monitor_scrollback: 1 } } })
+  })
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: { items: [task], total: 1, has_more: false } }))
+  await page.route('**/api/tasks/running-search?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/running-search/logs?*', route => {
+    logReads++
+    const context = new URL(route.request().url()).searchParams.get('chunk_size') === '32768'
+    return route.fulfill({ json: { selected_log: 'run1.log', available_logs: ['run1.log'],
+      content: context ? 'needle history\n' + 'after match\n'.repeat(500) : 'latest output\n',
+      log_identity: 'same-log', offset: context ? 7040 : 10000 } })
+  })
+  await page.routeWebSocket('**/api/tasks/running-search/logs/stream?*', socket => {
+    connections++
+    sendLog = value => socket.send(value)
+  })
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  const terminal = page.getByRole('region', { name: 'Read-only logs for running-search' })
+  await expect.poll(() => connections).toBeGreaterThan(0)
+  sendLog(JSON.stringify({ type: 'chunk', task_name: task.name, log_file_name: 'run1.log', content: 'live connected\n', offset: 10015 }))
+  await expect(terminal).toContainText('live connected')
+  await page.getByRole('textbox', { name: 'Search monitor tasks', exact: true }).fill('needle')
+  await page.getByRole('button', { name: /View Log match in running-search at run1.log:42/ }).click()
+  await expect(terminal).toContainText('needle history')
+  const readsAtMatch = logReads
+  const connectionsAtMatch = connections
+  await page.clock.install()
+  await page.clock.fastForward(15_001)
+  expect(logReads).toBe(readsAtMatch)
+  expect(connections).toBe(connectionsAtMatch)
+  await expect(terminal).toContainText('needle history')
+  await page.getByRole('button', { name: 'Back to latest log' }).click()
+  await expect.poll(() => connections).toBeGreaterThan(connectionsAtMatch)
+  sendLog(JSON.stringify({ type: 'chunk', task_name: task.name, log_file_name: 'run1.log', content: 'resumed output\n', offset: 10030 }))
+  await expect(terminal).toContainText('resumed output')
+  await expect(page.getByLabel('Selected log match')).toBeHidden()
+  if (isMobile) {
+    await page.getByRole('button', { name: 'Search results', exact: true }).click()
+    await expect(page.getByRole('textbox', { name: 'Search monitor tasks', exact: true })).toHaveValue('needle')
+  }
 })
 
 test('task detail conflicts and session recovery preserve local drafts', async ({ page }) => {

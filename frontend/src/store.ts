@@ -6,6 +6,7 @@ import type {
   RuntimeInfo,
   ScriptCandidate,
   Task,
+  TaskSearchMatch,
   TaskSortMode,
   TaskStatusCounts,
   TemplateContent,
@@ -17,6 +18,7 @@ import { resolveMonitorScrollback } from './utils/monitorSettings'
 let taskRequestSeq = 0
 let monitorTaskRequestSeq = 0
 let monitorRequestSeq = 0
+let monitorLogController: AbortController | null = null
 let launcherRequestSeq = 0
 let runtimeRequestSeq = 0
 let dashboardRequestSeq = 0
@@ -97,6 +99,7 @@ function currentWorkspaceKey() {
 }
 
 function resetWorkspaceScopedState(nextWorkspaceKey: string) {
+  monitorLogController?.abort()
   taskSearchController?.abort()
   monitorSearchController?.abort()
   taskRequestSeq += 1
@@ -130,6 +133,9 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   useMonitorStore.setState({
     workspaceKey: nextWorkspaceKey,
     selectedTaskName: null,
+    logMatch: null,
+    logError: '',
+    logGeneration: monitorRequestSeq,
     logContent: '',
     logOffset: 0,
     logIdentity: '',
@@ -1011,6 +1017,9 @@ export async function confirmDiscardWorkspaceChanges() {
 interface MonitorState {
   workspaceKey: string
   selectedTaskName: string | null
+  logMatch: TaskSearchMatch | null
+  logError: string
+  logGeneration: number
   logContent: string
   logOffset: number
   logIdentity: string
@@ -1020,7 +1029,7 @@ interface MonitorState {
   logTailLimitBytes: number
   loading: boolean
   exportIds: Set<string>
-  selectTask: (name: string) => Promise<void>
+  selectTask: (name: string, match?: TaskSearchMatch) => Promise<void>
   selectLogFile: (name: string) => Promise<void>
   appendLog: (text: string) => void
   clearLog: () => void
@@ -1032,6 +1041,9 @@ interface MonitorState {
 export const useMonitorStore = create<MonitorState>((set, get) => ({
   workspaceKey: '',
   selectedTaskName: null,
+  logMatch: null,
+  logError: '',
+  logGeneration: 0,
   logContent: '',
   logOffset: 0,
   logIdentity: '',
@@ -1041,25 +1053,38 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   logTailLimitBytes: 0,
   loading: false,
   exportIds: new Set(),
-  async selectTask(name: string) {
+  async selectTask(name: string, match?: TaskSearchMatch) {
     const requestId = ++monitorRequestSeq
     const workspaceKey = currentWorkspaceKey()
     if (get().workspaceKey !== workspaceKey) {
       return
     }
+    monitorLogController?.abort()
+    const controller = new AbortController()
+    monitorLogController = controller
+    const timeout = setTimeout(() => controller.abort(new Error('Log loading timed out. Please retry.')), 10_000)
+    const logMatch = match?.field === 'log' ? match : null
     set({
       selectedTaskName: name,
+      logMatch,
+      logError: '',
+      logGeneration: requestId,
       logContent: '',
       logOffset: 0,
       logIdentity: '',
       availableLogs: [],
-      selectedLog: '',
+      selectedLog: logMatch?.log_file || '',
       logTailTruncated: false,
       logTailLimitBytes: 0,
       loading: true,
     })
     try {
-      const logs = await api.getTaskLogs(name, { tailLines: currentMonitorScrollback() })
+      const logs = await api.getTaskLogs(name, logMatch ? {
+        logFileName: logMatch.log_file,
+        logIdentity: logMatch.log_identity,
+        offset: logMatch.offset ?? 0,
+        chunkSize: 32 * 1024,
+      } : { tailLines: currentMonitorScrollback() }, controller.signal)
       if (
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== name
@@ -1067,6 +1092,10 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         || currentWorkspaceKey() !== workspaceKey
       ) {
         return
+      }
+      if (logMatch && (!logs.available_logs.includes(logMatch.log_file ?? '')
+        || logs.selected_log !== logMatch.log_file || logs.reset)) {
+        throw new Error('This log changed. Refresh the search to locate the match again.')
       }
       set({
         logContent: logs.content,
@@ -1077,7 +1106,12 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         logTailTruncated: Boolean(logs.tail_truncated),
         logTailLimitBytes: Number(logs.tail_limit_bytes || 0),
       })
+    } catch (err) {
+      if (requestId !== monitorRequestSeq || get().workspaceKey !== workspaceKey) return
+      set({ logError: err instanceof Error ? err.message : String(err) })
+      throw err
     } finally {
+      clearTimeout(timeout)
       if (
         requestId === monitorRequestSeq
         && get().workspaceKey === workspaceKey
@@ -1095,8 +1129,12 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     if (get().workspaceKey !== workspaceKey) {
       return
     }
+    monitorLogController?.abort()
     set({
       selectedLog: logName,
+      logMatch: null,
+      logError: '',
+      logGeneration: requestId,
       logContent: '',
       logOffset: 0,
       logIdentity: '',

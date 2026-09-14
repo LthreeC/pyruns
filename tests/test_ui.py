@@ -668,14 +668,14 @@ def test_react_gpu_process_dialog_shows_process_owner():
         types.index("export interface GPUProcessDetails"):
         types.index("export interface GPUMetric")
     ]
-    assert "user:" not in process_summary
+    assert "user: string" in process_summary
     assert "command_line:" not in process_summary
     assert "host_memory_mb:" not in process_summary
     assert "user: string" in process_details
     assert "command_line: string" in process_details
     assert "host_memory_mb: number | null" in process_details
     assert 'min-w-[700px]' not in dashboard
-    assert "processDetails?.user || '--'" in dashboard
+    assert "process.user || processDetails?.user || 'unknown'" in dashboard
     assert "process.memory_mb == null || gpu.mem_total <= 0" in dashboard
     assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
@@ -1081,7 +1081,7 @@ def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reco
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
     assert "offset: currentOffset" in monitor
     assert "tailLines: monitorScrollback" not in monitor[monitor.index("const pollLiveLog"):monitor.index("const filteredTasks")]
-    assert "usePolling(pollLiveLog, 1500, Boolean(isLive), false)" in monitor
+    assert "usePolling(pollLiveLog, 1500, !loading && isLive, false)" in monitor
     assert "queuedLiveLogTaskRef" in monitor
     assert "manualHistoricalLogRef" in monitor
     assert "const viewingQueueOrLiveLog = !selectedLog || selectedLog === QUEUE_LOG_NAME" in monitor

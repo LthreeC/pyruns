@@ -312,6 +312,7 @@ export interface TaskEventMessage {
 export interface GPUProcessInfo {
   pid: number
   name: string
+  user: string
   memory_mb: number | null
 }
 

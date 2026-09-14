@@ -966,8 +966,8 @@ function GpuProcessDialog({
                         className="grid min-h-11 w-full grid-cols-[56px_minmax(0,1fr)_64px_16px] items-center gap-x-2 gap-y-0.5 px-3 py-3 text-left text-xs transition-colors hover:bg-surface-overlay/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50 sm:grid-cols-[72px_96px_minmax(0,1fr)_80px_48px_16px] sm:gap-3 sm:px-4 sm:text-sm"
                       >
                         <span className="row-span-2 truncate font-mono text-txt-secondary sm:row-span-1" title={String(process.pid)}>{process.pid >= 0 ? process.pid : '--'}</span>
-                        <span className="col-start-2 row-start-2 truncate font-mono text-xs text-txt-secondary sm:col-auto sm:row-auto" title={processDetails?.user || 'Load details to view'}>
-                          {processDetails?.user || '--'}
+                        <span className="col-start-2 row-start-2 truncate font-mono text-xs text-txt-secondary sm:col-auto sm:row-auto" title={process.user || processDetails?.user || 'unknown'}>
+                          {process.user || processDetails?.user || 'unknown'}
                         </span>
                         <span className="col-start-2 row-start-1 truncate text-txt-primary sm:col-auto sm:row-auto" title={process.name}>{displayName}</span>
                         <span className="row-span-2 text-right font-mono text-txt-secondary sm:row-span-1">{formatMemory(process.memory_mb)}</span>

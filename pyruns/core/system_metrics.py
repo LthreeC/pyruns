@@ -336,6 +336,7 @@ class SystemMonitor:
         )
 
         processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
+        users_by_pid: Dict[int, str] = {}
         for parts in self._parse_csv_rows(out):
             if len(parts) < 4:
                 raise ValueError("NVIDIA returned an unrecognized GPU process response.")
@@ -345,9 +346,19 @@ class SystemMonitor:
                 continue
 
             pid = self._coerce_int(pid_raw, default=-1)
+            if pid not in users_by_pid:
+                user = "unknown"
+                if pid > 0:
+                    try:
+                        user = psutil.Process(pid).username() or "unknown"
+                    except (psutil.Error, OSError):
+                        # Exited, inaccessible, or outside this PID namespace.
+                        pass
+                users_by_pid[pid] = user
             process_info = {
                 "pid": pid,
                 "name": process_name or "unknown",
+                "user": users_by_pid[pid],
                 "memory_mb": self._coerce_optional_float(memory_raw),
             }
             processes_by_uuid.setdefault(gpu_uuid, []).append(process_info)

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import psutil
 
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
@@ -43,6 +44,7 @@ def test_gpu_process_summary_keeps_unavailable_memory_unknown(
 ):
     mock_psutil.cpu_percent.return_value = 12.0
     mock_psutil.virtual_memory().percent = 34.0
+    mock_psutil.Process.return_value.username.return_value = "researcher"
     mock_check_output.side_effect = [
         b"0, NVIDIA RTX 5090, GPU-AAA, 5.0, 1024.0, 24576.0\n",
         b"GPU-AAA, 1234, python.exe, [N/A]\n",
@@ -55,9 +57,23 @@ def test_gpu_process_summary_keeps_unavailable_memory_unknown(
     assert process == {
         "pid": 1234,
         "name": "python.exe",
+        "user": "researcher",
         "memory_mb": None,
     }
-    mock_psutil.Process.assert_not_called()
+    mock_psutil.Process.assert_called_once_with(1234)
+
+
+@pytest.mark.parametrize("failure", [psutil.AccessDenied(1234), psutil.NoSuchProcess(1234), OSError("unavailable")])
+def test_gpu_summary_owner_is_deduplicated_and_unavailable_owner_keeps_process(failure):
+    with patch("pyruns.core.system_metrics.subprocess.check_output", return_value=(
+        b"GPU-A, 1234, python, 1024\nGPU-B, 1234, python, 2048\nGPU-A, 5678, train, 512\n"
+    )), patch("pyruns.core.system_metrics.psutil.Process") as process:
+        process.return_value.username.side_effect = [failure, "researcher"]
+        rows = SystemMonitor()._get_gpu_processes()
+        assert rows["GPU-A"][0]["user"] == rows["GPU-B"][0]["user"] == "unknown"
+        assert rows["GPU-A"][1]["user"] == "researcher"
+        assert process.call_count == 2
+        assert [call[0] for call in process.return_value.method_calls] == ["username", "username"]
 
 
 @patch("pyruns.core.system_metrics.psutil.Process")

@@ -18,8 +18,8 @@ export function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
   </span>
 }
 
-export default function TaskSearchMatches({ task, onSelect, action = 'View', exportMode = false }: {
-  task: Task; onSelect: () => void; action?: string; exportMode?: boolean
+export default function TaskSearchMatches({ task, onSelect, onSelectMatch, action = 'View', exportMode = false }: {
+  task: Task; onSelect: () => void; onSelectMatch?: (match: TaskSearchMatch) => void; action?: string; exportMode?: boolean
 }) {
   const [preview, setPreview] = useState<TaskSearchMatch | null>(null)
   const matches = task.search_matches ?? []
@@ -40,7 +40,12 @@ export default function TaskSearchMatches({ task, onSelect, action = 'View', exp
       {rows.map((match, index) => <button key={index} type="button"
         aria-label={`${action} ${LABELS[match.field]} match in ${task.name}${match.location ? ` at ${match.location}` : ''}: ${match.snippet}`}
         className="touch-target block w-full min-w-0 border-l-2 border-transparent py-1 pl-5 pr-2 text-left hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
-        onClick={() => match.field === 'log' && !exportMode ? setPreview(match) : onSelect()}>
+        onClick={() => {
+          if (exportMode) onSelect()
+          else if (onSelectMatch) onSelectMatch(match)
+          else if (match.field === 'log') setPreview(match)
+          else onSelect()
+        }}>
         <SearchMatchContext match={match} />
       </button>)}
     </details>)}

@@ -8,6 +8,7 @@ import {
   useDashboardStore,
   useGeneratorStore,
   useLauncherStore,
+  useMonitorStore,
   useRuntimeStore,
   useTaskDetailDraftStore,
   useTaskStore,
@@ -17,6 +18,7 @@ import {
 
 vi.mock('./api', () => ({
   getTasks: vi.fn(),
+  getTaskLogs: vi.fn(),
   getDashboard: vi.fn(),
   getTemplates: vi.fn(),
   getTemplateContent: vi.fn(),
@@ -59,6 +61,44 @@ describe('workspace-scoped stores', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('opens bounded search context and returns to the latest task log', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const match = { field: 'log' as const, log_file: 'run1.log', offset: 5_000_000, log_identity: 'old', snippet: 'needle', match_start: 0, match_end: 6, location: 'run1.log:42' }
+    vi.mocked(api.getTaskLogs).mockResolvedValueOnce({ content: 'needle\n', offset: 5_000_007, selected_log: 'run1.log', available_logs: ['run1.log', 'run2.log'], log_identity: 'old' } as any)
+    await useMonitorStore.getState().selectTask('alpha', match)
+    expect(api.getTaskLogs).toHaveBeenLastCalledWith('alpha', {
+      logFileName: 'run1.log', logIdentity: 'old', offset: 5_000_000, chunkSize: 32768,
+    }, expect.any(AbortSignal))
+    expect(useMonitorStore.getState()).toMatchObject({ selectedTaskName: 'alpha', selectedLog: 'run1.log', logMatch: match, logContent: 'needle\n', loading: false })
+    vi.mocked(api.getTaskLogs).mockResolvedValueOnce({ content: 'latest\n', offset: 7, selected_log: 'run2.log', available_logs: ['run1.log', 'run2.log'] } as any)
+    await useMonitorStore.getState().selectTask('alpha')
+    expect(useMonitorStore.getState()).toMatchObject({ selectedLog: 'run2.log', logMatch: null, logContent: 'latest\n' })
+  })
+
+  it.each(['selection', 'workspace'])('discards obsolete log context after changing %s', async change => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const stale = deferred<any>()
+    vi.mocked(api.getTaskLogs).mockReturnValueOnce(stale.promise)
+    const pending = useMonitorStore.getState().selectTask('alpha', { field: 'log', log_file: 'run1.log', snippet: 'needle', match_start: 0, match_end: 6, location: 'run1.log:42' })
+    const signal = vi.mocked(api.getTaskLogs).mock.calls[0][2]!
+    if (change === 'workspace') useWorkspaceStore.getState().setWorkspace(workspace('B'))
+    else {
+      vi.mocked(api.getTaskLogs).mockResolvedValueOnce({ content: 'beta', offset: 4, selected_log: 'run2.log', available_logs: ['run2.log'] } as any)
+      await useMonitorStore.getState().selectTask('beta')
+    }
+    expect(signal.aborted).toBe(true)
+    stale.resolve({ content: 'obsolete', offset: 8, selected_log: 'run1.log', available_logs: ['run1.log'] })
+    await pending
+    expect(useMonitorStore.getState()).toMatchObject({ logContent: change === 'workspace' ? '' : 'beta', logMatch: null, loading: false, logError: '' })
+  })
+
+  it.each([{ reset: true }, { available_logs: [] }, { selected_log: 'run2.log' }])('rejects stale search locations: %j', async changed => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    vi.mocked(api.getTaskLogs).mockResolvedValueOnce({ content: 'wrong context', selected_log: 'run1.log', available_logs: ['run1.log'], ...changed } as any)
+    await expect(useMonitorStore.getState().selectTask('alpha', { field: 'log', log_file: 'run1.log', snippet: 'needle', match_start: 0, match_end: 6, location: 'run1.log:42' })).rejects.toThrow('This log changed')
+    expect(useMonitorStore.getState()).toMatchObject({ logContent: '', loading: false, logError: expect.stringContaining('This log changed') })
   })
 
   it('ignores a task response from the workspace that was replaced', async () => {

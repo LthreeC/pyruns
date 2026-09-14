@@ -40,7 +40,7 @@ import {
 } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
 import SearchInput from '@/components/shared/SearchInput'
-import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
+import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
@@ -49,7 +49,7 @@ import CopyButton from '@/components/shared/CopyButton'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
-import type { GPUWaitStatus, LogStreamMessage, Task } from '@/types'
+import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
@@ -66,6 +66,7 @@ import {
   TERMINAL_SEARCH_DEBOUNCE_MS,
   TERMINAL_SEARCH_HIGHLIGHT_LIMIT,
   terminalSearchResultLabel,
+  splitTaskSearchSnippet,
 } from '@/utils/monitorSearch'
 import { pickInitialMonitorTask } from '@/utils/monitorSelection'
 
@@ -211,11 +212,12 @@ export default function MonitorPage() {
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
     selectedTaskName, logContent, logOffset, logIdentity, availableLogs, selectedLog,
-    logTailTruncated, logTailLimitBytes, loading, exportIds,
+    logTailTruncated, logTailLimitBytes, loading, exportIds, logMatch, logError, logGeneration,
     selectTask, selectLogFile, toggleExport, selectAllExport, clearExport,
   } = useMonitorStore()
 
   const [sidebarQuery, setSidebarQuery] = useState('')
+  const [compactSearchFocused, setCompactSearchFocused] = useState(false)
   const [exportMode, setExportMode] = useState(false)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectedTaskSnapshot, setSelectedTaskSnapshot] = useState<Task | null>(null)
@@ -279,7 +281,7 @@ export default function MonitorPage() {
   const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
   const isFollowingQueuedTask = queuedLiveLogTaskRef.current.taskName === selectedTask?.name
-  const isLive = Boolean(selectedTask && (
+  const isLive = Boolean(!logMatch && selectedTask && (
     (selectedTask.status === 'queued' && (!selectedLog || selectedLog === QUEUE_LOG_NAME))
     || (
       selectedTask.status === 'running'
@@ -341,6 +343,8 @@ export default function MonitorPage() {
         setSelectedTaskSnapshot(null)
         useMonitorStore.setState({
           selectedTaskName: null,
+          logMatch: null,
+          logError: '',
           logContent: '',
           logOffset: 0,
           logIdentity: '',
@@ -560,6 +564,7 @@ export default function MonitorPage() {
     xtermRef.current?.clear()
     xtermRef.current?.reset()
     setSidebarQuery('')
+    setCompactSearchFocused(false)
     setExportMode(false)
     setDetailTask(null)
     setSelectedTaskSnapshot(null)
@@ -824,9 +829,9 @@ export default function MonitorPage() {
 
   useEffect(() => {
     if (xtermRef.current) {
-      xtermRef.current.options.scrollback = monitorScrollback
+      xtermRef.current.options.scrollback = logMatch ? Math.max(monitorScrollback, 32 * 1024) : monitorScrollback
     }
-  }, [monitorScrollback])
+  }, [monitorScrollback, logMatch])
 
   useEffect(() => {
     if (!xtermRef.current) {
@@ -882,7 +887,7 @@ export default function MonitorPage() {
     }
   }, [terminalVisible])
 
-  const renderKey = `${workspaceKey}::${selectedTaskName ?? ''}::${selectedLog || ''}`
+  const renderKey = `${workspaceKey}::${selectedTaskName ?? ''}::${selectedLog || ''}::${logGeneration}`
   const shouldShowNoLogPlaceholder = !loading && availableLogs.length === 0 && !selectedLog
 
   useEffect(() => {
@@ -935,6 +940,21 @@ export default function MonitorPage() {
 
     renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
   }, [renderKey, selectedTaskName, logContent, logOffset, shouldShowNoLogPlaceholder])
+
+  useEffect(() => {
+    const term = xtermRef.current
+    if (!term || !logMatch || loading || logError) return
+    let cancelled = false
+    // Wait for xterm's write queue, without adding a timer or scanning the full file.
+    term.write('', () => {
+      if (cancelled) return
+      term.clearSelection()
+      term.scrollToTop()
+      const [, query] = splitTaskSearchSnippet(logMatch.snippet, logMatch.match_start, logMatch.match_end)
+      runTerminalSearch(query, 'next', true)
+    })
+    return () => { cancelled = true }
+  }, [logMatch, logContent, loading, logError, logGeneration, runTerminalSearch])
 
   useEffect(() => {
     if (!selectedTaskName && terminalSearchOpen) {
@@ -1054,6 +1074,10 @@ export default function MonitorPage() {
 
   useEffect(() => {
     const taskName = selectedTask?.name ?? null
+    if (logMatch) {
+      queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
+      return
+    }
     const taskStatus = selectedTask?.status ?? null
     const manualHistory = manualHistoricalLogRef.current
     if (manualHistory.taskName && manualHistory.taskName !== taskName) {
@@ -1117,7 +1141,7 @@ export default function MonitorPage() {
         .catch(err => notify({ tone: 'error', title: 'Could not load run log', detail: errorMessage(err) }))
     }, 1500)
     return () => window.clearTimeout(fallbackTimer)
-  }, [notify, runLogName, selectLogFile, selectedLog, selectedTask?.name, selectedTask?.status])
+  }, [logMatch, notify, runLogName, selectLogFile, selectedLog, selectedTask?.name, selectedTask?.status])
 
   const flushLiveLogChunkBuffer = useCallback(() => {
     if (liveLogFlushTimerRef.current !== null) {
@@ -1135,10 +1159,11 @@ export default function MonitorPage() {
     const activeTaskName = selectedTaskNameRef.current
     const activeLog = selectedLogRef.current || liveLogNameRef.current
     const activeKey = activeTaskName
-      ? `${workspaceKeyRef.current}::${activeTaskName}::${activeLog}`
+      ? `${workspaceKeyRef.current}::${activeTaskName}::${activeLog}::${useMonitorStore.getState().logGeneration}`
       : ''
     if (buffer.key === activeKey) {
       useMonitorStore.setState(state => {
+        if (state.loading || state.logMatch) return state
         let nextContent = state.logContent
         let nextOffset = state.logOffset
         let nextIdentity = state.logIdentity
@@ -1176,16 +1201,18 @@ export default function MonitorPage() {
   }, [])
 
   useEffect(() => {
-    const key = `${workspaceKey}::${selectedTaskName ?? ''}::${liveLogName}`
+    const key = `${workspaceKey}::${selectedTaskName ?? ''}::${liveLogName}::${logGeneration}`
     if (livePollingKeyRef.current === key) {
       return
     }
     livePollingKeyRef.current = key
     livePollInFlightRef.current = false
     wsStreamActiveRef.current = false
-  }, [liveLogName, selectedTaskName, workspaceKey])
+  }, [liveLogName, selectedTaskName, workspaceKey, logGeneration])
 
   const handleChunk = useCallback((message: LogStreamMessage) => {
+    const state = useMonitorStore.getState()
+    if (state.loading || state.logMatch) return
     const activeTaskName = selectedTaskNameRef.current
     const activeWorkspaceKey = workspaceKeyRef.current
     if (!activeTaskName || message.task_name !== activeTaskName) {
@@ -1276,7 +1303,7 @@ export default function MonitorPage() {
       return
     }
 
-    const key = `${activeWorkspaceKey}::${activeTaskName}::${activeLog || messageLog || liveLog}`
+    const key = `${activeWorkspaceKey}::${activeTaskName}::${activeLog || messageLog || liveLog}::${state.logGeneration}`
     const buffer = pendingLiveLogChunkRef.current
     const chunk: PendingLiveLogChunk = typeof message.offset === 'number' && Number.isFinite(message.offset)
       ? { content: message.content, offset: message.offset, logIdentity: message.log_identity }
@@ -1310,7 +1337,7 @@ export default function MonitorPage() {
     logFileName: selectedLog || liveLogName || undefined,
     offset: logOffsetRef.current,
     logIdentity: logIdentityRef.current,
-    generationKey: workspaceKey,
+    generationKey: `${workspaceKey}:${logGeneration}`,
   })
 
   const pollLiveLog = useCallback(async () => {
@@ -1324,6 +1351,10 @@ export default function MonitorPage() {
     const requestedWorkspaceKey = workspaceKeyRef.current
     const requestedLog = selectedLogRef.current || liveLog
     const monitorState = useMonitorStore.getState()
+    if (monitorState.loading || monitorState.logMatch) {
+      livePollInFlightRef.current = false
+      return
+    }
     const currentOffset = monitorState.logOffset
     const currentIdentity = monitorState.logIdentity
     try {
@@ -1336,6 +1367,7 @@ export default function MonitorPage() {
       if (
         selectedTaskNameRef.current !== activeTaskName
         || workspaceKeyRef.current !== requestedWorkspaceKey
+        || useMonitorStore.getState().logGeneration !== monitorState.logGeneration
       ) {
         return
       }
@@ -1370,13 +1402,13 @@ export default function MonitorPage() {
     } catch {
       // Keep the monitor quiet; task polling still refreshes status.
     } finally {
-      if (workspaceKeyRef.current === requestedWorkspaceKey) {
+      if (workspaceKeyRef.current === requestedWorkspaceKey && useMonitorStore.getState().logGeneration === monitorState.logGeneration) {
         livePollInFlightRef.current = false
       }
     }
   }, [canUseLogStream, monitorChunkSize])
 
-  usePolling(pollLiveLog, 1500, Boolean(isLive), false)
+  usePolling(pollLiveLog, 1500, !loading && isLive, false)
 
   const filteredTasks = monitorTasks
   const sidebarSearchActive = Boolean(sidebarQuery.trim())
@@ -1408,13 +1440,18 @@ export default function MonitorPage() {
     && !filteredTasks.some(task => task.name === selectedTask.name),
   )
 
-  const handleSidebarClick = (task: Task) => {
+  const handleSidebarClick = (task: Task, match?: TaskSearchMatch) => {
     if (exportMode) {
       toggleExport(task.name)
       return
     }
-    void selectTask(task.name)
+    closeTerminalSearch(false)
+    if (compactMonitorLayout && sidebarQuery.trim()) setCompactSearchFocused(true)
+    pendingLiveLogChunkRef.current = { key: '', chunks: [] }
+    void selectTask(task.name, match)
       .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
+    termContainerRef.current?.scrollIntoView({ block: 'nearest' })
+    xtermRef.current?.focus()
   }
 
   const handleTaskAction = useCallback(async (action: 'run' | 'cancel') => {
@@ -1544,7 +1581,8 @@ export default function MonitorPage() {
       <aside
         aria-label="Task monitor sidebar"
         className={clsx(
-          'flex flex-none flex-col overflow-hidden bg-surface-raised',
+          'flex-none flex-col overflow-hidden bg-surface-raised',
+          compactMonitorLayout && compactSearchFocused && selectedTaskName ? 'hidden' : 'flex',
           compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle',
         )}
         style={compactMonitorLayout
@@ -1626,6 +1664,7 @@ export default function MonitorPage() {
                   exportMode={exportMode}
                   exportSelected={exportIds.has(task.name)}
                   onClick={() => handleSidebarClick(task)}
+                  onSelectMatch={match => handleSidebarClick(task, match)}
                 />
               ))}
             </CompactSection>
@@ -1783,6 +1822,12 @@ export default function MonitorPage() {
 
       <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" style={{ background: '#0A0A0B' }}>
         <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-raised px-4 py-2.5">
+          {compactMonitorLayout && compactSearchFocused && selectedTaskName && (
+            <ActionButton variant="secondary" icon={<Search className="h-3.5 w-3.5" />} onClick={() => {
+              setCompactSearchFocused(false)
+              window.requestAnimationFrame(() => sidebarSearchInputRef.current?.focus())
+            }}>Search results</ActionButton>
+          )}
           {selectedTask ? (
             <>
               <StatusBadge status={selectedTask.status as TaskStatus} />
@@ -1879,6 +1924,22 @@ export default function MonitorPage() {
             <span className="text-xs text-txt-tertiary">Select a task to view logs</span>
           )}
         </div>
+
+        {logMatch && (
+          <div aria-label="Selected log match" className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-raised px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-txt-secondary">{logMatch.log_file}:{logMatch.line} · Search match · Up to 32 KB</p>
+              <SearchMatchContext match={logMatch} />
+            </div>
+            <ActionButton variant="secondary" onClick={() => selectedTask && handleSidebarClick(selectedTask)}>Back to latest log</ActionButton>
+          </div>
+        )}
+        {logError && (
+          <div role="alert" className="border-b border-border bg-surface-raised px-3 py-2 text-xs text-rose-600 dark:text-rose-300">
+            {logError}
+            <button type="button" className="touch-target ml-2 text-accent underline" onClick={() => selectedTask && handleSidebarClick(selectedTask, logMatch ?? undefined)}>Retry</button>
+          </div>
+        )}
 
         {selectedTask?.status === 'queued' && (
           <GPUWaitPanel wait={selectedTask.gpu_wait ?? null} />
@@ -2211,12 +2272,14 @@ function SearchResultGroup({
   exportMode,
   exportSelected,
   onClick,
+  onSelectMatch,
 }: {
   task: Task
   active: boolean
   exportMode: boolean
   exportSelected: boolean
   onClick: () => void
+  onSelectMatch: (match: TaskSearchMatch) => void
 }) {
   const matches = task.search_matches ?? []
   const matchCount = Math.max(matches.length, task.search_match_count ?? 0)
@@ -2250,7 +2313,7 @@ function SearchResultGroup({
           {matchCount.toLocaleString()}
         </span>
       </summary>
-      <TaskSearchMatches task={task} onSelect={onClick} action={action} exportMode={exportMode} />
+      <TaskSearchMatches task={task} onSelect={onClick} onSelectMatch={onSelectMatch} action={action} exportMode={exportMode} />
     </details>
   )
 }

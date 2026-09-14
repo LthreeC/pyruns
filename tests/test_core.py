@@ -980,7 +980,7 @@ def test_system_monitor_sample(mock_subprocess, mock_psutil):
     assert gpus[1]["name"] == "NVIDIA RTX 4080"
     assert gpus[1]["util"] == 90.0
     assert gpus[1]["processes"][0]["name"] == "train.py"
-    mock_psutil.Process.assert_not_called()
+    assert mock_psutil.Process.call_count == 3
 
     assert monitor._gpu_cache == [
         {key: value for key, value in gpu.items() if key != "processes"}
@@ -1062,8 +1062,10 @@ def test_system_monitor_gpu_process_query_failure_still_returns_gpu_summary(mock
 
 
 @patch("pyruns.core.system_metrics.subprocess.check_output")
-def test_system_monitor_gpu_process_summary_does_not_read_process_metadata(mock_subprocess):
+@patch("pyruns.core.system_metrics.psutil.Process")
+def test_system_monitor_gpu_process_summary_reads_only_owner(mock_process, mock_subprocess):
     mock_subprocess.return_value = b"GPU-AAA, 1234, python.exe, 2048\n"
+    mock_process.return_value.username.return_value = "researcher"
 
     monitor = SystemMonitor()
     processes = monitor._get_gpu_processes()
@@ -1071,8 +1073,10 @@ def test_system_monitor_gpu_process_summary_does_not_read_process_metadata(mock_
     assert processes["GPU-AAA"][0] == {
         "pid": 1234,
         "name": "python.exe",
+        "user": "researcher",
         "memory_mb": 2048.0,
     }
+    assert [call[0] for call in mock_process.return_value.method_calls] == ["username"]
 
 
 @patch("pyruns.core.system_metrics.subprocess.check_output")
