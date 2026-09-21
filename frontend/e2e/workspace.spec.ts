@@ -1178,6 +1178,7 @@ for (const workspaceKind of ['script', 'shell'] as const) {
       await expect(group).toHaveCount(0)
       await search.fill('needle')
       await expect(group.locator('mark')).toHaveCount(fields.length)
+      await page.screenshot({ path: testInfo.outputPath(`${view}-search-fields-before-theme-toggle.png`), animations: 'disabled' })
       await page.getByRole('button', { name: /^(Dark|Light) Mode$/ }).click()
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
       await page.screenshot({ path: testInfo.outputPath(`${view}-search-fields.png`), animations: 'disabled' })
@@ -1192,6 +1193,9 @@ for (const workspaceKind of ['script', 'shell'] as const) {
         await page.getByRole('button', { name: 'Search results', exact: true }).click()
         await expect(group).toBeVisible()
       }
+      await page.getByRole('button', { name: 'Clear search', exact: true }).click()
+      await expect(search).toHaveValue('')
+      await expect(group).toHaveCount(0)
     }
     expect(errors).toEqual([])
   })
@@ -1255,9 +1259,9 @@ test('Monitor and Manager group full log matches and load context only on demand
       const url = new URL(response.url())
       return url.pathname === '/api/tasks' && url.searchParams.get('query') === 'needle'
     })
-    await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await page.getByRole('button', { name: 'Refresh search results', exact: true }).click()
     await refreshedSearch
-    await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Refresh search results', exact: true })).toBeVisible()
     expect(searchRequests).toBe(searchesBeforeIdle + 1)
     const source = group.locator('summary').filter({ hasText: 'run1.log' })
     await source.click()

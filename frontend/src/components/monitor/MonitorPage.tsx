@@ -39,7 +39,7 @@ import {
   type TaskEventStreamStatus,
 } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
-import TaskSearchInput, { taskSearchDescription } from '@/components/shared/TaskSearchInput'
+import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
@@ -1632,6 +1632,7 @@ export default function MonitorPage() {
             </span>
           </div>
           <TaskSearchInput
+            compact
             workspaceKind={workspace?.workspace_kind}
             value={sidebarQuery}
             onChange={setSidebarQuery}
@@ -1639,15 +1640,14 @@ export default function MonitorPage() {
             onSearchFieldChange={setMonitorSearchField}
             searchOptions={monitorSearchOptions}
             onSearchOptionsChange={setMonitorSearchOptions}
+            searching={monitorLoading}
+            onRefresh={() => void refreshMonitorTasks().catch(() => {})}
+            onCancel={() => useTaskStore.getState().cancelMonitorSearch()}
             ariaLabel="Search monitor tasks"
             ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
             debounceMs={250}
             inputRef={sidebarSearchInputRef}
           />
-          {sidebarSearchActive && <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
-            <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(monitorSearchField, workspace?.workspace_kind)}>{monitorLoading ? 'Searching…' : taskSearchDescription(monitorSearchField, workspace?.workspace_kind)}</span>
-            <button type="button" className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5" onClick={() => monitorLoading ? useTaskStore.getState().cancelMonitorSearch() : void refreshMonitorTasks().catch(() => {})}>{monitorLoading ? 'Cancel' : 'Refresh'}</button>
-          </div>}
           {monitorError && (
             <div className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-500/20 bg-rose-500/8 px-2 py-1.5 text-2xs text-rose-700 dark:text-rose-300" role="alert">
               <WifiOff className="mt-0.5 h-3 w-3 flex-none" />

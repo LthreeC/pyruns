@@ -16,7 +16,7 @@ import {
 import clsx from 'clsx'
 import { useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
-import TaskSearchInput, { taskSearchDescription } from '@/components/shared/TaskSearchInput'
+import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import Pagination from '@/components/shared/Pagination'
@@ -850,8 +850,8 @@ export default function ManagerPage() {
           </div>
         </div>
 
-        <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-start">
-          <div className="w-full min-w-0 flex-none lg:w-auto lg:flex-[1_1_22rem]">
+        <div className="mt-3 flex flex-col gap-3 xl:flex-row xl:items-start">
+          <div className="w-full min-w-0 xl:max-w-[44rem] xl:flex-1">
             <TaskSearchInput
               workspaceKind={workspaceKind}
               value={query}
@@ -860,23 +860,14 @@ export default function ManagerPage() {
               onSearchFieldChange={setSearchField}
               searchOptions={searchOptions}
               onSearchOptionsChange={setSearchOptions}
+              searching={loading}
+              onRefresh={() => void fetchTasks()}
+              onCancel={() => useTaskStore.getState().cancelTaskSearch()}
               ariaLabel="Search tasks"
             />
-            {query.trim() && (
-              <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
-                <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(searchField, workspaceKind)}>{loading ? 'Searching…' : taskSearchDescription(searchField, workspaceKind)}</span>
-                <button
-                  type="button"
-                  className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5"
-                  onClick={() => loading ? useTaskStore.getState().cancelTaskSearch() : void fetchTasks()}
-                >
-                  {loading ? 'Cancel' : 'Refresh'}
-                </button>
-              </div>
-            )}
           </div>
 
-          <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+          <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap xl:ml-auto xl:flex-none">
             <div className="relative min-w-0 sm:flex-none">
               <select
                 value={statusFilter}
@@ -887,7 +878,7 @@ export default function ManagerPage() {
               >
                 {STATUS_OPTIONS.map(option => (
                   <option key={option} value={option}>
-                    {option === 'All' ? 'All' : STATUS_LABELS[option as TaskStatus]}
+                    {option === 'All' ? 'All statuses' : STATUS_LABELS[option as TaskStatus]}
                   </option>
                 ))}
               </select>

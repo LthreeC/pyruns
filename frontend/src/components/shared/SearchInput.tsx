@@ -1,4 +1,4 @@
-import { useEffect, useState, type Ref } from 'react'
+import { useEffect, useState, type ReactNode, type Ref } from 'react'
 import { Search, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
@@ -12,6 +12,7 @@ interface Props {
   className?: string
   inputRef?: Ref<HTMLInputElement>
   ariaKeyShortcuts?: string
+  trailingControls?: ReactNode
 }
 
 export default function SearchInput({
@@ -23,6 +24,7 @@ export default function SearchInput({
   className,
   inputRef,
   ariaKeyShortcuts,
+  trailingControls,
 }: Props) {
   const [local, setLocal] = useState(value)
   const debounced = useDebouncedValue(local, debounceMs)
@@ -31,8 +33,8 @@ export default function SearchInput({
   useEffect(() => { setLocal(value) }, [value])
 
   return (
-    <div className={clsx('relative flex items-center', className)}>
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-txt-tertiary" />
+    <div className={clsx('touch-input flex h-11 min-w-0 items-center rounded-md border border-border bg-surface-overlay transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 sm:h-9', className)}>
+      <Search aria-hidden="true" className="pointer-events-none ml-2.5 h-3.5 w-3.5 flex-none text-txt-tertiary" />
       <input
         ref={inputRef}
         type="text"
@@ -44,7 +46,7 @@ export default function SearchInput({
         placeholder={placeholder}
         aria-label={ariaLabel}
         aria-keyshortcuts={ariaKeyShortcuts}
-        className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-overlay py-2 pl-8 pr-11 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none transition-colors focus:border-border focus:bg-surface-raised sm:h-[34px] sm:pr-8 sm:text-xs"
+        className="h-full min-w-0 flex-1 bg-transparent px-2 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none focus-visible:outline-none sm:text-xs"
       />
       {local && (
         <button
@@ -52,11 +54,12 @@ export default function SearchInput({
           onClick={() => { setLocal(''); onChange('') }}
           aria-label="Clear search"
           title="Clear search"
-          className="touch-target absolute right-0 top-1/2 inline-flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus:outline-none focus:ring-2 focus:ring-accent/25 sm:right-1 sm:h-7 sm:w-7"
+          className="touch-target mr-0.5 inline-flex h-10 w-10 flex-none items-center justify-center rounded text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"
         >
           <X className="h-3.5 w-3.5" />
         </button>
       )}
+      {trailingControls}
     </div>
   )
 }
