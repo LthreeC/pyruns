@@ -410,13 +410,15 @@ class TaskManager:
             if serialized is not None
         ]
 
-    def get_task(self, identifier: str) -> Dict[str, Any] | None:
+    def get_task(self, identifier: str, *, summary: bool = False) -> Dict[str, Any] | None:
         """Return a detached task copy by name."""
         with self._lock:
             snapshot = self._snapshot_task_for_api(
                 self._tasks_by_name.get(identifier),
-                summary=False,
+                summary=summary,
             )
+        if summary:
+            return self.serialize_task(snapshot, summary=True)
         return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
 
     def get_task_summary_page(
@@ -484,12 +486,16 @@ class TaskManager:
             status_counts,
         )
 
-    def get_task_search_snapshots(self, task_names: List[str]) -> Dict[str, Dict[str, Any]]:
-        """Capture metadata for searching outside the manager lock."""
+    def get_task_search_snapshots(self, task_names: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
+        """Capture search/sort metadata without copying every task's run history."""
         with self._lock:
             snapshots = [
                 {
+                    "dir": task.get("dir", ""),
                     "name": task.get("name", ""),
+                    "status": task.get("status", "pending"),
+                    **{key: task.get(key) for key in ("pinned", "task_order", "created_at")},
+                    **{key: list((task.get(key) or [])[-1:]) for key in ("start_times", "finish_times")},
                     "notes": task.get("notes", ""),
                     "env": dict(task.get("env", {}) or {}),
                     "search_text": task.get("search_text", ""),
@@ -497,7 +503,7 @@ class TaskManager:
                     "config": task.get("config", {}),
                     "config_text": task.get("config_text", ""),
                 }
-                for name in task_names
+                for name in (task_names if task_names is not None else self._tasks_by_name)
                 if (task := self._tasks_by_name.get(name)) is not None
             ]
         return {str(task.get("name", "")): task for task in snapshots}

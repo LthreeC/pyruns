@@ -1226,13 +1226,13 @@ class PyrunsRuntime:
                 epoch = self._workspace_epoch
                 self.ensure_tasks_loaded(full_refresh=False)
                 manager = self.task_manager
-                tasks = manager.list_tasks(summary=True)
+                sources = manager.get_task_search_snapshots()
+            tasks = list(sources.values())
             counts = dict.fromkeys(("pending", "queued", "running", "completed", "failed", "cancelled"), 0)
             for task in tasks:
                 task_status = str(task.get("status") or "pending").lower()
                 counts[task_status] = counts.get(task_status, 0) + 1
             ordered = sort_tasks_for_manager(filter_tasks(tasks, "", status), sort_mode)
-            sources = manager.get_task_search_snapshots([task["name"] for task in ordered]) if search_field != "log" else {}
             needles = matcher.needles
             total = 0
             selected = []
@@ -1260,8 +1260,7 @@ class PyrunsRuntime:
             for task in selected:
                 logs = task.pop("_log_search_result")
                 context = build_task_search_result(sources.get(task["name"], {}), query, search_field=search_field, matcher=matcher)
-                if not summary:
-                    task = manager.get_task(task["name"]) or task
+                task = manager.get_task(task["name"], summary=summary) or manager.serialize_task(task, summary=summary)
                 task["search_matches"] = context["matches"] + logs["matches"]
                 task["search_match_count"] = context["match_count"] + logs["match_count"]
                 items.append(task)

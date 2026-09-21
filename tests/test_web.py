@@ -2423,6 +2423,31 @@ def test_invalid_and_slow_regex_report_errors_and_release_search_slots(tmp_path,
     runtime._log_search.slots.release()
 
 
+@pytest.mark.parametrize("summary", [False, True])
+def test_task_search_only_copies_payloads_for_returned_page(tmp_path, summary):
+    class UncopiedHistory(list):
+        def __deepcopy__(self, memo):
+            raise AssertionError("Search must not copy run history outside its result page")
+
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("needle-a", "needle-b", "other"):
+        _add_task(workspace, name)
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    manager = runtime.task_manager
+    with manager._lock:
+        manager._tasks_by_name["needle-a"]["run_environments"] = [{"host": "original"}]
+        for name in ("needle-b", "other"):
+            manager._tasks_by_name[name]["run_environments"] = UncopiedHistory([{"host": "large-history"}])
+
+    page = runtime.search_tasks(query="needle", search_field="name", sort_mode="name_asc", limit=1,
+                                include_logs=False, summary=summary, cancelled=threading.Event())
+    assert page.total == 2 and page.has_more
+    assert [task["name"] for task in page.items] == ["needle-a"]
+    page.items[0]["run_environments"][0]["host"] = "changed"
+    assert manager.get_task("needle-a")["run_environments"] == [{"host": "original"}]
+
+
 def test_metadata_search_cancels_between_lines_without_holding_task_lock(tmp_path, monkeypatch):
     from concurrent.futures import CancelledError
     from pyruns.utils.search_query import SearchQuery
