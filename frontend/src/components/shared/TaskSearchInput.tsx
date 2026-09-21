@@ -55,7 +55,14 @@ export default function TaskSearchInput({
   const searchActive = Boolean(props.value.trim())
   const refreshLabel = searching && searchActive ? 'Cancel search' : searchActive ? 'Refresh search results' : 'Refresh tasks'
   const matchOptions = (
-    <div className="flex flex-none items-center gap-0.5" role="group" aria-label="Search match options">
+    <div
+      className={clsx(
+        'flex flex-none items-center',
+        compact ? 'border-l border-border-subtle' : 'gap-0.5',
+      )}
+      role="group"
+      aria-label="Search match options"
+    >
       {MATCH_OPTIONS.map(option => <button
         key={option.key}
         type="button"
@@ -64,9 +71,16 @@ export default function TaskSearchInput({
         aria-keyshortcuts={option.shortcut}
         title={`${option.label} (${option.shortcut})${option.key === 'useRegex' ? ' — searches each line separately' : ''}`}
         onClick={() => onSearchOptionsChange({ ...searchOptions, [option.key]: !searchOptions[option.key] })}
-        className={clsx('touch-target inline-flex h-11 w-11 items-center justify-center rounded border font-mono text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:h-6 sm:w-6',
-          searchOptions[option.key] ? 'border-accent/40 bg-accent/10 text-accent' : 'border-transparent text-txt-secondary hover:bg-surface-hover hover:text-txt-primary',
-          option.key === 'wholeWord' && 'underline underline-offset-4')}
+        className={clsx(
+          'touch-target inline-flex h-11 w-11 items-center justify-center font-mono text-sm transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30',
+          compact
+            ? 'border-l border-border-subtle first:border-l-0 focus-visible:ring-inset sm:h-8 sm:w-8'
+            : 'rounded border border-transparent sm:h-6 sm:w-6',
+          searchOptions[option.key]
+            ? compact ? 'bg-accent/10 text-accent' : 'border-accent/40 bg-accent/10 text-accent'
+            : 'text-txt-secondary hover:bg-surface-hover hover:text-txt-primary',
+          option.key === 'wholeWord' && 'underline underline-offset-4',
+        )}
       >{option.symbol}</button>)}
     </div>
   )
@@ -94,25 +108,39 @@ export default function TaskSearchInput({
         trailingControls={compact ? undefined : <div className="mr-1 hidden flex-none sm:[@media(pointer:fine)]:block">{matchOptions}</div>}
       />
       <div className={clsx(
-        'flex min-w-0 items-center justify-between gap-1.5',
-        !compact && 'col-span-2 row-start-2 flex-wrap sm:[@media(pointer:fine)]:col-span-1 sm:[@media(pointer:fine)]:col-start-2 sm:[@media(pointer:fine)]:row-start-1',
+        'flex min-w-0 items-center',
+        compact
+          ? 'justify-start'
+          : 'col-span-2 row-start-2 flex-wrap justify-between gap-1.5 sm:[@media(pointer:fine)]:col-span-1 sm:[@media(pointer:fine)]:col-start-2 sm:[@media(pointer:fine)]:row-start-1',
       )}>
-        <div className={clsx('relative min-w-0', compact && 'flex-1')}>
-          <select
-            value={searchField}
-            onChange={event => onSearchFieldChange(event.target.value as TaskSearchScope)}
-            aria-label="Search field"
-            title={taskSearchDescription(searchField, workspaceKind)}
-            className={clsx(
-              'touch-target h-11 max-w-28 appearance-none rounded-md border border-border-subtle bg-surface-raised py-1.5 pl-2 pr-6 text-xs text-txt-secondary outline-none transition-colors hover:bg-surface-overlay focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:h-9',
-              compact && 'w-full',
-            )}
-          >
-            {searchFields.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+        <div
+          role={compact ? 'toolbar' : undefined}
+          aria-label={compact ? 'Search filters' : undefined}
+          className={clsx(
+            'flex min-w-0 items-center',
+            compact && 'overflow-hidden rounded-md border border-border-subtle bg-surface-overlay',
+          )}
+        >
+          <div className={clsx('relative min-w-0', compact && 'w-28 flex-none')}>
+            <select
+              value={searchField}
+              onChange={event => onSearchFieldChange(event.target.value as TaskSearchScope)}
+              aria-label="Search field"
+              title={taskSearchDescription(searchField, workspaceKind)}
+              className={clsx(
+                'touch-target h-11 max-w-28 appearance-none py-1.5 pl-2 pr-6 text-xs text-txt-secondary outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/20',
+                compact
+                  ? 'w-full bg-transparent hover:bg-surface-hover focus-visible:ring-inset sm:h-8'
+                  : 'rounded-md border border-border-subtle bg-surface-raised hover:bg-surface-overlay focus-visible:border-accent sm:h-9',
+              )}
+            >
+              {searchFields.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+          </div>
+          {compact && matchOptions}
         </div>
-        <div className={clsx('flex-none', !compact && 'sm:[@media(pointer:fine)]:hidden')}>{matchOptions}</div>
+        {!compact && <div className="flex-none sm:[@media(pointer:fine)]:hidden">{matchOptions}</div>}
       </div>
       {!compact && (
         <button
