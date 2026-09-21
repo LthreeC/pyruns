@@ -219,6 +219,7 @@ export default function ManagerPage() {
   const focusTaskName = searchParams.get('task')
   const notify = useToastStore(state => state.notify)
   const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
+  const workspaceKind = useWorkspaceStore(state => state.workspace?.workspace_kind)
   const rejectIncompleteReorder = useCallback((page: { has_more: boolean; total: number }) => {
     if (!page.has_more) {
       return false
@@ -852,6 +853,7 @@ export default function ManagerPage() {
         <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-start">
           <div className="w-full min-w-0 flex-none lg:w-auto lg:flex-[1_1_22rem]">
             <TaskSearchInput
+              workspaceKind={workspaceKind}
               value={query}
               onChange={setQuery}
               searchField={searchField}
@@ -862,7 +864,7 @@ export default function ManagerPage() {
             />
             {query.trim() && (
               <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
-                <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(searchField)}>{loading ? 'Searching…' : taskSearchDescription(searchField)}</span>
+                <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(searchField, workspaceKind)}>{loading ? 'Searching…' : taskSearchDescription(searchField, workspaceKind)}</span>
                 <button
                   type="button"
                   className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5"

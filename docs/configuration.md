@@ -275,7 +275,7 @@ Manager 和 Monitor 使用单行搜索框。
 
 语义是：
 
-- 默认按连续文本搜索，不区分大小写；字段默认 `All fields`，也可单独选择任务名、Notes、Config、Shell script、Env 或 Logs
+- 默认按连续文本搜索，不区分大小写；字段默认 `All fields`，也可单独选择任务名、Notes、Env 或 Logs；Python 工作区额外显示 `Config`，Shell 工作区额外显示 `Shell script`
 - `Config` 搜索 Python 任务配置的键和值，`Shell script` 搜索 Shell 任务的脚本内容；不检索 Python 源代码
 - `Env` 搜索任务自身设置的环境变量键和值（`KEY=value`），不包含服务器进程继承的环境或工作区全局 Env
 - `Logs` 检索 `run_logs` 中完整的 `run*.log`、`error.log` 和 `queue.log`；选择其他单独字段时不会扫描日志

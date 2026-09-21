@@ -1,11 +1,11 @@
 import type { ComponentProps } from 'react'
 import { ChevronDown } from 'lucide-react'
 import clsx from 'clsx'
-import type { TaskSearchOptions, TaskSearchScope } from '@/types'
+import type { TaskSearchOptions, TaskSearchScope, WorkspaceKind } from '@/types'
 import SearchInput from './SearchInput'
 
 const SEARCH_FIELDS: { value: TaskSearchScope; label: string; description: string }[] = [
-  { value: 'all', label: 'All fields', description: 'Names, notes, config, scripts, task env and full log files' },
+  { value: 'all', label: 'All fields', description: 'Names, notes, config, task env and full log files' },
   { value: 'name', label: 'Task name', description: 'Task names only' },
   { value: 'notes', label: 'Notes', description: 'Task notes only' },
   { value: 'log', label: 'Logs', description: 'Full log files, including previous runs' },
@@ -20,18 +20,23 @@ const MATCH_OPTIONS: { key: keyof TaskSearchOptions; symbol: string; label: stri
   { key: 'useRegex', symbol: '.*', label: 'Use regular expression', shortcut: 'Alt+R', code: 'KeyR' },
 ]
 
-export function taskSearchDescription(field: TaskSearchScope) {
+export function taskSearchDescription(field: TaskSearchScope, workspaceKind?: WorkspaceKind) {
+  if (field === 'all' && workspaceKind === 'shell') {
+    return 'Names, notes, shell scripts, task env and full log files'
+  }
   return SEARCH_FIELDS.find(option => option.value === field)!.description
 }
 
 interface Props extends Omit<ComponentProps<typeof SearchInput>, 'className' | 'placeholder'> {
+  workspaceKind?: WorkspaceKind
   searchField: TaskSearchScope
   onSearchFieldChange: (field: TaskSearchScope) => void
   searchOptions: TaskSearchOptions
   onSearchOptionsChange: (options: TaskSearchOptions) => void
 }
 
-export default function TaskSearchInput({ searchField, onSearchFieldChange, searchOptions, onSearchOptionsChange, ...props }: Props) {
+export default function TaskSearchInput({ workspaceKind, searchField, onSearchFieldChange, searchOptions, onSearchOptionsChange, ...props }: Props) {
+  const searchFields = SEARCH_FIELDS.filter(option => option.value !== (workspaceKind === 'shell' ? 'config' : 'script'))
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5" onKeyDown={event => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.repeat) return
@@ -51,10 +56,10 @@ export default function TaskSearchInput({ searchField, onSearchFieldChange, sear
             value={searchField}
             onChange={event => onSearchFieldChange(event.target.value as TaskSearchScope)}
             aria-label="Search field"
-            title={taskSearchDescription(searchField)}
+            title={taskSearchDescription(searchField, workspaceKind)}
             className="touch-target h-11 max-w-28 appearance-none rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-2 pr-6 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:h-[34px]"
           >
-            {SEARCH_FIELDS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {searchFields.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
           <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
         </div>

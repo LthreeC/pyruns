@@ -1632,6 +1632,7 @@ export default function MonitorPage() {
             </span>
           </div>
           <TaskSearchInput
+            workspaceKind={workspace?.workspace_kind}
             value={sidebarQuery}
             onChange={setSidebarQuery}
             searchField={monitorSearchField}
@@ -1644,7 +1645,7 @@ export default function MonitorPage() {
             inputRef={sidebarSearchInputRef}
           />
           {sidebarSearchActive && <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
-            <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(monitorSearchField)}>{monitorLoading ? 'Searching…' : taskSearchDescription(monitorSearchField)}</span>
+            <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(monitorSearchField, workspace?.workspace_kind)}>{monitorLoading ? 'Searching…' : taskSearchDescription(monitorSearchField, workspace?.workspace_kind)}</span>
             <button type="button" className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5" onClick={() => monitorLoading ? useTaskStore.getState().cancelMonitorSearch() : void refreshMonitorTasks().catch(() => {})}>{monitorLoading ? 'Cancel' : 'Refresh'}</button>
           </div>}
           {monitorError && (
