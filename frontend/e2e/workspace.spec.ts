@@ -1062,6 +1062,18 @@ test('monitor task details stay stable after the full task loads', async ({ page
 
   await page.goto('/monitor?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'View alpha, pending' }).click()
+  const logActions = page.getByRole('toolbar', { name: 'Log actions', exact: true })
+  await expect(logActions).toBeVisible()
+  expect(await logActions.evaluate(element => {
+    const toolbarBounds = element.getBoundingClientRect()
+    const controls = element.querySelectorAll('button, select')
+    return toolbarBounds.left >= 0
+      && toolbarBounds.right <= window.innerWidth
+      && Array.from(controls).every(control => {
+        const bounds = control.getBoundingClientRect()
+        return bounds.left >= toolbarBounds.left && bounds.right <= toolbarBounds.right
+      })
+  })).toBe(true)
   await page.keyboard.press('Control+Shift+F')
   await expect(page.getByRole('textbox', { name: 'Search monitor tasks' })).toBeFocused()
   await page.getByRole('button', { name: 'View Details' }).click()
@@ -1149,6 +1161,13 @@ for (const workspaceKind of ['script', 'shell'] as const) {
       const selector = page.getByRole('combobox', { name: 'Search field', exact: true })
       const search = page.getByRole('textbox', { name: view === 'Monitor' ? 'Search monitor tasks' : 'Search tasks', exact: true })
       await expect(selector).toHaveValue('all')
+      if (view === 'Monitor') {
+        const searchBounds = await search.boundingBox()
+        const matchBounds = await page.getByRole('button', { name: 'Match case', exact: true }).boundingBox()
+        expect(searchBounds).not.toBeNull()
+        expect(matchBounds).not.toBeNull()
+        expect(matchBounds!.y).toBeGreaterThanOrEqual(searchBounds!.y + searchBounds!.height)
+      }
       await expect(selector.locator('option')).toHaveText(['All fields', 'Task name', 'Notes', 'Logs', 'Env', workspaceKind === 'shell' ? 'Shell script' : 'Config'])
       await expect(selector).toHaveAttribute('title', `Names, notes, ${workspaceKind === 'shell' ? 'shell scripts' : 'config'}, task env and full log files`)
       await search.fill('needle')

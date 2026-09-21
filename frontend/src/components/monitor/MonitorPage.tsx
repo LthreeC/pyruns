@@ -1598,38 +1598,64 @@ export default function MonitorPage() {
           : { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}
       >
         <div className="flex-none border-b border-border-subtle px-2.5 py-2">
-          <div className="mb-2 flex items-center justify-between">
-            <div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="min-w-0">
               <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">Monitor</div>
               <div className="text-sm font-medium text-txt-primary">
                 {monitorTotal.toLocaleString()} task{monitorTotal === 1 ? '' : 's'}
               </div>
             </div>
-            <span
-              role="status"
-              aria-live="polite"
-              aria-label={taskEventStatus === 'live'
-                ? 'Task list updates live'
-                : taskEventStatus === 'reconnecting'
-                  ? 'Live task updates disconnected; fallback refresh is active'
-                  : 'Connecting live task updates'}
-              title={taskEventStatus === 'live'
-                ? 'Task changes appear automatically'
-                : 'Using fallback refresh while the live connection recovers'}
-              className={clsx(
-                'inline-flex items-center gap-1.5 text-2xs',
-                taskEventStatus === 'live' ? 'text-txt-tertiary' : 'text-amber-700 dark:text-amber-300',
-              )}
-            >
-              {taskEventStatus === 'live'
-                ? <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                : <LoaderCircle aria-hidden="true" className="h-3 w-3 motion-safe:animate-spin" />}
-              {taskEventStatus === 'live'
-                ? 'Live'
-                : taskEventStatus === 'reconnecting'
-                  ? 'Retrying'
-                  : 'Connecting'}
-            </span>
+            <div className="flex flex-none items-center gap-1">
+              <span
+                role="status"
+                aria-live="polite"
+                aria-label={taskEventStatus === 'live'
+                  ? 'Task list updates live'
+                  : taskEventStatus === 'reconnecting'
+                    ? 'Live task updates disconnected; fallback refresh is active'
+                    : 'Connecting live task updates'}
+                title={taskEventStatus === 'live'
+                  ? 'Task changes appear automatically'
+                  : 'Using fallback refresh while the live connection recovers'}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 text-2xs',
+                  taskEventStatus === 'live' ? 'text-txt-tertiary' : 'text-amber-700 dark:text-amber-300',
+                )}
+              >
+                {taskEventStatus === 'live'
+                  ? <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  : <LoaderCircle aria-hidden="true" className="h-3 w-3 motion-safe:animate-spin" />}
+                {taskEventStatus === 'live'
+                  ? 'Live'
+                  : taskEventStatus === 'reconnecting'
+                    ? 'Retrying'
+                    : 'Connecting'}
+              </span>
+              <button
+                type="button"
+                aria-label={monitorLoading && sidebarSearchActive
+                  ? 'Cancel search'
+                  : sidebarSearchActive
+                    ? 'Refresh search results'
+                    : 'Refresh tasks'}
+                title={monitorLoading && sidebarSearchActive
+                  ? 'Cancel search'
+                  : sidebarSearchActive
+                    ? 'Refresh search results'
+                    : 'Refresh tasks'}
+                disabled={monitorLoading && !sidebarSearchActive}
+                onClick={() => monitorLoading && sidebarSearchActive
+                  ? useTaskStore.getState().cancelMonitorSearch()
+                  : void refreshMonitorTasks().catch(() => {})}
+                className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-wait disabled:opacity-50 sm:h-8 sm:w-8"
+              >
+                {monitorLoading
+                  ? sidebarSearchActive
+                    ? <Square aria-hidden="true" className="h-3.5 w-3.5" />
+                    : <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                  : <RefreshCw aria-hidden="true" className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
           <TaskSearchInput
             compact
@@ -1833,117 +1859,162 @@ export default function MonitorPage() {
       )}
 
       <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" style={{ background: '#0A0A0B' }}>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-raised px-4 py-2.5">
-          {compactMonitorLayout && compactSearchFocused && selectedTaskName && (
-            <ActionButton variant="secondary" icon={<Search className="h-3.5 w-3.5" />} onClick={() => {
-              setCompactSearchFocused(false)
-              window.requestAnimationFrame(() => sidebarSearchInputRef.current?.focus())
-            }}>Search results</ActionButton>
-          )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface-raised px-3 py-2.5 sm:px-4">
           {selectedTask ? (
-            <>
-              <StatusBadge status={selectedTask.status as TaskStatus} />
-              <div className="min-w-0 flex-1 basis-[12rem]">
-                <div className="truncate text-sm font-medium text-txt-primary" title={selectedTask.name}>
-                  {selectedTask.name}
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="flex min-w-0 flex-1 basis-[24rem] items-center gap-2.5">
+                {compactMonitorLayout && compactSearchFocused && selectedTaskName && (
+                  <ActionButton
+                    aria-label="Search results"
+                    title="Back to search results"
+                    className="flex-none px-2 [&>span]:sr-only"
+                    variant="secondary"
+                    icon={<Search className="h-3.5 w-3.5" />}
+                    onClick={() => {
+                      setCompactSearchFocused(false)
+                      window.requestAnimationFrame(() => sidebarSearchInputRef.current?.focus())
+                    }}
+                  >
+                    Search results
+                  </ActionButton>
+                )}
+                <StatusBadge status={selectedTask.status as TaskStatus} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-txt-primary" title={selectedTask.name}>
+                    {selectedTask.name}
+                  </div>
+                  <div className="truncate text-xs text-txt-secondary" title={selectedLog || liveLogName || 'latest log'}>
+                    {selectedLog || liveLogName || 'latest log'}
+                  </div>
                 </div>
-                <div className="truncate text-xs text-txt-secondary" title={selectedLog || liveLogName || 'latest log'}>
-                  {selectedLog || liveLogName || 'latest log'}
-                </div>
+
+                {isLive && (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    title={streamStatus === 'reconnecting' ? 'Live stream disconnected; incremental polling remains active while reconnecting.' : undefined}
+                    className={clsx(
+                      'inline-flex flex-none items-center gap-1 rounded-md px-2 py-1 text-2xs font-medium',
+                      streamStatus === 'live'
+                        ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
+                    )}
+                  >
+                    {streamStatus === 'live'
+                      ? <Wifi className="h-3 w-3" />
+                      : <RefreshCw className="h-3 w-3 motion-safe:animate-spin" />}
+                    {streamStatus === 'live'
+                      ? 'Live'
+                      : streamStatus === 'reconnecting'
+                        ? 'Reconnecting'
+                        : 'Connecting'}
+                  </span>
+                )}
               </div>
 
-              {isLive && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  title={streamStatus === 'reconnecting' ? 'Live stream disconnected; incremental polling remains active while reconnecting.' : undefined}
-                  className={clsx(
-                    'inline-flex items-center gap-1 rounded-md px-2 py-1 text-2xs font-medium',
-                    streamStatus === 'live'
-                      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                      : 'bg-amber-500/10 text-amber-700 dark:text-amber-300',
-                  )}
-                >
-                  {streamStatus === 'live'
-                    ? <Wifi className="h-3 w-3" />
-                    : <RefreshCw className="h-3 w-3 motion-safe:animate-spin" />}
-                  {streamStatus === 'live'
-                    ? 'Live'
-                    : streamStatus === 'reconnecting'
-                      ? 'Reconnecting'
-                      : 'Connecting'}
-                </span>
-              )}
+              <div
+                className={clsx(
+                  'flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5',
+                  compactMonitorLayout ? 'w-full' : 'ml-auto flex-none',
+                )}
+                role="toolbar"
+                aria-label="Log actions"
+              >
+                {availableLogs.length > 1 && (
+                  <div className="relative min-w-0">
+                    <select
+                      value={selectedLog}
+                      onChange={event => handleSelectLogFile(event.target.value)}
+                      title="Select log file"
+                      aria-label="Select task log file"
+                      disabled={loading}
+                      className="touch-input h-11 max-w-36 appearance-none truncate rounded-md border border-border bg-surface-raised px-2.5 pr-7 text-xs text-txt-primary transition-colors hover:bg-surface-overlay sm:h-9"
+                    >
+                      {availableLogs.map(log => (
+                        <option key={log} value={log}>{log}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+                  </div>
+                )}
 
-              {(selectedTask.status === 'pending'
-                || selectedTask.status === 'failed'
-                || selectedTask.status === 'completed'
-                || selectedTask.status === 'cancelled') && (
                 <ActionButton
-                  icon={taskActionPending === 'run'
-                    ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
-                    : <Play className="h-3.5 w-3.5" />}
-                  variant="success"
-                  onClick={() => void handleTaskAction('run')}
-                  disabled={taskActionPending !== null}
+                  icon={<PanelRightOpen className="h-3.5 w-3.5" />}
+                  variant="secondary"
+                  aria-label="View Details"
+                  title="View task details"
+                  className="max-[900px]:px-2 max-[900px]:[&>span]:sr-only"
+                  onClick={() => openDetailTask(selectedTask)}
                 >
-                  {taskActionPending === 'run' ? 'Starting' : 'Run'}
+                  View Details
                 </ActionButton>
-              )}
 
-              {(selectedTask.status === 'running' || selectedTask.status === 'queued') && (
-                <ActionButton
-                  icon={taskActionPending === 'cancel'
-                    ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
-                    : <Square className="h-3.5 w-3.5" />}
-                  variant="danger"
-                  onClick={() => setStopConfirmTask(selectedTask.name)}
-                  disabled={taskActionPending !== null}
-                >
-                  {taskActionPending === 'cancel' ? 'Stopping' : 'Stop'}
-                </ActionButton>
-              )}
+                <CopyButton
+                  value={logContent}
+                  label="Copy current log"
+                  size="md"
+                  className="border border-border bg-surface-raised"
+                />
 
-              <ActionButton icon={<PanelRightOpen className="h-3.5 w-3.5" />} variant="secondary" onClick={() => openDetailTask(selectedTask)}>
-                View Details
-              </ActionButton>
-
-              <CopyButton
-                value={logContent}
-                label="Copy current log"
-                text="Copy log"
-              />
-
-              {availableLogs.length > 1 && (
-                <div className="relative">
-                  <select
-                    value={selectedLog}
-                    onChange={event => handleSelectLogFile(event.target.value)}
-                    title="Select log file"
-                    aria-label="Select task log file"
-                    disabled={loading}
-                    className="touch-input h-11 max-w-40 appearance-none rounded-md border border-border bg-surface-raised px-3 pr-7 text-xs text-txt-primary transition-colors hover:bg-surface-overlay sm:h-9"
+                {(selectedTask.status === 'pending'
+                  || selectedTask.status === 'failed'
+                  || selectedTask.status === 'completed'
+                  || selectedTask.status === 'cancelled') && (
+                  <ActionButton
+                    icon={taskActionPending === 'run'
+                      ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                      : <Play className="h-3.5 w-3.5" />}
+                    variant="success"
+                    onClick={() => void handleTaskAction('run')}
+                    disabled={taskActionPending !== null}
                   >
-                    {availableLogs.map(log => (
-                      <option key={log} value={log}>{log}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-                </div>
-              )}
-            </>
+                    {taskActionPending === 'run' ? 'Starting' : 'Run'}
+                  </ActionButton>
+                )}
+
+                {(selectedTask.status === 'running' || selectedTask.status === 'queued') && (
+                  <ActionButton
+                    icon={taskActionPending === 'cancel'
+                      ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                      : <Square className="h-3.5 w-3.5" />}
+                    variant="danger"
+                    onClick={() => setStopConfirmTask(selectedTask.name)}
+                    disabled={taskActionPending !== null}
+                  >
+                    {taskActionPending === 'cancel' ? 'Stopping' : 'Stop'}
+                  </ActionButton>
+                )}
+              </div>
+            </div>
           ) : (
-            <span className="text-xs text-txt-tertiary">Select a task to view logs</span>
+            <>
+              {compactMonitorLayout && compactSearchFocused && selectedTaskName && (
+                <ActionButton variant="secondary" icon={<Search className="h-3.5 w-3.5" />} onClick={() => {
+                  setCompactSearchFocused(false)
+                  window.requestAnimationFrame(() => sidebarSearchInputRef.current?.focus())
+                }}>Search results</ActionButton>
+              )}
+              <span className="text-xs text-txt-tertiary">Select a task to view logs</span>
+            </>
           )}
         </div>
 
         {logMatch && (
-          <div aria-label="Selected log match" className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-raised px-3 py-2">
-            <div className="min-w-0 flex-1">
-              <p className="text-xs text-txt-secondary">{logMatch.log_file}:{logMatch.line} · Search match · Up to 32 KB</p>
-              <SearchMatchContext match={logMatch} />
+          <div aria-label="Selected log match" className="border-b border-border bg-surface-raised px-3 py-2">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <p className="min-w-0 flex-1 text-xs text-txt-secondary">{logMatch.log_file}:{logMatch.line} · Search match · Up to 32 KB</p>
+              <ActionButton
+                variant="secondary"
+                icon={<X className="h-3.5 w-3.5" />}
+                aria-label="Back to latest log"
+                title="Close this search match and return to the latest log"
+                className="flex-none max-[900px]:px-2 max-[900px]:[&>span]:sr-only"
+                onClick={() => selectedTask && handleSidebarClick(selectedTask)}
+              >
+                Back to latest log
+              </ActionButton>
             </div>
-            <ActionButton variant="secondary" onClick={() => selectedTask && handleSidebarClick(selectedTask)}>Back to latest log</ActionButton>
+            <SearchMatchContext match={logMatch} />
           </div>
         )}
         {logError && (
