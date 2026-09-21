@@ -35,6 +35,7 @@ from pyruns._config import (
 from pyruns.utils.events import log_emitter
 from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
+from pyruns.utils.search_query import SearchQueryError
 from pyruns.web.runtime import (
     PyrunsRuntime,
     TaskEnvConflictError,
@@ -891,6 +892,10 @@ def create_app(
         summary: bool = False,
         compact: bool = False,
         include_logs: bool = False,
+        search_field: Literal["all", "name", "notes", "config", "script", "env", "log"] = "all",
+        match_case: bool = False,
+        whole_word: bool = False,
+        use_regex: bool = False,
         sort: Literal[
             "priority",
             "manual",
@@ -901,11 +906,13 @@ def create_app(
         ] = "priority",
     ) -> dict[str, Any]:
         runtime = get_runtime()
-        if include_logs and query.strip():
+        if (include_logs or search_field == "log" or match_case or whole_word or use_regex) and query.strip():
             cancelled = threading.Event()
             pending = asyncio.create_task(asyncio.to_thread(
                 runtime.search_tasks, query=query, status=status, offset=offset,
-                limit=limit, sort_mode=sort, cancelled=cancelled,
+                limit=limit, sort_mode=sort, search_field=search_field, cancelled=cancelled,
+                match_case=match_case, whole_word=whole_word, use_regex=use_regex, include_logs=include_logs,
+                summary=summary,
             ))
             try:
                 while not pending.done():
@@ -917,6 +924,8 @@ def create_app(
                 page = await pending
             except WorkspaceChangedError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except SearchQueryError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             finally:
                 cancelled.set()
                 if not pending.done():
@@ -924,7 +933,7 @@ def create_app(
         else:
             page = await run_in_threadpool(
                 runtime.list_tasks, query=query, status=status, offset=offset,
-                limit=limit, refresh=refresh, summary=summary, sort_mode=sort,
+                limit=limit, refresh=refresh, summary=summary, sort_mode=sort, search_field=search_field,
             )
         items = [_compact_monitor_task(item) for item in page.items] if compact else page.items
         return {

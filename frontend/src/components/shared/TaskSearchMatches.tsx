@@ -6,7 +6,7 @@ import { errorMessage } from '@/utils/errors'
 import { getTaskLogs } from '@/api'
 import CopyButton from './CopyButton'
 
-const LABELS = { name: 'Name', notes: 'Notes', config: 'Config', script: 'Script', log: 'Log' }
+const LABELS = { name: 'Name', notes: 'Notes', config: 'Config', script: 'Script', env: 'Env', log: 'Log' }
 
 export function SearchMatchContext({ match }: { match: TaskSearchMatch }) {
   const [before, highlighted, after] = splitTaskSearchSnippet(match.snippet, match.match_start, match.match_end)

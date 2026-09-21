@@ -16,7 +16,7 @@ import {
 import clsx from 'clsx'
 import { useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
-import SearchInput from '@/components/shared/SearchInput'
+import TaskSearchInput, { taskSearchDescription } from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import Pagination from '@/components/shared/Pagination'
@@ -188,7 +188,8 @@ function hasReorderChanges(tasks: Task[], items: { name: string; pinned: boolean
 export default function ManagerPage() {
   const {
     tasks, total, statusCounts, offset, limit, query, statusFilter, sortMode, selectedIds, loading, error, columns,
-    setQuery, setStatusFilter, setSortMode, setOffset, setColumns, fetchTasks,
+    setQuery, searchField, setSearchField, setStatusFilter, setSortMode, setOffset, setColumns, fetchTasks,
+    searchOptions, setSearchOptions,
     toggleSelect, selectAll, clearSelection,
   } = useTaskStore()
 
@@ -238,7 +239,7 @@ export default function ManagerPage() {
   useEffect(() => {
     void fetchTasks()
     return () => useTaskStore.getState().cancelTaskSearch()
-  }, [query, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch])
+  }, [query, searchField, searchOptions, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch])
 
   useEffect(() => {
     detailRequestSeqRef.current += 1
@@ -850,15 +851,18 @@ export default function ManagerPage() {
 
         <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-start">
           <div className="w-full min-w-0 flex-none lg:w-auto lg:flex-[1_1_22rem]">
-            <SearchInput
+            <TaskSearchInput
               value={query}
               onChange={setQuery}
-              placeholder="Search tasks and full logs"
+              searchField={searchField}
+              onSearchFieldChange={setSearchField}
+              searchOptions={searchOptions}
+              onSearchOptionsChange={setSearchOptions}
               ariaLabel="Search tasks"
             />
             {query.trim() && (
               <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
-                <span>{loading ? 'Searching tasks and full logs…' : 'Includes names, notes, config, scripts and full log files'}</span>
+                <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(searchField)}>{loading ? 'Searching…' : taskSearchDescription(searchField)}</span>
                 <button
                   type="button"
                   className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5"

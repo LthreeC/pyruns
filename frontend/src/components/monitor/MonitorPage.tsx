@@ -39,7 +39,7 @@ import {
   type TaskEventStreamStatus,
 } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
-import SearchInput from '@/components/shared/SearchInput'
+import TaskSearchInput, { taskSearchDescription } from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
@@ -206,6 +206,10 @@ export default function MonitorPage() {
     monitorHasMore,
     monitorLoading,
     monitorError,
+    monitorSearchField,
+    setMonitorSearchField,
+    monitorSearchOptions,
+    setMonitorSearchOptions,
     fetchMonitorTasks,
     upsertMonitorTask,
   } = useTaskStore()
@@ -314,10 +318,12 @@ export default function MonitorPage() {
   const refreshMonitorTasks = useCallback(
     () => fetchMonitorTasks({
       query: sidebarQuery,
+      searchField: monitorSearchField,
+      searchOptions: monitorSearchOptions,
       refresh: !sidebarQuery.trim(),
       workspaceKey,
     }),
-    [fetchMonitorTasks, sidebarQuery, workspaceKey],
+    [fetchMonitorTasks, sidebarQuery, monitorSearchField, monitorSearchOptions, workspaceKey],
   )
   const refreshDetachedSelectedTask = useCallback(async (duringSearch = false) => {
     if (!selectedTaskName || (selectedTaskFromList && !duringSearch)) {
@@ -605,6 +611,8 @@ export default function MonitorPage() {
 
   useEffect(() => {
     void refreshMonitorTasks().catch(err => {
+      // Incomplete expressions while typing are already explained beside the search.
+      if (err instanceof api.ApiError && err.status === 422) return
       notify({
         tone: 'error',
         title: 'Could not load monitor tasks',
@@ -1586,7 +1594,7 @@ export default function MonitorPage() {
           compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle',
         )}
         style={compactMonitorLayout
-          ? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }
+          ? { height: sidebarSearchActive ? '100%' : COMPACT_MONITOR_SIDEBAR_HEIGHT }
           : { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}
       >
         <div className="flex-none border-b border-border-subtle px-2.5 py-2">
@@ -1623,18 +1631,21 @@ export default function MonitorPage() {
                   : 'Connecting'}
             </span>
           </div>
-          <SearchInput
+          <TaskSearchInput
             value={sidebarQuery}
             onChange={setSidebarQuery}
-            placeholder="Search tasks and full logs"
+            searchField={monitorSearchField}
+            onSearchFieldChange={setMonitorSearchField}
+            searchOptions={monitorSearchOptions}
+            onSearchOptionsChange={setMonitorSearchOptions}
             ariaLabel="Search monitor tasks"
             ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
             debounceMs={250}
             inputRef={sidebarSearchInputRef}
           />
           {sidebarSearchActive && <div className="mt-1 flex items-center justify-between gap-1 text-2xs text-txt-tertiary" role="status">
-            <span>{monitorLoading ? 'Searching tasks and full logs…' : 'Includes full log files'}</span>
-            <button type="button" className="touch-target rounded px-2 py-1 text-accent hover:bg-accent/5" onClick={() => monitorLoading ? useTaskStore.getState().cancelMonitorSearch() : void refreshMonitorTasks().catch(() => {})}>{monitorLoading ? 'Cancel' : 'Refresh'}</button>
+            <span className="min-w-0 flex-1 truncate" title={taskSearchDescription(monitorSearchField)}>{monitorLoading ? 'Searching…' : taskSearchDescription(monitorSearchField)}</span>
+            <button type="button" className="touch-target flex-none rounded px-2 py-1 text-accent hover:bg-accent/5" onClick={() => monitorLoading ? useTaskStore.getState().cancelMonitorSearch() : void refreshMonitorTasks().catch(() => {})}>{monitorLoading ? 'Cancel' : 'Refresh'}</button>
           </div>}
           {monitorError && (
             <div className="mt-2 flex items-start gap-1.5 rounded-md border border-rose-500/20 bg-rose-500/8 px-2 py-1.5 text-2xs text-rose-700 dark:text-rose-300" role="alert">

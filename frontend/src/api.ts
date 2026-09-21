@@ -6,6 +6,8 @@ import type {
   TaskLogs,
   TaskPage,
   TaskSortMode,
+  TaskSearchScope,
+  TaskSearchOptions,
   TemplateContent,
   WorkspaceInfo,
   SystemMetrics,
@@ -167,6 +169,8 @@ export const getTasks = (params: {
   compact?: boolean
   sort?: TaskSortMode
   includeLogs?: boolean
+  searchField?: TaskSearchScope
+  searchOptions?: TaskSearchOptions
 } = {}, signal?: AbortSignal) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
@@ -178,6 +182,10 @@ export const getTasks = (params: {
   if (params.compact != null) sp.set('compact', String(params.compact))
   if (params.sort) sp.set('sort', params.sort)
   if (params.includeLogs) sp.set('include_logs', 'true')
+  if (params.searchField) sp.set('search_field', params.searchField)
+  if (params.searchOptions?.matchCase) sp.set('match_case', 'true')
+  if (params.searchOptions?.wholeWord) sp.set('whole_word', 'true')
+  if (params.searchOptions?.useRegex) sp.set('use_regex', 'true')
   return request<TaskPage>(`/api/tasks?${sp}`, { signal })
 }
 

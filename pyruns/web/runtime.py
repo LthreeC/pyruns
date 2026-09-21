@@ -74,10 +74,14 @@ from pyruns.utils.log_search import LogSearch
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
-from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager, task_search_needles
+from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
+from pyruns.utils.search_query import SearchQuery
 from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
     build_task_preview_and_search,
+    build_task_search_result,
+    filter_tasks_by_search_field,
+    task_search_found,
     normalize_task_kind,
     normalize_workspace_kind,
     resolve_task_payload_path,
@@ -1151,6 +1155,7 @@ class PyrunsRuntime:
         refresh: bool = True,
         summary: bool = False,
         sort_mode: str = "priority",
+        search_field: str = "all",
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh)
@@ -1159,7 +1164,7 @@ class PyrunsRuntime:
         if summary:
             items, total, status_counts = self.task_manager.get_task_summary_page(
                 query=query, status=status, offset=safe_offset,
-                limit=safe_limit, sort_mode=sort_mode,
+                limit=safe_limit, sort_mode=sort_mode, search_field=search_field,
             )
         else:
             all_tasks = self.task_manager.list_tasks()
@@ -1170,7 +1175,9 @@ class PyrunsRuntime:
             for task in all_tasks:
                 task_status = str(task.get("status", "pending") or "pending").lower()
                 status_counts[task_status] = status_counts.get(task_status, 0) + 1
-            ordered = sort_tasks_for_manager(filter_tasks(all_tasks, query, status), sort_mode)
+            ordered = sort_tasks_for_manager(
+                filter_tasks_by_search_field(all_tasks, query, status, search_field), sort_mode,
+            )
             total = len(ordered)
             items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
         if summary:
@@ -1178,6 +1185,7 @@ class PyrunsRuntime:
                 results_by_name = self.task_manager.get_task_search_results(
                     [str(task.get("name", "") or "") for task in items],
                     query,
+                    search_field=search_field,
                 )
                 enriched_items: List[Dict[str, Any]] = []
                 for task in items:
@@ -1204,8 +1212,10 @@ class PyrunsRuntime:
             status_counts=status_counts,
         )
 
-    def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", cancelled):
+    def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", search_field="all",
+                     match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True, cancelled):
         """Search metadata and all log files without holding task/workspace locks during I/O."""
+        matcher = SearchQuery(query, match_case=match_case, whole_word=whole_word, use_regex=use_regex, cancelled=cancelled)
         while not self._log_search.slots.acquire(timeout=0.1):
             if cancelled.is_set():
                 raise CancelledError()
@@ -1222,15 +1232,23 @@ class PyrunsRuntime:
                 task_status = str(task.get("status") or "pending").lower()
                 counts[task_status] = counts.get(task_status, 0) + 1
             ordered = sort_tasks_for_manager(filter_tasks(tasks, "", status), sort_mode)
-            needles = task_search_needles(query)
+            sources = manager.get_task_search_snapshots([task["name"] for task in ordered]) if search_field != "log" else {}
+            needles = matcher.needles
             total = 0
             selected = []
             errors = []
             for task in ordered:
                 if cancelled.is_set():
                     raise CancelledError()
-                found = {needle for needle in needles if filter_tasks([task], needle)}
-                logs = self._log_search.search(task["dir"], query, cancelled)
+                found = (
+                    task_search_found(sources.get(task["name"], task), matcher, search_field)
+                    if search_field != "log" else set()
+                )
+                logs = (
+                    self._log_search.search(task["dir"], query, cancelled, matcher)
+                    if search_field == "log" or (search_field == "all" and include_logs)
+                    else {"matches": [], "match_count": 0, "found": set(), "errors": []}
+                )
                 errors.extend(f"{task['name']}: {message}" for message in logs["errors"] if len(errors) < 8)
                 if not all(needle in found or needle in logs["found"] for needle in needles):
                     continue
@@ -1238,18 +1256,19 @@ class PyrunsRuntime:
                     task["_log_search_result"] = logs
                     selected.append(task)
                 total += 1
-            metadata = manager.get_task_search_results([task["name"] for task in selected], query)
             items = []
             for task in selected:
                 logs = task.pop("_log_search_result")
-                context = metadata.get(task["name"], {"matches": [], "match_count": 0})
+                context = build_task_search_result(sources.get(task["name"], {}), query, search_field=search_field, matcher=matcher)
+                if not summary:
+                    task = manager.get_task(task["name"]) or task
                 task["search_matches"] = context["matches"] + logs["matches"]
                 task["search_match_count"] = context["match_count"] + logs["match_count"]
                 items.append(task)
             with self._workspace_lock:
                 if epoch != self._workspace_epoch:
                     raise WorkspaceChangedError("Workspace changed during search; search again.")
-            return TaskPage(_cap_summary_task_payloads(items), total, offset, limit,
+            return TaskPage(_cap_summary_task_payloads(items) if summary else items, total, offset, limit,
                             offset + len(items) < total, counts, errors)
         finally:
             self._log_search.slots.release()

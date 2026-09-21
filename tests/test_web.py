@@ -2291,6 +2291,196 @@ def test_compact_task_search_returns_field_context_without_scanning_logs(tmp_pat
     assert log_response.json()["items"] == []
 
 
+@pytest.mark.parametrize("summary,compact", [(False, False), (True, False), (True, True)])
+def test_task_search_fields_filter_results_previews_and_pagination(tmp_path, summary, compact):
+    workspace = _make_workspace(tmp_path, "main")
+    names = {"name": "needle-name", "notes": "by-note", "config": "by-config",
+             "script": "by-script", "log": "by-log"}
+    for field, name in names.items():
+        _add_task(workspace, name, status="completed", log_text="needle\n" if field == "log" else "")
+    note_dir = workspace / TASKS_DIR / names["notes"]
+    update_task_info(str(note_dir), lambda info: info.update({"notes": "NEEDLE\nsecond-line"}))
+    save_yaml(str(workspace / TASKS_DIR / names["config"] / CONFIG_FILENAME), {"model": {"tag": "needle"}})
+    script_dir = workspace / TASKS_DIR / names["script"]
+    (script_dir / SHELL_CONFIG_FILENAME).write_text("echo needle\n", encoding="utf-8")
+    update_task_info(str(script_dir), lambda info: info.update({
+        "task_kind": TASK_KIND_SHELL, "config_file": SHELL_CONFIG_FILENAME,
+    }))
+    _add_task(workspace, "needle-mixed", status="completed", log_text="needle\n")
+    mixed_dir = workspace / TASKS_DIR / "needle-mixed"
+    update_task_info(str(mixed_dir), lambda info: info.update({"notes": "needle"}))
+    save_yaml(str(mixed_dir / CONFIG_FILENAME), {"tag": "needle"})
+    _add_task(workspace, "unmatched")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    params = {"query": "needle", "summary": summary, "compact": compact,
+              "include_logs": True, "sort": "name_asc", "refresh": False}
+    with patch.object(runtime._log_search, "search", wraps=runtime._log_search.search) as scan:
+        for field, name in names.items():
+            before = scan.call_count
+            response = client.get("/api/tasks", params={**params, "search_field": field})
+            assert response.status_code == 200
+            page = response.json()
+            expected = sorted([name] + (["needle-mixed"] if field != "script" else []))
+            assert page["total"] == len(expected)
+            assert [task["name"] for task in page["items"]] == expected
+            if not summary:
+                own_task = next(task for task in page["items"] if task["name"] == name)
+                if field == "config":
+                    assert own_task["config"] == {"model": {"tag": "needle"}}
+                elif field == "script":
+                    assert own_task["config_text"] == (script_dir / SHELL_CONFIG_FILENAME).read_bytes().decode("utf-8")
+            if summary or field == "log":
+                for item in page["items"]:
+                    assert item["search_match_count"] == 1
+                    assert {m["field"] for m in item["search_matches"]} == {field}
+            if field != "log":
+                assert scan.call_count == before
+            assert page["status_counts"]["pending"] == 1
+
+        # All is the default and pagination/counts cover hits from every source.
+        for offset, name in enumerate(sorted([*names.values(), "needle-mixed"])):
+            page = client.get("/api/tasks", params={**params, "offset": offset, "limit": 1}).json()
+            assert page["total"] == 6
+            assert [task["name"] for task in page["items"]] == [name]
+            assert page["has_more"] == (offset < 5)
+
+        # Each query line must match the selected field, never another field.
+        mixed = client.get("/api/tasks", params={**params, "query": "by-log\nneedle", "search_field": "log"}).json()
+        assert mixed["total"] == 0
+        notes = client.get("/api/tasks", params={**params, "query": "needle\nsecond-line", "search_field": "notes"}).json()
+        assert notes["total"] == 1
+        assert client.get("/api/tasks", params={**params, "status": "pending", "search_field": "notes"}).json()["total"] == 0
+        before = scan.call_count
+        assert client.get("/api/tasks", params={**params, "query": "", "search_field": "log"}).json()["total"] == 7
+        assert scan.call_count == before
+    assert client.get("/api/tasks", params={**params, "search_field": "unknown"}).status_code == 422
+
+
+@pytest.mark.parametrize("field", ["name", "notes", "config", "script", "env", "log"])
+def test_search_match_options_combine_with_each_field(tmp_path, field):
+    import itertools
+
+    workspace = _make_workspace(tmp_path, "main")
+    text = "Token token tokenize token_1 xToken tokenx"
+    name = text.replace(" ", "-") if field == "name" else "source"
+    _add_task(workspace, name, log_text=text + "\r\n" if field == "log" else "")
+    task_dir = workspace / TASKS_DIR / name
+    if field == "notes":
+        update_task_info(str(task_dir), lambda info: info.update({"notes": text}))
+    elif field == "env":
+        update_task_info(str(task_dir), lambda info: info.update({"env": {"SEARCH_PAYLOAD": text}}))
+    elif field == "config":
+        save_yaml(str(task_dir / CONFIG_FILENAME), {"payload": text})
+    elif field == "script":
+        (task_dir / SHELL_CONFIG_FILENAME).write_text(f"echo {text}\n", encoding="utf-8")
+        update_task_info(str(task_dir), lambda info: info.update({"task_kind": TASK_KIND_SHELL, "config_file": SHELL_CONFIG_FILENAME}))
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    for match_case, whole_word, use_regex in itertools.product([False, True], repeat=3):
+        params = {"query": "Toke[n]" if use_regex else "Token", "include_logs": True,
+                  "search_field": field, "match_case": match_case, "whole_word": whole_word, "use_regex": use_regex}
+        response = client.get("/api/tasks", params=params)
+        assert response.status_code == 200, response.text
+        item = response.json()["items"][0]
+        if field == "config":
+            assert item["config"] == {"payload": text}
+        elif field == "script":
+            assert item["config_text"] == (task_dir / SHELL_CONFIG_FILENAME).read_bytes().decode("utf-8")
+        expected = (1 if match_case else 2) if whole_word else (2 if match_case else 6)
+        assert item["search_match_count"] == expected
+        assert {match["field"] for match in item["search_matches"]} == {field}
+        assert all(match["snippet"][match["match_start"]:match["match_end"]] in {"token", "Token"} for match in item["search_matches"])
+        params["search_field"] = "all"
+        assert client.get("/api/tasks", params=params).json()["items"][0]["search_match_count"] == expected
+    if field == "env":
+        # Env key/value syntax is searchable, including the metadata-only API.
+        response = client.get("/api/tasks", params={"query": "SEARCH_PAYLOAD=Token", "search_field": "env", "summary": True})
+        assert response.json()["total"] == 1
+
+
+@pytest.mark.parametrize("field", ["notes", "log"])
+def test_invalid_and_slow_regex_report_errors_and_release_search_slots(tmp_path, monkeypatch, field):
+    from pyruns.utils import search_query
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source", log_text="A" * 3000 + "!\n")
+    update_task_info(str(workspace / TASKS_DIR / "source"), lambda info: info.update({"notes": "A" * 3000 + "!"}))
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    params = {"search_field": field, "include_logs": True, "use_regex": True}
+    invalid = client.get("/api/tasks", params={**params, "query": "("})
+    assert invalid.status_code == 422
+    assert "Invalid regular expression" in invalid.json()["detail"]
+    monkeypatch.setattr(search_query, "REGEX_TIMEOUT_SECONDS", 0.001)
+    timed_out = client.get("/api/tasks", params={**params, "query": "(A|AA)+$"})
+    assert timed_out.status_code == 422
+    assert "too long" in timed_out.json()["detail"]
+    assert client.get("/api/tasks", params={**params, "query": "A", "use_regex": False}).json()["total"] == 1
+    assert runtime._log_search.slots.acquire(blocking=False)
+    assert runtime._log_search.slots.acquire(blocking=False)
+    runtime._log_search.slots.release()
+    runtime._log_search.slots.release()
+
+
+def test_metadata_search_cancels_between_lines_without_holding_task_lock(tmp_path, monkeypatch):
+    from concurrent.futures import CancelledError
+    from pyruns.utils.search_query import SearchQuery
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source")
+    update_task_info(str(workspace / TASKS_DIR / "source"), lambda info: info.update({"notes": "line\n" * 1000}))
+    runtime = _build_runtime(workspace)
+    cancelled = threading.Event()
+    original = SearchQuery.found
+    calls = []
+
+    def cancel_during_search(matcher, text):
+        calls.append(text)
+        if len(calls) == 1:
+            acquired = []
+
+            def check_lock():
+                if runtime.task_manager._lock.acquire(timeout=0.5):
+                    acquired.append(True)
+                    runtime.task_manager._lock.release()
+
+            worker = threading.Thread(target=check_lock)
+            worker.start()
+            worker.join(timeout=1)
+            assert acquired == [True]
+        result = original(matcher, text)
+        cancelled.set()
+        return result
+
+    monkeypatch.setattr(SearchQuery, "found", cancel_during_search)
+    with pytest.raises(CancelledError):
+        runtime.search_tasks(query="absent", search_field="notes", cancelled=cancelled)
+    assert len(calls) == 2
+
+
+def test_regex_log_context_preserves_anchors_unicode_ansi_and_long_line_offsets(tmp_path, monkeypatch):
+    from pyruns.utils import log_search
+    from pyruns.utils.search_query import SearchQuery
+
+    path = tmp_path / "run1.log"
+    prefix = "x" * 65536 + "\r\n" + "前缀 "
+    payload = (prefix + "\x1b[31mToken42\x1b[0m 后缀\r\n").encode("utf-8")
+    path.write_bytes(payload)
+    matcher = SearchQuery(r"(?<=前缀 )Token\d+(?= 后缀$)", use_regex=True, match_case=True)
+    result = log_search.LogSearch._search_file_patterns(str(path), path.name, len(payload), matcher, threading.Event())
+    assert result["match_count"] == 1
+    match = result["matches"][0]
+    assert match["line"] == 2
+    assert match["snippet"][match["match_start"]:match["match_end"]] == "Token42"
+    assert 0 <= payload.index(b"Token42") - match["offset"] <= 256
+    assert SearchQuery(r"\S+", use_regex=True).scan(" a B ")["match_count"] == 2
+    assert SearchQuery("^", use_regex=True).scan("")["spans"] == [(0, 0)]
+    monkeypatch.setattr(log_search, "_MAX_PATTERN_LINE_CHARS", 32)
+    with pytest.raises(ValueError, match="line exceeds"):
+        log_search.LogSearch._search_file_patterns(str(path), path.name, len(payload), matcher, threading.Event())
+
+
 def test_full_log_search_finds_history_outside_terminal_tail_and_opens_context(tmp_path):
     from pyruns._config import RUN_LOGS_DIR
 
@@ -2330,18 +2520,22 @@ def test_full_log_search_finds_history_outside_terminal_tail_and_opens_context(t
     ("x" * 16380, "loss   :   42", "\rnext\n", "loss:42"),
     ("\t", "İstanbul", "\n", "i̇stanbul"),
 ], ids=["ascii", "unicode", "ansi", "colon-spaces", "unicode-lower"])
-def test_log_search_chunk_boundaries_unicode_ansi_and_normalization(tmp_path, prefix, token, suffix, query):
+@pytest.mark.parametrize("match_case", [False, True])
+def test_log_search_chunk_boundaries_unicode_ansi_and_normalization(tmp_path, prefix, token, suffix, query, match_case):
     from pyruns.utils.log_search import LogSearch
+    from pyruns.utils.search_query import SearchQuery
+
+    if match_case:
+        query = query.replace("i\u0307", "\u0130")
 
     path = tmp_path / "run1.log"
     path.write_text(prefix + token + suffix, encoding="utf-8", newline="")
-    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, [query], threading.Event())
+    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, [query], threading.Event(), match_case=match_case)
     assert result["match_count"] == 1
     match = result["matches"][0]
     assert match["line"] == 1
     assert len(match["snippet"]) <= 180
-    from pyruns.utils.sort_utils import normalize_task_search_text
-    assert normalize_task_search_text(match["snippet"][match["match_start"]:match["match_end"]]) == query
+    assert SearchQuery(query, match_case=match_case).normalize(match["snippet"][match["match_start"]:match["match_end"]]) == query
     with path.open("rb") as handle:
         handle.seek(match["offset"])
         context = handle.read(32768).decode("utf-8", errors="replace")
@@ -2365,20 +2559,25 @@ def test_log_search_counts_long_lines_without_duplicate_overlap_and_cancels(tmp_
 
 
 @pytest.mark.parametrize("encoding", ["gbk", "invalid-utf8"])
-def test_log_search_preserves_byte_positions_for_locale_and_invalid_bytes(tmp_path, monkeypatch, encoding):
+@pytest.mark.parametrize("advanced", [False, True])
+def test_log_search_preserves_byte_positions_for_locale_and_invalid_bytes(tmp_path, monkeypatch, encoding, advanced):
     from pyruns.utils import log_search
 
     path = tmp_path / "run1.log"
     if encoding == "gbk":
         monkeypatch.setattr(log_search, "_log_decode_candidates", lambda: ["utf-8", "gbk"])
         token = "测试"
-        payload = b"ASCII header\n" * 10000 + token.encode("gbk")
+        payload = b"ASCII header " * 10000 + token.encode("gbk")
     else:
         monkeypatch.setattr(log_search, "_log_decode_candidates", lambda: ["utf-8"])
         token = "token"
         payload = b"\xff" * 2000 + token.encode()
     path.write_bytes(payload)
-    result = log_search.LogSearch._search_file(str(path), path.name, len(payload), [token], threading.Event())
+    if advanced:
+        from pyruns.utils.search_query import SearchQuery
+        result = log_search.LogSearch._search_file_patterns(str(path), path.name, len(payload), SearchQuery(token, use_regex=True), threading.Event())
+    else:
+        result = log_search.LogSearch._search_file(str(path), path.name, len(payload), [token], threading.Event())
     assert result["match_count"] == 1
     match = result["matches"][0]
     assert match["snippet"][match["match_start"]:match["match_end"]] == token

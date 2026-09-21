@@ -2295,6 +2295,32 @@ class TestFilterTasksMultiline:
         assert all(match["field"] == "script" for match in matches)
         assert matches[0]["location"] == "Line 2"
 
+    def test_search_highlights_preserve_source_whitespace_and_unicode(self):
+        from pyruns.utils.search_query import SearchQuery
+
+        cases = [
+            ("  Token", "Token", "Token"),
+            ("\techo\tToken  ", "Token", "Token"),
+            ("\tkey  :\tToken", "key:Token", "key  :\tToken"),
+            ("\u0130\tKEY : TOKEN", "key:token", "KEY : TOKEN"),
+            ("\u039f\u03a3 : Token", "token", "Token"),
+        ]
+        for source, query, expected in cases:
+            task = {"task_kind": TASK_KIND_SHELL, "notes": source, "config_text": source}
+            for options in ({}, {"whole_word": True}):
+                for field in ("notes", "script"):
+                    matcher = SearchQuery(query, **options)
+                    result = build_task_search_result(task, query, matcher=matcher, search_field=field)
+                    assert result["match_count"] == 1
+                    match = result["matches"][0]
+                    assert match["snippet"][match["match_start"]:match["match_end"]] == expected
+
+        task = {"task_kind": TASK_KIND_SHELL, "notes": "header\n\nfooter", "config_text": "header\n\nfooter"}
+        for field in ("notes", "script"):
+            result = build_task_search_result(task, "^$", matcher=SearchQuery("^$", use_regex=True), search_field=field)
+            assert result["match_count"] == 1
+            assert result["matches"][0]["location"] == "Line 2"
+
     def test_search_result_counts_repeated_matches_beyond_context_limit(self):
         task = {
             "name": "repeated-task",

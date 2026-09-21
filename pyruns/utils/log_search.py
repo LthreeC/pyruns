@@ -11,11 +11,12 @@ from concurrent.futures import CancelledError
 
 from pyruns.utils.info_io import get_log_options
 from pyruns.utils.log_io import _log_decode_candidates, log_file_identity
-from pyruns.utils.sort_utils import normalize_task_search_text, task_search_needles
-from pyruns.utils.task_files import _build_task_search_snippet, _normalized_search_with_positions
+from pyruns.utils.search_query import SearchQuery, SearchQueryError, normalized_search_with_positions
+from pyruns.utils.task_files import _build_task_search_snippet
 
 _CHUNK_CHARS = 16 * 1024
 _PREVIEW_LIMIT = 24
+_MAX_PATTERN_LINE_CHARS = 8 * 1024 * 1024
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 _INCOMPLETE_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?$")
 _UNDECODABLE = re.compile("[\udc80-\udcff]")
@@ -43,8 +44,9 @@ class LogSearch:
         self._lock = threading.Lock()
         self.slots = threading.BoundedSemaphore(2)
 
-    def search(self, task_dir, query, cancelled):
-        needles = task_search_needles(query)
+    def search(self, task_dir, query, cancelled, matcher=None):
+        matcher = matcher or SearchQuery(query)
+        needles = matcher.needles
         result = {"matches": [], "match_count": 0, "found": set(), "errors": []}
         try:
             options = get_log_options(task_dir)
@@ -57,13 +59,16 @@ class LogSearch:
             try:
                 stat = os.stat(path)
                 signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-                key = (path, signature, tuple(needles))
+                key = (path, signature, matcher.cache_key)
                 with self._lock:
                     cached = self._cache.get(key)
                     if cached is not None:
                         self._cache.move_to_end(key)
                 if cached is None:
-                    cached = self._search_file(path, name, stat.st_size, needles, cancelled)
+                    cached = (
+                        self._search_file(path, name, stat.st_size, needles, cancelled, match_case=matcher.match_case)
+                        if not matcher.patterns else self._search_file_patterns(path, name, stat.st_size, matcher, cancelled)
+                    )
                     with self._lock:
                         self._cache[key] = cached
                         while len(self._cache) > 128:
@@ -76,8 +81,57 @@ class LogSearch:
         return result
 
     @staticmethod
-    def _search_file(path, name, size, needles, cancelled, encoding_hint=None):
+    def _search_file_patterns(path, name, size, matcher, cancelled, encoding_hint=None):
+        """Evaluate complete lines so anchors, word boundaries and greedy matches are exact."""
         result = {"matches": [], "match_count": 0, "found": set()}
+        encoding = encoding_hint or _encoding(path)
+        identity = log_file_identity(path)
+        line = 0
+        next_offset = 0
+        with open(path, encoding=encoding, errors="surrogateescape", newline="\n") as handle:
+            while next_offset < size:
+                if cancelled.is_set():
+                    raise CancelledError()
+                byte_offset = next_offset
+                raw = handle.readline(min(_MAX_PATTERN_LINE_CHARS + 1, size - byte_offset))
+                if not raw:
+                    break
+                next_offset += len(raw.encode(encoding, errors="surrogateescape"))
+                if len(raw) > _MAX_PATTERN_LINE_CHARS:
+                    raise SearchQueryError(
+                        f"{name}: a line exceeds 8 Mi characters. Disable whole-word and regex matching for this log."
+                    )
+                line += 1
+                undecodable = _UNDECODABLE.search(raw) if encoding_hint is None else None
+                if undecodable:
+                    invalid_offset = byte_offset + len(raw[:undecodable.start()].encode(encoding, errors="surrogateescape"))
+                    detected = _encoding(path, invalid_offset)
+                    if detected != encoding:
+                        return LogSearch._search_file_patterns(path, name, size, matcher, cancelled, detected)
+                display = _UNDECODABLE.sub("\ufffd", _INCOMPLETE_ANSI.sub("", _ANSI.sub("", raw))).rstrip("\r\n")
+                matches = matcher.scan(display, max(0, _PREVIEW_LIMIT - len(result["matches"])))
+                result["found"].update(matches["found"])
+                result["match_count"] += matches["match_count"]
+                for start, end in matches["spans"]:
+                    raw_start = start
+                    for escape in _ANSI.finditer(raw):
+                        if escape.start() > raw_start:
+                            break
+                        raw_start += escape.end() - escape.start()
+                    snippet, match_start, match_end = _build_task_search_snippet(display, None, start, end - start, 180)
+                    delta = len(raw[:raw_start].encode(encoding, errors="surrogateescape"))
+                    result["matches"].append({
+                        "field": "log", "location": f"{name}:{line}", "log_file": name,
+                        "line": line, "offset": max(0, byte_offset + delta - 256),
+                        "log_identity": identity, "snippet": snippet,
+                        "match_start": match_start, "match_end": match_end,
+                    })
+        return result
+
+    @staticmethod
+    def _search_file(path, name, size, needles, cancelled, encoding_hint=None, *, match_case=False):
+        result = {"matches": [], "match_count": 0, "found": set()}
+        normalize = SearchQuery("", match_case=match_case).normalize
         overlap = max(8192, max(map(len, needles), default=0) * 8)
         encoding = encoding_hint or _encoding(path)
         identity = log_file_identity(path)
@@ -99,7 +153,7 @@ class LogSearch:
                     # first locale-encoded message. Retry once in that encoding.
                     detected = _encoding(path, byte_offset)
                     if detected != encoding:
-                        return LogSearch._search_file(path, name, size, needles, cancelled, detected)
+                        return LogSearch._search_file(path, name, size, needles, cancelled, detected, match_case=match_case)
                 raw = carry + chunk
                 base = char_offset - len(carry)
                 complete_end = raw.rfind("\n") + 1
@@ -111,7 +165,7 @@ class LogSearch:
                     complete = raw[:complete_end]
                     for needle in needles:
                         unread = complete[max(0, last_end[needle] - base):]
-                        count = normalize_task_search_text(_UNDECODABLE.sub("\ufffd", _ANSI.sub("", unread))).count(needle)
+                        count = normalize(_UNDECODABLE.sub("\ufffd", _ANSI.sub("", unread))).count(needle)
                         if count:
                             result["found"].add(needle)
                             result["match_count"] += count
@@ -120,12 +174,12 @@ class LogSearch:
                     base += complete_end
                 display = _INCOMPLETE_ANSI.sub("", _ANSI.sub("", raw))
                 display = _UNDECODABLE.sub("\ufffd", display)
-                normalized = normalize_task_search_text(display)
+                normalized = normalize(display)
                 hits = [needle for needle in needles if needle in normalized]
                 if hits:
                     positions = None
-                    if not (display.isascii() and normalized == display.lower()):
-                        normalized, positions = _normalized_search_with_positions(display)
+                    if not (display.isascii() and len(normalized) == len(display)):
+                        normalized, positions = normalized_search_with_positions(display, match_case)
                     raw_positions = None
                     if display != raw:
                         raw_positions = []

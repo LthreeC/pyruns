@@ -192,6 +192,43 @@ describe('workspace-scoped stores', () => {
     expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'latest' }])
   })
 
+  it.each([
+    ['manager', 'field'], ['monitor', 'field'], ['manager', 'options'], ['monitor', 'options'],
+  ])('changing %s search %s aborts stale results and resets pagination', async (view, change) => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const old = deferred<any>()
+    vi.mocked(api.getTasks).mockReturnValueOnce(old.promise)
+    useTaskStore.setState({ query: 'needle', monitorQuery: 'needle', offset: 50, monitorLoadedLimit: 600 })
+    const fetch = () => view === 'manager' ? useTaskStore.getState().fetchTasks() : useTaskStore.getState().fetchMonitorTasks()
+    const pending = fetch()
+    const signal = vi.mocked(api.getTasks).mock.calls[0][1]!
+    expect(vi.mocked(api.getTasks).mock.calls[0][0]?.searchField).toBe('all')
+    const options = { matchCase: true, wholeWord: true, useRegex: true }
+    if (change === 'field') {
+      if (view === 'manager') useTaskStore.getState().setSearchField('notes')
+      else useTaskStore.getState().setMonitorSearchField('notes')
+    } else {
+      if (view === 'manager') useTaskStore.getState().setSearchOptions(options)
+      else useTaskStore.getState().setMonitorSearchOptions(options)
+    }
+    expect(signal.aborted).toBe(true)
+    vi.mocked(api.getTasks).mockResolvedValue({ items: [{ name: 'notes-result' }], total: 1, has_more: false } as any)
+    await fetch()
+    const expected = change === 'field' ? { searchField: 'notes' } : { searchOptions: options }
+    expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ ...expected, ...(view === 'manager' ? { offset: 0 } : { limit: 200 }) }), expect.any(AbortSignal))
+    old.resolve({ items: [{ name: 'stale-log-result' }], total: 1, has_more: false })
+    await pending
+    expect(view === 'manager' ? useTaskStore.getState().tasks : useTaskStore.getState().monitorTasks).toEqual([{ name: 'notes-result' }])
+    if (view === 'monitor') {
+      await useTaskStore.getState().fetchMonitorTasks({ loadMore: true })
+      expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ ...expected, limit: 400 }), expect.any(AbortSignal))
+    }
+    useWorkspaceStore.getState().setWorkspace(workspace('B'))
+    expect(useTaskStore.getState()).toMatchObject({ searchField: 'all', monitorSearchField: 'all' })
+    expect(useTaskStore.getState().searchOptions).toEqual({ matchCase: false, wholeWord: false, useRegex: false })
+    expect(useTaskStore.getState().monitorSearchOptions).toEqual({ matchCase: false, wholeWord: false, useRegex: false })
+  })
+
   it('preserves the current generator draft after a template load failure', async () => {
     useWorkspaceStore.getState().setWorkspace(workspace('A'))
     useGeneratorStore.setState({

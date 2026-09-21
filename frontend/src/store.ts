@@ -7,6 +7,8 @@ import type {
   ScriptCandidate,
   Task,
   TaskSearchMatch,
+  TaskSearchScope,
+  TaskSearchOptions,
   TaskSortMode,
   TaskStatusCounts,
   TemplateContent,
@@ -36,6 +38,7 @@ const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
 const MONITOR_TASK_PAGE_SIZE = 200
+const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
 const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
 const TASK_SORT_MODES = new Set<TaskSortMode>([
   'priority',
@@ -116,6 +119,8 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     offset: 0,
     hasMore: false,
     query: '',
+    searchField: 'all',
+    searchOptions: { ...DEFAULT_SEARCH_OPTIONS },
     statusFilter: 'All',
     selectedIds: new Set(),
     loading: false,
@@ -126,6 +131,8 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     monitorHasMore: false,
     monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE,
     monitorQuery: '',
+    monitorSearchField: 'all',
+    monitorSearchOptions: { ...DEFAULT_SEARCH_OPTIONS },
     monitorLoading: false,
     monitorError: '',
     monitorStatusCounts: null,
@@ -549,6 +556,8 @@ interface TaskState {
   monitorHasMore: boolean
   monitorLoadedLimit: number
   monitorQuery: string
+  monitorSearchField: TaskSearchScope
+  monitorSearchOptions: TaskSearchOptions
   monitorLoading: boolean
   monitorError: string
   monitorStatusCounts: TaskStatusCounts | null
@@ -558,6 +567,8 @@ interface TaskState {
   limit: number
   hasMore: boolean
   query: string
+  searchField: TaskSearchScope
+  searchOptions: TaskSearchOptions
   statusFilter: string
   sortMode: TaskSortMode
   selectedIds: Set<string>
@@ -565,6 +576,10 @@ interface TaskState {
   error: string | null
   columns: number
   setQuery: (q: string) => void
+  setSearchField: (field: TaskSearchScope) => void
+  setMonitorSearchField: (field: TaskSearchScope) => void
+  setSearchOptions: (options: TaskSearchOptions) => void
+  setMonitorSearchOptions: (options: TaskSearchOptions) => void
   setStatusFilter: (s: string) => void
   setSortMode: (mode: TaskSortMode) => void
   setOffset: (o: number) => void
@@ -572,6 +587,8 @@ interface TaskState {
   fetchTasks: () => Promise<void>
   fetchMonitorTasks: (options?: {
     query?: string
+    searchField?: TaskSearchScope
+    searchOptions?: TaskSearchOptions
     loadMore?: boolean
     refresh?: boolean
     background?: boolean
@@ -609,6 +626,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   monitorHasMore: false,
   monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE,
   monitorQuery: '',
+  monitorSearchField: 'all',
+  monitorSearchOptions: { ...DEFAULT_SEARCH_OPTIONS },
   monitorLoading: false,
   monitorError: '',
   monitorStatusCounts: null,
@@ -618,6 +637,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   limit: 50,
   hasMore: false,
   query: '',
+  searchField: 'all',
+  searchOptions: { ...DEFAULT_SEARCH_OPTIONS },
   statusFilter: 'All',
   sortMode: readStoredTaskSortMode(),
   selectedIds: new Set(),
@@ -636,6 +657,30 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       taskRequestSeq += 1
       set({ statusFilter: s, offset: 0, selectedIds: new Set() })
     }
+  },
+  setSearchField(searchField) {
+    if (searchField !== get().searchField) {
+      taskSearchController?.abort()
+      taskRequestSeq += 1
+      set({ searchField, offset: 0, selectedIds: new Set() })
+    }
+  },
+  setMonitorSearchField(monitorSearchField) {
+    if (monitorSearchField !== get().monitorSearchField) {
+      monitorSearchController?.abort()
+      monitorTaskRequestSeq += 1
+      set({ monitorSearchField, monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE })
+    }
+  },
+  setSearchOptions(searchOptions) {
+    taskSearchController?.abort()
+    taskRequestSeq += 1
+    set({ searchOptions, offset: 0, selectedIds: new Set() })
+  },
+  setMonitorSearchOptions(monitorSearchOptions) {
+    monitorSearchController?.abort()
+    monitorTaskRequestSeq += 1
+    set({ monitorSearchOptions, monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE })
   },
   setSortMode(sortMode) {
     if (sortMode !== get().sortMode) {
@@ -661,13 +706,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     taskSearchController = controller
     const requestId = ++taskRequestSeq
     const workspaceKey = currentWorkspaceKey()
-    const { query, statusFilter, sortMode, offset, limit } = get()
+    const { query, searchField, searchOptions, statusFilter, sortMode, offset, limit } = get()
     let requestedOffset = offset
     const isCurrentRequest = () => {
       const current = get()
       return requestId === taskRequestSeq
         && workspaceKey === currentWorkspaceKey()
         && current.query === query
+        && current.searchField === searchField
+        && current.searchOptions === searchOptions
         && current.statusFilter === statusFilter
         && current.sortMode === sortMode
         && current.offset === requestedOffset
@@ -675,7 +722,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
     set({ loading: true, error: null })
     try {
-      const page = await api.getTasks({ query, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true }, controller?.signal)
+      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true }, controller?.signal)
       if (!isCurrentRequest()) {
         return
       }
@@ -688,6 +735,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           set({ offset: nextOffset })
           const retryPage = await api.getTasks({
             query,
+            searchField,
+            searchOptions,
             status: statusFilter,
             sort: sortMode,
             offset: nextOffset,
@@ -737,7 +786,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       })
     } catch (err) {
       if (isCurrentRequest()) {
-        set({ error: err instanceof Error ? err.message : 'Could not load tasks' })
+        set({ error: err instanceof Error ? err.message : 'Could not load tasks',
+          ...(err instanceof Error && 'status' in err && err.status === 422
+            ? { tasks: [], total: 0, hasMore: false, selectedIds: new Set<string>() } : {}),
+        })
       }
     } finally {
       if (isCurrentRequest()) {
@@ -756,19 +808,23 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (workspaceKey !== currentWorkspaceKey()) {
       return
     }
-    const query = String(options.query ?? current.monitorQuery).trim()
-    const queryChanged = query !== current.monitorQuery
+    const query = String(options.query ?? current.monitorQuery)
+    const searchField = options.searchField ?? current.monitorSearchField
+    const searchOptions = options.searchOptions ?? current.monitorSearchOptions
+    const queryChanged = query !== current.monitorQuery || searchField !== current.monitorSearchField || searchOptions !== current.monitorSearchOptions
     const background = Boolean(options.background)
     const baseLimit = queryChanged ? MONITOR_TASK_PAGE_SIZE : current.monitorLoadedLimit
     const nextLimit = options.loadMore && !queryChanged
       ? baseLimit + MONITOR_TASK_PAGE_SIZE
       : baseLimit
     set(background
-      ? { monitorQuery: query }
-      : { monitorLoading: true, monitorError: '', monitorQuery: query })
+      ? { monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions }
+      : { monitorLoading: true, monitorError: '', monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions })
     try {
       const page = await api.getTasks({
         query,
+        searchField,
+        searchOptions,
         limit: nextLimit,
         refresh: options.refresh ?? true,
         summary: true,
@@ -798,7 +854,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       ) {
         return
       }
-      set({ monitorError: error instanceof Error ? error.message : String(error) })
+      set({ monitorError: error instanceof Error ? error.message : String(error),
+        ...(error instanceof Error && 'status' in error && error.status === 422
+          ? { monitorTasks: [], monitorTotal: 0, monitorHasMore: false } : {}),
+      })
       throw error
     } finally {
       if (!background && (

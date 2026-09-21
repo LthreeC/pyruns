@@ -30,7 +30,13 @@ export interface GPUWaitStatus {
   devices?: GPUWaitDeviceStatus[]
 }
 
-export type TaskSearchField = 'name' | 'notes' | 'config' | 'script' | 'log'
+export type TaskSearchField = 'name' | 'notes' | 'config' | 'script' | 'env' | 'log'
+export type TaskSearchScope = 'all' | TaskSearchField
+export interface TaskSearchOptions {
+  matchCase: boolean
+  wholeWord: boolean
+  useRegex: boolean
+}
 
 export interface TaskSearchMatch {
   field: TaskSearchField

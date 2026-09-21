@@ -343,7 +343,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'window.matchMedia(COMPACT_MONITOR_QUERY)',
             "compactMonitorLayout ? 'flex-col' : 'flex-row'",
             "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'",
-            '? { height: COMPACT_MONITOR_SIDEBAR_HEIGHT }',
+            "? { height: sidebarSearchActive ? '100%' : COMPACT_MONITOR_SIDEBAR_HEIGHT }",
             ': { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}',
             'className="flex-none border-b border-border-subtle px-2.5 py-2"',
             'className="min-h-0 flex-1 overflow-y-auto px-2 py-2"',

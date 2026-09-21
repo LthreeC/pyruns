@@ -1114,6 +1114,79 @@ test('monitor task details stay stable after the full task loads', async ({ page
   expect(browserErrors).toEqual([])
 })
 
+test('Monitor and Manager combine search fields and match options', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const fields = ['name', 'notes', 'config', 'script', 'env', 'log']
+  let lastSearch = new URLSearchParams()
+  const task = { name: 'needle-demo', dir: '/tmp/needle-demo', status: 'completed', task_kind: 'shell', run_index: 1, notes: '' }
+  await page.route('**/api/tasks?*', route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get('query')) lastSearch = params
+    if (params.get('use_regex') && params.get('query') === '(') {
+      return route.fulfill({ status: 422, json: { detail: 'Invalid regular expression: missing )' } })
+    }
+    const field = params.get('search_field')
+    const matches = params.get('query') ? fields.filter(value => field === 'all' || value === field).map(value => ({
+      field: value, location: '', snippet: `needle in ${value}`, match_start: 0, match_end: 6,
+    })) : []
+    return route.fulfill({ json: { items: [{ ...task, search_matches: matches, search_match_count: matches.length }], total: 1, has_more: false } })
+  })
+  await page.route('**/api/tasks/needle-demo?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/needle-demo/logs?*', route => route.fulfill({ json: {
+    available_logs: ['run1.log'], selected_log: 'run1.log', content: 'needle\n', offset: 7,
+  } }))
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  for (const view of ['Monitor', 'Manager']) {
+    if (view === 'Manager') await page.getByRole('link', { name: 'Manager', exact: true }).click()
+    const selector = page.getByRole('combobox', { name: 'Search field', exact: true })
+    const search = page.getByRole('textbox', { name: view === 'Monitor' ? 'Search monitor tasks' : 'Search tasks', exact: true })
+    await expect(selector).toHaveValue('all')
+    await search.fill('needle')
+    const group = page.getByLabel('Matches in needle-demo', { exact: true })
+    await expect(group.locator('mark')).toHaveCount(6)
+    for (const field of [...fields, 'all']) {
+      await selector.selectOption(field)
+      await expect(group.locator('mark')).toHaveCount(field === 'all' ? 6 : 1)
+      if (field !== 'all') await expect(group).toContainText(`needle in ${field}`)
+      await expect(search).toHaveValue('needle')
+    }
+    for (const [label, param] of [['Match case', 'match_case'], ['Match whole word', 'whole_word'], ['Use regular expression', 'use_regex']]) {
+      const button = page.getByRole('button', { name: label, exact: true })
+      await expect(button).toHaveAttribute('aria-pressed', 'false')
+      await button.click()
+      await expect(button).toHaveAttribute('aria-pressed', 'true')
+      await expect.poll(() => lastSearch.get(param)).toBe('true')
+    }
+    await search.focus()
+    await search.press('Alt+C')
+    await expect.poll(() => lastSearch.has('match_case')).toBe(false)
+    await search.fill(' needle ')
+    await expect.poll(() => lastSearch.get('query')).toBe(' needle ')
+    await search.fill('(')
+    await expect(page.getByRole('alert')).toContainText('Invalid regular expression')
+    await expect(group).toHaveCount(0)
+    await search.fill('needle')
+    await expect(group.locator('mark')).toHaveCount(6)
+    await page.getByRole('button', { name: /^(Dark|Light) Mode$/ }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath(`${view}-search-fields.png`), animations: 'disabled' })
+    if (view === 'Monitor' && isMobile) {
+      const firstMatch = group.getByRole('button').first()
+      await expect(firstMatch).toBeInViewport({ ratio: 1 })
+      const lastMatch = group.getByRole('button').last()
+      await lastMatch.scrollIntoViewIfNeeded()
+      await expect(lastMatch).toBeInViewport({ ratio: 1 })
+      await firstMatch.click()
+      await expect(page.getByRole('complementary', { name: 'Task monitor sidebar' })).toBeHidden()
+      await page.getByRole('button', { name: 'Search results', exact: true }).click()
+      await expect(group).toBeVisible()
+    }
+  }
+  expect(errors).toEqual([])
+})
+
 test('Monitor and Manager group full log matches and load context only on demand', async ({ page, isMobile }, testInfo) => {
   if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
   const errors: string[] = []

@@ -57,10 +57,11 @@ from pyruns.utils.settings import load_settings
 from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
-from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
+from pyruns.utils.sort_utils import sort_tasks_for_manager
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
     build_task_search_result,
+    filter_tasks_by_search_field,
     normalize_task_kind,
     read_task_payload,
     resolve_task_config_file,
@@ -426,6 +427,7 @@ class TaskManager:
         offset: int = 0,
         limit: int = 50,
         sort_mode: str = "priority",
+        search_field: str = "all",
     ) -> tuple[List[Dict[str, Any]], int, Dict[str, int]]:
         """Select a page under the lock, copying payloads only for its tasks."""
         safe_offset = max(0, int(offset))
@@ -439,7 +441,12 @@ class TaskManager:
                     "name": task.get("name", ""),
                     "status": task.get("status", "pending"),
                     "notes": task.get("notes", ""),
+                    "env": task.get("env", {}),
                     "search_text": task.get("search_text", ""),
+                    **({
+                        key: task.get(key)
+                        for key in ("task_kind", "config", "config_text")
+                    } if search_field in {"config", "script"} else {}),
                     **{
                         key: task.get(key)
                         for key in ("pinned", "task_order", "created_at")
@@ -460,7 +467,7 @@ class TaskManager:
                 task_status = str(task["status"] or "pending").lower()
                 status_counts[task_status] = status_counts.get(task_status, 0) + 1
             ordered = sort_tasks_for_manager(
-                filter_tasks(candidates, query, status), sort_mode,
+                filter_tasks_by_search_field(candidates, query, status, search_field), sort_mode,
             )
             total = len(ordered)
             selected = (
@@ -477,18 +484,15 @@ class TaskManager:
             status_counts,
         )
 
-    def get_task_search_results(
-        self,
-        task_names: List[str],
-        query: str,
-    ) -> Dict[str, Dict[str, Any]]:
-        """Return bounded contexts and counts for a page of in-memory tasks."""
-
+    def get_task_search_snapshots(self, task_names: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Capture metadata for searching outside the manager lock."""
         with self._lock:
             snapshots = [
                 {
                     "name": task.get("name", ""),
                     "notes": task.get("notes", ""),
+                    "env": dict(task.get("env", {}) or {}),
+                    "search_text": task.get("search_text", ""),
                     "task_kind": task.get("task_kind"),
                     "config": task.get("config", {}),
                     "config_text": task.get("config_text", ""),
@@ -496,9 +500,19 @@ class TaskManager:
                 for name in task_names
                 if (task := self._tasks_by_name.get(name)) is not None
             ]
+        return {str(task.get("name", "")): task for task in snapshots}
+
+    def get_task_search_results(
+        self,
+        task_names: List[str],
+        query: str,
+        *,
+        search_field: str = "all",
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return bounded contexts and counts for a page of in-memory tasks."""
         return {
-            str(task.get("name", "")): build_task_search_result(task, query)
-            for task in snapshots
+            name: build_task_search_result(task, query, search_field=search_field)
+            for name, task in self.get_task_search_snapshots(task_names).items()
         }
 
     def scan_disk_async(self) -> None:

@@ -28,7 +28,8 @@ from pyruns.utils.info_io import (
     validate_task_directory,
     validate_workspace_file,
 )
-from pyruns.utils.sort_utils import normalize_task_search_text, task_search_needles
+from pyruns.utils.sort_utils import filter_tasks
+from pyruns.utils.search_query import SearchQuery
 
 MAX_TASK_PAYLOAD_BYTES = 4 * 1024 * 1024
 
@@ -196,32 +197,6 @@ _TASK_SEARCH_MATCH_LIMIT = 8
 _TASK_SEARCH_SNIPPET_CHARS = 180
 
 
-def _normalized_search_with_positions(text: str) -> Tuple[str, List[int]]:
-    """Normalize text while retaining a map back to source character offsets."""
-
-    normalized: List[str] = []
-    positions: List[int] = []
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if char == ":":
-            while normalized and normalized[-1].isspace() and normalized[-1] not in "\r\n":
-                normalized.pop()
-                positions.pop()
-            normalized.append(char)
-            positions.append(index)
-            index += 1
-            while index < len(text) and text[index].isspace() and text[index] not in "\r\n":
-                index += 1
-            continue
-
-        for lowered in char.lower():
-            normalized.append(lowered)
-            positions.append(index)
-        index += 1
-    return "".join(normalized), positions
-
-
 def _build_task_search_snippet(
     display: str,
     positions: List[int] | None,
@@ -254,70 +229,36 @@ def _build_task_search_snippet(
     return snippet, min(match_start, len(snippet)), min(match_end, len(snippet))
 
 
-def _task_search_source_matches(
-    text: str,
-    needles: List[str],
-    max_chars: int,
-    limit: int,
-) -> Tuple[int, List[Tuple[int, str, int, int]]]:
-    display = str(text or "").replace("\t", "    ").strip()
-    if not display:
-        return 0, []
-
-    normalized = normalize_task_search_text(display)
-    positions: List[int] | None = None
-    if not (display.isascii() and len(normalized) == len(display)):
-        normalized, positions = _normalized_search_with_positions(display)
-    if not normalized:
-        return 0, []
-
-    occurrences: List[Tuple[int, int, int]] = []
-    match_count = 0
-    for needle_index, needle in enumerate(needles):
-        match_count += normalized.count(needle)
-        if limit <= 0:
-            continue
-        search_start = 0
-        needle_contexts = 0
-        while search_start <= len(normalized) and needle_contexts < limit:
-            match_index = normalized.find(needle, search_start)
-            if match_index < 0:
-                break
-            occurrences.append((match_index, needle_index, len(needle)))
-            needle_contexts += 1
-            search_start = match_index + max(1, len(needle))
-
-    contexts: List[Tuple[int, str, int, int]] = []
-    for match_index, needle_index, match_length in sorted(occurrences)[:limit]:
-        snippet, match_start, match_end = _build_task_search_snippet(
-            display,
-            positions,
-            match_index,
-            match_length,
-            max_chars,
-        )
-        contexts.append((needle_index, snippet, match_start, match_end))
-    return match_count, contexts
-
-
-def _task_search_sources(task: Mapping[str, Any]):
+def _task_search_sources(task: Mapping[str, Any], search_field: str = "all"):
     name = str(task.get("name", "") or "")
-    if name:
+    if name and search_field in {"all", "name"}:
         yield "name", "", name
 
     notes = str(task.get("notes", "") or "")
-    note_lines = notes.splitlines()
+    note_lines = notes.splitlines() if search_field in {"all", "notes"} else []
     for line_number, line in enumerate(note_lines, start=1):
-        if line.strip():
-            location = f"Line {line_number}" if len(note_lines) > 1 else ""
-            yield "notes", location, line
+        location = f"Line {line_number}" if len(note_lines) > 1 else ""
+        yield "notes", location, line
+
+    if search_field in {"all", "env"}:
+        task_env = task.get("env") or {}
+        if isinstance(task_env, Mapping):
+            env_items = task_env.items()
+        else:
+            env_items = ()
+        for key, value in env_items:
+            for line in f"{key}={value}".splitlines():
+                yield "env", str(key), line
 
     if normalize_task_kind(task.get("task_kind")) == TASK_KIND_SHELL:
+        if search_field not in {"all", "script"}:
+            return
         for line_number, line in enumerate(str(task.get("config_text", "") or "").splitlines(), start=1):
-            if line.strip():
-                yield "script", f"Line {line_number}", line
+            yield "script", f"Line {line_number}", line
         return
 
+    if search_field not in {"all", "config"}:
+        return
     config = task.get("config", {}) or {}
     if not isinstance(config, (Mapping, DictConfig)):
         return
@@ -329,6 +270,31 @@ def _task_search_sources(task: Mapping[str, Any]):
         for line in detail_lines:
             if line.strip():
                 yield "config", key_text, line
+
+
+def filter_tasks_by_search_field(
+    tasks: list, query: str, status: str = "All", search_field: str = "all",
+    *, matcher: SearchQuery | None = None,
+) -> list:
+    """Filter metadata using the same sources as the displayed match previews."""
+    candidates = filter_tasks(tasks, "", status)
+    matcher = matcher or SearchQuery(query)
+    if not matcher.needles:
+        return candidates
+    return [task for task in candidates if len(task_search_found(task, matcher, search_field)) == len(matcher.needles)]
+
+
+def task_search_found(task, matcher, search_field="all"):
+    if matcher.plain and search_field == "all" and task.get("search_text"):
+        # Preserve the cached metadata fast path, adding task-specific env values.
+        text = task["search_text"] + "\n" + "\n".join(source for _, _, source in _task_search_sources(task, "env"))
+        return matcher.found(text)
+    found = set()
+    for _, _, source in _task_search_sources(task, search_field):
+        found.update(matcher.found(source))
+        if len(found) == len(matcher.needles):
+            break
+    return found
 
 
 def build_task_search_matches(
@@ -352,28 +318,26 @@ def build_task_search_result(
     task: Mapping[str, Any],
     query: str,
     *,
+    search_field: str = "all",
+    matcher: SearchQuery | None = None,
     limit: int = _TASK_SEARCH_MATCH_LIMIT,
     max_snippet_chars: int = _TASK_SEARCH_SNIPPET_CHARS,
 ) -> Dict[str, Any]:
     """Return bounded contexts and the exact in-memory match count for one task."""
 
-    needles = task_search_needles(query)
-    if not needles:
+    matcher = matcher or SearchQuery(query)
+    if not matcher.needles:
         return {"matches": [], "match_count": 0}
 
     safe_limit = max(0, int(limit))
     snippet_chars = max(32, int(max_snippet_chars))
     matches: List[Dict[str, Any]] = []
     match_count = 0
-    for field, location, source in _task_search_sources(task):
-        source_count, contexts = _task_search_source_matches(
-            source,
-            needles,
-            snippet_chars,
-            safe_limit - len(matches),
-        )
-        match_count += source_count
-        for _needle_index, snippet, match_start, match_end in contexts:
+    for field, location, source in _task_search_sources(task, search_field):
+        result = matcher.scan(source, max(0, safe_limit - len(matches)))
+        match_count += result["match_count"]
+        for start, end in result["spans"]:
+            snippet, match_start, match_end = _build_task_search_snippet(source, None, start, end - start, snippet_chars)
             matches.append(
                 {
                     "field": field,
