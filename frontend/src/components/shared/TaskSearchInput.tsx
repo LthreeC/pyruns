@@ -4,14 +4,14 @@ import clsx from 'clsx'
 import type { TaskSearchOptions, TaskSearchScope, WorkspaceKind } from '@/types'
 import SearchInput from './SearchInput'
 
-const SEARCH_FIELDS: { value: TaskSearchScope; label: string; description: string }[] = [
-  { value: 'all', label: 'All fields', description: 'Names, notes, config, task env and full log files' },
-  { value: 'name', label: 'Task name', description: 'Task names only' },
-  { value: 'notes', label: 'Notes', description: 'Task notes only' },
-  { value: 'log', label: 'Logs', description: 'Full log files, including previous runs' },
-  { value: 'env', label: 'Env', description: 'Task environment overrides: keys and values (KEY=value)' },
-  { value: 'config', label: 'Config', description: 'Python task configuration keys and values' },
-  { value: 'script', label: 'Shell script', description: 'Shell script content only' },
+const SEARCH_FIELDS: { value: TaskSearchScope; label: string; compactLabel: string; description: string }[] = [
+  { value: 'all', label: 'All fields', compactLabel: 'All', description: 'Names, notes, config, task env and full log files' },
+  { value: 'name', label: 'Task name', compactLabel: 'Name', description: 'Task names only' },
+  { value: 'notes', label: 'Notes', compactLabel: 'Notes', description: 'Task notes only' },
+  { value: 'log', label: 'Logs', compactLabel: 'Logs', description: 'Full log files, including previous runs' },
+  { value: 'env', label: 'Env', compactLabel: 'Env', description: 'Task environment overrides: keys and values (KEY=value)' },
+  { value: 'config', label: 'Config', compactLabel: 'Config', description: 'Python task configuration keys and values' },
+  { value: 'script', label: 'Shell script', compactLabel: 'Script', description: 'Shell script content only' },
 ]
 
 const MATCH_OPTIONS: { key: keyof TaskSearchOptions; symbol: string; label: string; shortcut: string; code: string }[] = [
@@ -52,6 +52,7 @@ export default function TaskSearchInput({
   ...props
 }: Props) {
   const searchFields = SEARCH_FIELDS.filter(option => option.value !== (workspaceKind === 'shell' ? 'config' : 'script'))
+  const selectedField = SEARCH_FIELDS.find(option => option.value === searchField) ?? SEARCH_FIELDS[0]
   const searchActive = Boolean(props.value.trim())
   const refreshLabel = searching && searchActive ? 'Cancel search' : searchActive ? 'Refresh search results' : 'Refresh tasks'
   const matchOptions = (
@@ -74,7 +75,7 @@ export default function TaskSearchInput({
         className={clsx(
           'touch-target inline-flex h-11 w-11 items-center justify-center font-mono text-sm transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30',
           compact
-            ? 'border-l border-border-subtle first:border-l-0 focus-visible:ring-inset sm:h-8 sm:w-8'
+            ? 'border-l border-border-subtle first:border-l-0 focus-visible:ring-inset sm:h-full sm:w-7'
             : 'rounded border border-transparent sm:h-6 sm:w-6',
           searchOptions[option.key]
             ? compact ? 'bg-accent/10 text-accent' : 'border-accent/40 bg-accent/10 text-accent'
@@ -84,12 +85,40 @@ export default function TaskSearchInput({
       >{option.symbol}</button>)}
     </div>
   )
+  const fieldSelector = (
+    <div className={clsx(
+      'relative min-w-0',
+      compact && 'task-search-field group h-full flex-none hover:bg-surface-hover',
+    )}>
+      <select
+        value={searchField}
+        onChange={event => onSearchFieldChange(event.target.value as TaskSearchScope)}
+        aria-label="Search field"
+        title={taskSearchDescription(searchField, workspaceKind)}
+        className={clsx(
+          'touch-target appearance-none py-1.5 pl-2 pr-6 text-xs text-txt-secondary outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/20',
+          compact
+            ? 'h-full w-full cursor-pointer border-0 border-l border-border-subtle bg-transparent opacity-0 focus-visible:ring-inset'
+            : 'h-11 max-w-28 rounded-md border border-border-subtle bg-surface-raised hover:bg-surface-overlay focus-visible:border-accent sm:h-9',
+        )}
+      >
+        {searchFields.map(option => <option key={option.value} value={option.value} className="text-txt-primary">{option.label}</option>)}
+      </select>
+      {compact && (
+        <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-2 right-5 flex items-center overflow-hidden whitespace-nowrap text-xs text-txt-secondary group-focus-within:text-txt-primary">
+          <span className="task-search-field-label-short">{selectedField.compactLabel}</span>
+          <span className="task-search-field-label-full">{selectedField.label}</span>
+        </span>
+      )}
+      <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+    </div>
+  )
   return (
     <div className={clsx(
-      'min-w-0 gap-1.5',
+      'min-w-0',
       compact
-        ? 'flex flex-col'
-        : 'grid grid-cols-[minmax(0,1fr)_auto] items-center sm:[@media(pointer:fine)]:grid-cols-[minmax(0,1fr)_auto_auto]',
+        ? 'task-search-compact block'
+        : 'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 sm:[@media(pointer:fine)]:grid-cols-[minmax(0,1fr)_auto_auto]',
     )} onKeyDown={event => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.repeat) return
       const option = MATCH_OPTIONS.find(item => item.code === event.code)
@@ -99,49 +128,27 @@ export default function TaskSearchInput({
     }}>
       <SearchInput
         {...props}
-        className={compact ? undefined : 'col-start-1 row-start-1'}
+        className={compact ? 'w-full overflow-hidden' : 'col-start-1 row-start-1'}
         placeholder={searchOptions.useRegex
           ? 'Search with regex'
           : searchField === 'all'
             ? compact ? 'Search tasks' : 'Search tasks and full logs'
-            : `Search ${SEARCH_FIELDS.find(option => option.value === searchField)!.label.toLowerCase()}`}
-        trailingControls={compact ? undefined : <div className="mr-1 hidden flex-none sm:[@media(pointer:fine)]:block">{matchOptions}</div>}
+            : `Search ${selectedField.label.toLowerCase()}`}
+        trailingControls={compact
+          ? (
+              <div className="flex h-full flex-none items-stretch" role="toolbar" aria-label="Search filters">
+                {fieldSelector}
+                {matchOptions}
+              </div>
+            )
+          : <div className="mr-1 hidden flex-none sm:[@media(pointer:fine)]:block">{matchOptions}</div>}
       />
-      <div className={clsx(
-        'flex min-w-0 items-center',
-        compact
-          ? 'justify-start'
-          : 'col-span-2 row-start-2 flex-wrap justify-between gap-1.5 sm:[@media(pointer:fine)]:col-span-1 sm:[@media(pointer:fine)]:col-start-2 sm:[@media(pointer:fine)]:row-start-1',
-      )}>
-        <div
-          role={compact ? 'toolbar' : undefined}
-          aria-label={compact ? 'Search filters' : undefined}
-          className={clsx(
-            'flex min-w-0 items-center',
-            compact && 'overflow-hidden rounded-md border border-border-subtle bg-surface-overlay',
-          )}
-        >
-          <div className={clsx('relative min-w-0', compact && 'w-28 flex-none')}>
-            <select
-              value={searchField}
-              onChange={event => onSearchFieldChange(event.target.value as TaskSearchScope)}
-              aria-label="Search field"
-              title={taskSearchDescription(searchField, workspaceKind)}
-              className={clsx(
-                'touch-target h-11 max-w-28 appearance-none py-1.5 pl-2 pr-6 text-xs text-txt-secondary outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/20',
-                compact
-                  ? 'w-full bg-transparent hover:bg-surface-hover focus-visible:ring-inset sm:h-8'
-                  : 'rounded-md border border-border-subtle bg-surface-raised hover:bg-surface-overlay focus-visible:border-accent sm:h-9',
-              )}
-            >
-              {searchFields.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-            <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-          </div>
-          {compact && matchOptions}
+      {!compact && (
+        <div className="col-span-2 row-start-2 flex min-w-0 flex-wrap items-center justify-between gap-1.5 sm:[@media(pointer:fine)]:col-span-1 sm:[@media(pointer:fine)]:col-start-2 sm:[@media(pointer:fine)]:row-start-1">
+          {fieldSelector}
+          <div className="flex-none sm:[@media(pointer:fine)]:hidden">{matchOptions}</div>
         </div>
-        {!compact && <div className="flex-none sm:[@media(pointer:fine)]:hidden">{matchOptions}</div>}
-      </div>
+      )}
       {!compact && (
         <button
           type="button"

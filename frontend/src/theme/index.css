@@ -97,6 +97,38 @@ summary::-webkit-details-marker {
   overscroll-behavior: contain;
 }
 
+.task-search-compact {
+  container-type: inline-size;
+}
+
+.task-search-field {
+  width: 4rem;
+}
+
+.task-search-field-label-full {
+  display: none;
+}
+
+@container (max-width: 19.999rem) {
+  .task-search-compact .search-input-icon {
+    display: none;
+  }
+}
+
+@container (min-width: 20rem) {
+  .task-search-field {
+    width: 5.5rem;
+  }
+
+  .task-search-field-label-short {
+    display: none;
+  }
+
+  .task-search-field-label-full {
+    display: inline;
+  }
+}
+
 @media (max-width: 700px) {
   .runtime-panel {
     inset: 8px 8px 8px 72px !important;

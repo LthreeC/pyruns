@@ -34,7 +34,7 @@ export default function SearchInput({
 
   return (
     <div className={clsx('touch-input box-content flex h-11 min-w-0 items-center rounded-md border border-border bg-surface-overlay transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 sm:h-[34px]', className)}>
-      <Search aria-hidden="true" className="pointer-events-none ml-2.5 h-3.5 w-3.5 flex-none text-txt-tertiary" />
+      <Search aria-hidden="true" className="search-input-icon pointer-events-none ml-2.5 h-3.5 w-3.5 flex-none text-txt-tertiary" />
       <input
         ref={inputRef}
         type="text"
