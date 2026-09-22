@@ -464,10 +464,10 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'aria-label={ariaLabel}',
             'aria-label="Clear search"',
             'title="Clear search"',
-            'inline-flex h-11 w-11',
+            'inline-flex h-10 w-10',
             'items-center justify-center',
             'sm:h-7 sm:w-7',
-            'focus:ring-2 focus:ring-accent/25',
+            'focus-visible:ring-2 focus-visible:ring-accent/25',
         ), id='search-input'),
     ],
 )

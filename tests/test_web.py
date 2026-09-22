@@ -35,7 +35,7 @@ from pyruns._config import (
     WORKSPACE_KIND_SHELL,
 )
 from pyruns.core.executor import _build_command, _resolve_python_runtime
-from pyruns.core.task_manager import TaskManager
+from pyruns.core.task_manager import TaskManager, active_task_run_index
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
@@ -5316,6 +5316,124 @@ def test_runtime_cancel_binds_the_refreshed_runner_and_run(tmp_path, monkeypatch
         "expected_runner_id": info["runner_id"],
         "expected_run_index": 1,
     }
+
+
+def test_runtime_cancel_returns_a_task_that_finished_during_the_request(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    task_dir = workspace / TASKS_DIR / "alpha"
+
+    def finish_before_cancel(_name, **_identity):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update({"status": "completed"}),
+        )
+        return False
+
+    monkeypatch.setattr(runtime.task_manager, "request_task_cancel", finish_before_cancel)
+
+    result = runtime.cancel_task("alpha")
+
+    assert result["status"] == "completed"
+
+
+def test_runtime_cancel_accepts_a_persisted_local_request_while_runner_retries(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    task_dir = workspace / TASKS_DIR / "alpha"
+    runner_id = runtime.task_manager.runner_id
+
+    def persist_request(_name, **_identity):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update({"cancel_requested_at": "2026-03-20_00-00-02"}),
+        )
+        return False
+
+    monkeypatch.setattr(runtime.task_manager, "request_task_cancel", persist_request)
+
+    result = runtime.cancel_task("alpha")
+
+    assert result["status"] == "running"
+    assert result["runner_id"] == runner_id
+
+
+def test_runtime_cancel_accepts_a_pending_local_stop_request(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    task_dir = workspace / TASKS_DIR / "alpha"
+    runner_id = runtime.task_manager.runner_id
+
+    def persist_pending_request(_name, **_identity):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update(
+                {
+                    "cancel_requested_at": "2026-03-20_00-00-02",
+                    "_pending_stop_summary": {
+                        "run_index": active_task_run_index(info),
+                        "event": "stopped",
+                        "reason": "cancelled_by_user",
+                    },
+                }
+            ),
+        )
+        return False
+
+    monkeypatch.setattr(runtime.task_manager, "request_task_cancel", persist_pending_request)
+
+    result = runtime.cancel_task("alpha")
+
+    assert result["status"] == "running"
+    assert result["runner_id"] == runner_id
+
+
+def test_runtime_cancel_is_idempotent_for_an_already_terminal_task(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed")
+    runtime = _build_runtime(workspace)
+
+    monkeypatch.setattr(
+        runtime.task_manager,
+        "request_task_cancel",
+        lambda *_args, **_kwargs: pytest.fail("a terminal task must not receive a cancel request"),
+    )
+
+    result = runtime.cancel_task("alpha")
+
+    assert result["status"] == "completed"
+
+
+def test_runtime_cancel_rejects_a_newer_run_that_finished_during_the_request(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    runtime = _build_runtime(workspace)
+    task_dir = workspace / TASKS_DIR / "alpha"
+
+    def finish_newer_run_before_cancel(_name, **_identity):
+        update_task_info(
+            str(task_dir),
+            lambda info: info.update(
+                {
+                    "status": "completed",
+                    "run_index": 2,
+                    "run_statuses": ["completed", "completed"],
+                }
+            ),
+        )
+        return False
+
+    monkeypatch.setattr(
+        runtime.task_manager,
+        "request_task_cancel",
+        finish_newer_run_before_cancel,
+    )
+
+    with pytest.raises(ValueError, match="cannot be cancelled"):
+        runtime.cancel_task("alpha")
 
 
 def test_runtime_workspace_reload_shutdown_and_path_edges(tmp_path, monkeypatch):

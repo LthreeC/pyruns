@@ -1930,11 +1930,31 @@ class TaskManager:
 
         action = request_context["action"]
         if action == "cancel_local":
-            return self.cancel_task(
+            cancelled = self.cancel_task(
                 task_name,
                 expected_runner_id=str(request_context["runner_id"] or ""),
                 expected_run_index=int(request_context["run_index"] or 0),
             )
+            if cancelled:
+                return True
+
+            # The request itself is durable.  A short-lived state-file lock can
+            # defer the immediate local stop until the scheduler's next pass.
+            # A pending stop summary means the immediate stop passed the lock
+            # but could not verify process termination; do not treat its marker
+            # as an accepted request if rolling that marker back failed.
+            latest = load_task_info(task_dir) or {}
+            if latest:
+                self._refresh_memory_task_from_disk_info(task_name, task_dir, latest)
+                self.trigger_update()
+            latest_status = str(latest.get("status", "") or "").lower()
+            same_run = active_task_run_index(latest) == int(request_context["run_index"] or 0)
+            if same_run and latest_status in {"completed", "failed", "cancelled"}:
+                return True
+            # Keep returning False while the local runner has not confirmed
+            # termination. CLI and detached runner callers must retry until a
+            # terminal state is observed.
+            return False
         if action.startswith("reconcile_"):
             status = str(request_context["original_status"] or "")
             if request_context["finalized_run_slot"]:
@@ -2086,10 +2106,28 @@ class TaskManager:
                         pid,
                         target_name,
                     )
-                    self._clear_pending_stop_request(
-                        target_ref["dir"],
-                        run_index=action_task["run_index"],
-                    )
+                    # Keep a durable request only while the recorded process
+                    # is still the same process.  The scheduler can retry a
+                    # transient termination failure, while a reused PID is
+                    # rolled back so an unrelated process is never stopped.
+                    try:
+                        process_still_matches = process_identity_matches(
+                            int(pid),
+                            created_at,
+                        )
+                    except Exception:
+                        process_still_matches = False
+                    if not process_still_matches:
+                        self._clear_pending_stop_request(
+                            target_ref["dir"],
+                            run_index=action_task["run_index"],
+                        )
+                    else:
+                        logger.info(
+                            "Keeping cancellation request for %s; PID %s is still owned by this run",
+                            target_name,
+                            pid,
+                        )
                     latest = load_task_info(target_ref["dir"]) or disk_info
                     self._refresh_memory_task_from_disk_info(
                         target_name,

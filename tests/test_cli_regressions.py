@@ -28,7 +28,7 @@ from pyruns.cli.submission_protocol import (
 )
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.core.task_generator import TaskGenerator
-from pyruns.utils.info_io import ensure_run_slot, load_task_info, update_task_info
+from pyruns.utils.info_io import ensure_run_slot, load_task_info, save_task_info, update_task_info
 from pyruns.update_coordination import (
     UPDATE_STATE_DIR_ENV,
     CoordinationStore,
@@ -520,6 +520,60 @@ def test_stop_reports_partial_cancellation_when_one_run_identity_changes(
         ("first", identities["first"].runner_id, 1),
         ("second", identities["second"].runner_id, 1),
     ]
+
+
+def test_stop_waits_for_a_durable_request_when_process_stop_needs_retry(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from pyruns.cli import commands
+
+    task_dir = tmp_path / "retry-stop"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "retry-stop",
+            "status": "running",
+            "run_index": 1,
+            "runner_id": "host:100:retry",
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "cancel_requested_at": "2026-03-20_00-00-02",
+        },
+    )
+    task = {"name": "retry-stop", "dir": str(task_dir), "status": "running"}
+    identity = commands._TaskRunIdentity(run_index=1, runner_id="host:100:retry")
+
+    class FakeManager:
+        def request_task_cancel(self, _name, **_kwargs):
+            return False
+
+    monkeypatch.setattr(commands, "_resolve_exact_tasks", lambda _manager, _names: [task])
+    monkeypatch.setattr(commands, "_capture_task_run_identity", lambda _task: identity)
+    monkeypatch.setattr(
+        commands,
+        "_bound_task_record",
+        lambda _task, _identity: {"name": "retry-stop", "status": "running"},
+    )
+    monkeypatch.setattr(
+        commands,
+        "_wait_for_task_records",
+        lambda *_args, **_kwargs: [{"name": "retry-stop", "status": "cancelled"}],
+    )
+
+    result = commands.cmd_stop(
+        SimpleNamespace(json_output=True),
+        SimpleNamespace(tasks=["retry-stop"], timeout=1.0),
+        FakeManager(),
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stopped"] == [{"name": "retry-stop", "status": "cancelled"}]
+    assert payload["not_stopped"] == []
 
 
 def test_detached_submission_never_installs_foreground_interrupt_cleanup(monkeypatch):

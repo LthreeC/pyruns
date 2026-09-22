@@ -5121,6 +5121,81 @@ def test_task_manager_cancel_task_persists_reason_before_verified_termination(tm
     assert events == ["persist", ("kill", 12345, 1000.0)]
 
 
+def test_task_manager_request_cancel_keeps_retrying_a_persisted_local_request(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    manager = _make_task_manager(tasks_dir)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
+    monkeypatch.setattr(manager, "cancel_task", lambda *_args, **_kwargs: False)
+
+    assert manager.request_task_cancel(
+        "runner",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    ) is False
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "running"
+    assert info["cancel_requested_at"]
+
+
+def test_task_manager_request_cancel_rejects_unverified_stop_with_stale_marker(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    manager = _make_task_manager(tasks_dir)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(manager, "_clear_pending_stop_request", lambda *_args, **_kwargs: False)
+
+    assert manager.request_task_cancel(
+        "runner",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    ) is False
+    info = load_task_info(str(task_dir))
+    assert info["cancel_requested_at"]
+    assert info["_pending_stop_summary"]["reason"] == "cancelled_by_user"
+
+
 def test_task_manager_cancel_task_fails_closed_when_task_info_is_busy(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -5240,6 +5315,45 @@ def test_task_manager_cancel_task_does_not_finalize_or_kill_a_reused_pid(tmp_pat
     info = load_task_info(str(task_dir))
     assert info["status"] == "running"
     assert "_pending_stop_summary" not in info
+
+
+def test_task_manager_cancel_task_keeps_request_for_a_live_process_after_timeout(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task_dir = tasks_dir / "retry-stop"
+    task_dir.mkdir()
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "retry-stop",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "pid_create_times": [1000.0],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+    manager = _make_task_manager(tasks_dir)
+    _mark_task_owned_by_manager(manager, "retry-stop", task_dir)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        "pyruns.core.task_manager.process_identity_matches",
+        lambda *_args, **_kwargs: True,
+    )
+
+    assert manager.cancel_task("retry-stop") is False
+    info = load_task_info(str(task_dir))
+    assert info["status"] == "running"
+    assert info["cancel_requested_at"]
+    assert info["_pending_stop_summary"]["reason"] == "cancelled_by_user"
 
 
 def test_kill_process_rejects_mismatched_creation_time_without_signalling(monkeypatch):

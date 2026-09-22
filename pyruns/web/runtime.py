@@ -1344,14 +1344,35 @@ class PyrunsRuntime:
         info = load_task_info(task_dir) if task_dir else {}
         status = str(info.get("status", "") or "").lower()
         if status not in {"queued", "running"}:
+            if status in {"completed", "failed", "cancelled"}:
+                return self.get_task(task_name) or task
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
+        requested_run_index = active_task_run_index(info)
         self.invalidate_cache()
         ok = manager.request_task_cancel(
             task_name,
             expected_runner_id=str(info.get("runner_id", "") or ""),
-            expected_run_index=active_task_run_index(info),
+            expected_run_index=requested_run_index,
         )
         if not ok:
+            latest = self.get_task(task_name)
+            # Cancellation markers are intentionally internal task metadata
+            # and are omitted from API snapshots. Read the same locked state
+            # file to distinguish a durable request from an identity race.
+            latest_info = load_task_info(task_dir) or {}
+            latest_status = str(latest_info.get("status", "") or "").lower()
+            if (
+                latest_status in {"completed", "failed", "cancelled"}
+                and active_task_run_index(latest_info) == requested_run_index
+            ):
+                return latest
+            if (
+                latest_status in {"queued", "running"}
+                and active_task_run_index(latest_info) == requested_run_index
+                and str(latest_info.get("runner_id", "") or "") == str(info.get("runner_id", "") or "")
+                and latest_info.get("cancel_requested_at")
+            ):
+                return latest
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
         return self.get_task(task_name) or task
 

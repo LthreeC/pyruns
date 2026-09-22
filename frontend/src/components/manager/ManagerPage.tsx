@@ -829,9 +829,30 @@ export default function ManagerPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-semibold tracking-tight text-txt-primary">Task Manager</h1>
-              {loading && tasks.length > 0 && (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-txt-tertiary" aria-label="Refreshing tasks" />
-              )}
+              <button
+                type="button"
+                aria-label={loading && query.trim()
+                  ? 'Cancel search'
+                  : query.trim()
+                    ? 'Refresh search results'
+                    : 'Refresh tasks'}
+                title={loading && query.trim()
+                  ? 'Cancel search'
+                  : query.trim()
+                    ? 'Refresh search results'
+                    : 'Refresh tasks'}
+                disabled={loading && !query.trim()}
+                onClick={() => loading && query.trim()
+                  ? useTaskStore.getState().cancelTaskSearch()
+                  : void fetchTasks()}
+                className="touch-target inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-wait disabled:opacity-50 sm:h-8 sm:w-8"
+              >
+                {loading
+                  ? query.trim()
+                    ? <Square aria-hidden="true" className="h-3.5 w-3.5" />
+                    : <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                  : <RefreshCw aria-hidden="true" className="h-4 w-4" />}
+              </button>
             </div>
             <p className="mt-0.5 text-xs text-txt-secondary">
               Review, organize, and run workspace tasks from one queue.
@@ -853,6 +874,7 @@ export default function ManagerPage() {
         <div className="mt-3 flex flex-col gap-3 xl:flex-row xl:items-start">
           <div className="w-full min-w-0 xl:max-w-[44rem] xl:flex-1">
             <TaskSearchInput
+              compact
               workspaceKind={workspaceKind}
               value={query}
               onChange={setQuery}

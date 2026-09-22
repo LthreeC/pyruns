@@ -975,6 +975,23 @@ def _bound_task_record(
     return record
 
 
+def _has_persisted_cancel_request(
+    task: dict[str, Any],
+    identity: _TaskRunIdentity,
+) -> bool:
+    """Return whether the captured run still owns a durable cancel request."""
+
+    task_dir = str(task.get("dir", "") or "")
+    info = load_task_info(task_dir) if task_dir else {}
+    if not info or str(info.get("status", "") or "").lower() not in _ACTIVE_STATUSES:
+        return False
+    if _active_run_index(info) != identity.run_index:
+        return False
+    if str(info.get("runner_id", "") or "") != str(identity.runner_id or ""):
+        return False
+    return bool(info.get("cancel_requested_at"))
+
+
 def _wait_for_task_records(
     tasks: list[dict[str, Any]],
     identities: dict[str, _TaskRunIdentity],
@@ -1088,8 +1105,9 @@ def _cancel_submitted_tasks_after_interrupt(
             except Exception:
                 current_status = ""
             if current_status in _ACTIVE_STATUSES:
-                failed_requests.append(name)
                 wait_tasks.append(task)
+                if not _has_persisted_cancel_request(task, identity):
+                    failed_requests.append(name)
         else:
             wait_tasks.append(task)
 
@@ -1917,8 +1935,9 @@ def cmd_stop(context: Any, args: Any, manager: TaskManager) -> int:
             expected_runner_id=identity.runner_id,
             expected_run_index=identity.run_index,
         ):
-            not_requested.append(name)
-            continue
+            if not _has_persisted_cancel_request(task, identity):
+                not_requested.append(name)
+                continue
         requested.append(task)
 
     if not requested:
