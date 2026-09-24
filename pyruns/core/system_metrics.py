@@ -9,11 +9,25 @@ import shlex
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import psutil
 
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
+
+
+class _SampleClock:
+    """Keep one sample's clock reads consistent without losing elapsed time."""
+
+    __slots__ = ("start", "_start_ns")
+
+    def __init__(self) -> None:
+        self.start = time.monotonic()
+        self._start_ns = time.monotonic_ns()
+
+    def now(self) -> float:
+        elapsed_ns = time.monotonic_ns() - self._start_ns
+        return self.start + max(0.0, elapsed_ns / 1_000_000_000)
 
 
 class SystemMonitor:
@@ -387,11 +401,16 @@ class SystemMonitor:
         self,
         *,
         refresh: bool,
+        now: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> tuple[Dict[str, List[Dict[str, Any]]], str]:
         """Share one process query without blocking device-only requests."""
 
         with self._gpu_process_lock:
-            now = time.monotonic()
+            if now is None:
+                now = time.monotonic()
+            if clock is None:
+                clock = time.monotonic
             process_error = self._gpu_process_error
             cache_expired = (
                 now - self._gpu_process_cache_at >= self._gpu_ttl_sec
@@ -416,7 +435,7 @@ class SystemMonitor:
                     self._gpu_process_cache = processes
                     self._gpu_process_cache_valid = True
                     process_error = ""
-                self._gpu_process_cache_at = time.monotonic()
+                self._gpu_process_cache_at = clock()
                 self._gpu_process_error = process_error
             if self._gpu_process_cache_valid:
                 return self._gpu_process_cache, process_error
@@ -430,6 +449,8 @@ class SystemMonitor:
         *,
         include_processes: bool,
         refresh_processes: bool = True,
+        now: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> List[Dict[str, Any]]:
         """Attach optional, separately cached process data to GPU rows."""
 
@@ -438,6 +459,8 @@ class SystemMonitor:
         if include_processes:
             processes_by_uuid, process_error = self._get_cached_gpu_processes(
                 refresh=refresh_processes,
+                now=now,
+                clock=clock,
             )
 
         result = [
@@ -485,15 +508,20 @@ class SystemMonitor:
         """Return cached GPU metrics and load process details on demand."""
 
         include_detail = include_processes if detail is None else bool(detail)
+        clock = _SampleClock()
         with self._gpu_lock:
             gpus, refresh_processes = self._get_gpu_metrics_locked(
                 detail=include_detail,
                 allow_stale=allow_stale,
+                now=clock.start,
+                clock=clock.now,
             )
         return self._attach_gpu_processes(
             gpus,
             include_processes=include_processes,
             refresh_processes=refresh_processes,
+            now=clock.now(),
+            clock=clock.now,
         )
 
     def _get_gpu_metrics_locked(
@@ -501,10 +529,15 @@ class SystemMonitor:
         *,
         detail: bool,
         allow_stale: bool,
+        now: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> tuple[List[Dict[str, Any]], bool]:
         """Return device rows and whether process discovery can proceed."""
 
-        now = time.monotonic()
+        if now is None:
+            now = time.monotonic()
+        if clock is None:
+            clock = time.monotonic
         cache_fresh = now - self._gpu_cache_at < self._gpu_ttl_sec
         cache_satisfies_request = (
             not detail
@@ -598,20 +631,18 @@ class SystemMonitor:
                     )
                 gpus.append(gpu_info)
 
-            now = time.monotonic()
             self._gpu_cache = gpus
-            self._gpu_cache_at = now
+            self._gpu_cache_at = clock()
             self._gpu_cache_valid = True
             self._gpu_cache_has_details = has_details
             self._gpu_fail_count = 0
             self._gpu_disabled_at = 0.0
             return gpus, True
         except Exception:
-            now = time.monotonic()
             self._gpu_fail_count += 1
             if self._gpu_fail_count >= self._gpu_max_fails:
                 self._gpu_available = False
-                self._gpu_disabled_at = now
+                self._gpu_disabled_at = clock()
             return (
                 self._copy_cached_gpu_rows(
                     self._gpu_cache if allow_stale else [],
