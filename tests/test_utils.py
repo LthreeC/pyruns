@@ -2285,6 +2285,31 @@ class TestTypeValidation:
 
 
 class TestFilterTasksMultiline:
+    @pytest.mark.parametrize("task_kind", [TASK_KIND_CONFIG, TASK_KIND_SHELL])
+    @pytest.mark.parametrize("cached", [False, True])
+    @pytest.mark.parametrize("options", [{}, {"match_case": True}, {"whole_word": True}, {"use_regex": True}])
+    def test_summary_search_preserves_cached_text_and_limits_payload_fallback(self, task_kind, cached, options):
+        from pyruns.utils.search_query import SearchQuery
+        from pyruns.utils.task_files import filter_tasks_by_search_field
+
+        task = {
+            "name": "experiment", "notes": "note_token", "env": {"TOKEN": "env_value"},
+            "task_kind": task_kind, "config": {"value": "payload_token"},
+            "config_text": "echo payload_token",
+            "search_text": "experiment\nnote_token\npayload_token" if cached else "",
+        }
+        matcher = SearchQuery("payload_token", **options)
+        assert filter_tasks_by_search_field([task], "payload_token", matcher=matcher) == [task]
+        assert filter_tasks_by_search_field(
+            [task], "payload_token", matcher=matcher, include_payload=False,
+        ) == ([task] if cached and not options else [])
+
+        for query in ("experiment", "note_token", "TOKEN=env_value", "experiment\nTOKEN=env_value"):
+            assert filter_tasks_by_search_field(
+                [task], query, matcher=SearchQuery(query, **options), include_payload=False,
+            ) == [task]
+        assert filter_tasks_by_search_field([task], " \n", include_payload=False) == [task]
+
     def test_multiline_yaml_subset(self):
         tasks = [
             {"name": "task1", "config": {"device": None, "batch_size": 32, "lr": 0.01}, "status": "running"},

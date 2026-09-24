@@ -489,24 +489,12 @@ class TaskManager:
                     task for task in candidates
                     if status.lower() == task.get("status", "pending")
                 ]
-            if summary and query and search_field == "all":
-                # Summary search uses cached text, falling back to metadata
-                # without config/script payloads. Keep that search contract.
-                search_candidates = [
-                    {
-                        "name": task.get("name", ""),
-                        "notes": task.get("notes", ""),
-                        "env": task.get("env", {}),
-                        "search_text": task.get("search_text", ""),
-                        "_task": task,
-                    }
-                    for task in candidates
-                ]
-                candidates = [
-                    task["_task"] for task in filter_tasks_by_search_field(search_candidates, query)
-                ]
-            else:
-                candidates = filter_tasks_by_search_field(candidates, query, search_field=search_field)
+            # Summary search uses cached text, falling back to metadata without
+            # config/script payloads. Apply this boundary without copying tasks.
+            candidates = filter_tasks_by_search_field(
+                candidates, query, search_field=search_field,
+                include_payload=not summary or search_field in {"config", "script"},
+            )
             ordered = sort_tasks_for_manager(candidates, sort_mode)
             total = len(ordered)
             selected = (

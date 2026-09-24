@@ -229,7 +229,7 @@ def _build_task_search_snippet(
     return snippet, min(match_start, len(snippet)), min(match_end, len(snippet))
 
 
-def _task_search_sources(task: Mapping[str, Any], search_field: str = "all"):
+def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, include_payload: bool = True):
     name = str(task.get("name", "") or "")
     if name and search_field in {"all", "name"}:
         yield "name", "", name
@@ -249,6 +249,9 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all"):
         for key, value in env_items:
             for line in f"{key}={value}".splitlines():
                 yield "env", str(key), line
+
+    if not include_payload:
+        return
 
     if normalize_task_kind(task.get("task_kind")) == TASK_KIND_SHELL:
         if search_field not in {"all", "script"}:
@@ -274,23 +277,27 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all"):
 
 def filter_tasks_by_search_field(
     tasks: list, query: str, status: str = "All", search_field: str = "all",
-    *, matcher: SearchQuery | None = None,
+    *, matcher: SearchQuery | None = None, include_payload: bool = True,
 ) -> list:
     """Filter metadata using the same sources as the displayed match previews."""
     candidates = filter_tasks(tasks, "", status)
     matcher = matcher or SearchQuery(query)
     if not matcher.needles:
         return candidates
-    return [task for task in candidates if len(task_search_found(task, matcher, search_field)) == len(matcher.needles)]
+    return [
+        task for task in candidates
+        if len(task_search_found(task, matcher, search_field, include_payload=include_payload)) == len(matcher.needles)
+    ]
 
 
-def task_search_found(task, matcher, search_field="all"):
+def task_search_found(task, matcher, search_field="all", *, include_payload=True):
+    """Match cached text, optionally limiting uncached sources to metadata."""
     if matcher.plain and search_field == "all" and task.get("search_text"):
         # Preserve the cached metadata fast path, adding task-specific env values.
         text = task["search_text"] + "\n" + "\n".join(source for _, _, source in _task_search_sources(task, "env"))
         return matcher.found(text)
     found = set()
-    for _, _, source in _task_search_sources(task, search_field):
+    for _, _, source in _task_search_sources(task, search_field, include_payload=include_payload):
         found.update(matcher.found(source))
         if len(found) == len(matcher.needles):
             break
