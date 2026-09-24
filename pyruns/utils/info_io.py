@@ -365,6 +365,25 @@ def _load_json_object(path: str, *, max_bytes: int, label: str) -> Dict[str, Any
     return data
 
 
+def _release_task_lock(lock_path: str, owner: str) -> None:
+    """Retry temporary sharing violations without deleting another owner's lock."""
+    for attempt in range(_REPLACE_RETRY_COUNT):
+        try:
+            with open(lock_path, "r", encoding="utf-8") as handle:
+                current_owner = handle.read().strip()
+            if current_owner != owner:
+                return
+            os.remove(lock_path)
+            return
+        except PermissionError:
+            # Windows readers can temporarily deny deletion. Leaving this file
+            # behind would block the still-live owner on its next update.
+            if attempt < _REPLACE_RETRY_COUNT - 1:
+                time.sleep(_REPLACE_RETRY_DELAY_SEC * (attempt + 1))
+        except OSError:
+            return
+
+
 @contextmanager
 def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, create_dir: bool = True):
     """Acquire a task-local thread/process lock for task_info.json updates."""
@@ -401,17 +420,7 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                 os.close(fd)
             except OSError:
                 pass
-        try:
-            if os.path.exists(lock_path):
-                try:
-                    with open(lock_path, "r", encoding="utf-8") as handle:
-                        current_owner = handle.read().strip()
-                except OSError:
-                    current_owner = ""
-                if current_owner == owner:
-                    os.remove(lock_path)
-        except OSError:
-            pass
+        _release_task_lock(lock_path, owner)
         thread_lock.release()
 
 

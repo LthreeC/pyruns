@@ -366,7 +366,8 @@ for value in range(20):
     try:
         for process in processes:
             output, error = process.communicate(timeout=30)
-            assert process.returncode == 0, (output, error)
+            if process.returncode != 0:
+                pytest.fail((output + error).decode("utf-8", errors="replace"))
     finally:
         for process in processes:
             if process.poll() is None:
@@ -478,3 +479,58 @@ def test_failed_append_to_new_slot_can_resume_without_losing_existing_runs(task,
     append_task_track(str(task), {"loss": 11}, run_index=2)
     update_task_metadata(str(task), lambda info: info.update(status="completed", exit_codes=[0, 0]))
     assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1, 2, 3]}, {"loss": [11]}]
+
+
+@pytest.mark.parametrize("blocked_operation", ["read", "remove"])
+def test_task_lock_release_retries_transient_windows_sharing_errors(task, monkeypatch, blocked_operation):
+    import builtins
+
+    lock_path = str(task / info_io._LOCK_FILENAME)
+    original_remove = os.remove
+    original_open = builtins.open
+    failures = []
+
+    def remove(path, *args, **kwargs):
+        if str(path) == lock_path and blocked_operation == "remove" and not failures:
+            failures.append(path)
+            raise PermissionError("file is being read by a competing process")
+        return original_remove(path, *args, **kwargs)
+
+    def open_file(path, *args, **kwargs):
+        if str(path) == lock_path and blocked_operation == "read" and not failures:
+            failures.append(path)
+            raise PermissionError("sharing violation while checking lock owner")
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "remove", remove)
+        patch.setattr(builtins, "open", open_file)
+        append_task_track(str(task), {"loss": 0})
+    assert failures
+    assert not os.path.exists(lock_path), "failed lock cleanup blocks the still-live owner on its next write"
+    append_task_track(str(task), {"loss": 1})
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1]}]
+
+
+def test_task_lock_release_does_not_remove_new_owner_after_retry(task, monkeypatch):
+    lock_path = task / info_io._LOCK_FILENAME
+    original_remove = os.remove
+    failures = []
+
+    def remove(path, *args, **kwargs):
+        if str(path) == str(lock_path):
+            if not failures:
+                failures.append(path)
+                lock_path.write_text("different owner", encoding="utf-8")
+                raise PermissionError("owner changed during cleanup")
+            pytest.fail("release retried without rechecking ownership")
+        return original_remove(path, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "remove", remove)
+            with task_info_lock(str(task)):
+                pass
+        assert lock_path.read_text(encoding="utf-8") == "different owner"
+    finally:
+        lock_path.unlink(missing_ok=True)
