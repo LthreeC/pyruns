@@ -5290,6 +5290,94 @@ def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
     assert fourth["offset"] == 4
 
 
+@pytest.mark.parametrize("during_initial_read", [False, True], ids=["ready", "initial-read"])
+@pytest.mark.parametrize("oversized", [False, True], ids=["burst", "oversized"])
+def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read, oversized):
+    import asyncio
+
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_bytes(b"")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    original_get_logs = runtime.get_task_logs
+    original_send = WebSocket.send_json
+    initial_read = threading.Event()
+    release_initial = threading.Event()
+    idle = threading.Event()
+    loop_blocked = threading.Event()
+    release_loop = threading.Event()
+    sent_all = threading.Event()
+    sent_messages = []
+    chunks = ["中" * 32] if oversized else [f"{index:03d}\n" for index in range(30)]
+    expected = "".join(chunks)
+    expected_bytes = len(expected.encode("utf-8"))
+
+    def get_logs(*args, **kwargs):
+        if during_initial_read and kwargs.get("tail_lines") == 0:
+            initial_read.set()
+            assert release_initial.wait(3)
+        return original_get_logs(*args, **kwargs)
+
+    def mark_idle(path):
+        asyncio.get_running_loop().call_soon(idle.set)
+        return log_file_identity(path)
+
+    def block_loop():
+        loop_blocked.set()
+        assert release_loop.wait(3)
+
+    async def send_json(self, data, mode="text"):
+        await original_send(self, data, mode=mode)
+        sent_messages.append(data)
+        if data.get("offset") == expected_bytes:
+            sent_all.set()
+
+    with (
+        patch.object(runtime, "get_task_logs", side_effect=get_logs),
+        patch.object(WebSocket, "send_json", send_json),
+        patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
+        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
+        patch("pyruns.web.app.LOG_STREAM_QUEUE_LIMIT", 2),
+        patch("pyruns.web.app.LOG_STREAM_PENDING_CHARS", 8),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
+    ):
+        with client.websocket_connect("/api/tasks/alpha/logs/stream?log_file_name=run1.log") as websocket:
+            try:
+                assert (initial_read if during_initial_read else idle).wait(3)
+                loop = subscribe.call_args.kwargs["loop"]
+                loop.call_soon_threadsafe(block_loop)
+                assert loop_blocked.wait(3)
+                offset = 0
+                for chunk in chunks:
+                    data = chunk.encode("utf-8")
+                    with log_file.open("ab") as handle:
+                        handle.write(data)
+                    offset += len(data)
+                    log_emitter.emit(
+                        "alpha", chunk, offset=offset, byte_length=len(data),
+                        log_file_name="run1.log", task_dir=str(task_dir),
+                    )
+                delivered = threading.Event()
+                loop.call_soon_threadsafe(delivered.set)
+                release_loop.set()
+                assert delivered.wait(3)
+                release_initial.set()
+                assert sent_all.wait(3)
+                messages = [websocket.receive_json() for _ in sent_messages]
+            finally:
+                release_loop.set()
+                release_initial.set()
+
+    assert "".join(message["content"] for message in messages) == expected
+    assert all(message["type"] == "chunk" for message in messages)
+    assert messages[-1]["offset"] == expected_bytes
+
+
 def test_logs_websocket_replay_preserves_order_when_emitter_fires(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")

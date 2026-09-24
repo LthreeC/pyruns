@@ -1,4 +1,7 @@
 import os
+from collections import deque
+
+import pytest
 
 from pyruns.utils.events import LogEmitter, SimpleEventBus
 
@@ -140,3 +143,118 @@ def test_log_emitter_scopes_same_named_tasks_by_directory(tmp_path):
     assert len(received) == 1
     assert received[0][0] == "right workspace\n"
     assert received[0][1]["task_dir"] == os.path.normcase(str(task_a.resolve()))
+
+
+class PausedLoop:
+    def __init__(self):
+        self.calls = deque()
+        self.running = True
+
+    def is_running(self):
+        return self.running
+
+    def call_soon_threadsafe(self, callback, *args):
+        self.calls.append((callback, args))
+
+    def drain(self):
+        while self.calls:
+            callback, args = self.calls.popleft()
+            callback(*args)
+
+
+@pytest.mark.parametrize("limit_kind", ["chunks", "characters"])
+def test_log_emitter_bounds_dispatch_and_reports_first_skipped_offset(limit_kind):
+    emitter = LogEmitter()
+    loop = PausedLoop()
+    received, overflow = [], []
+    emitter.subscribe(
+        "task", lambda chunk, metadata: received.append((chunk, metadata)),
+        loop=loop, include_metadata=True, on_overflow=overflow.append,
+        max_pending_chunks=2 if limit_kind == "chunks" else 100,
+        max_pending_chars=8 if limit_kind == "characters" else 1000,
+    )
+
+    for index in range(10_000):
+        emitter.emit("task", "data", offset=(index + 1) * 4, byte_length=4, log_file_name="run1.log")
+
+    assert len(loop.calls) == 3
+    loop.drain()
+    assert [meta["offset"] for _, meta in received] == [4, 8]
+    assert overflow == [{"offset": 12, "byte_length": 4, "log_file_name": "run1.log"}]
+
+    emitter.emit("task", "next", offset=40_004, byte_length=4, log_file_name="run1.log")
+    loop.drain()
+    assert received[-1] == ("next", {"offset": 40_004, "byte_length": 4, "log_file_name": "run1.log"})
+    assert len(overflow) == 1
+
+
+def test_log_emitter_oversized_chunk_retains_only_replay_metadata():
+    emitter = LogEmitter()
+    loop = PausedLoop()
+    received, overflow = [], []
+    emitter.subscribe(
+        "task", received.append, loop=loop, max_pending_chars=4,
+        on_overflow=overflow.append,
+    )
+    emitter.emit("task", "中" * 1000)
+    loop.drain()
+    assert received == []
+    assert overflow == [{"byte_length": 3000}]
+    emitter.emit("task", "ok")
+    loop.drain()
+    assert received == ["ok"]
+
+
+def test_log_emitter_unsubscribe_cancels_queued_dispatch_and_overflow():
+    emitter = LogEmitter()
+    loop = PausedLoop()
+    received, overflow = [], []
+
+    def on_chunk(chunk):
+        received.append(chunk)
+
+    emitter.subscribe("task", on_chunk, loop=loop, max_pending_chunks=1, on_overflow=overflow.append)
+    emitter.emit("task", "pending")
+    emitter.emit("task", "overflow")
+    emitter.unsubscribe("task", on_chunk)
+    loop.drain()
+    assert received == overflow == []
+
+
+def test_log_emitter_dispatch_failure_releases_capacity():
+    emitter = LogEmitter()
+    loop = PausedLoop()
+    received = []
+    emitter.subscribe("task", received.append, loop=loop, max_pending_chunks=1, on_overflow=lambda _: None)
+    schedule = loop.call_soon_threadsafe
+
+    def fail(*args):
+        raise RuntimeError("event loop closed")
+
+    loop.call_soon_threadsafe = fail
+    emitter.emit("task", "failed")
+    loop.call_soon_threadsafe = schedule
+    emitter.emit("task", "next")
+    loop.drain()
+    assert received == ["next"]
+    loop.running = False
+    emitter.emit("task", "stopped")
+    assert received == ["next"]
+
+
+def test_log_emitter_callback_failure_releases_capacity():
+    emitter = LogEmitter()
+    loop = PausedLoop()
+    received = []
+
+    def on_chunk(chunk):
+        received.append(chunk)
+        if chunk == "failing":
+            raise RuntimeError("callback failed")
+
+    emitter.subscribe("task", on_chunk, loop=loop, max_pending_chunks=1, on_overflow=lambda _: None)
+    emitter.emit("task", "failing")
+    loop.drain()
+    emitter.emit("task", "next")
+    loop.drain()
+    assert received == ["failing", "next"]

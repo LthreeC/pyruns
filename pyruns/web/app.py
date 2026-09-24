@@ -69,6 +69,7 @@ from pyruns.utils import get_logger
 logger = get_logger(__name__)
 
 LOG_STREAM_QUEUE_LIMIT = 256
+LOG_STREAM_PENDING_CHARS = 1024 * 1024
 LOG_STREAM_TAIL_INTERVAL_SEC = 0.5
 LOG_STREAM_TAIL_CHUNK_SIZE = 64 * 1024
 LOG_STREAM_EMITTER_QUIET_SEC = 2.0
@@ -1248,6 +1249,18 @@ def create_app(
             except asyncio.QueueFull:
                 logger.debug("Dropping live log chunk for %s because websocket queue is full", task_name)
 
+        def on_dispatch_overflow(metadata: dict[str, Any]) -> None:
+            nonlocal replaying_backlog, pending_initial_overflow
+            if not disconnected.is_set():
+                if not stream_initialized:
+                    if len(pending_initial_chunks) < LOG_STREAM_QUEUE_LIMIT:
+                        # Keep the byte boundary even when the very first
+                        # live chunk exceeds the dispatch size limit.
+                        pending_initial_chunks.append(("", metadata))
+                    pending_initial_overflow = True
+                replaying_backlog = True
+                tail_wakeup.set()
+
         def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
             nonlocal last_emitter_chunk_at, stream_log_name, stream_offset, stream_identity
             nonlocal replaying_backlog, pending_initial_overflow
@@ -1544,6 +1557,9 @@ def create_app(
             loop=loop,
             include_metadata=True,
             task_dir=stream_task_dir,
+            max_pending_chunks=LOG_STREAM_QUEUE_LIMIT,
+            max_pending_chars=LOG_STREAM_PENDING_CHARS,
+            on_overflow=on_dispatch_overflow,
         )
         try:
             while not disconnected.is_set():
