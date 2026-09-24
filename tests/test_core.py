@@ -7913,6 +7913,152 @@ def test_task_manager_queue_heartbeat_continues_after_one_metadata_write_fails(t
     assert load_task_info(beta["dir"])["lease_heartbeat"] > 1.0
 
 
+@pytest.mark.parametrize("claim_persisted", [False, True])
+def test_task_manager_queue_heartbeat_does_not_requeue_selected_task(tmp_path, monkeypatch, claim_persisted):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    original_update = task_manager_module.update_task_info
+    selected = False
+
+    def renew_then_select(task_dir, *args, **kwargs):
+        nonlocal selected
+        updated = original_update(task_dir, *args, **kwargs)
+        if not selected:
+            selected = True
+            picked, run_index = manager._pick_queued_task()
+            assert picked["name"] == "alpha"
+            if claim_persisted:
+                assert manager._claim_task_for_run(picked, run_index, counts_for_batch=True)
+        return updated
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", renew_then_select)
+    manager._refresh_queued_runner_leases()
+
+    assert manager.get_task("alpha")["status"] == "running"
+    assert manager.get_task("alpha")["run_index"] == 1
+    assert "alpha" in manager._batch_running_ids
+    assert manager._pick_queued_task()[0] is None
+
+
+def test_task_manager_queue_heartbeat_keeps_new_gpu_wait_generation(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    config = GpuSchedulerConfig(enabled=True, max_wait_seconds=600)
+    old_wait = manager._new_gpu_wait_state(1, config, started_at=100)
+    new_wait = manager._new_gpu_wait_state(1, config, started_at=200)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1, gpu_wait=old_wait)
+    original_update = task_manager_module.update_task_info
+
+    def requeue_then_renew(task_dir, *args, **kwargs):
+        updated = original_update(task_dir, lambda info: info.update({
+            "queued_at": new_wait["started_at"], "gpu_wait": new_wait,
+        }))
+        with manager._lock:
+            manager._apply_info_to_task(manager._tasks_by_name["alpha"], updated)
+        return original_update(task_dir, *args, **kwargs)
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", requeue_then_renew)
+    manager._refresh_queued_runner_leases()
+
+    assert load_task_info(task["dir"])["gpu_wait"]["started_at"] == 200
+    assert manager.get_task("alpha")["gpu_wait"]["deadline_at"] == 800
+
+
+def test_task_manager_queue_heartbeat_renews_legacy_gpu_wait_without_queued_at(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    config = GpuSchedulerConfig(enabled=True, max_wait_seconds=600)
+    wait = TaskManager._new_gpu_wait_state(1, config, started_at=100)
+    update_task_info(task["dir"], lambda info: info.update({
+        "status": "queued", "gpu_wait": wait, "lease_heartbeat": 1.0,
+    }))
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    with manager._lock:
+        manager._ensure_gpu_wait_state(manager._tasks_by_name["alpha"], 1, config, now=150)
+
+    manager._refresh_queued_runner_leases()
+
+    renewed = load_task_info(task["dir"])
+    assert renewed["lease_heartbeat"] > 1.0
+    assert renewed["gpu_wait"]["started_at"] == 100
+
+
+@pytest.mark.parametrize("operation", ["pin", "notes", "env", "reorder"])
+@pytest.mark.parametrize("claim_persisted", [False, True])
+def test_task_manager_metadata_edit_keeps_selected_task_running(tmp_path, monkeypatch, operation, claim_persisted):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    original_update = task_manager_module.update_task_info
+    selected = False
+
+    def save_then_select(task_dir, *args, **kwargs):
+        nonlocal selected
+        updated = original_update(task_dir, *args, **kwargs)
+        if not selected:
+            selected = True
+            picked, run_index = manager._pick_queued_task()
+            assert picked["name"] == "alpha"
+            if claim_persisted:
+                assert manager._claim_task_for_run(picked, run_index, counts_for_batch=True)
+        return updated
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", save_then_select)
+    edits = {
+        "pin": lambda: manager.set_task_pinned("alpha", True),
+        "notes": lambda: manager.update_task_notes("alpha", "updated note", ""),
+        "env": lambda: manager.update_task_env("alpha", {"OMP_NUM_THREADS": "2"}, {}),
+        "reorder": lambda: manager.reorder_tasks([{"name": "alpha", "pinned": True}]),
+    }
+    assert edits[operation]()[0] is True
+
+    current = manager.get_task("alpha")
+    assert current["status"] == "running"
+    assert current["run_index"] == 1
+    assert "alpha" in manager._batch_running_ids
+    assert manager._pick_queued_task()[0] is None
+    if operation in {"pin", "reorder"}:
+        assert current["pinned"] is True
+    elif operation == "notes":
+        assert current["notes"] == "updated note"
+    else:
+        assert current["env"] == {"OMP_NUM_THREADS": "2"}
+
+
+@pytest.mark.parametrize("concurrent_edit", ["notes", "env"])
+def test_task_manager_metadata_edit_preserves_later_edits(tmp_path, monkeypatch, concurrent_edit):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    original_update = task_manager_module.update_task_info
+    changed = False
+
+    def save_then_edit(task_dir, *args, **kwargs):
+        nonlocal changed
+        updated = original_update(task_dir, *args, **kwargs)
+        if not changed:
+            changed = True
+            if concurrent_edit == "notes":
+                assert manager.update_task_notes("alpha", "second note", "first note")[0] is True
+            else:
+                assert manager.update_task_env("alpha", {"OMP_NUM_THREADS": "2"}, {})[0] is True
+        return updated
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", save_then_edit)
+    assert manager.update_task_notes("alpha", "first note", "")[0] is True
+
+    current = manager.get_task("alpha")
+    if concurrent_edit == "notes":
+        assert current["notes"] == "second note"
+    else:
+        assert current["notes"] == "first note"
+        assert current["env"] == {"OMP_NUM_THREADS": "2"}
+
+
 @pytest.mark.parametrize("new_status", ["queued", "running"])
 def test_task_manager_stale_claim_does_not_rewind_a_new_run(tmp_path, new_status):
     tasks_dir = tmp_path / "tasks"

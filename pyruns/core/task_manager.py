@@ -1830,6 +1830,44 @@ class TaskManager:
         self.trigger_update()
         return True
 
+    def _apply_task_metadata_update(
+        self,
+        task_name: str,
+        task_dir: str,
+        observed: Dict[str, Any],
+        revision: int,
+        info: Dict[str, Any],
+    ) -> None:
+        """Merge editable fields without replacing a concurrent dispatch state."""
+        for attempt in range(3):
+            with self._lock:
+                current = self._tasks_by_name.get(task_name)
+                if current is not observed or not self._same_task_dir(current.get("dir"), task_dir):
+                    return
+                current_revision = current.get("_registry_revision", 0)
+                if current_revision == revision:
+                    notes_changed = current.get("notes", "") != info.get("notes", "")
+                    for field, default in (("pinned", False), ("task_order", None), ("notes", ""), ("env", {})):
+                        current[field] = copy.deepcopy(info.get(field, default))
+                    current["_info_signature"] = None
+                    if notes_changed:
+                        self._refresh_derived_fields(current)
+                    current["_registry_revision"] = current_revision + 1
+                    return
+                # A newer mutation may contain this write plus other edits.
+                # Reload it outside the registry lock before trying again.
+                revision = current_revision
+                current["_info_signature"] = None
+            if attempt == 2:
+                return  # Normal disk refresh reconciles sustained contention.
+            try:
+                info = load_task_info(task_dir, raise_error=True)
+            except (OSError, ValueError) as exc:
+                logger.debug("Could not reload edited metadata for %s yet: %s", task_name, exc)
+                return
+            if not info:
+                return
+
     def set_task_pinned(self, task_name: str, pinned: Optional[bool] = None) -> tuple[bool, bool | str]:
         """Toggle or set a task's pinned state and sync in-memory caches."""
         with self._lock:
@@ -1838,15 +1876,13 @@ class TaskManager:
                 return False, "Task not found"
             new_value = (not bool(target.get("pinned", False))) if pinned is None else bool(pinned)
             task_dir = target["dir"]
+            revision = target.get("_registry_revision", 0)
 
         def _apply(task_info: Dict[str, Any]) -> None:
             task_info["pinned"] = new_value
 
         updated = update_task_info(task_dir, _apply)
-        with self._lock:
-            current = self._resolve_identifier_locked(task_name)
-            if current:
-                self._apply_info_to_task(current, updated)
+        self._apply_task_metadata_update(task_name, task_dir, target, revision, updated)
         self.trigger_update()
         return True, new_value
 
@@ -1878,11 +1914,13 @@ class TaskManager:
         with task_info_lock(self.tasks_dir):
             with self._lock:
                 updates: list[tuple[str, str, Optional[bool], int]] = []
+                observed_tasks = {}
                 for task_name, pinned_value, order in normalized:
                     target = self._resolve_identifier_locked(task_name)
                     if not target:
                         return False, f"Task not found: {task_name}"
                     updates.append((task_name, target["dir"], pinned_value, order))
+                    observed_tasks[task_name] = (target, target.get("_registry_revision", 0))
 
             updated_info: dict[str, Dict[str, Any]] = {}
             original_fields: dict[str, dict[str, tuple[bool, Any]]] = {}
@@ -1948,19 +1986,21 @@ class TaskManager:
                                 refresh_exc,
                             )
 
-                with self._lock:
-                    for task_name, info in updated_info.items():
-                        current = self._resolve_identifier_locked(task_name)
-                        if current:
-                            self._apply_info_to_task(current, info)
+                for task_name, task_dir, _, _ in updates:
+                    if task_name in updated_info:
+                        target, revision = observed_tasks[task_name]
+                        self._apply_task_metadata_update(
+                            task_name, task_dir, target, revision, updated_info[task_name],
+                        )
                 self.trigger_update()
                 raise
 
+            for task_name, task_dir, _, _ in updates:
+                target, revision = observed_tasks[task_name]
+                self._apply_task_metadata_update(
+                    task_name, task_dir, target, revision, updated_info[task_name],
+                )
             with self._lock:
-                for task_name, info in updated_info.items():
-                    current = self._resolve_identifier_locked(task_name)
-                    if current:
-                        self._apply_info_to_task(current, info)
                 reordered = [
                     self.serialize_task(self._resolve_identifier_locked(task_name))
                     for task_name, _, _ in normalized
@@ -1981,6 +2021,7 @@ class TaskManager:
             if not target:
                 return False, "Task not found"
             task_dir = target["dir"]
+            revision = target.get("_registry_revision", 0)
 
         def _apply(task_info: Dict[str, Any]) -> None:
             current_notes = str(task_info.get("notes", "") or "")
@@ -1989,10 +2030,7 @@ class TaskManager:
             task_info["notes"] = str(notes or "")
 
         updated = update_task_info(task_dir, _apply)
-        with self._lock:
-            current = self._resolve_identifier_locked(task_name)
-            if current:
-                self._apply_info_to_task(current, updated)
+        self._apply_task_metadata_update(task_name, task_dir, target, revision, updated)
         self.trigger_update()
         return True, str(updated.get("notes", "") or "")
 
@@ -2008,6 +2046,7 @@ class TaskManager:
             if not target:
                 return False, "Task not found"
             task_dir = target["dir"]
+            revision = target.get("_registry_revision", 0)
 
         try:
             normalized_env = normalize_environment(env)
@@ -2023,10 +2062,7 @@ class TaskManager:
             task_info.pop("custom_env", None)
 
         updated = update_task_info(task_dir, _apply)
-        with self._lock:
-            current = self._resolve_identifier_locked(task_name)
-            if current:
-                self._apply_info_to_task(current, updated)
+        self._apply_task_metadata_update(task_name, task_dir, target, revision, updated)
         self.trigger_update()
         return True, dict(updated.get("env", {}) or {})
 
@@ -3571,21 +3607,27 @@ class TaskManager:
         with self._lock:
             queued = [
                 (
+                    task,
+                    task.get("_registry_revision", 0),
                     str(task.get("name", "") or ""),
                     str(task.get("dir", "") or ""),
+                    self._next_run_index(task),
+                    self._queue_started_at_value(task),
                     copy.deepcopy(task.get("gpu_wait")) if isinstance(task.get("gpu_wait"), dict) else None,
                 )
                 for task in self.tasks
                 if task and task.get("status") == "queued" and not self._is_foreign_live_runner(task)
             ]
 
-        for task_name, task_dir, gpu_wait in queued:
+        for task, revision, task_name, task_dir, run_index, queued_at, gpu_wait in queued:
             if not task_name or not task_dir:
                 continue
 
             def _apply(info: Dict[str, Any]) -> None:
                 if str(info.get("status", "") or "").lower() != "queued":
                     raise TaskStateConflict("task is no longer queued")
+                if self._next_run_index(info) != run_index or self._queue_started_at_value(info) != queued_at:
+                    raise TaskStateConflict("task queue changed before lease renewal")
                 if self._is_foreign_live_runner(info):
                     raise TaskClaimConflict("queued task already owned by another runner")
                 self._set_runner_lease_fields(info)
@@ -3601,7 +3643,10 @@ class TaskManager:
                 continue
             with self._lock:
                 current = self._resolve_identifier_locked(task_name)
-                if current and self._same_task_dir(current.get("dir"), task_dir):
+                if (
+                    current is task and current.get("_registry_revision", 0) == revision
+                    and self._same_task_dir(current.get("dir"), task_dir)
+                ):
                     self._apply_info_to_task(current, updated)
                     self._failed_claim_ids.discard(task_name)
 
