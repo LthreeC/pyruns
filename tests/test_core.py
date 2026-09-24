@@ -9028,7 +9028,10 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     assert manager._format_duration(90) == "1.5m"
     assert manager._format_elapsed(3661) == "01:01:01"
 
-    config = GpuSchedulerConfig(enabled=True, task_mode="multi", gpus_per_task=2, device_ids=[1, 3], max_wait_seconds=3600)
+    config = GpuSchedulerConfig(
+        enabled=True, task_mode="multi", gpus_per_task=2,
+        device_ids=[1, 3], max_wait_seconds=3600, stable_seconds=10,
+    )
     assert manager._gpu_need_label(config) == "2 GPUs"
     assert manager._gpu_pool_label(config) == "1,3"
 
@@ -9042,7 +9045,8 @@ def test_task_manager_logs_and_gpu_helper_branches(tmp_path, monkeypatch):
     )
     assert manager._gpu_assignment_to_dict(assignment)["gpu_ids"] == [1, 3]
 
-    manager._append_gpu_wait_started(task, 1, config)
+    with patch("pyruns.core.task_manager.time.monotonic", return_value=90.0):
+        manager._append_gpu_wait_started(task, 1, config)
     manager._append_gpu_wait_decision(
         task,
         1,
