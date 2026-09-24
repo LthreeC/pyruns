@@ -45,6 +45,7 @@ class SystemMonitor:
 
     def __init__(self, *, gpu_ttl_sec: float = 1.5) -> None:
         self._gpu_lock = threading.Lock()
+        self._gpu_process_lock = threading.Lock()
         self._gpu_cache: List[Dict[str, Any]] = []
         self._gpu_cache_at: float = 0.0
         self._gpu_cache_valid: bool = False
@@ -376,23 +377,20 @@ class SystemMonitor:
 
         return processes_by_uuid
 
-    def _attach_gpu_processes(
+    def _get_cached_gpu_processes(
         self,
-        gpus: List[Dict[str, Any]],
         *,
-        now: float,
-        include_processes: bool,
-        refresh_processes: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """Attach optional, separately cached process data to GPU rows."""
+        refresh: bool,
+    ) -> tuple[Dict[str, List[Dict[str, Any]]], str]:
+        """Share one process query without blocking device-only requests."""
 
-        processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
-        process_error = ""
-        if include_processes:
+        with self._gpu_process_lock:
+            now = time.monotonic()
+            process_error = ""
             cache_expired = (
                 now - self._gpu_process_cache_at >= self._gpu_ttl_sec
             )
-            if refresh_processes and (
+            if refresh and (
                 not self._gpu_process_cache_valid or cache_expired
             ):
                 try:
@@ -409,12 +407,29 @@ class SystemMonitor:
                     process_error = f"Could not query NVIDIA processes: {str(detail).strip()[:512]}"
                 else:
                     self._gpu_process_cache = processes
-                    self._gpu_process_cache_at = now
+                    self._gpu_process_cache_at = time.monotonic()
                     self._gpu_process_cache_valid = True
             if self._gpu_process_cache_valid:
-                processes_by_uuid = self._gpu_process_cache
-            elif not refresh_processes:
+                return self._gpu_process_cache, process_error
+            if not refresh:
                 process_error = "GPU process data is unavailable because NVIDIA device discovery failed."
+            return {}, process_error
+
+    def _attach_gpu_processes(
+        self,
+        gpus: List[Dict[str, Any]],
+        *,
+        include_processes: bool,
+        refresh_processes: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Attach optional, separately cached process data to GPU rows."""
+
+        processes_by_uuid: Dict[str, List[Dict[str, Any]]] = {}
+        process_error = ""
+        if include_processes:
+            processes_by_uuid, process_error = self._get_cached_gpu_processes(
+                refresh=refresh_processes,
+            )
 
         result = [
             {
@@ -459,21 +474,28 @@ class SystemMonitor:
     ) -> List[Dict[str, Any]]:
         """Return cached GPU metrics and load process details on demand."""
 
+        include_detail = include_processes if detail is None else bool(detail)
         with self._gpu_lock:
-            return self._get_gpu_metrics_locked(include_processes=include_processes, detail=detail)
+            gpus, refresh_processes = self._get_gpu_metrics_locked(
+                detail=include_detail,
+            )
+        return self._attach_gpu_processes(
+            gpus,
+            include_processes=include_processes,
+            refresh_processes=refresh_processes,
+        )
 
     def _get_gpu_metrics_locked(
         self,
         *,
-        include_processes: bool,
-        detail: bool | None,
-    ) -> List[Dict[str, Any]]:
+        detail: bool,
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Return device rows and whether process discovery can proceed."""
 
-        include_detail = include_processes if detail is None else bool(detail)
         now = time.monotonic()
         cache_fresh = now - self._gpu_cache_at < self._gpu_ttl_sec
         cache_satisfies_request = (
-            not include_detail
+            not detail
             or self._gpu_cache_has_details
             or not self._gpu_detail_query_supported
         )
@@ -484,31 +506,25 @@ class SystemMonitor:
         ):
             cached_gpus = self._copy_cached_gpu_rows(
                 self._gpu_cache,
-                detail=include_detail,
+                detail=detail,
             )
-            return self._attach_gpu_processes(
-                cached_gpus,
-                now=now,
-                include_processes=include_processes,
-            )
+            return cached_gpus, True
 
         if not self._gpu_available:
             if now - self._gpu_disabled_at < self._gpu_retry_sec:
-                return self._attach_gpu_processes(
+                return (
                     self._copy_cached_gpu_rows(
                         self._gpu_cache,
-                        detail=include_detail,
+                        detail=detail,
                     ),
-                    now=now,
-                    include_processes=include_processes,
-                    refresh_processes=bool(self._gpu_cache),
+                    bool(self._gpu_cache),
                 )
             self._gpu_available = True
             self._gpu_fail_count = 0
 
         try:
             out, has_details = self._query_gpu_snapshot(
-                detail=include_detail,
+                detail=detail,
             )
             gpus: List[Dict[str, Any]] = []
             for parts in self._parse_csv_rows(out):
@@ -570,28 +586,24 @@ class SystemMonitor:
                     )
                 gpus.append(gpu_info)
 
+            now = time.monotonic()
             self._gpu_cache = gpus
             self._gpu_cache_at = now
             self._gpu_cache_valid = True
             self._gpu_cache_has_details = has_details
             self._gpu_fail_count = 0
             self._gpu_disabled_at = 0.0
-            return self._attach_gpu_processes(
-                gpus,
-                now=now,
-                include_processes=include_processes,
-            )
+            return gpus, True
         except Exception:
+            now = time.monotonic()
             self._gpu_fail_count += 1
             if self._gpu_fail_count >= self._gpu_max_fails:
                 self._gpu_available = False
                 self._gpu_disabled_at = now
-            return self._attach_gpu_processes(
+            return (
                 self._copy_cached_gpu_rows(
                     self._gpu_cache,
-                    detail=include_detail,
+                    detail=detail,
                 ),
-                now=now,
-                include_processes=include_processes,
-                refresh_processes=bool(self._gpu_cache),
+                bool(self._gpu_cache),
             )

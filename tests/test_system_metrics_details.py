@@ -1,4 +1,6 @@
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -263,7 +265,7 @@ def test_detail_request_reads_processes_when_gpu_refresh_fails(
 ):
     mock_psutil.cpu_percent.return_value = 12.0
     mock_psutil.virtual_memory().percent = 34.0
-    mock_monotonic.side_effect = [10.0, 12.0]
+    mock_monotonic.return_value = 10.0
     mock_check_output.side_effect = [
         b"0, NVIDIA RTX 5090, GPU-AAA, 5.0, 1024.0, 24576.0\n",
         OSError("nvidia-smi temporarily unavailable"),
@@ -272,6 +274,7 @@ def test_detail_request_reads_processes_when_gpu_refresh_fails(
     monitor = SystemMonitor(gpu_ttl_sec=1.5)
 
     summary_gpu = monitor.sample(include_processes=False)["gpus"][0]
+    mock_monotonic.return_value = 12.0
     detail_gpu = monitor.sample(include_processes=True)["gpus"][0]
 
     assert summary_gpu["processes"] == []
@@ -306,6 +309,149 @@ def test_gpu_process_query_failure_is_visible_and_retry_recovers(failure, has_pr
         empty = monitor.sample()["gpus"][0]
         assert "processes_error" not in empty
         assert empty["processes"] == []
+
+
+def test_slow_gpu_query_cache_lasts_from_query_completion(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("pyruns.core.system_metrics.time", SimpleNamespace(monotonic=lambda: now[0]))
+    monitor = SystemMonitor(gpu_ttl_sec=0.25)
+
+    def slow_query(*, detail):
+        now[0] += 0.5
+        return "0, GPU, GPU-AAA, 5, 1024, 24576\n", False
+
+    with patch.object(monitor, "_query_gpu_snapshot", side_effect=slow_query) as query:
+        first = monitor._get_gpu_metrics(include_processes=False)
+        assert monitor._get_gpu_metrics(include_processes=False) == first
+        assert query.call_count == 1
+
+        now[0] += 0.3
+        assert monitor._get_gpu_metrics(include_processes=False) == first
+        assert query.call_count == 2
+
+
+def test_slow_gpu_process_query_is_cached_after_completion(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("pyruns.core.system_metrics.time", SimpleNamespace(monotonic=lambda: now[0]))
+    monitor = SystemMonitor(gpu_ttl_sec=1.5)
+
+    def slow_processes():
+        now[0] += 4.0
+        return {"GPU-AAA": [{"pid": 1234, "memory_mb": 2048}]}
+
+    with (
+        patch.object(monitor, "_query_gpu_snapshot", return_value=("0, GPU, GPU-AAA, 5, 1024, 24576\n", False)),
+        patch.object(monitor, "_get_gpu_processes", side_effect=slow_processes) as query,
+    ):
+        first = monitor._get_gpu_metrics(detail=False)
+        assert first[0]["processes"][0]["pid"] == 1234
+        assert monitor._get_gpu_metrics(detail=False) == first
+        assert query.call_count == 1
+
+        now[0] += 1.6
+        assert monitor._get_gpu_metrics(detail=False) == first
+        assert query.call_count == 2
+
+
+def test_gpu_disable_cooldown_starts_when_failed_query_finishes(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("pyruns.core.system_metrics.time", SimpleNamespace(monotonic=lambda: now[0]))
+    monitor = SystemMonitor()
+    monitor._gpu_max_fails = 1
+
+    def slow_failure(*, detail):
+        now[0] += 2.0
+        raise OSError("NVIDIA temporarily unavailable")
+
+    with patch.object(monitor, "_query_gpu_snapshot", side_effect=slow_failure) as query:
+        assert monitor._get_gpu_metrics(include_processes=False) == []
+        assert query.call_count == 1
+
+        now[0] += monitor._gpu_retry_sec - 1.0
+        assert monitor._get_gpu_metrics(include_processes=False) == []
+        assert query.call_count == 1
+
+        now[0] += 2.0
+        assert monitor._get_gpu_metrics(include_processes=False) == []
+        assert query.call_count == 2
+
+
+def test_gpu_summary_does_not_wait_for_slow_process_details():
+    monitor = SystemMonitor(gpu_ttl_sec=60)
+    process_query_started = threading.Event()
+    release_process_query = threading.Event()
+    summary_ready = threading.Event()
+
+    def slow_processes():
+        process_query_started.set()
+        assert release_process_query.wait(2)
+        return {"GPU-AAA": [{"pid": 1234, "memory_mb": 2048}]}
+
+    def request_summary():
+        result = monitor._get_gpu_metrics(include_processes=False)
+        summary_ready.set()
+        return result
+
+    with (
+        patch.object(monitor, "_query_gpu_snapshot", return_value=("0, GPU, GPU-AAA, 5, 1024, 24576\n", False)),
+        patch.object(monitor, "_get_gpu_processes", side_effect=slow_processes),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        details = pool.submit(monitor._get_gpu_metrics, detail=False)
+        try:
+            assert process_query_started.wait(2)
+            summary = pool.submit(request_summary)
+            summary_finished_before_details = summary_ready.wait(0.5)
+        finally:
+            release_process_query.set()
+        assert details.result(timeout=2)[0]["processes"][0]["pid"] == 1234
+        assert summary.result(timeout=2)[0]["processes"] == []
+
+    assert summary_finished_before_details
+
+
+def test_concurrent_gpu_details_share_one_process_query():
+    monitor = SystemMonitor(gpu_ttl_sec=60)
+    process_query_started = threading.Event()
+    second_request_started = threading.Event()
+    duplicate_query = threading.Event()
+    release_process_query = threading.Event()
+    query_count = 0
+    count_lock = threading.Lock()
+
+    def slow_processes():
+        nonlocal query_count
+        with count_lock:
+            query_count += 1
+            if query_count > 1:
+                duplicate_query.set()
+        process_query_started.set()
+        assert release_process_query.wait(2)
+        return {"GPU-AAA": [{"pid": 1234, "memory_mb": 2048}]}
+
+    def second_request():
+        second_request_started.set()
+        return monitor._get_gpu_metrics(detail=False)
+
+    with (
+        patch.object(monitor, "_query_gpu_snapshot", return_value=("0, GPU, GPU-AAA, 5, 1024, 24576\n", False)),
+        patch.object(monitor, "_get_gpu_processes", side_effect=slow_processes),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        first = pool.submit(monitor._get_gpu_metrics, detail=False)
+        try:
+            assert process_query_started.wait(2)
+            second = pool.submit(second_request)
+            assert second_request_started.wait(2)
+            duplicate_before_release = duplicate_query.wait(0.2)
+        finally:
+            release_process_query.set()
+        first_result = first.result(timeout=2)
+        assert second.result(timeout=2) == first_result
+        assert first_result[0]["processes"][0]["pid"] == 1234
+
+    assert duplicate_before_release is False
+    assert query_count == 1
 
 
 def test_unrecognized_gpu_process_response_is_not_a_successful_empty_list():

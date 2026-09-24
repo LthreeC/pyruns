@@ -1024,7 +1024,7 @@ def test_system_monitor_gpu_empty(mock_subprocess):
 @patch("pyruns.core.system_metrics.time.monotonic")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
 def test_system_monitor_reuses_empty_gpu_cache_until_ttl_expires(mock_subprocess, mock_monotonic):
-    mock_monotonic.side_effect = [10.0, 10.5, 12.0]
+    mock_monotonic.return_value = 10.0
     mock_subprocess.side_effect = [
         b"   \n\n\n",
         b"",
@@ -1036,9 +1036,11 @@ def test_system_monitor_reuses_empty_gpu_cache_until_ttl_expires(mock_subprocess
 
     assert monitor._get_gpu_metrics() == []
     assert monitor._gpu_cache_valid is True
+    mock_monotonic.return_value = 10.5
     assert monitor._get_gpu_metrics() == []
     assert mock_subprocess.call_count == 2
 
+    mock_monotonic.return_value = 12.0
     gpus = monitor._get_gpu_metrics()
 
     assert len(gpus) == 1
@@ -1133,7 +1135,7 @@ def test_system_monitor_gpu_csv_parser_handles_quoted_names(mock_subprocess):
 @patch("pyruns.core.system_metrics.time.monotonic")
 @patch("pyruns.core.system_metrics.subprocess.check_output")
 def test_system_monitor_retries_after_gpu_disable_cooldown(mock_subprocess, mock_monotonic):
-    mock_monotonic.side_effect = [0.0, 1.0, 2.0, 20.0, 40.0]
+    mock_monotonic.return_value = 0.0
     mock_subprocess.side_effect = [
         Exception("nvidia-smi failed"),
         Exception("nvidia-smi failed"),
@@ -1145,14 +1147,18 @@ def test_system_monitor_retries_after_gpu_disable_cooldown(mock_subprocess, mock
     monitor = SystemMonitor()
 
     assert monitor._get_gpu_metrics() == []
+    mock_monotonic.return_value = 1.0
     assert monitor._get_gpu_metrics() == []
+    mock_monotonic.return_value = 2.0
     assert monitor._get_gpu_metrics() == []
     assert monitor._gpu_available is False
     assert mock_subprocess.call_count == 3
 
+    mock_monotonic.return_value = 20.0
     assert monitor._get_gpu_metrics() == []
     assert mock_subprocess.call_count == 3
 
+    mock_monotonic.return_value = 40.0
     gpus = monitor._get_gpu_metrics()
     assert len(gpus) == 1
     assert gpus[0]["uuid"] == "GPU-AAA"
