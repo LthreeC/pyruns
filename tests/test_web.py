@@ -2665,7 +2665,7 @@ def test_log_search_keeps_contextual_unicode_case_across_chunks(tmp_path, suffix
     ("x" * 8191 + "ΑΣ " + "x" * 16000, "ς"),
     ("x" * 8191 + "A" + "\u0301" * 8191 + "Σ tail\n", "ς tail"),
     ("x" * 8190 + "A\u0888" + "\u0301" * 8191 + "Σ tail\n", "ς tail"),
-])
+], ids=["word-overlap", "combining-prefix", "unicode-version-prefix"])
 def test_log_search_preserves_case_context_before_retained_overlap(tmp_path, payload, query):
     from pyruns.utils.log_search import LogSearch
     from pyruns.utils.search_query import SearchQuery
@@ -2692,7 +2692,7 @@ def test_log_search_preserves_case_context_before_retained_overlap(tmp_path, pay
     ("\x1b]title", "\x07B"),
     ("\x1b]title", "\x1b\\B"),
     ("", "\x1b[0 0mB"),
-])
+], ids=["combining-lookahead", "color", "split-escape", "split-csi", "osc-bell", "osc-st", "invalid-csi"])
 def test_log_search_case_lookahead_preserves_ansi_and_reader_position(tmp_path, query, pending, suffix):
     from pyruns.utils.log_search import LogSearch, _ANSI, _CHUNK_CHARS
     from pyruns.utils.search_query import SearchQuery
