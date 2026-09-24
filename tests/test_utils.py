@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import signal
+import threading
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ from pyruns.utils.log_io import (
     append_log, decode_log_bytes, normalize_log_newlines,
     read_log, read_log_chunk, read_last_bytes, read_last_lines, safe_read_log,
 )
+from pyruns.utils.log_search import LogSearch
 from pyruns.utils.parse_utils import (
     detect_config_source_fast, extract_argparse_params,
     argparse_params_to_dict, resolve_config_path, generate_config_file, split_cli_args,
@@ -2657,6 +2659,17 @@ class TestFilterTasksMultiline:
 
         assert result["match_count"] == 20_000
         assert len(result["matches"]) == 4
+
+    def test_log_search_snippet_excludes_crlf_line_ending(self, tmp_path):
+        log_path = tmp_path / "run.log"
+        log_path.write_bytes(b"first-query\r\nsecond\r\n")
+        result = LogSearch()._search_file(
+            str(log_path), "run.log", log_path.stat().st_size,
+            ["first-query"], threading.Event(), match_case=False,
+        )
+        match = result["matches"][0]
+        assert match["snippet"] == "first-query"
+        assert match["snippet"][match["match_start"]:match["match_end"]] == "first-query"
 
 
 

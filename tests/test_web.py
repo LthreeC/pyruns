@@ -2711,7 +2711,7 @@ def test_concurrent_log_searches_keep_per_query_contexts_separate(tmp_path, monk
                 assert page.total == 1
                 item = page.items[0]
                 assert item["search_match_count"] == 1
-                assert item["search_matches"][0]["snippet"] == query
+                assert item["search_matches"][0]["snippet"].rstrip("\r") == query
         assert "_log_search_result" not in runtime.task_manager._get_task_search_views()["source"]
     finally:
         runtime.shutdown()

@@ -333,8 +333,9 @@ class LogSearch:
                                 line_end = display.find("\n", source_end)
                                 if line_end < 0:
                                     line_end = len(display)
+                                line_display = display[line_start:line_end].rstrip("\r")
                                 snippet, match_start, match_end = _build_task_search_snippet(
-                                    display[line_start:line_end], None, source_start - line_start,
+                                    line_display, None, source_start - line_start,
                                     source_end - source_start + 1, 180,
                                 )
                                 delta = (len(raw[:raw_start].encode(encoding, errors="surrogateescape"))
