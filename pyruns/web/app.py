@@ -1122,16 +1122,31 @@ def create_app(
         loop = asyncio.get_running_loop()
         changes: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
         disconnected = asyncio.Event()
+        dispatch_lock = threading.Lock()
+        change_scheduled = False
 
-        def on_change() -> None:
-            def enqueue() -> None:
+        def enqueue_change() -> None:
+            nonlocal change_scheduled
+            try:
                 if not disconnected.is_set() and changes.empty():
                     changes.put_nowait(None)
+            finally:
+                with dispatch_lock:
+                    change_scheduled = False
 
+        def on_change() -> None:
+            nonlocal change_scheduled
+            # Coalesce before call_soon_threadsafe: a bounded asyncio queue
+            # alone cannot bound callbacks waiting for a busy event loop.
+            with dispatch_lock:
+                if change_scheduled:
+                    return
+                change_scheduled = True
             try:
-                loop.call_soon_threadsafe(enqueue)
+                loop.call_soon_threadsafe(enqueue_change)
             except RuntimeError:
-                pass
+                with dispatch_lock:
+                    change_scheduled = False
 
         async def send_events() -> None:
             revision = 0

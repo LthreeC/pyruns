@@ -895,6 +895,56 @@ def test_task_event_websocket_pushes_invalidations_and_releases_watch(tmp_path):
         runtime.shutdown()
 
 
+def test_task_event_websocket_coalesces_changes_before_loop_dispatch(tmp_path):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    workspace = _make_workspace(tmp_path, "event-burst")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    original_send = WebSocket.send_json
+    loops = []
+    blocked = threading.Event()
+    release = threading.Event()
+
+    async def send_json(self, data, mode="text"):
+        if data.get("type") == "ready":
+            loops.append(asyncio.get_running_loop())
+        await original_send(self, data, mode=mode)
+
+    def block_loop():
+        blocked.set()
+        assert release.wait(3)
+
+    try:
+        with patch.object(WebSocket, "send_json", send_json):
+            with client.websocket_connect("/api/tasks/events") as websocket:
+                assert websocket.receive_json() == {"type": "ready", "revision": 0}
+                loop = loops[0]
+                with patch.object(loop, "call_soon_threadsafe", side_effect=RuntimeError("loop unavailable")):
+                    runtime.task_manager.trigger_update()
+                loop.call_soon_threadsafe(block_loop)
+                try:
+                    assert blocked.wait(3)
+                    with patch.object(loop, "call_soon_threadsafe", wraps=loop.call_soon_threadsafe) as dispatch:
+                        def emit_burst(_):
+                            for _ in range(2500):
+                                runtime.task_manager.trigger_update()
+
+                        with ThreadPoolExecutor(max_workers=4) as pool:
+                            list(pool.map(emit_burst, range(4)))
+                        assert dispatch.call_count == 1
+                finally:
+                    release.set()
+                assert websocket.receive_json() == {"type": "changed", "revision": 1}
+                runtime.task_manager.trigger_update()
+                assert websocket.receive_json() == {"type": "changed", "revision": 2}
+        assert runtime.task_manager.has_reactive_watchers() is False
+    finally:
+        release.set()
+        runtime.shutdown()
+
+
 def test_task_event_websocket_ignores_close_after_client_disconnect(tmp_path):
     workspace = _make_workspace(tmp_path, "events-disconnect")
     runtime = _build_runtime(workspace)
