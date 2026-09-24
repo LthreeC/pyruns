@@ -78,19 +78,27 @@ def _natural_name_key(value: object) -> tuple:
     )
 
 
+def _finite_task_order(value: object) -> float | None:
+    """Treat malformed saved weights as unset, preserving a total ordering."""
+    if value is None:
+        return None
+    try:
+        order = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return order if math.isfinite(order) else None
+
+
 def task_manager_sort_key(task: Dict[str, object]) -> tuple:
     """Sort one task by the Manager page's logical order within its pin group."""
     active_rank, time_rank, inactive_tie = task_sort_key(task)
 
-    order = task.get("task_order")
+    order = _finite_task_order(task.get("task_order"))
     order_group = 0
     order_rank = -time_rank
     if order is not None:
-        try:
-            order_group = 1
-            order_rank = float(order)
-        except (TypeError, ValueError):
-            pass
+        order_group = 1
+        order_rank = order
 
     return (
         -active_rank,
@@ -103,13 +111,9 @@ def task_manager_sort_key(task: Dict[str, object]) -> tuple:
 
 
 def _manual_sort_key(task: Dict[str, object]) -> tuple:
-    order = task.get("task_order")
-    try:
-        normalized_order = float(order) if order is not None else math.nan
-    except (TypeError, ValueError):
-        normalized_order = math.nan
-    if math.isfinite(normalized_order):
-        return (0, normalized_order, _natural_name_key(task.get("name", "")))
+    order = _finite_task_order(task.get("task_order"))
+    if order is not None:
+        return (0, order, _natural_name_key(task.get("name", "")))
     return (1, *task_manager_sort_key(task))
 
 

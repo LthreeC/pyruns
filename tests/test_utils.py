@@ -1340,6 +1340,35 @@ def test_sort_tasks_for_manager_supports_explicit_card_orders():
         sort_tasks_for_manager(tasks, "unsupported")
 
 
+@pytest.mark.parametrize("sort_mode", ["priority", "manual"])
+@pytest.mark.parametrize("invalid_order", ["nan", "inf", "-Infinity", "invalid", 10 ** 400, [], {}],
+                         ids=["nan", "inf", "negative_inf", "text", "overflow", "list", "dict"])
+def test_task_sort_treats_malformed_saved_order_as_unset(sort_mode, invalid_order):
+    tasks = [
+        {"name": "task3", "status": "completed", "task_order": 3},
+        {"name": "fresh", "status": "completed", "created_at": "2026-01-02", "task_order": invalid_order},
+        {"name": "older", "status": "completed", "created_at": "2026-01-01"},
+        {"name": "task2", "status": "completed", "task_order": 2},
+        {"name": "task1", "status": "completed", "task_order": 1},
+    ]
+    expected = ["fresh", "older", "task1", "task2", "task3"] if sort_mode == "priority" else [
+        "task1", "task2", "task3", "fresh", "older",
+    ]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, sort_mode)] == expected
+    assert tasks[1]["task_order"] is invalid_order
+
+
+def test_priority_sort_keeps_relative_order_when_an_invalid_weight_is_filtered_out():
+    tasks = [
+        {"name": "keep-3", "status": "completed", "task_order": 3},
+        {"name": "drop", "status": "completed", "task_order": "nan"},
+        {"name": "keep-2", "status": "completed", "task_order": 2},
+        {"name": "keep-1", "status": "completed", "task_order": 1},
+    ]
+    page = [task["name"] for task in sort_tasks_for_manager(tasks) if task["name"] != "drop"]
+    assert page == ["keep-1", "keep-2", "keep-3"]
+
+
 @pytest.fixture(autouse=True)
 def clean_cache():
     # Before each test
