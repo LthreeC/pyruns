@@ -1252,7 +1252,7 @@ def create_app(
         def on_dispatch_overflow(metadata: dict[str, Any]) -> None:
             nonlocal replaying_backlog, pending_initial_overflow
             if not disconnected.is_set():
-                if not stream_initialized:
+                if not stream_initialized and requested_offset is None:
                     if len(pending_initial_chunks) < LOG_STREAM_QUEUE_LIMIT:
                         # Keep the byte boundary even when the very first
                         # live chunk exceeds the dispatch size limit.
@@ -1264,13 +1264,17 @@ def create_app(
         def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
             nonlocal last_emitter_chunk_at, stream_log_name, stream_offset, stream_identity
             nonlocal replaying_backlog, pending_initial_overflow
-            if disconnected.is_set() or replaying_backlog:
+            if disconnected.is_set():
                 return
             if not stream_initialized:
+                if requested_offset is not None:
+                    return
                 if len(pending_initial_chunks) < LOG_STREAM_QUEUE_LIMIT:
                     pending_initial_chunks.append((chunk_text, metadata))
                 else:
                     pending_initial_overflow = True
+                return
+            if replaying_backlog:
                 return
             chunk_log_name = str((metadata or {}).get("log_file_name") or stream_log_name or "")
             if stream_log_name and stream_log_name != QUEUE_LOG_FILENAME and chunk_log_name != stream_log_name:

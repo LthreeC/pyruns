@@ -5292,7 +5292,8 @@ def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
 
 @pytest.mark.parametrize("during_initial_read", [False, True], ids=["ready", "initial-read"])
 @pytest.mark.parametrize("oversized", [False, True], ids=["burst", "oversized"])
-def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read, oversized):
+@pytest.mark.parametrize("resume", [False, True], ids=["live", "resume"])
+def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read, oversized, resume):
     import asyncio
 
     from pyruns.utils.log_io import log_file_identity
@@ -5318,7 +5319,7 @@ def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read
     expected_bytes = len(expected.encode("utf-8"))
 
     def get_logs(*args, **kwargs):
-        if during_initial_read and kwargs.get("tail_lines") == 0:
+        if during_initial_read and not initial_read.is_set():
             initial_read.set()
             assert release_initial.wait(3)
         return original_get_logs(*args, **kwargs)
@@ -5346,7 +5347,8 @@ def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read
         patch("pyruns.web.app.LOG_STREAM_PENDING_CHARS", 8),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
     ):
-        with client.websocket_connect("/api/tasks/alpha/logs/stream?log_file_name=run1.log") as websocket:
+        url = "/api/tasks/alpha/logs/stream?log_file_name=run1.log" + ("&offset=0" if resume else "")
+        with client.websocket_connect(url) as websocket:
             try:
                 assert (initial_read if during_initial_read else idle).wait(3)
                 loop = subscribe.call_args.kwargs["loop"]
