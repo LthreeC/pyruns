@@ -6421,6 +6421,48 @@ def test_task_manager_add_tasks_upserts_existing_name(tmp_path):
     assert tasks[0]["script"] == "train.py"
 
 
+def test_task_manager_batch_merge_preserves_order_worker_references_and_fields(tmp_path):
+    manager = TaskManager(str(tmp_path), lazy_scan=None, owns_task_lifecycle=False)
+    manager.add_tasks([
+        {"name": "alpha", "status": "running", "runner_id": "owner"},
+        {"name": "beta", "status": "pending", "script": "train.py"},
+        {"name": "untouched", "status": "completed"},
+    ])
+    original_alpha = manager._tasks_by_name["alpha"]
+    original_beta = manager._tasks_by_name["beta"]
+    revisions = {name: task["_registry_revision"] for name, task in manager._tasks_by_name.items()}
+    notifications = []
+    manager.on_change(lambda: notifications.append([task["name"] for task in manager.tasks]))
+
+    manager.add_tasks([
+        {"name": "beta", "notes": "first occurrence wins"},
+        {"name": "new", "notes": "new first"},
+        {"name": "alpha", "progress": 0.5},
+        {"name": "beta", "notes": "later occurrence", "env": {"SEED": "7"}},
+        {"name": "new", "script": "new.py"},
+    ])
+
+    assert notifications == [["beta", "new", "alpha", "untouched"]]
+    assert manager._tasks_by_name["alpha"] is original_alpha
+    assert manager._tasks_by_name["beta"] is original_beta
+    assert original_alpha["status"] == "running"
+    assert original_alpha["runner_id"] == "owner"
+    assert original_alpha["progress"] == 0.5
+    assert original_alpha["_registry_revision"] == revisions["alpha"] + 1
+    assert original_beta["script"] == "train.py"
+    assert original_beta["env"] == {"SEED": "7"}
+    assert original_beta["notes"] == "first occurrence wins"
+    assert original_beta["_registry_revision"] == revisions["beta"] + 2
+    assert manager._tasks_by_name["new"]["notes"] == "new first"
+    assert manager._tasks_by_name["new"]["script"] == "new.py"
+
+    manager.add_task({"name": "alpha", "progress": 0.75})
+    assert [task["name"] for task in manager.tasks] == ["alpha", "beta", "new", "untouched"]
+    assert manager._tasks_by_name["alpha"] is original_alpha
+    assert original_alpha["progress"] == 0.75
+    manager.shutdown()
+
+
 def test_task_manager_refresh_keeps_discovered_tasks_in_disk_order(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

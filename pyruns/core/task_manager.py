@@ -1366,11 +1366,11 @@ class TaskManager:
         ):
             loaded["_queued_independent"] = True
 
-    def _upsert_task_locked(self, task_obj: Dict[str, Any]) -> None:
+    def _upsert_task_locked(self, task_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge one registry entry without rebuilding the ordered task list."""
         task_name = str((task_obj or {}).get("name", "") or "")
         if not task_name:
-            self.tasks.insert(0, task_obj)
-            return
+            return task_obj
 
         existing = self._tasks_by_name.get(task_name)
         revision = existing.get("_registry_revision", 0) if existing else 0
@@ -1381,25 +1381,30 @@ class TaskManager:
             existing.update(merged)
             task_obj = existing
         task_obj["_registry_revision"] = revision + 1
-
-        self.tasks = [
-            task
-            for task in self.tasks
-            if str((task or {}).get("name", "") or "") != task_name
-        ]
-        self.tasks.insert(0, task_obj)
+        self._tasks_by_name[task_name] = task_obj
+        return task_obj
 
     def add_task(self, task_obj: Dict[str, Any]) -> None:
-        with self._lock:
-            self._upsert_task_locked(task_obj)
-            self._rebuild_indexes_locked()
-            self._recompute_processing_flag_locked()
-        self.trigger_update()
+        self.add_tasks([task_obj])
 
     def add_tasks(self, task_objs: List[Dict[str, Any]]) -> None:
         with self._lock:
-            for task in reversed(task_objs):
-                self._upsert_task_locked(task)
+            # Earlier entries keep their precedence, while repeated names
+            # merge into the same object referenced by an active worker.
+            incoming = [self._upsert_task_locked(task) for task in reversed(task_objs)]
+            names: set[str] = set()
+            ordered = []
+            for task in reversed(incoming):
+                name = str((task or {}).get("name", "") or "")
+                if name:
+                    if name in names:
+                        continue
+                    names.add(name)
+                ordered.append(task)
+            self.tasks = ordered + [
+                task for task in self.tasks
+                if str((task or {}).get("name", "") or "") not in names
+            ]
             self._rebuild_indexes_locked()
             self._recompute_processing_flag_locked()
         self.trigger_update()
