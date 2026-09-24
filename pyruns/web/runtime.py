@@ -1218,19 +1218,30 @@ class PyrunsRuntime:
             for task in tasks:
                 task_status = str(task.get("status") or "pending").lower()
                 counts[task_status] = counts.get(task_status, 0) + 1
-            ordered = sort_tasks_for_manager(filter_tasks(tasks, "", status), sort_mode)
             needles = matcher.needles
+            search_logs = search_field == "log" or (search_field == "all" and include_logs)
+            candidates = filter_tasks(tasks, "", status)
+            if not search_logs:
+                # Only matching metadata needs sort keys and page selection.
+                matched = []
+                for task in candidates:
+                    if cancelled.is_set():
+                        raise CancelledError()
+                    found = task_search_found(sources.get(task["name"], task), matcher, search_field)
+                    if all(needle in found for needle in needles):
+                        matched.append(task)
+                candidates = matched
+            ordered = sort_tasks_for_manager(candidates, sort_mode)
             total = 0
             selected = []
             errors = []
-            search_logs = search_field == "log" or (search_field == "all" and include_logs)
             miss_snapshot = self._log_search.snapshot_misses(matcher) if search_logs else None
             for task in ordered:
                 if cancelled.is_set():
                     raise CancelledError()
                 found = (
                     task_search_found(sources.get(task["name"], task), matcher, search_field)
-                    if search_field != "log" else set()
+                    if search_logs and search_field != "log" else set()
                 )
                 logs = (
                     self._log_search.search(task["dir"], query, cancelled, matcher, miss_snapshot=miss_snapshot)
@@ -1238,7 +1249,7 @@ class PyrunsRuntime:
                     else {"matches": [], "match_count": 0, "found": set(), "errors": []}
                 )
                 errors.extend(f"{task['name']}: {message}" for message in logs["errors"] if len(errors) < 8)
-                if not all(needle in found or needle in logs["found"] for needle in needles):
+                if search_logs and not all(needle in found or needle in logs["found"] for needle in needles):
                     continue
                 if offset <= total < offset + limit:
                     task["_log_search_result"] = logs

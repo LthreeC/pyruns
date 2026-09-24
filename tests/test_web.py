@@ -2527,6 +2527,129 @@ def test_task_search_only_copies_payloads_for_returned_page(tmp_path, summary):
 
 
 @pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("field", ["notes", "all"])
+@pytest.mark.parametrize("sort_mode,expected", [
+    ("priority", ["keep-10", "keep-01", "keep-1", "keep-3", "keep-2"]),
+    ("manual", ["keep-10", "keep-01", "keep-1", "keep-3", "keep-2"]),
+    ("activity_desc", ["keep-10", "keep-2", "keep-01", "keep-1", "keep-3"]),
+    ("activity_asc", ["keep-10", "keep-3", "keep-01", "keep-1", "keep-2"]),
+    ("name_asc", ["keep-10", "keep-01", "keep-1", "keep-2", "keep-3"]),
+    ("name_desc", ["keep-10", "keep-3", "keep-2", "keep-01", "keep-1"]),
+])
+def test_metadata_search_preserves_sort_pagination_counts_and_payloads(tmp_path, summary, field, sort_mode, expected):
+    rows = [
+        ("keep-2", "completed", 2, 4, False),
+        ("drop-1", "completed", "nan", 5, True),
+        ("keep-01", "running", 0, 3, False),
+        ("keep-1", "running", 0, 3, False),
+        ("keep-10", "failed", 99, 1, True),
+        ("keep-3", "pending", 1, 2, False),
+        ("drop-2", "cancelled", 3, 6, False),
+    ]
+    workspace = _make_workspace(tmp_path, "main")
+    for name, *_ in rows:
+        _add_task(workspace, name)
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    try:
+        runtime.ensure_tasks_loaded(full_refresh=False)
+        manager = runtime.task_manager
+        with manager._lock:
+            for name, status, order, activity, pinned in rows:
+                timestamp = f"2026-01-01_00-00-0{activity}"
+                manager._tasks_by_name[name].update({
+                    "status": status, "task_order": order, "pinned": pinned,
+                    "created_at": timestamp, "start_times": [timestamp], "finish_times": [],
+                    "notes": "Needle7\nsecond" if name.startswith("keep") else "Needle7",
+                    "env": {"SAVED": "original"}, "search_text": "", "records": [{"loss": 0.1}],
+                })
+            manager.tasks = [manager._tasks_by_name[name] for name, *_ in rows]
+            manager._rebuild_indexes_locked()
+        options = {"match_case": True, "use_regex": True} if field == "all" else {}
+        query = "Needle[0-9]\nsecond" if field == "all" else "needle\nsecond"
+        args = dict(query=query, search_field=field, include_logs=field != "all", sort_mode=sort_mode,
+                    summary=summary, refresh=False, cancelled=threading.Event(), **options)
+        counts = {"pending": 1, "queued": 0, "running": 2, "completed": 2, "failed": 1, "cancelled": 1}
+        with patch.object(runtime._log_search, "search", side_effect=AssertionError("metadata search read logs")):
+            for offset in (0, 1, 4, 9):
+                page = runtime.search_tasks(offset=offset, limit=2, **args)
+                assert [task["name"] for task in page.items] == expected[offset:offset + 2]
+                assert page.total == 5 and page.has_more == (offset + len(page.items) < 5)
+                assert page.status_counts == counts and page.search_errors == []
+                for item in page.items:
+                    assert item["search_match_count"] == 2
+                    assert {match["field"] for match in item["search_matches"]} == {"notes"}
+                    assert item["notes"] == "Needle7\nsecond"
+                    assert item["records"] == ([] if summary else [{"loss": 0.1}])
+                    item["env"]["SAVED"] = "changed"
+                    assert manager.get_task(item["name"])["env"] == {"SAVED": "original"}
+            running = runtime.search_tasks(status="running", **args)
+            assert [task["name"] for task in running.items] == ["keep-01", "keep-1"]
+            assert running.total == 2 and running.status_counts == counts
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("kind", ["config", "shell"])
+def test_metadata_search_all_keeps_uncached_payload_sources(tmp_path, kind):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source")
+    task_dir = workspace / TASKS_DIR / "source"
+    if kind == "shell":
+        (task_dir / SHELL_CONFIG_FILENAME).write_text("echo needle\n", encoding="utf-8")
+        update_task_info(str(task_dir), lambda info: info.update({
+            "task_kind": TASK_KIND_SHELL, "config_file": SHELL_CONFIG_FILENAME,
+        }))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    try:
+        runtime.ensure_tasks_loaded(full_refresh=False)
+        with runtime.task_manager._lock:
+            runtime.task_manager._tasks_by_name["source"]["search_text"] = ""
+        page = runtime.search_tasks(query="echo needle" if kind == "shell" else "model:tiny",
+                                    include_logs=False, summary=True, refresh=False, cancelled=threading.Event())
+        assert page.total == 1 and page.items[0]["name"] == "source"
+        assert page.items[0]["search_match_count"] == 1
+        assert {match["field"] for match in page.items[0]["search_matches"]} == {
+            "script" if kind == "shell" else "config",
+        }
+    finally:
+        runtime.shutdown()
+
+
+def test_metadata_search_rejects_results_after_workspace_switch(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from pyruns.web import runtime as runtime_module
+
+    first = _make_workspace(tmp_path, "first")
+    second = _make_workspace(tmp_path, "second")
+    _add_task(first, "needle-first")
+    _add_task(second, "needle-second")
+    runtime = _build_runtime(first, owns_task_lifecycle=False)
+    entered = threading.Event()
+    release = threading.Event()
+    original = runtime_module.task_search_found
+
+    def blocked_match(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "task_search_found", blocked_match)
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            pending = pool.submit(runtime.search_tasks, query="needle", search_field="name", cancelled=threading.Event())
+            try:
+                assert entered.wait(5)
+                pool.submit(runtime.change_run_root, str(second)).result(timeout=5)
+            finally:
+                release.set()
+            with pytest.raises(runtime_module.WorkspaceChangedError):
+                pending.result(timeout=5)
+    finally:
+        release.set()
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("summary", [False, True])
 def test_task_list_only_copies_payloads_for_returned_page(tmp_path, summary):
     class UncopiedHistory(list):
         def __deepcopy__(self, memo):
