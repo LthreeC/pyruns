@@ -127,7 +127,7 @@ Pyruns 不修改 Bash、Zsh、Fish 或 PowerShell 的行编辑器。所有平台
 pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -ForegroundColor $colors[$_-1] }'
 ```
 
-Shell task 使用跨平台伪终端保留颜色：Linux/macOS 使用系统 PTY，Windows 强制使用原生 ConPTY 且不创建可见控制台窗口。日志保留 SGR 颜色，但过滤清屏、光标定位和窗口标题等控制序列；伪终端不可用时回退到普通 stdout/stderr 管道。
+Shell task 使用跨平台伪终端保留颜色：Linux/macOS 使用系统 PTY，Windows 在已有控制台时使用原生 ConPTY。没有已附着的 Windows 控制台时，会回退到隐藏的 stdout/stderr 管道，避免弹出控制台窗口，此时颜色可能丢失。伪终端捕获的日志保留 SGR 颜色，但过滤清屏、光标定位和窗口标题等控制序列。
 
 少量环境变量只需写一次 `-e`，`--` 明确标记目标命令的开始：
 

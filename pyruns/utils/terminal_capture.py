@@ -293,6 +293,19 @@ def _terminal_env(env: Mapping[str, str]) -> dict[str, str]:
     return result
 
 
+def _windows_console_available() -> bool:
+    """Return whether this process already has a Windows console attached."""
+
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())
+    except (AttributeError, OSError):
+        return False
+
+
 def _spawn_windows_conpty(
     command: Sequence[str],
     *,
@@ -361,5 +374,11 @@ def spawn_terminal_process(
     """Spawn one color-preserving terminal child on Windows, Linux, or macOS."""
 
     if os.name == "nt":
+        # pywinpty allocates a temporary console when its parent has none.
+        # That allocation can flash a visible black window in GUI, service,
+        # and redirected test runners.  Let the caller use its hidden-pipe
+        # fallback instead of asking ConPTY to create a console for us.
+        if not _windows_console_available():
+            raise RuntimeError("Windows ConPTY requires an attached console")
         return _spawn_windows_conpty(command, cwd=cwd, env=env)
     return _spawn_posix_pty(command, cwd=cwd, env=env)

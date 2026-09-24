@@ -48,21 +48,65 @@ def _isolated_tmp_root(path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _prevent_windows_test_console_windows(monkeypatch):
-    """Keep every subprocess spawned by tests invisible on Windows."""
+    """Keep every process spawned by tests invisible on Windows.
+
+    ``subprocess.Popen`` is not the only process creation path on Windows:
+    ``multiprocessing`` calls ``_winapi.CreateProcess`` directly.  Cover both
+    entry points so a test cannot accidentally allocate a new console window.
+    """
 
     if os.name != "nt":
         yield
         return
 
+    import _winapi
+
+    def hidden_creation_flags(value: int | None) -> int:
+        creationflags = int(value or 0)
+        creationflags &= ~subprocess.CREATE_NEW_CONSOLE
+        return creationflags | subprocess.CREATE_NO_WINDOW
+
+    def hidden_startupinfo(startupinfo):
+        if startupinfo is None:
+            startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        return startupinfo
+
     original_init = subprocess.Popen.__init__
 
     def hidden_init(self, *args, **kwargs):
-        creationflags = int(kwargs.get("creationflags", 0))
-        creationflags &= ~subprocess.CREATE_NEW_CONSOLE
-        kwargs["creationflags"] = creationflags | subprocess.CREATE_NO_WINDOW
+        kwargs["creationflags"] = hidden_creation_flags(kwargs.get("creationflags"))
+        kwargs["startupinfo"] = hidden_startupinfo(kwargs.get("startupinfo"))
         original_init(self, *args, **kwargs)
 
+    original_create_process = _winapi.CreateProcess
+
+    def hidden_create_process(
+        application_name,
+        command_line,
+        process_attributes,
+        thread_attributes,
+        inherit_handles,
+        creation_flags,
+        environment,
+        current_directory,
+        startup_info,
+    ):
+        return original_create_process(
+            application_name,
+            command_line,
+            process_attributes,
+            thread_attributes,
+            inherit_handles,
+            hidden_creation_flags(creation_flags),
+            environment,
+            current_directory,
+            hidden_startupinfo(startup_info),
+        )
+
     monkeypatch.setattr(subprocess.Popen, "__init__", hidden_init)
+    monkeypatch.setattr(_winapi, "CreateProcess", hidden_create_process)
     yield
 
 

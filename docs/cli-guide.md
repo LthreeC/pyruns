@@ -209,7 +209,7 @@ Bash、Zsh 或 Fish 示例：
 pyr exec -c 'printf "%s\n" "$HOME" | sed "s/home/HOME/"'
 ```
 
-这是调用端 shell 的固有限制：它会在启动 `pyr` 前解析自己的控制符，因此外部 CLI 无法在启动后找回未引用的剩余文本。颜色捕获则使用统一的伪终端语义：Linux/macOS 通过系统 PTY，Windows 强制通过原生 ConPTY 且不创建可见控制台窗口。SGR 颜色进入 `runN.log`，清屏、光标定位和窗口标题等界面控制序列会被过滤；伪终端不可用时回退到普通管道。
+这是调用端 shell 的固有限制：它会在启动 `pyr` 前解析自己的控制符，因此外部 CLI 无法在启动后找回未引用的剩余文本。颜色捕获使用伪终端：Linux/macOS 通过系统 PTY，Windows 在已有控制台时通过原生 ConPTY。没有已附着的 Windows 控制台时，会回退到隐藏管道，避免弹出控制台窗口，此时颜色可能丢失。伪终端捕获的 SGR 颜色进入 `runN.log`，清屏、光标定位和窗口标题等界面控制序列会被过滤。
 
 如果操作系统无法直接启动精确 argv 的首个参数，Pyruns 会自动改用工作区 shell 执行已安全
 引用的任务 payload。这样 PowerShell 的 `ls` 等 alias 或 shell builtin 可以直接使用；命令失败时

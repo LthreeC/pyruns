@@ -184,7 +184,7 @@ pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log
 pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -ForegroundColor $colors[$_-1] }'
 ```
 
-Shell task 使用跨平台伪终端捕获颜色：Linux/macOS 使用系统 PTY，Windows 强制使用原生 ConPTY，且不会创建可见控制台窗口。SGR 颜色序列会写入日志并在前台还原；清屏、光标定位和窗口标题等界面控制序列会被过滤。伪终端不可用时才回退到普通 stdout/stderr 管道。
+Shell task 使用跨平台伪终端捕获颜色：Linux/macOS 使用系统 PTY，Windows 在已有控制台时使用原生 ConPTY。没有已附着的 Windows 控制台时，会回退到隐藏的 stdout/stderr 管道，避免弹出控制台窗口，此时颜色可能丢失。伪终端捕获的 SGR 颜色序列会写入日志并在前台还原；清屏、光标定位和窗口标题等界面控制序列会被过滤。
 
 `exec` 始终使用 `<当前目录>/_pyruns_/_shell_`，不会复用父目录中的 shell workspace。启动横幅和 Source 状态会先写入日志，随后才转存命令输出。Source 采集与子进程并行执行；期间 stdout/stderr 会持续读入可落盘缓冲，不会通过休眠或阻塞子进程来换取日志顺序。
 

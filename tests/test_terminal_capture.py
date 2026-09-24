@@ -102,3 +102,17 @@ def test_windows_stdout_skips_redraws_without_reporting_premature_eof(eof):
     assert stdout.read1(8192) == b"\x1b[0m"
     process.read.side_effect = EOFError
     assert stdout.read1(8192) == b""
+
+
+def test_windows_without_an_attached_console_skips_conpty(monkeypatch):
+    from pyruns.utils import terminal_capture
+
+    monkeypatch.setattr(terminal_capture.os, "name", "nt", raising=False)
+    monkeypatch.setattr(terminal_capture, "_windows_console_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="attached console"):
+        terminal_capture.spawn_terminal_process(
+            ["powershell", "-NoProfile", "-Command", "Write-Output ok"],
+            cwd=".",
+            env={},
+        )
