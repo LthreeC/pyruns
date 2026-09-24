@@ -697,7 +697,7 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "limit: nextLimit" in store
     assert "compact: true" in store
     assert "limit: 0" not in store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
-    assert "refresh: !sidebarQuery.trim()" in monitor
+    assert "refresh: forceRefresh || !sidebarQuery.trim()" in monitor
     assert "fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
     assert "useTaskEvents({" in monitor

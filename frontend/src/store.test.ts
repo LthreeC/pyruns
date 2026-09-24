@@ -192,6 +192,44 @@ describe('workspace-scoped stores', () => {
     expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'latest' }])
   })
 
+  it.each(['manager', 'monitor'] as const)('does not let %s polling cancel a foreground search', async view => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const foreground = deferred<any>()
+    vi.mocked(api.getTasks).mockReturnValueOnce(foreground.promise)
+
+    if (view === 'manager') useTaskStore.getState().setQuery('needle')
+    const pendingForeground = view === 'monitor'
+      ? useTaskStore.getState().fetchMonitorTasks({ query: 'needle', forceRefresh: true })
+      : useTaskStore.getState().fetchTasks({ forceRefresh: true })
+    expect(view === 'monitor' ? useTaskStore.getState().monitorLoading : useTaskStore.getState().loading).toBe(true)
+    const signal = vi.mocked(api.getTasks).mock.calls[0][1]!
+    const pendingBackground = view === 'monitor'
+      ? useTaskStore.getState().fetchMonitorTasks({ query: 'needle', background: true })
+      : useTaskStore.getState().fetchTasks({ background: true })
+    await pendingBackground
+    expect(signal.aborted).toBe(false)
+    expect(api.getTasks).toHaveBeenCalledTimes(1)
+
+    foreground.resolve({ items: [{ name: 'fresh' }], total: 1, has_more: false })
+    await pendingForeground
+    expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'fresh' }])
+    expect(view === 'monitor' ? useTaskStore.getState().monitorLoading : useTaskStore.getState().loading).toBe(false)
+  })
+
+  it('keeps Manager controls available while a background refresh is pending', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const pendingResponse = deferred<any>()
+    vi.mocked(api.getTasks).mockReturnValueOnce(pendingResponse.promise)
+
+    const pending = useTaskStore.getState().fetchTasks({ background: true })
+    expect(useTaskStore.getState().loading).toBe(false)
+
+    pendingResponse.resolve({ items: [{ name: 'fresh' }], total: 1, has_more: false })
+    await pending
+    expect(useTaskStore.getState().tasks).toEqual([{ name: 'fresh' }])
+    expect(useTaskStore.getState().loading).toBe(false)
+  })
+
   it.each([
     ['manager', 'field'], ['monitor', 'field'], ['manager', 'options'], ['monitor', 'options'],
   ])('changing %s search %s aborts stale results and resets pagination', async (view, change) => {

@@ -165,6 +165,7 @@ export const getTasks = (params: {
   offset?: number
   limit?: number
   refresh?: boolean
+  forceRefresh?: boolean
   summary?: boolean
   compact?: boolean
   sort?: TaskSortMode
@@ -178,6 +179,7 @@ export const getTasks = (params: {
   if (params.offset != null) sp.set('offset', String(params.offset))
   if (params.limit != null) sp.set('limit', String(params.limit))
   if (params.refresh != null) sp.set('refresh', String(params.refresh))
+  if (params.forceRefresh) sp.set('force_refresh', 'true')
   if (params.summary != null) sp.set('summary', String(params.summary))
   if (params.compact != null) sp.set('compact', String(params.compact))
   if (params.sort) sp.set('sort', params.sort)

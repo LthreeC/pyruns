@@ -316,11 +316,12 @@ export default function MonitorPage() {
     compactMonitorLayout ? 'flex-col' : 'flex-row',
   )
   const refreshMonitorTasks = useCallback(
-    () => fetchMonitorTasks({
+    (forceRefresh = false) => fetchMonitorTasks({
       query: sidebarQuery,
       searchField: monitorSearchField,
       searchOptions: monitorSearchOptions,
-      refresh: !sidebarQuery.trim(),
+      refresh: forceRefresh || !sidebarQuery.trim(),
+      forceRefresh,
       workspaceKey,
     }),
     [fetchMonitorTasks, sidebarQuery, monitorSearchField, monitorSearchOptions, workspaceKey],
@@ -424,9 +425,28 @@ export default function MonitorPage() {
     enabled: Boolean(workspaceKey),
     generationKey: workspaceKey,
   })
+  const pollMonitorSnapshot = useCallback(async () => {
+    if (sidebarQuery.trim()) {
+      await Promise.all([
+        fetchMonitorTasks({
+          query: sidebarQuery,
+          searchField: monitorSearchField,
+          searchOptions: monitorSearchOptions,
+          refresh: true,
+          background: true,
+          workspaceKey,
+        }),
+        refreshDetachedSelectedTask(true),
+      ])
+      return
+    }
+    await runTaskSnapshotRefresh()
+  }, [fetchMonitorTasks, monitorSearchField, monitorSearchOptions, refreshDetachedSelectedTask,
+    runTaskSnapshotRefresh, sidebarQuery, workspaceKey])
   usePolling(
-    runTaskSnapshotRefresh,
-    taskEventStatus === 'live' ? TASK_EVENT_FALLBACK_POLL_MS : TASK_EVENT_DEGRADED_POLL_MS,
+    pollMonitorSnapshot,
+    sidebarQuery.trim() ? 30000
+      : taskEventStatus === 'live' ? TASK_EVENT_FALLBACK_POLL_MS : TASK_EVENT_DEGRADED_POLL_MS,
     Boolean(workspaceKey),
     false,
   )
@@ -1646,7 +1666,7 @@ export default function MonitorPage() {
                 disabled={monitorLoading && !sidebarSearchActive}
                 onClick={() => monitorLoading && sidebarSearchActive
                   ? useTaskStore.getState().cancelMonitorSearch()
-                  : void refreshMonitorTasks().catch(() => {})}
+                  : void refreshMonitorTasks(true).catch(() => {})}
                 className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-wait disabled:opacity-50 sm:h-8 sm:w-8"
               >
                 {monitorLoading
@@ -1667,7 +1687,7 @@ export default function MonitorPage() {
             searchOptions={monitorSearchOptions}
             onSearchOptionsChange={setMonitorSearchOptions}
             searching={monitorLoading}
-            onRefresh={() => void refreshMonitorTasks().catch(() => {})}
+            onRefresh={() => void refreshMonitorTasks(true).catch(() => {})}
             onCancel={() => useTaskStore.getState().cancelMonitorSearch()}
             ariaLabel="Search monitor tasks"
             ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"

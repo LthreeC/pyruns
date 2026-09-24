@@ -235,7 +235,7 @@ export default function ManagerPage() {
   const hasActive = statusCounts
     ? statusCounts.running + statusCounts.queued > 0
     : tasks.some(task => task.status === 'running' || task.status === 'queued')
-  usePolling(fetchTasks, hasActive ? 3000 : 10000, !query.trim(), false)
+  usePolling(() => fetchTasks({ background: true }), query.trim() ? 30000 : hasActive ? 3000 : 10000, true, false)
 
   useEffect(() => {
     void fetchTasks()
@@ -844,7 +844,7 @@ export default function ManagerPage() {
                 disabled={loading && !query.trim()}
                 onClick={() => loading && query.trim()
                   ? useTaskStore.getState().cancelTaskSearch()
-                  : void fetchTasks()}
+                  : void fetchTasks({ forceRefresh: true })}
                 className="touch-target inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-wait disabled:opacity-50 sm:h-8 sm:w-8"
               >
                 {loading
@@ -883,7 +883,7 @@ export default function ManagerPage() {
               searchOptions={searchOptions}
               onSearchOptionsChange={setSearchOptions}
               searching={loading}
-              onRefresh={() => void fetchTasks()}
+              onRefresh={() => void fetchTasks({ forceRefresh: true })}
               onCancel={() => useTaskStore.getState().cancelTaskSearch()}
               ariaLabel="Search tasks"
             />
@@ -1057,7 +1057,7 @@ export default function ManagerPage() {
               variant="ghost"
               className="min-h-11 sm:min-h-9"
               disabled={loading}
-              onClick={() => void fetchTasks()}
+              onClick={() => void fetchTasks({ forceRefresh: true })}
             >
               Retry
             </ActionButton>

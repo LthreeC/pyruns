@@ -584,13 +584,14 @@ interface TaskState {
   setSortMode: (mode: TaskSortMode) => void
   setOffset: (o: number) => void
   setColumns: (n: number) => void
-  fetchTasks: () => Promise<void>
+  fetchTasks: (options?: { forceRefresh?: boolean; background?: boolean }) => Promise<void>
   fetchMonitorTasks: (options?: {
     query?: string
     searchField?: TaskSearchScope
     searchOptions?: TaskSearchOptions
     loadMore?: boolean
     refresh?: boolean
+    forceRefresh?: boolean
     background?: boolean
     workspaceKey?: string
   }) => Promise<void>
@@ -700,7 +701,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     writeLocalStorage(MANAGER_COLS_STORAGE_KEY, String(next))
     set({ columns: next })
   },
-  async fetchTasks() {
+  async fetchTasks(options = {}) {
+    if (options.background && get().loading) return
     taskSearchController?.abort()
     const controller = get().query.trim() ? new AbortController() : null
     taskSearchController = controller
@@ -720,9 +722,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         && current.offset === requestedOffset
         && current.limit === limit
     }
-    set({ loading: true, error: null })
+    set(options.background ? { error: null } : { loading: true, error: null })
     try {
-      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true }, controller?.signal)
+      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, forceRefresh: options.forceRefresh }, controller?.signal)
       if (!isCurrentRequest()) {
         return
       }
@@ -743,6 +745,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             limit,
             summary: true,
             includeLogs: true,
+            forceRefresh: options.forceRefresh,
           }, controller?.signal)
           if (!isCurrentRequest()) {
             return
@@ -799,6 +802,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
   async fetchMonitorTasks(options = {}) {
     if (String(options.workspaceKey ?? currentWorkspaceKey()) !== currentWorkspaceKey()) return
+    if (options.background && get().monitorLoading) return
     monitorSearchController?.abort()
     const controller = String(options.query ?? get().monitorQuery).trim() ? new AbortController() : null
     monitorSearchController = controller
@@ -818,7 +822,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       ? baseLimit + MONITOR_TASK_PAGE_SIZE
       : baseLimit
     set(background
-      ? { monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions }
+      ? { monitorLoading: false, monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions }
       : { monitorLoading: true, monitorError: '', monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions })
     try {
       const page = await api.getTasks({
@@ -827,6 +831,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         searchOptions,
         limit: nextLimit,
         refresh: options.refresh ?? true,
+        forceRefresh: options.forceRefresh,
         summary: true,
         compact: true,
         includeLogs: true,

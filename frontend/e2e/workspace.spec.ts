@@ -1257,6 +1257,8 @@ test('Monitor and Manager group full log matches and load context only on demand
   page.on('pageerror', error => errors.push(error.message))
   let contextRequests = 0
   let searchRequests = 0
+  const searchRefreshes: (string | null)[] = []
+  const searchForces: (string | null)[] = []
   let missingLog = false
   let emptyIdentity = false
   const task = {
@@ -1275,6 +1277,8 @@ test('Monitor and Manager group full log matches and load context only on demand
     if (params.get('query')) {
       expect(params.get('include_logs')).toBe('true')
       searchRequests++
+      searchRefreshes.push(params.get('refresh'))
+      searchForces.push(params.get('force_refresh'))
     }
     return route.fulfill({ json: { items: [task], total: 1, offset: 0, limit: 50, has_more: false } })
   })
@@ -1295,24 +1299,27 @@ test('Monitor and Manager group full log matches and load context only on demand
     } })
   })
   await page.goto('/monitor?token=pyruns-e2e-access-token')
+  await page.clock.install()
   for (const view of ['Monitor', 'Manager']) {
     if (view === 'Manager') await page.getByRole('link', { name: 'Manager', exact: true }).click()
     await page.getByRole('textbox', { name: view === 'Monitor' ? 'Search monitor tasks' : 'Search tasks', exact: true }).fill('needle')
     const group = page.getByLabel('Matches in search-demo', { exact: true })
     const match = group.getByRole('button', { name: /View Log match in search-demo at run1.log:42/ })
     await expect(match.locator('mark')).toHaveText('needle')
-    if (view === 'Monitor') await page.clock.install()
     const searchesBeforeIdle = searchRequests
     await page.clock.fastForward(60_001)
-    expect(searchRequests).toBe(searchesBeforeIdle)
+    await expect.poll(() => searchRequests).toBeGreaterThan(searchesBeforeIdle)
+    const searchesAfterIdle = searchRequests
     const refreshedSearch = page.waitForResponse(response => {
       const url = new URL(response.url())
       return url.pathname === '/api/tasks' && url.searchParams.get('query') === 'needle'
     })
     await page.getByRole('button', { name: 'Refresh search results', exact: true }).click()
     await refreshedSearch
+    await expect.poll(() => searchForces.at(-1)).toBe('true')
+    expect(searchRefreshes.at(-1)).not.toBe('false')
     await expect(page.getByRole('button', { name: 'Refresh search results', exact: true })).toBeVisible()
-    expect(searchRequests).toBe(searchesBeforeIdle + 1)
+    expect(searchRequests).toBe(searchesAfterIdle + 1)
     const source = group.locator('summary').filter({ hasText: 'run1.log' })
     await source.click()
     await expect(match).toBeHidden()
@@ -1346,7 +1353,6 @@ test('Monitor and Manager group full log matches and load context only on demand
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   }
   expect(contextRequests).toBe(2)
-  expect(searchRequests).toBe(4)
   await page.getByRole('button', { name: 'Dark Mode', exact: true }).click()
   if (isMobile) await page.setViewportSize({ width: 667, height: 375 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
