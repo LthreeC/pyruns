@@ -429,7 +429,8 @@ def test_gpu_summary_does_not_wait_for_slow_process_details():
     assert summary_finished_before_details
 
 
-def test_concurrent_gpu_details_share_one_process_query():
+@pytest.mark.parametrize("query_fails", [False, True])
+def test_concurrent_gpu_details_share_one_process_query(query_fails):
     monitor = SystemMonitor(gpu_ttl_sec=60)
     process_query_started = threading.Event()
     second_request_started = threading.Event()
@@ -446,6 +447,8 @@ def test_concurrent_gpu_details_share_one_process_query():
                 duplicate_query.set()
         process_query_started.set()
         assert release_process_query.wait(2)
+        if query_fails:
+            raise subprocess.TimeoutExpired("nvidia-smi", 5)
         return {"GPU-AAA": [{"pid": 1234, "memory_mb": 2048}]}
 
     def second_request():
@@ -467,10 +470,49 @@ def test_concurrent_gpu_details_share_one_process_query():
             release_process_query.set()
         first_result = first.result(timeout=2)
         assert second.result(timeout=2) == first_result
-        assert first_result[0]["processes"][0]["pid"] == 1234
+        if query_fails:
+            assert "timed out" in first_result[0]["processes_error"]
+        else:
+            assert first_result[0]["processes"][0]["pid"] == 1234
 
     assert duplicate_before_release is False
     assert query_count == 1
+
+
+@pytest.mark.parametrize("has_previous", [False, True])
+def test_slow_gpu_process_failure_is_cached_then_recovery_clears_error(monkeypatch, has_previous):
+    now = [100.0]
+    monkeypatch.setattr("pyruns.core.system_metrics.time", SimpleNamespace(monotonic=lambda: now[0]))
+    monitor = SystemMonitor(gpu_ttl_sec=1.5)
+    previous = {"GPU-AAA": [{"pid": 1234, "memory_mb": 2048}]}
+
+    def slow_failure():
+        now[0] += 4.0
+        raise subprocess.TimeoutExpired("nvidia-smi", 5)
+
+    with (
+        patch.object(monitor, "_query_gpu_snapshot", return_value=("0, GPU, GPU-AAA, 5, 1024, 24576\n", False)),
+        patch.object(monitor, "_get_gpu_processes", return_value=previous) as query,
+    ):
+        if has_previous:
+            monitor._get_gpu_metrics(detail=False)
+            now[0] += 2.0
+        query.reset_mock()
+        query.side_effect = slow_failure
+        failed = monitor._get_gpu_metrics(detail=False)
+        assert "timed out" in failed[0]["processes_error"]
+        assert failed[0]["processes"] == (previous["GPU-AAA"] if has_previous else [])
+        now[0] += 1.0
+        assert monitor._get_gpu_metrics(detail=False) == failed
+        assert query.call_count == 1
+
+        now[0] += 1.0
+        query.side_effect = None
+        query.return_value = {}
+        recovered = monitor._get_gpu_metrics(detail=False)
+        assert "processes_error" not in recovered[0]
+        assert recovered[0]["processes"] == []
+        assert query.call_count == 2
 
 
 def test_unrecognized_gpu_process_response_is_not_a_successful_empty_list():

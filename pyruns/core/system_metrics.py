@@ -53,6 +53,7 @@ class SystemMonitor:
         self._gpu_process_cache: Dict[str, List[Dict[str, Any]]] = {}
         self._gpu_process_cache_at: float = 0.0
         self._gpu_process_cache_valid: bool = False
+        self._gpu_process_error: str = ""
         try:
             ttl = float(gpu_ttl_sec)
         except (TypeError, ValueError):
@@ -391,12 +392,13 @@ class SystemMonitor:
 
         with self._gpu_process_lock:
             now = time.monotonic()
-            process_error = ""
+            process_error = self._gpu_process_error
             cache_expired = (
                 now - self._gpu_process_cache_at >= self._gpu_ttl_sec
             )
             if refresh and (
-                not self._gpu_process_cache_valid or cache_expired
+                (not self._gpu_process_cache_valid and not process_error)
+                or cache_expired
             ):
                 try:
                     processes = self._get_gpu_processes()
@@ -412,8 +414,10 @@ class SystemMonitor:
                     process_error = f"Could not query NVIDIA processes: {str(detail).strip()[:512]}"
                 else:
                     self._gpu_process_cache = processes
-                    self._gpu_process_cache_at = time.monotonic()
                     self._gpu_process_cache_valid = True
+                    process_error = ""
+                self._gpu_process_cache_at = time.monotonic()
+                self._gpu_process_error = process_error
             if self._gpu_process_cache_valid:
                 return self._gpu_process_cache, process_error
             if not refresh:
