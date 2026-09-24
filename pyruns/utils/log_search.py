@@ -25,6 +25,64 @@ _INCOMPLETE_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?$")
 _UNDECODABLE = re.compile("[\udc80-\udcff]")
 
 
+def _case_context(text, previous):
+    """Keep the preceding Unicode case context without retaining old log text."""
+    text = _INCOMPLETE_ANSI.sub("", _ANSI.sub("", text))
+    # A synthetic sigma uses exactly this Python version's Unicode rules.
+    return "A" if (previous + text + "Σ").lower().endswith("ς") else "0"
+
+
+def _next_character_is_cased(handle, size, cancelled, pending_ansi=""):
+    """Resolve a trailing sigma with bounded lookahead, restoring the reader."""
+    position = handle.tell()
+    state = "text"
+    chunk = pending_ansi
+    try:
+        while chunk or handle.tell() < size:
+            if cancelled.is_set():
+                raise CancelledError()
+            if not chunk:
+                chunk = handle.read(min(_CHUNK_CHARS, size - handle.tell()))
+                if not chunk:
+                    break
+            for char in chunk:
+                if state == "text":
+                    if char == "\x1b":
+                        state = "escape"
+                    elif ("AΣ" + char).lower().startswith("aσ"):
+                        return True
+                    elif ("AΣ" + char + "A").lower().startswith("aς"):
+                        return False
+                    # Otherwise this character is ignored by contextual casing.
+                elif state == "escape":
+                    if char == "[":
+                        state = "csi"
+                    elif char == "]":
+                        state = "osc"
+                    else:
+                        return False
+                elif state in ("csi", "csi_intermediate"):
+                    if "@" <= char <= "~":
+                        state = "text"
+                    elif " " <= char <= "/":
+                        state = "csi_intermediate"
+                    elif state != "csi" or not "0" <= char <= "?":
+                        return False
+                elif state == "osc":
+                    if char == "\x07":
+                        state = "text"
+                    elif char == "\x1b":
+                        state = "osc_escape"
+                elif char == "\\":
+                    state = "text"
+                else:
+                    return False
+            chunk = ""
+        return False
+    finally:
+        handle.seek(position)
+
+
 def _encoding(path, offset=0):
     with open(path, "rb") as handle:
         handle.seek(offset)
@@ -157,6 +215,8 @@ class LogSearch:
     def _search_file(path, name, size, needles, cancelled, encoding_hint=None, *, match_case=False):
         result = {"matches": [], "match_count": 0, "found": set()}
         normalize = SearchQuery("", match_case=match_case).normalize
+        contextual_case = not match_case and any("σ" in needle or "ς" in needle for needle in needles)
+        case_prefix = "0"
         overlap = max(8192, max(map(len, needles), default=0) * 8)
         encoding = encoding_hint or _encoding(path)
         identity = log_file_identity(path)
@@ -189,22 +249,36 @@ class LogSearch:
                     # unfinished line; long lines still use the overlap below.
                     complete = raw[:complete_end]
                     for needle in needles:
-                        unread = complete[max(0, last_end[needle] - base):]
-                        count = normalize(_UNDECODABLE.sub("\ufffd", _ANSI.sub("", unread))).count(needle)
+                        unread_start = max(0, last_end[needle] - base)
+                        unread = complete[unread_start:]
+                        display = _UNDECODABLE.sub("\ufffd", _ANSI.sub("", unread))
+                        prefix = _case_context(complete[:unread_start], case_prefix) if contextual_case else ""
+                        count = normalize(prefix + display)[len(prefix):].count(needle)
                         if count:
                             result["found"].add(needle)
                             result["match_count"] += count
                         last_end[needle] = base + complete_end
                     raw = raw[complete_end:]
                     base += complete_end
-                display = _INCOMPLETE_ANSI.sub("", _ANSI.sub("", raw))
+                    case_prefix = "0"
+                clean = _ANSI.sub("", raw)
+                incomplete_ansi = _INCOMPLETE_ANSI.search(clean)
+                display = clean[:incomplete_ansi.start()] if incomplete_ansi else clean
                 display = _UNDECODABLE.sub("\ufffd", display)
                 normalized = normalize(display)
+                if contextual_case and "Σ" in display:
+                    normalized = normalize(case_prefix + display)[1:]
+                    continued = normalize(case_prefix + display + "A")[1:-1]
+                    if continued != normalized and _next_character_is_cased(
+                        handle, size, cancelled,
+                        incomplete_ansi.group() if incomplete_ansi else "",
+                    ):
+                        normalized = continued
                 hits = [needle for needle in needles if needle in normalized]
                 if hits:
                     positions = None
                     if not (display.isascii() and len(normalized) == len(display)):
-                        normalized, positions = normalized_search_with_positions(display, match_case)
+                        _, positions = normalized_search_with_positions(display, match_case)
                     raw_positions = None
                     if display != raw:
                         raw_positions = []
@@ -251,5 +325,12 @@ class LogSearch:
                             start = end
                 char_offset += len(chunk)
                 line += chunk.count("\n")
-                carry = raw[max(raw.rfind("\n") + 1, len(raw) - overlap):]
+                carry_start = max(raw.rfind("\n") + 1, len(raw) - overlap)
+                if contextual_case:
+                    for escape in _ANSI.finditer(raw):
+                        if escape.start() < carry_start < escape.end():
+                            carry_start = escape.start()
+                            break
+                    case_prefix = _case_context(raw[:carry_start], case_prefix)
+                carry = raw[carry_start:]
         return result

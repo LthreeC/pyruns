@@ -2642,6 +2642,91 @@ def test_log_search_chunk_boundaries_unicode_ansi_and_normalization(tmp_path, pr
     assert token in context
 
 
+@pytest.mark.parametrize("suffix,query", [
+    ("B\n", "aς"), ("\u0301B\n", "aς"), ("", "aς"), ("B\n", "aσb"),
+    ("\u0888B\n", "aς"), ("\u0888B\n", "aσ"),
+])
+@pytest.mark.parametrize("fill_previews", [False, True])
+def test_log_search_keeps_contextual_unicode_case_across_chunks(tmp_path, suffix, query, fill_previews):
+    from pyruns.utils.log_search import LogSearch, _CHUNK_CHARS
+    from pyruns.utils.search_query import SearchQuery
+
+    prefix = "aς\n" * 24 if fill_previews else ""
+    payload = prefix + "x" * (_CHUNK_CHARS - len(prefix) - 2) + "AΣ" + suffix
+    path = tmp_path / "run1.log"
+    path.write_text(payload, encoding="utf-8")
+    matcher = SearchQuery(query)
+    expected = matcher.scan(payload)["match_count"]
+    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, matcher.needles, threading.Event())
+    assert result["match_count"] == expected
+
+
+@pytest.mark.parametrize("payload,query", [
+    ("x" * 8191 + "ΑΣ " + "x" * 16000, "ς"),
+    ("x" * 8191 + "A" + "\u0301" * 8191 + "Σ tail\n", "ς tail"),
+    ("x" * 8190 + "A\u0888" + "\u0301" * 8191 + "Σ tail\n", "ς tail"),
+])
+def test_log_search_preserves_case_context_before_retained_overlap(tmp_path, payload, query):
+    from pyruns.utils.log_search import LogSearch
+    from pyruns.utils.search_query import SearchQuery
+
+    path = tmp_path / "run1.log"
+    path.write_text(payload, encoding="utf-8")
+    matcher = SearchQuery(query)
+    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, matcher.needles, threading.Event())
+    expected = matcher.scan(payload)["match_count"]
+    assert result["match_count"] == expected
+    assert len(result["matches"]) == expected
+    token = "Σ" if query == "ς" else "Σ tail"
+    for match in result["matches"]:
+        assert match["snippet"][match["match_start"]:match["match_end"]] == token
+        assert 0 <= payload.encode().index("Σ".encode()) - match["offset"] <= 256
+
+
+@pytest.mark.parametrize("query", ["aς", "aσ"])
+@pytest.mark.parametrize("pending,suffix", [
+    ("", "\u0301" * 40000 + "B"),
+    ("", "\x1b[31mB\x1b[0m"),
+    ("\x1b", "[31mB\x1b[0m"),
+    ("\x1b[", "31mB\x1b[0m"),
+    ("\x1b]title", "\x07B"),
+    ("\x1b]title", "\x1b\\B"),
+    ("", "\x1b[0 0mB"),
+])
+def test_log_search_case_lookahead_preserves_ansi_and_reader_position(tmp_path, query, pending, suffix):
+    from pyruns.utils.log_search import LogSearch, _ANSI, _CHUNK_CHARS
+    from pyruns.utils.search_query import SearchQuery
+
+    payload = "x" * (_CHUNK_CHARS - 2 - len(pending)) + "AΣ" + pending + suffix + "\nmarker\n"
+    path = tmp_path / "run1.log"
+    path.write_text(payload, encoding="utf-8")
+    matcher = SearchQuery(query + "\nmarker")
+    expected = matcher.scan(_ANSI.sub("", payload))
+    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, matcher.needles, threading.Event())
+    assert result["match_count"] == expected["match_count"]
+    assert result["found"] == expected["found"]
+    marker = next(match for match in result["matches"] if match["line"] == 2)
+    assert marker["snippet"][marker["match_start"]:marker["match_end"]] == "marker"
+    assert 0 <= payload.encode().index(b"marker") - marker["offset"] <= 256
+
+
+def test_log_search_case_lookahead_cancels_and_restores_reader(tmp_path):
+    from concurrent.futures import CancelledError
+    from pyruns.utils.log_search import _CHUNK_CHARS, _next_character_is_cased
+
+    path = tmp_path / "run1.log"
+    path.write_text("AΣ" + "\u0301" * (_CHUNK_CHARS * 2) + "B", encoding="utf-8")
+    cancelled = MagicMock()
+    cancelled.is_set.side_effect = [False, True]
+    with path.open(encoding="utf-8") as handle:
+        handle.read(2)
+        position = handle.tell()
+        with pytest.raises(CancelledError):
+            _next_character_is_cased(handle, path.stat().st_size, cancelled)
+        assert handle.tell() == position
+        assert handle.read() == "\u0301" * (_CHUNK_CHARS * 2) + "B"
+
+
 @pytest.mark.parametrize("payload,expected", [("a" * 100_000, 100_000 // 3), ("aaa\n" * 100_000, 100_000)], ids=["long-line", "many-lines"])
 def test_log_search_counts_long_lines_without_duplicate_overlap_and_cancels(tmp_path, payload, expected):
     from concurrent.futures import CancelledError
