@@ -2617,27 +2617,28 @@ def test_metadata_search_all_keeps_uncached_payload_sources(tmp_path, kind):
 
 def test_all_search_skips_logs_when_metadata_satisfies_every_query_line(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "metadata-match", log_text="metadata-match\n")
-    _add_task(workspace, "log-match", log_text="needle-in-log\n")
+    _add_task(workspace, "metadata-match", log_text="needle-in-notes\n")
+    _add_task(workspace, "metadata-only", log_text="unrelated\n")
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     try:
         runtime.ensure_tasks_loaded(full_refresh=False)
         with runtime.task_manager._lock:
-            runtime.task_manager._tasks_by_name["metadata-match"]["notes"] = "needle-in-notes"
-            runtime.task_manager._tasks_by_name["metadata-match"]["search_text"] = (
-                "metadata-match\nneedle-in-notes"
-            )
+            for name in ("metadata-match", "metadata-only"):
+                runtime.task_manager._tasks_by_name[name]["notes"] = "needle-in-notes"
+                runtime.task_manager._tasks_by_name[name]["search_text"] = (
+                    f"{name}\nneedle-in-notes"
+                )
             runtime.task_manager._rebuild_indexes_locked()
         with patch.object(runtime._log_search, "search", wraps=runtime._log_search.search) as search:
             page = runtime.search_tasks(
                 query="needle-in-notes", search_field="all", include_logs=True,
-                refresh=False, cancelled=threading.Event(), sort_mode="name_asc",
+                refresh=False, cancelled=threading.Event(), sort_mode="name_asc", limit=1,
             )
             assert [task["name"] for task in page.items] == ["metadata-match"]
-            assert page.total == 1
+            assert page.total == 2
             assert search.call_count == 1
-            assert page.items[0]["search_match_count"] == 1
-            assert {match["field"] for match in page.items[0]["search_matches"]} == {"notes"}
+            assert page.items[0]["search_match_count"] == 2
+            assert {match["field"] for match in page.items[0]["search_matches"]} == {"notes", "log"}
     finally:
         runtime.shutdown()
 

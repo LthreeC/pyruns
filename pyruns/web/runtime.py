@@ -1249,9 +1249,10 @@ class PyrunsRuntime:
                     and search_field != "log"
                     and all(needle in found for needle in needles)
                 )
+                selected_for_page = offset <= total < offset + limit
                 logs = (
                     empty_logs
-                    if not search_logs or metadata_match
+                    if not search_logs or (metadata_match and not selected_for_page)
                     else self._log_search.search(
                         task["dir"], query, cancelled, matcher, miss_snapshot=miss_snapshot,
                     )
