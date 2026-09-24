@@ -1236,6 +1236,7 @@ class PyrunsRuntime:
             selected = []
             errors = []
             miss_snapshot = self._log_search.snapshot_misses(matcher) if search_logs else None
+            empty_logs = {"matches": [], "match_count": 0, "found": set(), "errors": []}
             for task in ordered:
                 if cancelled.is_set():
                     raise CancelledError()
@@ -1243,10 +1244,17 @@ class PyrunsRuntime:
                     task_search_found(sources.get(task["name"], task), matcher, search_field)
                     if search_logs and search_field != "log" else set()
                 )
+                metadata_match = (
+                    search_logs
+                    and search_field != "log"
+                    and all(needle in found for needle in needles)
+                )
                 logs = (
-                    self._log_search.search(task["dir"], query, cancelled, matcher, miss_snapshot=miss_snapshot)
-                    if search_logs
-                    else {"matches": [], "match_count": 0, "found": set(), "errors": []}
+                    empty_logs
+                    if not search_logs or metadata_match
+                    else self._log_search.search(
+                        task["dir"], query, cancelled, matcher, miss_snapshot=miss_snapshot,
+                    )
                 )
                 errors.extend(f"{task['name']}: {message}" for message in logs["errors"] if len(errors) < 8)
                 if search_logs and not all(needle in found or needle in logs["found"] for needle in needles):
