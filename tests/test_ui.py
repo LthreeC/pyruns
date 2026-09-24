@@ -676,7 +676,7 @@ def test_react_gpu_process_dialog_shows_process_owner():
     assert "host_memory_mb: number | null" in process_details
     assert 'min-w-[700px]' not in dashboard
     assert "process.user || processDetails?.user || 'unknown'" in dashboard
-    assert "process.memory_mb == null || gpu.mem_total <= 0" in dashboard
+    assert "process.memory_mb == null || gpu.mem_total == null || gpu.mem_total <= 0" in dashboard
     assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
     assert "sortedProcesses.map(process =>" in dashboard
     assert "<GpuProcessMetadata" in dashboard

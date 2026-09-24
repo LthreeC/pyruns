@@ -3605,6 +3605,25 @@ def test_directory_context_uses_target_project_logging_settings(tmp_path):
     assert "TaskManager initialised" not in result.stderr
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_metrics_preserves_unknown_gpu_values(monkeypatch, capsys, json_output):
+    from pyruns.cli import commands
+
+    monkeypatch.setattr(commands.SystemMonitor, "sample", lambda *args, **kwargs: {
+        "cpu_percent": 5, "mem_percent": 10,
+        "gpus": [{"index": 0, "util": None, "mem_used": None, "mem_total": 81920.0}],
+    })
+    assert commands.cmd_metrics(SimpleNamespace(json_output=json_output)) == 0
+    output = capsys.readouterr().out
+    if json_output:
+        gpu = json.loads(output)["gpus"][0]
+        assert gpu["util"] is None
+        assert gpu["mem_used"] is None
+    else:
+        assert "util=unknown" in output
+        assert "memory=unknown/81920.0 MB" in output
+
+
 def test_metrics_does_not_require_workspace(tmp_path):
     result = _run_cli(tmp_path, "metrics", "--json")
     assert result.returncode == 0

@@ -25,9 +25,16 @@ class GpuDevice:
     index: int
     name: str
     uuid: str
-    memory_used_mb: float
-    memory_total_mb: float
-    compute_util_pct: float
+    memory_used_mb: float | None
+    memory_total_mb: float | None
+    compute_util_pct: float | None
+
+    def __post_init__(self) -> None:
+        for field_name in ("memory_used_mb", "memory_total_mb", "compute_util_pct"):
+            object.__setattr__(
+                self, field_name,
+                SystemMonitor._coerce_optional_float(getattr(self, field_name)),
+            )
 
     @classmethod
     def from_metric(cls, metric: Dict[str, Any]) -> "GpuDevice":
@@ -35,24 +42,44 @@ class GpuDevice:
             index=int(metric.get("index", metric.get("id", 0)) or 0),
             name=str(metric.get("name", "") or "GPU"),
             uuid=str(metric.get("uuid", "") or ""),
-            memory_used_mb=float(metric.get("mem_used", 0.0) or 0.0),
-            memory_total_mb=float(metric.get("mem_total", 0.0) or 0.0),
-            compute_util_pct=float(metric.get("util", 0.0) or 0.0),
+            memory_used_mb=metric.get("mem_used"),
+            memory_total_mb=metric.get("mem_total"),
+            compute_util_pct=metric.get("util"),
         )
 
     @property
-    def memory_used_pct(self) -> float:
-        if self.memory_total_mb <= 0:
-            return 100.0
+    def _memory_metrics_available(self) -> bool:
+        return (
+            self.memory_used_mb is not None
+            and self.memory_total_mb is not None
+            and self.memory_total_mb > 0
+            and 0 <= self.memory_used_mb <= self.memory_total_mb
+        )
+
+    @property
+    def metrics_available(self) -> bool:
+        return (
+            self._memory_metrics_available
+            and self.compute_util_pct is not None
+            and 0 <= self.compute_util_pct <= 100
+        )
+
+    @property
+    def memory_used_pct(self) -> float | None:
+        if not self._memory_metrics_available:
+            return None
         return (self.memory_used_mb / self.memory_total_mb) * 100.0
 
     @property
-    def free_memory_mb(self) -> float:
-        return max(0.0, self.memory_total_mb - self.memory_used_mb)
+    def free_memory_mb(self) -> float | None:
+        if not self._memory_metrics_available:
+            return None
+        return self.memory_total_mb - self.memory_used_mb
 
     @property
-    def free_memory_gb(self) -> float:
-        return self.free_memory_mb / 1024.0
+    def free_memory_gb(self) -> float | None:
+        free = self.free_memory_mb
+        return free / 1024.0 if free is not None else None
 
 
 class GpuProvider(Protocol):
@@ -164,9 +191,9 @@ class GpuDeviceDecision:
     uuid: str
     eligible: bool
     reason: str
-    memory_used_pct: float
-    free_memory_gb: float
-    compute_util_pct: float
+    memory_used_pct: float | None
+    free_memory_gb: float | None
+    compute_util_pct: float | None
 
 
 class GpuResourceScheduler:
@@ -337,7 +364,12 @@ class GpuResourceScheduler:
     def _candidate_devices(self, config: GpuSchedulerConfig) -> List[GpuDevice]:
         allowed = set(config.device_ids or [])
         devices = [gpu for gpu in self._snapshot if not allowed or gpu.index in allowed]
-        devices.sort(key=lambda gpu: (-gpu.free_memory_mb, gpu.compute_util_pct, gpu.index))
+        devices.sort(key=lambda gpu: (
+            not gpu.metrics_available,
+            -(gpu.free_memory_mb or 0.0),
+            gpu.compute_util_pct or 0.0,
+            gpu.index,
+        ))
         return devices
 
     def _select_available_group(self, config: GpuSchedulerConfig, now: float) -> tuple[List[int], str]:
@@ -454,6 +486,8 @@ class GpuResourceScheduler:
         return f"{scope} GPUs must use the same model, got {', '.join(models)}"
 
     def _blocked_reason(self, gpu: GpuDevice, config: GpuSchedulerConfig, now: float) -> str:
+        if not gpu.metrics_available:
+            return f"GPU {gpu.index} metrics unavailable or invalid"
         reserved = self._reserved_count(gpu.index)
         if reserved >= config.max_tasks_per_gpu:
             return f"GPU {gpu.index} reserved ({reserved}/{config.max_tasks_per_gpu})"
@@ -489,7 +523,8 @@ class GpuResourceScheduler:
 
     def _meets_static_limits(self, gpu: GpuDevice, config: GpuSchedulerConfig) -> bool:
         return (
-            gpu.memory_used_pct <= config.memory_used_pct
+            gpu.metrics_available
+            and gpu.memory_used_pct <= config.memory_used_pct
             and gpu.free_memory_gb >= config.min_free_memory_gb
             and gpu.compute_util_pct <= config.compute_used_pct
         )

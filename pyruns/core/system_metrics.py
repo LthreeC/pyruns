@@ -100,21 +100,24 @@ class SystemMonitor:
 
         try:
             return int(float(str(value or "").strip()))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
 
     @staticmethod
-    def _coerce_optional_float(value: str) -> float | None:
+    def _coerce_optional_float(value: Any) -> float | None:
         """Parse an optional NVIDIA value without turning ``N/A`` into zero."""
 
-        text = str(value or "").strip()
+        if isinstance(value, bool):
+            return None
+        text = str("" if value is None else value).strip()
         normalized = text.strip("[]").strip().lower()
         if normalized in {"", "n/a", "na", "unknown", "not supported"}:
             return None
         try:
-            return float(text)
+            number = float(text)
         except (TypeError, ValueError):
             return None
+        return number if math.isfinite(number) else None
 
     @staticmethod
     def _coerce_optional_text(value: str) -> str:
@@ -544,9 +547,9 @@ class SystemMonitor:
                     "index": index,
                     "name": name,
                     "uuid": uuid,
-                    "util": self._coerce_float(parts[3], default=0.0),
-                    "mem_used": self._coerce_float(parts[4], default=0.0),
-                    "mem_total": self._coerce_float(parts[5], default=0.0),
+                    "util": self._coerce_optional_float(parts[3]),
+                    "mem_used": self._coerce_optional_float(parts[4]),
+                    "mem_total": self._coerce_optional_float(parts[5]),
                 }
                 if has_details:
                     gpu_info.update(

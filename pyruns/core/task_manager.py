@@ -4396,9 +4396,15 @@ class TaskManager:
             index = int(getattr(gpu, "index", 0))
             if allowed and index not in allowed:
                 continue
-            memory_pct = float(getattr(gpu, "memory_used_pct", 100.0))
-            compute_pct = float(getattr(gpu, "compute_util_pct", 0.0))
-            free_gib = float(getattr(gpu, "free_memory_gb", 0.0))
+            memory_pct = getattr(gpu, "memory_used_pct", None)
+            compute_pct = getattr(gpu, "compute_util_pct", None)
+            free_gib = getattr(gpu, "free_memory_gb", None)
+            if (
+                not getattr(gpu, "metrics_available", True)
+                or any(value is None for value in (memory_pct, compute_pct, free_gib))
+            ):
+                lines.append(f"GPU {index} blocked: metrics unavailable or invalid")
+                continue
             is_eligible = (
                 memory_pct <= config.memory_used_pct
                 and compute_pct <= config.compute_used_pct

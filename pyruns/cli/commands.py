@@ -2404,10 +2404,15 @@ def cmd_metrics(context: Any) -> int:
         )
         if payload["gpus"]:
             for gpu in payload["gpus"]:
+                util = gpu.get("util")
+                util_text = "unknown" if util is None else f"{float(util):.1f}%"
+                used = gpu.get("mem_used")
+                total = gpu.get("mem_total")
                 print(
                     f"GPU {gpu.get('index', '?')}: "
-                    f"util={float(gpu.get('util', 0) or 0):.1f}% "
-                    f"memory={gpu.get('mem_used', 0)}/{gpu.get('mem_total', 0)} MB"
+                    f"util={util_text} "
+                    f"memory={used if used is not None else 'unknown'}/"
+                    f"{total if total is not None else 'unknown'} MB"
                 )
         else:
             print("GPU:    none")

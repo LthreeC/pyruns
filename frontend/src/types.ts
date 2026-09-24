@@ -344,9 +344,9 @@ export interface GPUMetric {
   index: number
   name: string
   uuid: string
-  util: number
-  mem_used: number
-  mem_total: number
+  util: number | null
+  mem_used: number | null
+  mem_total: number | null
   mem_util?: number | null
   mem_free?: number | null
   temperature_c?: number | null

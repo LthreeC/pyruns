@@ -1,3 +1,4 @@
+import json
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -63,6 +64,24 @@ def test_gpu_process_summary_keeps_unavailable_memory_unknown(
         "memory_mb": None,
     }
     mock_psutil.Process.assert_called_once_with(1234)
+
+
+@pytest.mark.parametrize("value", ["[N/A]", "NaN", "Infinity", "-Infinity"])
+def test_gpu_metrics_keep_unavailable_values_unknown_and_json_serializable(value):
+    with patch("pyruns.core.system_metrics.subprocess.check_output") as query:
+        query.side_effect = [
+            f"0, GPU, GPU-AAA, {value}, {value}, {value}, {value}, {value}, "
+            f"{value}, {value}, {value}, {value}, P2, Default, {value}, {value}, pci, driver\n".encode(),
+            f"GPU-AAA, 1234, python, {value}\n".encode(),
+        ]
+        metrics = SystemMonitor().sample()
+    json.dumps(metrics, allow_nan=False)
+    gpu = metrics["gpus"][0]
+    assert gpu["util"] is None
+    assert gpu["mem_used"] is None
+    assert gpu["mem_total"] is None
+    assert gpu["power_draw_w"] is None
+    assert gpu["processes"][0]["memory_mb"] is None
 
 
 @pytest.mark.parametrize("failure", [psutil.AccessDenied(1234), psutil.NoSuchProcess(1234), OSError("unavailable")])

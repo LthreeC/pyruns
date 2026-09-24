@@ -14,6 +14,7 @@ import * as api from '@/api'
 import type { GPUMetric, RuntimeInfo, SystemMetrics } from '@/types'
 import { requestConfirmation, useRuntimeStore, useThemeStore, useToastStore, useWorkspaceStore } from '@/store'
 import { errorMessage } from '@/utils/errors'
+import { gpuFreeMemoryMb, gpuMemoryUsedPercent } from '@/utils/gpuMetrics'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ToggleSwitch from '@/components/shared/ToggleSwitch'
 
@@ -181,13 +182,13 @@ function gpuKey(gpu: GPUMetric) {
   return gpu.uuid || String(gpu.id)
 }
 
-function gpuMemoryGiB(memoryMb: number) {
-  return Math.max(0, memoryMb) / 1024
+function gpuMemoryGiB(memoryMb: number | null) {
+  return memoryMb != null && Number.isFinite(memoryMb) ? Math.max(0, memoryMb) / 1024 : null
 }
 
-function formatGiB(value: number) {
-  if (!Number.isFinite(value)) {
-    return '--'
+function formatGiB(value: number | null) {
+  if (value == null || !Number.isFinite(value)) {
+    return 'Unknown'
   }
   const digits = Number.isInteger(value) ? 0 : value >= 10 ? 1 : 2
   return `${value.toFixed(digits)} GiB`
@@ -201,18 +202,23 @@ function gpuRuleReasons(
 ) {
   const reasons: string[] = []
   const totalGiB = gpuMemoryGiB(gpu.mem_total)
-  const freeGiB = gpuMemoryGiB(gpu.mem_total - gpu.mem_used)
-  const memoryUsedPct = gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total) * 100 : 0
+  const freeGiB = gpuMemoryGiB(gpuFreeMemoryMb(gpu))
+  const memoryUsedPct = gpuMemoryUsedPercent(gpu)
 
-  if (minFreeMemoryGiB > totalGiB) {
+  if (memoryUsedPct == null) {
+    reasons.push('Memory metrics unavailable; waiting for a valid reading.')
+  }
+  if (totalGiB != null && minFreeMemoryGiB > totalGiB) {
     reasons.push(`Needs ${formatGiB(minFreeMemoryGiB)} free; this GPU has ${formatGiB(totalGiB)} total`)
-  } else if (freeGiB < minFreeMemoryGiB) {
+  } else if (freeGiB != null && freeGiB < minFreeMemoryGiB) {
     reasons.push(`Free memory ${formatGiB(freeGiB)} is below ${formatGiB(minFreeMemoryGiB)}`)
   }
-  if (memoryUsedPct > maxMemoryUsedPct) {
+  if (memoryUsedPct != null && memoryUsedPct > maxMemoryUsedPct) {
     reasons.push(`Memory use ${memoryUsedPct.toFixed(0)}% is above ${maxMemoryUsedPct}%`)
   }
-  if (gpu.util > maxComputeUsedPct) {
+  if (gpu.util == null || !Number.isFinite(gpu.util) || gpu.util < 0 || gpu.util > 100) {
+    reasons.push('Compute metrics unavailable; waiting for a valid reading.')
+  } else if (gpu.util > maxComputeUsedPct) {
     reasons.push(`Compute use ${gpu.util.toFixed(0)}% is above ${maxComputeUsedPct}%`)
   }
   return reasons
@@ -402,9 +408,12 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       Number.isFinite(rawFreeMemory)
       && rawFreeMemory >= 0
       && candidateGpus.length > 0
-      && candidateGpus.every(gpu => rawFreeMemory > gpuMemoryGiB(gpu.mem_total))
+      && candidateGpus.every(gpu => {
+        const totalGiB = gpuMemoryGiB(gpu.mem_total)
+        return totalGiB != null && rawFreeMemory > totalGiB
+      })
     ) {
-      const largestGpuGiB = Math.max(...candidateGpus.map(gpu => gpuMemoryGiB(gpu.mem_total)))
+      const largestGpuGiB = Math.max(...candidateGpus.map(gpu => gpuMemoryGiB(gpu.mem_total) ?? 0))
       issues.push(
         `${formatGiB(rawFreeMemory)} free is not possible on the configured GPU${candidateGpus.length === 1 ? '' : 's'} `
         + `(${formatGiB(largestGpuGiB)} maximum physical memory).`,
@@ -1261,7 +1270,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                   {gpuPreviewRows.map(({ gpu, reasons }) => {
                     const key = gpuKey(gpu)
                     const expanded = expandedGpuKey === key
-                    const freeGiB = gpuMemoryGiB(gpu.mem_total - gpu.mem_used)
+                    const freeGiB = gpuMemoryGiB(gpuFreeMemoryMb(gpu))
                     return (
                       <div key={key}>
                         <button

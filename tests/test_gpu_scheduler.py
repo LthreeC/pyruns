@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from pyruns.core.executor import _detect_cuda_oom_text
+from pyruns.core.task_manager import TaskManager
 from pyruns.core.gpu_scheduler import (
     GpuDevice,
     GpuResourceScheduler,
@@ -94,6 +98,40 @@ def test_gpu_scheduler_waits_for_fresh_metrics_after_query_failure(monkeypatch, 
         assert "stabilizing" in recovering.reason
     now[0] = 137.0
     assert scheduler.try_reserve("task-a", 1, config, task_env={}).assignment is not None
+
+
+@pytest.mark.parametrize("bad_values", [
+    "[N/A], 1024, 81920",
+    "5, [N/A], 81920",
+    "5, 1024, Infinity",
+])
+def test_gpu_scheduler_keeps_unavailable_gpu_blocked_while_healthy_gpu_can_run(monkeypatch, bad_values):
+    now = [100.0]
+    monkeypatch.setattr("pyruns.core.system_metrics.time", SimpleNamespace(monotonic=lambda: now[0]))
+    provider = SystemGpuProvider()
+    output = f"0, GPU, GPU-AAA, {bad_values}\n1, GPU, GPU-BBB, 5, 4096, 81920\n"
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(enabled=True, stable_seconds=1)
+    with patch.object(provider.monitor, "_query_gpu_snapshot", return_value=(output, False)):
+        assert scheduler.try_reserve("task-a", 1, config, task_env={}).assignment is None
+        now[0] += 1.0
+        decision = scheduler.try_reserve("task-a", 1, config, task_env={})
+    assert decision.assignment is not None
+    assert decision.assignment.gpu_ids == [1]
+    assert decision.devices[0].eligible is False
+    assert "metrics" in decision.devices[0].reason
+    assert "GPU 0 blocked: metrics unavailable" in TaskManager._gpu_snapshot_lines(decision.snapshot, config)[0]
+
+
+@pytest.mark.parametrize("used,total", [(1e308, 1e-308), (-1e308, 1e308), (0, 0)])
+def test_invalid_gpu_memory_cannot_overflow_queue_diagnostics(used, total):
+    device = _gpu(0, used=used, total=total, util=5)
+    scheduler = GpuResourceScheduler(provider=SequenceGpuProvider([[device]]), clock=lambda: 100.0)
+    decision = scheduler.try_reserve("task-a", 1, GpuSchedulerConfig(enabled=True), task_env={})
+    json.dumps(asdict(decision), allow_nan=False)
+    assert decision.assignment is None
+    assert decision.devices[0].memory_used_pct is None
+    assert decision.devices[0].free_memory_gb is None
 
 
 def test_gpu_scheduler_reserves_multi_gpu_after_stable_window():
@@ -785,8 +823,9 @@ def test_gpu_device_normalizes_metric_fallbacks_and_zero_total_memory():
     assert device.index == 7
     assert device.name == "GPU"
     assert device.memory_used_mb == 10.0
-    assert device.memory_used_pct == 100.0
-    assert device.free_memory_gb == 0.0
+    assert device.memory_used_pct is None
+    assert device.free_memory_gb is None
+    assert device.metrics_available is False
 
 
 def test_system_gpu_provider_filters_non_dict_metrics_and_non_list_payloads():

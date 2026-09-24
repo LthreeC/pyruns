@@ -26,6 +26,7 @@ import StatusBadge from '@/components/shared/StatusBadge'
 import CopyButton from '@/components/shared/CopyButton'
 import { formatElapsedDuration } from '@/utils/taskRuntime'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
+import { gpuFreeMemoryMb, gpuMemoryUsedPercent, summarizeGpuMetrics } from '@/utils/gpuMetrics'
 import { errorMessage } from '@/utils/errors'
 import type { GPUMetric, GPUProcessDetails, GPUProcessInfo, Task, SystemMetrics } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
@@ -250,23 +251,19 @@ export default function DashboardPage() {
     : 'Choose a workspace to start'
   const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)
   const gpuCount = metrics?.gpus.length ?? 0
-  const averageGpuUtil = gpuCount
-    ? (metrics?.gpus.reduce((total, gpu) => total + gpu.util, 0) ?? 0) / gpuCount
-    : 0
-  const totalGpuMemory = metrics?.gpus.reduce((total, gpu) => total + Math.max(0, gpu.mem_total), 0) ?? 0
-  const usedGpuMemory = metrics?.gpus.reduce((total, gpu) => total + Math.max(0, gpu.mem_used), 0) ?? 0
-  const gpuMemoryPct = totalGpuMemory > 0 ? (usedGpuMemory / totalGpuMemory) * 100 : 0
+  const {
+    averageUtil: averageGpuUtil,
+    memoryPercent: gpuMemoryPct,
+    largestMemoryGiB: largestGpuGiB,
+  } = summarizeGpuMetrics(metrics?.gpus ?? [])
   const gpuSchedulerEnabledRaw = workspace?.settings?.gpu_scheduler_enabled
   const gpuSchedulerEnabled = gpuSchedulerEnabledRaw === true
     || ['1', 'true', 'yes', 'on'].includes(String(gpuSchedulerEnabledRaw || '').toLowerCase())
   const configuredMinFreeGiB = Number(workspace?.settings?.gpu_scheduler_min_free_memory_gb ?? 0)
-  const largestGpuGiB = gpuCount
-    ? Math.max(...(metrics?.gpus.map(gpu => gpu.mem_total / 1024) || [0]))
-    : 0
   const impossibleGpuRule = gpuSchedulerEnabled
     && Number.isFinite(configuredMinFreeGiB)
     && configuredMinFreeGiB > 0
-    && largestGpuGiB > 0
+    && largestGpuGiB != null
     && configuredMinFreeGiB > largestGpuGiB
   const queuedCount = summary?.queued ?? 0
   const runningCount = summary?.running ?? 0
@@ -361,8 +358,8 @@ export default function DashboardPage() {
                     <ResourceTile label="RAM" value={`${metrics.mem_percent.toFixed(0)}%`}>
                       <MetricBar label="RAM" value={metrics.mem_percent} icon={MemoryStick} compact />
                     </ResourceTile>
-                    <ResourceTile label="GPU Avg" value={`${averageGpuUtil.toFixed(0)}%`} tone="sky" />
-                    <ResourceTile label="GPU VRAM" value={`${gpuMemoryPct.toFixed(0)}%`} tone={gpuMemoryPct > 85 ? 'amber' : 'slate'} />
+                    <ResourceTile label="GPU Avg" value={formatPercent(averageGpuUtil)} tone="sky" />
+                    <ResourceTile label="GPU VRAM" value={formatPercent(gpuMemoryPct)} tone={(gpuMemoryPct ?? 0) > 85 ? 'amber' : 'slate'} />
                   </div>
                 </>
               ) : (
@@ -568,7 +565,7 @@ function GpuMetricCard({
   wide: boolean
   onClick: (trigger: HTMLElement) => void
 }) {
-  const memoryPct = gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total) * 100 : 0
+  const memoryPct = gpuMemoryUsedPercent(gpu)
 
   return (
     <button
@@ -587,7 +584,7 @@ function GpuMetricCard({
           <div className="truncate text-xs text-txt-secondary" title={gpu.name}>{gpu.name}</div>
         </div>
         <div className="flex items-center gap-1 rounded-md bg-accent/10 px-2 py-1 text-2xs text-accent">
-          <span className="font-medium tabular-nums">{gpu.util.toFixed(0)}%</span>
+          <span className="font-medium tabular-nums">{formatPercent(gpu.util)}</span>
           <span>util</span>
         </div>
       </div>
@@ -614,8 +611,8 @@ function GpuMetricCard({
   )
 }
 
-function UsageTrack({ label, value, tone }: { label: string; value: number; tone: 'util' | 'memory' }) {
-  const pct = Math.min(100, Math.max(0, value))
+function UsageTrack({ label, value, tone }: { label: string; value: number | null; tone: 'util' | 'memory' }) {
+  const pct = Math.min(100, Math.max(0, value ?? 0))
   const barColor = tone === 'memory'
     ? pct > 92 ? 'bg-rose-400' : pct > 75 ? 'bg-amber-400' : 'bg-cyan-400'
     : pct > 92 ? 'bg-rose-400' : pct > 75 ? 'bg-amber-400' : 'bg-emerald-400'
@@ -626,7 +623,7 @@ function UsageTrack({ label, value, tone }: { label: string; value: number; tone
       <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-overlay/80">
         <div className={clsx('h-full rounded-full transition-all duration-500', barColor)} style={{ width: `${pct}%` }} />
       </div>
-      <span className="w-10 text-right text-2xs tabular-nums text-txt-secondary">{pct.toFixed(0)}%</span>
+      <span className="w-14 text-right text-2xs tabular-nums text-txt-secondary">{formatPercent(value)}</span>
     </div>
   )
 }
@@ -799,8 +796,8 @@ function GpuProcessDialog({
     return null
   }
 
-  const memoryPct = gpu.mem_total > 0 ? (gpu.mem_used / gpu.mem_total) * 100 : 0
-  const memoryFree = Math.max(0, gpu.mem_total - gpu.mem_used)
+  const memoryPct = gpuMemoryUsedPercent(gpu)
+  const memoryFree = gpuFreeMemoryMb(gpu)
   const sortedProcesses = [...gpu.processes].sort(
     (left, right) => (right.memory_mb ?? -1) - (left.memory_mb ?? -1),
   )
@@ -884,10 +881,10 @@ function GpuProcessDialog({
               Live metrics
             </h3>
             <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border-subtle bg-border-subtle lg:grid-cols-4">
-              <DetailMetric label="Compute" value={`${gpu.util.toFixed(0)}%`} tone="emerald" />
+              <DetailMetric label="Compute" value={formatPercent(gpu.util)} tone="emerald" />
               <DetailMetric label="Memory I/O" value={formatOptionalMetric(gpu.mem_util, '%')} tone="sky" />
               <DetailMetric label="VRAM used" value={`${formatMemory(gpu.mem_used)} / ${formatMemory(gpu.mem_total)}`} tone="sky" />
-              <DetailMetric label="VRAM free" value={formatMemory(reportedMemoryFree)} tone={memoryPct > 85 ? 'amber' : 'slate'} />
+              <DetailMetric label="VRAM free" value={formatMemory(reportedMemoryFree)} tone={(memoryPct ?? 0) > 85 ? 'amber' : 'slate'} />
               <DetailMetric label="Temperature" value={formatOptionalMetric(gpu.temperature_c, ' °C')} tone={(gpu.temperature_c ?? 0) >= 80 ? 'amber' : 'slate'} icon={Thermometer} />
               <DetailMetric label="Power" value={formatPower(gpu.power_draw_w, gpu.power_limit_w)} tone="slate" icon={Zap} />
               <DetailMetric label="Fan" value={formatOptionalMetric(gpu.fan_speed_pct, '%')} tone="slate" icon={Fan} />
@@ -972,7 +969,7 @@ function GpuProcessDialog({
                         <span className="col-start-2 row-start-1 truncate text-txt-primary sm:col-auto sm:row-auto" title={process.name}>{displayName}</span>
                         <span className="row-span-2 text-right font-mono text-txt-secondary sm:row-span-1">{formatMemory(process.memory_mb)}</span>
                         <span className="hidden text-right font-mono text-txt-tertiary sm:block">
-                          {process.memory_mb == null || gpu.mem_total <= 0
+                          {process.memory_mb == null || gpu.mem_total == null || gpu.mem_total <= 0
                             ? '--'
                             : formatPercent((process.memory_mb / gpu.mem_total) * 100)}
                         </span>
@@ -1194,8 +1191,11 @@ function formatMemory(memoryMb: number | null | undefined): string {
   return `${memoryMb.toFixed(memoryMb >= 100 ? 0 : 1)} MB`
 }
 
-function formatPercent(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
+function formatPercent(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) {
+    return 'Unknown'
+  }
+  if (value <= 0) {
     return '0%'
   }
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}%`
