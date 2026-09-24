@@ -69,7 +69,7 @@ from pyruns.utils.task_files import (
     resolve_task_config_file,
     resolve_task_payload_path,
 )
-from pyruns.utils.terminal_capture import spawn_terminal_process
+from pyruns.utils.terminal_capture import _SgrOutputFilter, spawn_terminal_process
 
 logger = get_logger(__name__)
 _ISOLATED_IMPORT_ROOT_LOCK = threading.Lock()
@@ -2006,6 +2006,13 @@ def run_task_worker(
             nonlocal source_output_flush
             try:
                 decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                # Apply the terminal log contract even when PTY startup fell
+                # back to a hidden pipe (for example, without a Windows console).
+                output_filter = (
+                    _SgrOutputFilter()
+                    if task_kind == TASK_KIND_SHELL and command_mode == "shell"
+                    else None
+                )
                 current_log_path = _get_log_path(task_dir, run_index)
                 with (
                     tempfile.SpooledTemporaryFile(
@@ -2069,7 +2076,11 @@ def run_task_worker(
                         for chunk in iter(lambda: proc.stdout.read1(4096), b""):
                             if not chunk:
                                 break
+                            if output_filter is not None:
+                                chunk = output_filter.feed(chunk)
                             _queue_or_append(decoder.decode(chunk))
+                        if output_filter is not None:
+                            _queue_or_append(decoder.decode(output_filter.finish()))
                         _queue_or_append(decoder.decode(b"", final=True))
                         source_state_ready.wait()
                         _flush_when_source_ready()

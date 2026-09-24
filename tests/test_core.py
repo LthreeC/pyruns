@@ -2432,6 +2432,37 @@ def test_spawn_captured_process_hides_windows_console(monkeypatch, tmp_path):
     assert captured["kwargs"]["shell"] is False
 
 
+@pytest.mark.parametrize("chunk_size", [1, 7, 4096])
+def test_shell_pipe_fallback_filters_controls_before_logging_and_emitting(tmp_path, monkeypatch, chunk_size):
+    task_dir = _write_worker_task_info(tmp_path, "pipe-colors")
+    update_task_info(task_dir, lambda info: info.update({"task_kind": TASK_KIND_SHELL, "command_mode": "shell"}))
+    raw = b"\x1b[2J\x1b[38;5;9mred-text\x1b[0m\x1b]0;title\x07\r\n"
+    process = MagicMock(pid=99999, returncode=0)
+    process.stdout.read1.side_effect = [raw[i:i + chunk_size] for i in range(0, len(raw), chunk_size)] + [b""]
+    process.wait.return_value = 0
+    process.poll.return_value = 0
+    monkeypatch.setattr(executor, "_build_command", lambda *a, **k: (["shell"], task_dir, []))
+    monkeypatch.setattr(executor, "_build_run_source_state", lambda **kwargs: "git test | clean")
+    monkeypatch.setattr(executor, "collect_run_environment", lambda *a, **k: {})
+    monkeypatch.setattr(executor, "get_process_create_time", lambda _pid: None)
+    terminal_spawn = MagicMock(side_effect=RuntimeError("no attached console"))
+    monkeypatch.setattr(executor, "spawn_terminal_process", terminal_spawn)
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda *a, **k: process)
+    emitted = []
+    monkeypatch.setattr(executor.log_emitter, "emit", lambda _name, text, **metadata: emitted.append((text, metadata)))
+
+    result = executor.run_task_worker(task_dir, "pipe-colors", "now", {})
+
+    assert result["status"] == "completed"
+    terminal_spawn.assert_called_once()
+    log_path = Path(task_dir) / RUN_LOGS_DIR / "run1.log"
+    for output in (log_path.read_text(encoding="utf-8"), "".join(text for text, _ in emitted)):
+        assert "\x1b[38;5;9mred-text\x1b[0m" in output
+        assert "\x1b[2J" not in output
+        assert "\x1b]0;" not in output
+    assert sum(metadata["byte_length"] for _, metadata in emitted) == log_path.stat().st_size
+
+
 def test_terminal_output_filter_preserves_sgr_and_removes_screen_controls():
     from pyruns.utils.terminal_capture import _SgrOutputFilter
 
@@ -6344,10 +6375,10 @@ def test_task_manager_refreshes_edited_shell_payload(tmp_path):
         "config_file": SHELL_CONFIG_FILENAME,
     })
     script_path = task_dir / SHELL_CONFIG_FILENAME
-    script_path.write_text("echo before\n", encoding="utf-8")
+    script_path.write_text("echo before\n", encoding="utf-8", newline="\n")
     manager = _make_task_manager(tmp_path)
 
-    script_path.write_text("echo after\n", encoding="utf-8")
+    script_path.write_text("echo after\n", encoding="utf-8", newline="\n")
     assert manager.refresh_from_disk(task_ids=["shell-task"]) is True
     assert manager.get_task("shell-task")["config_text"] == "echo after\n"
     assert manager.get_task_summary_page(query="after", search_field="script")[1] == 1
@@ -6360,7 +6391,7 @@ def test_task_manager_discovers_implicit_shell_payload_after_creation(tmp_path):
     manager = _make_task_manager(tmp_path)
     assert manager.get_task("shell-task")["_load_error"]
 
-    (task_dir / POWERSHELL_CONFIG_FILENAME).write_text("Write-Output ready\n", encoding="utf-8")
+    (task_dir / POWERSHELL_CONFIG_FILENAME).write_text("Write-Output ready\n", encoding="utf-8", newline="\n")
     assert manager.refresh_from_disk(check_all=True) is True
     task = manager.get_task("shell-task")
     assert task["config_file"] == POWERSHELL_CONFIG_FILENAME
@@ -7875,7 +7906,7 @@ def test_task_manager_failed_queue_claim_allows_next_task_to_run(tmp_path, monke
     original_update = task_manager_module.update_task_info
 
     def fail_alpha(task_dir, *args, **kwargs):
-        if task_dir == alpha["dir"]:
+        if Path(task_dir) == Path(alpha["dir"]):
             raise PermissionError("alpha metadata is read-only")
         return original_update(task_dir, *args, **kwargs)
 
@@ -7909,7 +7940,7 @@ def test_task_manager_queue_heartbeat_continues_after_one_metadata_write_fails(t
     original_update = task_manager_module.update_task_info
 
     def fail_alpha(task_dir, *args, **kwargs):
-        if task_dir == alpha["dir"]:
+        if Path(task_dir) == Path(alpha["dir"]):
             raise PermissionError("alpha metadata is read-only")
         return original_update(task_dir, *args, **kwargs)
 

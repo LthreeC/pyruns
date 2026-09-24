@@ -5384,6 +5384,7 @@ def test_logs_websocket_keeps_emitter_chunk_during_initial_selection(tmp_path):
                     handle.write("live\n")
                 log_emitter.emit(
                     "alpha", "live\r\n", offset=log_file.stat().st_size,
+                    byte_length=log_file.stat().st_size - initial_offset,
                     log_file_name="run1.log", task_dir=str(task_dir),
                 )
                 delivered = threading.Event()
