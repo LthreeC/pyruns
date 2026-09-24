@@ -6154,7 +6154,8 @@ def test_task_manager_api_snapshots_stay_consistent_during_locked_gpu_updates(tm
 @pytest.mark.parametrize("sort_mode", [
     "priority", "manual", "activity_desc", "activity_asc", "name_asc", "name_desc",
 ])
-def test_task_summary_page_preserves_filter_order_counts_and_detachment(tmp_path, sort_mode):
+@pytest.mark.parametrize("summary", [False, True])
+def test_task_page_preserves_filter_order_counts_and_detachment(tmp_path, sort_mode, summary):
     from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
 
     manager = TaskManager(tasks_dir=str(tmp_path), lazy_scan=None, owns_task_lifecycle=False)
@@ -6172,7 +6173,7 @@ def test_task_summary_page_preserves_filter_order_counts_and_detachment(tmp_path
             ("queued", "queued", True, None),
         ])
     ]
-    baseline = manager.list_tasks(summary=True)
+    baseline = manager.list_tasks(summary=summary)
     for query, status, offset, limit in [
         ("", "All", 1, 2), ("keep\ntask", "All", 0, 1),
         ("", "running", 0, 0), ("hidden_in_summary", "All", 0, 5),
@@ -6180,7 +6181,8 @@ def test_task_summary_page_preserves_filter_order_counts_and_detachment(tmp_path
     ]:
         expected = sort_tasks_for_manager(filter_tasks(baseline, query, status), sort_mode)
         with patch.object(manager, "_snapshot_task_for_api", wraps=manager._snapshot_task_for_api) as copy_task:
-            items, total, counts = manager.get_task_summary_page(
+            page_method = manager.get_task_summary_page if summary else manager.get_task_page
+            items, total, counts = page_method(
                 query=query, status=status, offset=offset, limit=limit, sort_mode=sort_mode,
             )
         assert items == (expected[offset:offset + limit] if limit else expected[offset:])

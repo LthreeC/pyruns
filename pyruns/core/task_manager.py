@@ -453,6 +453,23 @@ class TaskManager:
         sort_mode: str = "priority",
         search_field: str = "all",
     ) -> tuple[List[Dict[str, Any]], int, Dict[str, int]]:
+        """Return a page of detached task summaries with workspace counts."""
+        return self.get_task_page(
+            query=query, status=status, offset=offset, limit=limit,
+            sort_mode=sort_mode, search_field=search_field, summary=True,
+        )
+
+    def get_task_page(
+        self,
+        *,
+        query: str = "",
+        status: str = "All",
+        offset: int = 0,
+        limit: int = 50,
+        sort_mode: str = "priority",
+        search_field: str = "all",
+        summary: bool = False,
+    ) -> tuple[List[Dict[str, Any]], int, Dict[str, int]]:
         """Select a page under the lock, copying payloads only for its tasks."""
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))
@@ -470,7 +487,7 @@ class TaskManager:
                     **({
                         key: task.get(key)
                         for key in ("task_kind", "config", "config_text")
-                    } if search_field in {"config", "script"} else {}),
+                    } if not summary or search_field in {"config", "script"} else {}),
                     **{
                         key: task.get(key)
                         for key in ("pinned", "task_order", "created_at")
@@ -499,11 +516,15 @@ class TaskManager:
                 if safe_limit else ordered[safe_offset:]
             )
             snapshots = [
-                self._snapshot_task_for_api(task["_task"], summary=True)
+                self._snapshot_task_for_api(task["_task"], summary=summary)
                 for task in selected
             ]
         return (
-            [self.serialize_task(snapshot, summary=True) for snapshot in snapshots],
+            [
+                self.serialize_task(snapshot, summary=True)
+                if summary else self._finalize_full_task_snapshot(snapshot)
+                for snapshot in snapshots
+            ],
             total,
             status_counts,
         )

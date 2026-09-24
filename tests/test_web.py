@@ -2526,6 +2526,72 @@ def test_task_search_only_copies_payloads_for_returned_page(tmp_path, summary):
     assert manager.get_task("needle-a")["run_environments"] == [{"host": "original"}]
 
 
+@pytest.mark.parametrize("summary", [False, True])
+def test_task_list_only_copies_payloads_for_returned_page(tmp_path, summary):
+    class UncopiedHistory(list):
+        def __deepcopy__(self, memo):
+            raise AssertionError("List must not copy run history outside its result page")
+
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("first", "second", "third"):
+        _add_task(workspace, name)
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    manager = runtime.task_manager
+    with manager._lock:
+        manager._tasks_by_name["first"]["run_environments"] = [{"host": "original"}]
+        for name in ("second", "third"):
+            manager._tasks_by_name[name]["run_environments"] = UncopiedHistory([{"host": "large-history"}])
+
+    page = runtime.list_tasks(sort_mode="name_asc", limit=1, refresh=False, summary=summary)
+    assert page.total == 3 and page.has_more
+    assert [task["name"] for task in page.items] == ["first"]
+    page.items[0]["run_environments"][0]["host"] = "changed"
+    assert manager.get_task("first")["run_environments"] == [{"host": "original"}]
+
+
+def test_full_task_page_loads_curves_only_for_selected_tasks_without_registry_lock(tmp_path, monkeypatch):
+    from pyruns.utils import track_store
+
+    monkeypatch.setattr(track_store, "INLINE_TRACK_POINTS", 4)
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("first", "second", "third"):
+        _add_task(workspace, name)
+        update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update(tracks=[{"loss": [0, 1, 2, 3]}]))
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    manager = runtime.task_manager
+    original_read = track_store.read_tracks
+    reads = []
+
+    def read(task_dir, *args, **kwargs):
+        acquired = []
+
+        def check_lock():
+            if manager._lock.acquire(timeout=1):
+                acquired.append(True)
+                manager._lock.release()
+
+        checker = threading.Thread(target=check_lock)
+        checker.start()
+        checker.join(timeout=2)
+        assert acquired == [True], "curve I/O held the manager lock"
+        reads.append(Path(task_dir).name)
+        return original_read(task_dir, *args, **kwargs)
+
+    monkeypatch.setattr(track_store, "read_tracks", read)
+    client = TestClient(create_app(runtime))
+    response = client.get("/api/tasks", params={"sort": "name_asc", "offset": 1, "limit": 1, "refresh": False})
+    assert response.status_code == 200
+    page = response.json()
+    assert page["total"] == 3 and page["has_more"]
+    assert page["items"][0]["name"] == "second"
+    assert page["items"][0]["tracks"] == [{"loss": [0, 1, 2, 3]}]
+    assert reads == ["second"]
+    assert client.get("/api/tasks", params={"offset": 10, "refresh": False}).json()["items"] == []
+    assert reads == ["second"]
+
+
 @pytest.mark.parametrize("include_logs", [False, True], ids=["metadata", "log-search"])
 def test_search_api_honors_refresh_for_externally_created_tasks(tmp_path, include_logs):
     workspace = _make_workspace(tmp_path, "main")

@@ -82,7 +82,6 @@ from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
     build_task_preview_and_search,
     build_task_search_result,
-    filter_tasks_by_search_field,
     task_search_found,
     normalize_task_kind,
     normalize_workspace_kind,
@@ -1162,25 +1161,10 @@ class PyrunsRuntime:
         self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))
-        if summary:
-            items, total, status_counts = self.task_manager.get_task_summary_page(
-                query=query, status=status, offset=safe_offset,
-                limit=safe_limit, sort_mode=sort_mode, search_field=search_field,
-            )
-        else:
-            all_tasks = self.task_manager.list_tasks()
-            status_counts = dict.fromkeys(
-                ("pending", "queued", "running", "completed", "failed", "cancelled"),
-                0,
-            )
-            for task in all_tasks:
-                task_status = str(task.get("status", "pending") or "pending").lower()
-                status_counts[task_status] = status_counts.get(task_status, 0) + 1
-            ordered = sort_tasks_for_manager(
-                filter_tasks_by_search_field(all_tasks, query, status, search_field), sort_mode,
-            )
-            total = len(ordered)
-            items = ordered[safe_offset:] if safe_limit == 0 else ordered[safe_offset:safe_offset + safe_limit]
+        items, total, status_counts = self.task_manager.get_task_page(
+            query=query, status=status, offset=safe_offset, limit=safe_limit,
+            sort_mode=sort_mode, search_field=search_field, summary=summary,
+        )
         if summary:
             if query.strip() and items:
                 results_by_name = self.task_manager.get_task_search_results(
