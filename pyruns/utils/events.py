@@ -90,6 +90,7 @@ class LogEmitter:
         chunk_text: str,
         *,
         offset: int | None = None,
+        byte_length: int | None = None,
         log_file_name: str | None = None,
         task_dir: str | None = None,
     ) -> None:
@@ -112,6 +113,8 @@ class LogEmitter:
         metadata: Dict[str, Any] = {}
         if offset is not None:
             metadata["offset"] = offset
+        if byte_length is not None:
+            metadata["byte_length"] = byte_length
         if log_file_name:
             metadata["log_file_name"] = log_file_name
         normalized_task_dir = _normalize_task_dir(task_dir)

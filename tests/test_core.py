@@ -1046,6 +1046,43 @@ def test_system_monitor_reuses_empty_gpu_cache_until_ttl_expires(mock_subprocess
     assert mock_subprocess.call_count == 4
 
 
+def test_system_monitor_coalesces_concurrent_gpu_queries():
+    monitor = SystemMonitor(gpu_ttl_sec=60)
+    query_started = threading.Event()
+    second_started = threading.Event()
+    duplicate_query = threading.Event()
+    release_query = threading.Event()
+    query_count = 0
+    count_lock = threading.Lock()
+
+    def query_snapshot(*, detail):
+        nonlocal query_count
+        with count_lock:
+            query_count += 1
+            if query_count > 1:
+                duplicate_query.set()
+        query_started.set()
+        assert release_query.wait(2)
+        return "0, GPU, GPU-1, 1, 100, 1000\n", False
+
+    def second_request():
+        second_started.set()
+        return monitor._get_gpu_metrics(include_processes=False, detail=False)
+
+    with patch.object(monitor, "_query_gpu_snapshot", side_effect=query_snapshot):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(monitor._get_gpu_metrics, include_processes=False, detail=False)
+            assert query_started.wait(2)
+            second = pool.submit(second_request)
+            assert second_started.wait(2)
+            duplicate_before_release = duplicate_query.wait(0.2)
+            release_query.set()
+            assert first.result(timeout=2) == second.result(timeout=2)
+
+    assert duplicate_before_release is False
+    assert query_count == 1
+
+
 @patch("pyruns.core.system_metrics.subprocess.check_output")
 def test_system_monitor_gpu_process_query_failure_still_returns_gpu_summary(mock_subprocess):
     mock_subprocess.side_effect = [
@@ -6204,6 +6241,127 @@ def test_task_manager_refresh_discovers_external_added_and_removed_tasks(tmp_pat
     assert tasks["beta"]["config"]["value"] == 2
 
 
+def test_task_manager_refreshes_edited_payload_and_clears_parse_error(tmp_path):
+    task_dir = tmp_path / "sample"
+    task_dir.mkdir()
+    save_task_info(str(task_dir), {"status": "pending", "task_kind": TASK_KIND_CONFIG})
+    config_path = task_dir / CONFIG_FILENAME
+    config_path.write_text("epochs: 1\n", encoding="utf-8")
+    manager = _make_task_manager(tmp_path)
+    info_mtime = (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns
+
+    config_path.write_text("epochs: [broken\n", encoding="utf-8")
+    assert manager.refresh_from_disk(task_ids=["sample"]) is True
+    assert manager.get_task("sample")["_load_error"]
+
+    config_path.write_text("epochs: 2\n", encoding="utf-8")
+    assert manager.refresh_from_disk(task_ids=["sample"]) is True
+    task = manager.get_task("sample")
+    assert task["_load_error"] == ""
+    assert task["config"]["epochs"] == 2
+    assert manager.get_task_summary_page(query="epochs:2", search_field="config")[1] == 1
+    assert (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns == info_mtime
+
+
+def test_task_manager_refreshes_replaced_metadata_with_same_mtime_and_size(tmp_path):
+    task_dir = tmp_path / "sample"
+    task_dir.mkdir()
+    save_task_info(str(task_dir), {"status": "pending", "notes": "before"})
+    (task_dir / CONFIG_FILENAME).write_text("epochs: 1\n", encoding="utf-8")
+    manager = _make_task_manager(tmp_path)
+    assert manager.get_task("sample")["notes"] == "before"
+
+    info_path = task_dir / TASK_INFO_FILENAME
+    original = info_path.stat()
+    replacement = tmp_path / "replacement.json"
+    original_text = info_path.read_text(encoding="utf-8")
+    assert "before" in original_text
+    replacement.write_text(original_text.replace("before", "after!"), encoding="utf-8")
+    assert replacement.stat().st_size == original.st_size
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    replacement.replace(info_path)
+
+    assert manager.refresh_from_disk(check_all=True) is True
+    assert manager.get_task("sample")["notes"] == "after!"
+
+
+def test_task_manager_rechecks_metadata_replaced_during_initial_load(tmp_path):
+    import pyruns.core.task_manager as task_manager_module
+
+    task_dir = tmp_path / "sample"
+    task_dir.mkdir()
+    save_task_info(str(task_dir), {"status": "pending", "notes": "before"})
+    (task_dir / CONFIG_FILENAME).write_text("epochs: 1\n", encoding="utf-8")
+    replacement = tmp_path / "replacement.json"
+    info_path = task_dir / TASK_INFO_FILENAME
+    replacement.write_text(
+        info_path.read_text(encoding="utf-8").replace("before", "after!"),
+        encoding="utf-8",
+    )
+    manager = _make_task_manager(tmp_path, lazy_scan=None)
+    original_load = task_manager_module.load_task_info
+
+    def replace_after_read(*args, **kwargs):
+        info = original_load(*args, **kwargs)
+        if replacement.exists():
+            replacement.replace(info_path)
+        return info
+
+    with patch.object(task_manager_module, "load_task_info", side_effect=replace_after_read):
+        assert manager.load_task_by_name("sample")["notes"] == "before"
+    assert manager.refresh_from_disk(task_ids=["sample"]) is True
+    assert manager.get_task("sample")["notes"] == "after!"
+
+
+def test_task_manager_reports_corrupt_metadata_and_recovers(tmp_path):
+    task_dir = tmp_path / "sample"
+    task_dir.mkdir()
+    save_task_info(str(task_dir), {"status": "pending"})
+    (task_dir / CONFIG_FILENAME).write_text("epochs: 1\n", encoding="utf-8")
+    manager = _make_task_manager(tmp_path)
+    info_path = task_dir / TASK_INFO_FILENAME
+
+    info_path.write_text("{broken", encoding="utf-8")
+    assert manager.refresh_from_disk(check_all=True) is True
+    assert "Could not load task metadata" in manager.get_task("sample")["_load_error"]
+
+    save_task_info(str(task_dir), {"status": "pending"})
+    assert manager.refresh_from_disk(check_all=True) is True
+    assert manager.get_task("sample")["_load_error"] == ""
+
+
+def test_task_manager_refreshes_edited_shell_payload(tmp_path):
+    task_dir = tmp_path / "shell-task"
+    task_dir.mkdir()
+    save_task_info(str(task_dir), {
+        "status": "pending", "task_kind": TASK_KIND_SHELL,
+        "config_file": SHELL_CONFIG_FILENAME,
+    })
+    script_path = task_dir / SHELL_CONFIG_FILENAME
+    script_path.write_text("echo before\n", encoding="utf-8")
+    manager = _make_task_manager(tmp_path)
+
+    script_path.write_text("echo after\n", encoding="utf-8")
+    assert manager.refresh_from_disk(task_ids=["shell-task"]) is True
+    assert manager.get_task("shell-task")["config_text"] == "echo after\n"
+    assert manager.get_task_summary_page(query="after", search_field="script")[1] == 1
+
+
+def test_task_manager_discovers_implicit_shell_payload_after_creation(tmp_path):
+    task_dir = tmp_path / "shell-task"
+    task_dir.mkdir()
+    save_task_info(str(task_dir), {"status": "pending", "task_kind": TASK_KIND_SHELL})
+    manager = _make_task_manager(tmp_path)
+    assert manager.get_task("shell-task")["_load_error"]
+
+    (task_dir / POWERSHELL_CONFIG_FILENAME).write_text("Write-Output ready\n", encoding="utf-8")
+    assert manager.refresh_from_disk(check_all=True) is True
+    task = manager.get_task("shell-task")
+    assert task["config_file"] == POWERSHELL_CONFIG_FILENAME
+    assert task["config_text"] == "Write-Output ready\n"
+    assert task["_load_error"] == ""
+
+
 def test_task_manager_add_tasks_upserts_existing_name(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -6244,6 +6402,377 @@ def test_task_manager_refresh_keeps_discovered_tasks_in_disk_order(tmp_path):
     assert manager.refresh_from_disk(check_all=True, discover=True) is True
 
     assert [task["name"] for task in manager.list_tasks()] == ["newest", "middle", "older"]
+
+
+def test_task_manager_discovery_does_not_remove_recreated_task(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    original = generator.create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    shutil.rmtree(original["dir"])
+    scan = manager._scan_task_dir_names
+
+    def scan_then_recreate(*args, **kwargs):
+        result = scan(*args, **kwargs)
+        generator.create_task("alpha", {"value": 2})
+        manager.add_task(manager._load_task_dir("alpha"))
+        return result
+
+    monkeypatch.setattr(manager, "_scan_task_dir_names", scan_then_recreate)
+    manager.sync_task_dirs_from_disk()
+
+    assert manager.get_task("alpha")["config"]["value"] == 2
+
+
+def test_task_manager_full_scan_keeps_task_added_while_loading(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    generator.create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, lazy_scan=None, owns_task_lifecycle=False)
+    load_dirs = manager._load_task_dirs
+    added = False
+
+    def load_then_add(names, **kwargs):
+        nonlocal added
+        loaded = load_dirs(names, **kwargs)
+        if not added:
+            added = True
+            generator.create_task("beta", {"value": 2})
+            manager.add_task(manager._load_task_dir("beta"))
+        return loaded
+
+    monkeypatch.setattr(manager, "_load_task_dirs", load_then_add)
+    manager.scan_disk()
+
+    assert {task["name"] for task in manager.list_tasks()} == {"alpha", "beta"}
+
+
+def test_task_manager_full_scan_keeps_task_reloaded_while_loading(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    load_dirs = manager._load_task_dirs
+    reloaded = False
+
+    def load_then_reload(names, **kwargs):
+        nonlocal reloaded
+        loaded = load_dirs(names, **kwargs)
+        if not reloaded:
+            reloaded = True
+            save_yaml(str(Path(task["dir"]) / CONFIG_FILENAME), {"value": 2})
+            manager.load_task_by_name("alpha")
+        return loaded
+
+    monkeypatch.setattr(manager, "_load_task_dirs", load_then_reload)
+    manager.scan_disk()
+
+    assert manager.get_task("alpha")["config"]["value"] == 2
+
+
+def test_task_manager_full_scan_reconciles_edited_task_after_concurrent_add(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    alpha = generator.create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    load_dirs = manager._load_task_dirs
+    added = False
+
+    def load_then_edit(names, **kwargs):
+        nonlocal added
+        loaded = load_dirs(names, **kwargs)
+        if not added:
+            added = True
+            save_yaml(str(Path(alpha["dir"]) / CONFIG_FILENAME), {"value": 2})
+            generator.create_task("beta", {"value": 3})
+            manager.add_task(manager._load_task_dir("beta"))
+        return loaded
+
+    monkeypatch.setattr(manager, "_load_task_dirs", load_then_edit)
+    manager.scan_disk()
+
+    assert manager.get_task("alpha")["config"]["value"] == 2
+    assert manager.get_task("beta")["config"]["value"] == 3
+
+
+def test_task_manager_parallel_directory_scan_keeps_order_and_skips_unsafe_paths(
+    tmp_path, monkeypatch,
+):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    base_time = time.time() - 100
+    for index in range(12):
+        task = generator.create_task(f"task-{index}", {"value": index})
+        os.utime(task["dir"], (base_time + index, base_time + index))
+    hidden = tasks_dir / ".internal"
+    hidden.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (tasks_dir / "unsafe").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pass
+    manager = _make_task_manager(tasks_dir, lazy_scan=None, owns_task_lifecycle=False)
+    validate = task_manager_module.validate_task_directory
+    worker_threads = []
+    main_thread = threading.get_ident()
+
+    def observed_validate(path):
+        worker_threads.append(threading.get_ident())
+        return validate(path)
+
+    monkeypatch.setattr(task_manager_module, "validate_task_directory", observed_validate)
+    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
+
+    ok, names = manager._scan_task_dir_names()
+
+    assert ok is True
+    assert names == [f"task-{index}" for index in reversed(range(12))]
+    assert any(thread != main_thread for thread in worker_threads)
+
+
+def test_task_manager_refresh_does_not_overwrite_replaced_task(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    update_task_info(task["dir"], lambda info: info.update({"status": "failed"}))
+    original_load = task_manager_module.load_task_info
+
+    def load_then_replace(task_dir, **kwargs):
+        stale_info = original_load(task_dir, **kwargs)
+        update_task_info(task_dir, lambda info: info.update({"status": "completed"}))
+        with manager._lock:
+            replacement = dict(manager._tasks_by_name["alpha"])
+        replacement["status"] = "completed"
+        manager.add_task(replacement)
+        return stale_info
+
+    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_replace)
+    manager.refresh_from_disk(check_all=True)
+
+    assert manager.get_task("alpha")["status"] == "completed"
+
+
+def test_task_manager_refresh_does_not_overwrite_newer_in_place_update(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    update_task_info(task["dir"], lambda info: info.update({"status": "failed"}))
+    original_load = task_manager_module.load_task_info
+
+    def load_then_refresh(task_dir, **kwargs):
+        stale_info = original_load(task_dir, **kwargs)
+        update_task_info(task_dir, lambda info: info.update({"status": "completed"}))
+        with manager._lock:
+            manager._apply_info_to_task(
+                manager._tasks_by_name["alpha"], original_load(task_dir),
+            )
+        return stale_info
+
+    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_refresh)
+    manager.refresh_from_disk(check_all=True)
+
+    assert manager.get_task("alpha")["status"] == "completed"
+
+
+def test_task_manager_exact_load_preserves_concurrent_update(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    original_load = manager._load_task_dir
+
+    def load_then_update(name, **kwargs):
+        stale_task = original_load(name, **kwargs)
+        updated = update_task_info(task["dir"], lambda info: info.update({"notes": "latest"}))
+        with manager._lock:
+            manager._apply_info_to_task(manager._tasks_by_name[name], updated)
+        return stale_task
+
+    monkeypatch.setattr(manager, "_load_task_dir", load_then_update)
+    loaded = manager.load_task_by_name("alpha")
+
+    assert loaded["notes"] == "latest"
+    assert manager.get_task("alpha")["notes"] == "latest"
+
+
+@pytest.mark.parametrize("reload_method", ["load_task_by_name", "scan_disk"])
+def test_task_manager_reload_keeps_independent_gpu_queue(tmp_path, reload_method):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager._sync_status_to_disk("alpha", "queued", run_index=1, counts_for_batch=False)
+    with manager._lock:
+        manager._tasks_by_name["alpha"]["_queued_independent"] = True
+
+    if reload_method == "scan_disk":
+        manager.scan_disk()
+    else:
+        manager.load_task_by_name("alpha")
+
+    picked, run_index = manager._pick_queued_task(independent_only=True)
+    assert picked is not None
+    assert picked["name"] == "alpha"
+    assert run_index == 1
+    assert "alpha" not in manager._batch_running_ids
+
+
+def test_task_manager_refresh_preserves_task_picked_during_read(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    original_load = task_manager_module.load_task_info
+
+    def load_then_pick(task_dir, **kwargs):
+        stale_info = original_load(task_dir, **kwargs)
+        picked, run_index = manager._pick_queued_task()
+        assert picked["name"] == "alpha"
+        assert run_index == 1
+        return stale_info
+
+    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_pick)
+    manager.refresh_from_disk(force_all=True)
+
+    assert manager.get_task("alpha")["status"] == "running"
+    assert "alpha" in manager._batch_running_ids
+
+
+def test_task_manager_full_scan_preserves_task_picked_during_read(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    original_load = manager._load_task_dirs
+
+    def load_then_pick(names, **kwargs):
+        loaded = original_load(names, **kwargs)
+        picked, _ = manager._pick_queued_task()
+        assert picked["name"] == "alpha"
+        return loaded
+
+    monkeypatch.setattr(manager, "_load_task_dirs", load_then_pick)
+    manager.scan_disk()
+
+    assert manager.get_task("alpha")["status"] == "running"
+    assert "alpha" in manager._batch_running_ids
+
+
+def test_task_manager_refresh_skips_metadata_replaced_during_read(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    update_task_info(task["dir"], lambda info: info.update({"status": "failed"}))
+    original_load = task_manager_module.load_task_info
+
+    def load_then_replace(task_dir, **kwargs):
+        stale_info = original_load(task_dir, **kwargs)
+        update_task_info(task_dir, lambda info: info.update({"status": "completed"}))
+        return stale_info
+
+    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_replace)
+    manager.refresh_from_disk(check_all=True)
+    assert manager.get_task("alpha")["status"] == "pending"
+
+    monkeypatch.setattr(task_manager_module, "load_task_info", original_load)
+    manager.refresh_from_disk(check_all=True)
+    assert manager.get_task("alpha")["status"] == "completed"
+
+
+def test_task_manager_refresh_detects_disk_write_after_local_update(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    original_update = task_manager_module.update_task_info
+
+    def update_then_external_edit(task_dir, mutator, **kwargs):
+        local_info = original_update(task_dir, mutator, **kwargs)
+        original_update(task_dir, lambda info: info.update({"notes": "external latest"}))
+        return local_info
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", update_then_external_edit)
+    assert manager.update_task_notes("alpha", "local edit", expected_notes="")[0]
+    manager.refresh_from_disk(task_ids=["alpha"])
+
+    assert manager.get_task("alpha")["notes"] == "external latest"
+
+
+def test_task_manager_parallel_refresh_preserves_order_and_error_semantics(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    created = [generator.create_task(f"task-{index}", {"value": index}) for index in range(12)]
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    original_order = [task["name"] for task in manager.list_tasks()]
+    update_task_info(created[0]["dir"], lambda info: info.update({"status": "failed"}))
+    (Path(created[5]["dir"]) / TASK_INFO_FILENAME).unlink()
+    probe = manager._probe_refresh_task
+    probe_threads = []
+    main_thread = threading.get_ident()
+
+    def observed_probe(task, *, check_payload):
+        probe_threads.append(threading.get_ident())
+        return probe(task, check_payload=check_payload)
+
+    monkeypatch.setattr(manager, "_probe_refresh_task", observed_probe)
+    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
+
+    with pytest.raises(FileNotFoundError):
+        manager.refresh_from_disk(check_all=True, raise_on_error=True)
+    assert manager.get_task("task-5") is not None
+
+    assert manager.refresh_from_disk(check_all=True) is True
+    assert [task["name"] for task in manager.list_tasks()] == [
+        name for name in original_order if name != "task-5"
+    ]
+    assert manager.get_task("task-0")["status"] == "failed"
+    assert any(thread != main_thread for thread in probe_threads)
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_task_manager_loads_many_task_dirs_in_order(tmp_path, monkeypatch, parallel):
+    manager = _make_task_manager(tmp_path, lazy_scan=None, owns_task_lifecycle=False)
+    names = [f"task-{index}" for index in range(12)]
+    loader_threads = []
+    main_thread = threading.get_ident()
+
+    def load(name, *, raise_on_error=False):
+        loader_threads.append(threading.get_ident())
+        return None if name == "task-4" else {"name": name}
+
+    monkeypatch.setattr(manager, "_load_task_dir", load)
+    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: parallel)
+
+    loaded = manager._load_task_dirs(names)
+
+    assert [task["name"] for task in loaded] == [name for name in names if name != "task-4"]
+    assert any(thread != main_thread for thread in loader_threads) is parallel
+
+
+def test_task_manager_strict_discovery_keeps_state_on_parallel_load_error(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    broken = tasks_dir / "broken"
+    broken.mkdir()
+    (broken / TASK_INFO_FILENAME).write_text("not json", encoding="utf-8")
+    old_time = time.time() - 100
+    os.utime(broken, (old_time, old_time))
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    for index in range(9):
+        generator.create_task(f"task-{index}", {"value": index})
+    manager = _make_task_manager(tasks_dir, lazy_scan=None, owns_task_lifecycle=False)
+    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
+
+    with pytest.raises(ValueError):
+        manager.sync_task_dirs_from_disk(raise_on_error=True)
+
+    assert manager.list_tasks() == []
 
 
 def test_task_manager_refresh_keeps_tasks_when_directory_scan_fails(tmp_path):
@@ -6562,7 +7091,7 @@ def test_task_manager_keeps_live_foreign_runner_running(tmp_path, monkeypatch):
     assert manager.get_task("remote")["status"] == "running"
 
 
-def test_task_manager_refresh_keeps_expired_remote_runner_when_mtime_unchanged(tmp_path, monkeypatch):
+def test_task_manager_refresh_keeps_expired_remote_runner_when_metadata_changes(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     task_dir = tasks_dir / "remote"
@@ -6592,13 +7121,12 @@ def test_task_manager_refresh_keeps_expired_remote_runner_when_mtime_unchanged(t
     task = manager.get_task("remote")
     assert task["status"] == "running"
     original_mtime_ns = task["_mtime_ns"]
+    assert manager.refresh_from_disk() is False
 
     update_task_info(str(task_dir), lambda info: info.update({"lease_until": time.time() - 60}))
     expired_mtime_ns = (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns
-    with manager._lock:
-        manager._tasks_by_name["remote"]["_mtime_ns"] = expired_mtime_ns
 
-    assert manager.refresh_from_disk() is False
+    assert manager.refresh_from_disk() is True
     refreshed = manager.get_task("remote")
     assert refreshed["status"] == "running"
     assert refreshed["_mtime_ns"] == expired_mtime_ns
@@ -7206,6 +7734,243 @@ def test_task_manager_internal_executor_and_worker_error_paths(tmp_path, monkeyp
     assert "alpha" not in manager._batch_running_ids
 
 
+@pytest.mark.parametrize("independent", [False, True])
+@pytest.mark.parametrize("final_write_fails", [False, True])
+def test_task_manager_failed_submission_finalizes_or_retries_metadata(
+    tmp_path, monkeypatch, independent, final_write_fails,
+):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1, counts_for_batch=not independent)
+
+    class RejectingExecutor:
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("executor rejected submission")
+
+    if independent:
+        manager._independent_executor = RejectingExecutor()
+    else:
+        manager._executor = RejectingExecutor()
+        monkeypatch.setattr(manager, "_ensure_executor", lambda: None)
+
+    def fail_final_write(*args, **kwargs):
+        raise PermissionError("read-only task metadata")
+
+    if final_write_fails:
+        monkeypatch.setattr(manager, "_mark_failed_on_disk", fail_final_write)
+    manager._submit_task(manager._tasks_by_name["alpha"], 1, independent=independent)
+
+    assert "alpha" not in manager._running_ids
+    assert "alpha" not in manager._batch_running_ids
+    assert manager.is_processing is False
+    current = manager.get_task("alpha")
+    assert current["status"] == "failed"
+    if final_write_fails:
+        assert "read-only task metadata" in current["_load_error"]
+    else:
+        assert current["_load_error"] == ""
+        assert load_task_info(task["dir"])["status"] == "failed"
+        error_text = (Path(task["dir"]) / RUN_LOGS_DIR / ERROR_LOG_FILENAME).read_text(encoding="utf-8")
+        assert "reason=submission_error" in error_text
+        assert f"independent={independent}" in error_text
+        assert "executor rejected submission" in error_text
+
+
+@pytest.mark.parametrize("independent", [False, True])
+@pytest.mark.parametrize("final_write_fails", [False, True])
+def test_task_manager_rejected_submission_cannot_execute_later(
+    tmp_path, monkeypatch, independent, final_write_fails,
+):
+    tasks_dir = tmp_path / "tasks"
+    TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1, counts_for_batch=not independent)
+    launched = []
+    monkeypatch.setattr(task_manager_module, "run_task_worker", lambda *args: launched.append(args[1]))
+
+    def fail_final_write(*args, **kwargs):
+        raise PermissionError("read-only task metadata")
+
+    if final_write_fails:
+        monkeypatch.setattr(manager, "_mark_failed_on_disk", fail_final_write)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        if independent:
+            manager._independent_executor = pool
+        else:
+            manager._executor = pool
+            monkeypatch.setattr(manager, "_ensure_executor", lambda: None)
+        # A real pool enqueues the work before trying to start its first thread.
+        with patch.object(threading.Thread, "start", side_effect=RuntimeError("cannot start thread")):
+            manager._submit_task(manager._tasks_by_name["alpha"], 1, independent=independent)
+
+        assert manager.get_task("alpha")["status"] == "failed"
+        assert "alpha" not in manager._running_ids
+        # Starting another worker must drain the rejected item without launching it.
+        pool.submit(lambda: None).result(timeout=5)
+
+    assert launched == []
+
+
+@pytest.mark.parametrize("disk_status", ["queued", "running"])
+@pytest.mark.parametrize("independent", [False, True])
+def test_task_manager_claim_write_error_does_not_hold_a_worker_slot(tmp_path, monkeypatch, disk_status, independent):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", disk_status, run_index=1, counts_for_batch=not independent)
+    if disk_status == "queued":
+        with manager._lock:
+            manager._tasks_by_name["alpha"]["_queued_independent"] = independent
+        target, run_index = manager._pick_queued_task()
+        target.pop("_queued_independent", None)
+    else:
+        target, run_index = manager._tasks_by_name["alpha"], 1
+
+    def fail_write(*args, **kwargs):
+        raise PermissionError("read-only task metadata")
+
+    original_update = task_manager_module.update_task_info
+    monkeypatch.setattr(task_manager_module, "update_task_info", fail_write)
+    try:
+        manager._submit_task(target, run_index, independent=independent)
+    except PermissionError:
+        pass
+
+    assert "alpha" not in manager._running_ids
+    assert "alpha" not in manager._batch_running_ids
+    assert load_task_info(task["dir"])["status"] == disk_status
+    assert manager.get_task("alpha")["status"] != "running"
+    monkeypatch.setattr(task_manager_module, "update_task_info", original_update)
+    if disk_status == "queued":
+        picked, next_run = manager._pick_queued_task(independent_only=independent)
+        assert picked is not None
+        assert next_run == 1
+        assert ("alpha" in manager._batch_running_ids) is (not independent)
+        assert manager._claim_task_for_run(picked, next_run, counts_for_batch=not independent)
+    else:
+        manager.owns_task_lifecycle = True
+        manager.refresh_from_disk()
+        assert load_task_info(task["dir"])["status"] == "failed"
+        assert manager.get_task("alpha")["_load_error"] == ""
+
+
+def test_task_manager_failed_queue_claim_allows_next_task_to_run(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    alpha = generator.create_task("alpha", {"value": 1})
+    generator.create_task("beta", {"value": 2})
+    generator.create_task("gamma", {"value": 3})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    assert manager._sync_status_to_disk("beta", "queued", run_index=1)
+    target, run_index = manager._pick_queued_task()
+    assert target["name"] == "alpha"
+    original_update = task_manager_module.update_task_info
+
+    def fail_alpha(task_dir, *args, **kwargs):
+        if task_dir == alpha["dir"]:
+            raise PermissionError("alpha metadata is read-only")
+        return original_update(task_dir, *args, **kwargs)
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", fail_alpha)
+    with pytest.raises(PermissionError, match="read-only"):
+        manager._submit_task(target, run_index, independent=False)
+
+    next_task, next_run = manager._pick_queued_task()
+    assert next_task["name"] == "beta"
+    assert manager._claim_task_for_run(next_task, next_run, counts_for_batch=True)
+
+    assert manager._sync_status_to_disk("gamma", "queued", run_index=1)
+    assert manager._sync_status_to_disk("beta", "completed", run_index=1)
+    monkeypatch.setattr(task_manager_module, "update_task_info", original_update)
+    manager._refresh_queued_runner_leases()
+
+    recovered_task, recovered_run = manager._pick_queued_task()
+    assert recovered_task["name"] == "alpha"
+    assert recovered_run == 1
+
+
+def test_task_manager_queue_heartbeat_continues_after_one_metadata_write_fails(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    generator = TaskGenerator(root_dir=str(tasks_dir))
+    beta = generator.create_task("beta", {"value": 2})
+    alpha = generator.create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    assert manager._sync_status_to_disk("beta", "queued", run_index=1)
+    update_task_info(beta["dir"], lambda info: info.update({"lease_heartbeat": 1.0}))
+    original_update = task_manager_module.update_task_info
+
+    def fail_alpha(task_dir, *args, **kwargs):
+        if task_dir == alpha["dir"]:
+            raise PermissionError("alpha metadata is read-only")
+        return original_update(task_dir, *args, **kwargs)
+
+    monkeypatch.setattr(task_manager_module, "update_task_info", fail_alpha)
+    manager._refresh_queued_runner_leases()
+
+    assert load_task_info(beta["dir"])["lease_heartbeat"] > 1.0
+
+
+@pytest.mark.parametrize("new_status", ["queued", "running"])
+def test_task_manager_stale_claim_does_not_rewind_a_new_run(tmp_path, new_status):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+    update_task_info(task["dir"], lambda info: info.update({"status": "completed", "run_statuses": ["completed"]}))
+    assert manager._sync_status_to_disk("alpha", new_status, run_index=2)
+
+    claimed = manager._claim_task_for_run(manager._tasks_by_name["alpha"], 1, counts_for_batch=True)
+
+    assert claimed is None
+    persisted = load_task_info(task["dir"])
+    assert persisted["status"] == new_status
+    assert persisted["run_index"] == (1 if new_status == "queued" else 2)
+    assert persisted["run_statuses"][0] == "completed"
+    manager._submit_task(manager._tasks_by_name["alpha"], 1, independent=False)
+    if new_status == "running":
+        assert "alpha" in manager._running_ids
+        assert manager.get_task("alpha")["run_index"] == 2
+
+
+def test_task_manager_gpu_claim_rejection_preserves_new_run_resources(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    config = GpuSchedulerConfig(enabled=True, min_free_memory_gb=8, stable_seconds=1)
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(
+        provider=_StaticGpuProvider([GpuDevice(0, "A800", "GPU-0", 2048, 40960, 1)]),
+        clock=lambda: now[0],
+    )
+    manager.gpu_scheduler.snapshot(config)
+    now[0] += 1
+
+    def claim_after_restart(*args, **kwargs):
+        updated = update_task_info(task["dir"], lambda info: info.update({
+            "status": "running", "run_index": 2,
+            "_gpu_assignment": {"run_index": 2, "gpu_ids": [0]},
+        }))
+        with manager._lock:
+            manager._apply_info_to_task(manager._tasks_by_name["alpha"], updated)
+            manager._mark_running_locked("alpha", counts_for_batch=True)
+        return None
+
+    monkeypatch.setattr(manager, "_claim_task_for_run", claim_after_restart)
+    picked, _ = manager._pick_queued_gpu_task(config, independent_only=False)
+
+    assert picked is None
+    current = manager.get_task("alpha")
+    assert current["status"] == "running"
+    assert current["run_index"] == 2
+    assert current["_gpu_assignment"]["run_index"] == 2
+    assert "alpha" in manager._batch_running_ids
+    assert manager.gpu_scheduler._reservations == {"alpha": [0]}
+
+
 def test_task_manager_old_worker_callback_does_not_clear_new_run(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -7246,6 +8011,325 @@ def test_task_manager_old_worker_callback_does_not_clear_new_run(tmp_path, monke
     assert current["run_index"] == 2
     assert task["name"] in manager._running_ids
     assert released == []
+
+
+def test_task_manager_worker_callback_preserves_run_started_during_read(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager._sync_status_to_disk("alpha", "running", run_index=1)
+    update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
+    original_load = task_manager_module.load_task_info
+
+    def load_then_restart(task_dir, **kwargs):
+        stale_info = original_load(task_dir, **kwargs)
+        manager._sync_status_to_disk("alpha", "running", run_index=2)
+        return stale_info
+
+    released = []
+    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_restart)
+    monkeypatch.setattr(manager.gpu_scheduler, "release", released.append)
+    future = Future()
+    future.set_result(None)
+
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    current = manager.get_task("alpha")
+    assert current["status"] == "running"
+    assert current["run_index"] == 2
+    assert "alpha" in manager._batch_running_ids
+    assert released == []
+
+
+@pytest.mark.parametrize("failure", [PermissionError("read-only metadata"), TimeoutError("metadata lock busy")])
+def test_task_manager_worker_error_releases_resources_when_final_write_fails(tmp_path, monkeypatch, failure):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+    update_task_info(task["dir"], lambda info: info.update({"_gpu_assignment": {"gpu_ids": [0]}}))
+
+    def fail_final_write(*args, **kwargs):
+        raise failure
+
+    released = []
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", fail_final_write)
+    monkeypatch.setattr(manager.gpu_scheduler, "release", released.append)
+    future = Future()
+    future.set_exception(RuntimeError("worker failed"))
+
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    assert "alpha" not in manager._running_ids
+    assert "alpha" not in manager._batch_running_ids
+    assert manager.is_processing is False
+    assert released == ["alpha"]
+    current = manager.get_task("alpha")
+    assert current["status"] == "failed"
+    assert str(failure) in current["_load_error"]
+    assert load_task_info(task["dir"])["status"] == "running"
+    manager._sync_gpu_reservations_from_running_tasks()
+    assert "alpha" not in manager.gpu_scheduler._reservations
+
+
+@pytest.mark.parametrize("concurrent_change", ["notes", "new_run"])
+def test_task_manager_final_write_failure_keeps_concurrent_updates(tmp_path, monkeypatch, concurrent_change):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+
+    def change_then_fail(*args, **kwargs):
+        if concurrent_change == "notes":
+            assert manager.update_task_notes("alpha", "latest notes", expected_notes="")[0]
+        else:
+            update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
+            assert manager._sync_status_to_disk("alpha", "running", run_index=2)
+        raise TimeoutError("metadata lock busy")
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", change_then_fail)
+    future = Future()
+    future.set_exception(RuntimeError("worker failed"))
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    current = manager.get_task("alpha")
+    if concurrent_change == "notes":
+        assert current["notes"] == "latest notes"
+        assert current["status"] == "failed"
+        assert "alpha" not in manager._running_ids
+    else:
+        assert current["run_index"] == 2
+        assert current["status"] == "running"
+        assert "alpha" in manager._running_ids
+
+
+def test_task_manager_stale_reconciliation_preserves_new_local_run(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager.owns_task_lifecycle = True
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+    stale_info = load_task_info(task["dir"])
+    with manager._lock:
+        manager._clear_running_locked("alpha")
+    original_mark_failed = manager._mark_failed_on_disk
+
+    def restart_then_mark(*args, **kwargs):
+        update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
+        assert manager._sync_status_to_disk("alpha", "running", run_index=2)
+        return original_mark_failed(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", restart_then_mark)
+    info, changed = manager._fail_unowned_running_info_if_needed("alpha", task["dir"], stale_info)
+
+    assert changed is False
+    assert info["status"] == "running"
+    assert info["run_index"] == 2
+    assert load_task_info(task["dir"])["status"] == "running"
+
+
+@pytest.mark.parametrize("reload_method", ["refresh", "load_task_by_name", "scan_disk"])
+def test_task_manager_retries_failed_completion_when_storage_recovers(tmp_path, monkeypatch, reload_method):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager.owns_task_lifecycle = True
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+    original_mark_failed = manager._mark_failed_on_disk
+
+    def fail_final_write(*args, **kwargs):
+        raise PermissionError("read-only metadata")
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", fail_final_write)
+    future = Future()
+    future.set_exception(RuntimeError("worker failed"))
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    if reload_method == "scan_disk":
+        manager.scan_disk()
+    elif reload_method == "load_task_by_name":
+        manager.load_task_by_name("alpha")
+    else:
+        manager.refresh_from_disk(check_all=True)
+    assert manager.get_task("alpha")["status"] == "failed"
+    assert "read-only metadata" in manager.get_task("alpha")["_load_error"]
+    assert manager.get_task("alpha")["run_statuses"] == ["failed"]
+    assert "_terminal_write_pending" not in manager.get_task("alpha")
+    with pytest.raises(PermissionError, match="read-only metadata"):
+        manager.refresh_from_disk(raise_on_error=True)
+
+    monkeypatch.setattr(manager, "_mark_failed_on_disk", original_mark_failed)
+    manager.refresh_from_disk()
+
+    assert load_task_info(task["dir"])["status"] == "failed"
+    assert manager.get_task("alpha")["status"] == "failed"
+    assert manager.get_task("alpha")["_load_error"] == ""
+
+
+def test_task_manager_worker_completion_does_not_wait_for_a_long_metadata_lock(tmp_path):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager.owns_task_lifecycle = True
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+    future = Future()
+    future.set_exception(RuntimeError("worker failed"))
+    finished = threading.Event()
+
+    def complete_worker():
+        manager._on_task_done(
+            future,
+            "alpha",
+            expected_runner_id=manager.runner_id,
+            expected_run_index=1,
+        )
+        finished.set()
+
+    with task_manager_module.task_info_lock(task["dir"]):
+        callback = threading.Thread(target=complete_worker)
+        callback.start()
+        finished_while_locked = finished.wait(timeout=2.0)
+    callback.join(timeout=5)
+
+    assert finished_while_locked is True
+    assert "alpha" not in manager._batch_running_ids
+    manager.refresh_from_disk()
+    assert load_task_info(task["dir"])["status"] == "failed"
+    assert manager.get_task("alpha")["_load_error"] == ""
+
+
+@pytest.mark.parametrize("process_started", [False, True])
+def test_task_manager_gpu_reservations_keep_starting_or_live_local_run(tmp_path, process_started):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+
+    def assign_gpu(info):
+        info["_gpu_assignment"] = {"gpu_ids": [0]}
+        if process_started:
+            info["pids"] = [os.getpid()]
+            info["pid_create_times"] = [psutil.Process().create_time()]
+
+    update_task_info(task["dir"], assign_gpu)
+    if process_started:
+        with manager._lock:
+            manager._clear_running_locked("alpha")
+
+    manager._sync_gpu_reservations_from_running_tasks()
+
+    assert manager.gpu_scheduler._reservations == {"alpha": [0]}
+
+
+@pytest.mark.parametrize("metadata_state", ["missing", "corrupt"])
+@pytest.mark.parametrize("current_run_index", [1, 2])
+def test_task_manager_worker_done_releases_slot_when_metadata_unreadable(
+    tmp_path, monkeypatch, metadata_state, current_run_index,
+):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "running", run_index=1)
+    if current_run_index == 2:
+        update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
+        assert manager._sync_status_to_disk("alpha", "running", run_index=2)
+    info_path = Path(task["dir"]) / TASK_INFO_FILENAME
+    if metadata_state == "missing":
+        info_path.unlink()
+    else:
+        info_path.write_text("{broken", encoding="utf-8")
+    released = []
+    monkeypatch.setattr(manager.gpu_scheduler, "release", released.append)
+    future = Future()
+    future.set_exception(ValueError("Could not persist the final task state"))
+
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    if current_run_index == 2:
+        assert "alpha" in manager._batch_running_ids
+        assert manager.get_task("alpha")["status"] == "running"
+        assert released == []
+        return
+
+    assert "alpha" not in manager._running_ids
+    assert "alpha" not in manager._batch_running_ids
+    assert manager.is_processing is False
+    assert released == ["alpha"]
+    current = manager.get_task("alpha")
+    assert current["status"] == "failed"
+    assert "metadata" in current["_load_error"].lower()
+    if metadata_state == "corrupt":
+        assert info_path.read_text(encoding="utf-8") == "{broken"
+    else:
+        assert not info_path.exists()
+
+
+@pytest.mark.parametrize("remove_during_read", [False, True])
+def test_task_manager_worker_done_releases_slot_after_full_scan_removes_task(
+    tmp_path, monkeypatch, remove_during_read,
+):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    manager._sync_status_to_disk("alpha", "running", run_index=1)
+
+    def remove_task():
+        shutil.rmtree(task["dir"])
+        manager.scan_disk()
+        assert manager.get_task("alpha") is None
+
+    if remove_during_read:
+        original_load = task_manager_module.load_task_info
+
+        def load_then_remove(task_dir, **kwargs):
+            info = original_load(task_dir, **kwargs)
+            remove_task()
+            return info
+
+        monkeypatch.setattr(task_manager_module, "load_task_info", load_then_remove)
+    else:
+        remove_task()
+    released = []
+    monkeypatch.setattr(manager.gpu_scheduler, "release", released.append)
+    future = Future()
+    future.set_result(None)
+
+    manager._on_task_done(
+        future,
+        "alpha",
+        expected_runner_id=manager.runner_id,
+        expected_run_index=1,
+    )
+
+    assert "alpha" not in manager._running_ids
+    assert "alpha" not in manager._batch_running_ids
+    assert manager.is_processing is False
+    assert released == ["alpha"]
 
 
 def test_task_manager_shutdown_retries_cleanup_before_unregistering_atexit(tmp_path, monkeypatch):
@@ -8659,6 +9743,7 @@ def test_run_environment_collection_does_not_delay_log_stream(tmp_path, monkeypa
     monkeypatch.setattr(executor, "_spawn_captured_process", lambda *a, **k: process)
     output_emitted = threading.Event()
     streamed_during_collection = []
+    emitted_byte_lengths = []
 
     def collect(*args, **kwargs):
         # Simulate a GPU query waiting while the command produces output.
@@ -8666,6 +9751,7 @@ def test_run_environment_collection_does_not_delay_log_stream(tmp_path, monkeypa
         return {"host": "gpu-server"}
 
     def emit(_name, text, **kwargs):
+        emitted_byte_lengths.append(kwargs["byte_length"])
         if "training started" in text:
             output_emitted.set()
 
@@ -8676,6 +9762,7 @@ def test_run_environment_collection_does_not_delay_log_stream(tmp_path, monkeypa
     assert result["status"] == "completed"
     assert streamed_during_collection == [True]
     assert load_task_info(task_dir)["run_environments"] == [{"host": "gpu-server"}]
+    assert sum(emitted_byte_lengths) == (Path(task_dir) / "run_logs" / "run1.log").stat().st_size
 
 
 def test_run_environment_survives_rerun_and_runner_cleanup(tmp_path, monkeypatch):

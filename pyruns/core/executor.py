@@ -178,6 +178,11 @@ def _append_run_log_text(log_path: str, text: str, *, clean_boundary: bool = Fal
     return payload
 
 
+def _text_log_write_size(text: str) -> int:
+    """Count UTF-8 bytes after text-mode newline conversion on this platform."""
+    return len(text.replace("\n", os.linesep).encode("utf-8"))
+
+
 def _prepend_pythonpath(env: Dict[str, str], path: str) -> None:
     """Ensure child scripts can import the same pyruns package as the parent."""
 
@@ -822,6 +827,7 @@ def _persist_run_source_state(
             task_name,
             payload.replace("\n", "\r\n"),
             offset=os.path.getsize(log_path),
+            byte_length=_text_log_write_size(payload),
             log_file_name=os.path.basename(log_path),
             task_dir=task_dir,
         )
@@ -1935,11 +1941,12 @@ def run_task_worker(
         log_path = _get_log_path(task_dir, run_index)
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(start_payload)
-            start_offset = handle.tell()
+        start_offset = os.path.getsize(log_path)
         log_emitter.emit(
             name,
             start_payload.replace("\n", "\r\n"),
             offset=start_offset,
+            byte_length=_text_log_write_size(start_payload),
             log_file_name=os.path.basename(log_path),
             task_dir=task_dir,
         )
@@ -2018,6 +2025,7 @@ def run_task_worker(
                                 name,
                                 normalized,
                                 offset=handle.tell(),
+                                byte_length=len(encoded),
                                 log_file_name=os.path.basename(log_path),
                                 task_dir=task_dir,
                             )
@@ -2139,6 +2147,7 @@ def run_task_worker(
             name,
             finish_payload.replace("\n", "\r\n"),
             offset=os.path.getsize(log_path),
+            byte_length=_text_log_write_size(finish_payload),
             log_file_name=os.path.basename(log_path),
             task_dir=task_dir,
         )
@@ -2190,6 +2199,7 @@ def run_task_worker(
                 name,
                 final_status_payload.replace("\n", "\r\n"),
                 offset=os.path.getsize(log_path),
+                byte_length=_text_log_write_size(final_status_payload),
                 log_file_name=os.path.basename(log_path),
                 task_dir=task_dir,
             )
@@ -2299,6 +2309,7 @@ def run_task_worker(
                 name,
                 run_payload.replace("\n", "\r\n"),
                 offset=os.path.getsize(log_path),
+                byte_length=_text_log_write_size(run_payload),
                 log_file_name=os.path.basename(log_path),
                 task_dir=task_dir,
             )

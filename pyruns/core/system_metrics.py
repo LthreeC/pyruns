@@ -7,6 +7,7 @@ import math
 import os
 import shlex
 import subprocess
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -43,6 +44,7 @@ class SystemMonitor:
     )
 
     def __init__(self, *, gpu_ttl_sec: float = 1.5) -> None:
+        self._gpu_lock = threading.Lock()
         self._gpu_cache: List[Dict[str, Any]] = []
         self._gpu_cache_at: float = 0.0
         self._gpu_cache_valid: bool = False
@@ -456,6 +458,16 @@ class SystemMonitor:
         detail: bool | None = None,
     ) -> List[Dict[str, Any]]:
         """Return cached GPU metrics and load process details on demand."""
+
+        with self._gpu_lock:
+            return self._get_gpu_metrics_locked(include_processes=include_processes, detail=detail)
+
+    def _get_gpu_metrics_locked(
+        self,
+        *,
+        include_processes: bool,
+        detail: bool | None,
+    ) -> List[Dict[str, Any]]:
 
         include_detail = include_processes if detail is None else bool(detail)
         now = time.monotonic()

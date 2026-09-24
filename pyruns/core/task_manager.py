@@ -21,6 +21,7 @@ from pyruns._config import (
     ERROR_LOG_FILENAME,
     QUEUE_LOG_FILENAME,
     TASK_KIND_CONFIG,
+    TASK_KIND_SHELL,
     TASK_INFO_FILENAME,
     TASKS_DIR,
     TRASH_DIR,
@@ -65,6 +66,7 @@ from pyruns.utils.task_files import (
     normalize_task_kind,
     read_task_payload,
     resolve_task_config_file,
+    resolve_task_payload_path,
 )
 
 logger = get_logger(__name__)
@@ -169,6 +171,7 @@ class TaskManager:
         self.is_processing = False
         self._running_ids: set[str] = set()
         self._batch_running_ids: set[str] = set()
+        self._failed_claim_ids: set[str] = set()
         self._disk_scan_complete = False
         self.gpu_scheduler = GpuResourceScheduler()
 
@@ -217,6 +220,9 @@ class TaskManager:
     def _mark_running_locked(self, task_name: str, *, counts_for_batch: bool) -> None:
         if not task_name:
             return
+        task = self._tasks_by_name.get(task_name)
+        if task is not None:
+            task["_registry_revision"] = task.get("_registry_revision", 0) + 1
         self._running_ids.add(task_name)
         if counts_for_batch:
             self._batch_running_ids.add(task_name)
@@ -332,6 +338,11 @@ class TaskManager:
         data["dir"] = str(data.get("dir", "")).replace("\\", "/")
         data["config"] = to_container(data.get("config", {}) or {}, resolve=False)
         data.pop("_gpu_wait_persisted_signature", None)
+        data.pop("_info_signature", None)
+        data.pop("_payload_signature", None)
+        data.pop("_config_file_explicit", None)
+        data.pop("_registry_revision", None)
+        data.pop("_terminal_write_pending", None)
         gpu_wait = TaskManager._serialized_gpu_wait(data)
         if gpu_wait is None:
             data.pop("gpu_wait", None)
@@ -541,6 +552,11 @@ class TaskManager:
                 self._disk_scan_complete = True
             return
 
+        with self._lock:
+            known_tasks = {
+                name: (task, task.get("_registry_revision", 0))
+                for name, task in self._tasks_by_name.items()
+            }
         scan_ok, subdirs = self._scan_task_dir_names()
         if not scan_ok:
             logger.debug("scan_disk skipped; could not list task directories under %s", self.tasks_dir)
@@ -548,29 +564,82 @@ class TaskManager:
                 self._disk_scan_complete = True
             return
 
-        # Parallel I/O: load task dirs concurrently for large workspaces
-        if len(subdirs) > 8:
-            with ThreadPoolExecutor(max_workers=min(16, len(subdirs))) as pool:
-                results = list(pool.map(self._load_task_dir, subdirs))
-            new_tasks = [t for t in results if t is not None]
-        else:
-            new_tasks = []
-            for dir_name in subdirs:
-                task = self._load_task_dir(dir_name)
-                if task is not None:
-                    new_tasks.append(task)
+        new_tasks = self._load_task_dirs(subdirs)
 
         with self._lock:
-            self.tasks = new_tasks
-            self._rebuild_indexes_locked()
-            self._recompute_processing_flag_locked()
+            concurrent_change = (
+                set(self._tasks_by_name) != set(known_tasks)
+                or any(
+                    self._tasks_by_name[name] is not task
+                    or task.get("_registry_revision", 0) != revision
+                    for name, (task, revision) in known_tasks.items()
+                    if name in self._tasks_by_name
+                )
+            )
+            if not concurrent_change:
+                for task in new_tasks:
+                    self._preserve_queue_dispatch_mode(task, self._tasks_by_name.get(task["name"]))
+                self.tasks = new_tasks
+                self._rebuild_indexes_locked()
+                self._recompute_processing_flag_locked()
+            unchanged_names = [
+                name for name, (task, revision) in known_tasks.items()
+                if self._tasks_by_name.get(name) is task
+                and task.get("_registry_revision", 0) == revision
+            ] if concurrent_change else []
             self._disk_scan_complete = True
+        if concurrent_change:
+            self.sync_task_dirs_from_disk()
+            if unchanged_names:
+                self.refresh_from_disk(task_ids=unchanged_names)
+            logger.debug("scan_disk reconciled concurrent task changes")
+            return
         logger.debug("scan_disk completed: %d tasks found", len(new_tasks))
 
     def _list_task_dir_names(self) -> list[str]:
         """Return task folder names ordered by directory mtime, newest first."""
         _ok, names = self._scan_task_dir_names()
         return names
+
+    @staticmethod
+    def _parallel_loading_worthwhile(elapsed: float, cpu_time: float) -> bool:
+        return elapsed >= 0.008 and elapsed - cpu_time >= elapsed * 0.5
+
+    def _map_task_disk_io(self, items: list[Any], load: Callable[[Any], Any]) -> list[Any]:
+        """Preserve item order while parallelizing slow filesystem probes."""
+        if len(items) <= 8:
+            return [load(item) for item in items]
+
+        results = []
+        sample_count = min(3, len(items))
+        for index in range(sample_count):
+            started = time.perf_counter()
+            cpu_started = time.thread_time()
+            results.append(load(items[index]))
+            elapsed = time.perf_counter() - started
+            cpu_time = time.thread_time() - cpu_started
+            if self._parallel_loading_worthwhile(elapsed, cpu_time):
+                remaining = items[index + 1:]
+                if remaining:
+                    with ThreadPoolExecutor(max_workers=min(16, len(remaining))) as pool:
+                        results.extend(pool.map(load, remaining))
+                return results
+
+        results.extend(load(item) for item in items[sample_count:])
+        return results
+
+    def _load_task_dirs(
+        self,
+        names: list[str],
+        *,
+        raise_on_error: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """Load in disk order, using threads only when a sample waits on I/O."""
+        def load(name: str) -> Dict[str, Any] | None:
+            return self._load_task_dir(name, raise_on_error=raise_on_error)
+
+        results = self._map_task_disk_io(names, load)
+        return [task for task in results if task is not None]
 
     def _scan_task_dir_names(
         self,
@@ -583,25 +652,30 @@ class TaskManager:
 
         try:
             validate_tasks_root(self.tasks_dir)
-            entries = []
+            def inspect_entry(entry: os.DirEntry) -> tuple[str, int] | None:
+                try:
+                    validate_task_directory(entry.path)
+                except ValueError as exc:
+                    logger.warning("Ignoring unsafe task directory %s: %s", entry.path, exc)
+                    return None
+                if not entry.is_dir(follow_symlinks=False):
+                    return None
+                try:
+                    mtime_ns = entry.stat().st_mtime_ns
+                except OSError:
+                    mtime_ns = 0
+                return entry.name, mtime_ns
+
             with os.scandir(self.tasks_dir) as it:
-                for entry in it:
-                    # Task names cannot start with '.', so hidden directories are
-                    # always Pyruns internals (for example transactional staging)
-                    # or foreign metadata. Never surface them as corrupt tasks.
-                    if not entry.name.startswith(".") and entry.name != TRASH_DIR:
-                        try:
-                            validate_task_directory(entry.path)
-                        except ValueError as exc:
-                            logger.warning("Ignoring unsafe task directory %s: %s", entry.path, exc)
-                            continue
-                        if not entry.is_dir(follow_symlinks=False):
-                            continue
-                        try:
-                            mtime_ns = entry.stat().st_mtime_ns
-                        except OSError:
-                            mtime_ns = 0
-                        entries.append((entry.name, mtime_ns))
+                # Hidden names are Pyruns internals or foreign metadata.
+                candidates = [
+                    entry for entry in it
+                    if not entry.name.startswith(".") and entry.name != TRASH_DIR
+                ]
+                entries = [
+                    result for result in self._map_task_disk_io(candidates, inspect_entry)
+                    if result is not None
+                ]
             entries.sort(key=lambda x: x[1], reverse=True)
             return True, [name for name, _ in entries]
         except (OSError, ValueError) as exc:
@@ -627,6 +701,11 @@ class TaskManager:
                 self._disk_scan_complete = True
             return had_tasks
 
+        with self._lock:
+            known_tasks = {
+                name: (task, task.get("_registry_revision", 0))
+                for name, task in self._tasks_by_name.items()
+            }
         scan_ok, disk_names = self._scan_task_dir_names(
             raise_on_error=raise_on_error,
         )
@@ -634,35 +713,13 @@ class TaskManager:
             return False
 
         disk_name_set = set(disk_names)
-        with self._lock:
-            known_names = set(self._tasks_by_name)
-
+        known_names = set(known_tasks)
         missing_names = known_names - disk_name_set
         new_names = [name for name in disk_names if name not in known_names]
         if not missing_names and not new_names:
             return False
 
-        if len(new_names) > 8:
-            with ThreadPoolExecutor(max_workers=min(16, len(new_names))) as pool:
-                results = list(
-                    pool.map(
-                        lambda name: self._load_task_dir(
-                            name,
-                            raise_on_error=raise_on_error,
-                        ),
-                        new_names,
-                    )
-                )
-            new_tasks = [task for task in results if task is not None]
-        else:
-            new_tasks = [
-                task
-                for task in (
-                    self._load_task_dir(name, raise_on_error=raise_on_error)
-                    for name in new_names
-                )
-                if task is not None
-            ]
+        new_tasks = self._load_task_dirs(new_names, raise_on_error=raise_on_error)
         if raise_on_error:
             loaded_names = {
                 str(task.get("name", "") or "")
@@ -680,14 +737,19 @@ class TaskManager:
 
         changed = False
         with self._lock:
-            if missing_names:
+            missing_current_names = {
+                name for name in missing_names
+                if self._tasks_by_name.get(name) is known_tasks[name][0]
+                and known_tasks[name][0].get("_registry_revision", 0) == known_tasks[name][1]
+            }
+            if missing_current_names:
                 before_count = len(self.tasks)
                 self.tasks = [
                     task
                     for task in self.tasks
-                    if task and task.get("name") not in missing_names
+                    if task and task.get("name") not in missing_current_names
                 ]
-                self._clear_running_many_locked(missing_names)
+                self._clear_running_many_locked(missing_current_names)
                 changed = changed or len(self.tasks) != before_count
                 self._rebuild_indexes_locked()
 
@@ -766,6 +828,8 @@ class TaskManager:
         task_name: str,
         task_dir: str,
         info: Dict[str, Any],
+        *,
+        raise_on_error: bool = False,
     ) -> tuple[Dict[str, Any], bool]:
         if (
             not self.owns_task_lifecycle
@@ -779,15 +843,37 @@ class TaskManager:
         try:
             self._mark_failed_on_disk(
                 {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
+                lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                 expected_statuses={"running"},
                 require_no_live_owner=True,
+                expected_runner_id=str(info.get("runner_id", "") or ""),
+                expected_run_index=active_task_run_index(info),
             )
         except (TaskClaimConflict, TaskStateConflict):
             updated = load_task_info(task_dir) or info
             return updated, False
+        except (OSError, ValueError) as exc:
+            if raise_on_error:
+                raise
+            return self._failed_info_with_error(
+                info, f"Could not persist final task metadata: {exc}",
+            ), True
         updated = load_task_info(task_dir) or info
         logger.warning("%s: local process identity is no longer live; marked failed", task_name)
         return updated, True
+
+    def _failed_info_with_error(self, info: Dict[str, Any], message: str) -> Dict[str, Any]:
+        """Represent a verified finished process when its terminal write fails."""
+        failed = copy.deepcopy(info)
+        self._apply_terminal_status_to_info(
+            failed,
+            run_index=active_task_run_index(info),
+            finish_now=get_now_str(),
+            final_status="failed",
+        )
+        failed["_load_error"] = message
+        failed["_terminal_write_pending"] = True
+        return failed
 
     @staticmethod
     def _same_task_dir(left: str | None, right: str | None) -> bool:
@@ -928,6 +1014,44 @@ class TaskManager:
                 self.gpu_scheduler.release(task_name)
             self._recompute_processing_flag_locked()
 
+    @staticmethod
+    def _stat_signature(stat: os.stat_result) -> tuple[int, ...]:
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    @classmethod
+    def _payload_signature(cls, task_dir: str, config_file: str) -> tuple[int, ...] | None:
+        """Detect edits to a task payload independently of task_info.json."""
+        try:
+            path = resolve_task_payload_path(task_dir, config_file)
+            stat = os.stat(path)
+        except (OSError, ValueError):
+            return None
+        return cls._stat_signature(stat)
+
+    def _probe_refresh_task(
+        self,
+        task: Dict[str, Any],
+        *,
+        check_payload: bool,
+    ) -> tuple[os.stat_result | None, tuple[int, ...] | None, bool, Exception | None]:
+        try:
+            info_stat = os.stat(os.path.join(task["dir"], TASK_INFO_FILENAME))
+            info_signature = self._stat_signature(info_stat)
+            payload_changed = check_payload and (
+                self._payload_signature(task["dir"], task.get("config_file", ""))
+                != task.get("_payload_signature")
+                or (
+                    task.get("task_kind") == TASK_KIND_SHELL
+                    and not task.get("_config_file_explicit")
+                    and resolve_task_config_file(
+                        {"task_kind": TASK_KIND_SHELL}, task_dir=task["dir"],
+                    ) != task.get("config_file")
+                )
+            )
+            return info_stat, info_signature, payload_changed, None
+        except Exception as exc:
+            return None, None, False, exc
+
     def _load_task_dir(
         self,
         dir_name: str,
@@ -939,8 +1063,12 @@ class TaskManager:
             return None
         task_dir = os.path.join(self.tasks_dir, dir_name)
         info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
-        if not os.path.exists(info_path):
-            return None
+        try:
+            info_stat = os.stat(info_path)
+        except OSError:
+            if not os.path.exists(info_path):
+                return None
+            info_stat = None
 
         metadata_error = ""
         try:
@@ -958,19 +1086,20 @@ class TaskManager:
         if info:
             info = self._strip_queued_placeholder_run(info)
 
+        config_file = resolve_task_config_file(info, None, task_dir)
+        payload_signature = self._payload_signature(task_dir, config_file)
         task_kind, config_data, config_text, payload_error = read_task_payload(task_dir, info)
-        load_error = "; ".join(
-            message for message in (metadata_error, payload_error) if message
-        )
-
         task_name = dir_name
         if info:
-            info, _ = self._fail_unowned_running_info_if_needed(task_name, task_dir, info)
+            info, _ = self._fail_unowned_running_info_if_needed(
+                task_name, task_dir, info, raise_on_error=raise_on_error,
+            )
+        load_error = "; ".join(
+            message for message in (metadata_error, info.get("_load_error"), payload_error) if message
+        )
 
-        try:
-            mtime_ns = os.stat(info_path).st_mtime_ns
-        except OSError:
-            mtime_ns = 0
+        mtime_ns = info_stat.st_mtime_ns if info_stat else 0
+        info_signature = self._stat_signature(info_stat) if info_stat else None
 
         task = {
             "dir": task_dir.replace("\\", "/"),
@@ -979,7 +1108,9 @@ class TaskManager:
             "created_at": info.get("created_at"),
             "config": config_data,
             "config_text": config_text,
-            "config_file": resolve_task_config_file(info, task_kind or None, task_dir),
+            "config_file": config_file,
+            "_config_file_explicit": bool(str(info.get("config_file", "") or "").strip()),
+            "_payload_signature": payload_signature,
             "log": "",
             "progress": info.get("progress", 0.0),
             "env": info.get("env", {}),
@@ -1013,8 +1144,10 @@ class TaskManager:
             "lease_until": info.get("lease_until"),
             "lease_heartbeat": info.get("lease_heartbeat"),
             "_load_error": load_error,
+            "_terminal_write_pending": bool(info.get("_terminal_write_pending")),
             "_mtime": (mtime_ns / 1_000_000_000) if mtime_ns else 0.0,
             "_mtime_ns": mtime_ns,
+            "_info_signature": info_signature,
         }
         pending_run_index = info.get("run_index", info.get("_run_index"))
         if pending_run_index:
@@ -1039,63 +1172,116 @@ class TaskManager:
             else False
         )
 
-        with self._lock:
-            current = list(self.tasks)
-
         target_ids = set(task_ids) if task_ids else None
-        for task in current:
-            if not task:
-                continue
-            if not (
-                force_all
-                or check_all
-                or (target_ids and self._task_matches_identifier(task, target_ids))
-                or task["status"] in ("running", "queued")
-            ):
+        with self._lock:
+            if target_ids and not force_all and not check_all:
+                selected = [
+                    self._tasks_by_name[name]
+                    for name in target_ids
+                    if name in self._tasks_by_name
+                ]
+            else:
+                selected = list(self.tasks)
+            current = [(task, task.get("_registry_revision", 0)) for task in selected if task]
+
+        current = [
+            (task, revision) for task, revision in current
+            if force_all or check_all or target_ids or task["status"] in ("running", "queued")
+            or task.get("_terminal_write_pending")
+        ]
+        check_payload = check_all or target_ids is not None
+        probes = self._map_task_disk_io(
+            current,
+            lambda entry: self._probe_refresh_task(entry[0], check_payload=check_payload),
+        )
+        missing_metadata: list[tuple[Dict[str, Any], int]] = []
+        for (task, revision), (info_stat, info_signature, payload_changed, probe_error) in zip(
+            current, probes,
+        ):
+            info_path = os.path.join(task["dir"], TASK_INFO_FILENAME)
+            if probe_error is not None:
+                if raise_on_error:
+                    raise probe_error
+                if isinstance(probe_error, FileNotFoundError):
+                    missing_metadata.append((task, revision))
+                else:
+                    logger.debug("refresh_from_disk skipped %s: %s", task.get("name"), probe_error)
                 continue
 
-            info_path = os.path.join(task["dir"], TASK_INFO_FILENAME)
             try:
-                mtime_ns = os.stat(info_path).st_mtime_ns
-                if not force_all and task.get("_mtime_ns") == mtime_ns:
+                mtime_ns = info_stat.st_mtime_ns
+                if (
+                    not force_all and task.get("_info_signature") == info_signature
+                    and not payload_changed and not task.get("_terminal_write_pending")
+                ):
                     if task.get("status") == "running" and task.get("name") not in self._running_ids:
                         info = load_task_info(task["dir"])
                         if not info:
                             continue
                         info = self._strip_queued_placeholder_run(info)
-                        info, failed = self._fail_unowned_running_info_if_needed(task["name"], task["dir"], info)
+                        info, failed = self._fail_unowned_running_info_if_needed(
+                            task["name"], task["dir"], info, raise_on_error=raise_on_error,
+                        )
                         if failed:
                             try:
-                                mtime_ns = os.stat(info_path).st_mtime_ns
+                                info_stat = os.stat(info_path)
+                                mtime_ns = info_stat.st_mtime_ns
+                                info_signature = self._stat_signature(info_stat)
                             except OSError:
                                 mtime_ns = 0
+                                info_signature = None
                             with self._lock:
                                 existing = self._tasks_by_name.get(task["name"])
-                                if existing:
+                                if existing is task and task.get("_registry_revision", 0) == revision:
                                     before = self._task_snapshot(existing)
-                                    self._apply_info_to_task(existing, info, mtime_ns=mtime_ns)
+                                    self._apply_info_to_task(
+                                        existing, info, mtime_ns=mtime_ns,
+                                        info_signature=info_signature,
+                                    )
                                     self._clear_running_locked(task["name"])
                                     self.gpu_scheduler.release(task["name"])
                                     self._recompute_processing_flag_locked()
                                     after = self._task_snapshot(existing)
                                     has_changed |= before != after
                     continue
-                info = load_task_info(task["dir"], raise_error=raise_on_error)
+                try:
+                    info = load_task_info(task["dir"], raise_error=True)
+                    if not info:
+                        raise ValueError("Task metadata is empty")
+                except Exception as exc:
+                    if raise_on_error:
+                        raise
+                    with self._lock:
+                        existing = self._tasks_by_name.get(task["name"])
+                        if existing is task and task.get("_registry_revision", 0) == revision:
+                            before = self._task_snapshot(existing)
+                            existing["_load_error"] = f"Could not load task metadata: {exc}"
+                            has_changed |= before != self._task_snapshot(existing)
+                    continue
+                if self._stat_signature(os.stat(info_path)) != info_signature:
+                    raise TaskStateConflict(
+                        f"Task metadata changed while reading {task['name']}"
+                    )
                 if raise_on_error:
                     _validate_task_status_for_strict_refresh(
                         info,
                         str(task.get("name", "") or ""),
                     )
-                if not info:
-                    continue
                 info = self._strip_queued_placeholder_run(info)
+                if task.get("_terminal_write_pending"):
+                    info, _ = self._fail_unowned_running_info_if_needed(
+                        task["name"], task["dir"], info, raise_on_error=raise_on_error,
+                    )
 
                 with self._lock:
                     existing = self._tasks_by_name.get(task["name"])
-                    if not existing:
+                    if existing is not task or task.get("_registry_revision", 0) != revision:
                         continue
                     before = self._task_snapshot(existing)
-                    self._apply_info_to_task(existing, info, mtime_ns=mtime_ns)
+                    self._apply_info_to_task(
+                        existing, info, mtime_ns=mtime_ns,
+                        info_signature=info_signature,
+                    )
                     self._recompute_processing_flag_locked()
                     after = self._task_snapshot(existing)
                 has_changed |= before != after
@@ -1103,6 +1289,27 @@ class TaskManager:
                 if raise_on_error:
                     raise
                 logger.debug("refresh_from_disk skipped %s: %s", task.get("name"), exc)
+
+        missing_tasks = [
+            (task, revision) for task, revision in missing_metadata
+            if not os.path.isfile(os.path.join(task["dir"], TASK_INFO_FILENAME))
+        ]
+        if missing_tasks:
+            with self._lock:
+                missing_names = {
+                    str(task.get("name", "") or "") for task, revision in missing_tasks
+                    if self._tasks_by_name.get(task.get("name")) is task
+                    and task.get("_registry_revision", 0) == revision
+                }
+                if missing_names:
+                    self.tasks = [
+                        task for task in self.tasks
+                        if task and task.get("name") not in missing_names
+                    ]
+                    self._clear_running_many_locked(missing_names)
+                    self._rebuild_indexes_locked()
+                    self._recompute_processing_flag_locked()
+                    has_changed = True
 
         return has_changed
 
@@ -1112,13 +1319,25 @@ class TaskManager:
         if validate_task_name(task_name) is not None:
             return None
 
+        with self._lock:
+            before = self._tasks_by_name.get(task_name)
+            revision = before.get("_registry_revision", 0) if before else 0
+
         task = self._load_task_dir(task_name)
-        if task is None:
-            return None
 
         with self._lock:
             existing = self._tasks_by_name.get(task_name)
+            if existing is not before or (
+                existing is not None and existing.get("_registry_revision", 0) != revision
+            ):
+                return existing
+            if task is None:
+                return None
+            task["_registry_revision"] = (
+                existing.get("_registry_revision", 0) + 1 if existing else 1
+            )
             if existing:
+                self._preserve_queue_dispatch_mode(task, existing)
                 existing.clear()
                 existing.update(task)
                 loaded = existing
@@ -1129,6 +1348,24 @@ class TaskManager:
             self._recompute_processing_flag_locked()
         return loaded
 
+    def _preserve_queue_dispatch_mode(
+        self,
+        loaded: Dict[str, Any],
+        existing: Dict[str, Any] | None,
+    ) -> None:
+        """Keep a local Run Now request independent when reloading its queue entry."""
+        if (
+            existing
+            and existing.get("_queued_independent")
+            and self._is_current_runner(existing)
+            and loaded.get("status") == existing.get("status") == "queued"
+            and loaded.get("runner_id") == existing.get("runner_id")
+            and loaded.get("created_at") == existing.get("created_at")
+            and loaded.get("queued_at") == existing.get("queued_at")
+            and active_task_run_index(loaded) == active_task_run_index(existing)
+        ):
+            loaded["_queued_independent"] = True
+
     def _upsert_task_locked(self, task_obj: Dict[str, Any]) -> None:
         task_name = str((task_obj or {}).get("name", "") or "")
         if not task_name:
@@ -1136,12 +1373,14 @@ class TaskManager:
             return
 
         existing = self._tasks_by_name.get(task_name)
+        revision = existing.get("_registry_revision", 0) if existing else 0
         if existing:
             merged = dict(existing)
             merged.update(task_obj)
             existing.clear()
             existing.update(merged)
             task_obj = existing
+        task_obj["_registry_revision"] = revision + 1
 
         self.tasks = [
             task
@@ -2562,7 +2801,11 @@ class TaskManager:
         ]
         ordered = sorted(
             candidates,
-            key=lambda item: (self._queue_started_at_value(item[1]), -item[0]),
+            key=lambda item: (
+                item[1].get("name") in self._failed_claim_ids,
+                self._queue_started_at_value(item[1]),
+                -item[0],
+            ),
         )
         return [task for _index, task in ordered]
 
@@ -2742,17 +2985,7 @@ class TaskManager:
                         run_index,
                         counts_for_batch=not is_independent,
                     ) is None:
-                        self.gpu_scheduler.release(task_name)
-                        with self._lock:
-                            current = self._resolve_identifier_locked(task_name)
-                            if current:
-                                info = load_task_info(current["dir"])
-                                if info:
-                                    info = self._strip_queued_placeholder_run(info)
-                                    self._apply_info_to_task(current, info)
-                                self._clear_running_locked(task_name)
-                                self._clear_gpu_schedule_state(current)
-                                self._recompute_processing_flag_locked()
+                        self._restore_unsubmitted_task(target, run_index, independent=is_independent)
                         target = None
                         assignment_log = None
                         # A claim race can reveal a newly running foreign task.
@@ -2823,18 +3056,19 @@ class TaskManager:
         """Submit one task while the lifecycle lock is held."""
 
         if self._claim_task_for_run(target, run_index, counts_for_batch=not independent) is None:
-            self.gpu_scheduler.release(target["name"])
-            with self._lock:
-                self._clear_running_locked(target["name"])
-                current = self._resolve_identifier_locked(target["name"])
-                if current:
-                    info = load_task_info(current["dir"])
-                    if info:
-                        info = self._strip_queued_placeholder_run(info)
-                        self._apply_info_to_task(current, info)
-                self._recompute_processing_flag_locked()
-            self.trigger_update()
+            self._restore_unsubmitted_task(target, run_index, independent=independent)
             return
+
+        submission_ready = threading.Event()
+        submission_accepted = False
+
+        def run_after_submission(*args):
+            # ThreadPoolExecutor can enqueue work and then fail to start a
+            # thread.  Such an item must stay inert if another worker finds it.
+            submission_ready.wait()
+            if submission_accepted:
+                return run_task_worker(*args)
+            return None
 
         try:
             if independent:
@@ -2850,7 +3084,7 @@ class TaskManager:
             task_env = {str(k): str(v) for k, v in (target.get("env", {}) or {}).items()}
             task_env.update({str(k): str(v) for k, v in (target.get("_scheduled_env", {}) or {}).items()})
             future = executor.submit(
-                run_task_worker,
+                run_after_submission,
                 target["dir"],
                 target["name"],
                 target["created_at"],
@@ -2877,40 +3111,64 @@ class TaskManager:
                 self.max_workers,
                 len(self._running_ids),
             )
+            submission_accepted = True
         except Exception as exc:
-            try:
-                self._mark_failed_on_disk(
-                    target,
-                    reason="submission_error",
-                    detail_lines=[
-                        f"exception={type(exc).__name__}: {exc}",
-                        f"independent={independent}",
-                    ],
-                    expected_statuses={"running"},
-                    expected_runner_id=self.runner_id,
-                    expected_run_index=run_index,
-                )
-            except (TaskClaimConflict, TaskStateConflict):
-                pass
-            latest = load_task_info(target["dir"])
-            release_gpu = False
-            with self._lock:
-                current = self._resolve_identifier_locked(target["name"])
-                if current and latest:
-                    self._apply_info_to_task(current, latest)
-                if (
-                    current
-                    and active_task_run_index(current) == run_index
-                    and str(current.get("status", "") or "").lower()
-                    not in {"queued", "running"}
-                ):
-                    self._clear_running_locked(target["name"])
-                    self._clear_gpu_schedule_state(current)
-                    release_gpu = True
-                self._recompute_processing_flag_locked()
-            if release_gpu:
-                self.gpu_scheduler.release(target["name"])
+            self._finalize_task_attempt(
+                target["name"],
+                expected_runner_id=self.runner_id,
+                expected_run_index=run_index,
+                error=exc,
+                reason="submission_error",
+                detail_lines=[f"independent={independent}"],
+            )
             logger.error("Failed to submit task %s: %s", target["name"], exc)
+        finally:
+            submission_ready.set()
+
+    def _restore_unsubmitted_task(
+        self, target: Dict[str, Any], run_index: int, *, independent: bool,
+    ) -> None:
+        """Release a rejected dispatch without clearing a newer local run."""
+        task_name = str(target["name"])
+        task_dir = str(target["dir"])
+        queued_at = target.get("queued_at")
+        with self._lock:
+            observed = self._tasks_by_name.get(task_name)
+            revision = observed.get("_registry_revision", 0) if observed else 0
+        try:
+            info = load_task_info(task_dir)
+            if info:
+                info = self._strip_queued_placeholder_run(info)
+        except (OSError, ValueError):
+            info = None
+
+        with self._lock:
+            current = self._tasks_by_name.get(task_name)
+            if current and self._same_task_dir(current.get("dir"), task_dir):
+                if (
+                    current.get("status") == "running" and self._is_current_runner(current)
+                    and active_task_run_index(current) != run_index
+                ):
+                    return
+                if info and current is observed and current.get("_registry_revision", 0) == revision:
+                    self._apply_info_to_task(current, info)
+                if (
+                    current.get("status") == "running" and self._is_current_runner(current)
+                    and active_task_run_index(current) != run_index
+                ):
+                    return
+                if current.get("status") == "queued":
+                    if (
+                        self._is_current_runner(current) and self._next_run_index(current) == run_index
+                        and current.get("queued_at") == queued_at
+                    ):
+                        current["_queued_independent"] = independent
+                else:
+                    current.pop("_queued_independent", None)
+            self._clear_running_locked(task_name)
+            self.gpu_scheduler.release(task_name)
+            self._recompute_processing_flag_locked()
+        self.trigger_update()
 
     def _on_task_done(
         self,
@@ -2930,11 +3188,33 @@ class TaskManager:
         except Exception:
             pass
 
+        self._finalize_task_attempt(
+            task_id,
+            expected_runner_id=expected_runner_id,
+            expected_run_index=expected_run_index,
+            error=worker_error,
+        )
+
+    def _finalize_task_attempt(
+        self,
+        task_id: str,
+        *,
+        expected_runner_id: str,
+        expected_run_index: int,
+        error: BaseException | None = None,
+        reason: str = "worker_exception",
+        detail_lines: List[str] | None = None,
+    ) -> None:
+        """Reconcile a finished worker or a rejected executor submission."""
         with self._lock:
             task = self._tasks_by_name.get(task_id)
             if not task:
+                self._clear_running_locked(task_id)
+                self.gpu_scheduler.release(task_id)
+                self._recompute_processing_flag_locked()
                 return
             task_dir = str(task.get("dir", "") or "")
+            revision = task.get("_registry_revision", 0)
 
         try:
             info = load_task_info(task_dir)
@@ -2954,7 +3234,8 @@ class TaskManager:
             disk_status = ""
             same_generation = False
 
-        if worker_error and same_generation and disk_status in {"queued", "running"}:
+        persistence_error = None
+        if error and same_generation and disk_status in {"queued", "running"}:
             try:
                 self._mark_failed_on_disk(
                     {
@@ -2962,24 +3243,48 @@ class TaskManager:
                         "dir": task_dir,
                         "run_index": expected_run_index,
                     },
-                    reason="worker_exception",
-                    detail_lines=[f"exception={type(worker_error).__name__}: {worker_error}"],
+                    reason=reason,
+                    detail_lines=[f"exception={type(error).__name__}: {error}", *(detail_lines or [])],
+                    lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                     expected_statuses={disk_status},
                     expected_runner_id=expected_runner_id,
                     expected_run_index=expected_run_index,
                 )
             except (TaskClaimConflict, TaskStateConflict):
                 pass
+            except (OSError, ValueError) as exc:
+                persistence_error = exc
+                logger.warning("Could not persist task completion for %s: %s", task_id, exc)
             try:
                 info = load_task_info(task_dir)
             except Exception:
                 info = None
 
-        release_gpu = False
         with self._lock:
             current = self._tasks_by_name.get(task_id)
-            if current and self._same_task_dir(current.get("dir"), task_dir) and info:
-                self._apply_info_to_task(current, info)
+            if current is None:
+                self._clear_running_locked(task_id)
+                self.gpu_scheduler.release(task_id)
+            elif self._same_task_dir(current.get("dir"), task_dir):
+                unchanged = current is task and current.get("_registry_revision", 0) == revision
+                if info and unchanged:
+                    self._apply_info_to_task(current, info)
+                if (
+                    (not info or persistence_error is not None)
+                    and active_task_run_index(current) == expected_run_index
+                    and current.get("runner_id") == expected_runner_id
+                    and current.get("status") in {"queued", "running"}
+                ):
+                    # Finished workers and rejected submissions must not leave
+                    # a slot occupied because their terminal write failed.
+                    error_message = (
+                        f"Could not persist final task metadata: {persistence_error}"
+                        if persistence_error is not None
+                        else "Final task metadata could not be read"
+                    )
+                    self._apply_info_to_task(
+                        current, self._failed_info_with_error(current, error_message),
+                    )
                 current_status = str(current.get("status", "") or "").lower()
                 if (
                     active_task_run_index(current) == expected_run_index
@@ -2987,11 +3292,8 @@ class TaskManager:
                 ):
                     self._clear_running_locked(task_id)
                     self._clear_gpu_schedule_state(current)
-                    release_gpu = True
+                    self.gpu_scheduler.release(task_id)
             self._recompute_processing_flag_locked()
-
-        if release_gpu:
-            self.gpu_scheduler.release(task_id)
 
         self.trigger_update()
 
@@ -3294,10 +3596,14 @@ class TaskManager:
                 updated = update_task_info(task_dir, _apply)
             except (FileNotFoundError, TaskClaimConflict, TaskStateConflict):
                 continue
+            except (OSError, ValueError) as exc:
+                logger.debug("Could not renew queued task %s yet: %s", task_name, exc)
+                continue
             with self._lock:
                 current = self._resolve_identifier_locked(task_name)
                 if current and self._same_task_dir(current.get("dir"), task_dir):
                     self._apply_info_to_task(current, updated)
+                    self._failed_claim_ids.discard(task_name)
 
     @staticmethod
     def _clear_runner_lease_fields(info: Dict[str, Any]) -> None:
@@ -3320,6 +3626,7 @@ class TaskManager:
             current = self._resolve_identifier_locked(task_name)
             if not current or not self._same_task_dir(current.get("dir"), task_dir):
                 return None
+            dispatch = dict(task)
 
         info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
         if not os.path.isfile(info_path):
@@ -3333,9 +3640,13 @@ class TaskManager:
             if status == "running":
                 if not self._is_current_runner(info):
                     raise TaskClaimConflict("task already owned by another runner")
+                if active_task_run_index(info) != run_index:
+                    raise TaskStateConflict("task run changed before claim")
             elif status == "queued":
                 if self._is_foreign_live_runner(info):
                     raise TaskClaimConflict("queued task already owned by another runner")
+                if self._next_run_index(info) != run_index:
+                    raise TaskStateConflict("queued task run changed before claim")
             else:
                 raise TaskStateConflict(f"task is no longer claimable: {status}")
             info["status"] = "running"
@@ -3358,12 +3669,29 @@ class TaskManager:
         except (FileNotFoundError, TaskClaimConflict, TaskStateConflict) as exc:
             logger.info("Skip submitting %s: %s", task_name, exc)
             return None
+        except (OSError, ValueError) as exc:
+            self._restore_unsubmitted_task(dispatch, run_index, independent=not counts_for_batch)
+            with self._lock:
+                current = self._tasks_by_name.get(task_name)
+                still_queued = current is not None and current.get("status") == "queued"
+                if still_queued:
+                    self._failed_claim_ids.add(task_name)
+            if not still_queued:
+                self._finalize_task_attempt(
+                    task_name,
+                    expected_runner_id=self.runner_id,
+                    expected_run_index=run_index,
+                    error=exc,
+                    reason="claim_error",
+                )
+            raise
 
         with self._lock:
             current = self._resolve_identifier_locked(task_name)
             if current and self._same_task_dir(current.get("dir"), task_dir):
                 self._apply_info_to_task(current, updated)
                 current["status"] = "running"
+                self._failed_claim_ids.discard(task_name)
                 self._mark_running_locked(current["name"], counts_for_batch=counts_for_batch)
                 self._recompute_processing_flag_locked()
             else:
@@ -3466,6 +3794,7 @@ class TaskManager:
             current = self._resolve_identifier_locked(identifier)
             if current and updated and self._same_task_dir(current.get("dir"), task_dir):
                 self._apply_info_to_task(current, updated)
+                self._failed_claim_ids.discard(identifier)
                 if current["status"] == "running":
                     self._mark_running_locked(identifier, counts_for_batch=counts_for_batch)
                 elif current.get("status") != "running":
@@ -3750,7 +4079,7 @@ class TaskManager:
                 str(task.get("name", "") or ""): {
                     "dir": str(task.get("dir", "") or ""),
                     "status": str(task.get("status", "") or "").lower(),
-                    "mtime_ns": int(task.get("_mtime_ns", 0) or 0),
+                    "info_signature": task.get("_info_signature"),
                     "foreign_live": self._is_foreign_live_runner(task),
                     "local_live": self._is_current_runner(task) and self._lease_active(task),
                 }
@@ -3775,10 +4104,10 @@ class TaskManager:
                     task_refs.append((task_name, task_dir))
                     continue
                 try:
-                    disk_mtime_ns = os.stat(os.path.join(task_dir, TASK_INFO_FILENAME)).st_mtime_ns
+                    disk_stat = os.stat(os.path.join(task_dir, TASK_INFO_FILENAME))
                 except OSError:
                     continue
-                if disk_mtime_ns != int(known["mtime_ns"] or 0):
+                if self._stat_signature(disk_stat) != known["info_signature"]:
                     task_refs.append((task_name, task_dir))
         else:
             task_refs = [
@@ -3797,7 +4126,15 @@ class TaskManager:
                 continue
             if str(info.get("status", "") or "").lower() != "running":
                 continue
-            if not (self._is_current_runner(info) or self._running_info_has_live_owner(info)):
+            if self._is_current_runner(info):
+                with self._lock:
+                    current = self._tasks_by_name.get(task_name)
+                    if (
+                        current and current.get("_terminal_write_pending")
+                        and active_task_run_index(current) == active_task_run_index(info)
+                    ):
+                        continue
+            elif not self._running_info_has_live_owner(info):
                 continue
             gpu_ids = self._gpu_ids_from_assignment(info.get("_gpu_assignment"))
             if gpu_ids:
@@ -4297,6 +4634,9 @@ class TaskManager:
             task.get("launch_started_at"),
             task.get("launch_run_index"),
             task.get("notes", ""),
+            task.get("_info_signature"),
+            task.get("_payload_signature"),
+            task.get("_load_error"),
             task.get("runner_id"),
             task.get("runner_host"),
             task.get("lease_until"),
@@ -4310,6 +4650,7 @@ class TaskManager:
         info: Dict[str, Any],
         *,
         mtime_ns: int | None = None,
+        info_signature: tuple[int, ...] | None = None,
     ) -> None:
         """Copy task_info.json fields used by UI and scheduler."""
         task.update(
@@ -4340,6 +4681,7 @@ class TaskManager:
                     ),
                     task["dir"],
                 ),
+                "_config_file_explicit": bool(str(info.get("config_file", "") or "").strip()),
                 "start_times": info.get("start_times", []),
                 "finish_times": info.get("finish_times", []),
                 "pids": info.get("pids", []),
@@ -4361,15 +4703,27 @@ class TaskManager:
         )
         self._copy_gpu_schedule_info(task, info)
         self._copy_gpu_wait_info(task, info)
+        # Only the caller that brackets its read can validate this signature.
+        # A stat here could tag old info with a newer writer's file identity,
+        # causing every subsequent refresh to skip that writer's changes.
+        task["_info_signature"] = info_signature
+        task["_payload_signature"] = self._payload_signature(task["dir"], task["config_file"])
         loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
         task["config"] = loaded_config
         task["config_text"] = loaded_text
-        task["_load_error"] = load_error
+        task["_load_error"] = "; ".join(
+            message for message in (info.get("_load_error"), load_error) if message
+        )
+        if info.get("_terminal_write_pending"):
+            task["_terminal_write_pending"] = True
+        else:
+            task.pop("_terminal_write_pending", None)
         if mtime_ns is not None:
             task["_mtime_ns"] = mtime_ns
             task["_mtime"] = mtime_ns / 1_000_000_000
         self._refresh_derived_fields(task)
+        task["_registry_revision"] = task.get("_registry_revision", 0) + 1
 
     def _refresh_derived_fields(self, task: Dict[str, Any]) -> None:
         preview_text, search_text = build_task_preview_and_search(
@@ -4384,10 +4738,7 @@ class TaskManager:
 
     def _rebuild_indexes_locked(self) -> None:
         self._tasks_by_name = {task["name"]: task for task in self.tasks if task and task.get("name")}
-
-    @staticmethod
-    def _task_matches_identifier(task: Dict[str, Any], identifiers: set[str]) -> bool:
-        return str(task.get("name")) in identifiers
+        self._failed_claim_ids.intersection_update(self._tasks_by_name)
 
     def _recompute_processing_flag_locked(self) -> None:
         """Sleep the scheduler when nothing is queued or running."""
