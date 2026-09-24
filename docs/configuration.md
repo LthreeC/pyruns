@@ -83,6 +83,7 @@ _pyruns_/
 ```text
 tasks/<task_name>/
 ├─ task_info.json
+├─ tracks.sqlite3       # 曲线较大时自动创建
 ├─ config.yaml
 ├─ run_logs/
    ├─ run1.log
@@ -97,6 +98,7 @@ tasks/<task_name>/
 ```text
 tasks/<task_name>/
 ├─ task_info.json
+├─ tracks.sqlite3       # 曲线较大时自动创建
 ├─ config.ps1 | config.cmd | config.sh
 ├─ run_logs/
    ├─ run1.log
@@ -166,6 +168,15 @@ tasks/<task_name>/
 ```
 
 `config_file` 也可能是 `config.cmd` 或 `config.sh`，取决于 shell runtime。
+
+较大的 `track()` 历史保存在同目录的 `tracks.sqlite3`。此时 `task_info.json`
+包含内部 `track_store` 版本和代次指针，`tracks` 只保留运行槽位。读取完整曲线请使用
+`pyruns.load_task_info(task_dir)` 或 CLI `show`，不要仅解析 JSON 的 `tracks` 字段。
+`records` 和生命周期字段继续存放在 JSON 中，16 MiB 元数据上限不再包含外置曲线。
+
+备份和移动任务时应包含整个任务目录。为得到一致的备份，应先停止该任务及其写入进程。
+数据库使用 SQLite 回滚日志和完整同步；任务重命名、移入回收站、恢复时会随目录移动。
+已迁移的工作区需要使用 0.3.9 或更新版本读取曲线。
 
 ## 6. `_pyruns_settings.yaml`
 

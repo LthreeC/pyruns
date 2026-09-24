@@ -2383,7 +2383,7 @@ def test_executor_runtime_source_and_summary_helpers_cover_edge_paths(tmp_path, 
     save_task_info(str(task_dir), {"name": "task", "_pending_stop_summary": {"run_index": 3, "reason": "stop"}})
     assert executor._consume_pending_stop_summary(str(task_dir), 2) is None
     assert executor._consume_pending_stop_summary(str(task_dir), 3)["reason"] == "stop"
-    assert "_pending_stop_summary" not in executor.load_task_info(str(task_dir))
+    assert "_pending_stop_summary" not in executor.load_task_metadata(str(task_dir))
 
     save_task_info(str(task_dir), {"name": "task", "_pending_stop_summary": "bad"})
     assert executor._consume_pending_stop_summary(str(task_dir), 3) is None
@@ -3550,7 +3550,7 @@ def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, mo
         lambda *args, **kwargs: ([sys.executable, "-c", "print('ok')"], str(tmp_path), []),
     )
 
-    original_update = executor.update_task_info
+    original_update = executor.update_task_metadata
     update_calls = {"count": 0}
 
     def flaky_update(*args, **kwargs):
@@ -3561,7 +3561,7 @@ def test_run_task_worker_kills_started_process_after_internal_error(tmp_path, mo
 
     captured_create_times = []
     killed = []
-    monkeypatch.setattr(executor, "update_task_info", flaky_update)
+    monkeypatch.setattr(executor, "update_task_metadata", flaky_update)
     monkeypatch.setattr(
         executor,
         "get_process_create_time",
@@ -5303,7 +5303,7 @@ def test_task_manager_cancel_task_fails_closed_when_task_info_is_busy(tmp_path, 
         lambda pid, expected_create_time=None: killed.append((pid, expected_create_time)) or True,
     )
 
-    with patch("pyruns.core.task_manager.update_task_info", side_effect=TimeoutError("busy")):
+    with patch("pyruns.core.task_manager.update_task_metadata", side_effect=TimeoutError("busy")):
         assert manager.cancel_task("runner") is False
 
     assert manager.get_task("runner")["status"] == "running"
@@ -5347,7 +5347,7 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
         timeout_values.append(kwargs.get("timeout_sec"))
         raise TimeoutError("busy")
 
-    with patch("pyruns.core.task_manager.update_task_info", side_effect=record_timeout):
+    with patch("pyruns.core.task_manager.update_task_metadata", side_effect=record_timeout):
         assert manager.cancel_task("runner") is False
 
     assert timeout_values == [task_manager_module._STOP_TASK_INFO_LOCK_TIMEOUT_SEC]
@@ -6206,13 +6206,13 @@ def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
     empty_dir = tasks_dir / "empty-info"
     empty_dir.mkdir()
     (empty_dir / TASK_INFO_FILENAME).write_text("{}", encoding="utf-8")
-    with patch("pyruns.core.task_manager.load_task_info", return_value={}):
+    with patch("pyruns.core.task_manager.load_task_metadata", return_value={}):
         empty_task = manager._load_task_dir("empty-info")
     assert empty_task is not None
     assert empty_task["status"] == "failed"
     assert "metadata is empty" in empty_task["_load_error"].lower()
 
-    with patch("pyruns.core.task_manager.load_task_info", side_effect=RuntimeError("bad info")):
+    with patch("pyruns.core.task_manager.load_task_metadata", side_effect=RuntimeError("bad info")):
         broken_task = manager._load_task_dir("empty-info")
     assert broken_task is not None
     assert broken_task["status"] == "failed"
@@ -6336,7 +6336,7 @@ def test_task_manager_rechecks_metadata_replaced_during_initial_load(tmp_path):
         encoding="utf-8",
     )
     manager = _make_task_manager(tmp_path, lazy_scan=None)
-    original_load = task_manager_module.load_task_info
+    original_load = task_manager_module.load_task_metadata
 
     def replace_after_read(*args, **kwargs):
         info = original_load(*args, **kwargs)
@@ -6344,7 +6344,7 @@ def test_task_manager_rechecks_metadata_replaced_during_initial_load(tmp_path):
             replacement.replace(info_path)
         return info
 
-    with patch.object(task_manager_module, "load_task_info", side_effect=replace_after_read):
+    with patch.object(task_manager_module, "load_task_metadata", side_effect=replace_after_read):
         assert manager.load_task_by_name("sample")["notes"] == "before"
     assert manager.refresh_from_disk(task_ids=["sample"]) is True
     assert manager.get_task("sample")["notes"] == "after!"
@@ -6620,7 +6620,7 @@ def test_task_manager_refresh_does_not_overwrite_replaced_task(tmp_path, monkeyp
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     update_task_info(task["dir"], lambda info: info.update({"status": "failed"}))
-    original_load = task_manager_module.load_task_info
+    original_load = task_manager_module.load_task_metadata
 
     def load_then_replace(task_dir, **kwargs):
         stale_info = original_load(task_dir, **kwargs)
@@ -6631,7 +6631,7 @@ def test_task_manager_refresh_does_not_overwrite_replaced_task(tmp_path, monkeyp
         manager.add_task(replacement)
         return stale_info
 
-    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_replace)
+    monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_replace)
     manager.refresh_from_disk(check_all=True)
 
     assert manager.get_task("alpha")["status"] == "completed"
@@ -6643,7 +6643,7 @@ def test_task_manager_refresh_does_not_overwrite_newer_in_place_update(tmp_path,
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     update_task_info(task["dir"], lambda info: info.update({"status": "failed"}))
-    original_load = task_manager_module.load_task_info
+    original_load = task_manager_module.load_task_metadata
 
     def load_then_refresh(task_dir, **kwargs):
         stale_info = original_load(task_dir, **kwargs)
@@ -6654,7 +6654,7 @@ def test_task_manager_refresh_does_not_overwrite_newer_in_place_update(tmp_path,
             )
         return stale_info
 
-    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_refresh)
+    monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_refresh)
     manager.refresh_from_disk(check_all=True)
 
     assert manager.get_task("alpha")["status"] == "completed"
@@ -6706,7 +6706,7 @@ def test_task_manager_refresh_preserves_task_picked_during_read(tmp_path, monkey
     TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     manager._sync_status_to_disk("alpha", "queued", run_index=1)
-    original_load = task_manager_module.load_task_info
+    original_load = task_manager_module.load_task_metadata
 
     def load_then_pick(task_dir, **kwargs):
         stale_info = original_load(task_dir, **kwargs)
@@ -6715,7 +6715,7 @@ def test_task_manager_refresh_preserves_task_picked_during_read(tmp_path, monkey
         assert run_index == 1
         return stale_info
 
-    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_pick)
+    monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_pick)
     manager.refresh_from_disk(force_all=True)
 
     assert manager.get_task("alpha")["status"] == "running"
@@ -6748,18 +6748,18 @@ def test_task_manager_refresh_skips_metadata_replaced_during_read(tmp_path, monk
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     update_task_info(task["dir"], lambda info: info.update({"status": "failed"}))
-    original_load = task_manager_module.load_task_info
+    original_load = task_manager_module.load_task_metadata
 
     def load_then_replace(task_dir, **kwargs):
         stale_info = original_load(task_dir, **kwargs)
         update_task_info(task_dir, lambda info: info.update({"status": "completed"}))
         return stale_info
 
-    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_replace)
+    monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_replace)
     manager.refresh_from_disk(check_all=True)
     assert manager.get_task("alpha")["status"] == "pending"
 
-    monkeypatch.setattr(task_manager_module, "load_task_info", original_load)
+    monkeypatch.setattr(task_manager_module, "load_task_metadata", original_load)
     manager.refresh_from_disk(check_all=True)
     assert manager.get_task("alpha")["status"] == "completed"
 
@@ -6768,14 +6768,14 @@ def test_task_manager_refresh_detects_disk_write_after_local_update(tmp_path, mo
     tasks_dir = tmp_path / "tasks"
     TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
 
     def update_then_external_edit(task_dir, mutator, **kwargs):
         local_info = original_update(task_dir, mutator, **kwargs)
         original_update(task_dir, lambda info: info.update({"notes": "external latest"}))
         return local_info
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", update_then_external_edit)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", update_then_external_edit)
     assert manager.update_task_notes("alpha", "local edit", expected_notes="")[0]
     manager.refresh_from_disk(task_ids=["alpha"])
 
@@ -6885,7 +6885,7 @@ def test_task_manager_strict_refresh_fails_closed_on_disk_errors(tmp_path):
             )
 
     with patch(
-        "pyruns.core.task_manager.load_task_info",
+        "pyruns.core.task_manager.load_task_metadata",
         side_effect=OSError("task metadata unavailable"),
     ):
         with pytest.raises(OSError, match="task metadata unavailable"):
@@ -6976,7 +6976,7 @@ def test_task_manager_pin_reorder_notes_env_and_rename_edges(tmp_path, monkeypat
     with patch("pyruns.core.task_manager.os.rename", lambda old, new: (_ for _ in ()).throw(OSError("rename failed"))):
         assert manager.rename_task("alpha", "gamma") == (False, "rename failed")
 
-    with patch("pyruns.core.task_manager.update_task_info", side_effect=RuntimeError("write failed")):
+    with patch("pyruns.core.task_manager.update_task_metadata", side_effect=RuntimeError("write failed")):
         ok, message = manager.rename_task("alpha", "gamma")
     assert ok is False
     assert "write failed" in message
@@ -7002,7 +7002,7 @@ def test_task_manager_reorder_rolls_back_partial_writes(tmp_path, monkeypatch):
             raise OSError("shared filesystem write failed")
         return update_task_info(task_dir, updater)
 
-    monkeypatch.setattr("pyruns.core.task_manager.update_task_info", fail_second_write)
+    monkeypatch.setattr("pyruns.core.task_manager.update_task_metadata", fail_second_write)
 
     with pytest.raises(OSError, match="shared filesystem write failed"):
         manager.reorder_tasks([
@@ -7057,7 +7057,7 @@ def test_task_manager_reorder_serializes_concurrent_batches(tmp_path, monkeypatc
                 pass
         return real_update_task_info(task_dir, updater)
 
-    monkeypatch.setattr("pyruns.core.task_manager.update_task_info", coordinated_update)
+    monkeypatch.setattr("pyruns.core.task_manager.update_task_metadata", coordinated_update)
     forward = [{"name": name} for name in ("alpha", "beta", "gamma")]
     reverse = [{"name": name} for name in ("gamma", "beta", "alpha")]
 
@@ -7909,8 +7909,8 @@ def test_task_manager_claim_write_error_does_not_hold_a_worker_slot(tmp_path, mo
     def fail_write(*args, **kwargs):
         raise PermissionError("read-only task metadata")
 
-    original_update = task_manager_module.update_task_info
-    monkeypatch.setattr(task_manager_module, "update_task_info", fail_write)
+    original_update = task_manager_module.update_task_metadata
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", fail_write)
     try:
         manager._submit_task(target, run_index, independent=independent)
     except PermissionError:
@@ -7920,7 +7920,7 @@ def test_task_manager_claim_write_error_does_not_hold_a_worker_slot(tmp_path, mo
     assert "alpha" not in manager._batch_running_ids
     assert load_task_info(task["dir"])["status"] == disk_status
     assert manager.get_task("alpha")["status"] != "running"
-    monkeypatch.setattr(task_manager_module, "update_task_info", original_update)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", original_update)
     if disk_status == "queued":
         picked, next_run = manager._pick_queued_task(independent_only=independent)
         assert picked is not None
@@ -7945,14 +7945,14 @@ def test_task_manager_failed_queue_claim_allows_next_task_to_run(tmp_path, monke
     assert manager._sync_status_to_disk("beta", "queued", run_index=1)
     target, run_index = manager._pick_queued_task()
     assert target["name"] == "alpha"
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
 
     def fail_alpha(task_dir, *args, **kwargs):
         if Path(task_dir) == Path(alpha["dir"]):
             raise PermissionError("alpha metadata is read-only")
         return original_update(task_dir, *args, **kwargs)
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", fail_alpha)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", fail_alpha)
     with pytest.raises(PermissionError, match="read-only"):
         manager._submit_task(target, run_index, independent=False)
 
@@ -7962,7 +7962,7 @@ def test_task_manager_failed_queue_claim_allows_next_task_to_run(tmp_path, monke
 
     assert manager._sync_status_to_disk("gamma", "queued", run_index=1)
     assert manager._sync_status_to_disk("beta", "completed", run_index=1)
-    monkeypatch.setattr(task_manager_module, "update_task_info", original_update)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", original_update)
     manager._refresh_queued_runner_leases()
 
     recovered_task, recovered_run = manager._pick_queued_task()
@@ -7979,14 +7979,14 @@ def test_task_manager_queue_heartbeat_continues_after_one_metadata_write_fails(t
     assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
     assert manager._sync_status_to_disk("beta", "queued", run_index=1)
     update_task_info(beta["dir"], lambda info: info.update({"lease_heartbeat": 1.0}))
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
 
     def fail_alpha(task_dir, *args, **kwargs):
         if Path(task_dir) == Path(alpha["dir"]):
             raise PermissionError("alpha metadata is read-only")
         return original_update(task_dir, *args, **kwargs)
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", fail_alpha)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", fail_alpha)
     manager._refresh_queued_runner_leases()
 
     assert load_task_info(beta["dir"])["lease_heartbeat"] > 1.0
@@ -8005,7 +8005,7 @@ def test_task_manager_queue_heartbeat_ignores_wall_clock_adjustments(tmp_path, m
     clock.monotonic.side_effect = lambda: elapsed_now[0]
     monkeypatch.setattr(task_manager_module, "time", clock)
 
-    with patch.object(task_manager_module, "update_task_info", wraps=update_task_info) as write:
+    with patch.object(task_manager_module, "update_task_metadata", wraps=update_task_info) as write:
         manager._refresh_queued_runner_leases()
         assert write.call_count == 1
 
@@ -8027,7 +8027,7 @@ def test_task_manager_queue_heartbeat_does_not_requeue_selected_task(tmp_path, m
     TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
     selected = False
 
     def renew_then_select(task_dir, *args, **kwargs):
@@ -8041,7 +8041,7 @@ def test_task_manager_queue_heartbeat_does_not_requeue_selected_task(tmp_path, m
                 assert manager._claim_task_for_run(picked, run_index, counts_for_batch=True)
         return updated
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", renew_then_select)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", renew_then_select)
     manager._refresh_queued_runner_leases()
 
     assert manager.get_task("alpha")["status"] == "running"
@@ -8058,7 +8058,7 @@ def test_task_manager_queue_heartbeat_keeps_new_gpu_wait_generation(tmp_path, mo
     old_wait = manager._new_gpu_wait_state(1, config, started_at=100)
     new_wait = manager._new_gpu_wait_state(1, config, started_at=200)
     assert manager._sync_status_to_disk("alpha", "queued", run_index=1, gpu_wait=old_wait)
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
 
     def requeue_then_renew(task_dir, *args, **kwargs):
         updated = original_update(task_dir, lambda info: info.update({
@@ -8068,7 +8068,7 @@ def test_task_manager_queue_heartbeat_keeps_new_gpu_wait_generation(tmp_path, mo
             manager._apply_info_to_task(manager._tasks_by_name["alpha"], updated)
         return original_update(task_dir, *args, **kwargs)
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", requeue_then_renew)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", requeue_then_renew)
     manager._refresh_queued_runner_leases()
 
     assert load_task_info(task["dir"])["gpu_wait"]["started_at"] == 200
@@ -8101,7 +8101,7 @@ def test_task_manager_metadata_edit_keeps_selected_task_running(tmp_path, monkey
     TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
     selected = False
 
     def save_then_select(task_dir, *args, **kwargs):
@@ -8115,7 +8115,7 @@ def test_task_manager_metadata_edit_keeps_selected_task_running(tmp_path, monkey
                 assert manager._claim_task_for_run(picked, run_index, counts_for_batch=True)
         return updated
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", save_then_select)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", save_then_select)
     edits = {
         "pin": lambda: manager.set_task_pinned("alpha", True),
         "notes": lambda: manager.update_task_notes("alpha", "updated note", ""),
@@ -8142,7 +8142,7 @@ def test_task_manager_metadata_edit_preserves_later_edits(tmp_path, monkeypatch,
     tasks_dir = tmp_path / "tasks"
     TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
-    original_update = task_manager_module.update_task_info
+    original_update = task_manager_module.update_task_metadata
     changed = False
 
     def save_then_edit(task_dir, *args, **kwargs):
@@ -8156,7 +8156,7 @@ def test_task_manager_metadata_edit_preserves_later_edits(tmp_path, monkeypatch,
                 assert manager.update_task_env("alpha", {"OMP_NUM_THREADS": "2"}, {})[0] is True
         return updated
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", save_then_edit)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", save_then_edit)
     assert manager.update_task_notes("alpha", "first note", "")[0] is True
 
     current = manager.get_task("alpha")
@@ -8273,7 +8273,7 @@ def test_task_manager_worker_callback_preserves_run_started_during_read(tmp_path
     manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
     manager._sync_status_to_disk("alpha", "running", run_index=1)
     update_task_info(task["dir"], lambda info: info.update({"status": "completed"}))
-    original_load = task_manager_module.load_task_info
+    original_load = task_manager_module.load_task_metadata
 
     def load_then_restart(task_dir, **kwargs):
         stale_info = original_load(task_dir, **kwargs)
@@ -8281,7 +8281,7 @@ def test_task_manager_worker_callback_preserves_run_started_during_read(tmp_path
         return stale_info
 
     released = []
-    monkeypatch.setattr(task_manager_module, "load_task_info", load_then_restart)
+    monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_restart)
     monkeypatch.setattr(manager.gpu_scheduler, "release", released.append)
     future = Future()
     future.set_result(None)
@@ -8558,14 +8558,14 @@ def test_task_manager_worker_done_releases_slot_after_full_scan_removes_task(
         assert manager.get_task("alpha") is None
 
     if remove_during_read:
-        original_load = task_manager_module.load_task_info
+        original_load = task_manager_module.load_task_metadata
 
         def load_then_remove(task_dir, **kwargs):
             info = original_load(task_dir, **kwargs)
             remove_task()
             return info
 
-        monkeypatch.setattr(task_manager_module, "load_task_info", load_then_remove)
+        monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_remove)
     else:
         remove_task()
     released = []
@@ -8832,7 +8832,7 @@ def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch)
             return foreign_info
         return {**local_info, "run_index": 2 if name == "queued" else 1}
 
-    monkeypatch.setattr("pyruns.core.task_manager.load_task_info", fake_load_task_info)
+    monkeypatch.setattr("pyruns.core.task_manager.load_task_metadata", fake_load_task_info)
     killed = []
     monkeypatch.setattr(
         "pyruns.core.task_manager.kill_process",

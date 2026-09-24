@@ -77,7 +77,7 @@ pyruns.record(loss=0.31, acc=91.2)
 
 ### `pyruns.track(key=None, value=None, **kwargs)`
 
-把序列数据写入 `task_info.json["tracks"]`。
+向当前运行的指标序列追加数据，每次调用持久化后返回。
 
 示例：
 
@@ -86,6 +86,14 @@ pyruns.track(loss=0.8)
 pyruns.track(loss=0.6)
 pyruns.track("acc", 0.91)
 ```
+
+少量数据保存在 `task_info.json["tracks"]`。累计达到 1,024 个指标值或约 256 KiB
+曲线 JSON 时，自动迁移到任务目录的 `tracks.sqlite3`，后续调用只追加新数据。
+旧工作区无需手动迁移，`load_task_info()`、CLI `show` 和任务详情仍返回完整曲线。
+任务状态、`record()` 和列表查询不会读取大曲线。
+
+持久化失败会输出去重 warning，不会终止实验。单次追加最多 16 MiB；
+NaN 和 Infinity 不受支持。完整详情仍需读取全部历史，耗时和内存随曲线长度增加。
 
 ### `pyruns.get_task_dir()`
 

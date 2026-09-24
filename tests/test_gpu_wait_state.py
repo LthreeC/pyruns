@@ -204,14 +204,14 @@ def test_gpu_wait_semantic_changes_persist_once_without_time_only_rewrites(tmp_p
 
     from pyruns.core import task_manager as task_manager_module
 
-    real_update = task_manager_module.update_task_info
+    real_update = task_manager_module.update_task_metadata
     writes: list[str] = []
 
     def tracked_update(task_dir, updater, **kwargs):
         writes.append(str(task_dir))
         return real_update(task_dir, updater, **kwargs)
 
-    monkeypatch.setattr(task_manager_module, "update_task_info", tracked_update)
+    monkeypatch.setattr(task_manager_module, "update_task_metadata", tracked_update)
 
     assert manager._pick_queued_task()[0] is None
     assert len(writes) == 1
@@ -285,7 +285,7 @@ def test_gpu_queue_pass_samples_and_syncs_once_for_many_blocked_candidates(tmp_p
     task_names = [task["name"] for task in manager.tasks]
     monkeypatch.setattr(manager, "_scan_task_dir_names", lambda: (True, task_names))
     monkeypatch.setattr(
-        "pyruns.core.task_manager.load_task_info",
+        "pyruns.core.task_manager.load_task_metadata",
         lambda task_dir: loaded_task_info.append(task_dir) or {},
     )
     original_sync = manager._sync_gpu_reservations_from_running_tasks
@@ -357,7 +357,7 @@ def test_reservation_sync_skips_unchanged_locally_queued_task_files(tmp_path, mo
             },
         }
 
-    monkeypatch.setattr("pyruns.core.task_manager.load_task_info", fake_load)
+    monkeypatch.setattr("pyruns.core.task_manager.load_task_metadata", fake_load)
 
     manager._sync_gpu_reservations_from_running_tasks()
 

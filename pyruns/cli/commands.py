@@ -62,6 +62,7 @@ from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
     load_script_info,
     load_task_info,
+    load_task_metadata,
     resolve_log_path,
     run_slot_count,
     task_info_lock,
@@ -480,7 +481,7 @@ def _selected_run_record(
     """Return one validated historical run summary."""
 
     task_dir = str(task.get("dir", "") or "")
-    current_info = info if info is not None else (load_task_info(task_dir) or task)
+    current_info = info if info is not None else (load_task_info(task_dir, raise_error=True) or task)
     total = run_slot_count(current_info)
     if run_index > total:
         name = str(task.get("name", "") or "")
@@ -547,7 +548,7 @@ def _resolve_log_reference(
     """Resolve a log path together with the run identity it actually represents."""
 
     task_dir = str(task.get("dir", "") or "")
-    current_info = info if info is not None else (load_task_info(task_dir) or task)
+    current_info = info if info is not None else (load_task_metadata(task_dir) or task)
     status = str(
         current_info.get("status", task.get("status", "")) or ""
     ).lower()
@@ -588,7 +589,7 @@ def _task_record(
     info = (
         info_snapshot
         if info_snapshot is not None
-        else (load_task_info(task_dir) or {})
+        else ((load_task_info(task_dir, raise_error=True) if detailed else load_task_metadata(task_dir)) or {})
     )
     status = str(info.get("status", task.get("status", "pending")) or "pending")
     kind = str(info.get("task_kind", task.get("task_kind", "config")) or "config")
@@ -891,7 +892,7 @@ def _active_run_index(info: dict[str, Any]) -> int:
 
 def _capture_task_run_identity(task: dict[str, Any]) -> _TaskRunIdentity:
     task_dir = str(task.get("dir", "") or "")
-    info = load_task_info(task_dir)
+    info = load_task_metadata(task_dir)
     if not info:
         raise CliError(f"cannot read task state: {task.get('name', '')}")
     status = str(info.get("status", "pending") or "pending").lower()
@@ -915,7 +916,7 @@ def _bound_task_record(
     """Read only the run captured when the command began."""
 
     task_dir = str(task.get("dir", "") or "")
-    info = load_task_info(task_dir)
+    info = load_task_metadata(task_dir)
     name = str(task.get("name", "") or "")
     if not info:
         raise CliError(f"cannot read task state: {name}")
@@ -982,7 +983,7 @@ def _has_persisted_cancel_request(
     """Return whether the captured run still owns a durable cancel request."""
 
     task_dir = str(task.get("dir", "") or "")
-    info = load_task_info(task_dir) if task_dir else {}
+    info = load_task_metadata(task_dir) if task_dir else {}
     if not info or str(info.get("status", "") or "").lower() not in _ACTIVE_STATUSES:
         return False
     if _active_run_index(info) != identity.run_index:
@@ -1154,7 +1155,7 @@ def _tasks_owned_by_submission(
     owned: list[dict[str, Any]] = []
     identities: dict[str, _TaskRunIdentity] = {}
     for task in tasks:
-        info = load_task_info(str(task.get("dir", "") or "")) or {}
+        info = load_task_metadata(str(task.get("dir", "") or "")) or {}
         if str(info.get("status", "") or "").lower() not in _ACTIVE_STATUSES:
             continue
         parts = str(info.get("runner_id", "") or "").rsplit(":", 2)
@@ -1199,7 +1200,7 @@ def _submit_and_wait(
     queue_offsets: dict[str, int] = {}
     for task in tasks:
         name = str(task["name"])
-        info = load_task_info(str(task.get("dir", "") or "")) or task
+        info = load_task_metadata(str(task.get("dir", "") or "")) or task
         expected_runs[name] = _latest_run_index(task, info) + 1
         try:
             queue_path = validate_task_log_path(
@@ -1682,7 +1683,7 @@ def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
             continue
         if not path.is_dir() or path.is_symlink():
             continue
-        info = load_task_info(str(path)) or {}
+        info = load_task_metadata(str(path)) or {}
         records.append(
             {
                 "name": str(info.get("name", "") or path.name),
@@ -2068,7 +2069,7 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
                             f"cannot restore '{target_name}': trash entry no longer exists"
                         )
                     try:
-                        info = load_task_info(source, raise_error=True)
+                        info = load_task_metadata(source, raise_error=True)
                     except Exception as exc:
                         raise CliError(
                             f"cannot restore '{target_name}': invalid task metadata: {exc}"

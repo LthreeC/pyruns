@@ -46,9 +46,9 @@ from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import (
     ensure_run_slot,
     load_script_info,
-    load_task_info,
+    load_task_metadata,
     prepare_task_log_path,
-    update_task_info,
+    update_task_metadata,
 )
 from pyruns.utils.log_io import normalize_log_newlines
 from pyruns.utils.process_utils import (
@@ -839,7 +839,7 @@ def _persist_run_source_state(
         _append_run_slot_value(info, "source_states", slot, source_state)
 
     try:
-        update_task_info(task_dir, _apply)
+        update_task_metadata(task_dir, _apply)
     except Exception as exc:
         logger.debug("Failed to persist source state for %s: %s", task_name, exc)
 
@@ -1450,7 +1450,7 @@ def _append_error_summary(
 def _consume_pending_stop_summary(task_dir: str, run_index: int) -> Dict[str, Any] | None:
     """Pop one pending stop summary for the finished run, if present."""
 
-    current = load_task_info(task_dir)
+    current = load_task_metadata(task_dir)
     raw_current = current.get("_pending_stop_summary") if isinstance(current, dict) else None
     if not isinstance(raw_current, dict):
         return None
@@ -1473,7 +1473,7 @@ def _consume_pending_stop_summary(task_dir: str, run_index: int) -> Dict[str, An
         captured.update(raw)
         info.pop("_pending_stop_summary", None)
 
-    update_task_info(task_dir, _apply)
+    update_task_metadata(task_dir, _apply)
     return captured or None
 
 
@@ -1530,7 +1530,7 @@ def run_task_worker(
     logger.info("Task %s starting  run=#%d", name, run_index)
 
     log_path = _get_log_path(task_dir, run_index)
-    task_meta = load_task_info(task_dir)
+    task_meta = load_task_metadata(task_dir)
     task_kind = normalize_task_kind(task_meta.get("task_kind", task_meta.get("config_mode")))
     command_mode = str(task_meta.get("command_mode", "") or "").lower()
     config_file = resolve_task_config_file(task_meta, task_kind, task_dir)
@@ -1612,7 +1612,7 @@ def run_task_worker(
                 )
 
         try:
-            update_task_info(task_dir, _apply)
+            update_task_metadata(task_dir, _apply)
         except Exception as exc:
             logger.debug("Failed to refresh runner lease for %s: %s", name, exc)
 
@@ -1660,7 +1660,7 @@ def run_task_worker(
                     slot = ensure_run_slot(info, run_index)
                     info["run_environments"][slot] = environment
 
-            update_task_info(task_dir, _store_environment)
+            update_task_metadata(task_dir, _store_environment)
         except Exception as exc:
             logger.debug("Failed to collect run environment for %s: %s", name, exc)
 
@@ -1726,7 +1726,7 @@ def run_task_worker(
             )
 
         try:
-            update_task_info(task_dir, _mark_surviving)
+            update_task_metadata(task_dir, _mark_surviving)
         except Exception as state_exc:
             logger.warning("Could not persist surviving process identity for %s: %s", name, state_exc)
 
@@ -1787,7 +1787,7 @@ def run_task_worker(
             _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
-        update_task_info(task_dir, _mark_stopped)
+        update_task_metadata(task_dir, _mark_stopped)
 
         detail_lines = [f"reason={summary.get('reason', 'stopped')}"]
         detail_lines.extend(list(summary.get("detail_lines", []) or []))
@@ -1872,7 +1872,7 @@ def run_task_worker(
                 process_terminated=False,
             )
 
-        if runner_id and not _owns_current_run(load_task_info(task_dir)):
+        if runner_id and not _owns_current_run(load_task_metadata(task_dir)):
             logger.info(
                 "Skip launching %s run #%d because task ownership changed",
                 name,
@@ -1975,7 +1975,7 @@ def run_task_worker(
             )
             started_state_applied = True
 
-        update_task_info(task_dir, _mark_started)
+        update_task_metadata(task_dir, _mark_started)
         if runner_id and not started_state_applied:
             child_process_terminated, _survived = _terminate_and_wait_for_started_process(
                 "task ownership change"
@@ -2199,7 +2199,7 @@ def run_task_worker(
                 info[TRACKS_KEY] = []
             _clear_runner_lease(info, runner_id)
 
-        update_task_info(task_dir, _mark_finished)
+        update_task_metadata(task_dir, _mark_finished)
 
         if status == "cancelled":
             final_status_payload = "[PYRUNS] Final status: cancelled\n"
@@ -2289,7 +2289,7 @@ def run_task_worker(
             _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
-        update_task_info(task_dir, _mark_error)
+        update_task_metadata(task_dir, _mark_error)
 
         detail_lines = [
             f"exception={type(exc).__name__}: {exc}",

@@ -11,7 +11,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from omegaconf._utils import get_yaml_loader
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
-from pyruns.utils.info_io import _replace_with_retry, load_task_info
+from pyruns.utils.info_io import _replace_with_retry, load_task_metadata
 from pyruns.utils.sort_utils import normalize_task_search_text, sort_tasks_for_manager
 
 
@@ -267,7 +267,7 @@ def list_template_files(run_root: str) -> Dict[str, str]:
 
                 cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
                 if os.path.exists(cfg_path):
-                    info = load_task_info(task_dir)
+                    info = load_task_metadata(task_dir)
                     try:
                         fallback_mtime = os.path.getmtime(os.path.join(task_dir, TASK_INFO_FILENAME))
                     except OSError:

@@ -598,6 +598,7 @@ class TestAddMonitor:
 
     def test_record_and_track_retry_after_transient_io_errors(self, tmp_path, monkeypatch):
         import pyruns
+        from pyruns.utils import info_io
 
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
@@ -606,6 +607,7 @@ class TestAddMonitor:
         record_calls = {"count": 0}
         track_calls = {"count": 0}
         real_update = pyruns.update_task_info
+        real_append = info_io.append_task_track
 
         def flaky_record_update(*args, **kwargs):
             record_calls["count"] += 1
@@ -621,9 +623,9 @@ class TestAddMonitor:
             track_calls["count"] += 1
             if track_calls["count"] == 1:
                 raise OSError("busy")
-            return real_update(*args, **kwargs)
+            return real_append(*args, **kwargs)
 
-        monkeypatch.setattr(pyruns, "update_task_info", flaky_track_update)
+        monkeypatch.setattr(info_io, "append_task_track", flaky_track_update)
         pyruns.track(loss=0.3)
         assert track_calls["count"] == 2
 
@@ -654,6 +656,7 @@ class TestAddMonitor:
         self, tmp_path, monkeypatch, capsys
     ):
         import pyruns
+        from pyruns.utils import info_io
 
         task_dir = self._make_task_dir(tmp_path)
         config_path = os.path.join(task_dir, "config.yaml")
@@ -667,7 +670,7 @@ class TestAddMonitor:
             calls["count"] += 1
             raise OSError("task metadata remains locked")
 
-        monkeypatch.setattr(pyruns, "update_task_info", fail_update)
+        monkeypatch.setattr(info_io, "append_task_track", fail_update)
 
         pyruns.track(loss=0.3)
         pyruns.track(loss=0.2)

@@ -64,7 +64,7 @@ from pyruns.utils.config_utils import (
 from pyruns.utils.info_io import (
     get_log_options,
     load_script_info,
-    load_task_info,
+    load_task_metadata,
     resolve_log_path,
     validate_task_log_path,
     validate_task_name,
@@ -894,7 +894,7 @@ class PyrunsRuntime:
                 task_dir = os.path.join(tasks_dir, dir_name)
                 if not os.path.isdir(task_dir):
                     continue
-                task_info = load_task_info(task_dir)
+                task_info = load_task_metadata(task_dir)
                 if normalize_task_kind(task_info.get("task_kind")) != _cfg.TASK_KIND_SHELL:
                     continue
 
@@ -1347,7 +1347,7 @@ class PyrunsRuntime:
         if task is None:
             raise KeyError(task_name)
         task_dir = str(task.get("dir", "") or "")
-        info = load_task_info(task_dir) if task_dir else {}
+        info = load_task_metadata(task_dir) if task_dir else {}
         status = str(info.get("status", "") or "").lower()
         if status not in {"queued", "running"}:
             if status in {"completed", "failed", "cancelled"}:
@@ -1365,7 +1365,7 @@ class PyrunsRuntime:
             # Cancellation markers are intentionally internal task metadata
             # and are omitted from API snapshots. Read the same locked state
             # file to distinguish a durable request from an identity race.
-            latest_info = load_task_info(task_dir) or {}
+            latest_info = load_task_metadata(task_dir) or {}
             latest_status = str(latest_info.get("status", "") or "").lower()
             if (
                 latest_status in {"completed", "failed", "cancelled"}

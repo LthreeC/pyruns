@@ -39,11 +39,11 @@ from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
     ensure_run_slot,
-    load_task_info,
+    load_task_metadata,
     prepare_task_log_path,
     run_slot_count,
     task_info_lock,
-    update_task_info,
+    update_task_metadata,
     validate_task_directory,
     validate_task_name,
     validate_tasks_root,
@@ -335,6 +335,17 @@ class TaskManager:
     @staticmethod
     def _finalize_full_task_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply derived API fields to an already detached full-task snapshot."""
+        if data.get("track_store"):
+            from pyruns.utils.info_io import load_task_info
+
+            try:
+                info = load_task_info(str(data["dir"]), raise_error=True)
+                data["tracks"] = info["tracks"]
+            except Exception as exc:
+                data["_load_error"] = "; ".join(
+                    message for message in (data.get("_load_error"), f"Could not load tracks: {exc}") if message
+                )
+        data.pop("track_store", None)
         data["dir"] = str(data.get("dir", "")).replace("\\", "/")
         data["config"] = to_container(data.get("config", {}) or {}, resolve=False)
         data.pop("_gpu_wait_persisted_signature", None)
@@ -850,7 +861,7 @@ class TaskManager:
                 expected_run_index=active_task_run_index(info),
             )
         except (TaskClaimConflict, TaskStateConflict):
-            updated = load_task_info(task_dir) or info
+            updated = load_task_metadata(task_dir) or info
             return updated, False
         except (OSError, ValueError) as exc:
             if raise_on_error:
@@ -858,7 +869,7 @@ class TaskManager:
             return self._failed_info_with_error(
                 info, f"Could not persist final task metadata: {exc}",
             ), True
-        updated = load_task_info(task_dir) or info
+        updated = load_task_metadata(task_dir) or info
         logger.warning("%s: local process identity is no longer live; marked failed", task_name)
         return updated, True
 
@@ -959,7 +970,7 @@ class TaskManager:
                 raise TaskStateConflict("task run changed before directory move")
             info[_NAMESPACE_OPERATION_KEY] = operation
 
-        update_task_info(task_dir, _apply)
+        update_task_metadata(task_dir, _apply)
         return token
 
     @staticmethod
@@ -979,7 +990,7 @@ class TaskManager:
                 info["name"] = new_name
             info.pop(_NAMESPACE_OPERATION_KEY, None)
 
-        return update_task_info(task_dir, _apply)
+        return update_task_metadata(task_dir, _apply)
 
     @staticmethod
     def _rollback_namespace_operation(task_dir: str, token: str) -> None:
@@ -991,7 +1002,7 @@ class TaskManager:
                 info.pop(_NAMESPACE_OPERATION_KEY, None)
 
         try:
-            update_task_info(task_dir, _apply)
+            update_task_metadata(task_dir, _apply)
         except (FileNotFoundError, OSError, TimeoutError, TypeError, ValueError):
             pass
 
@@ -1072,7 +1083,7 @@ class TaskManager:
 
         metadata_error = ""
         try:
-            info = load_task_info(task_dir, raise_error=True)
+            info = load_task_metadata(task_dir, raise_error=True)
             if raise_on_error:
                 _validate_task_status_for_strict_refresh(info, dir_name)
             if not info:
@@ -1149,6 +1160,8 @@ class TaskManager:
             "_mtime_ns": mtime_ns,
             "_info_signature": info_signature,
         }
+        if "track_store" in info:
+            task["track_store"] = copy.deepcopy(info["track_store"])
         pending_run_index = info.get("run_index", info.get("_run_index"))
         if pending_run_index:
             task["run_index"] = int(pending_run_index)
@@ -1215,7 +1228,7 @@ class TaskManager:
                     and not payload_changed and not task.get("_terminal_write_pending")
                 ):
                     if task.get("status") == "running" and task.get("name") not in self._running_ids:
-                        info = load_task_info(task["dir"])
+                        info = load_task_metadata(task["dir"])
                         if not info:
                             continue
                         info = self._strip_queued_placeholder_run(info)
@@ -1245,7 +1258,7 @@ class TaskManager:
                                     has_changed |= before != after
                     continue
                 try:
-                    info = load_task_info(task["dir"], raise_error=True)
+                    info = load_task_metadata(task["dir"], raise_error=True)
                     if not info:
                         raise ValueError("Task metadata is empty")
                 except Exception as exc:
@@ -1510,6 +1523,9 @@ class TaskManager:
 
     @staticmethod
     def _run_slot_has_data(meta: Dict[str, Any], slot: int) -> bool:
+        descriptor = meta.get("track_store") or {}
+        if slot < int(descriptor.get("max_run_index", 0)):
+            return True
         for key in (
             "start_times",
             "finish_times",
@@ -1866,7 +1882,7 @@ class TaskManager:
             if attempt == 2:
                 return  # Normal disk refresh reconciles sustained contention.
             try:
-                info = load_task_info(task_dir, raise_error=True)
+                info = load_task_metadata(task_dir, raise_error=True)
             except (OSError, ValueError) as exc:
                 logger.debug("Could not reload edited metadata for %s yet: %s", task_name, exc)
                 return
@@ -1886,7 +1902,7 @@ class TaskManager:
         def _apply(task_info: Dict[str, Any]) -> None:
             task_info["pinned"] = new_value
 
-        updated = update_task_info(task_dir, _apply)
+        updated = update_task_metadata(task_dir, _apply)
         self._apply_task_metadata_update(task_name, task_dir, target, revision, updated)
         self.trigger_update()
         return True, new_value
@@ -1948,7 +1964,7 @@ class TaskManager:
                         if pinned_value is not None:
                             task_info["pinned"] = pinned_value
 
-                    updated_info[task_name] = update_task_info(task_dir, _apply)
+                    updated_info[task_name] = update_task_metadata(task_dir, _apply)
             except Exception:
                 for task_name, task_dir, _, _ in reversed(updates):
                     if task_name not in updated_info:
@@ -1974,7 +1990,7 @@ class TaskManager:
                                 task_info.pop(field, None)
 
                     try:
-                        updated_info[task_name] = update_task_info(task_dir, _restore)
+                        updated_info[task_name] = update_task_metadata(task_dir, _restore)
                     except Exception as rollback_exc:
                         logger.warning(
                             "Could not roll back task reorder for %s: %s",
@@ -1982,7 +1998,7 @@ class TaskManager:
                             rollback_exc,
                         )
                         try:
-                            updated_info[task_name] = load_task_info(task_dir, raise_error=True)
+                            updated_info[task_name] = load_task_metadata(task_dir, raise_error=True)
                         except Exception as refresh_exc:
                             updated_info.pop(task_name, None)
                             logger.warning(
@@ -2007,12 +2023,12 @@ class TaskManager:
                 )
             with self._lock:
                 reordered = [
-                    self.serialize_task(self._resolve_identifier_locked(task_name))
+                    self._snapshot_task_for_api(self._resolve_identifier_locked(task_name), summary=False)
                     for task_name, _, _ in normalized
                 ]
 
         self.trigger_update()
-        return True, [task for task in reordered if task is not None]
+        return True, [self._finalize_full_task_snapshot(task) for task in reordered if task is not None]
 
     def update_task_notes(
         self,
@@ -2034,7 +2050,7 @@ class TaskManager:
                 raise TaskStateConflict("Task notes changed since they were loaded.")
             task_info["notes"] = str(notes or "")
 
-        updated = update_task_info(task_dir, _apply)
+        updated = update_task_metadata(task_dir, _apply)
         self._apply_task_metadata_update(task_name, task_dir, target, revision, updated)
         self.trigger_update()
         return True, str(updated.get("notes", "") or "")
@@ -2066,7 +2082,7 @@ class TaskManager:
             task_info["env"] = normalized_env
             task_info.pop("custom_env", None)
 
-        updated = update_task_info(task_dir, _apply)
+        updated = update_task_metadata(task_dir, _apply)
         self._apply_task_metadata_update(task_name, task_dir, target, revision, updated)
         self.trigger_update()
         return True, dict(updated.get("env", {}) or {})
@@ -2096,7 +2112,7 @@ class TaskManager:
                 return False, f"Task name '{new_name}' already exists in the current workspace"
 
             try:
-                disk_info = load_task_info(old_dir, raise_error=True)
+                disk_info = load_task_metadata(old_dir, raise_error=True)
                 move_token = self._begin_namespace_operation(
                     old_dir,
                     str(target["name"]),
@@ -2198,7 +2214,7 @@ class TaskManager:
             request_context["finalized_run_slot"] = finalized_run_slot
 
         try:
-            updated = update_task_info(task_dir, _request)
+            updated = update_task_metadata(task_dir, _request)
         except (FileNotFoundError, TaskStateConflict):
             return False
 
@@ -2223,7 +2239,7 @@ class TaskManager:
             # A pending stop summary means the immediate stop passed the lock
             # but could not verify process termination; do not treat its marker
             # as an accepted request if rolling that marker back failed.
-            latest = load_task_info(task_dir) or {}
+            latest = load_task_metadata(task_dir) or {}
             if latest:
                 self._refresh_memory_task_from_disk_info(task_name, task_dir, latest)
                 self.trigger_update()
@@ -2275,7 +2291,7 @@ class TaskManager:
         for task_name, task_dir in candidates:
             if not task_name or not task_dir:
                 continue
-            info = load_task_info(task_dir) or {}
+            info = load_task_metadata(task_dir) or {}
             if not info.get("cancel_requested_at") or not self._is_current_runner(info):
                 continue
             self.cancel_task(
@@ -2305,7 +2321,7 @@ class TaskManager:
         if target_ref is None:
             return False
 
-        disk_info = load_task_info(target_ref["dir"])
+        disk_info = load_task_metadata(target_ref["dir"])
         if not disk_info:
             return False
         disk_status = str(disk_info.get("status", "") or "").lower()
@@ -2358,7 +2374,7 @@ class TaskManager:
                 return False
             except (TaskClaimConflict, TaskStateConflict) as exc:
                 logger.info("Cancel skipped for %s because disk state changed: %s", target_name, exc)
-                latest = load_task_info(target_ref["dir"]) or disk_info
+                latest = load_task_metadata(target_ref["dir"]) or disk_info
                 self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], latest)
                 self.trigger_update()
                 return False
@@ -2408,7 +2424,7 @@ class TaskManager:
                             target_name,
                             pid,
                         )
-                    latest = load_task_info(target_ref["dir"]) or disk_info
+                    latest = load_task_metadata(target_ref["dir"]) or disk_info
                     self._refresh_memory_task_from_disk_info(
                         target_name,
                         target_ref["dir"],
@@ -2434,12 +2450,12 @@ class TaskManager:
                 return False
             except (TaskClaimConflict, TaskStateConflict) as exc:
                 logger.info("Cancel skipped for %s because disk state changed: %s", target_name, exc)
-                latest = load_task_info(target_ref["dir"]) or disk_info
+                latest = load_task_metadata(target_ref["dir"]) or disk_info
                 self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], latest)
                 self.trigger_update()
                 return False
 
-        latest = load_task_info(target_ref["dir"]) or action_task
+        latest = load_task_metadata(target_ref["dir"]) or action_task
         with self._lock:
             current = self._tasks_by_name.get(target_name)
             if current and self._same_task_dir(str(current.get("dir", "") or ""), target_ref["dir"]):
@@ -2487,7 +2503,7 @@ class TaskManager:
 
         targets: list[Dict[str, Any]] = []
         for candidate in candidates:
-            disk_info = load_task_info(candidate["dir"])
+            disk_info = load_task_metadata(candidate["dir"])
             disk_status = str((disk_info or {}).get("status", candidate.get("status", "")) or "").lower()
             if (
                 (disk_status == "running" and not self._is_current_runner(disk_info or {}))
@@ -2532,7 +2548,7 @@ class TaskManager:
                             candidate["name"],
                             exc,
                         )
-                        latest = load_task_info(candidate["dir"])
+                        latest = load_task_metadata(candidate["dir"])
                         if latest:
                             self._refresh_memory_task_from_disk_info(
                                 candidate["name"],
@@ -2600,7 +2616,7 @@ class TaskManager:
                             candidate["name"],
                             exc,
                         )
-                        latest = load_task_info(candidate["dir"])
+                        latest = load_task_metadata(candidate["dir"])
                         if latest:
                             self._refresh_memory_task_from_disk_info(
                                 candidate["name"],
@@ -2636,7 +2652,7 @@ class TaskManager:
                 "dir": candidate["dir"],
                 "identity": source_identity,
                 "run_index": active_task_run_index(
-                    settled if disk_status == "running" else (load_task_info(candidate["dir"]) or action_task)
+                    settled if disk_status == "running" else (load_task_metadata(candidate["dir"]) or action_task)
                 ),
             })
 
@@ -2952,7 +2968,7 @@ class TaskManager:
                                 task_name,
                                 exc,
                             )
-                            latest = load_task_info(candidate["dir"])
+                            latest = load_task_metadata(candidate["dir"])
                             if latest:
                                 self._refresh_memory_task_from_disk_info(task_name, candidate["dir"], latest)
                         else:
@@ -3177,7 +3193,7 @@ class TaskManager:
             observed = self._tasks_by_name.get(task_name)
             revision = observed.get("_registry_revision", 0) if observed else 0
         try:
-            info = load_task_info(task_dir)
+            info = load_task_metadata(task_dir)
             if info:
                 info = self._strip_queued_placeholder_run(info)
         except (OSError, ValueError):
@@ -3258,7 +3274,7 @@ class TaskManager:
             revision = task.get("_registry_revision", 0)
 
         try:
-            info = load_task_info(task_dir)
+            info = load_task_metadata(task_dir)
         except Exception:
             info = None
 
@@ -3297,7 +3313,7 @@ class TaskManager:
                 persistence_error = exc
                 logger.warning("Could not persist task completion for %s: %s", task_id, exc)
             try:
-                info = load_task_info(task_dir)
+                info = load_task_metadata(task_dir)
             except Exception:
                 info = None
 
@@ -3376,7 +3392,7 @@ class TaskManager:
         for task in active_tasks:
             status = task.get("status")
             task_name = str(task.get("name", ""))
-            disk_info = load_task_info(task["dir"])
+            disk_info = load_task_metadata(task["dir"])
             if not disk_info and not os.path.isdir(task["dir"]):
                 if not self._is_current_runner(task):
                     continue
@@ -3590,7 +3606,7 @@ class TaskManager:
         return pid, created_at
 
     def _latest_pid_from_disk(self, task: Dict[str, Any]) -> Any:
-        task_info = load_task_info(task["dir"])
+        task_info = load_task_metadata(task["dir"])
         return self._latest_pid(task_info) if task_info else None
 
     def _set_runner_lease_fields(self, info: Dict[str, Any]) -> None:
@@ -3640,7 +3656,7 @@ class TaskManager:
                     info["gpu_wait"] = copy.deepcopy(gpu_wait)
 
             try:
-                updated = update_task_info(task_dir, _apply)
+                updated = update_task_metadata(task_dir, _apply)
             except (FileNotFoundError, TaskClaimConflict, TaskStateConflict):
                 continue
             except (OSError, ValueError) as exc:
@@ -3715,7 +3731,7 @@ class TaskManager:
             self._set_runner_lease_fields(info)
 
         try:
-            updated = update_task_info(task_dir, _apply)
+            updated = update_task_metadata(task_dir, _apply)
         except (FileNotFoundError, TaskClaimConflict, TaskStateConflict) as exc:
             logger.info("Skip submitting %s: %s", task_name, exc)
             return None
@@ -3820,11 +3836,11 @@ class TaskManager:
                 self._clear_gpu_schedule_info(task_info)
 
         try:
-            updated = update_task_info(task_dir, _apply)
+            updated = update_task_metadata(task_dir, _apply)
         except (FileNotFoundError, TaskClaimConflict, TaskStateConflict) as exc:
             logger.info("Skip syncing %s as %s: %s", identifier, status, exc)
             try:
-                refreshed = load_task_info(task_dir)
+                refreshed = load_task_metadata(task_dir)
             except Exception:
                 refreshed = None
             if refreshed:
@@ -3953,7 +3969,7 @@ class TaskManager:
             info["gpu_wait"] = copy.deepcopy(wait)
 
         try:
-            update_task_info(task_dir, _apply)
+            update_task_metadata(task_dir, _apply)
         except (FileNotFoundError, OSError, TimeoutError, TaskClaimConflict, TaskStateConflict) as exc:
             logger.debug("Could not persist GPU wait details for %s yet: %s", task_name, exc)
             return False
@@ -4171,7 +4187,7 @@ class TaskManager:
             if not task_name or not task_dir:
                 continue
             try:
-                info = load_task_info(task_dir)
+                info = load_task_metadata(task_dir)
             except Exception:
                 continue
             if str(info.get("status", "") or "").lower() != "running":
@@ -4468,7 +4484,7 @@ class TaskManager:
             info.pop("cancel_requested_at", None)
 
         try:
-            update_task_info(
+            update_task_metadata(
                 task_dir,
                 _apply,
                 timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
@@ -4489,7 +4505,7 @@ class TaskManager:
         deadline = time.monotonic() + max(0.0, float(timeout))
         while True:
             try:
-                info = load_task_info(task_dir) or {}
+                info = load_task_metadata(task_dir) or {}
             except (OSError, TypeError, ValueError):
                 return None
             status = str(info.get("status", "") or "").lower()
@@ -4546,7 +4562,7 @@ class TaskManager:
         update_kwargs = {}
         if lock_timeout_sec is not None:
             update_kwargs["timeout_sec"] = lock_timeout_sec
-        updated = update_task_info(task_dir, _apply, **update_kwargs)
+        updated = update_task_metadata(task_dir, _apply, **update_kwargs)
         if "status" in task:
             self._apply_info_to_task(task, updated)
 
@@ -4636,7 +4652,7 @@ class TaskManager:
         update_kwargs = {}
         if lock_timeout_sec is not None:
             update_kwargs["timeout_sec"] = lock_timeout_sec
-        updated = update_task_info(task_dir, _apply, **update_kwargs)
+        updated = update_task_metadata(task_dir, _apply, **update_kwargs)
         if reason or detail_lines:
             if failure_context.get("finalized_run_slot"):
                 display_run_index = max(run_index, int(updated.get("run_index", 0) or 0), 1)
@@ -4676,6 +4692,7 @@ class TaskManager:
             tuple(repr(item) for item in (task.get("run_environments", []) or [])),
             tuple(repr(item) for item in (task.get("records", []) or [])),
             tuple(repr(item) for item in (task.get("tracks", []) or [])),
+            repr(task.get("track_store")),
             task.get("pinned"),
             task.get("task_order"),
             task.get("task_kind"),
@@ -4709,6 +4726,10 @@ class TaskManager:
         info_signature: tuple[int, ...] | None = None,
     ) -> None:
         """Copy task_info.json fields used by UI and scheduler."""
+        if "track_store" in info:
+            task["track_store"] = copy.deepcopy(info["track_store"])
+        else:
+            task.pop("track_store", None)
         task.update(
             {
                 "name": os.path.basename(os.path.normpath(task["dir"])),

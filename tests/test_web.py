@@ -2552,7 +2552,7 @@ def test_initial_task_load_does_not_parse_metadata_twice(tmp_path):
     for name in ("first", "second"):
         _add_task(workspace, name)
     runtime = _build_runtime(workspace)
-    with patch.object(task_manager_module, "load_task_info", wraps=task_manager_module.load_task_info) as load:
+    with patch.object(task_manager_module, "load_task_metadata", wraps=task_manager_module.load_task_metadata) as load:
         assert runtime.list_tasks(summary=True).total == 2
     assert load.call_count == 2
 

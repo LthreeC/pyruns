@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import socket
@@ -345,9 +346,19 @@ def _validate_contained_path(path: str, root: str, *, label: str) -> None:
 
 def _load_json_object(path: str, *, max_bytes: int, label: str) -> Dict[str, Any]:
     with open(path, "rb") as handle:
-        raw = handle.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise ValueError(f"{label} is too large (max {max_bytes} bytes): {path}")
+        # BufferedReader.read(limit) reserves the entire limit even for tiny
+        # metadata files. Bound each allocation while still detecting growth.
+        chunks = []
+        total = 0
+        while True:
+            chunk = handle.read(min(64 * 1024, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"{label} is too large (max {max_bytes} bytes): {path}")
+    raw = b"".join(chunks)
     data = json.loads(raw.decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{label} root must be a JSON object: {path}")
@@ -404,8 +415,8 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
         thread_lock.release()
 
 
-def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
-    """Load task_info.json from a task directory."""
+def load_task_metadata(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
+    """Load task control data without materializing externally stored curves."""
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
     try:
         validate_task_directory(task_dir)
@@ -435,6 +446,55 @@ def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
     return {}
 
 
+def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
+    """Load complete task info, including legacy and external track histories."""
+    from pyruns.utils.track_store import TRACK_STORE_KEY, MissingTrackGeneration, read_tracks
+
+    info = load_task_metadata(task_dir, raise_error=raise_error)
+    if TRACK_STORE_KEY not in info:
+        return info
+    try:
+        for attempt in range(_READ_RETRY_COUNT):
+            try:
+                if TRACK_STORE_KEY in info:
+                    info["tracks"] = read_tracks(task_dir, info[TRACK_STORE_KEY], slots=run_slot_count(info))
+                return info
+            except MissingTrackGeneration:
+                # Replacement commits the new generation before switching JSON.
+                # A pruned pointer is retried only when metadata actually changed.
+                latest = load_task_metadata(task_dir, raise_error=True)
+                if attempt == _READ_RETRY_COUNT - 1 or latest.get(TRACK_STORE_KEY) == info.get(TRACK_STORE_KEY):
+                    raise
+                info = latest
+    except Exception:
+        if raise_error:
+            raise
+        return {}
+
+
+def _save_full_task_info_unlocked(info_path: str, task_dir: str, payload: Dict[str, Any]) -> None:
+    """Commit a prepared curve generation before switching the atomic pointer."""
+    from pyruns.utils.track_store import (
+        TRACK_STORE_KEY, new_descriptor, prepare_generation, prune_generations, should_externalize,
+    )
+
+    if TRACK_STORE_KEY not in payload and not should_externalize(payload.get("tracks", [])):
+        _write_task_info_unlocked(info_path, task_dir, payload)
+        return
+    descriptor = new_descriptor(payload["tracks"])
+    stored = {**payload, "tracks": [{} for _ in payload["tracks"]], TRACK_STORE_KEY: descriptor}
+    _serialize_task_info(info_path, stored)
+    prepare_generation(task_dir, payload["tracks"], descriptor)
+    _write_task_info_unlocked(info_path, task_dir, stored)
+    payload[TRACK_STORE_KEY] = descriptor
+    try:
+        prune_generations(task_dir, descriptor)
+    except Exception as exc:
+        # Cleanup is not part of the commit. Reporting a committed update as
+        # failed could make an SDK retry it and duplicate a metric point.
+        logging.getLogger(__name__).debug("Could not prune old track generations: %s", exc)
+
+
 def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     """Save task_info.json atomically after normalizing run-slot fields."""
     validate_task_directory(task_dir)
@@ -444,7 +504,7 @@ def save_task_info(task_dir: str, info: Dict[str, Any]) -> None:
     payload.pop("id", None)
     normalize_run_history(payload)
     with task_info_lock(task_dir):
-        _write_task_info_unlocked(info_path, task_dir, payload)
+        _save_full_task_info_unlocked(info_path, task_dir, payload)
 
 
 def load_script_info(run_root: str) -> Dict[str, Any]:
@@ -515,7 +575,7 @@ def extract_metrics(info: Dict[str, Any]) -> list:
 
 def load_record_data(task_dir: str) -> list:
     """Load record entries from task_info.json."""
-    info = load_task_info(task_dir)
+    info = load_task_metadata(task_dir)
     return extract_metrics(info)
 
 
@@ -524,6 +584,7 @@ def update_task_info(
     updater: Callable[[Dict[str, Any]], None],
     *,
     timeout_sec: float = _LOCK_TIMEOUT_SEC,
+    include_tracks: bool = True,
 ) -> Dict[str, Any]:
     """Strictly update an existing task_info.json through the atomic save path."""
     validate_task_directory(task_dir)
@@ -538,12 +599,61 @@ def update_task_info(
 
         info.pop("id", None)
         normalize_run_history(info)
+        from pyruns.utils.track_store import TRACK_STORE_KEY, read_tracks
+
+        if include_tracks and TRACK_STORE_KEY in info:
+            info["tracks"] = read_tracks(task_dir, info[TRACK_STORE_KEY], slots=run_slot_count(info))
         updater(info)
         payload = copy.deepcopy(info)
         payload.pop("id", None)
         normalize_run_history(payload)
-        _write_task_info_unlocked(info_path, task_dir, payload)
+        if include_tracks:
+            _save_full_task_info_unlocked(info_path, task_dir, payload)
+        else:
+            if TRACK_STORE_KEY in payload and any(payload["tracks"]):
+                raise ValueError("Use a full task update when replacing externally stored tracks")
+            if TRACK_STORE_KEY in payload:
+                _write_task_info_unlocked(info_path, task_dir, payload)
+            else:
+                _save_full_task_info_unlocked(info_path, task_dir, payload)
+                if TRACK_STORE_KEY in payload:
+                    payload["tracks"] = [{} for _ in payload["tracks"]]
         return payload
+
+
+def update_task_metadata(
+    task_dir: str,
+    updater: Callable[[Dict[str, Any]], None],
+    *,
+    timeout_sec: float = _LOCK_TIMEOUT_SEC,
+) -> Dict[str, Any]:
+    """Update control fields while preserving an external curve generation."""
+    return update_task_info(task_dir, updater, timeout_sec=timeout_sec, include_tracks=False)
+
+
+def append_task_track(task_dir: str, data: Dict[str, Any], *, run_index: int | None = None) -> None:
+    """Persist one SDK track update without rewriting a large history."""
+    from pyruns.utils.track_store import TRACK_STORE_KEY, append_point, encode_values
+
+    encoded = encode_values(data)
+    values = json.loads(encoded)
+    with task_info_lock(task_dir, create_dir=False):
+        info = load_task_metadata(task_dir, raise_error=True)
+        previous_slots = run_slot_count(info)
+        target = run_index if run_index is not None else max(1, previous_slots)
+        slot = ensure_run_slot(info, target)
+        target = slot + 1
+        info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
+        if TRACK_STORE_KEY in info:
+            descriptor = info[TRACK_STORE_KEY]
+            if target > previous_slots or target > int(descriptor.get("max_run_index", 0)):
+                descriptor["max_run_index"] = max(target, int(descriptor.get("max_run_index", 0)))
+                _write_task_info_unlocked(info_path, task_dir, info)
+            append_point(task_dir, descriptor, target, encoded)
+            return
+        for key, value in values.items():
+            info["tracks"][slot].setdefault(key, []).append(value)
+        _save_full_task_info_unlocked(info_path, task_dir, info)
 
 
 def run_slot_count(meta: Dict[str, Any]) -> int:
@@ -662,7 +772,7 @@ def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Opti
     if log_file_name:
         return opts.get(log_file_name)
     if opts:
-        info = load_task_info(task_dir) or {}
+        info = load_task_metadata(task_dir) or {}
         status = str(info.get("status", "") or "").lower()
         if status == "queued" and QUEUE_LOG_FILENAME in opts:
             return opts[QUEUE_LOG_FILENAME]
@@ -788,13 +898,18 @@ def normalize_run_history(meta: Dict[str, Any]) -> int:
     return total
 
 
-def _write_task_info_unlocked(info_path: str, task_dir: str, payload: Dict[str, Any]) -> None:
-    """Write task info atomically; caller must already hold task_info_lock()."""
+def _serialize_task_info(info_path: str, payload: Dict[str, Any]) -> str:
     serialized = json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False)
     if len(serialized.encode("utf-8")) > MAX_TASK_INFO_BYTES:
         raise ValueError(
             f"{TASK_INFO_FILENAME} is too large (max {MAX_TASK_INFO_BYTES} bytes): {info_path}"
         )
+    return serialized
+
+
+def _write_task_info_unlocked(info_path: str, task_dir: str, payload: Dict[str, Any]) -> None:
+    """Write task info atomically; caller must already hold task_info_lock()."""
+    serialized = _serialize_task_info(info_path, payload)
     fd, tmp_path = tempfile.mkstemp(
         prefix=f".{TASK_INFO_FILENAME}.",
         suffix=".tmp",

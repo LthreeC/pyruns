@@ -19,7 +19,7 @@ from pyruns.cli.submission_protocol import (
     write_submission_receipt,
 )
 from pyruns.core.task_manager import TaskManager, active_task_run_index
-from pyruns.utils.info_io import load_task_info
+from pyruns.utils.info_io import load_task_metadata
 from pyruns.utils.settings import ensure_settings_file, load_settings
 from pyruns.update_coordination import EnvironmentActivityLease
 
@@ -101,7 +101,7 @@ def _claimed_tasks_stopped(
         for name in claimed:
             task = selected.get(name) or {}
             task_dir = str(task.get("dir", "") or "")
-            info = load_task_info(task_dir) if task_dir else None
+            info = load_task_metadata(task_dir) if task_dir else None
             if not info:
                 return False
             status = str(info.get("status", "") or "").lower()
@@ -343,7 +343,7 @@ def main() -> int:
                     detail="accepted submission was aborted during handoff",
                 )
 
-            infos = [load_task_info(str(selected[name]["dir"])) or {} for name in names]
+            infos = [load_task_metadata(str(selected[name]["dir"])) or {} for name in names]
             if any(not info for info in infos):
                 return 1
             statuses = [

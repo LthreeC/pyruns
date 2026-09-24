@@ -320,7 +320,7 @@ def test_wait_returns_the_captured_run_when_a_newer_run_starts(monkeypatch):
     task = {"name": "race", "dir": "unused"}
     identity = commands._TaskRunIdentity(run_index=1, runner_id=old_runner)
 
-    monkeypatch.setattr(commands, "load_task_info", lambda _task_dir: next(snapshots))
+    monkeypatch.setattr(commands, "load_task_metadata", lambda _task_dir: next(snapshots))
     monkeypatch.setattr(
         commands,
         "_task_record",
@@ -379,7 +379,7 @@ def test_log_follow_never_switches_to_a_newer_run_log(monkeypatch):
     identity = commands._TaskRunIdentity(run_index=1, runner_id=old_runner)
     reads: list[str] = []
 
-    monkeypatch.setattr(commands, "load_task_info", lambda _task_dir: next(snapshots))
+    monkeypatch.setattr(commands, "load_task_metadata", lambda _task_dir: next(snapshots))
     monkeypatch.setattr(
         commands,
         "_task_record",
@@ -991,7 +991,7 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
-    monkeypatch.setattr(detached_runner, "load_task_info", lambda _task_dir: {})
+    monkeypatch.setattr(detached_runner, "load_task_metadata", lambda _task_dir: {})
     monkeypatch.setattr(
         detached_runner.time,
         "sleep",
@@ -1060,7 +1060,7 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
     monkeypatch.setattr(
         detached_runner,
-        "load_task_info",
+        "load_task_metadata",
         lambda _task_dir: {
             "status": "running",
             "run_index": 2,
@@ -1947,7 +1947,7 @@ def test_unresolved_interrupt_cancels_only_exact_submission_owner(
         return [{"name": "owned", "status": "cancelled"}]
 
     monkeypatch.setattr(commands, "submit_cli_tasks", interrupted_submit)
-    monkeypatch.setattr(commands, "load_task_info", task_info)
+    monkeypatch.setattr(commands, "load_task_metadata", task_info)
     monkeypatch.setattr(commands, "_wait_for_task_records", wait_for_cancelled)
 
     with pytest.raises(runner.SubmissionInterrupted):
@@ -2075,7 +2075,7 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
         ),
     )
     monkeypatch.setattr(detached_runner, "TaskManager", FakeTaskManager)
-    monkeypatch.setattr(detached_runner, "load_task_info", lambda task_dir: states.get(task_dir))
+    monkeypatch.setattr(detached_runner, "load_task_metadata", lambda task_dir: states.get(task_dir))
     monkeypatch.setattr(detached_runner, "write_submission_receipt", recording_write_receipt)
 
     assert detached_runner.main() == 2
@@ -2116,7 +2116,7 @@ def test_detached_runner_reports_unresolved_when_partial_cleanup_is_not_confirme
 
     monkeypatch.setattr(
         detached_runner,
-        "load_task_info",
+        "load_task_metadata",
         lambda _task_dir: {"status": "queued"},
     )
     monkeypatch.setattr(detached_runner, "_CLEANUP_TIMEOUT_SEC", 0.0)
@@ -2163,7 +2163,7 @@ def test_detached_runner_does_not_cancel_foreign_rerun_of_claimed_task(
 
     monkeypatch.setattr(
         detached_runner,
-        "load_task_info",
+        "load_task_metadata",
         lambda _task_dir: {
             "status": "running",
             "runner_id": "foreign:9999:other",

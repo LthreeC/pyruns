@@ -97,22 +97,27 @@ def _warn_metric_write_failure(
 def _write_metrics(
     operation: str,
     task_dir: str,
-    apply_update: Callable[[Dict[str, Any], int], None],
+    apply_update: Callable[[Dict[str, Any], int], None] | None = None,
+    *,
+    track_data: Dict[str, Any] | None = None,
 ) -> None:
     """Persist metrics with bounded I/O retries and best-effort diagnostics."""
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         try:
             run_index = _get_env_run_index()
-            if run_index is None:
-                info = _lazy_export("load_task_info")(task_dir, raise_error=True)
-                run_index = max(1, _lazy_export("run_slot_count")(info))
+            if track_data is not None:
+                from .utils.info_io import append_task_track
+
+                append_task_track(task_dir, track_data, run_index=run_index)
+                return
 
             def _apply(info: Dict[str, Any]) -> None:
-                slot = _lazy_export("ensure_run_slot")(info, run_index)
+                target = run_index if run_index is not None else max(1, _lazy_export("run_slot_count")(info))
+                slot = _lazy_export("ensure_run_slot")(info, target)
                 apply_update(info, slot)
 
-            _lazy_export("update_task_info")(task_dir, _apply)
+            _lazy_export("update_task_info")(task_dir, _apply, include_tracks=False)
             return
         except (IOError, OSError) as error:
             if attempt == max_attempts:
@@ -316,12 +321,7 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
     if not update_data:
         return
 
-    def _apply_track(info: Dict[str, Any], slot: int) -> None:
-        current_tracks = info[TRACKS_KEY][slot]
-        for item_key, item_value in update_data.items():
-            current_tracks.setdefault(item_key, []).append(item_value)
-
-    _write_metrics("track", os.path.dirname(pyr_config), _apply_track)
+    _write_metrics("track", os.path.dirname(pyr_config), track_data=update_data)
 
 
 def get_task_dir() -> Optional[str]:
@@ -340,7 +340,9 @@ def get_run_index() -> Optional[int]:
     env_run_index = _get_env_run_index()
     if env_run_index is not None:
         return env_run_index
-    info = _lazy_export("load_task_info")(os.path.dirname(pyr_config), raise_error=True)
+    from .utils.info_io import load_task_metadata
+
+    info = load_task_metadata(os.path.dirname(pyr_config), raise_error=True)
     return _lazy_export("run_slot_count")(info)
 
 

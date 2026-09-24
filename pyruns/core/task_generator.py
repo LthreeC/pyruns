@@ -25,7 +25,7 @@ from pyruns.utils.info_io import (
     load_script_info,
     run_slot_count,
     save_task_info,
-    update_task_info,
+    update_task_metadata,
     validate_task_name,
     validate_tasks_root,
 )
@@ -245,7 +245,7 @@ class TaskGenerator:
             info["_creation_rollback"] = rollback_token
 
         try:
-            updated = update_task_info(task_dir, _mark_for_rollback)
+            updated = update_task_metadata(task_dir, _mark_for_rollback)
         except (OSError, TypeError, ValueError, _TaskCreationRollbackConflict) as exc:
             logger.warning("Preserving task that is unsafe to roll back %s: %s", task_dir, exc)
             return False
