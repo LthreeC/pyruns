@@ -1893,6 +1893,53 @@ class TestFlattenUnflatten:
 #  YAML / JSON I/O
 
 class TestYamlIO:
+    def test_config_parses_preserve_scalars_and_other_yaml_loaders(self):
+        text = (
+            "batch: 1:3:1\nleading: 012\ninteger: -4\nhex: 0xff\n"
+            "octal: 0o17\nbinary: 0b101\nrate: 1e-3\nflag: true\n"
+            "date: 2026-09-25\nbase: local\npointer: ${base}\n"
+        )
+        global_yaml = yaml.safe_load(text)
+        global_omegaconf = OmegaConf.to_container(OmegaConf.create(text), resolve=False)
+        expected = {
+            "batch": "1:3:1", "leading": "012", "integer": -4, "hex": 255,
+            "octal": 15, "binary": 5, "rate": 0.001, "flag": True,
+            "date": "2026-09-25", "base": "local", "pointer": "${base}",
+        }
+        for _ in range(3):
+            config = config_utils.load_config_text(text)
+            assert OmegaConf.to_container(config, resolve=False) == expected
+            config.base = "modified"
+        assert yaml.safe_load(text) == global_yaml
+        assert OmegaConf.to_container(OmegaConf.create(text), resolve=False) == global_omegaconf
+
+    def test_config_parse_state_does_not_leak_between_documents_or_errors(self):
+        text = "source: &data\n  value: 7\ncopy: *data\n"
+        first = config_utils.load_config_text(text)
+        first.source.value = 99
+        for invalid, message in [
+            ("copy: *data\n", "undefined alias"),
+            ("value: 1\nvalue: 2\n", "duplicate key"),
+            ("items: [1, 2\n", "expected"),
+        ]:
+            with pytest.raises(yaml.YAMLError, match=message):
+                config_utils.load_config_text(invalid)
+            assert config_utils.load_config_text(text) == {"source": {"value": 7}, "copy": {"value": 7}}
+
+    def test_concurrent_config_parses_keep_independent_anchors_and_values(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def parse(index):
+            text = f"source: &data\n  value: {index}\ncopy: *data\nbatch: 1:3:1\n"
+            return OmegaConf.to_container(config_utils.load_config_text(text), resolve=False)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            configs = list(pool.map(parse, range(32)))
+        assert configs == [
+            {"source": {"value": index}, "copy": {"value": index}, "batch": "1:3:1"}
+            for index in range(32)
+        ]
+
     def test_save_and_load(self, tmp_path):
         data = {"lr": 0.01, "model": {"name": "vgg"}}
         path = str(tmp_path / "test.yaml")

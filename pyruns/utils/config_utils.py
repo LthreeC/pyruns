@@ -4,6 +4,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from datetime import date, datetime, time as datetime_time
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -28,7 +29,9 @@ _PYRUNS_INT_PATTERN = re.compile(
 )
 
 
+@lru_cache(maxsize=1)
 def _get_pyruns_yaml_loader() -> Any:
+    """Reuse the configured class; yaml.load creates a fresh parser per call."""
     loader = get_yaml_loader()
     loader.yaml_implicit_resolvers = {
         key: [
