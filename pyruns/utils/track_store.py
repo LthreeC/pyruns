@@ -26,6 +26,8 @@ INLINE_TRACK_BYTES = 256 * 1024
 MAX_TRACK_EVENT_BYTES = 16 * 1024 * 1024
 _SCHEMA_VERSION = 1
 _GENERATION_RE = re.compile(r"[0-9a-f]{32}\Z")
+_READ_BATCH_POINTS = 1024
+_READ_BATCH_CHARS = 256 * 1024
 
 
 class MissingTrackGeneration(ValueError):
@@ -149,33 +151,65 @@ def prune_generations(task_dir: str, descriptor: dict[str, Any]) -> None:
         connection.execute("DELETE FROM generations WHERE generation<>?", (generation,))
 
 
+def _read_point_batch(connection: sqlite3.Connection, generation: str, after: int, maximum: int) -> list:
+    """Copy a bounded batch, releasing SQLite's read lock before decoding it."""
+    connection.execute("BEGIN")
+    if connection.execute("SELECT 1 FROM generations WHERE generation=?", (generation,)).fetchone() is None:
+        raise MissingTrackGeneration("Referenced track generation is missing")
+    cursor = connection.execute(
+        "SELECT sequence, run_index, payload FROM points "
+        "WHERE generation=? AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?",
+        (generation, after, maximum, _READ_BATCH_POINTS),
+    )
+    rows = []
+    characters = 0
+    try:
+        for row in cursor:
+            rows.append(row)
+            characters += len(row[2])
+            if characters >= _READ_BATCH_CHARS:
+                break
+    finally:
+        # An unfinished SELECT cursor can retain a read lock after COMMIT.
+        cursor.close()
+    connection.commit()
+    return rows
+
+
 def read_tracks(task_dir: str, descriptor: dict[str, Any], *, slots: int) -> list:
-    """Read one consistent generation without creating a workspace lock file."""
+    """Read a fixed history using short transactions, then decode without locks."""
     generation = _generation(descriptor)
     with _connect(task_dir, readonly=True) as connection:
         connection.execute("BEGIN")
         row = connection.execute("SELECT snapshot FROM generations WHERE generation=?", (generation,)).fetchone()
         if row is None:
             raise MissingTrackGeneration("Referenced track generation is missing")
+        maximum = connection.execute(
+            "SELECT max(sequence) FROM points WHERE generation=?", (generation,),
+        ).fetchone()[0] or 0
+        connection.commit()
         tracks = json.loads(row[0])
         if not isinstance(tracks, list) or any(not isinstance(run, dict) for run in tracks):
             raise ValueError("Invalid track snapshot")
         if len(tracks) > slots:
             tracks = tracks[:slots]
         tracks.extend({} for _ in range(slots - len(tracks)))
-        cursor = connection.execute(
-            "SELECT run_index, payload FROM points WHERE generation=? ORDER BY sequence", (generation,),
-        )
-        for run_index, payload in cursor:
-            if not 1 <= run_index <= slots:
-                # Reserved/trimmed run slots are controlled by JSON metadata.
-                continue
-            values = json.loads(payload)
-            if not isinstance(values, dict):
-                raise ValueError("Invalid track point")
-            target = tracks[run_index - 1]
-            for key, value in values.items():
-                target.setdefault(key, []).append(value)
+        previous = 0
+        while previous < maximum:
+            rows = _read_point_batch(connection, generation, previous, maximum)
+            if not rows:
+                raise ValueError("Track events disappeared during read")
+            previous = rows[-1][0]
+            for _, run_index, payload in rows:
+                if not 1 <= run_index <= slots:
+                    # Reserved/trimmed run slots are controlled by JSON metadata.
+                    continue
+                values = json.loads(payload)
+                if not isinstance(values, dict):
+                    raise ValueError("Invalid track point")
+                target = tracks[run_index - 1]
+                for key, value in values.items():
+                    target.setdefault(key, []).append(value)
         return tracks
 
 

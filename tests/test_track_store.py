@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
@@ -534,3 +535,71 @@ def test_task_lock_release_does_not_remove_new_owner_after_retry(task, monkeypat
         assert lock_path.read_text(encoding="utf-8") == "different owner"
     finally:
         lock_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("pause_at", ["snapshot", "point", "bounded batch"])
+def test_detail_decode_allows_writers_and_excludes_later_appends(task, monkeypatch, pause_at):
+    externalize(task)
+    append_task_track(str(task), {"loss": 4})
+    expected = [0, 1, 2, 3, 4]
+    if pause_at == "bounded batch":
+        monkeypatch.setattr(track_store, "_READ_BATCH_CHARS", 1)
+        for value in (6, 7):
+            append_task_track(str(task), {"loss": value})
+            expected.append(value)
+    original_loads = json.loads
+    target = '[{"loss":[0,1,2,3]}]' if pause_at == "snapshot" else '{"loss":4}'
+    decoding = threading.Event()
+    resume = threading.Event()
+
+    def decode(text, *args, **kwargs):
+        if text == target and not decoding.is_set():
+            decoding.set()
+            assert resume.wait(10), "reader was not released"
+        return original_loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(track_store.json, "loads", decode)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader = pool.submit(load_task_info, str(task), True)
+        try:
+            assert decoding.wait(5), "reader did not reach JSON decoding"
+            writer = pool.submit(append_task_track, str(task), {"loss": 5})
+            writer.result(timeout=3)
+        finally:
+            resume.set()
+        assert reader.result(timeout=5)["tracks"] == [{"loss": expected}]
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": expected + [5]}]
+
+
+def test_replacement_between_read_batches_reloads_complete_new_generation(task, monkeypatch):
+    externalize(task)
+    for value in range(4, 8):
+        append_task_track(str(task), {"loss": value})
+    monkeypatch.setattr(track_store, "_READ_BATCH_POINTS", 1)
+    original_loads = json.loads
+    decoding = threading.Event()
+    resume = threading.Event()
+
+    def decode(text, *args, **kwargs):
+        if text == '{"loss":4}' and not decoding.is_set():
+            decoding.set()
+            assert resume.wait(10), "reader was not released"
+        return original_loads(text, *args, **kwargs)
+
+    def replace():
+        update_task_info(str(task), lambda info: info.update(tracks=[{"loss": [100, 101]}]))
+        # Pruning allows SQLite to reuse event sequence numbers. A stale reader
+        # must follow the generation identity rather than mix these new rows in.
+        append_task_track(str(task), {"loss": 102})
+
+    monkeypatch.setattr(track_store.json, "loads", decode)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader = pool.submit(load_task_info, str(task), True)
+        try:
+            assert decoding.wait(5)
+            pool.submit(replace).result(timeout=3)
+        finally:
+            resume.set()
+        assert reader.result(timeout=5)["tracks"] == [{"loss": [100, 101, 102]}]
+    with sqlite3.connect(task / track_store.TRACK_STORE_FILENAME) as connection:
+        assert connection.execute("SELECT count(*) FROM generations").fetchone()[0] == 1
