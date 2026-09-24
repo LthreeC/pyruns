@@ -125,11 +125,26 @@ def test_detect_config_source_fast_accepts_utf8_bom_argparse_script(tmp_path):
     assert extract_argparse_params(str(p_bom))["lr"]["default"] == 0.01
 
 
+def test_argparse_cache_detects_replaced_script_with_same_mtime_and_size(tmp_path):
+    script = tmp_path / "train.py"
+    replacement = tmp_path / "replacement.py"
+    script.write_text("parser.add_argument('--lr', default=1)\n", encoding="utf-8")
+    assert extract_argparse_params(str(script))["lr"]["default"] == 1
+    original = script.stat()
+
+    replacement.write_text("parser.add_argument('--lr', default=2)\n", encoding="utf-8")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert replacement.stat().st_size == original.st_size
+    replacement.replace(script)
+
+    assert extract_argparse_params(str(script))["lr"]["default"] == 2
+
+
 def test_parse_utils_handles_missing_invalid_and_multiline_cli_edges(tmp_path, monkeypatch):
     import pyruns.utils.parse_utils as parse_utils
 
     missing_script = tmp_path / "missing.py"
-    assert parse_utils._cache_key(str(missing_script))[1:] == (0, 0)
+    assert parse_utils._cache_key(str(missing_script))[1:] == (0, 0, 0, 0, 0)
     assert detect_config_source_fast(str(missing_script)) == ("unknown", None)
     assert extract_argparse_params(str(missing_script)) == {}
 
@@ -680,6 +695,43 @@ def test_safe_read_log_keeps_offset_when_read_returns_no_bytes(monkeypatch):
     monkeypatch.setattr(builtins, "open", lambda *_args, **_kwargs: EmptyReader())
 
     assert safe_read_log("edge.log", 4, max_bytes=8) == ("", 4)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "gbk"])
+@pytest.mark.parametrize("max_bytes", [1, 2, 3, 4])
+def test_safe_read_log_keeps_multibyte_characters_across_chunks(tmp_path, monkeypatch, encoding, max_bytes):
+    if encoding == "gbk":
+        monkeypatch.setattr(log_io, "_log_decode_candidates", lambda: ["utf-8-sig", "utf-8", "gbk"])
+    path = tmp_path / "multibyte.log"
+    text = "ab测试😀c" if encoding == "utf-8" else "ab测试c"
+    payload = text.encode(encoding)
+    path.write_bytes(payload)
+
+    offset = 0
+    chunks = []
+    while offset < len(payload):
+        content, next_offset = safe_read_log(str(path), offset, max_bytes=max_bytes)
+        assert next_offset > offset
+        chunks.append(content)
+        offset = next_offset
+    assert "".join(chunks) == text
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "gbk"])
+def test_safe_read_log_waits_for_incomplete_character_at_current_eof(tmp_path, monkeypatch, encoding):
+    if encoding == "gbk":
+        monkeypatch.setattr(log_io, "_log_decode_candidates", lambda: ["utf-8-sig", "utf-8", "gbk"])
+    path = tmp_path / "partial-write.log"
+    encoded = "测".encode(encoding)
+    path.write_bytes(b"A" + encoded[:1])
+
+    first, offset = safe_read_log(str(path), 0)
+    assert (first, offset) == ("A", 1)
+
+    with path.open("ab") as handle:
+        handle.write(encoded[1:])
+    second, next_offset = safe_read_log(str(path), offset)
+    assert (second, next_offset) == ("测", 1 + len(encoded))
 
 
 def test_is_pid_running_invalid():

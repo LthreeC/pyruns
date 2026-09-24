@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import psutil
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pyruns import __version__
 from pyruns._config import (
@@ -51,11 +51,25 @@ WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
 WEB_RUNTIME = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "runtime.py"
 
 
+class _TestClientScope:
+    """Normalize the client address omitted by older Starlette TestClients."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in {"http", "websocket"} and scope.get("client") is None:
+            scope = {**scope, "client": ("testclient", 50000)}
+        await self.app(scope, receive, send)
+
+
 def create_app(runtime=None, **kwargs):
     """Create an app with the ASGI test-client bypass enabled explicitly."""
 
     kwargs.setdefault("allow_test_client_bypass", True)
-    return _create_app(runtime, **kwargs)
+    app = _create_app(runtime, **kwargs)
+    app.add_middleware(_TestClientScope)
+    return app
 
 
 def test_pyruns_runtime_declares_single_constructor():
@@ -515,7 +529,7 @@ def test_session_recovery_keeps_one_browser_session_across_ui_restarts(tmp_path)
         session_scope_value=original_scope,
         allow_test_client_bypass=False,
     )
-    first_client = TestClient(first)
+    first_client = TestClient(first, base_url="http://127.0.0.1")
     bootstrap = first_client.get(
         "/?token=first-token",
         follow_redirects=False,
@@ -535,7 +549,7 @@ def test_session_recovery_keeps_one_browser_session_across_ui_restarts(tmp_path)
         session_scope_value=original_scope,
         allow_test_client_bypass=False,
     )
-    second_client = TestClient(second)
+    second_client = TestClient(second, base_url="http://127.0.0.1")
     second_client.cookies.update(first_client.cookies)
 
     recovered = second_client.get("/api/workspace")
@@ -552,7 +566,7 @@ def test_session_recovery_keeps_one_browser_session_across_ui_restarts(tmp_path)
         session_scope_value=original_scope,
         allow_test_client_bypass=False,
     )
-    third_client = TestClient(third)
+    third_client = TestClient(third, base_url="http://127.0.0.1")
     third_client.cookies.update(first_client.cookies)
     assert third_client.get("/api/workspace").json() == {"instance": "third"}
     assert third_client.cookies.get(third.state.session_cookie_name) == persistent_token
@@ -561,11 +575,11 @@ def test_session_recovery_keeps_one_browser_session_across_ui_restarts(tmp_path)
         follow_redirects=False,
     ).status_code == 401
 
-    explicit_recovery = TestClient(second)
+    explicit_recovery = TestClient(second, base_url="http://127.0.0.1")
     explicit_recovery.cookies.update(first_client.cookies)
     recovered = explicit_recovery.post(
         "/session/recover",
-        headers={"Origin": "http://testserver"},
+        headers={"Origin": "http://127.0.0.1"},
     )
     assert recovered.status_code == 200
     assert recovered.json() == {"ok": True}
@@ -576,11 +590,11 @@ def test_session_recovery_keeps_one_browser_session_across_ui_restarts(tmp_path)
     assert still_authenticated.status_code == 200
     assert still_authenticated.json() == {"instance": "second"}
 
-    forged = TestClient(second)
+    forged = TestClient(second, base_url="http://127.0.0.1")
     forged.cookies.set(second.state.session_cookie_name, "forged-token")
     assert forged.post(
         "/session/recover",
-        headers={"Origin": "http://testserver"},
+        headers={"Origin": "http://127.0.0.1"},
     ).status_code == 401
     assert forged.post(
         "/session/recover",
@@ -881,6 +895,20 @@ def test_task_event_websocket_pushes_invalidations_and_releases_watch(tmp_path):
         runtime.shutdown()
 
 
+def test_task_event_websocket_ignores_close_after_client_disconnect(tmp_path):
+    workspace = _make_workspace(tmp_path, "events-disconnect")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+
+    try:
+        with patch.object(WebSocket, "close", side_effect=WebSocketDisconnect(1006)):
+            with client.websocket_connect("/api/tasks/events") as websocket:
+                assert websocket.receive_json()["type"] == "ready"
+        assert runtime.task_manager.has_reactive_watchers() is False
+    finally:
+        runtime.shutdown()
+
+
 def test_task_event_websocket_closes_when_workspace_changes(tmp_path):
     workspace_a = _make_workspace(tmp_path, "event-a")
     workspace_b = _make_workspace(tmp_path, "event-b")
@@ -926,7 +954,7 @@ def test_root_uses_fallback_html_when_static_bundle_is_missing(tmp_path, monkeyp
     from pyruns.web import app as web_app
 
     monkeypatch.setattr(web_app, "_frontend_candidates", lambda: [tmp_path / "missing"])
-    client = TestClient(web_app.create_app(_RouteRuntime()))
+    client = TestClient(web_app.create_app(_RouteRuntime()), base_url="http://127.0.0.1")
 
     response = client.get("/")
 
@@ -2448,6 +2476,53 @@ def test_task_search_only_copies_payloads_for_returned_page(tmp_path, summary):
     assert manager.get_task("needle-a")["run_environments"] == [{"host": "original"}]
 
 
+@pytest.mark.parametrize("include_logs", [False, True], ids=["metadata", "log-search"])
+def test_search_api_honors_refresh_for_externally_created_tasks(tmp_path, include_logs):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "first")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    assert runtime.list_tasks(summary=True).total == 1
+
+    _add_task(workspace, "second")
+    with runtime._lock:
+        runtime._last_full_refresh_time = time.monotonic() + 60
+    params = {"query": "second", "search_field": "name", "include_logs": include_logs, "summary": True}
+    assert client.get("/api/tasks", params={**params, "refresh": False}).json()["total"] == 0
+    assert client.get("/api/tasks", params={**params, "refresh": True}).json()["total"] == 0
+    response = client.get("/api/tasks", params={**params, "force_refresh": True})
+    assert response.status_code == 200
+    assert [task["name"] for task in response.json()["items"]] == ["second"]
+
+
+def test_initial_task_load_does_not_parse_metadata_twice(tmp_path):
+    import pyruns.core.task_manager as task_manager_module
+
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("first", "second"):
+        _add_task(workspace, name)
+    runtime = _build_runtime(workspace)
+    with patch.object(task_manager_module, "load_task_info", wraps=task_manager_module.load_task_info) as load:
+        assert runtime.list_tasks(summary=True).total == 2
+    assert load.call_count == 2
+
+
+def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path):
+    import pyruns.web.runtime as runtime_module
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "first")
+    runtime = _build_runtime(workspace)
+    assert runtime.list_tasks(summary=True).total == 1
+
+    _add_task(workspace, "second")
+    clock = MagicMock()
+    clock.time.return_value = -1_000_000_000.0
+    clock.monotonic.return_value = runtime._last_full_refresh_time + 5.0
+    with patch.object(runtime_module, "time", clock):
+        assert runtime.list_tasks(summary=True).total == 2
+
+
 def test_metadata_search_cancels_between_lines_without_holding_task_lock(tmp_path, monkeypatch):
     from concurrent.futures import CancelledError
     from pyruns.utils.search_query import SearchQuery
@@ -2631,6 +2706,56 @@ def test_log_search_cache_invalidates_for_append_rewrite_and_read_error(tmp_path
         assert scan.call_count == 3
     monkeypatch.setattr(search, "_search_file", MagicMock(side_effect=PermissionError("denied")))
     assert search.search(str(task_dir), "uncached", event)["errors"] == ["Could not read run1.log"]
+
+
+def test_log_search_cache_reuses_files_beyond_its_capacity(tmp_path, monkeypatch):
+    from pyruns._config import RUN_LOGS_DIR
+    from pyruns.utils import log_search
+
+    monkeypatch.setattr(log_search, "_CACHE_FILES_PER_QUERY", 4)
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="needle\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    for run_index in range(2, 6):
+        (task_dir / RUN_LOGS_DIR / f"run{run_index}.log").write_text("needle\n", encoding="utf-8")
+
+    search = log_search.LogSearch()
+    event = threading.Event()
+    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 5
+        assert scan.call_count == 5
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 5
+        assert scan.call_count == 6
+        search.search(str(task_dir), "other", event)
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 5
+        assert scan.call_count == 12
+
+
+def test_log_search_caches_negative_results_beyond_preview_capacity(tmp_path, monkeypatch):
+    from pyruns._config import RUN_LOGS_DIR
+    from pyruns.utils import log_search
+
+    monkeypatch.setattr(log_search, "_CACHE_FILES_PER_QUERY", 4)
+    monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 8, raising=False)
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="other\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    for run_index in range(2, 6):
+        (task_dir / RUN_LOGS_DIR / f"run{run_index}.log").write_text("other\n", encoding="utf-8")
+
+    search = log_search.LogSearch()
+    event = threading.Event()
+    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 0
+        assert scan.call_count == 5
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 0
+        assert scan.call_count == 5
+
+        (task_dir / RUN_LOGS_DIR / "run5.log").write_text("needle\n", encoding="utf-8")
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 1
+        assert scan.call_count == 6
+        assert search.search(str(task_dir), "needle", event)["match_count"] == 1
+        assert scan.call_count == 6
 
 
 def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_path):
@@ -3536,7 +3661,7 @@ def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch, 
         events.append("server-run")
         captured["session_state"] = app_target.state.session_recovery.path
         captured["session_scope"] = app_target.state.session_scope
-        client = TestClient(app_target)
+        client = TestClient(app_target, base_url="http://127.0.0.1")
         assert client.get("/?token=private-token", follow_redirects=False).status_code == 303
         response = client.post(
             "/api/system/update",
@@ -3598,7 +3723,7 @@ def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch
 
     def fake_run(app_target, **_kwargs):
         events.append("server-run")
-        client = TestClient(app_target)
+        client = TestClient(app_target, base_url="http://127.0.0.1")
         assert client.get("/?token=private-token", follow_redirects=False).status_code == 303
         info = client.get("/api/system/info")
         assert info.json()["restart_required"] is True
@@ -3920,6 +4045,74 @@ def test_task_endpoint_lazy_loads_external_task_by_name(tmp_path):
     assert response.json()["name"] == "external"
 
 
+@pytest.mark.parametrize("status", ["pending", "queued"])
+def test_task_endpoint_does_not_return_removed_cached_task(tmp_path, status):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "removed", status=status)
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    assert client.get("/api/tasks/removed").status_code == 200
+
+    (workspace / TASKS_DIR / "removed" / TASK_INFO_FILENAME).unlink()
+    assert client.get("/api/tasks/removed", params={"refresh": False}).status_code == 200
+    assert client.get("/api/tasks/removed", params={"refresh": True}).status_code == 404
+    assert client.get("/api/tasks", params={"force_refresh": True}).json()["total"] == 0
+    assert runtime.task_manager.is_processing is False
+
+
+def test_task_list_force_refresh_discards_missing_metadata(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "removed")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    assert client.get("/api/tasks", params={"summary": True}).json()["total"] == 1
+
+    (workspace / TASKS_DIR / "removed" / TASK_INFO_FILENAME).unlink()
+    assert client.get("/api/tasks", params={"refresh": False, "summary": True}).json()["total"] == 1
+    assert client.get("/api/tasks", params={"force_refresh": True, "summary": True}).json()["total"] == 0
+
+
+def test_task_endpoint_refresh_checks_only_selected_pending_payload(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("alpha", "beta", "gamma"):
+        _add_task(workspace, name)
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded()
+    client = TestClient(create_app(runtime))
+
+    manager = runtime.task_manager
+    with patch.object(manager, "_payload_signature", wraps=manager._payload_signature) as signature:
+        response = client.get("/api/tasks/alpha")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "alpha"
+    assert [Path(call.args[0]).name for call in signature.call_args_list] == ["alpha"]
+
+
+def test_task_endpoint_refresh_skips_unrelated_active_metadata(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    _add_task(workspace, "beta", status="queued")
+    _add_task(workspace, "gamma", status="running")
+    runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded()
+    client = TestClient(create_app(runtime))
+
+    original_stat = os.stat
+    metadata_stats = []
+
+    def track_stat(path, *args, **kwargs):
+        if Path(path).name == TASK_INFO_FILENAME:
+            metadata_stats.append(Path(path).parent.name)
+        return original_stat(path, *args, **kwargs)
+
+    with patch("pyruns.core.task_manager.os.stat", side_effect=track_stat):
+        response = client.get("/api/tasks/alpha")
+
+    assert response.status_code == 200
+    assert metadata_stats and set(metadata_stats) == {"alpha"}
+
+
 def test_logs_endpoint_prefers_active_run_log_even_before_file_exists(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running", log_text="old run\n")
@@ -4045,6 +4238,23 @@ def test_logs_endpoint_caps_incremental_reads_by_chunk_size(tmp_path):
     payload = response.json()
     assert payload["content"].replace("\r", "") == "line 1\n"
     assert payload["offset"] == len(payload["content"].encode("utf-8"))
+
+
+def test_logs_endpoint_preserves_unicode_across_incremental_chunks(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running", log_text="ab测试c")
+    client = TestClient(create_app(_build_runtime(workspace)))
+
+    offset = 0
+    chunks = []
+    while offset < len("ab测试c".encode("utf-8")):
+        response = client.get("/api/tasks/alpha/logs", params={"offset": offset, "chunk_size": 3})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["offset"] > offset
+        chunks.append(payload["content"])
+        offset = payload["offset"]
+    assert "".join(chunks) == "ab测试c"
 
 
 def test_logs_endpoint_resets_incremental_reader_after_truncate_and_rotation(tmp_path):
@@ -4839,6 +5049,455 @@ def test_logs_websocket_stream_catches_up_from_client_offset(tmp_path):
     assert payload["log_file_name"] == "run1.log"
 
 
+def test_logs_websocket_replays_backlog_without_poll_delay(tmp_path):
+    import pyruns.web.runtime as runtime_module
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    log_file.write_text("A" * (5 * 1024), encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    original_get_logs = runtime.get_task_logs
+    reads_complete = threading.Event()
+    read_count = 0
+
+    def tracked_get_logs(*args, **kwargs):
+        nonlocal read_count
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("offset") is not None:
+            read_count += 1
+            if read_count >= 5:
+                reads_complete.set()
+        return payload
+
+    with (
+        patch.object(runtime, "get_task_logs", side_effect=tracked_get_logs),
+        patch.object(runtime_module, "get_log_options", wraps=runtime_module.get_log_options) as get_options,
+        patch("pyruns.web.app.LOG_STREAM_TAIL_CHUNK_SIZE", 1024),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
+    ):
+        with client.websocket_connect(
+            "/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset=0"
+        ) as websocket:
+            assert reads_complete.wait(1.5)
+            chunks = [websocket.receive_json() for _ in range(5)]
+
+    assert "".join(chunk["content"] for chunk in chunks) == "A" * (5 * 1024)
+    assert all(chunk["type"] == "chunk" for chunk in chunks)
+    assert chunks[-1]["offset"] == log_file.stat().st_size
+    assert get_options.call_count == 1
+
+
+def test_logs_websocket_replay_waits_for_full_send_queue(tmp_path):
+    import asyncio
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    log_file.write_text("".join(char * 1024 for char in "ABCD"), encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    original_get_logs = runtime.get_task_logs
+    original_send_json = WebSocket.send_json
+    reads_complete = threading.Event()
+    send_started = threading.Event()
+    release_send = threading.Event()
+    read_count = 0
+
+    def tracked_get_logs(*args, **kwargs):
+        nonlocal read_count
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("offset") is not None:
+            read_count += 1
+            if read_count >= 4:
+                reads_complete.set()
+        return payload
+
+    async def blocked_send(self, data, mode="text"):
+        if data.get("type") == "chunk" and not send_started.is_set():
+            send_started.set()
+            assert await asyncio.to_thread(release_send.wait, 2)
+        await original_send_json(self, data, mode=mode)
+
+    with (
+        patch.object(runtime, "get_task_logs", side_effect=tracked_get_logs),
+        patch.object(WebSocket, "send_json", blocked_send),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_CHUNK_SIZE", 1024),
+        patch("pyruns.web.app.LOG_STREAM_QUEUE_LIMIT", 2),
+    ):
+        with client.websocket_connect(
+            "/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset=0"
+        ) as websocket:
+            try:
+                assert send_started.wait(2)
+                assert reads_complete.wait(2)
+            finally:
+                release_send.set()
+            first_three = [websocket.receive_json() for _ in range(3)]
+            assert [item["content"] for item in first_three] == [char * 1024 for char in "ABC"]
+            fourth = websocket.receive_json()
+
+    assert fourth["content"] == "D" * 1024
+    assert fourth["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
+    import asyncio
+
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_text("", encoding="utf-8")
+    client = TestClient(create_app(_build_runtime(workspace)))
+    original_send_json = WebSocket.send_json
+    idle = threading.Event()
+    send_started = threading.Event()
+    release_send = threading.Event()
+
+    def mark_idle(path):
+        asyncio.get_running_loop().call_soon(idle.set)
+        return log_file_identity(path)
+
+    async def blocked_send(self, data, mode="text"):
+        if data.get("content") == "A" and not send_started.is_set():
+            send_started.set()
+            assert await asyncio.to_thread(release_send.wait, 3)
+        await original_send_json(self, data, mode=mode)
+
+    with (
+        patch.object(WebSocket, "send_json", blocked_send),
+        patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
+        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
+        patch("pyruns.web.app.LOG_STREAM_QUEUE_LIMIT", 2),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 10.0),
+    ):
+        with client.websocket_connect(
+            "/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset=0"
+        ) as websocket:
+            try:
+                assert idle.wait(2)
+                with log_file.open("a", encoding="utf-8") as handle:
+                    handle.write("A")
+                log_emitter.emit(
+                    "alpha", "A", offset=1, log_file_name="run1.log", task_dir=str(task_dir),
+                )
+                assert send_started.wait(2)
+                for offset, char in enumerate("BCD", start=2):
+                    with log_file.open("a", encoding="utf-8") as handle:
+                        handle.write(char)
+                    log_emitter.emit(
+                        "alpha", char, offset=offset, log_file_name="run1.log", task_dir=str(task_dir),
+                    )
+                delivered = threading.Event()
+                subscribe.call_args.kwargs["loop"].call_soon_threadsafe(delivered.set)
+                assert delivered.wait(2)
+            finally:
+                release_send.set()
+            first_three = [websocket.receive_json() for _ in range(3)]
+            assert [item["content"] for item in first_three] == ["A", "B", "C"]
+            fourth = websocket.receive_json()
+
+    assert fourth["content"] == "D"
+    assert fourth["offset"] == 4
+
+
+def test_logs_websocket_replay_preserves_order_when_emitter_fires(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_text("A" * 2048, encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    original_get_logs = runtime.get_task_logs
+    first_read = threading.Event()
+    release_read = threading.Event()
+
+    def pause_first_read(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("offset") == 0 and not first_read.is_set():
+            first_read.set()
+            assert release_read.wait(2)
+        return payload
+
+    with (
+        patch.object(runtime, "get_task_logs", side_effect=pause_first_read),
+        patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
+        patch("pyruns.web.app.LOG_STREAM_TAIL_CHUNK_SIZE", 1024),
+    ):
+        with client.websocket_connect(
+            "/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset=0"
+        ) as websocket:
+            try:
+                assert first_read.wait(2)
+                with log_file.open("a", encoding="utf-8") as handle:
+                    handle.write("B" * 1024)
+                log_emitter.emit(
+                    "alpha", "B" * 1024, offset=log_file.stat().st_size,
+                    log_file_name="run1.log", task_dir=str(task_dir),
+                )
+                delivered = threading.Event()
+                subscribe.call_args.kwargs["loop"].call_soon_threadsafe(delivered.set)
+                assert delivered.wait(2)
+            finally:
+                release_read.set()
+            chunks = [websocket.receive_json() for _ in range(3)]
+
+    assert "".join(chunk["content"] for chunk in chunks) == "A" * 2048 + "B" * 1024
+    assert [chunk["offset"] for chunk in chunks] == [1024, 2048, 3072]
+
+
+def test_logs_websocket_keeps_emitter_chunk_during_initial_selection(tmp_path):
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_text("initial\n", encoding="utf-8")
+    initial_offset = log_file.stat().st_size
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    initial_read = threading.Event()
+    release_read = threading.Event()
+    stale_read = threading.Event()
+    polled = threading.Event()
+    poll_count = 0
+    original_get_logs = runtime.get_task_logs
+
+    def pause_initial_read(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0 and not initial_read.is_set():
+            initial_read.set()
+            assert release_read.wait(2)
+        if kwargs.get("offset") == initial_offset:
+            stale_read.set()
+        return payload
+
+    def track_identity(path):
+        nonlocal poll_count
+        poll_count += 1
+        if poll_count >= 3:
+            polled.set()
+        return log_file_identity(path)
+
+    with (
+        patch.object(runtime, "get_task_logs", side_effect=pause_initial_read),
+        patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
+        patch("pyruns.web.app.log_file_identity", side_effect=track_identity),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
+        patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
+    ):
+        with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+            try:
+                assert initial_read.wait(2)
+                with log_file.open("a", encoding="utf-8") as handle:
+                    handle.write("live\n")
+                log_emitter.emit(
+                    "alpha", "live\r\n", offset=log_file.stat().st_size,
+                    log_file_name="run1.log", task_dir=str(task_dir),
+                )
+                delivered = threading.Event()
+                subscribe.call_args.kwargs["loop"].call_soon_threadsafe(delivered.set)
+                assert delivered.wait(2)
+            finally:
+                release_read.set()
+            payload = websocket.receive_json()
+            assert polled.wait(2)
+
+    assert payload["content"] == "live\r\n"
+    assert payload["offset"] == log_file.stat().st_size
+    assert not stale_read.is_set()
+
+
+def test_logs_websocket_replays_gap_during_initial_selection(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_text("initial\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    initial_read = threading.Event()
+    release_read = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def pause_initial_read(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0 and not initial_read.is_set():
+            initial_read.set()
+            assert release_read.wait(2)
+        return payload
+
+    with (
+        patch.object(runtime, "get_task_logs", side_effect=pause_initial_read),
+        patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
+    ):
+        with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+            try:
+                assert initial_read.wait(2)
+                with log_file.open("a", encoding="utf-8") as handle:
+                    handle.write("silent\nlive\n")
+                log_emitter.emit(
+                    "alpha", "live\n", offset=log_file.stat().st_size,
+                    byte_length=len("live\n"), log_file_name="run1.log", task_dir=str(task_dir),
+                )
+                delivered = threading.Event()
+                subscribe.call_args.kwargs["loop"].call_soon_threadsafe(delivered.set)
+                assert delivered.wait(2)
+            finally:
+                release_read.set()
+            payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["content"].replace("\r", "") == "silent\nlive\n"
+    assert payload["offset"] == log_file.stat().st_size
+
+
+@pytest.mark.parametrize(
+    ("file_suffix", "emitter_text"),
+    [
+        ("silent\nlive\n", "live\n"),
+        ("Xa\nb\n", "a\r\nb\r\n"),
+    ],
+)
+def test_logs_websocket_replays_file_gap_before_emitter_chunk(tmp_path, file_suffix, emitter_text):
+    import asyncio
+
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_text("base\n", encoding="utf-8")
+    offset = log_file.stat().st_size
+    client = TestClient(create_app(_build_runtime(workspace)))
+    idle = threading.Event()
+
+    def mark_idle(path):
+        asyncio.get_running_loop().call_soon(idle.set)
+        return log_file_identity(path)
+
+    with (
+        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
+    ):
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}"
+        ) as websocket:
+            assert idle.wait(2)
+            with log_file.open("a", encoding="utf-8") as handle:
+                handle.write(file_suffix)
+            log_emitter.emit(
+                "alpha", emitter_text, offset=log_file.stat().st_size,
+                log_file_name="run1.log", task_dir=str(task_dir),
+            )
+            payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["content"].replace("\r", "") == file_suffix
+    assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_uses_written_byte_length_for_crlf_emitter(tmp_path):
+    import asyncio
+
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log_file = task_dir / "run_logs" / "run1.log"
+    log_file.write_text("base\n", encoding="utf-8")
+    offset = log_file.stat().st_size
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    idle = threading.Event()
+
+    def mark_idle(path):
+        asyncio.get_running_loop().call_soon(idle.set)
+        return log_file_identity(path)
+
+    with (
+        patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
+        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
+    ):
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}"
+        ) as websocket:
+            assert idle.wait(2)
+            with log_file.open("ab") as handle:
+                handle.write(b"raw\r\n")
+            log_emitter.emit(
+                "alpha", "raw\r\n", offset=log_file.stat().st_size,
+                byte_length=len(b"raw\r\n"), log_file_name="run1.log", task_dir=str(task_dir),
+            )
+            payload = websocket.receive_json()
+            assert get_logs.call_count == 1
+
+    assert payload["content"] == "raw\r\n"
+    assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_ignores_emitter_for_another_run_log(tmp_path):
+    import asyncio
+
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    run_log = task_dir / "run_logs" / "run1.log"
+    run_log.write_text("base\n", encoding="utf-8")
+    other_log = task_dir / "run_logs" / "run2.log"
+    offset = run_log.stat().st_size
+    client = TestClient(create_app(_build_runtime(workspace)))
+    idle = threading.Event()
+
+    def mark_idle(path):
+        asyncio.get_running_loop().call_soon(idle.set)
+        return log_file_identity(path)
+
+    with (
+        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
+    ):
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}"
+        ) as websocket:
+            assert idle.wait(2)
+            other_log.write_text("other run\n", encoding="utf-8")
+            log_emitter.emit(
+                "alpha", "other run\n", offset=other_log.stat().st_size,
+                log_file_name="run2.log", task_dir=str(task_dir),
+            )
+            with run_log.open("a", encoding="utf-8") as handle:
+                handle.write("current run\n")
+            payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["log_file_name"] == "run1.log"
+    assert payload["content"].replace("\r", "") == "current run\n"
+
+
+def test_logs_websocket_rejects_invalid_log_file_name(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running")
+    client = TestClient(create_app(_build_runtime(workspace)))
+
+    with client.websocket_connect(
+        "/api/tasks/alpha/logs/stream?log_file_name=..%2Fsecret.log&offset=0"
+    ) as websocket:
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_json()
+
+
 def test_logs_websocket_resets_after_live_log_is_truncated(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -4911,6 +5570,45 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
     assert payload["offset"] == log_file.stat().st_size
 
 
+def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="running", log_text="existing\n")
+    log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    offset = log_file.stat().st_size
+    polled = threading.Event()
+    identity_calls = 0
+
+    def track_identity(path):
+        nonlocal identity_calls
+        identity_calls += 1
+        if identity_calls >= 3:
+            polled.set()
+        return log_file_identity(path)
+
+    with (
+        patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
+        patch("pyruns.web.app.log_file_identity", side_effect=track_identity),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
+        patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
+    ):
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}"
+        ) as websocket:
+            assert polled.wait(2)
+            assert get_logs.call_count == 1
+            with log_file.open("a", encoding="utf-8") as handle:
+                handle.write("after idle\n")
+            payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["content"].replace("\r", "") == "after idle\n"
+    assert payload["offset"] == log_file.stat().st_size
+
+
 def test_logs_websocket_stream_tails_queued_gpu_log_from_client_offset(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="queued")
@@ -4952,6 +5650,100 @@ def test_logs_websocket_stream_tails_queued_gpu_log_from_client_offset(tmp_path)
     assert payload["offset"] == queue_log.stat().st_size
 
 
+def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("waiting\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    offset = queue_log.stat().st_size
+    polled = threading.Event()
+    identity_calls = 0
+
+    def track_identity(path):
+        nonlocal identity_calls
+        identity_calls += 1
+        if identity_calls >= 3:
+            polled.set()
+        return log_file_identity(path)
+
+    with (
+        patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
+        patch("pyruns.web.app.log_file_identity", side_effect=track_identity),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
+        patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
+    ):
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=queue.log&offset={offset}"
+        ) as websocket:
+            assert polled.wait(2)
+            assert get_logs.call_count == 1
+            with runtime.task_manager._lock:
+                current = runtime.task_manager._tasks_by_name["alpha"]
+                current["status"] = "running"
+                current["run_index"] = 1
+            run_log = task_dir / "run_logs" / "run1.log"
+            run_log.write_text("running after queue\n", encoding="utf-8")
+            payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["log_file_name"] == "run1.log"
+    assert payload["content"].replace("\r", "") == "running after queue\n"
+
+
+def test_logs_websocket_drains_queue_log_before_run_emitter(tmp_path):
+    import asyncio
+
+    from pyruns.utils.log_io import log_file_identity
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("waiting\n", encoding="utf-8")
+    run_log = task_dir / "run_logs" / "run1.log"
+    offset = queue_log.stat().st_size
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    idle = threading.Event()
+
+    def mark_idle(path):
+        asyncio.get_running_loop().call_soon(idle.set)
+        return log_file_identity(path)
+
+    with (
+        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
+        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
+    ):
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=queue.log&offset={offset}"
+        ) as websocket:
+            assert idle.wait(2)
+            with queue_log.open("a", encoding="utf-8") as handle:
+                handle.write("assigned\n")
+            with runtime.task_manager._lock:
+                current = runtime.task_manager._tasks_by_name["alpha"]
+                current["status"] = "running"
+                current["run_index"] = 1
+            run_log.write_text("run start\n", encoding="utf-8")
+            log_emitter.emit(
+                "alpha", "run start\n", offset=run_log.stat().st_size,
+                byte_length=run_log.stat().st_size,
+                log_file_name="run1.log", task_dir=str(task_dir),
+            )
+            queue_chunk = websocket.receive_json()
+            assert queue_chunk["log_file_name"] == "queue.log"
+            assert queue_chunk["content"].replace("\r", "") == "assigned\n"
+            run_chunk = websocket.receive_json()
+
+    assert run_chunk["log_file_name"] == "run1.log"
+    assert run_chunk["content"].replace("\r", "") == "run start\n"
+
+
 def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -4979,6 +5771,36 @@ def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_pa
     assert payload["task_name"] == "alpha"
     assert payload["content"].replace("\r\n", "\n") == "created after connect\n"
     assert payload["offset"] == log_file.stat().st_size
+
+
+def test_logs_websocket_stream_finds_queue_log_created_after_connect(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    queue_log = workspace / TASKS_DIR / "alpha" / "run_logs" / "queue.log"
+    runtime = _build_runtime(workspace)
+    client = TestClient(create_app(runtime))
+    initialized = threading.Event()
+    discovered = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def track_selection(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+            if payload.get("selected_log") == "queue.log":
+                discovered.set()
+        return payload
+
+    with patch.object(runtime, "get_task_logs", side_effect=track_selection):
+        with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
+            assert initialized.wait(2)
+            queue_log.write_text("queued after connect\n", encoding="utf-8")
+            assert discovered.wait(2)
+            payload = websocket.receive_json()
+
+    assert payload["type"] == "chunk"
+    assert payload["log_file_name"] == "queue.log"
+    assert payload["content"].replace("\r", "") == "queued after connect\n"
 
 
 def test_logs_websocket_stream_switches_from_queue_log_to_active_run_log(tmp_path):

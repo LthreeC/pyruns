@@ -1019,8 +1019,14 @@ def _wait_for_task_records(
 def _write_available_log(path: str, offset: int) -> int:
     while True:
         content, next_offset = safe_read_log(path, offset, max_bytes=65536)
-        if not content or next_offset == offset:
+        if next_offset < offset:
+            offset = 0
+            continue
+        if next_offset == offset:
             return offset
+        if not content:
+            offset = next_offset
+            continue
         content = content.replace("\r\n", "\n")
         try:
             sys.stdout.write(content)

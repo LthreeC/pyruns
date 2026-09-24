@@ -15,17 +15,20 @@ from .info_io import (
 )
 
 
-def _cache_key(filepath: str) -> Tuple[str, int, int]:
-    """Return a cache key that invalidates on file content changes."""
+def _cache_key(filepath: str) -> Tuple[str, int, int, int, int, int]:
+    """Invalidate cached ASTs when a script changes or is replaced."""
     try:
         stat = os.stat(filepath)
-        return (os.path.abspath(filepath), stat.st_mtime_ns, stat.st_size)
+        return (
+            os.path.abspath(filepath), stat.st_mtime_ns, stat.st_size,
+            stat.st_dev, stat.st_ino, stat.st_ctime_ns,
+        )
     except OSError:
-        return (os.path.abspath(filepath), 0, 0)
+        return (os.path.abspath(filepath), 0, 0, 0, 0, 0)
 
 
 @functools.lru_cache(maxsize=128)
-def _read_tree_cached(cache_key: Tuple[str, int, int]) -> Optional[ast.AST]:
+def _read_tree_cached(cache_key: Tuple[str, int, int, int, int, int]) -> Optional[ast.AST]:
     path = cache_key[0]
     try:
         with open(path, "r", encoding="utf-8-sig") as f:

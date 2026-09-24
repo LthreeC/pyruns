@@ -17,6 +17,9 @@ from pyruns.utils.task_files import _build_task_search_snippet
 _CHUNK_CHARS = 16 * 1024
 _PREVIEW_LIMIT = 24
 _MAX_PATTERN_LINE_CHARS = 8 * 1024 * 1024
+_CACHE_QUERIES = 2
+_CACHE_FILES_PER_QUERY = 1024
+_CACHE_MISSES_PER_QUERY = 8192
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 _INCOMPLETE_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?$")
 _UNDECODABLE = re.compile("[\udc80-\udcff]")
@@ -44,6 +47,17 @@ class LogSearch:
         self._lock = threading.Lock()
         self.slots = threading.BoundedSemaphore(2)
 
+    def _query_cache(self, cache_key):
+        cached_files = self._cache.get(cache_key)
+        if cached_files is None:
+            cached_files = ({}, OrderedDict())
+            self._cache[cache_key] = cached_files
+            if len(self._cache) > _CACHE_QUERIES:
+                self._cache.popitem(last=False)
+        else:
+            self._cache.move_to_end(cache_key)
+        return cached_files
+
     def search(self, task_dir, query, cancelled, matcher=None):
         matcher = matcher or SearchQuery(query)
         needles = matcher.needles
@@ -59,20 +73,31 @@ class LogSearch:
             try:
                 stat = os.stat(path)
                 signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-                key = (path, signature, matcher.cache_key)
                 with self._lock:
-                    cached = self._cache.get(key)
-                    if cached is not None:
-                        self._cache.move_to_end(key)
+                    matches, misses = self._query_cache(matcher.cache_key)
+                    entry = matches.get(path)
+                    if entry is None:
+                        entry = misses.get(path)
+                        if entry is not None:
+                            misses.move_to_end(path)
+                    cached = entry[1] if entry is not None and entry[0] == signature else None
                 if cached is None:
                     cached = (
                         self._search_file(path, name, stat.st_size, needles, cancelled, match_case=matcher.match_case)
                         if not matcher.patterns else self._search_file_patterns(path, name, stat.st_size, matcher, cancelled)
                     )
                     with self._lock:
-                        self._cache[key] = cached
-                        while len(self._cache) > 128:
-                            self._cache.popitem(last=False)
+                        matches, misses = self._query_cache(matcher.cache_key)
+                        if cached["match_count"]:
+                            misses.pop(path, None)
+                            if path in matches or len(matches) < _CACHE_FILES_PER_QUERY:
+                                matches[path] = (signature, cached)
+                        else:
+                            matches.pop(path, None)
+                            misses[path] = (signature, cached)
+                            misses.move_to_end(path)
+                            while len(misses) > _CACHE_MISSES_PER_QUERY:
+                                misses.popitem(last=False)
                 result["found"].update(cached["found"])
                 result["match_count"] += cached["match_count"]
                 result["matches"].extend(cached["matches"][:max(0, _PREVIEW_LIMIT - len(result["matches"]))])

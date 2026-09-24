@@ -22,6 +22,7 @@ import pyruns._config as _cfg
 from pyruns._config import (
     CONFIG_DEFAULT_FILENAME,
     SCRIPT_INFO_FILENAME,
+    TASK_INFO_FILENAME,
     TASKS_DIR,
     TASK_KIND_CONFIG,
     TASK_KIND_SHELL,
@@ -65,6 +66,7 @@ from pyruns.utils.info_io import (
     load_script_info,
     load_task_info,
     resolve_log_path,
+    validate_task_log_path,
     validate_task_name,
     validate_tasks_root,
     validate_workspace_directory,
@@ -1084,22 +1086,20 @@ class PyrunsRuntime:
             self._last_full_refresh_time = 0.0
 
     @_with_stable_workspace
-    def ensure_tasks_loaded(self, *, full_refresh: bool = False) -> None:
+    def ensure_tasks_loaded(self, *, full_refresh: bool = False, force_refresh: bool = False) -> None:
         """Load task metadata on demand for faster startup."""
         manager = self.task_manager
         if not self._tasks_loaded:
-            if not manager.tasks:
-                manager.scan_disk()
-            manager.refresh_from_disk(force_all=True)
+            manager.refresh_from_disk(check_all=True, discover=True)
             self._tasks_loaded = True
             with self._lock:
-                self._last_full_refresh_time = time.time()
+                self._last_full_refresh_time = time.monotonic()
             return
-        if full_refresh:
-            now = time.time()
+        if full_refresh or force_refresh:
+            now = time.monotonic()
             with self._lock:
                 elapsed = now - self._last_full_refresh_time
-            if elapsed >= 4.0:
+            if force_refresh or elapsed >= 4.0:
                 manager.refresh_from_disk(check_all=True, discover=True)
                 with self._lock:
                     self._last_full_refresh_time = now
@@ -1153,12 +1153,13 @@ class PyrunsRuntime:
         offset: int = 0,
         limit: int = 50,
         refresh: bool = True,
+        force_refresh: bool = False,
         summary: bool = False,
         sort_mode: str = "priority",
         search_field: str = "all",
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
-        self.ensure_tasks_loaded(full_refresh=refresh)
+        self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))
         if summary:
@@ -1213,7 +1214,8 @@ class PyrunsRuntime:
         )
 
     def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", search_field="all",
-                     match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True, cancelled):
+                     match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True,
+                     refresh=True, force_refresh=False, cancelled):
         """Search metadata and all log files without holding task/workspace locks during I/O."""
         matcher = SearchQuery(query, match_case=match_case, whole_word=whole_word, use_regex=use_regex, cancelled=cancelled)
         while not self._log_search.slots.acquire(timeout=0.1):
@@ -1224,7 +1226,7 @@ class PyrunsRuntime:
                 raise CancelledError()
             with self._workspace_lock:
                 epoch = self._workspace_epoch
-                self.ensure_tasks_loaded(full_refresh=False)
+                self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
                 manager = self.task_manager
                 sources = manager.get_task_search_snapshots()
             tasks = list(sources.values())
@@ -1305,11 +1307,15 @@ class PyrunsRuntime:
         """Return one task snapshot."""
         self.ensure_tasks_loaded(full_refresh=False)
         if refresh:
-            self.task_manager.refresh_from_disk(task_ids=[task_name], check_all=True)
+            self.task_manager.refresh_from_disk(task_ids=[task_name])
         task = self.task_manager.get_task(task_name)
         if task is None and refresh:
             self.task_manager.load_task_by_name(task_name)
             task = self.task_manager.get_task(task_name)
+        if task is not None and refresh and not os.path.isfile(
+            os.path.join(str(task.get("dir", "") or ""), TASK_INFO_FILENAME)
+        ):
+            return None
         return task
 
     def require_task(self, task_name: str, *, refresh: bool = True) -> Dict[str, Any]:
@@ -1580,6 +1586,7 @@ class PyrunsRuntime:
         tail_bytes: int | None = None,
         tail_lines: int | None = None,
         chunk_size: int | None = None,
+        include_log_options: bool = True,
         expected_workspace_root: str | None = None,
         expected_task_dir: str | None = None,
     ) -> Dict[str, Any]:
@@ -1599,10 +1606,25 @@ class PyrunsRuntime:
             expected_dir = os.path.normcase(os.path.abspath(expected_task_dir))
             if current_task_dir != expected_dir:
                 raise WorkspaceChangedError("Workspace changed")
-        log_options = get_log_options(task_dir)
-        available_logs = list(log_options.keys())
         selected_name = str(log_file_name or "").strip()
-        selected_path = log_options.get(selected_name) if selected_name else None
+        if not include_log_options and offset is not None and selected_name:
+            # A stream has already selected the file; listing every old run on each chunk is costly.
+            log_options = {}
+            available_logs = []
+            valid_name = (
+                selected_name in {_cfg.QUEUE_LOG_FILENAME, _cfg.ERROR_LOG_FILENAME}
+                or selected_name.startswith("run") and selected_name.endswith(".log")
+            )
+            try:
+                selected_path = validate_task_log_path(task_dir, selected_name) if valid_name else None
+            except ValueError:
+                selected_path = None
+            if selected_path and not os.path.isfile(selected_path):
+                selected_path = None
+        else:
+            log_options = get_log_options(task_dir)
+            available_logs = list(log_options.keys())
+            selected_path = log_options.get(selected_name) if selected_name else None
 
         task_status = str(task.get("status", "")).lower()
         queue_name = _cfg.QUEUE_LOG_FILENAME

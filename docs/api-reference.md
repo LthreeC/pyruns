@@ -199,6 +199,8 @@ shell 工作区：
 
 分页获取任务列表。
 
+首次加载后，`refresh=true` 最多每 4 秒同步一次磁盘；`refresh=false` 使用当前任务快照。手动刷新可传 `force_refresh=true` 立即同步磁盘。
+
 #### `GET /api/tasks/{task_name}`
 
 获取单个任务详情。

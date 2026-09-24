@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import locale
 import os
 from typing import Tuple
@@ -212,8 +213,43 @@ def read_last_lines(log_path: str, max_lines: int = 10000, max_bytes: int | None
         return "", 0
 
 
+def _complete_log_character(handle, chunk: bytes, remaining: int) -> bytes:
+    """Keep a byte-limited read from ending inside a decoded character."""
+
+    if not chunk or chunk[-1] < 0x80:
+        return chunk
+    extra = None
+    for encoding in _log_decode_candidates():
+        try:
+            decoder = codecs.getincrementaldecoder(encoding)()
+            decoder.decode(chunk, final=False)
+            pending = decoder.getstate()[0]
+        except (LookupError, UnicodeDecodeError):
+            continue
+        if not pending:
+            return chunk
+        complete_bytes = len(chunk) - len(pending)
+        if complete_bytes:
+            return chunk[:complete_bytes]
+        # Very small chunk limits need a bounded read ahead to make progress.
+        if extra is None:
+            extra = handle.read(min(3, remaining))
+        invalid_sequence = False
+        for index, next_byte in enumerate(extra):
+            try:
+                decoder.decode(bytes((next_byte,)), final=False)
+            except UnicodeDecodeError:
+                invalid_sequence = True
+                break
+            if not decoder.getstate()[0]:
+                return chunk + extra[:index + 1]
+        if not invalid_sequence:
+            return b""
+    return chunk
+
+
 def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> Tuple[str, int]:
-    """Read up to ``max_bytes`` from ``filepath`` at ``offset`` safely."""
+    """Read a bounded chunk, allowing up to three extra bytes for one character."""
 
     try:
         if not os.path.exists(filepath):
@@ -234,6 +270,8 @@ def safe_read_log(filepath: str, offset: int, max_bytes: int = 50000) -> Tuple[s
                 last_newline = chunk.rfind(b"\n")
                 if last_newline != -1:
                     chunk = chunk[: last_newline + 1]
+
+            chunk = _complete_log_character(handle, chunk, max(0, file_size - offset - len(chunk)))
 
             return normalize_log_newlines(decode_log_bytes(chunk)), offset + len(chunk)
     except OSError:

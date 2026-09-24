@@ -1177,6 +1177,30 @@ def test_write_available_log_does_not_duplicate_crlf_rows(tmp_path, capsys):
     assert capsys.readouterr().out == "first\nsecond\nprogress 1%\rprogress 100%"
 
 
+def test_write_available_log_restarts_after_truncation(tmp_path, capsys):
+    from pyruns.cli import commands
+
+    log_path = tmp_path / "run.log"
+    log_path.write_text("previous output\n", encoding="utf-8")
+    old_offset = log_path.stat().st_size
+    log_path.write_text("new\n", encoding="utf-8")
+
+    offset = commands._write_available_log(str(log_path), old_offset)
+
+    assert offset == log_path.stat().st_size
+    assert capsys.readouterr().out == "new\n"
+
+
+def test_write_available_log_advances_past_empty_decoded_chunk(tmp_path, capsys):
+    from pyruns.cli import commands
+
+    log_path = tmp_path / "run.log"
+    log_path.write_bytes(b"\xef\xbb\xbf")
+
+    assert commands._write_available_log(str(log_path), 0) == 3
+    assert capsys.readouterr().out == ""
+
+
 def test_explicit_run_log_never_falls_back_to_an_older_log(tmp_path):
     from pyruns.cli import commands
 
