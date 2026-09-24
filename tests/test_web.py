@@ -2959,6 +2959,127 @@ def test_log_search_caches_negative_results_beyond_preview_capacity(tmp_path, mo
         assert scan.call_count == 6
 
 
+@pytest.mark.parametrize("options", [{}, {"use_regex": True}])
+def test_log_search_reuses_cached_misses_during_workspace_scan(tmp_path, monkeypatch, options):
+    from pyruns.utils import log_search
+
+    monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 2)
+    workspace = _make_workspace(tmp_path, "main")
+    for index in range(5):
+        _add_task(workspace, f"task{index}", log_text="needle\n" if index == 4 else "other\n")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    method = "_search_file_patterns" if options else "_search_file"
+    try:
+        with patch.object(runtime._log_search, method, wraps=getattr(runtime._log_search, method)) as scan:
+            for iteration in range(3):
+                page = runtime.search_tasks(
+                    query="needle", search_field="log", sort_mode="name_asc", refresh=False,
+                    cancelled=threading.Event(), **options,
+                )
+                assert page.total == 1
+                assert [task["name"] for task in page.items] == ["task4"]
+                assert page.items[0]["search_match_count"] == 1
+                assert page.search_errors == []
+                assert scan.call_count == 5 + 2 * iteration
+            for matches, misses in runtime._log_search._cache.values():
+                assert len(matches) <= log_search._CACHE_FILES_PER_QUERY
+                assert len(misses) <= log_search._CACHE_MISSES_PER_QUERY
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("change", ["append", "rewrite", "replace", "read_error"])
+def test_log_search_miss_snapshot_rechecks_changed_files(tmp_path, monkeypatch, change):
+    from pyruns._config import RUN_LOGS_DIR
+    from pyruns.utils import log_search
+    from pyruns.utils.search_query import SearchQuery
+
+    monkeypatch.setattr(log_search, "_CACHE_QUERIES", 1)
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="absent\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    path = task_dir / RUN_LOGS_DIR / "run1.log"
+    search = log_search.LogSearch()
+    event = threading.Event()
+    matcher = SearchQuery("needle")
+    assert search.search(str(task_dir), "needle", event, matcher)["match_count"] == 0
+    snapshot = search.snapshot_misses(matcher)
+    search.search(str(task_dir), "different-query", event)
+
+    previous = path.stat()
+    if change == "append":
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("needle\n")
+    elif change == "replace":
+        replacement = path.with_suffix(".new")
+        replacement.write_text("needle\n", encoding="utf-8")
+        replacement.replace(path)
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    else:
+        path.write_text("needle\n", encoding="utf-8")
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
+
+    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
+        if change == "read_error":
+            scan.side_effect = PermissionError("denied")
+        result = search.search(str(task_dir), "needle", event, matcher, miss_snapshot=snapshot)
+        assert scan.call_count == 1
+    if change == "read_error":
+        assert result["errors"] == ["Could not read run1.log"]
+    else:
+        assert result["match_count"] == 1
+        assert result["found"] == {"needle"}
+        assert result["errors"] == []
+
+
+@pytest.mark.parametrize("before,after", [
+    (("absent", {}), ("needle", {})),
+    (("NEEDLE", {"match_case": True}), ("NEEDLE", {})),
+    (("need", {"whole_word": True}), ("need", {})),
+    (("n.*le", {}), ("n.*le", {"use_regex": True})),
+])
+def test_log_search_miss_snapshot_is_bound_to_query_and_options(tmp_path, before, after):
+    from pyruns.utils.log_search import LogSearch
+    from pyruns.utils.search_query import SearchQuery
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="needle\n")
+    task_dir = str(workspace / TASKS_DIR / "alpha")
+    search = LogSearch()
+    event = threading.Event()
+    first = SearchQuery(before[0], **before[1])
+    assert search.search(task_dir, before[0], event, first)["match_count"] == 0
+    snapshot = search.snapshot_misses(first)
+    second = SearchQuery(after[0], **after[1])
+    assert search.search(task_dir, after[0], event, second, miss_snapshot=snapshot)["match_count"] == 1
+
+
+def test_log_search_miss_snapshot_survives_another_query_evicting_the_cache(tmp_path, monkeypatch):
+    from concurrent.futures import CancelledError, ThreadPoolExecutor
+    from pyruns.utils import log_search
+    from pyruns.utils.search_query import SearchQuery
+
+    monkeypatch.setattr(log_search, "_CACHE_QUERIES", 1)
+    monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 1)
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", log_text="other\n")
+    task_dir = str(workspace / TASKS_DIR / "alpha")
+    search = log_search.LogSearch()
+    event = threading.Event()
+    matcher = SearchQuery("needle")
+    search.search(task_dir, "needle", event, matcher)
+    snapshot = search.snapshot_misses(matcher)
+    assert len(snapshot.signatures) == 1
+    with ThreadPoolExecutor(1) as pool:
+        assert pool.submit(search.search, task_dir, "other", event).result(timeout=5)["match_count"] == 1
+    assert matcher.cache_key not in search._cache
+    with patch.object(search, "_search_file", side_effect=AssertionError("reread a cached miss")):
+        assert search.search(task_dir, "needle", event, matcher, miss_snapshot=snapshot)["match_count"] == 0
+    event.set()
+    with pytest.raises(CancelledError):
+        search.search(task_dir, "needle", event, matcher, miss_snapshot=snapshot)
+
+
 def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -2969,10 +3090,10 @@ def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_pa
     release = threading.Event()
     scan = runtime._log_search.search
 
-    def slow_scan(*args):
+    def slow_scan(*args, **kwargs):
         entered.set()
         assert release.wait(5)
-        return scan(*args)
+        return scan(*args, **kwargs)
 
     with patch.object(runtime._log_search, "search", side_effect=slow_scan) as mocked:
         client = TestClient(create_app(runtime))

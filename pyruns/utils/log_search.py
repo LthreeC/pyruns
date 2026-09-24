@@ -7,7 +7,10 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Mapping
 from concurrent.futures import CancelledError
+from dataclasses import dataclass
+from types import MappingProxyType
 
 from pyruns.utils.info_io import get_log_options
 from pyruns.utils.log_io import _log_decode_candidates, log_file_identity
@@ -97,6 +100,12 @@ def _encoding(path, offset=0):
     return "utf-8"
 
 
+@dataclass(frozen=True)
+class _MissCacheSnapshot:
+    query_key: tuple
+    signatures: Mapping[str, tuple]
+
+
 class LogSearch:
     """Cache only bounded match contexts; never store log contents or write logs."""
 
@@ -116,9 +125,20 @@ class LogSearch:
             self._cache.move_to_end(cache_key)
         return cached_files
 
-    def search(self, task_dir, query, cancelled, matcher=None):
+    def snapshot_misses(self, matcher):
+        """Keep bounded negative signatures stable during one workspace scan."""
+        with self._lock:
+            cached = self._cache.get(matcher.cache_key)
+            signatures = {path: entry[0] for path, entry in cached[1].items()} if cached else {}
+        return _MissCacheSnapshot(matcher.cache_key, MappingProxyType(signatures))
+
+    def search(self, task_dir, query, cancelled, matcher=None, *, miss_snapshot=None):
         matcher = matcher or SearchQuery(query)
         needles = matcher.needles
+        known_misses = (
+            miss_snapshot.signatures
+            if miss_snapshot is not None and miss_snapshot.query_key == matcher.cache_key else None
+        )
         result = {"matches": [], "match_count": 0, "found": set(), "errors": []}
         try:
             options = get_log_options(task_dir)
@@ -140,6 +160,10 @@ class LogSearch:
                             misses.move_to_end(path)
                     cached = entry[1] if entry is not None and entry[0] == signature else None
                 if cached is None:
+                    # A long scan may evict its own later entries from the LRU.
+                    # Reuse captured misses only after checking the current file.
+                    if known_misses is not None and known_misses.get(path) == signature:
+                        continue
                     cached = (
                         self._search_file(path, name, stat.st_size, needles, cancelled, match_case=matcher.match_case)
                         if not matcher.patterns else self._search_file_patterns(path, name, stat.st_size, matcher, cancelled)
