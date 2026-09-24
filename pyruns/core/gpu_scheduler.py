@@ -68,11 +68,16 @@ class SystemGpuProvider:
 
     def sample(self) -> List[GpuDevice]:
         try:
-            snapshot = self.monitor.sample(include_processes=False)
+            snapshot = self.monitor.sample(
+                include_processes=False,
+                allow_stale_gpu=False,
+            )
         except TypeError:
-            # Keep lightweight third-party/test monitors with the original
-            # no-argument sample() contract working.
-            snapshot = self.monitor.sample()
+            # Keep monitors with either earlier sample() signature working.
+            try:
+                snapshot = self.monitor.sample(include_processes=False)
+            except TypeError:
+                snapshot = self.monitor.sample()
         metrics = snapshot.get("gpus", [])
         if not isinstance(metrics, list):
             return []

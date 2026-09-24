@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from pyruns.core.executor import _detect_cuda_oom_text
 from pyruns.core.gpu_scheduler import (
@@ -54,6 +57,43 @@ def test_system_gpu_provider_default_monitor_refreshes_within_stable_sample_gap(
     provider = SystemGpuProvider()
 
     assert provider.monitor._gpu_ttl_sec <= 1.0
+
+
+@pytest.mark.parametrize("max_fails", [1, 3])
+def test_gpu_scheduler_waits_for_fresh_metrics_after_query_failure(monkeypatch, max_fails):
+    now = [100.0]
+    available = [True]
+    monkeypatch.setattr("pyruns.core.system_metrics.time", SimpleNamespace(monotonic=lambda: now[0]))
+    provider = SystemGpuProvider()
+    provider.monitor._gpu_max_fails = max_fails
+
+    def query_snapshot(*, detail):
+        if not available[0]:
+            raise OSError("NVIDIA query unavailable")
+        return "0, GPU, GPU-AAA, 5, 1024, 81920\n", False
+
+    monkeypatch.setattr(provider.monitor, "_query_gpu_snapshot", query_snapshot)
+    scheduler = GpuResourceScheduler(provider=provider, clock=lambda: now[0])
+    config = GpuSchedulerConfig(enabled=True, stable_seconds=2)
+    assert scheduler.try_reserve("task-a", 1, config, task_env={}).assignment is None
+
+    available[0] = False
+    now[0] = 101.0
+    failed = scheduler.try_reserve("task-a", 1, config, task_env={})
+    now[0] = 102.0
+    still_failed = scheduler.try_reserve("task-a", 1, config, task_env={})
+    assert still_failed.assignment is None
+    assert failed.snapshot == still_failed.snapshot == []
+    assert provider.monitor.sample(include_processes=False)["gpus"][0]["uuid"] == "GPU-AAA"
+
+    available[0] = True
+    for timestamp in (135.0, 136.0):
+        now[0] = timestamp
+        recovering = scheduler.try_reserve("task-a", 1, config, task_env={})
+        assert recovering.assignment is None
+        assert "stabilizing" in recovering.reason
+    now[0] = 137.0
+    assert scheduler.try_reserve("task-a", 1, config, task_env={}).assignment is not None
 
 
 def test_gpu_scheduler_reserves_multi_gpu_after_stable_window():
@@ -761,6 +801,15 @@ def test_system_gpu_provider_filters_non_dict_metrics_and_non_list_payloads():
     devices = SystemGpuProvider(Monitor({"gpus": [{"index": 0}, "skip", {"id": 2}]})).sample()
 
     assert [device.index for device in devices] == [0, 2]
+
+
+def test_system_gpu_provider_keeps_legacy_monitor_process_queries_disabled():
+    class Monitor:
+        def sample(self, *, include_processes=True):
+            assert include_processes is False
+            return {"gpus": [{"index": 0}]}
+
+    assert [device.index for device in SystemGpuProvider(Monitor()).sample()] == [0]
 
 
 def test_gpu_scheduler_rejects_duplicate_cuda_visible_devices_and_reports_missing_fixed_gpu():

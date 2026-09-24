@@ -70,8 +70,9 @@ class SystemMonitor:
         *,
         include_processes: bool = True,
         detail: bool | None = None,
+        allow_stale_gpu: bool = True,
     ) -> Dict[str, Any]:
-        """Collect system metrics."""
+        """Collect metrics, optionally rejecting GPU data after a query failure."""
 
         include_detail = include_processes if detail is None else bool(detail)
         return {
@@ -80,6 +81,7 @@ class SystemMonitor:
             "gpus": self._get_gpu_metrics(
                 include_processes=include_processes,
                 detail=include_detail,
+                allow_stale=allow_stale_gpu,
             ),
         }
 
@@ -471,6 +473,7 @@ class SystemMonitor:
         *,
         include_processes: bool = True,
         detail: bool | None = None,
+        allow_stale: bool = True,
     ) -> List[Dict[str, Any]]:
         """Return cached GPU metrics and load process details on demand."""
 
@@ -478,6 +481,7 @@ class SystemMonitor:
         with self._gpu_lock:
             gpus, refresh_processes = self._get_gpu_metrics_locked(
                 detail=include_detail,
+                allow_stale=allow_stale,
             )
         return self._attach_gpu_processes(
             gpus,
@@ -489,6 +493,7 @@ class SystemMonitor:
         self,
         *,
         detail: bool,
+        allow_stale: bool,
     ) -> tuple[List[Dict[str, Any]], bool]:
         """Return device rows and whether process discovery can proceed."""
 
@@ -514,10 +519,10 @@ class SystemMonitor:
             if now - self._gpu_disabled_at < self._gpu_retry_sec:
                 return (
                     self._copy_cached_gpu_rows(
-                        self._gpu_cache,
+                        self._gpu_cache if allow_stale else [],
                         detail=detail,
                     ),
-                    bool(self._gpu_cache),
+                    allow_stale and bool(self._gpu_cache),
                 )
             self._gpu_available = True
             self._gpu_fail_count = 0
@@ -602,8 +607,8 @@ class SystemMonitor:
                 self._gpu_disabled_at = now
             return (
                 self._copy_cached_gpu_rows(
-                    self._gpu_cache,
+                    self._gpu_cache if allow_stale else [],
                     detail=detail,
                 ),
-                bool(self._gpu_cache),
+                allow_stale and bool(self._gpu_cache),
             )
