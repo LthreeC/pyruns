@@ -168,30 +168,37 @@ def _remove_stale_lock_file(lock_path: str) -> bool:
     return True
 
 
-def _path_is_within(path: str, root: str) -> bool:
+def _path_is_within(path: str, root: str, *, _resolved_paths: dict[str, str | None] | None = None) -> bool:
     try:
-        resolved_path = os.path.realpath(os.path.abspath(path))
-        resolved_root = os.path.realpath(os.path.abspath(root))
+        absolute = os.path.abspath(path)
+        absolute_root = os.path.abspath(root)
+        # Candidates are always fresh; an anchor can belong to this operation.
+        resolved_path = os.path.realpath(absolute)
+        resolved_root = _resolved_paths.get(absolute_root) if _resolved_paths is not None else None
+        if resolved_root is None:
+            resolved_root = os.path.realpath(absolute_root)
         common = os.path.commonpath([resolved_path, resolved_root])
     except (OSError, ValueError):
         return False
-    return os.path.normcase(common) == os.path.normcase(resolved_root)
+    if os.path.normcase(common) != os.path.normcase(resolved_root):
+        return False
+    if _resolved_paths is not None:
+        for key, resolved in ((absolute_root, resolved_root), (absolute, resolved_path)):
+            if key in _resolved_paths and _resolved_paths[key] is None:
+                _resolved_paths[key] = resolved
+    return True
 
 
 def _path_is_link_or_reparse(path: str) -> bool:
     """Return whether *path* itself is a symlink, junction, or reparse point."""
 
     try:
-        if os.path.islink(path):
-            return True
-        isjunction = getattr(os.path, "isjunction", None)
-        if isjunction is not None and isjunction(path):
-            return True
-        attributes = int(getattr(os.lstat(path), "st_file_attributes", 0) or 0)
+        info = os.lstat(path)
     except OSError:
         return False
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
     reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
-    return bool(attributes & reparse_flag)
+    return stat.S_ISLNK(info.st_mode) or bool(attributes & reparse_flag)
 
 
 def validate_workspace_file(path: str, workspace_dir: str, *, label: str) -> None:
@@ -268,13 +275,13 @@ def _validate_managed_ancestor_chain(path: str) -> None:
             )
 
 
-def validate_task_directory(task_dir: str) -> None:
+def validate_task_directory(task_dir: str, *, _resolved_paths: dict[str, str | None] | None = None) -> None:
     """Reject task paths that can alias another directory through reparse metadata."""
 
     absolute = os.path.abspath(task_dir)
     validate_tasks_root(os.path.dirname(absolute))
     exists = os.path.lexists(absolute)
-    if exists and not _path_is_within(absolute, os.path.dirname(absolute)):
+    if exists and not _path_is_within(absolute, os.path.dirname(absolute), _resolved_paths=_resolved_paths):
         raise ValueError(f"Task directory resolves outside the tasks directory: {task_dir}")
     if exists and _path_is_link_or_reparse(absolute):
         raise ValueError(
@@ -282,8 +289,8 @@ def validate_task_directory(task_dir: str) -> None:
         )
 
 
-def _task_log_directory(task_dir: str, *, create: bool) -> str:
-    validate_task_directory(task_dir)
+def _task_log_directory(task_dir: str, *, create: bool, _resolved_paths: dict[str, str | None] | None = None) -> str:
+    validate_task_directory(task_dir, _resolved_paths=_resolved_paths)
     absolute_task = os.path.abspath(task_dir)
     log_dir = os.path.join(absolute_task, RUN_LOGS_DIR)
     if os.path.lexists(log_dir):
@@ -298,7 +305,8 @@ def _task_log_directory(task_dir: str, *, create: bool) -> str:
         os.makedirs(log_dir, exist_ok=True)
 
     if os.path.lexists(log_dir) and (
-        _path_is_link_or_reparse(log_dir) or not _path_is_within(log_dir, absolute_task)
+        _path_is_link_or_reparse(log_dir)
+        or not _path_is_within(log_dir, absolute_task, _resolved_paths=_resolved_paths)
     ):
         raise ValueError(f"Run logs directory resolves outside the task boundary: {log_dir}")
     return log_dir
@@ -737,8 +745,14 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
 def get_log_options(task_dir: str) -> Dict[str, str]:
     """Return ``{display_name: file_path}`` for all available log files."""
     opts: Dict[str, str] = {}
+    absolute_task = os.path.abspath(task_dir)
+    # Retain only these three directory anchors, for this enumeration alone.
+    # A redirected parent must not change the boundary of later file checks.
+    resolved_paths: dict[str, str | None] = dict.fromkeys((
+        os.path.dirname(absolute_task), absolute_task, os.path.join(absolute_task, RUN_LOGS_DIR),
+    ))
     try:
-        run_dir = _task_log_directory(task_dir, create=False)
+        run_dir = _task_log_directory(task_dir, create=False, _resolved_paths=resolved_paths)
     except ValueError:
         return opts
     if os.path.isdir(run_dir):
@@ -746,7 +760,7 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         if (
             os.path.isfile(queue_path)
             and not _path_is_link_or_reparse(queue_path)
-            and _path_is_within(queue_path, run_dir)
+            and _path_is_within(queue_path, run_dir, _resolved_paths=resolved_paths)
         ):
             opts[QUEUE_LOG_FILENAME] = queue_path
 
@@ -757,7 +771,7 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
                 if f.startswith("run") and f.endswith(".log")
                 and os.path.isfile(os.path.join(run_dir, f))
                 and not _path_is_link_or_reparse(os.path.join(run_dir, f))
-                and _path_is_within(os.path.join(run_dir, f), run_dir)
+                and _path_is_within(os.path.join(run_dir, f), run_dir, _resolved_paths=resolved_paths)
             ],
             key=lambda x: int("".join(filter(str.isdigit, x)) or "0"),
         )
@@ -768,9 +782,17 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         if (
             os.path.isfile(err_path)
             and not _path_is_link_or_reparse(err_path)
-            and _path_is_within(err_path, run_dir)
+            and _path_is_within(err_path, run_dir, _resolved_paths=resolved_paths)
         ):
             opts[ERROR_LOG_FILENAME] = err_path
+
+        # Discard earlier entries too if their parent was redirected while
+        # later files were being enumerated (queue.log is collected first).
+        try:
+            if opts and os.path.realpath(run_dir) != resolved_paths[run_dir]:
+                return {}
+        except (OSError, ValueError):
+            return {}
 
     return opts
 

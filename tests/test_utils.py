@@ -509,6 +509,7 @@ def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, mon
     (task_dir / TASK_INFO_FILENAME).write_text('{"name":"safe"}', encoding="utf-8")
 
     class ReparseStat:
+        st_mode = 0
         st_file_attributes = 0x400
 
     with monkeypatch.context() as patcher:
@@ -520,6 +521,36 @@ def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, mon
         assert info_io._path_is_link_or_reparse(str(tasks_dir)) is True
         with pytest.raises(ValueError, match="reparse point"):
             load_task_info(str(task_dir), raise_error=True)
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "missing"])
+def test_link_check_identifies_existing_and_broken_links(tmp_path, kind):
+    import pyruns.utils.info_io as info_io
+
+    target = tmp_path / "target"
+    if kind == "file":
+        target.touch()
+    elif kind == "directory":
+        target.mkdir()
+    assert not info_io._path_is_link_or_reparse(str(target))
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory=kind == "directory")
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    assert info_io._path_is_link_or_reparse(str(link))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a native Windows junction")
+def test_link_check_identifies_windows_junction(tmp_path):
+    import _winapi
+    import pyruns.utils.info_io as info_io
+
+    target = tmp_path / "target"
+    target.mkdir()
+    junction = tmp_path / "junction"
+    _winapi.CreateJunction(str(target), str(junction))
+    assert info_io._path_is_link_or_reparse(str(junction))
 
 
 def test_task_info_and_logs_reject_nested_symlink_escapes(tmp_path):
@@ -1635,6 +1666,110 @@ def test_get_log_options_handles_empty_and_naturally_sorted_run_logs(tmp_path):
     options = get_log_options(task_dir)
     assert list(options) == ["run1.log", "run2.log", "run10.log"]
     assert all(os.path.isfile(path) for path in options.values())
+
+
+@pytest.mark.parametrize("ancestor", ["managed_root", "workspace", "tasks", "task", "logs"])
+def test_log_enumeration_rejects_ancestor_redirected_after_validation(tmp_path, monkeypatch, ancestor):
+    import pyruns.utils.info_io as info_io
+
+    managed_root = tmp_path / DEFAULT_ROOT_NAME
+    workspace = managed_root / "main"
+    tasks = workspace / "tasks"
+    task = tasks / "experiment"
+    logs = task / RUN_LOGS_DIR
+    logs.mkdir(parents=True)
+    for name in ("queue.log", "run1.log", "error.log"):
+        (logs / name).write_text("original", encoding="utf-8")
+    boundary = {"managed_root": managed_root, "workspace": workspace, "tasks": tasks,
+                "task": task, "logs": logs}[ancestor]
+    outside = tmp_path / "outside"
+    outside_logs = outside / logs.relative_to(boundary)
+    outside_logs.mkdir(parents=True)
+    for name in ("queue.log", "run1.log", "error.log"):
+        (outside_logs / name).write_text("outside", encoding="utf-8")
+    redirect = tmp_path / "redirect"
+    try:
+        redirect.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+    real_listdir = os.listdir
+    redirected = False
+
+    def replace_before_listing(path):
+        nonlocal redirected
+        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(logs)) and not redirected:
+            boundary.rename(tmp_path / "original")
+            redirect.rename(boundary)
+            redirected = True
+        return real_listdir(path)
+
+    monkeypatch.setattr(info_io.os, "listdir", replace_before_listing)
+    assert get_log_options(str(task)) == {}
+    assert redirected
+
+
+@pytest.mark.parametrize("filename", ["queue.log", "run1.log", "error.log"])
+def test_log_enumeration_rechecks_linked_files_on_later_calls(tmp_path, filename):
+    task = tmp_path / DEFAULT_ROOT_NAME / "main" / "tasks" / "experiment"
+    logs = task / RUN_LOGS_DIR
+    logs.mkdir(parents=True)
+    path = logs / filename
+    path.write_text("original", encoding="utf-8")
+    assert get_log_options(str(task)) == {filename: str(path)}
+    outside = tmp_path / "outside.log"
+    outside.write_text("outside", encoding="utf-8")
+    redirect = logs / "redirect"
+    try:
+        redirect.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    redirect.replace(path)
+    assert get_log_options(str(task)) == {}
+
+
+@pytest.mark.parametrize("filename", ["queue.log", "run1.log", "error.log"])
+def test_log_enumeration_rejects_reparse_file_attributes(tmp_path, monkeypatch, filename):
+    from types import SimpleNamespace
+    import pyruns.utils.info_io as info_io
+
+    task = tmp_path / "tasks" / "experiment"
+    logs = task / RUN_LOGS_DIR
+    logs.mkdir(parents=True)
+    path = logs / filename
+    path.touch()
+    real_lstat = os.lstat
+
+    def reparse_stat(candidate, *args, **kwargs):
+        info = real_lstat(candidate, *args, **kwargs)
+        if os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(str(path)):
+            return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
+        return info
+
+    monkeypatch.setattr(info_io.os, "lstat", reparse_stat)
+    assert get_log_options(str(task)) == {}
+
+
+def test_log_enumeration_resolves_relative_unicode_paths_and_fresh_project_anchors(tmp_path, monkeypatch):
+    task_relative = Path(DEFAULT_ROOT_NAME) / "工作区" / "tasks" / "space name"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for directory, filename in ((first, "run1.log"), (second, "run2.log")):
+        logs = directory / task_relative / RUN_LOGS_DIR
+        logs.mkdir(parents=True)
+        (logs / filename).touch()
+    alias = tmp_path / "project"
+    redirect = tmp_path / "next-project"
+    try:
+        alias.symlink_to(first, target_is_directory=True)
+        redirect.symlink_to(second, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink creation unavailable: {exc}")
+    monkeypatch.chdir(tmp_path)
+    relative_task = Path("project") / task_relative
+    assert list(get_log_options(str(relative_task))) == ["run1.log"]
+    alias.rename(tmp_path / "old-project")
+    redirect.rename(alias)
+    assert list(get_log_options(str(relative_task))) == ["run2.log"]
 
 
 class TestResolveLogPath:
