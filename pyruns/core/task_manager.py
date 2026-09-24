@@ -474,49 +474,47 @@ class TaskManager:
         safe_offset = max(0, int(offset))
         safe_limit = max(0, int(limit))
         with self._lock:
-            # Filtering and ordering only read these fields. Keep their source
-            # references inside the lock so the page and counts agree, without
-            # copying every task's environment and complete run history.
-            candidates = [
-                {
-                    "name": task.get("name", ""),
-                    "status": task.get("status", "pending"),
-                    "notes": task.get("notes", ""),
-                    "env": task.get("env", {}),
-                    "search_text": task.get("search_text", ""),
-                    **({
-                        key: task.get(key)
-                        for key in ("task_kind", "config", "config_text")
-                    } if not summary or search_field in {"config", "script"} else {}),
-                    **{
-                        key: task.get(key)
-                        for key in ("pinned", "task_order", "created_at")
-                    },
-                    **{
-                        key: list((task.get(key) or [])[-1:])
-                        for key in ("start_times", "finish_times")
-                    },
-                    "_task": task,
-                }
-                for task in self.tasks if task is not None
-            ]
+            # Read source references only while locked, then detach the selected
+            # page. Sorting does not need a metadata copy for every task.
+            candidates = [task for task in self.tasks if task is not None]
             status_counts = dict.fromkeys(
                 ("pending", "queued", "running", "completed", "failed", "cancelled"),
                 0,
             )
             for task in candidates:
-                task_status = str(task["status"] or "pending").lower()
+                task_status = str(task.get("status", "pending") or "pending").lower()
                 status_counts[task_status] = status_counts.get(task_status, 0) + 1
-            ordered = sort_tasks_for_manager(
-                filter_tasks_by_search_field(candidates, query, status, search_field), sort_mode,
-            )
+            if status != "All":
+                candidates = [
+                    task for task in candidates
+                    if status.lower() == task.get("status", "pending")
+                ]
+            if summary and query and search_field == "all":
+                # Summary search uses cached text, falling back to metadata
+                # without config/script payloads. Keep that search contract.
+                search_candidates = [
+                    {
+                        "name": task.get("name", ""),
+                        "notes": task.get("notes", ""),
+                        "env": task.get("env", {}),
+                        "search_text": task.get("search_text", ""),
+                        "_task": task,
+                    }
+                    for task in candidates
+                ]
+                candidates = [
+                    task["_task"] for task in filter_tasks_by_search_field(search_candidates, query)
+                ]
+            else:
+                candidates = filter_tasks_by_search_field(candidates, query, search_field=search_field)
+            ordered = sort_tasks_for_manager(candidates, sort_mode)
             total = len(ordered)
             selected = (
                 ordered[safe_offset:safe_offset + safe_limit]
                 if safe_limit else ordered[safe_offset:]
             )
             snapshots = [
-                self._snapshot_task_for_api(task["_task"], summary=summary)
+                self._snapshot_task_for_api(task, summary=summary)
                 for task in selected
             ]
         return (

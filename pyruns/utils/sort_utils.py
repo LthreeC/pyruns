@@ -49,9 +49,9 @@ def _timestamp_weight(task: Dict[str, object]) -> int:
     finishes = task.get("finish_times") or []
     starts = task.get("start_times") or []
 
-    if isinstance(finishes, list) and finishes:
+    if isinstance(finishes, (list, tuple)) and finishes:
         timestamp = finishes[-1]
-    elif isinstance(starts, list) and starts:
+    elif isinstance(starts, (list, tuple)) and starts:
         timestamp = starts[-1]
     else:
         timestamp = task.get("created_at") or ""

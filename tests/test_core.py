@@ -6195,6 +6195,72 @@ def test_task_page_preserves_filter_order_counts_and_detachment(tmp_path, sort_m
             assert all(task["env"]["CUDA_VISIBLE_DEVICES"] == "0" and task["start_times"] for task in manager.tasks)
 
 
+@pytest.mark.parametrize("summary", [False, True])
+def test_task_page_preserves_tuple_activity_order(tmp_path, summary):
+    manager = TaskManager(tasks_dir=str(tmp_path), lazy_scan=None, owns_task_lifecycle=False)
+    manager.tasks = [
+        {"name": "latest-start", "start_times": ["2026-09-25T12:00:00"]},
+        {"name": "latest-finish", "finish_times": ["2026-09-25T13:00:00"]},
+        {"name": "created", "created_at": "2026-09-25T11:00:00"},
+    ]
+    for sort_mode in ("priority", "manual", "activity_asc", "activity_desc"):
+        list_page = manager.get_task_page(sort_mode=sort_mode, summary=summary)
+        for task in manager.tasks:
+            for field in ("start_times", "finish_times"):
+                if field in task:
+                    task[field] = tuple(task[field])
+        tuple_page = manager.get_task_page(sort_mode=sort_mode, summary=summary)
+        assert [task["name"] for task in tuple_page[0]] == [task["name"] for task in list_page[0]]
+        assert tuple_page[1:] == list_page[1:]
+        for task in manager.tasks:
+            for field in ("start_times", "finish_times"):
+                if field in task:
+                    task[field] = list(task[field])
+
+
+@pytest.mark.parametrize("summary", [False, True])
+@pytest.mark.parametrize("query,search_field,status,expected", [
+    ("config_token", "all", "All", ["train1"]),
+    ("script_token", "all", "All", ["shell2"]),
+    ("cached_token", "all", "All", ["cached3"]),
+    ("config_token", "config", "All", ["cached3", "train1"]),
+    ("script_token", "script", "All", ["shell2"]),
+    ("train", "name", "All", ["train1"]),
+    ("note_token", "notes", "All", ["train1"]),
+    ("TOKEN=env_value", "env", "All", ["cached3", "train1"]),
+    ("note_token\nTOKEN=env_value", "all", "All", ["train1"]),
+    ("", "all", "pending", ["train1"]),
+    ("train", "all", "PENDING", ["train1"]),
+])
+def test_task_page_preserves_search_sources(tmp_path, summary, query, search_field, status, expected):
+    manager = TaskManager(tasks_dir=str(tmp_path), lazy_scan=None, owns_task_lifecycle=False)
+    manager.tasks = [
+        {
+            "name": "train1", "notes": "note_token", "env": {"TOKEN": "env_value"},
+            "task_kind": TASK_KIND_CONFIG, "config": {"config_token": 1},
+        },
+        {
+            "name": "shell2", "status": "running", "task_kind": TASK_KIND_SHELL,
+            "config_text": "echo script_token",
+        },
+        {
+            "name": "cached3", "status": "completed", "search_text": "cached_token",
+            "config": {"config_token": 2}, "env": {"TOKEN": "env_value"},
+        },
+        None,
+    ]
+    if summary and search_field == "all" and query in {"config_token", "script_token"}:
+        expected = []
+    items, total, counts = manager.get_task_page(
+        query=query, search_field=search_field, status=status, sort_mode="name_asc", summary=summary,
+    )
+    assert [task["name"] for task in items] == expected
+    assert total == len(expected)
+    assert counts == {"pending": 1, "queued": 0, "running": 1, "completed": 1, "failed": 0, "cancelled": 0}
+    assert "status" not in manager.tasks[0]
+    assert "search_text" not in manager.tasks[0]
+
+
 def test_task_manager_scan_and_load_task_dir_edge_cases(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
