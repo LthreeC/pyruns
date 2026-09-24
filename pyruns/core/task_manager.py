@@ -2717,7 +2717,7 @@ class TaskManager:
         last_reactive_refresh = 0.0
         while not self._shutdown_event.is_set():
             try:
-                now = time.time()
+                now = time.monotonic()
                 reactive_refresh_due = (
                     self.has_reactive_watchers()
                     and now - last_reactive_refresh >= _REACTIVE_DISK_REFRESH_INTERVAL_SEC
@@ -3598,7 +3598,7 @@ class TaskManager:
     def _refresh_queued_runner_leases(self) -> None:
         """Keep locally queued tasks owned while they wait for workers or GPUs."""
 
-        now = time.time()
+        now = time.monotonic()
         interval = min(DEFAULT_RUNNER_HEARTBEAT_SECONDS, max(1.0, self.lease_seconds / 3))
         if now - self._last_queued_lease_heartbeat < interval:
             return

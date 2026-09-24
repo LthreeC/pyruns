@@ -7913,6 +7913,35 @@ def test_task_manager_queue_heartbeat_continues_after_one_metadata_write_fails(t
     assert load_task_info(beta["dir"])["lease_heartbeat"] > 1.0
 
 
+@pytest.mark.parametrize("wall_clock_shift", [-3600.0, 3600.0])
+def test_task_manager_queue_heartbeat_ignores_wall_clock_adjustments(tmp_path, monkeypatch, wall_clock_shift):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("alpha", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False)
+    assert manager._sync_status_to_disk("alpha", "queued", run_index=1)
+    wall_now = [100_000.0]
+    elapsed_now = [100.0]
+    clock = MagicMock(wraps=time)
+    clock.time.side_effect = lambda: wall_now[0]
+    clock.monotonic.side_effect = lambda: elapsed_now[0]
+    monkeypatch.setattr(task_manager_module, "time", clock)
+
+    with patch.object(task_manager_module, "update_task_info", wraps=update_task_info) as write:
+        manager._refresh_queued_runner_leases()
+        assert write.call_count == 1
+
+        wall_now[0] += wall_clock_shift
+        elapsed_now[0] += 0.1
+        manager._refresh_queued_runner_leases()
+        assert write.call_count == 1
+
+        elapsed_now[0] += manager.lease_seconds
+        manager._refresh_queued_runner_leases()
+        assert write.call_count == 2
+
+    assert load_task_info(task["dir"])["lease_heartbeat"] == wall_now[0]
+
+
 @pytest.mark.parametrize("claim_persisted", [False, True])
 def test_task_manager_queue_heartbeat_does_not_requeue_selected_task(tmp_path, monkeypatch, claim_persisted):
     tasks_dir = tmp_path / "tasks"
@@ -8609,6 +8638,52 @@ def test_task_manager_shutdown_keeps_failed_cleanup_retryable(tmp_path, monkeypa
     assert manager._shutdown_cleanup_done is True
     assert manager._atexit_registered is False
     assert unregistered == [manager._atexit_callback]
+
+
+@pytest.mark.parametrize("wall_clock_shift", [-3600.0, 3600.0])
+def test_task_manager_scheduler_refresh_ignores_wall_clock_adjustments(tmp_path, monkeypatch, wall_clock_shift):
+    manager = _make_task_manager(tmp_path / "tasks", owns_task_lifecycle=False)
+    manager.acquire_reactive_watch()
+    wall_now = [100_000.0]
+    elapsed_now = [100.0]
+    clock = MagicMock(wraps=time)
+    clock.time.side_effect = lambda: wall_now[0]
+    clock.monotonic.side_effect = lambda: elapsed_now[0]
+    monkeypatch.setattr(task_manager_module, "time", clock)
+    refreshes = []
+    updates = []
+
+    def refresh(**kwargs):
+        assert kwargs == {"check_all": True, "discover": True}
+        refreshes.append(elapsed_now[0])
+        return True
+
+    waits = 0
+
+    def advance_clock(_timeout):
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            wall_now[0] += wall_clock_shift
+            elapsed_now[0] += 0.2
+        elif waits == 2:
+            wall_now[0] += 1.0
+            elapsed_now[0] += 1.0
+        else:
+            manager._shutdown_event.set()
+            return True
+        return False
+
+    monkeypatch.setattr(manager, "refresh_from_disk", refresh)
+    monkeypatch.setattr(manager, "trigger_update", lambda: updates.append(elapsed_now[0]))
+    monkeypatch.setattr(manager, "_refresh_queued_runner_leases", lambda: None)
+    monkeypatch.setattr(manager, "_process_cancel_requests", lambda: None)
+    monkeypatch.setattr(manager._shutdown_event, "wait", advance_clock)
+
+    manager._scheduler_loop()
+
+    assert refreshes == pytest.approx([100.0, 101.2])
+    assert updates == pytest.approx([100.0, 101.2])
 
 
 def test_task_manager_scheduler_helpers_and_cleanup_edges(tmp_path, monkeypatch):
