@@ -9880,6 +9880,24 @@ def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=No
 
 
 class TestBuildExportCSV:
+    @pytest.mark.parametrize("exit_literal", ["1e10000", "-1e10000", "NaN"])
+    def test_nonfinite_legacy_exit_codes_preserve_csv_and_json_error_handling(self, tmp_path, exit_literal):
+        task = _make_task(tmp_path, "invalid-exit")
+        info_path = Path(task["dir"]) / TASK_INFO_FILENAME
+        info_path.write_text(
+            '{"name":"invalid-exit","status":"failed","run_index":1,"exit_codes":[' + exit_literal + ']}'
+        )
+        task.update(load_task_info(task["dir"], raise_error=True))
+        healthy = _make_task(tmp_path, "healthy")
+        healthy["exit_codes"] = [0]
+
+        rows = list(csv.DictReader(io.StringIO(build_export_csv([task, healthy]))))
+        assert [(row["name"], row["status"]) for row in rows] == [
+            ("invalid-exit", "failed"), ("healthy", "completed"),
+        ]
+        with pytest.raises(ValueError, match="strict JSON"):
+            build_export_json([task, healthy])
+
     def test_single_task_single_run(self, tmp_path):
         task = _make_task(tmp_path, "t1", records=[{"loss": 0.5, "acc": 92}])
         task["durations"] = [12.345]

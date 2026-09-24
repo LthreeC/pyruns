@@ -39,7 +39,7 @@ def _run_status(
     if exit_code is not None and exit_code != "":
         try:
             code = int(exit_code)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return "failed"
         if code == 0:
             return "completed"
