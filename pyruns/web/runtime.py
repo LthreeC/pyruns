@@ -1212,7 +1212,7 @@ class PyrunsRuntime:
                 epoch = self._workspace_epoch
                 self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
                 manager = self.task_manager
-                sources = manager.get_task_search_snapshots()
+                sources = manager._get_task_search_views()
             tasks = list(sources.values())
             counts = dict.fromkeys(("pending", "queued", "running", "completed", "failed", "cancelled"), 0)
             for task in tasks:
@@ -1252,14 +1252,21 @@ class PyrunsRuntime:
                 if search_logs and not all(needle in found or needle in logs["found"] for needle in needles):
                     continue
                 if offset <= total < offset + limit:
-                    task["_log_search_result"] = logs
-                    selected.append(task)
+                    selected.append((task, logs))
                 total += 1
             items = []
-            for task in selected:
-                logs = task.pop("_log_search_result")
+            for task, logs in selected:
                 context = build_task_search_result(sources.get(task["name"], {}), query, search_field=search_field, matcher=matcher)
-                task = manager.get_task(task["name"], summary=summary) or manager.serialize_task(task, summary=summary)
+                current = manager.get_task(task["name"], summary=summary)
+                if current is None:
+                    # A task may disappear after capture; materialize its view
+                    # before the full serializer deep-copies nested values.
+                    current = manager.serialize_task({
+                        **task, "env": dict(task["env"]),
+                        "start_times": list(task["start_times"]),
+                        "finish_times": list(task["finish_times"]),
+                    }, summary=summary)
+                task = current
                 task["search_matches"] = context["matches"] + logs["matches"]
                 task["search_match_count"] = context["match_count"] + logs["match_count"]
                 items.append(task)

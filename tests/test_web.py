@@ -2639,13 +2639,81 @@ def test_metadata_search_rejects_results_after_workspace_switch(tmp_path, monkey
             pending = pool.submit(runtime.search_tasks, query="needle", search_field="name", cancelled=threading.Event())
             try:
                 assert entered.wait(5)
+                retired = runtime.task_manager
+                assert retired._search_view_cache
                 pool.submit(runtime.change_run_root, str(second)).result(timeout=5)
+                assert not retired._search_view_cache
             finally:
                 release.set()
             with pytest.raises(runtime_module.WorkspaceChangedError):
                 pending.result(timeout=5)
     finally:
         release.set()
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("summary", [False, True])
+def test_search_serializes_captured_task_if_deleted_during_matching(tmp_path, monkeypatch, summary):
+    from pyruns.web import runtime as runtime_module
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    manager = runtime.task_manager
+    with manager._lock:
+        manager.tasks[0].update({"notes": "needle", "env": {"SAVED": "original"},
+                                 "start_times": ["2026-01-01_00-00-01"]})
+    original = runtime_module.task_search_found
+
+    def delete_while_matching(task, *args, **kwargs):
+        with manager._lock:
+            manager.tasks.clear()
+            manager._rebuild_indexes_locked()
+        return original(task, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "task_search_found", delete_while_matching)
+    try:
+        page = runtime.search_tasks(query="needle", search_field="notes", summary=summary,
+                                    refresh=False, cancelled=threading.Event())
+        assert page.total == 1
+        item = page.items[0]
+        assert item["name"] == "source" and item["search_match_count"] == 1
+        assert item["env"] == {"SAVED": "original"}
+        assert item["start_times"] == ["2026-01-01_00-00-01"]
+        json.dumps(item)  # No private mapping wrappers escape the API.
+        assert not manager._search_view_cache
+    finally:
+        runtime.shutdown()
+
+
+def test_concurrent_log_searches_keep_per_query_contexts_separate(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source", log_text="first-query\nsecond-query\n")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    barrier = threading.Barrier(2)
+    original = runtime._log_search.search
+
+    def search(*args, **kwargs):
+        barrier.wait(timeout=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime._log_search, "search", search)
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            pending = [pool.submit(runtime.search_tasks, query=query, search_field="log", refresh=False,
+                                   cancelled=threading.Event()) for query in ("first-query", "second-query")]
+            for query, future in zip(("first-query", "second-query"), pending):
+                page = future.result(timeout=5)
+                assert page.total == 1
+                item = page.items[0]
+                assert item["search_match_count"] == 1
+                assert item["search_matches"][0]["snippet"] == query
+        assert "_log_search_result" not in runtime.task_manager._get_task_search_views()["source"]
+    finally:
         runtime.shutdown()
 
 

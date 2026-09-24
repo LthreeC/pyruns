@@ -13,7 +13,8 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from pyruns._config import (
     DEFAULT_RUNNER_HEARTBEAT_SECONDS,
@@ -145,6 +146,7 @@ class TaskManager:
         self.tasks_dir = tasks_dir
         self.tasks: List[Dict[str, Any]] = []
         self._tasks_by_name: Dict[str, Dict[str, Any]] = {}
+        self._search_view_cache: dict[str, tuple[tuple, Mapping[str, Any]]] = {}
         self._lock = threading.Lock()
         self._observer_lock = threading.Lock()
         self._executor_lock = threading.Lock()
@@ -514,6 +516,47 @@ class TaskManager:
             total,
             status_counts,
         )
+
+    _SEARCH_VIEW_DEFAULTS = {
+        "dir": "", "name": "", "status": "pending", "pinned": None,
+        "task_order": None, "created_at": None, "notes": "", "search_text": "",
+        "task_kind": None, "config_text": "",
+    }
+    _SEARCH_CONFIG_MISSING = object()
+
+    def _get_task_search_views(self) -> Dict[str, Mapping[str, Any]]:
+        """Reuse unchanged metadata; each request owns its outer mapping.
+
+        Compare source values under the registry lock, including in-place env
+        edits and timestamp tails. Views freeze these containers, while config
+        retains the reference semantics of get_task_search_snapshots().
+        """
+        with self._lock:
+            views = {}
+            for name, task in self._tasks_by_name.items():
+                scalars = tuple(task.get(key, default) for key, default in self._SEARCH_VIEW_DEFAULTS.items())
+                starts = tuple((task.get("start_times") or ())[-1:])
+                finishes = tuple((task.get("finish_times") or ())[-1:])
+                config = task.get("config", self._SEARCH_CONFIG_MISSING)
+                env_items = tuple((task.get("env") or {}).items())
+                # Equal numbers/bools can have different searchable text.
+                value_types = tuple(map(type, scalars + starts + finishes)) + tuple(
+                    type(value) for pair in env_items for value in pair
+                )
+                signature = (scalars, starts, finishes, id(config), env_items, value_types)
+                previous = self._search_view_cache.get(name)
+                if previous is None or signature != previous[0]:
+                    view = MappingProxyType({
+                        **dict(zip(self._SEARCH_VIEW_DEFAULTS, scalars)),
+                        "start_times": starts, "finish_times": finishes,
+                        "config": {} if config is self._SEARCH_CONFIG_MISSING else config,
+                        "env": MappingProxyType(dict(env_items)),
+                    })
+                    previous = (signature, view)
+                    if not self._shutdown_event.is_set():
+                        self._search_view_cache[name] = previous
+                views[str(task.get("name", ""))] = previous[1]
+            return views
 
     def get_task_search_snapshots(self, task_names: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
         """Capture search/sort metadata without copying every task's run history."""
@@ -3532,6 +3575,8 @@ class TaskManager:
         """Stop background scheduling and release executors promptly."""
         with self._shutdown_lock:
             self._shutdown_event.set()
+        with self._lock:
+            self._search_view_cache.clear()
         if self.owns_task_lifecycle:
             try:
                 self._cleanup_on_shutdown()
@@ -4822,6 +4867,8 @@ class TaskManager:
 
     def _rebuild_indexes_locked(self) -> None:
         self._tasks_by_name = {task["name"]: task for task in self.tasks if task and task.get("name")}
+        for name in self._search_view_cache.keys() - self._tasks_by_name.keys():
+            self._search_view_cache.pop(name)
         self._failed_claim_ids.intersection_update(self._tasks_by_name)
 
     def _recompute_processing_flag_locked(self) -> None:
