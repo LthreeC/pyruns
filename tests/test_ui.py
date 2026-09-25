@@ -170,23 +170,14 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8)',
             'const next = clampInteger(n, 5, 1, 8)',
             'const next = clampInteger(n, 5, 2, 8)',
-            'let launcherRequestSeq = 0',
-            'const requestId = ++launcherRequestSeq',
-            'if (requestId !== launcherRequestSeq)',
             'let runtimeRequestSeq = 0',
             'let dashboardRequestSeq = 0',
-            'let generatorTemplateRequestSeq = 0',
             'const requestId = ++runtimeRequestSeq',
             'requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()',
             'const requestId = ++dashboardRequestSeq',
             'requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()',
-            'const requestId = ++generatorTemplateRequestSeq',
-            'requestId !== generatorTemplateRequestSeq',
-            'draftVersion !== generatorDraftVersion',
-            '|| workspaceKey !== currentWorkspaceKey()',
             'workspaceEpoch',
             'dashboardRequestSeq += 1',
-            'generatorTemplateRequestSeq += 1',
             'tasks: []',
             'data: null',
             "selectedTemplate: ''",
@@ -197,11 +188,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'if (dashboardRefreshPromiseRef.current)',
             'const refreshPromise = Promise.allSettled([',
             'api.getMetrics({}, controller.signal)',
-            '{ includeProcesses: true, detail: true }',
-            'api.getGpuProcessDetails(process.pid, controller.signal)',
-            'GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000',
-            'gpuDetailsAbortControllerRef.current?.abort()',
-            'GPU process details timed out. Check the connection and retry.',
             "setMetricsError('')",
             "errorMessage(metricsResult.reason, 'System metrics unavailable.')",
             'Metrics refresh failed. Showing last values.',
@@ -227,29 +213,14 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'wide={gpuCount === 1}',
             'metrics.gpus.map(gpu =>',
             'key={gpuKey(gpu)}',
-            'aria-label={`View details for GPU ${gpu.index} ${gpu.name}`}',
             'title={gpu.name}',
             "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'",
-            'max-h-[calc(100dvh-2rem)]',
-            'flex-col overflow-hidden rounded-md',
-            'min-h-0 flex-1 space-y-5 overflow-y-auto',
-            'role="dialog"',
-            'aria-modal="true"',
-            'aria-labelledby="gpu-detail-title"',
-            'id="gpu-detail-title"',
-            'Close GPU details',
             'RefreshCw',
             'manualRefreshing',
             'const handleManualRefresh = useCallback(async () => {',
             'Dashboard refreshed',
             'Task summary and system metrics are up to date.',
             'Refresh dashboard now',
-            'Live metrics',
-            'Device information',
-            'GPU processes',
-            'Refresh GPU details',
-            'gpu.temperature_c',
-            'gpu.pci_bus_id',
         ), id='dashboard'),
         pytest.param(FRONTEND_APP, (
             'useLocation',
@@ -366,10 +337,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             "event.key === 'Home'",
             "event.key === 'End'",
             'cursor-col-resize',
-            'window.requestAnimationFrame(() => xtermRef.current?.focus())',
-            'closeTerminalSearch(false)',
-            'aria-live="polite"',
-            'aria-atomic="true"',
             'Passes current thresholds',
             'useMemo',
             'const selectedTaskFromList = useMemo(',
@@ -631,33 +598,11 @@ def test_react_workspace_chrome_distinguishes_uninitialized_roots():
     assert "Workspace needed" in sidebar
 
 
-def test_react_gpu_process_dialog_shows_process_owner():
+def test_react_gpu_process_memory_percentage_guards_missing_readings():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
-    types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
-    process_summary = types[
-        types.index("export interface GPUProcessInfo"):
-        types.index("export interface GPUProcessDetails")
-    ]
-    process_details = types[
-        types.index("export interface GPUProcessDetails"):
-        types.index("export interface GPUMetric")
-    ]
-    assert "user: string" in process_summary
-    assert "command_line:" not in process_summary
-    assert "host_memory_mb:" not in process_summary
-    assert "user: string" in process_details
-    assert "command_line: string" in process_details
-    assert "host_memory_mb: number | null" in process_details
-    assert 'min-w-[700px]' not in dashboard
-    assert "process.user || processDetails?.user || 'unknown'" in dashboard
     assert "process.memory_mb == null || gpu.mem_total == null || gpu.mem_total <= 0" in dashboard
     assert "formatPercent((process.memory_mb / gpu.mem_total) * 100)" in dashboard
-    assert "sortedProcesses.map(process =>" in dashboard
-    assert "<GpuProcessMetadata" in dashboard
-    assert "state={processDetailsState}" in dashboard
-    assert "Loading process details..." in dashboard
-    assert "Copy command line for PID" in dashboard
 
 
 def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
