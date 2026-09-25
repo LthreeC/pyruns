@@ -169,6 +169,24 @@ def sample_config():
     }
 
 
+@pytest.fixture(params=["python", "libyaml"])
+def pyruns_yaml_backend(request, monkeypatch):
+    """Exercise the shared parser with either backend and reset its cache."""
+    import yaml
+    from pyruns.utils import config_utils
+
+    with monkeypatch.context() as patch:
+        if request.param == "python":
+            patch.delattr(yaml, "CSafeLoader", raising=False)
+        elif not hasattr(yaml, "CSafeLoader"):
+            pytest.skip("PyYAML was installed without libyaml")
+        config_utils._get_pyruns_yaml_loader.cache_clear()
+        try:
+            yield
+        finally:
+            config_utils._get_pyruns_yaml_loader.cache_clear()
+
+
 @pytest.fixture()
 def sample_config_with_pipes():
     """Config with product pipe syntax."""

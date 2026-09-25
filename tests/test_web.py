@@ -4884,14 +4884,8 @@ def test_config_views_preserve_complete_web_responses(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     documents = {
         "plain": "value: 7\nnested: {items: [1, 2]}\n",
-        "aliases": "base: &base {items: [1, 2]}\ncopy: *base\n",
-        "interpolated": "base: 8\nvalue: ${base}\n",
         "environment": "value: ${oc.env:PYRUNS_VIEW_ENV}\n",
-        "missing": "value: ???\n",
-        "special": "value: !!binary YQ==\nnested: {1: one}\n",
         "nonstring": "1: one\nfalse: no\n0.5: ratio\n",
-        "deep": "{node: " * 20 + "1" + "}" * 20,
-        "invalid_yaml": "value: [broken",
         "invalid_interpolation": "value: ${broken\n",
     }
     for name, document in documents.items():

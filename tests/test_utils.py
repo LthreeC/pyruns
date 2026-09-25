@@ -2154,20 +2154,6 @@ class TestFlattenUnflatten:
 
 #  YAML / JSON I/O
 
-@pytest.fixture(params=["python", "libyaml"])
-def pyruns_yaml_backend(request, monkeypatch):
-    with monkeypatch.context() as patch:
-        if request.param == "python":
-            patch.delattr(yaml, "CSafeLoader", raising=False)
-        elif not hasattr(yaml, "CSafeLoader"):
-            pytest.skip("PyYAML was installed without libyaml")
-        config_utils._get_pyruns_yaml_loader.cache_clear()
-        try:
-            yield
-        finally:
-            config_utils._get_pyruns_yaml_loader.cache_clear()
-
-
 class TestYamlIO:
     def test_config_parses_preserve_scalars_and_other_yaml_loaders(self, pyruns_yaml_backend):
         text = (

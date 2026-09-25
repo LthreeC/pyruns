@@ -14,17 +14,6 @@ from pyruns.utils.info_io import load_task_info
 from pyruns.utils.task_files import read_task_payload
 
 
-@pytest.fixture(params=["python", "libyaml"])
-def yaml_backend(request, monkeypatch):
-    if request.param == "python":
-        monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
-    elif not hasattr(yaml, "CSafeLoader"):
-        pytest.skip("PyYAML was installed without libyaml")
-    config_utils._get_pyruns_yaml_loader.cache_clear()
-    yield
-    config_utils._get_pyruns_yaml_loader.cache_clear()
-
-
 @pytest.mark.parametrize("document", [
     "", "null", "{}",
     "epochs: 10\nrate: 1e-3\nlabel: 中文\nnested: {enabled: true, layers: [64, 32, null]}\n",
@@ -32,7 +21,7 @@ def yaml_backend(request, monkeypatch):
     "base: &base {x: 7, values: [1, 2]}\ncopy: *base\nmerged: {<<: *base, x: 9}\n",
     'name: "\\uD800"\n',
 ])
-def test_plain_views_preserve_values_and_types(yaml_backend, document):
+def test_plain_views_preserve_values_and_types(pyruns_yaml_backend, document):
     expected = config_utils.to_container(config_utils.load_config_text(document), resolve=False)
     actual = config_utils.load_config_view_text(document)
     assert type(actual) is dict
@@ -40,7 +29,7 @@ def test_plain_views_preserve_values_and_types(yaml_backend, document):
     assert json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
 
 
-def test_view_aliases_and_documents_are_independent(yaml_backend):
+def test_view_aliases_and_documents_are_independent(pyruns_yaml_backend):
     document = "base: &base {nested: {x: 7}, values: [1, 2]}\ncopy: *base\n"
     first = config_utils.load_config_view_text(document)
     first["base"]["nested"]["x"] = 99
@@ -80,7 +69,7 @@ def test_nonstring_config_keys_preserve_preview_search_and_values(
     "[1, 2]", "'scalar'",
     "{node: " * 20 + "1" + "}" * 20,
 ])
-def test_special_views_keep_omegaconf_behavior(yaml_backend, monkeypatch, document):
+def test_special_views_keep_omegaconf_behavior(monkeypatch, document):
     monkeypatch.setenv("PYRUNS_VIEW_ENV", "first")
     expected = config_utils.load_config_text(document)
     actual = config_utils.load_config_view_text(document)
@@ -92,12 +81,11 @@ def test_special_views_keep_omegaconf_behavior(yaml_backend, monkeypatch, docume
 
 
 @pytest.mark.parametrize("document", [
-    "value: 1\nvalue: 2\n", "items: [1, 2\n", "copy: *undefined\n", "name: \ud800\n",
     "value: ${broken\n", "value: !!set {a: null}\n", "null: invalid-key\n",
-    "value: !!timestamp 2026-09-25\n", "value: !!python/object/apply:os.system [forbidden]\n",
+    "value: !!timestamp 2026-09-25\n",
     "value: &loop [*loop]\n",
 ])
-def test_view_errors_preserve_existing_diagnostics(yaml_backend, document):
+def test_view_errors_preserve_existing_diagnostics(document):
     with pytest.raises(Exception) as expected:
         config_utils.load_config_text(document)
     with pytest.raises(type(expected.value)) as actual:

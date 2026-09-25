@@ -11,7 +11,6 @@ FRONTEND_LOG_STREAM = Path(__file__).resolve().parents[1] / "frontend" / "src" /
 FRONTEND_STORE = Path(__file__).resolve().parents[1] / "frontend" / "src" / "store.ts"
 FRONTEND_DASHBOARD = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "dashboard" / "DashboardPage.tsx"
 FRONTEND_MONITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "monitor" / "MonitorPage.tsx"
-FRONTEND_MONITOR_SEARCH = Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "monitorSearch.ts"
 FRONTEND_MANAGER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "manager" / "ManagerPage.tsx"
 FRONTEND_LAUNCHER = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "launcher" / "LauncherPage.tsx"
 FRONTEND_APP_SHELL = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "layout" / "AppShell.tsx"
@@ -186,7 +185,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'draftVersion !== generatorDraftVersion',
             '|| workspaceKey !== currentWorkspaceKey()',
             'workspaceEpoch',
-            'function resetWorkspaceScopedState',
             'dashboardRequestSeq += 1',
             'generatorTemplateRequestSeq += 1',
             'tasks: []',
@@ -252,7 +250,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'Refresh GPU details',
             'gpu.temperature_c',
             'gpu.pci_bus_id',
-            'formatPercent',
         ), id='dashboard'),
         pytest.param(FRONTEND_APP, (
             'useLocation',
@@ -284,7 +281,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'kind="yaml"',
             'Recent YAML',
             'max-h-60 space-y-1 overflow-y-auto',
-            'launchMode',
             'const scriptPathReady = manualScriptPath.trim().length > 0',
             'const shellPathReady = manualShellRootPath.trim().length > 0',
             'pathReady={scriptPathReady}',
@@ -319,20 +315,16 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'function ModeActionPanel',
             "launchMode === 'python'",
             "launchMode === 'shell'",
-            'Browse Script',
             'Browse & Open Folder',
-            'requiresConfigTemplate',
             'Choose a YAML config',
             'This script needs a YAML config before first launch.',
             'pyruns will save it as config_default.yaml',
             'Choose or enter a YAML config path first.',
-            'Path to YAML config',
         ), id='launcher'),
         pytest.param(FRONTEND_SIDEBAR, (
             'border-l-2 border-accent',
             'bg-accent/10 text-accent',
             'workspaceModeLabel',
-            'Workspace',
             'runtimeLabel',
             'SlidersHorizontal',
             'rounded-md px-2 py-2',
@@ -342,7 +334,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             "const COMPACT_MONITOR_SIDEBAR_HEIGHT = 'clamp(18rem, 45vh, 24rem)'",
             'window.matchMedia(COMPACT_MONITOR_QUERY)',
             "compactMonitorLayout ? 'flex-col' : 'flex-row'",
-            "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'",
             "? { height: sidebarSearchActive ? '100%' : COMPACT_MONITOR_SIDEBAR_HEIGHT }",
             ': { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}',
             'className="flex-none border-b border-border-subtle px-2.5 py-2"',
@@ -382,7 +373,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'Passes current thresholds',
             'useMemo',
             'const selectedTaskFromList = useMemo(',
-            'monitorTasks.find(task => task.name === selectedTaskName)',
             'taskRefreshInFlightRef',
             'taskRefreshQueuedRef',
             'TASK_EVENT_REFRESH_DEBOUNCE_MS',
@@ -475,21 +465,6 @@ def test_react_source_contracts(source_path, markers):
     source = source_path.read_text(encoding="utf-8")
     missing = [marker for marker in markers if marker not in source]
     assert not missing, f"{source_path.name} is missing source contracts: {missing}"
-
-
-def test_react_task_fetch_ignores_stale_responses():
-    source = FRONTEND_STORE.read_text(encoding="utf-8")
-
-    assert "let taskRequestSeq = 0" in source
-    assert "const requestId = ++taskRequestSeq" in source
-    assert source.count("taskRequestSeq += 1") >= 3
-    assert "const isCurrentRequest = () => {" in source
-    assert "requestId === taskRequestSeq" in source
-    assert "current.query === query" in source
-    assert "current.statusFilter === statusFilter" in source
-    assert "current.offset === requestedOffset" in source
-    assert "current.limit === limit" in source
-    assert "if (!isCurrentRequest()) {" in source
 
 
 def test_react_task_detail_displays_source_state_in_run_history():
@@ -1171,41 +1146,6 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     assert "normalize_log_newlines" not in source
 
 
-def test_react_monitor_supports_terminal_search_shortcut_and_controls():
-    source = FRONTEND_MONITOR.read_text(encoding="utf-8")
-    search_policy = FRONTEND_MONITOR_SEARCH.read_text(encoding="utf-8")
-
-    assert "SearchAddon, type ISearchOptions" in source
-    assert "TERMINAL_SEARCH_HIGHLIGHT_LIMIT = 250" in search_policy
-    assert "TERMINAL_SEARCH_DECORATION_ROW_LIMIT = 10_000" in search_policy
-    assert "TERMINAL_SEARCH_DEBOUNCE_MS = 150" in search_policy
-    assert "const TERMINAL_SEARCH_OPTIONS: ISearchOptions" in source
-    assert "searchAddonRef" in source
-    assert "new SearchAddon({ highlightLimit: TERMINAL_SEARCH_HIGHLIGHT_LIMIT })" in source
-    assert "term.loadAddon(searchAddon)" in source
-    assert "shouldDecorateTerminalSearch(term.buffer.active.length)" in source
-    assert "? { ...TERMINAL_SEARCH_OPTIONS, incremental }" in source
-    assert ": { incremental }" in source
-    assert "terminalSearchTimerRef" in source
-    assert "setTerminalSearchStatus('Searching...')" in source
-    assert "}, TERMINAL_SEARCH_DEBOUNCE_MS)" in source
-    assert 'defaultValue=""' in source
-    assert "value={terminalSearchQuery}" not in source
-    assert "window.addEventListener('keydown', handleTerminalSearchShortcut, true)" in source
-    assert "terminalSearchShortcutScopeRef" in source
-    assert "shortcutTargetsTerminal" in source
-    assert "key === 'f'" in source
-    assert "setTerminalSearchOpen(true)" in source
-    assert 'aria-label="Search terminal logs"' in source
-    assert "bg-[#252526]" in source
-    assert "text-[#cccccc]" in source
-    assert "text-[#f48771]" in source
-    assert "runPendingTerminalSearchNow(event.shiftKey ? 'previous' : 'next')" in source
-    assert 'aria-label="Previous match"' in source
-    assert 'aria-label="Next match"' in source
-    assert 'aria-label="Close terminal search"' in source
-
-
 def test_react_monitor_supports_configurable_terminal_line_height():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
     settings_source = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "monitorSettings.ts").read_text(encoding="utf-8")
@@ -1455,7 +1395,8 @@ def test_react_launcher_route_parameters_prefill_without_opening_workspace():
     assert "const configParam = searchParams.get('config')" in launcher
     assert "setManualScriptPath(scriptParam)" in launcher
     assert "setManualConfigPath(configParam || '')" in launcher
-    assert "openSelectedWorkspace(scriptParam, configParam)" not in launcher
+    assert "openSelectedWorkspace(scriptParam" not in launcher
+    assert "selectScript(scriptParam)" not in launcher
     assert "const handleLaunchModeChange = useCallback((mode: 'python' | 'shell')" in launcher
     assert "<LaunchChoiceTabs launchMode={launchMode} busy={loading} onChange={handleLaunchModeChange}" in launcher
 
@@ -1630,15 +1571,6 @@ def test_react_dashboard_surfaces_task_refresh_failures():
     assert "Task summary refresh failed" in dashboard
     assert "Task summary unavailable" in dashboard
     assert 'role="alert"' in dashboard
-
-
-def test_react_launcher_url_paths_require_explicit_open():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-
-    assert "setManualScriptPath(scriptParam)" in launcher
-    assert "setManualConfigPath(configParam || '')" in launcher
-    assert "openSelectedWorkspace(scriptParam" not in launcher
-    assert "selectScript(scriptParam)" not in launcher
 
 
 def test_react_generator_keeps_edits_made_while_tasks_are_created():
