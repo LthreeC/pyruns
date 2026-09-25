@@ -43,6 +43,11 @@ import ToggleSwitch from '@/components/shared/ToggleSwitch'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
 import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
+import {
+  configPathId, configPathFromId, formatConfigPath, getConfigValue,
+  isConfigMap as isNestedGroup, updateConfigValue,
+  type ConfigKey, type ConfigMap, type ConfigPath,
+} from '@/utils/configPaths'
 
 const DEFAULT_SHELL_TEMPLATE = ''
 const GENERATOR_SETTINGS_WIDTH_STORAGE_KEY = 'pyruns.generatorSettingsWidth'
@@ -397,6 +402,7 @@ type ParamType = keyof typeof PARAM_TYPE_STYLES
 interface PinnedParamRow {
   name: string
   fullKey: string
+  path: ConfigPath
   value: any
   declaredType?: ParamType
   batchActive: boolean
@@ -404,6 +410,7 @@ interface PinnedParamRow {
 
 interface BatchTriggerDetail {
   key: string
+  label: string
   value: string
   kind: string
 }
@@ -411,13 +418,19 @@ interface BatchTriggerDetail {
 interface TreeSectionNode {
   name: string
   path: string
+  keys: ConfigPath
   depth: number
   childCount: number
   leafCount: number
 }
 
-function isNestedGroup(value: any) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function parseFormConfig(text: string): ConfigMap | null {
+  try {
+    const value: unknown = yamlParse(text, { mapAsMap: true })
+    return value == null ? new Map() : isNestedGroup(value) ? value : null
+  } catch {
+    return null
+  }
 }
 
 function inferParamType(value: any): ParamType {
@@ -436,64 +449,28 @@ function inferParamType(value: any): ParamType {
   return 'str'
 }
 
-function buildTypeMap(config: Record<string, any> | null, prefix = ''): Record<string, ParamType> {
+function buildTypeMap(config: ConfigMap | null, prefix: ConfigPath = []): Record<string, ParamType> {
   if (!config) {
     return {}
   }
 
   const result: Record<string, keyof typeof PARAM_TYPE_STYLES> = {}
-  for (const [key, value] of Object.entries(config)) {
-    if (key.startsWith('_meta')) {
+  for (const [key, value] of config) {
+    if (String(key).startsWith('_meta')) {
       continue
     }
-    const fullKey = prefix ? `${prefix}.${key}` : key
+    const path = [...prefix, key]
     if (isNestedGroup(value)) {
-      Object.assign(result, buildTypeMap(value, fullKey))
+      Object.assign(result, buildTypeMap(value, path))
       continue
     }
-    result[fullKey] = inferParamType(value)
+    result[configPathId(path)] = inferParamType(value)
   }
   return result
 }
 
-function getValueAtPath(data: Record<string, any>, fullKey: string) {
-  const parts = fullKey.split('.').filter(Boolean)
-  let current: any = data
-
-  for (const part of parts) {
-    if (!isNestedGroup(current) || !Object.prototype.hasOwnProperty.call(current, part)) {
-      return undefined
-    }
-    current = current[part]
-  }
-
-  return current
-}
-
-function updateValueAtPath(data: Record<string, any>, fullKey: string, value: any): Record<string, any> {
-  const parts = fullKey.split('.').filter(Boolean)
-  if (parts.length === 0) {
-    return data
-  }
-
-  const [head, ...tail] = parts
-  if (tail.length === 0) {
-    return { ...data, [head]: value }
-  }
-
-  const current = data[head]
-  if (!isNestedGroup(current)) {
-    return data
-  }
-
-  return {
-    ...data,
-    [head]: updateValueAtPath(current, tail.join('.'), value),
-  }
-}
-
 function collectPinnedRows(
-  data: Record<string, any>,
+  data: ConfigMap,
   pinnedParams: string[],
   declaredTypeMap: Record<string, ParamType>,
   batchParams: string[],
@@ -503,20 +480,21 @@ function collectPinnedRows(
   const batchSet = new Set(batchParams)
 
   for (const fullKey of pinnedParams) {
-    if (seen.has(fullKey) || fullKey.split('.').some(part => part.startsWith('_meta'))) {
+    const path = configPathFromId(fullKey)
+    if (!path?.length || seen.has(fullKey) || path.some(part => String(part).startsWith('_meta'))) {
       continue
     }
     seen.add(fullKey)
 
-    const value = getValueAtPath(data, fullKey)
+    const value = getConfigValue(data, path)
     if (value === undefined || isNestedGroup(value)) {
       continue
     }
 
-    const parts = fullKey.split('.')
     rows.push({
-      name: parts[parts.length - 1] || fullKey,
+      name: formatConfigPath(path.slice(-1)),
       fullKey,
+      path,
       value,
       declaredType: declaredTypeMap[fullKey],
       batchActive: batchSet.has(fullKey),
@@ -526,10 +504,10 @@ function collectPinnedRows(
   return rows
 }
 
-function countLeafParams(data: Record<string, any>): number {
+function countLeafParams(data: ConfigMap): number {
   let count = 0
-  for (const [key, value] of Object.entries(data)) {
-    if (key.startsWith('_meta')) {
+  for (const [key, value] of data) {
+    if (String(key).startsWith('_meta')) {
       continue
     }
     if (isNestedGroup(value)) {
@@ -541,47 +519,50 @@ function countLeafParams(data: Record<string, any>): number {
   return count
 }
 
-function collectTreeSections(data: Record<string, any>, prefix = '', depth = 0): TreeSectionNode[] {
+function collectTreeSections(data: ConfigMap, prefix: ConfigPath = [], depth = 0): TreeSectionNode[] {
   const sections: TreeSectionNode[] = []
-  for (const [key, value] of Object.entries(data)) {
-    if (key.startsWith('_meta') || !isNestedGroup(value)) {
+  for (const [key, value] of data) {
+    if (String(key).startsWith('_meta') || !isNestedGroup(value)) {
       continue
     }
-    const path = prefix ? `${prefix}.${key}` : key
-    const childEntries = Object.entries(value).filter(([childKey]) => !childKey.startsWith('_meta'))
+    const keys = [...prefix, key]
+    const childEntries = [...value.keys()].filter(childKey => !String(childKey).startsWith('_meta'))
     sections.push({
-      name: key,
-      path,
+      name: formatConfigPath([key]),
+      path: configPathId(keys),
+      keys,
       depth,
       childCount: childEntries.length,
       leafCount: countLeafParams(value),
     })
-    sections.push(...collectTreeSections(value, path, depth + 1))
+    sections.push(...collectTreeSections(value, keys, depth + 1))
   }
   return sections
 }
 
 function collectParamRows(
-  data: Record<string, any>,
+  data: ConfigMap,
   declaredTypeMap: Record<string, ParamType>,
   batchParams: string[],
-  prefix = '',
+  prefix: ConfigPath = [],
   batchSet = new Set(batchParams),
 ) {
   const rows: PinnedParamRow[] = []
 
-  for (const [key, value] of Object.entries(data)) {
-    if (key.startsWith('_meta')) {
+  for (const [key, value] of data) {
+    if (String(key).startsWith('_meta')) {
       continue
     }
-    const fullKey = prefix ? `${prefix}.${key}` : key
+    const path = [...prefix, key]
+    const fullKey = configPathId(path)
     if (isNestedGroup(value)) {
-      rows.push(...collectParamRows(value, declaredTypeMap, batchParams, fullKey, batchSet))
+      rows.push(...collectParamRows(value, declaredTypeMap, batchParams, path, batchSet))
       continue
     }
     rows.push({
-      name: key,
+      name: formatConfigPath([key]),
       fullKey,
+      path,
       value,
       declaredType: declaredTypeMap[fullKey],
       batchActive: batchSet.has(fullKey),
@@ -896,11 +877,7 @@ export default function GeneratorPage() {
       return null
     }
 
-    try {
-      return (yamlParse(yamlText) as Record<string, any>) || {}
-    } catch {
-      return null
-    }
+    return parseFormConfig(yamlText)
   }, [editorMode, yamlText])
 
   const batchTriggerDetails = useMemo(() => {
@@ -909,22 +886,23 @@ export default function GeneratorPage() {
     }
 
     const result: BatchTriggerDetail[] = []
-    const walk = (obj: Record<string, any>, prefix = '') => {
-      for (const [key, value] of Object.entries(obj)) {
-        const fullKey = prefix ? `${prefix}.${key}` : key
+    const walk = (obj: ConfigMap, prefix: ConfigPath = []) => {
+      for (const [key, value] of obj) {
+        const path = [...prefix, key]
         if (
           typeof value === 'string'
           && (value.includes('|') || /^\s*-?\d+\s*:\s*-?\d+(?:\s*:\s*-?\d+)?\s*$/.test(value.trim()))
         ) {
           result.push({
-            key: fullKey,
+            key: configPathId(path),
+            label: formatConfigPath(path),
             value,
             kind: getBatchTriggerKind(value),
           })
           continue
         }
-        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-          walk(value, fullKey)
+        if (isNestedGroup(value)) {
+          walk(value, path)
         }
       }
     }
@@ -934,11 +912,11 @@ export default function GeneratorPage() {
   }, [parsedConfig])
   const batchParams = useMemo(() => batchTriggerDetails.map(item => item.key), [batchTriggerDetails])
   const declaredTypeMap = useMemo(
-    () => buildTypeMap(templateContent?.parsed_config || parsedConfig),
-    [parsedConfig, templateContent?.parsed_config]
+    () => buildTypeMap(templateContent ? parseFormConfig(templateContent.content) : parsedConfig),
+    [parsedConfig, templateContent]
   )
 
-  const hasBatchSyntax = editorMode === 'form' && hasBatchExpression(yamlText)
+  const hasBatchSyntax = editorMode === 'form' && batchParams.length > 0
   const yamlContainsBatchSyntax = editorMode === 'yaml' && hasBatchExpression(yamlText)
   const batchHintText = previewData?.count
     ? `Batch syntax detected. ${previewData.count} tasks will be created after confirmation.`
@@ -1359,13 +1337,13 @@ export default function GeneratorPage() {
                 {batchParams.length} batch-sensitive field{batchParams.length > 1 ? 's' : ''}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {batchParams.map(param => (
+                {batchTriggerDetails.map(param => (
                   <span
-                    key={param}
+                    key={param.key}
                     className="rounded-md border border-accent/20 bg-accent/8 px-1.5 py-0.5 font-mono text-2xs text-accent"
-                    title={param}
+                    title={param.label}
                   >
-                    {param}
+                    {param.label}
                   </span>
                 ))}
               </div>
@@ -1589,7 +1567,7 @@ function BatchPreviewContent({
               >
                 <div className="flex items-center gap-2">
                   <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-txt-primary">
-                    {item.key}
+                    {item.label}
                   </span>
                   <span className="flex-none rounded-md bg-accent/8 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-accent">
                     {formatBatchKind(item.kind)}
@@ -1771,7 +1749,7 @@ function FormEditor({
   onSetAllSections,
   onChange,
 }: {
-  config: Record<string, any> | null
+  config: ConfigMap | null
   columns: number
   layoutMode: FormLayoutMode
   openSignalValue: boolean
@@ -1781,9 +1759,9 @@ function FormEditor({
   batchParams: string[]
   onTogglePin: (key: string) => void
   onSetAllSections: (open: boolean) => void
-  onChange: (data: Record<string, any>) => void
+  onChange: (data: ConfigMap) => void
 }) {
-  const [data, setData] = useState<Record<string, any>>(config || {})
+  const [data, setData] = useState<ConfigMap>(config || new Map())
   const pinnedRows = useMemo(
     () => collectPinnedRows(data, pinnedParams, declaredTypeMap, batchParams),
     [batchParams, data, declaredTypeMap, pinnedParams]
@@ -1796,21 +1774,23 @@ function FormEditor({
     }
   }, [config])
 
-  if (!config || Object.keys(config).length === 0) {
+  if (!config || config.size === 0) {
     return <EmptyState title="No parameters" description="Load a template to edit parameters" />
   }
 
-  const allKeys = Object.keys(data).filter(key => !key.startsWith('_meta'))
-  const hasNestedSections = allKeys.some(key => isNestedGroup(data[key]))
+  const allKeys = [...data.keys()].filter(key => !String(key).startsWith('_meta'))
+  const hasNestedSections = allKeys.some(key => isNestedGroup(data.get(key)))
 
-  const handleChange = (key: string, value: any) => {
-    const next = { ...data, [key]: value }
+  const handleChange = (key: ConfigKey, value: any) => {
+    const next = new Map(data).set(key, value)
     setData(next)
     onChange(next)
   }
 
   const handlePinnedChange = (fullKey: string, value: any) => {
-    const next = updateValueAtPath(data, fullKey, value)
+    const path = configPathFromId(fullKey)
+    if (!path) return
+    const next = updateConfigValue(data, path, value)
     setData(next)
     onChange(next)
   }
@@ -1834,7 +1814,7 @@ function FormEditor({
     )
   }
 
-  const visibleKeys = allKeys.filter(key => !key.startsWith('_meta') && !pinnedRowKeys.has(key))
+  const visibleKeys = allKeys.filter(key => !String(key).startsWith('_meta') && !pinnedRowKeys.has(configPathId([key])))
   const gridStyle = buildColumnGridStyle(columns)
   const contentStyle = gridStyle
   const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'
@@ -1867,12 +1847,12 @@ function FormEditor({
         style={contentStyle}
       >
         {visibleKeys.map(key => {
-          const value = data[key]
+          const value = data.get(key)
           if (isNestedGroup(value)) {
             return (
-              <div key={key} className={childSectionClassName}>
+              <div key={configPathId([key])} className={childSectionClassName}>
                 <NestedSection
-                  name={key}
+                  name={formatConfigPath([key])}
                   data={value}
                   depth={0}
                   columns={columns}
@@ -1883,7 +1863,7 @@ function FormEditor({
                   pinnedParams={pinnedParams}
                   pinnedRowKeys={pinnedRowKeys}
                   batchParams={batchParams}
-                  prefix={key}
+                  prefix={[key]}
                   onTogglePin={onTogglePin}
                   onChange={next => handleChange(key, next)}
                 />
@@ -1892,15 +1872,15 @@ function FormEditor({
           }
           return (
             <ParamRow
-              key={key}
-              name={key}
+              key={configPathId([key])}
+              name={formatConfigPath([key])}
               value={value}
-              declaredType={declaredTypeMap[key]}
+              declaredType={declaredTypeMap[configPathId([key])]}
               layoutMode={layoutMode}
-              pinned={pinnedParams.includes(key)}
-              batchActive={batchParams.includes(key)}
+              pinned={pinnedParams.includes(configPathId([key]))}
+              batchActive={batchParams.includes(configPathId([key]))}
               onChange={next => handleChange(key, next)}
-              onTogglePin={() => onTogglePin(key)}
+              onTogglePin={() => onTogglePin(configPathId([key]))}
             />
           )
         })}
@@ -1923,7 +1903,7 @@ function TreeParameterExplorer({
   onChangeRoot,
   onChangePath,
 }: {
-  data: Record<string, any>
+  data: ConfigMap
   openSignalValue: boolean
   openSignalVersion: number
   declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
@@ -1933,7 +1913,7 @@ function TreeParameterExplorer({
   batchParams: string[]
   onTogglePin: (key: string) => void
   onSetAllSections: (open: boolean) => void
-  onChangeRoot: (key: string, value: any) => void
+  onChangeRoot: (key: ConfigKey, value: any) => void
   onChangePath: (fullKey: string, value: any) => void
 }) {
   const [selectedPath, setSelectedPath] = useState('')
@@ -1945,11 +1925,12 @@ function TreeParameterExplorer({
   const pendingOutlineWidthRef = useRef(outlineWidth)
   const outlineResizeFrameRef = useRef<number | null>(null)
   const outlineSections = useMemo(() => {
-    const rootEntries = Object.keys(data).filter(key => !key.startsWith('_meta'))
+    const rootEntries = [...data.keys()].filter(key => !String(key).startsWith('_meta'))
     return [
       {
         name: 'All parameters',
         path: '',
+        keys: [],
         depth: -1,
         childCount: rootEntries.length,
         leafCount: countLeafParams(data),
@@ -1964,15 +1945,15 @@ function TreeParameterExplorer({
       return [] as PinnedParamRow[]
     }
     return collectParamRows(data, declaredTypeMap, batchParams).filter(row => {
-      const pathText = row.fullKey.toLowerCase()
+      const pathText = formatConfigPath(row.path).toLowerCase()
       const valueText = stringifyEditable(row.value).toLowerCase()
       return pathText.includes(query) || valueText.includes(query)
     })
   }, [batchParams, data, declaredTypeMap, query])
   const selectedSection = outlineSections.find(section => section.path === selectedPath) || outlineSections[0]
-  const selectedValue = selectedPath ? getValueAtPath(data, selectedPath) : data
+  const selectedValue = getConfigValue(data, selectedSection.keys)
   const selectedData = isNestedGroup(selectedValue) ? selectedValue : data
-  const selectedCrumbs = selectedPath ? selectedPath.split('.') : ['config']
+  const selectedCrumbs = selectedPath ? selectedSection.keys.map(key => formatConfigPath([key])) : ['config']
 
   useEffect(() => {
     const query = window.matchMedia('(max-width: 700px)')
@@ -2102,7 +2083,7 @@ function TreeParameterExplorer({
                     setFilterText('')
                     setSelectedPath(section.path)
                   }}
-                  title={section.path || 'All parameters'}
+                  title={formatConfigPath(section.keys) || 'All parameters'}
                   className={clsx(
                     'flex w-full min-w-0 items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs transition-colors',
                     active
@@ -2206,14 +2187,14 @@ function TreeParameterExplorer({
               pinnedParams={pinnedParams}
               pinnedRowKeys={pinnedRowKeys}
               batchParams={batchParams}
-              prefix={selectedPath}
+              prefix={selectedSection.keys}
               onTogglePin={onTogglePin}
               onChange={next => onChangePath(selectedPath, next)}
             />
           ) : (
             <div className="space-y-4">
-              {Object.entries(data).filter(([key, value]) => (
-                !key.startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(key)
+              {[...data].filter(([key, value]) => (
+                !String(key).startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(configPathId([key]))
               )).length > 0 && (
                 <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface-raised/40 p-3 shadow-sm">
                   <div className="flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
@@ -2221,19 +2202,19 @@ function TreeParameterExplorer({
                     <span>Global Parameters</span>
                   </div>
                   <div className="space-y-1.5">
-                    {Object.entries(data).filter(([key, value]) => (
-                      !key.startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(key)
+                    {[...data].filter(([key, value]) => (
+                      !String(key).startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(configPathId([key]))
                     )).map(([key, value]) => (
                       <ParamRow
-                        key={key}
-                        name={key}
+                        key={configPathId([key])}
+                        name={formatConfigPath([key])}
                         value={value}
-                        declaredType={declaredTypeMap[key]}
+                        declaredType={declaredTypeMap[configPathId([key])]}
                         layoutMode="tree"
-                        pinned={pinnedParams.includes(key)}
-                        batchActive={batchParams.includes(key)}
+                        pinned={pinnedParams.includes(configPathId([key]))}
+                        batchActive={batchParams.includes(configPathId([key]))}
                         onChange={next => onChangeRoot(key, next)}
-                        onTogglePin={() => onTogglePin(key)}
+                        onTogglePin={() => onTogglePin(configPathId([key]))}
                       />
                     ))}
                   </div>
@@ -2241,7 +2222,8 @@ function TreeParameterExplorer({
               )}
 
               {outlineSections.filter(section => section.path && section.depth === 0).map(section => {
-                const sectionData = getValueAtPath(data, section.path)
+                const sectionData = getConfigValue(data, section.keys)
+                if (!isNestedGroup(sectionData)) return null
                 return (
                   <NestedSection
                     key={section.path}
@@ -2256,7 +2238,7 @@ function TreeParameterExplorer({
                     pinnedParams={pinnedParams}
                     pinnedRowKeys={pinnedRowKeys}
                     batchParams={batchParams}
-                    prefix={section.path}
+                    prefix={section.keys}
                     onTogglePin={onTogglePin}
                     onChange={next => onChangePath(section.path, next)}
                   />
@@ -2281,18 +2263,18 @@ function RootSectionOverview({
   onChangeRoot,
   onSelectPath,
 }: {
-  data: Record<string, any>
+  data: ConfigMap
   sections: TreeSectionNode[]
   declaredTypeMap: Record<string, keyof typeof PARAM_TYPE_STYLES>
   pinnedParams: string[]
   pinnedRowKeys: Set<string>
   batchParams: string[]
   onTogglePin: (key: string) => void
-  onChangeRoot: (key: string, value: any) => void
+  onChangeRoot: (key: ConfigKey, value: any) => void
   onSelectPath: (path: string) => void
 }) {
-  const scalarEntries = Object.entries(data).filter(([key, value]) => (
-    !key.startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(key)
+  const scalarEntries = [...data].filter(([key, value]) => (
+    !String(key).startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(configPathId([key]))
   ))
 
   return (
@@ -2301,15 +2283,15 @@ function RootSectionOverview({
         <div className="grid gap-2" style={buildColumnGridStyle(1)}>
           {scalarEntries.map(([key, value]) => (
             <ParamRow
-              key={key}
-              name={key}
+              key={configPathId([key])}
+              name={formatConfigPath([key])}
               value={value}
-              declaredType={declaredTypeMap[key]}
+              declaredType={declaredTypeMap[configPathId([key])]}
               layoutMode="tree"
-              pinned={pinnedParams.includes(key)}
-              batchActive={batchParams.includes(key)}
+              pinned={pinnedParams.includes(configPathId([key]))}
+              batchActive={batchParams.includes(configPathId([key]))}
               onChange={next => onChangeRoot(key, next)}
-              onTogglePin={() => onTogglePin(key)}
+              onTogglePin={() => onTogglePin(configPathId([key]))}
             />
           ))}
         </div>
@@ -2338,8 +2320,8 @@ function RootSectionOverview({
                     {section.leafCount}
                   </span>
                 </div>
-                <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary" title={section.path}>
-                  {section.path}
+                <div className="mt-1 truncate font-mono text-2xs text-txt-tertiary" title={formatConfigPath(section.keys)}>
+                  {formatConfigPath(section.keys)}
                 </div>
               </button>
             ))}
@@ -2373,8 +2355,8 @@ function SearchResultRows({
     <div className="space-y-2">
       {rows.map(row => (
         <div key={row.fullKey} className="rounded-md border border-border bg-surface-raised p-1.5 shadow-sm">
-          <div className="mb-1 truncate px-1 font-mono text-2xs text-txt-tertiary" title={row.fullKey}>
-            {row.fullKey}
+          <div className="mb-1 truncate px-1 font-mono text-2xs text-txt-tertiary" title={formatConfigPath(row.path)}>
+            {formatConfigPath(row.path)}
           </div>
           <ParamRow
             name={row.name}
@@ -2425,7 +2407,7 @@ function PinnedParameters({
         {rows.map(row => (
           <ParamRow
             key={row.fullKey}
-            name={row.fullKey}
+            name={formatConfigPath(row.path)}
             value={row.value}
             declaredType={row.declaredType}
             layoutMode={layoutMode}
@@ -2457,7 +2439,7 @@ function NestedSection({
   onChange,
 }: {
   name: string
-  data: Record<string, any>
+  data: ConfigMap
   depth: number
   columns: number
   layoutMode: FormLayoutMode
@@ -2467,12 +2449,12 @@ function NestedSection({
   pinnedParams: string[]
   pinnedRowKeys: Set<string>
   batchParams: string[]
-  prefix: string
+  prefix: ConfigPath
   onTogglePin: (key: string) => void
-  onChange: (data: Record<string, any>) => void
+  onChange: (data: ConfigMap) => void
 }) {
   const [open, setOpen] = useState(true)
-  const visibleEntries = Object.entries(data).filter(([key]) => !key.startsWith('_meta'))
+  const visibleEntries = [...data].filter(([key]) => !String(key).startsWith('_meta'))
   const treeSection = layoutMode === 'tree'
   const treeConnector = treeSection && depth > 0
   const effectiveColumns = Math.max(1, columns)
@@ -2485,8 +2467,8 @@ function NestedSection({
     setOpen(openSignalValue)
   }, [openSignalValue, openSignalVersion])
 
-  const handleChange = (key: string, value: any) => {
-    onChange({ ...data, [key]: value })
+  const handleChange = (key: ConfigKey, value: any) => {
+    onChange(new Map(data).set(key, value))
   }
 
   return (
@@ -2519,7 +2501,7 @@ function NestedSection({
           !treeSection && depth === 0 && open && 'border-b border-border bg-surface-overlay/55',
           !treeSection && depth > 0 && 'rounded-md bg-surface-base',
         )}
-        title={`${prefix} (${Object.keys(data).length} fields)`}
+        title={`${formatConfigPath(prefix)} (${data.size} fields)`}
       >
         {treeConnector && (
           <span className="absolute left-0 top-1/2 w-2 border-t border-dashed border-border-strong/60" />
@@ -2528,7 +2510,7 @@ function NestedSection({
         <span className="truncate text-sm font-semibold text-txt-primary group-hover:text-accent transition-colors" title={name}>{name}</span>
         {depth > 0 && (
           <span className="min-w-0 truncate font-mono text-2xs text-txt-tertiary">
-            {prefix}
+            {formatConfigPath(prefix)}
           </span>
         )}
         <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs font-medium text-txt-secondary">
@@ -2542,12 +2524,13 @@ function NestedSection({
             style={contentStyle}
           >
             {visibleEntries.map(([key, value]) => {
-              const fullKey = `${prefix}.${key}`
+              const path = [...prefix, key]
+              const fullKey = configPathId(path)
               if (isNestedGroup(value)) {
                 return (
-                  <div key={key} className={childSectionClassName}>
+                  <div key={configPathId([key])} className={childSectionClassName}>
                     <NestedSection
-                      name={key}
+                      name={formatConfigPath([key])}
                       data={value}
                       depth={depth + 1}
                       columns={columns}
@@ -2558,7 +2541,7 @@ function NestedSection({
                       pinnedParams={pinnedParams}
                       pinnedRowKeys={pinnedRowKeys}
                       batchParams={batchParams}
-                      prefix={fullKey}
+                      prefix={path}
                       onTogglePin={onTogglePin}
                       onChange={next => handleChange(key, next)}
                     />
@@ -2570,8 +2553,8 @@ function NestedSection({
               }
               return (
                 <ParamRow
-                  key={key}
-                  name={key}
+                  key={configPathId([key])}
+                  name={formatConfigPath([key])}
                   value={value}
                   declaredType={declaredTypeMap[fullKey]}
                   layoutMode={layoutMode}
@@ -2648,15 +2631,15 @@ function ParamRow({
       onChange(originalType === 'int' ? Math.round(Number(next)) : Number(next))
       return
     }
-    if (originalType === 'list' && !hasBatch) {
+    if (originalType === 'list') {
       try {
-        const parsed = JSON.parse(localValue)
+        const parsed = yamlParse(localValue, { mapAsMap: true })
         if (Array.isArray(parsed)) {
           onChange(parsed)
           return
         }
       } catch {
-        // Fall back to string if the edited value is not valid JSON.
+        // Fall back to string if the edited value is not a valid YAML list.
       }
     }
     if (originalType === 'null' && !hasBatch && next === '') {
@@ -2859,7 +2842,7 @@ function ParamRow({
 function stringifyEditable(value: any) {
   if (Array.isArray(value)) {
     try {
-      return JSON.stringify(value)
+      return yamlStringify(value, { collectionStyle: 'flow', lineWidth: 0 }).trim()
     } catch {
       return String(value)
     }

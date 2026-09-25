@@ -16,6 +16,7 @@ import type {
 } from './types'
 import * as api from './api'
 import { resolveMonitorScrollback } from './utils/monitorSettings'
+import { configPathId } from './utils/configPaths'
 
 let taskRequestSeq = 0
 let monitorTaskRequestSeq = 0
@@ -36,7 +37,7 @@ const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
-const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params'
+const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
 const MONITOR_TASK_PAGE_SIZE = 200
 const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
 const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
@@ -970,7 +971,9 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   namePrefix: 'task',
   appendTimestamp: true,
   columns: readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8),
-  pinnedParams: readStoredStringArray(PINNED_PARAMS_STORAGE_KEY),
+  pinnedParams: readLocalStorage(PINNED_PARAMS_STORAGE_KEY) !== null
+    ? readStoredStringArray(PINNED_PARAMS_STORAGE_KEY)
+    : readStoredStringArray('pyruns_pinned_params').map(key => configPathId(key.split('.').filter(Boolean))),
   dirty: false,
   loading: false,
   async fetchTemplates() {
