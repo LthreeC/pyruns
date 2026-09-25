@@ -51,6 +51,26 @@ WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
 WEB_RUNTIME = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "runtime.py"
 
 
+@pytest.fixture
+def log_stream_idle(monkeypatch):
+    """Signal after the log tailer has applied a read and waits for more work."""
+    import asyncio
+    from pyruns.web import app as app_mod
+
+    idle = threading.Event()
+    original_wait = asyncio.wait_for
+
+    async def wait_for(awaitable, timeout):
+        task = asyncio.current_task()
+        if (timeout == app_mod.LOG_STREAM_TAIL_INTERVAL_SEC
+                and task.get_coro().__name__ == "tail_log_file"):
+            asyncio.get_running_loop().call_soon(idle.set)
+        return await original_wait(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", wait_for)
+    return idle
+
+
 class _TestClientScope:
     """Normalize the client address omitted by older Starlette TestClients."""
 
@@ -956,6 +976,157 @@ def test_task_event_websocket_ignores_close_after_client_disconnect(tmp_path):
                 assert websocket.receive_json()["type"] == "ready"
         assert runtime.task_manager.has_reactive_watchers() is False
     finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("operation", ["acquire", "check", "release", "abandon_acquire"])
+def test_task_event_websocket_slow_context_does_not_block_http(tmp_path, monkeypatch, operation):
+    from concurrent.futures import ThreadPoolExecutor
+
+    runtime = _build_runtime(_make_workspace(tmp_path, "events"))
+    entered, release, close = (threading.Event() for _ in range(3))
+    method = {
+        "acquire": "get_task_event_stream_context",
+        "abandon_acquire": "get_task_event_stream_context",
+        "check": "workspace_stream_is_current",
+        "release": "release_task_event_stream_context",
+    }[operation]
+    original = getattr(runtime, method)
+    released = []
+    cleanup_done = threading.Event()
+
+    def slow_context(*args, **kwargs):
+        context = original(*args, **kwargs) if operation == "abandon_acquire" else None
+        entered.set()
+        assert release.wait(10)
+        return context if operation == "abandon_acquire" else original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, method, slow_context)
+    original_release = runtime.release_task_event_stream_context
+
+    def release_context(*args):
+        released.append(args)
+        original_release(*args)
+        cleanup_done.set()
+
+    monkeypatch.setattr(runtime, "release_task_event_stream_context", release_context)
+    with TestClient(create_app(runtime)) as client:
+        def subscribe():
+            with client.websocket_connect("/api/tasks/events") as websocket:
+                if operation == "abandon_acquire":
+                    return  # Disconnect before the background lookup returns.
+                assert websocket.receive_json()["type"] == "ready"
+                if operation == "check":
+                    runtime.task_manager.trigger_update()
+                    assert websocket.receive_json()["type"] == "changed"
+                if operation != "release":
+                    assert close.wait(10)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            subscribed = workers.submit(subscribe)
+            try:
+                assert entered.wait(5)
+                response = workers.submit(client.get, "/api/system/info").result(timeout=2)
+                assert response.status_code == 200
+                assert not release.is_set()
+            finally:
+                release.set()
+                close.set()
+            subscribed.result(timeout=5)
+        # Older Starlette clients return from close before the ASGI handler
+        # finishes; observe resource release instead of the client thread.
+        assert cleanup_done.wait(5)
+        assert not runtime.task_manager.has_reactive_watchers()
+        assert len(released) == 1
+
+
+@pytest.mark.parametrize("cancel_at", ["acquire", "acquire_switch", "send", "release"])
+def test_task_event_websocket_cancellation_releases_watch_once(tmp_path, monkeypatch, cancel_at):
+    import asyncio
+
+    runtime = _build_runtime(_make_workspace(tmp_path, "events"))
+    other_workspace = _make_workspace(tmp_path, "other")
+    manager = runtime.task_manager
+    initial_observers = tuple(manager._observers)
+    app = create_app(runtime)
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/tasks/events")
+    entered, release = threading.Event(), threading.Event()
+    release_calls = []
+    original_acquire = runtime.get_task_event_stream_context
+    original_release = runtime.release_task_event_stream_context
+
+    def acquire():
+        context = original_acquire()
+        if cancel_at.startswith("acquire"):
+            entered.set()
+            assert release.wait(10)
+        return context
+
+    def release_context(*args):
+        if cancel_at == "release":
+            entered.set()
+            assert release.wait(10)
+        release_calls.append(args)
+        original_release(*args)
+
+    monkeypatch.setattr(runtime, "get_task_event_stream_context", acquire)
+    monkeypatch.setattr(runtime, "release_task_event_stream_context", release_context)
+
+    async def exercise():
+        ready = asyncio.Event()
+        disconnect = asyncio.Event()
+        scope = {"type": "websocket", "path": "/api/tasks/events", "headers": [(b"host", b"testserver")],
+                 "client": ("testclient", 50000), "server": ("testserver", 80), "scheme": "ws"}
+        connected = False
+
+        async def receive():
+            nonlocal connected
+            if not connected:
+                connected = True
+                return {"type": "websocket.connect"}
+            await disconnect.wait()
+            return {"type": "websocket.disconnect", "code": 1000}
+
+        async def send(message):
+            if message["type"] == "websocket.send":
+                ready.set()
+                if cancel_at == "send":
+                    await asyncio.Event().wait()
+
+        handler = asyncio.create_task(endpoint(WebSocket(scope, receive, send)))
+        try:
+            if cancel_at.startswith("acquire"):
+                assert await asyncio.to_thread(entered.wait, 5)
+                if cancel_at == "acquire_switch":
+                    await asyncio.to_thread(runtime.change_run_root, str(other_workspace))
+            else:
+                await asyncio.wait_for(ready.wait(), timeout=5)
+                if cancel_at == "release":
+                    disconnect.set()
+                    assert await asyncio.to_thread(entered.wait, 5)
+            handler.cancel()
+            await asyncio.sleep(0)
+            handler.cancel()
+        finally:
+            release.set()
+            disconnect.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(handler, timeout=5)
+        assert len(release_calls) == 1
+        assert release_calls[0][1] is manager
+        assert not manager.has_reactive_watchers()
+        if cancel_at == "acquire_switch":
+            assert manager not in runtime._task_managers.values()
+            assert manager._shutdown_event.is_set()
+            assert not manager._observers
+        else:
+            assert tuple(manager._observers) == initial_observers
+        assert not [task for task in asyncio.all_tasks() if task is not asyncio.current_task() and not task.done()]
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
         runtime.shutdown()
 
 
@@ -6007,10 +6178,8 @@ def test_logs_websocket_replay_waits_for_full_send_queue(tmp_path):
     assert fourth["offset"] == log_file.stat().st_size
 
 
-def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
+def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path, log_stream_idle):
     import asyncio
-
-    from pyruns.utils.log_io import log_file_identity
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -6019,13 +6188,9 @@ def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
     log_file.write_text("", encoding="utf-8")
     client = TestClient(create_app(_build_runtime(workspace)))
     original_send_json = WebSocket.send_json
-    idle = threading.Event()
+    idle = log_stream_idle
     send_started = threading.Event()
     release_send = threading.Event()
-
-    def mark_idle(path):
-        asyncio.get_running_loop().call_soon(idle.set)
-        return log_file_identity(path)
 
     async def blocked_send(self, data, mode="text"):
         if data.get("content") == "A" and not send_started.is_set():
@@ -6036,7 +6201,6 @@ def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
     with (
         patch.object(WebSocket, "send_json", blocked_send),
         patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
-        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
         patch("pyruns.web.app.LOG_STREAM_QUEUE_LIMIT", 2),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 10.0),
     ):
@@ -6073,11 +6237,7 @@ def test_logs_websocket_replays_live_chunks_when_send_queue_fills(tmp_path):
 @pytest.mark.parametrize("during_initial_read", [False, True], ids=["ready", "initial-read"])
 @pytest.mark.parametrize("oversized", [False, True], ids=["burst", "oversized"])
 @pytest.mark.parametrize("resume", [False, True], ids=["live", "resume"])
-def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read, oversized, resume):
-    import asyncio
-
-    from pyruns.utils.log_io import log_file_identity
-
+def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read, oversized, resume, log_stream_idle):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     task_dir = workspace / TASKS_DIR / "alpha"
@@ -6089,7 +6249,7 @@ def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read
     original_send = WebSocket.send_json
     initial_read = threading.Event()
     release_initial = threading.Event()
-    idle = threading.Event()
+    idle = log_stream_idle
     loop_blocked = threading.Event()
     release_loop = threading.Event()
     sent_all = threading.Event()
@@ -6103,10 +6263,6 @@ def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read
             initial_read.set()
             assert release_initial.wait(3)
         return original_get_logs(*args, **kwargs)
-
-    def mark_idle(path):
-        asyncio.get_running_loop().call_soon(idle.set)
-        return log_file_identity(path)
 
     def block_loop():
         loop_blocked.set()
@@ -6122,7 +6278,6 @@ def test_logs_websocket_recovers_dispatch_overflow(tmp_path, during_initial_read
         patch.object(runtime, "get_task_logs", side_effect=get_logs),
         patch.object(WebSocket, "send_json", send_json),
         patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
-        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
         patch("pyruns.web.app.LOG_STREAM_QUEUE_LIMIT", 2),
         patch("pyruns.web.app.LOG_STREAM_PENDING_CHARS", 8),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
@@ -6321,11 +6476,7 @@ def test_logs_websocket_replays_gap_during_initial_selection(tmp_path):
         ("Xa\nb\n", "a\r\nb\r\n"),
     ],
 )
-def test_logs_websocket_replays_file_gap_before_emitter_chunk(tmp_path, file_suffix, emitter_text):
-    import asyncio
-
-    from pyruns.utils.log_io import log_file_identity
-
+def test_logs_websocket_replays_file_gap_before_emitter_chunk(tmp_path, file_suffix, emitter_text, log_stream_idle):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     task_dir = workspace / TASKS_DIR / "alpha"
@@ -6333,16 +6484,9 @@ def test_logs_websocket_replays_file_gap_before_emitter_chunk(tmp_path, file_suf
     log_file.write_text("base\n", encoding="utf-8")
     offset = log_file.stat().st_size
     client = TestClient(create_app(_build_runtime(workspace)))
-    idle = threading.Event()
+    idle = log_stream_idle
 
-    def mark_idle(path):
-        asyncio.get_running_loop().call_soon(idle.set)
-        return log_file_identity(path)
-
-    with (
-        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
-        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
-    ):
+    with patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0):
         with client.websocket_connect(
             f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}"
         ) as websocket:
@@ -6360,11 +6504,7 @@ def test_logs_websocket_replays_file_gap_before_emitter_chunk(tmp_path, file_suf
     assert payload["offset"] == log_file.stat().st_size
 
 
-def test_logs_websocket_uses_written_byte_length_for_crlf_emitter(tmp_path):
-    import asyncio
-
-    from pyruns.utils.log_io import log_file_identity
-
+def test_logs_websocket_uses_written_byte_length_for_crlf_emitter(tmp_path, log_stream_idle):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     task_dir = workspace / TASKS_DIR / "alpha"
@@ -6373,15 +6513,10 @@ def test_logs_websocket_uses_written_byte_length_for_crlf_emitter(tmp_path):
     offset = log_file.stat().st_size
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
-    idle = threading.Event()
-
-    def mark_idle(path):
-        asyncio.get_running_loop().call_soon(idle.set)
-        return log_file_identity(path)
+    idle = log_stream_idle
 
     with (
         patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
-        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
     ):
         with client.websocket_connect(
@@ -6401,11 +6536,7 @@ def test_logs_websocket_uses_written_byte_length_for_crlf_emitter(tmp_path):
     assert payload["offset"] == log_file.stat().st_size
 
 
-def test_logs_websocket_ignores_emitter_for_another_run_log(tmp_path):
-    import asyncio
-
-    from pyruns.utils.log_io import log_file_identity
-
+def test_logs_websocket_ignores_emitter_for_another_run_log(tmp_path, log_stream_idle):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     task_dir = workspace / TASKS_DIR / "alpha"
@@ -6414,16 +6545,9 @@ def test_logs_websocket_ignores_emitter_for_another_run_log(tmp_path):
     other_log = task_dir / "run_logs" / "run2.log"
     offset = run_log.stat().st_size
     client = TestClient(create_app(_build_runtime(workspace)))
-    idle = threading.Event()
+    idle = log_stream_idle
 
-    def mark_idle(path):
-        asyncio.get_running_loop().call_soon(idle.set)
-        return log_file_identity(path)
-
-    with (
-        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
-        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
-    ):
+    with patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01):
         with client.websocket_connect(
             f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={offset}"
         ) as websocket:
@@ -6483,6 +6607,223 @@ def test_logs_websocket_initial_lookup_does_not_block_http(tmp_path, monkeypatch
     assert message["content"].replace("\r", "") == "first\nsecond\n"
     assert message["log_file_name"] == "run1.log"
     assert message["offset"] == (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").stat().st_size
+
+
+@pytest.mark.parametrize("operation", ["workspace", "path", "identity", "size", "queue_switch"])
+def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log_stream_idle, operation):
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+    from pyruns.web import app as app_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    queued = operation == "queue_switch"
+    _add_task(workspace, "alpha", status="queued" if queued else "completed", log_text="first\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    queue_log.write_text("waiting\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    entered = threading.Event()
+    release = threading.Event()
+    close = threading.Event()
+
+    if operation == "workspace":
+        owner, attribute = runtime, "workspace_stream_is_current"
+    elif operation == "identity":
+        owner, attribute = app_mod, "log_file_identity"
+    elif operation == "size":
+        local_path = SimpleNamespace(**vars(os.path))
+        monkeypatch.setattr(app_mod, "os", SimpleNamespace(**{**vars(os), "path": local_path}))
+        owner, attribute = local_path, "getsize"
+    else:
+        owner, attribute = app_mod, "validate_task_log_path"
+    original = getattr(owner, attribute)
+
+    def slow_operation(*args, **kwargs):
+        if not release.is_set():
+            entered.set()
+            assert release.wait(10), "test did not release log I/O"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, attribute, slow_operation)
+    monkeypatch.setattr(app_mod, "LOG_STREAM_TAIL_INTERVAL_SEC", 60 if queued else 0.01)
+    filename = "queue.log" if queued else "run1.log"
+    resume = "" if queued else "&offset=0"
+    sessions = []
+    with TestClient(create_app(runtime)) as client:
+        def receive_log():
+            with client.websocket_connect(
+                f"/api/tasks/alpha/logs/stream?log_file_name={filename}{resume}"
+            ) as websocket:
+                sessions.append(websocket)
+                message = websocket.receive_json()
+                assert close.wait(10)
+                return message
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            stream = workers.submit(receive_log)
+            responsive = False
+            try:
+                if queued:
+                    assert log_stream_idle.wait(5)
+                    run_log = task_dir / "run_logs" / "run1.log"
+                    run_log.write_text("run start\n", encoding="utf-8")
+                    log_emitter.emit("alpha", "run start\r\n", offset=run_log.stat().st_size,
+                                     log_file_name="run1.log", task_dir=str(task_dir))
+                assert entered.wait(5)
+                response = workers.submit(client.get, "/api/system/info").result(timeout=2)
+                assert response.status_code == 200
+                assert not release.is_set()
+                responsive = True
+            finally:
+                release.set()
+                close.set()
+                if not responsive and sessions:
+                    sessions[0].close()
+            message = stream.result(timeout=5)
+    assert message["type"] == "chunk"
+    if queued:
+        assert message["content"] == "run start\r\n"
+    else:
+        assert message["content"].replace("\r", "") == "first\n"
+    assert message["log_file_name"] == "run1.log"
+
+
+def test_logs_websocket_discards_poll_size_older_than_a_live_chunk(tmp_path, monkeypatch, log_stream_idle):
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+    from pyruns.web import app as app_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed", log_text="first\n")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    log = task_dir / "run_logs" / "run1.log"
+    runtime = _build_runtime(workspace)
+    entered, release, polled_again = (threading.Event() for _ in range(3))
+    armed = threading.Event()
+    local_path = SimpleNamespace(**vars(os.path))
+    monkeypatch.setattr(app_mod, "os", SimpleNamespace(**{**vars(os), "path": local_path}))
+    monkeypatch.setattr(app_mod, "LOG_STREAM_TAIL_INTERVAL_SEC", 0.01)
+
+    def stale_size(path):
+        size = os.path.getsize(path)
+        if not armed.is_set():
+            return size
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        else:
+            polled_again.set()
+        return size
+
+    monkeypatch.setattr(local_path, "getsize", stale_size)
+    with TestClient(create_app(runtime)) as client:
+        with client.websocket_connect(
+            f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={log.stat().st_size}"
+        ) as websocket, ThreadPoolExecutor(max_workers=1) as workers:
+            received = False
+            try:
+                assert log_stream_idle.wait(5)
+                armed.set()
+                assert entered.wait(5)
+                with log.open("a", encoding="utf-8", newline="") as handle:
+                    handle.write("live\n")
+                log_emitter.emit("alpha", "live\r\n", offset=log.stat().st_size,
+                                 log_file_name="run1.log", task_dir=str(task_dir))
+                first = workers.submit(websocket.receive_json).result(timeout=2)
+                assert first["type"] == "chunk" and first["content"] == "live\r\n"
+                received = True
+            finally:
+                release.set()
+                if not received:
+                    websocket.close()
+            assert polled_again.wait(5)
+            with log.open("a", encoding="utf-8", newline="") as handle:
+                handle.write("marker\n")
+            log_emitter.emit("alpha", "marker\r\n", offset=log.stat().st_size,
+                             log_file_name="run1.log", task_dir=str(task_dir))
+            second = workers.submit(websocket.receive_json).result(timeout=2)
+            assert second["type"] == "chunk" and second["content"] == "marker\r\n"
+            assert second["offset"] == log.stat().st_size
+
+
+@pytest.mark.parametrize("buffer_case", ["raw", "gap", "count_limit", "char_limit"])
+def test_logs_websocket_buffers_run_switch_with_bounded_disk_fallback(
+    tmp_path, monkeypatch, log_stream_idle, buffer_case,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from pyruns.web import app as app_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="queued")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    queue_log = task_dir / "run_logs" / "queue.log"
+    run_log = task_dir / "run_logs" / "run1.log"
+    queue_log.write_bytes(b"waiting\n")
+    prefix = "silent\n" if buffer_case == "gap" else ""
+    run_log.write_text(prefix, encoding="utf-8", newline="")
+    runtime = _build_runtime(workspace)
+    entered, release = threading.Event(), threading.Event()
+    original_validate = app_mod.validate_task_log_path
+
+    def blocked_validate(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "validate_task_log_path", blocked_validate)
+    monkeypatch.setattr(app_mod, "LOG_STREAM_TAIL_INTERVAL_SEC", 60)
+    if buffer_case == "count_limit":
+        monkeypatch.setattr(app_mod, "LOG_STREAM_QUEUE_LIMIT", 2)
+    if buffer_case == "char_limit":
+        monkeypatch.setattr(app_mod, "LOG_STREAM_PENDING_CHARS", 12)
+    chunks = [f"line{index}\r\n" for index in range(4)]
+    expected = prefix + "".join(chunks).replace("\r", "")
+
+    with TestClient(create_app(runtime)) as client:
+        with client.websocket_connect(
+            "/api/tasks/alpha/logs/stream?log_file_name=queue.log"
+        ) as websocket, ThreadPoolExecutor(max_workers=1) as workers:
+            try:
+                assert log_stream_idle.wait(5)
+                with queue_log.open("ab") as handle:
+                    handle.write(b"assigned\n")
+                for chunk in chunks:
+                    data = chunk.replace("\r", "").encode("utf-8")
+                    with run_log.open("ab") as handle:
+                        handle.write(data)
+                    log_emitter.emit("alpha", chunk, offset=run_log.stat().st_size,
+                                     byte_length=len(data), log_file_name="run1.log", task_dir=str(task_dir))
+                    assert entered.wait(5)
+                    # Let each callback finish so this exercises the switch
+                    # buffer, independently of the emitter's dispatch bound.
+                    assert client.get("/api/system/info").status_code == 200
+            finally:
+                release.set()
+
+            def receive_all():
+                messages = []
+                while True:
+                    message = websocket.receive_json()
+                    messages.append(message)
+                    if message.get("log_file_name") == "run1.log" and message.get("offset") == len(expected.encode()):
+                        return messages
+
+            receiving = workers.submit(receive_all)
+            try:
+                messages = receiving.result(timeout=5)
+            finally:
+                if not receiving.done():
+                    websocket.close()
+    assert messages[0]["log_file_name"] == "queue.log"
+    assert messages[0]["content"].replace("\r", "") == "assigned\n"
+    run_messages = messages[1:]
+    assert all(item["log_file_name"] == "run1.log" and item["type"] == "chunk" for item in run_messages)
+    assert "".join(item["content"] for item in run_messages).replace("\r", "") == expected
+    assert len({item["offset"] for item in run_messages}) == len(run_messages)
+    if buffer_case == "raw":
+        assert [item["content"] for item in run_messages] == chunks
+    elif buffer_case in {"count_limit", "char_limit"}:
+        assert [item["content"] for item in run_messages] == [expected]
 
 
 def test_logs_websocket_rejects_invalid_log_file_name(tmp_path):
@@ -6694,11 +7035,7 @@ def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
     assert payload["content"].replace("\r", "") == "running after queue\n"
 
 
-def test_logs_websocket_drains_queue_log_before_run_emitter(tmp_path):
-    import asyncio
-
-    from pyruns.utils.log_io import log_file_identity
-
+def test_logs_websocket_drains_queue_log_before_run_emitter(tmp_path, log_stream_idle):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="queued")
     task_dir = workspace / TASKS_DIR / "alpha"
@@ -6708,16 +7045,9 @@ def test_logs_websocket_drains_queue_log_before_run_emitter(tmp_path):
     offset = queue_log.stat().st_size
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
-    idle = threading.Event()
+    idle = log_stream_idle
 
-    def mark_idle(path):
-        asyncio.get_running_loop().call_soon(idle.set)
-        return log_file_identity(path)
-
-    with (
-        patch("pyruns.web.app.log_file_identity", side_effect=mark_idle),
-        patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0),
-    ):
+    with patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 1.0):
         with client.websocket_connect(
             f"/api/tasks/alpha/logs/stream?log_file_name=queue.log&offset={offset}"
         ) as websocket:

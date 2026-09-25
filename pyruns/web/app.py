@@ -14,10 +14,11 @@ import time
 import webbrowser
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Awaitable, Literal, TYPE_CHECKING, TypeVar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import uvicorn
+from anyio import CancelScope
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -66,6 +67,9 @@ from pyruns.web.session_recovery import (
 )
 from pyruns.utils import get_logger
 
+if TYPE_CHECKING:
+    from pyruns.core.task_manager import TaskManager
+
 logger = get_logger(__name__)
 
 LOG_STREAM_QUEUE_LIMIT = 256
@@ -96,6 +100,35 @@ LOG_STREAM_DROPPED_NOTICE = (
 )
 _LOCAL_WEB_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _ASGI_TEST_HOST = "testserver"
+_StreamWorkResult = TypeVar("_StreamWorkResult")
+
+
+async def _finish_stream_work(work: Awaitable[_StreamWorkResult]) -> tuple[_StreamWorkResult, bool]:
+    """Finish owned work even if its caller is cancelled, then report cancellation.
+
+    A cancelled thread cannot be stopped after it acquires a reactive watch.
+    Shield both AnyIO scopes and repeated asyncio cancellation until ownership
+    can be handed back to the caller for cleanup.
+    """
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    with CancelScope(shield=True):
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+    return task.result(), cancelled
+
+
+async def _acquire_task_event_context(runtime: PyrunsRuntime) -> tuple[str, TaskManager]:
+    context, cancelled = await _finish_stream_work(
+        asyncio.to_thread(runtime.get_task_event_stream_context)
+    )
+    if cancelled:
+        await _finish_stream_work(asyncio.to_thread(runtime.release_task_event_stream_context, *context))
+        raise asyncio.CancelledError
+    return context
 
 
 def _compact_monitor_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -1117,7 +1150,7 @@ def create_app(
 
         runtime = get_runtime()
         await websocket.accept()
-        stream_root, stream_manager = runtime.get_task_event_stream_context()
+        stream_root, stream_manager = await _acquire_task_event_context(runtime)
 
         loop = asyncio.get_running_loop()
         changes: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
@@ -1159,7 +1192,7 @@ def create_app(
                 except asyncio.TimeoutError:
                     payload = {"type": "heartbeat", "revision": revision}
 
-                if not runtime.workspace_stream_is_current(stream_root, stream_manager):
+                if not await asyncio.to_thread(runtime.workspace_stream_is_current, stream_root, stream_manager):
                     await websocket.close(code=4409, reason="Workspace changed")
                     disconnected.set()
                     return
@@ -1178,21 +1211,26 @@ def create_app(
         sender = asyncio.create_task(send_events())
         receiver = asyncio.create_task(receive_client_messages())
         try:
-            done, pending = await asyncio.wait(
+            done, _ = await asyncio.wait(
                 {sender, receiver},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
-                task.cancel()
-            for task in done | pending:
+            for task in done:
                 try:
-                    await task
+                    task.result()
                 except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
                     pass
         finally:
             disconnected.set()
+            sender.cancel()
+            receiver.cancel()
+            _, cancelled = await _finish_stream_work(asyncio.gather(sender, receiver, return_exceptions=True))
             stream_manager.off_change(on_change)
-            runtime.release_task_event_stream_context(stream_root, stream_manager)
+            _, release_cancelled = await _finish_stream_work(
+                asyncio.to_thread(runtime.release_task_event_stream_context, stream_root, stream_manager)
+            )
+            if cancelled or release_cancelled:
+                raise asyncio.CancelledError
             try:
                 await websocket.close(code=1000)
             except (RuntimeError, WebSocketDisconnect):
@@ -1242,6 +1280,10 @@ def create_app(
         replaying_backlog = requested_offset is not None
         pending_initial_chunks: list[tuple[str, dict[str, Any] | None]] = []
         pending_initial_overflow = False
+        pending_run_log = ""
+        pending_run_chunks: list[tuple[str, dict[str, Any] | None]] = []
+        pending_run_chars = 0
+        pending_run_overflow = False
         last_emitter_chunk_at = 0.0
 
         def written_byte_length(chunk_text: str, metadata: dict[str, Any] | None) -> int:
@@ -1282,8 +1324,9 @@ def create_app(
                 tail_wakeup.set()
 
         def on_chunk(chunk_text: str, metadata: dict[str, Any] | None = None) -> None:
-            nonlocal last_emitter_chunk_at, stream_log_name, stream_offset, stream_identity
+            nonlocal last_emitter_chunk_at, stream_offset
             nonlocal replaying_backlog, pending_initial_overflow
+            nonlocal pending_run_log, pending_run_chars, pending_run_overflow
             if disconnected.is_set():
                 return
             if not stream_initialized:
@@ -1301,18 +1344,22 @@ def create_app(
                 return
             last_emitter_chunk_at = time.monotonic()
             if chunk_log_name and stream_log_name == QUEUE_LOG_FILENAME and chunk_log_name != stream_log_name:
-                try:
-                    queue_path = validate_task_log_path(stream_task_dir, QUEUE_LOG_FILENAME)
-                    unread_queue = os.path.getsize(queue_path) > stream_offset
-                except (OSError, ValueError):
-                    unread_queue = False
-                if unread_queue:
-                    replaying_backlog = True
-                    tail_wakeup.set()
+                if pending_run_log and chunk_log_name != pending_run_log:
                     return
-                stream_log_name = chunk_log_name
-                stream_offset = stream_offsets.get(chunk_log_name, 0)
-                stream_identity = ""
+                # The tailer drains queue.log before switching. Keep ordinary
+                # emitter text intact without doing disk I/O in this callback.
+                pending_run_log = chunk_log_name
+                if not pending_run_overflow:
+                    if (len(pending_run_chunks) < LOG_STREAM_QUEUE_LIMIT
+                            and pending_run_chars + len(chunk_text) <= LOG_STREAM_PENDING_CHARS):
+                        pending_run_chunks.append((chunk_text, metadata))
+                        pending_run_chars += len(chunk_text)
+                    else:
+                        pending_run_chunks.clear()
+                        pending_run_chars = 0
+                        pending_run_overflow = True
+                tail_wakeup.set()
+                return
             message = {
                 "type": "chunk",
                 "task_name": task_name,
@@ -1347,12 +1394,28 @@ def create_app(
                     message["offset"] = chunk_offset
             enqueue_message(message)
 
+        def read_log_state(log_name: str) -> tuple[str, int]:
+            path = validate_task_log_path(stream_task_dir, log_name)
+            identity = log_file_identity(path)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            return identity, size
+
+        async def wait_for_tail() -> None:
+            try:
+                await asyncio.wait_for(tail_wakeup.wait(), timeout=LOG_STREAM_TAIL_INTERVAL_SEC)
+            except asyncio.TimeoutError:
+                pass
+
         async def tail_log_file() -> None:
             nonlocal stream_initialized, stream_log_name, stream_offset, stream_identity, replaying_backlog
+            nonlocal pending_run_log, pending_run_chars, pending_run_overflow
             while not disconnected.is_set():
                 tail_wakeup.clear()
                 try:
-                    if not runtime.workspace_stream_is_current(stream_root):
+                    if not await asyncio.to_thread(runtime.workspace_stream_is_current, stream_root):
                         disconnected.set()
                         break
                     if not stream_initialized:
@@ -1427,16 +1490,17 @@ def create_app(
                             replaying_backlog = True
                             continue
                     elif stream_log_name:
+                        observed = (stream_log_name, stream_offset, stream_identity)
                         try:
-                            stream_path = validate_task_log_path(stream_task_dir, stream_log_name)
+                            current_identity, current_size = await asyncio.to_thread(read_log_state, stream_log_name)
                         except ValueError:
                             disconnected.set()
                             break
-                        current_identity = log_file_identity(stream_path)
-                        try:
-                            current_size = os.path.getsize(stream_path)
-                        except OSError:
-                            current_size = 0
+                        if observed != (stream_log_name, stream_offset, stream_identity):
+                            # A live callback advanced while the stat was pending.
+                            # Its older size must not look like a truncated log.
+                            await wait_for_tail()
+                            continue
                         identity_changed = bool(
                             stream_identity
                             and current_identity
@@ -1471,6 +1535,21 @@ def create_app(
                             stream_identity = current_identity
                         if current_size > stream_offset:
                             replaying_backlog = True
+                        if pending_run_log and stream_log_name == QUEUE_LOG_FILENAME and current_size <= stream_offset:
+                            stream_log_name = pending_run_log
+                            stream_offset = stream_offsets.get(stream_log_name, 0)
+                            stream_identity = ""
+                            pending_run_log = ""
+                            replaying_backlog = pending_run_overflow
+                            for chunk_text, metadata in pending_run_chunks:
+                                on_chunk(chunk_text, metadata)
+                            pending_run_chunks.clear()
+                            pending_run_chars = 0
+                            pending_run_overflow = False
+                            if replaying_backlog:
+                                continue
+                            await wait_for_tail()
+                            continue
                         emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC
                         if emitter_quiet or replaying_backlog:
                             switched_log = False
@@ -1489,11 +1568,14 @@ def create_app(
                                     )
                                     selected_log = str(queue_payload.get("selected_log") or stream_log_name)
                                     if selected_log != stream_log_name:
-                                        try:
-                                            queue_size = os.path.getsize(stream_path)
-                                        except OSError:
-                                            queue_size = 0
-                                        if queue_size > stream_offset:
+                                        observed = (stream_log_name, stream_offset, stream_identity)
+                                        queue_identity, queue_size = await asyncio.to_thread(read_log_state, stream_log_name)
+                                        if observed != (stream_log_name, stream_offset, stream_identity):
+                                            await wait_for_tail()
+                                            continue
+                                        if pending_run_log:
+                                            continue
+                                        if queue_size > stream_offset or queue_identity != current_identity:
                                             replaying_backlog = True
                                             continue
                                         stream_log_name = selected_log
@@ -1552,6 +1634,8 @@ def create_app(
                                         })
                                 if new_offset > read_offset and new_offset < current_size:
                                     continue
+                                if new_offset > read_offset and pending_run_log and stream_log_name == QUEUE_LOG_FILENAME:
+                                    continue
                             replaying_backlog = False
                 except WorkspaceChangedError:
                     disconnected.set()
@@ -1559,10 +1643,7 @@ def create_app(
                 except Exception as exc:
                     logger.debug("Log file tail fallback failed for %s: %s", task_name, exc)
 
-                try:
-                    await asyncio.wait_for(tail_wakeup.wait(), timeout=LOG_STREAM_TAIL_INTERVAL_SEC)
-                except asyncio.TimeoutError:
-                    pass
+                await wait_for_tail()
 
         async def watch_client_messages() -> None:
             try:

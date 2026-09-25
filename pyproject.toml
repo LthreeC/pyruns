@@ -33,6 +33,7 @@ classifiers = [
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
+    "anyio>=3.4,<5",
     "fastapi>=0.110",
     "omegaconf>=2.3,<3",
     "packaging>=23",
