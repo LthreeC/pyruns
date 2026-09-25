@@ -176,6 +176,8 @@ pyr init train.py
 
 这会创建 `_pyruns_/train/`，并准备 `config_default.yaml`。
 
+初始化通过静态解析读取参数，支持默认值和 `choices` 中的字面量 `*` / `**` 展开。展开来源依赖变量或函数调用时，无法确定的值保留为 `null`，请在配置中填写。
+
 创建一份配置，例如 `configs/quick.yaml`：
 
 ```yaml

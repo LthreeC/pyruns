@@ -255,6 +255,63 @@ def test_argparse_params_to_dict():
     assert d == {"lr": 0.01, "epochs": 10, "no_default": None}
 
 
+@pytest.mark.parametrize(("expression", "expected"), [
+    ('{"base": 0, **{"x": 1}, "base": 2}', {"base": 2, "x": 1}),
+    ('{**{}, **{"nested": {**{"x": 1}, "values": [0, *[1, 2]]}}}',
+     {"nested": {"x": 1, "values": [0, 1, 2]}}),
+    ('[0, *[1, 2], *(3, 4), *[], *"xy", *b"AB", *{"left": 5, "right": 6}]',
+     [0, 1, 2, 3, 4, "x", "y", 65, 66, "left", "right"]),
+    ('(0, *[1, 2], *())', (0, 1, 2)),
+    ('[*[]]', []),
+    ('(*(),)', ()),
+])
+def test_argparse_literal_unpack_roundtrips_without_executing_script(tmp_path, expression, expected):
+    script = tmp_path / "literal_unpack.py"
+    script.write_text(
+        'raise RuntimeError("script must not execute during discovery")\n'
+        'import argparse\nparser = argparse.ArgumentParser()\n'
+        f'parser.add_argument("--value", default={expression})\n'
+        'parser.add_argument("--device", choices=["cpu", *["cuda", "mps"]], default="cpu")\n',
+        encoding="utf-8",
+    )
+    params = extract_argparse_params(str(script))
+    assert params["value"]["default"] == expected
+    assert type(params["value"]["default"]) is type(expected)
+    assert params["device"]["choices"] == ["cpu", "cuda", "mps"]
+    workspace = tmp_path / "_pyruns_"
+    generate_config_file(str(workspace), str(script), params)
+    actual = OmegaConf.to_container(OmegaConf.load(workspace / "config_default.yaml"))
+    normalized = OmegaConf.to_container(OmegaConf.create({"value": expected, "device": "cpu"}))
+    assert actual == normalized
+
+
+@pytest.mark.parametrize("expression", [
+    '{"known": 1, **defaults}',
+    '{"known": 1, **build_defaults()}',
+    '[0, *options]',
+    '(0, *settings.options)',
+    '[0, *build_options()]',
+    '[0, *None]',
+])
+def test_argparse_dynamic_unpack_keeps_unknown_default(tmp_path, expression):
+    script = tmp_path / "dynamic_unpack.py"
+    script.write_text(
+        'raise RuntimeError("script must not execute during discovery")\n'
+        'import argparse\nparser = argparse.ArgumentParser()\n'
+        f'parser.add_argument("--value", default={expression})\n'
+        'parser.add_argument("--epochs", type=int, default=10)\n',
+        encoding="utf-8",
+    )
+    params = extract_argparse_params(str(script))
+    assert params["value"]["default"] is None
+    assert params["epochs"]["default"] == 10
+    workspace = tmp_path / "_pyruns_"
+    generate_config_file(str(workspace), str(script), params)
+    assert OmegaConf.to_container(OmegaConf.load(workspace / "config_default.yaml")) == {
+        "value": None, "epochs": 10,
+    }
+
+
 def test_split_cli_args_invalid_quotes():
     with pytest.raises(ValueError, match="Invalid CLI args"):
         split_cli_args('model="vit')

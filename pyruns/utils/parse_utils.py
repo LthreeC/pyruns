@@ -165,12 +165,32 @@ def _extract_value(node: ast.AST) -> Any:
             return -operand
         if isinstance(node.op, ast.UAdd) and isinstance(operand, (int, float)):
             return operand
-    if isinstance(node, ast.List):
-        return [_extract_value(x) for x in node.elts]
-    if isinstance(node, ast.Tuple):
-        return tuple(_extract_value(x) for x in node.elts)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items = []
+        for element in node.elts:
+            if isinstance(element, ast.Starred):
+                # Names/attributes are represented as text for argparse types
+                # and actions. That text is not a literal iterable to expand.
+                if not isinstance(element.value, (ast.Constant, ast.List, ast.Tuple, ast.Dict)):
+                    return None
+                expanded = _extract_value(element.value)
+                if not isinstance(expanded, (list, tuple, dict, str, bytes)):
+                    return None
+                items.extend(expanded)
+            else:
+                items.append(_extract_value(element))
+        return tuple(items) if isinstance(node, ast.Tuple) else items
     if isinstance(node, ast.Dict):
-        return {_extract_value(k): _extract_value(v) for k, v in zip(node.keys, node.values, strict=True)}
+        result = {}
+        for key, value in zip(node.keys, node.values, strict=True):
+            if key is None:  # An AST **mapping entry has no key node.
+                expanded = _extract_value(value)
+                if not isinstance(expanded, dict):
+                    return None
+                result.update(expanded)
+            else:
+                result[_extract_value(key)] = _extract_value(value)
+        return result
     return None
 
 
