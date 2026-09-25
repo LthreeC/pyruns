@@ -132,6 +132,8 @@ _SETTINGS_LOCK_TIMEOUT_SEC = 5.0
 _SETTINGS_LOCK_POLL_SEC = 0.05
 _SETTINGS_STALE_LOCK_MIN_AGE_SEC = 30.0
 _SETTINGS_LOCK_OWNER_HOST = socket.gethostname().lower()
+_SETTINGS_LOCK_RELEASE_ATTEMPTS = 15
+_SETTINGS_LOCK_RELEASE_RETRY_DELAY_SEC = 0.02
 
 
 def _thread_lock_for(path: str) -> threading.RLock:
@@ -144,12 +146,16 @@ def _thread_lock_for(path: str) -> threading.RLock:
         return lock
 
 
-def _settings_lock_snapshot(path: str) -> tuple[tuple[int, int, int, int], bytes] | None:
+def _settings_lock_snapshot(
+    path: str, *, raise_error: bool = False,
+) -> tuple[tuple[int, int, int, int], bytes] | None:
     try:
         with open(path, "rb") as handle:
             info = os.fstat(handle.fileno())
             content = handle.read(4096)
     except OSError:
+        if raise_error:
+            raise
         return None
     return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size), content
 
@@ -258,15 +264,22 @@ def _remove_stale_settings_lock(lock_path: str) -> bool:
 
 
 def _release_settings_lock(lock_path: str, owner: bytes) -> None:
-    snapshot = _settings_lock_snapshot(lock_path)
-    if snapshot is not None and snapshot[1] == owner:
-        if _quarantine_settings_lock(lock_path, snapshot):
-            return
-        if _settings_lock_snapshot(lock_path) == snapshot:
-            try:
+    """Retry sharing errors without treating an unreadable lock as absent."""
+    for attempt in range(_SETTINGS_LOCK_RELEASE_ATTEMPTS):
+        try:
+            snapshot = _settings_lock_snapshot(lock_path, raise_error=True)
+            if snapshot is None or snapshot[1] != owner:
+                return
+            if _quarantine_settings_lock(lock_path, snapshot):
+                return
+            if _settings_lock_snapshot(lock_path, raise_error=True) == snapshot:
                 os.remove(lock_path)
-            except OSError:
-                pass
+            return
+        except PermissionError:
+            if attempt < _SETTINGS_LOCK_RELEASE_ATTEMPTS - 1:
+                time.sleep(_SETTINGS_LOCK_RELEASE_RETRY_DELAY_SEC * (attempt + 1))
+        except OSError:
+            return
 
 
 def _open_settings_lock(

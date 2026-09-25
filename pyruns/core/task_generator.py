@@ -44,6 +44,8 @@ _TASK_NAME_LOCK_PREFIX = ".pyruns-create-"
 _TASK_NAME_LOCK_SUFFIX = ".lock"
 _TASK_NAME_LOCK_STALE_MIN_AGE_SEC = 30.0
 _TASK_NAME_LOCK_OWNER_HOST = socket.gethostname().lower()
+_TASK_NAME_LOCK_RELEASE_ATTEMPTS = 15
+_TASK_NAME_LOCK_RELEASE_RETRY_DELAY_SEC = 0.02
 
 
 class _TaskCreationRollbackConflict(RuntimeError):
@@ -451,16 +453,26 @@ class TaskGenerator:
         except OSError as exc:
             logger.warning("Could not close task name reservation %s: %s", lock_path, exc)
 
-        try:
-            validate_tasks_root(self.root_dir)
-            if self._path_identity(lock_path) != identity:
-                logger.warning("Refusing to remove replaced task reservation: %s", lock_path)
+        for attempt in range(_TASK_NAME_LOCK_RELEASE_ATTEMPTS):
+            try:
+                validate_tasks_root(self.root_dir)
+                if self._path_identity(lock_path) != identity:
+                    logger.warning("Refusing to remove replaced task reservation: %s", lock_path)
+                    return
+                os.unlink(lock_path)
                 return
-            os.unlink(lock_path)
-        except FileNotFoundError:
-            return
-        except (OSError, ValueError) as exc:
-            logger.warning("Could not remove task name reservation %s: %s", lock_path, exc)
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                # A Windows reader may deny deletion after our fd closes.
+                # Recheck the directory and file identity on every attempt.
+                if attempt >= _TASK_NAME_LOCK_RELEASE_ATTEMPTS - 1:
+                    logger.warning("Could not remove task name reservation %s: %s", lock_path, exc)
+                    return
+                time.sleep(_TASK_NAME_LOCK_RELEASE_RETRY_DELAY_SEC * (attempt + 1))
+            except (OSError, ValueError) as exc:
+                logger.warning("Could not remove task name reservation %s: %s", lock_path, exc)
+                return
 
     def reserve_exact_task_name(
         self,
