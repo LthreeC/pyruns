@@ -643,6 +643,54 @@ def test_batch_failure_preserves_an_earlier_task_started_by_another_runner(
     assert list(tasks_root.glob(".pyruns-create-*.lock")) == []
 
 
+@pytest.mark.parametrize("replace_at", ["before_rollback", "before_metadata_update"])
+def test_batch_failure_does_not_mutate_replacement_task(tmp_path, monkeypatch, replace_at):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(root_dir=str(tasks_root))
+    replacement_generator = TaskGenerator(root_dir=str(tasks_root))
+    original_write_payload = task_generator_module.write_task_payload
+    original_update = task_generator_module.update_task_metadata
+    first_task_dir = tasks_root / "batch_1-of-2"
+    moved_task_dir = tasks_root / "moved-original"
+    replacement_bytes = {}
+    calls = 0
+
+    def replace_first_task():
+        first_task_dir.rename(moved_task_dir)
+        replacement_generator.create_task(
+            first_task_dir.name, {"value": "replacement"}, exact_name=True,
+            task_metadata={"notes": "created by another caller"},
+        )
+        for path in first_task_dir.iterdir():
+            if path.is_file():
+                replacement_bytes[path.name] = path.read_bytes()
+
+    def fail_second_payload(task_dir, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if replace_at == "before_rollback":
+                replace_first_task()
+            raise RuntimeError("second task failed")
+        return original_write_payload(task_dir, **kwargs)
+
+    def update_after_replacement(task_dir, updater):
+        if replace_at == "before_metadata_update":
+            replace_first_task()
+        return original_update(task_dir, updater)
+
+    monkeypatch.setattr(task_generator_module, "write_task_payload", fail_second_payload)
+    monkeypatch.setattr(task_generator_module, "update_task_metadata", update_after_replacement)
+    with pytest.raises(RuntimeError, match="second task failed"):
+        generator.create_tasks([{"value": 1}, {"value": 2}], "batch")
+
+    assert replacement_bytes
+    assert {path.name: path.read_bytes() for path in first_task_dir.iterdir() if path.is_file()} == replacement_bytes
+    assert info_io.load_task_info(str(first_task_dir), raise_error=True)["status"] == "pending"
+    assert info_io.load_task_info(str(moved_task_dir), raise_error=True)["status"] == "pending"
+    assert {path.name for path in tasks_root.iterdir()} == {first_task_dir.name, moved_task_dir.name}
+
+
 def test_task_generator_rejects_symlinked_tasks_root_before_writing(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

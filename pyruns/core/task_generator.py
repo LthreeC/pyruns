@@ -234,12 +234,15 @@ class TaskGenerator:
         def _mark_for_rollback(info: Dict[str, Any]) -> None:
             status = str(info.get("status", "pending") or "pending").lower()
             if (
-                status != "pending"
+                # Check ownership while holding the metadata lock, before a
+                # replacement at the same path can receive our tombstone.
+                self._path_identity(task_dir) != expected_identity
+                or status != "pending"
                 or str(info.get("runner_id", "") or "")
                 or run_slot_count(info) != 0
             ):
                 raise _TaskCreationRollbackConflict(
-                    "task was started or changed before batch rollback"
+                    "task was replaced, started or changed before batch rollback"
                 )
             info["status"] = "cancelled"
             info["_creation_rollback"] = rollback_token
