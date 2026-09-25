@@ -383,7 +383,7 @@ class PyrunsRuntime:
         self._task_manager_factory = (
             task_manager_factory
             if task_manager_factory is not None
-            else lambda tasks_dir: TaskManager(tasks_dir=tasks_dir, lazy_scan=False)
+            else lambda tasks_dir: TaskManager(tasks_dir=tasks_dir, lazy_scan=None)
         )
         self._task_generator_factory = (
             task_generator_factory
@@ -1322,13 +1322,15 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def get_task(self, task_name: str, *, refresh: bool = True) -> Dict[str, Any] | None:
         """Return one task snapshot."""
-        self.ensure_tasks_loaded(full_refresh=False)
+        manager = self.task_manager
         if refresh:
-            self.task_manager.refresh_from_disk(task_ids=[task_name])
-        task = self.task_manager.get_task(task_name)
-        if task is None and refresh:
-            self.task_manager.load_task_by_name(task_name)
-            task = self.task_manager.get_task(task_name)
+            manager.refresh_from_disk(task_ids=[task_name])
+        task = manager.get_task(task_name)
+        # A cold single-task read need not initialize the whole workspace.
+        # After full discovery, refresh=False remains a cache-only lookup.
+        if task is None and (refresh or not self._tasks_loaded):
+            manager.load_task_by_name(task_name)
+            task = manager.get_task(task_name)
         if task is not None and refresh and not os.path.isfile(
             os.path.join(str(task.get("dir", "") or ""), TASK_INFO_FILENAME)
         ):
@@ -1345,6 +1347,7 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def start_task(self, task_name: str) -> Dict[str, Any]:
         """Start one task and return the updated snapshot."""
+        self.ensure_tasks_loaded(full_refresh=False)
         task = self.require_task(task_name)
         if task.get("_load_error"):
             raise ValueError(str(task["_load_error"]))
@@ -1407,6 +1410,7 @@ class PyrunsRuntime:
         max_workers: int | None = None,
     ) -> Dict[str, Any]:
         """Queue multiple tasks and return their updated snapshots."""
+        self.ensure_tasks_loaded(full_refresh=False)
         normalized_names: List[str] = []
         seen: set[str] = set()
         for name in task_names:
@@ -1443,6 +1447,7 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def delete_tasks_batch(self, task_names: List[str]) -> Dict[str, Any]:
         """Soft-delete multiple tasks."""
+        self.ensure_tasks_loaded(full_refresh=False)
         normalized_names: List[str] = []
         seen: set[str] = set()
         for name in task_names:
@@ -1468,7 +1473,7 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def export_tasks_csv(self, task_names: List[str]) -> str:
         """Build a CSV export for the selected tasks."""
-
+        self.ensure_tasks_loaded(full_refresh=False)
         normalized_names: List[str] = []
         seen: set[str] = set()
         tasks: List[Dict[str, Any]] = []

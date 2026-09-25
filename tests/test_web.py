@@ -4671,6 +4671,231 @@ def test_tasks_endpoint_discovers_external_task_dirs_on_refresh(tmp_path):
     assert names == {"alpha", "beta"}
 
 
+@pytest.mark.parametrize("route, expected_status", [
+    ("/api/tasks/alpha", 200),
+    ("/api/tasks/alpha?refresh=false", 200),
+    ("/api/tasks/missing", 404),
+    ("/api/tasks/missing?refresh=false", 404),
+    ("/api/tasks/alpha/logs", 200),
+])
+def test_default_runtime_first_task_read_loads_only_requested_task(
+    tmp_path, monkeypatch, route, expected_status,
+):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("alpha", "beta", "gamma"):
+        _add_task(workspace, name, status="completed", log_text="finished\n")
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    original_load = TaskManager._load_task_dir
+    original_scan = TaskManager._scan_task_dir_names
+    with patch.object(TaskManager, "_load_task_dir", autospec=True, side_effect=original_load) as load:
+        with patch.object(TaskManager, "_scan_task_dir_names", autospec=True, side_effect=original_scan) as scan:
+            # Use the production factory: the usual test helper scans eagerly.
+            runtime = PyrunsRuntime(str(workspace))
+            try:
+                with TestClient(create_app(runtime)) as client:
+                    response = client.get(route)
+                assert response.status_code == expected_status
+                requested = "missing" if "/missing" in route else "alpha"
+                assert [call.args[1] for call in load.call_args_list] == [requested]
+                scan.assert_not_called()
+                if expected_status == 200:
+                    if route.endswith("/logs"):
+                        assert "finished" in response.json()["content"]
+                    else:
+                        assert response.json()["config"] == {"lr": 0.01, "model": "tiny"}
+            finally:
+                runtime.shutdown()
+
+
+def test_default_runtime_partial_task_cache_preserves_refresh_behavior(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    _add_task(workspace, "beta")
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(workspace))
+    try:
+        assert runtime.get_task("alpha", refresh=False)["config"]["lr"] == 0.01
+        task_dir = workspace / TASKS_DIR / "alpha"
+        save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.2})
+        assert runtime.get_task("alpha", refresh=False)["config"]["lr"] == 0.01
+        assert runtime.get_task("alpha", refresh=True)["config"] == {"lr": 0.2}
+        assert runtime.get_task("beta", refresh=False)["name"] == "beta"
+        (task_dir / TASK_INFO_FILENAME).unlink()
+        assert runtime.get_task("alpha", refresh=False) is not None
+        assert runtime.get_task("alpha", refresh=True) is None
+        assert runtime.list_tasks(refresh=False).total == 1
+
+        _add_task(workspace, "external")
+        assert runtime.get_task("external", refresh=False) is None
+        assert runtime.get_task("external", refresh=True)["name"] == "external"
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("operation", ["list", "search", "events", "count"])
+def test_default_runtime_workspace_reads_discover_tasks_after_partial_load(
+    tmp_path, monkeypatch, operation,
+):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed")
+    _add_task(workspace, "beta", status="queued")
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(workspace))
+    try:
+        assert runtime.get_task("alpha", refresh=False)["name"] == "alpha"
+        assert [task["name"] for task in runtime.task_manager.tasks] == ["alpha"]
+        if operation in {"list", "search"}:
+            with TestClient(create_app(runtime)) as client:
+                response = client.get("/api/tasks", params={
+                    "query": "beta" if operation == "search" else "",
+                    "refresh": False, "summary": True,
+                })
+            assert response.status_code == 200
+            payload = response.json()
+            expected = {"beta"} if operation == "search" else {"alpha", "beta"}
+            assert {task["name"] for task in payload["items"]} == expected
+            assert payload["total"] == len(expected)
+        elif operation == "events":
+            root, manager = runtime.get_task_event_stream_context()
+            assert {task["name"] for task in manager.tasks} == {"alpha", "beta"}
+            runtime.release_task_event_stream_context(root, manager)
+        else:
+            assert runtime.active_task_count() == 1
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("operation", ["run", "batch_run", "batch_delete", "export"])
+def test_default_runtime_actions_discover_workspace_once(tmp_path, monkeypatch, operation):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("alpha", "beta", "gamma"):
+        _add_task(workspace, name)
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(workspace))
+    try:
+        # Reading one task must not leave later workspace actions partially loaded.
+        assert runtime.get_task("alpha", refresh=False)["name"] == "alpha"
+        manager = runtime.task_manager
+        submitted = []
+
+        def submit(task, run_index, *, independent=False):
+            assert {item["name"] for item in manager.tasks} == {"alpha", "beta", "gamma"}
+            submitted.append(task["name"])
+
+        monkeypatch.setattr(manager, "_submit_task", submit)
+        with patch.object(manager, "_scan_task_dir_names", wraps=manager._scan_task_dir_names) as scan:
+            with patch.object(manager, "load_task_by_name", wraps=manager.load_task_by_name) as load:
+                if operation == "run":
+                    assert runtime.start_task("beta")["status"] == "running"
+                    assert submitted == ["beta"]
+                elif operation == "batch_run":
+                    result = runtime.start_tasks_batch(["beta", "gamma"], max_workers=1)
+                    assert result["count"] == 2
+                    assert [item["status"] for item in result["items"]] == ["running", "queued"]
+                    assert submitted == ["beta"]
+                elif operation == "batch_delete":
+                    assert runtime.delete_tasks_batch(["beta", "gamma"])["count"] == 2
+                    assert runtime.list_tasks(refresh=False).total == 1
+                else:
+                    for name in ("beta", "gamma"):
+                        update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update(
+                            {"records": [{"loss": 0.5}]},
+                        ))
+                    csv_text = runtime.export_tasks_csv(["beta", "gamma"])
+                    assert "beta" in csv_text and "gamma" in csv_text and "loss" in csv_text
+                assert scan.call_count == 1
+                load.assert_not_called()
+    finally:
+        runtime.shutdown()
+
+
+def test_default_runtime_partial_load_and_log_context_follow_workspace_switch(tmp_path, monkeypatch):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    _add_task(workspace_a, "alpha")
+    _add_task(workspace_a, "unread")
+    _add_task(workspace_b, "alpha")
+    save_yaml(str(workspace_b / TASKS_DIR / "alpha" / CONFIG_FILENAME), {"lr": 0.3})
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(workspace_a))
+    try:
+        root, task = runtime.get_task_log_stream_context("alpha")
+        assert Path(root) == workspace_a
+        assert task["config"]["lr"] == 0.01
+        first = runtime.task_manager
+        assert {item["name"] for item in first.tasks} == {"alpha"}
+        runtime.reload(str(workspace_b))
+        assert first._shutdown_event.is_set()
+        assert runtime.get_task("alpha", refresh=False)["config"]["lr"] == 0.3
+        runtime.reload(str(workspace_a))
+        assert runtime.task_manager is not first
+        assert runtime.list_tasks(refresh=False).total == 2
+    finally:
+        runtime.shutdown()
+
+
+def test_default_runtime_retains_partially_loaded_active_manager(tmp_path, monkeypatch):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    _add_task(workspace_a, "alpha", status="queued")
+    _add_task(workspace_a, "unread")
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(workspace_a))
+    try:
+        assert runtime.get_task("alpha")["status"] == "queued"
+        manager = runtime.task_manager
+        runtime.reload(str(workspace_b))
+        assert not manager._shutdown_event.is_set()
+        update_task_info(str(workspace_a / TASKS_DIR / "alpha"), lambda info: info.update(
+            {"status": "completed"},
+        ))
+        manager.refresh_from_disk(task_ids=["alpha"])
+        manager.trigger_update()
+        assert manager._shutdown_event.is_set()
+    finally:
+        runtime.shutdown()
+
+
+def test_default_runtime_dispatches_full_batch_after_partial_read_and_workspace_switch(tmp_path):
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    release_file = tmp_path / "release-tasks"
+    (tmp_path / "main.py").write_text(
+        "import time\nfrom pathlib import Path\nimport pyruns\npyruns.load()\n"
+        "deadline = time.monotonic() + 15\n"
+        f"while not Path({str(release_file)!r}).exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\nprint('finished', flush=True)\n",
+        encoding="utf-8",
+    )
+    _add_task(workspace_a, "read-only", status="completed")
+    for name in ("alpha", "beta"):
+        _add_task(workspace_a, name)
+    runtime = PyrunsRuntime(str(workspace_a))
+    try:
+        assert runtime.get_task("read-only")["status"] == "completed"
+        result = runtime.start_tasks_batch(["alpha", "beta"], max_workers=1)
+        assert [item["status"] for item in result["items"]] == ["running", "queued"]
+        manager = runtime.task_manager
+        runtime.reload(str(workspace_b))
+        assert not manager._shutdown_event.is_set()
+        release_file.touch()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            tasks = [manager.get_task(name) for name in ("alpha", "beta")]
+            if all(task["status"] == "completed" for task in tasks) and manager._shutdown_event.is_set():
+                break
+            time.sleep(0.02)
+        assert [task["status"] for task in tasks] == ["completed", "completed"]
+        assert manager._shutdown_event.is_set()
+        for name in ("alpha", "beta"):
+            task_dir = workspace_a / TASKS_DIR / name
+            assert load_task_info(str(task_dir))["exit_codes"] == [0]
+            assert "finished" in (task_dir / "run_logs" / "run1.log").read_text(encoding="utf-8")
+    finally:
+        release_file.touch()
+        runtime.shutdown()
+
+
 def test_task_endpoint_lazy_loads_external_task_by_name(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
