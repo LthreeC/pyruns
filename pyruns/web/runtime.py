@@ -1267,9 +1267,13 @@ class PyrunsRuntime:
             for task, logs in selected:
                 context = build_task_search_result(sources.get(task["name"], {}), query, search_field=search_field, matcher=matcher)
                 current = manager.get_task(task["name"], summary=summary)
-                if current is None:
+                current_view = manager._get_task_search_view(task["name"])
+                same_task = current_view is task
+                if current is None or not same_task:
                     # A task may disappear after capture; materialize its view
-                    # before the full serializer deep-copies nested values.
+                    # before the full serializer deep-copies nested values. A
+                    # same-name replacement must use the captured task too,
+                    # otherwise its log context could be attached to a new task.
                     current = manager.serialize_task({
                         **task, "env": dict(task["env"]),
                         "start_times": list(task["start_times"]),

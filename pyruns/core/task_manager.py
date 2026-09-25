@@ -524,6 +524,54 @@ class TaskManager:
     }
     _SEARCH_CONFIG_MISSING = object()
 
+    def _get_task_search_view_locked(
+        self,
+        name: str,
+        task: Dict[str, Any],
+    ) -> Mapping[str, Any]:
+        """Return one cached view while the registry lock is held."""
+        scalars = tuple(
+            task.get(key, default)
+            for key, default in self._SEARCH_VIEW_DEFAULTS.items()
+        )
+        starts = tuple((task.get("start_times") or ())[-1:])
+        finishes = tuple((task.get("finish_times") or ())[-1:])
+        config = task.get("config", self._SEARCH_CONFIG_MISSING)
+        env_items = tuple((task.get("env") or {}).items())
+        # Equal numbers/bools can have different searchable text.
+        value_types = tuple(map(type, scalars + starts + finishes)) + tuple(
+            type(value) for pair in env_items for value in pair
+        )
+        identity = (
+            task.get("_registry_revision", 0),
+            task.get("_info_signature"),
+            id(task) if task.get("_info_signature") is None else None,
+        )
+        signature = (
+            scalars, starts, finishes, id(config), env_items, value_types,
+            identity,
+        )
+        previous = self._search_view_cache.get(name)
+        if previous is None or signature != previous[0]:
+            view = MappingProxyType({
+                **dict(zip(self._SEARCH_VIEW_DEFAULTS, scalars)),
+                "start_times": starts, "finish_times": finishes,
+                "config": {} if config is self._SEARCH_CONFIG_MISSING else config,
+                "env": MappingProxyType(dict(env_items)),
+            })
+            previous = (signature, view)
+            if not self._shutdown_event.is_set():
+                self._search_view_cache[name] = previous
+        return previous[1]
+
+    def _get_task_search_view(self, name: str) -> Mapping[str, Any] | None:
+        """Return one current search view without scanning other tasks."""
+        with self._lock:
+            task = self._tasks_by_name.get(name)
+            if task is None:
+                return None
+            return self._get_task_search_view_locked(name, task)
+
     def _get_task_search_views(self) -> Dict[str, Mapping[str, Any]]:
         """Reuse unchanged metadata; each request owns its outer mapping.
 
@@ -532,31 +580,10 @@ class TaskManager:
         retains the reference semantics of get_task_search_snapshots().
         """
         with self._lock:
-            views = {}
-            for name, task in self._tasks_by_name.items():
-                scalars = tuple(task.get(key, default) for key, default in self._SEARCH_VIEW_DEFAULTS.items())
-                starts = tuple((task.get("start_times") or ())[-1:])
-                finishes = tuple((task.get("finish_times") or ())[-1:])
-                config = task.get("config", self._SEARCH_CONFIG_MISSING)
-                env_items = tuple((task.get("env") or {}).items())
-                # Equal numbers/bools can have different searchable text.
-                value_types = tuple(map(type, scalars + starts + finishes)) + tuple(
-                    type(value) for pair in env_items for value in pair
-                )
-                signature = (scalars, starts, finishes, id(config), env_items, value_types)
-                previous = self._search_view_cache.get(name)
-                if previous is None or signature != previous[0]:
-                    view = MappingProxyType({
-                        **dict(zip(self._SEARCH_VIEW_DEFAULTS, scalars)),
-                        "start_times": starts, "finish_times": finishes,
-                        "config": {} if config is self._SEARCH_CONFIG_MISSING else config,
-                        "env": MappingProxyType(dict(env_items)),
-                    })
-                    previous = (signature, view)
-                    if not self._shutdown_event.is_set():
-                        self._search_view_cache[name] = previous
-                views[str(task.get("name", ""))] = previous[1]
-            return views
+            return {
+                str(task.get("name", "")): self._get_task_search_view_locked(name, task)
+                for name, task in self._tasks_by_name.items()
+            }
 
     def get_task_search_snapshots(self, task_names: List[str] | None = None) -> Dict[str, Dict[str, Any]]:
         """Capture search/sort metadata without copying every task's run history."""

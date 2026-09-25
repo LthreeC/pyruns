@@ -2735,6 +2735,49 @@ def test_search_serializes_captured_task_if_deleted_during_matching(tmp_path, mo
         runtime.shutdown()
 
 
+@pytest.mark.parametrize("summary", [False, True])
+def test_search_does_not_merge_matches_into_same_name_replacement(tmp_path, monkeypatch, summary):
+    from pyruns.web import runtime as runtime_module
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    manager = runtime.task_manager
+    with manager._lock:
+        task = manager._tasks_by_name["source"]
+        task.update({"notes": "old needle", "search_text": "source\nold needle"})
+        manager._rebuild_indexes_locked()
+
+    original = runtime_module.task_search_found
+
+    def replace_after_capture(captured, *args, **kwargs):
+        with manager._lock:
+            replacement = dict(manager._tasks_by_name["source"])
+            replacement.update({
+                "notes": "new value",
+                "search_text": "source\nnew value",
+                "_info_signature": (999, 999, 999, 999, 999),
+            })
+            manager.tasks = [replacement]
+            manager._rebuild_indexes_locked()
+        monkeypatch.setattr(runtime_module, "task_search_found", original)
+        return original(captured, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "task_search_found", replace_after_capture)
+    try:
+        page = runtime.search_tasks(
+            query="needle", search_field="notes", include_logs=False,
+            refresh=False, cancelled=threading.Event(), summary=summary,
+        )
+        assert page.total == 1
+        item = page.items[0]
+        assert item["notes"] == "old needle"
+        assert item["search_matches"][0]["snippet"] == "old needle"
+    finally:
+        runtime.shutdown()
+
+
 def test_concurrent_log_searches_keep_per_query_contexts_separate(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
