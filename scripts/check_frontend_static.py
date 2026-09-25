@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import TypedDict
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +18,11 @@ FRONTEND_DIR = ROOT / "frontend"
 STATIC_DIR = ROOT / "pyruns" / "web" / "static"
 
 
-def hidden_subprocess_kwargs() -> dict[str, int]:
+class _HiddenSubprocessKwargs(TypedDict, total=False):
+    creationflags: int
+
+
+def hidden_subprocess_kwargs() -> _HiddenSubprocessKwargs:
     """Keep npm hidden when this standalone script runs on Windows."""
 
     if os.name == "nt":

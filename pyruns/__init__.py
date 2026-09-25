@@ -9,7 +9,7 @@ import time
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, overload
 
 from ._config import (
     ARTIFACTS_DIR,
@@ -94,6 +94,23 @@ def _warn_metric_write_failure(
         pass
 
 
+@overload
+def _write_metrics(
+    operation: str,
+    task_dir: str,
+    apply_update: Callable[[Dict[str, Any], int], None],
+) -> None: ...
+
+
+@overload
+def _write_metrics(
+    operation: str,
+    task_dir: str,
+    *,
+    track_data: Dict[str, Any],
+) -> None: ...
+
+
 def _write_metrics(
     operation: str,
     task_dir: str,
@@ -111,6 +128,8 @@ def _write_metrics(
 
                 append_task_track(task_dir, track_data, run_index=run_index)
                 return
+
+            assert apply_update is not None, "record updates require a callback"
 
             def _apply(info: Dict[str, Any], run_index: int | None = run_index) -> None:
                 target = run_index if run_index is not None else max(1, _lazy_export("run_slot_count")(info))
@@ -177,7 +196,7 @@ def _get_default_config_path() -> str:
     )
 
 
-def read(file_path: str = None):
+def read(file_path: str | None = None):
     """Read a config file into the global config manager."""
     config_manager = _get_config_manager()
     pyr_config = os.environ.get(ENV_KEY_CONFIG)
@@ -228,7 +247,7 @@ def load():
     return config_manager.load()
 
 
-def ensure_config_default(root_dir: str = None):
+def ensure_config_default(root_dir: str | None = None):
     """Create ``config_default.yaml`` with defaults if it doesn't exist."""
     if root_dir is None:
         root_dir = ROOT_DIR

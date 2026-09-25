@@ -10,7 +10,7 @@ import shutil
 import sys
 import textwrap
 from dataclasses import dataclass
-from typing import Sequence
+from typing import NoReturn, Sequence
 
 from pyruns import __version__
 
@@ -75,7 +75,7 @@ class _ArgumentParser(argparse.ArgumentParser):
         kwargs.setdefault("allow_abbrev", False)
         super().__init__(*args, **kwargs)
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         if message == "unrecognized arguments: --json":
             message = (
                 "--json is command-specific; append it only to a command "

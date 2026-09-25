@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple
 
 from omegaconf import ListConfig
 
@@ -1255,7 +1255,7 @@ def _build_command(
                 flag = _option_flag_for_key(key)
                 default = info.get("default")
 
-                def _cannot_represent() -> None:
+                def _cannot_represent() -> NoReturn:
                     raise RuntimeError(
                         f"argparse action {action or 'store'} for {flag} cannot represent "
                         f"configured value {value!r}; use a compatible argparse action or a shell task."

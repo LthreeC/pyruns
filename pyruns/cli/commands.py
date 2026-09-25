@@ -21,7 +21,7 @@ from typing import Any, Iterator
 
 import psutil
 import yaml
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
@@ -1359,7 +1359,7 @@ def _load_task_config_batch(
     workspace: str,
     config_path: str,
     name_prefix: str | None,
-) -> tuple[str, list[dict[str, Any]], str, list[str]]:
+) -> tuple[str, list[DictConfig], str, list[str]]:
     """Read and validate one config batch without creating task directories."""
 
     if _workspace_kind(workspace) != WORKSPACE_KIND_SCRIPT:
@@ -2279,6 +2279,7 @@ def _validate_setting_value(key: str, value: Any) -> Any:
     default = SETTINGS_DEFAULTS[key]
     if not setting_numbers_are_finite(value):
         raise CliUsageError(f"{key} must contain only finite numbers")
+    normalized_value: Any = value
     expected = type(default)
     if expected is bool:
         if not isinstance(value, bool):
@@ -2289,7 +2290,7 @@ def _validate_setting_value(key: str, value: Any) -> Any:
     elif expected is float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise CliUsageError(f"{key} expects a number")
-        value = float(value)
+        normalized_value = float(value)
     elif expected is str:
         if not isinstance(value, str):
             raise CliUsageError(f"{key} expects a string")
@@ -2297,26 +2298,26 @@ def _validate_setting_value(key: str, value: Any) -> Any:
         raise CliUsageError(f"{key} expects {expected.__name__}")
     if key == "global_env":
         try:
-            value = normalize_environment(value, drop_none_values=True)
+            return normalize_environment(value, drop_none_values=True)
         except ValueError as exc:
             raise CliUsageError(str(exc)) from exc
     if key == "log_level":
-        value = value.upper()
+        normalized_value = value.upper()
     choices = _SETTING_CHOICES.get(key)
-    if choices and value not in choices:
+    if choices and normalized_value not in choices:
         raise CliUsageError(f"{key} expects one of: {', '.join(sorted(choices))}")
-    if key == "ui_port" and not 1 <= value <= 65535:
+    if key == "ui_port" and not 1 <= normalized_value <= 65535:
         raise CliUsageError("ui_port must be between 1 and 65535")
-    if key in _SETTING_MINIMUMS and value < _SETTING_MINIMUMS[key]:
+    if key in _SETTING_MINIMUMS and normalized_value < _SETTING_MINIMUMS[key]:
         minimum = _SETTING_MINIMUMS[key]
         comparison = "greater than zero" if minimum > 0 else "zero or greater"
         raise CliUsageError(f"{key} must be {comparison}")
-    if key in _SETTING_MAXIMUMS and value > _SETTING_MAXIMUMS[key]:
+    if key in _SETTING_MAXIMUMS and normalized_value > _SETTING_MAXIMUMS[key]:
         maximum = _SETTING_MAXIMUMS[key]
         raise CliUsageError(f"{key} must be {maximum:g} or less")
-    if key in _SETTING_PERCENTAGES and not 0 <= value <= 100:
+    if key in _SETTING_PERCENTAGES and not 0 <= normalized_value <= 100:
         raise CliUsageError(f"{key} must be between 0 and 100")
-    return value
+    return normalized_value
 
 
 def cmd_config(context: Any, args: Any, workspace: str) -> int:

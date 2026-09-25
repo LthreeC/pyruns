@@ -6,9 +6,16 @@ import os
 import platform
 import shutil
 import socket
-from typing import Any
+from typing import Any, TypedDict
 
 from pyruns.core.system_metrics import SystemMonitor
+
+
+class GpuInventoryEntry(TypedDict):
+    index: int
+    uuid: str
+    name: str
+    memory_total_mb: float | None
 
 
 def collect_run_environment(
@@ -65,7 +72,7 @@ def collect_run_environment(
     try:
         monitor = SystemMonitor()
         output = monitor._query_nvidia_smi("index,uuid,name,memory.total", scope="gpu")
-        gpus = []
+        gpus: list[GpuInventoryEntry] = []
         for row in monitor._parse_csv_rows(output):
             if len(row) != 4:
                 raise ValueError("Unrecognized GPU inventory response")

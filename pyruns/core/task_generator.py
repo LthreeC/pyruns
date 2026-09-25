@@ -10,7 +10,7 @@ import socket
 import stat
 import tempfile
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -323,6 +323,8 @@ class TaskGenerator:
         if not is_pid_running(pid):
             return True
         expected = owner.get("process_create_time")
+        if expected is None:
+            return False
         try:
             expected_value = float(expected)
         except (TypeError, ValueError, OverflowError):
@@ -686,7 +688,7 @@ class TaskGenerator:
 
     def create_tasks(
         self,
-        configs: List[Dict[str, Any]],
+        configs: Sequence[Dict[str, Any] | DictConfig],
         name_prefix: str,
         task_kind: str = TASK_KIND_CONFIG,
     ) -> List[Dict[str, Any]]:
