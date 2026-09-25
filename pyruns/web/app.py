@@ -915,7 +915,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get("/api/tasks")
+    @app.get("/api/tasks", response_model=dict[str, Any])
     async def get_tasks(
         request: Request,
         query: str = Query(default="", max_length=MAX_QUERY_CHARS),
@@ -939,7 +939,7 @@ def create_app(
             "name_asc",
             "name_desc",
         ] = "priority",
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Response:
         runtime = get_runtime()
         if (include_logs or search_field == "log" or match_case or whole_word or use_regex) and query.strip():
             cancelled = threading.Event()

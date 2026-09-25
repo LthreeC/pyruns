@@ -309,10 +309,11 @@ def _windows_console_available() -> bool:
 def _spawn_windows_conpty(
     command: Sequence[str],
     *,
-    cwd: str,
+    cwd: str | None,
     env: Mapping[str, str],
 ) -> WindowsConPtyProcessAdapter:
-    from winpty import Backend, PtyProcess
+    # The declared Windows-only dependency is absent from Linux type-check environments.
+    from winpty import Backend, PtyProcess  # ty: ignore[unresolved-import]
 
     dimensions = _terminal_dimensions(env)
     process = PtyProcess.spawn(
@@ -330,7 +331,7 @@ def _spawn_windows_conpty(
 def _spawn_posix_pty(
     command: Sequence[str],
     *,
-    cwd: str,
+    cwd: str | None,
     env: Mapping[str, str],
 ) -> PosixPtyProcessAdapter:
     import fcntl
@@ -368,7 +369,7 @@ def _spawn_posix_pty(
 def spawn_terminal_process(
     command: Sequence[str],
     *,
-    cwd: str,
+    cwd: str | None,
     env: Mapping[str, str],
 ) -> WindowsConPtyProcessAdapter | PosixPtyProcessAdapter:
     """Spawn one color-preserving terminal child on Windows, Linux, or macOS."""

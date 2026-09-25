@@ -2782,6 +2782,7 @@ class TaskManager:
                             candidate["name"],
                         )
                         continue
+                    settled_info = settled
                     with self._lock:
                         current = self._tasks_by_name.get(candidate["name"])
                         if current and self._same_task_dir(str(current.get("dir", "") or ""), candidate["dir"]):
@@ -2850,7 +2851,7 @@ class TaskManager:
                 "dir": candidate["dir"],
                 "identity": source_identity,
                 "run_index": active_task_run_index(
-                    settled if disk_status == "running" else (load_task_metadata(candidate["dir"]) or action_task)
+                    settled_info if disk_status == "running" else (load_task_metadata(candidate["dir"]) or action_task)
                 ),
             })
 
@@ -4214,10 +4215,12 @@ class TaskManager:
     ) -> Dict[str, Any]:
         legacy_started = task.get("_gpu_wait_started_at")
         legacy_wall_started = 0.0
-        try:
-            legacy_elapsed = self.gpu_scheduler.clock() - float(legacy_started)
-        except (TypeError, ValueError):
-            legacy_elapsed = -1.0
+        legacy_elapsed = -1.0
+        if legacy_started is not None:
+            try:
+                legacy_elapsed = self.gpu_scheduler.clock() - float(legacy_started)
+            except (TypeError, ValueError):
+                pass
         if legacy_elapsed >= 0:
             legacy_wall_started = max(0.0, now - legacy_elapsed)
 
@@ -4641,7 +4644,9 @@ class TaskManager:
             free_gib = getattr(gpu, "free_memory_gb", None)
             if (
                 not getattr(gpu, "metrics_available", True)
-                or any(value is None for value in (memory_pct, compute_pct, free_gib))
+                or memory_pct is None
+                or compute_pct is None
+                or free_gib is None
             ):
                 lines.append(f"GPU {index} blocked: metrics unavailable or invalid")
                 continue

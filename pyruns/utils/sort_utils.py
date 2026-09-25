@@ -3,7 +3,7 @@
 import math
 import re
 from collections.abc import Iterable, Mapping
-from typing import List, TypeVar
+from typing import Any, List, TypeVar
 
 from omegaconf import OmegaConf
 
@@ -85,7 +85,7 @@ def _natural_name_key(value: object) -> tuple:
     return tuple(key)
 
 
-def _finite_task_order(value: object) -> float | None:
+def _finite_task_order(value: Any) -> float | None:
     """Treat malformed saved weights as unset, preserving a total ordering."""
     if value is None:
         return None
@@ -172,6 +172,14 @@ def sort_tasks_for_manager(
     return pinned + others
 
 
+def _config_search_text(config: Any) -> str:
+    """Render unvalidated saved configs, retaining the fallback for unsupported values."""
+    try:
+        return OmegaConf.to_yaml(OmegaConf.create(config or {}), resolve=False).lower()
+    except Exception:
+        return str(config).lower()
+
+
 def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All") -> list[_Task]:
     """Apply status and multiline deep-search filtering."""
     tasks = [
@@ -188,13 +196,7 @@ def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All
     def matches_all(task: Mapping[str, object]) -> bool:
         normalized_blob = normalize_task_search_text(task.get("search_text", ""))
         if not normalized_blob:
-            try:
-                yaml_str = OmegaConf.to_yaml(
-                    OmegaConf.create(task.get("config", {}) or {}),
-                    resolve=False,
-                ).lower()
-            except Exception:
-                yaml_str = str(task.get("config", {})).lower()
+            yaml_str = _config_search_text(task.get("config", {}))
             text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}".lower()
             normalized_blob = normalize_task_search_text(text_blob)
 

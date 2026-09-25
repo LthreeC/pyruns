@@ -1099,7 +1099,7 @@ def _build_shell_command(
 def _spawn_captured_process(
     command: List[str],
     *,
-    workdir: str,
+    workdir: str | None,
     env: Dict[str, str],
     preserve_terminal_output: bool = False,
 ) -> Any:
@@ -1621,7 +1621,7 @@ def run_task_worker(
         while not heartbeat_stop.wait(interval):
             _refresh_runner_lease()
 
-    def _collect_source_state_async() -> None:
+    def _collect_source_state_async(command: List[str]) -> None:
         try:
             collected = _build_run_source_state(
                 task_dir=task_dir,
@@ -1994,6 +1994,7 @@ def run_task_worker(
 
         source_state_thread = threading.Thread(
             target=_collect_source_state_async,
+            args=(command,),
             daemon=True,
         )
         source_state_thread.start()

@@ -304,7 +304,8 @@ def generate_config_file(pyruns_dir: str, filepath: str, params: Dict[str, Dict[
         _replace_with_retry(temp_path, config_file)
         temp_path = ""
     finally:
-        if temp_path and os.path.lexists(temp_path):
+        # Failed writes reach finally before the path is cleared.
+        if temp_path and os.path.lexists(temp_path):  # ty: ignore[redundant-condition]
             try:
                 os.remove(temp_path)
             except OSError:

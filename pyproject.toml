@@ -94,22 +94,4 @@ select = ["E4", "E7", "E9", "F", "B", "ASYNC"]
 python-platform = "all"
 
 [tool.ty.src]
-# Expand this boundary after reviewing each module's runtime contracts.
-include = [
-    "pyruns/__init__.py",
-    "pyruns/cli/app.py",
-    "pyruns/cli/commands.py",
-    "pyruns/cli/submission_protocol.py",
-    "pyruns/core/run_environment.py",
-    "pyruns/core/task_generator.py",
-    "pyruns/utils/file_io.py",
-    "pyruns/utils/info_io.py",
-    "pyruns/utils/log_search.py",
-    "pyruns/utils/log_utils.py",
-    "pyruns/utils/process_utils.py",
-    "pyruns/utils/search_query.py",
-    "pyruns/utils/shell_runtime.py",
-    "pyruns/utils/task_files.py",
-    "pyruns/utils/track_store.py",
-    "scripts/check_frontend_static.py",
-]
+include = ["pyruns", "scripts"]

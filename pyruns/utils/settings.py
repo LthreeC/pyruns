@@ -597,7 +597,8 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
             os.replace(tmp_path, path)
             tmp_path = ""
         finally:
-            if tmp_path:
+            # Failed writes reach finally before the path is cleared.
+            if tmp_path:  # ty: ignore[redundant-condition]
                 try:
                     os.remove(tmp_path)
                 except OSError:
@@ -670,7 +671,8 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
             os.replace(tmp_path, path)
             tmp_path = ""
         finally:
-            if tmp_path:
+            # Failed writes reach finally before the path is cleared.
+            if tmp_path:  # ty: ignore[redundant-condition]
                 try:
                     os.remove(tmp_path)
                 except OSError:

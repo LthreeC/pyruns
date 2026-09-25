@@ -2,7 +2,7 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Hashable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time as datetime_time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
@@ -254,7 +254,8 @@ def save_yaml(path: str, data: Any) -> None:
         _replace_with_retry(temp_path, path)
         temp_path = ""
     finally:
-        if temp_path and os.path.lexists(temp_path):
+        # Failed writes reach finally before the path is cleared.
+        if temp_path and os.path.lexists(temp_path):  # ty: ignore[redundant-condition]
             try:
                 os.remove(temp_path)
             except OSError:
@@ -297,8 +298,12 @@ def iter_config_fields(
             yield path, value
 
 
-def flatten_dict(d: Mapping[str, Any] | DictConfig, parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
-    """Flatten a nested dict using dotted keys: ``{a: {b: 1}}`` → ``{'a.b': 1}``."""
+def flatten_dict(
+    d: Mapping[Any, Any] | DictConfig,
+    parent_key: Hashable = '',
+    sep: str = '.',
+) -> Dict[Hashable, Any]:
+    """Flatten using dotted keys; keys without a nonempty parent keep their type."""
     items = []
     source_items = d.items_ex(resolve=False) if isinstance(d, DictConfig) else d.items()
     for k, v in source_items:

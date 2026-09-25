@@ -161,7 +161,8 @@ def _atomic_write_json(path: str, payload: dict[str, Any]) -> None:
         os.replace(temporary, path)
         temporary = ""
     finally:
-        if temporary:
+        # Failed writes reach finally before the path is cleared.
+        if temporary:  # ty: ignore[redundant-condition]
             try:
                 os.remove(temporary)
             except OSError:

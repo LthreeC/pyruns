@@ -150,7 +150,8 @@ def _atomic_write(path: str, payload: dict[str, Any]) -> None:
                 os.close(fd)
             except OSError:
                 pass
-        if temporary:
+        # Failed writes reach finally before the path is cleared.
+        if temporary:  # ty: ignore[redundant-condition]
             try:
                 os.remove(temporary)
             except OSError:

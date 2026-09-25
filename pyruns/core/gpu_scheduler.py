@@ -68,12 +68,14 @@ class GpuDevice:
     def memory_used_pct(self) -> float | None:
         if not self._memory_metrics_available:
             return None
+        assert self.memory_used_mb is not None and self.memory_total_mb is not None
         return (self.memory_used_mb / self.memory_total_mb) * 100.0
 
     @property
     def free_memory_mb(self) -> float | None:
         if not self._memory_metrics_available:
             return None
+        assert self.memory_total_mb is not None and self.memory_used_mb is not None
         return self.memory_total_mb - self.memory_used_mb
 
     @property
@@ -491,12 +493,19 @@ class GpuResourceScheduler:
         reserved = self._reserved_count(gpu.index)
         if reserved >= config.max_tasks_per_gpu:
             return f"GPU {gpu.index} reserved ({reserved}/{config.max_tasks_per_gpu})"
-        if gpu.memory_used_pct > config.memory_used_pct:
-            return f"GPU {gpu.index} memory {gpu.memory_used_pct:.0f}% > {config.memory_used_pct:g}%"
-        if gpu.free_memory_gb < config.min_free_memory_gb:
-            return f"GPU {gpu.index} free {gpu.free_memory_gb:.1f} GiB < {config.min_free_memory_gb:g} GiB"
-        if gpu.compute_util_pct > config.compute_used_pct:
-            return f"GPU {gpu.index} compute {gpu.compute_util_pct:.0f}% > {config.compute_used_pct:g}%"
+        memory_used_pct = gpu.memory_used_pct
+        # The frozen snapshot passed the availability guard above.
+        assert memory_used_pct is not None
+        if memory_used_pct > config.memory_used_pct:
+            return f"GPU {gpu.index} memory {memory_used_pct:.0f}% > {config.memory_used_pct:g}%"
+        free_memory_gb = gpu.free_memory_gb
+        assert free_memory_gb is not None
+        if free_memory_gb < config.min_free_memory_gb:
+            return f"GPU {gpu.index} free {free_memory_gb:.1f} GiB < {config.min_free_memory_gb:g} GiB"
+        compute_util_pct = gpu.compute_util_pct
+        assert compute_util_pct is not None
+        if compute_util_pct > config.compute_used_pct:
+            return f"GPU {gpu.index} compute {compute_util_pct:.0f}% > {config.compute_used_pct:g}%"
         since = self._eligible_since.get(_gpu_stability_key(gpu))
         if since is None or now - since < config.stable_seconds:
             observed = 0.0 if since is None else max(0.0, now - since)
@@ -522,12 +531,19 @@ class GpuResourceScheduler:
         return decisions
 
     def _meets_static_limits(self, gpu: GpuDevice, config: GpuSchedulerConfig) -> bool:
-        return (
-            gpu.metrics_available
-            and gpu.memory_used_pct <= config.memory_used_pct
-            and gpu.free_memory_gb >= config.min_free_memory_gb
-            and gpu.compute_util_pct <= config.compute_used_pct
-        )
+        if not gpu.metrics_available:
+            return False
+        memory_used_pct = gpu.memory_used_pct
+        assert memory_used_pct is not None
+        if not memory_used_pct <= config.memory_used_pct:
+            return False
+        free_memory_gb = gpu.free_memory_gb
+        assert free_memory_gb is not None
+        if not free_memory_gb >= config.min_free_memory_gb:
+            return False
+        compute_util_pct = gpu.compute_util_pct
+        assert compute_util_pct is not None
+        return compute_util_pct <= config.compute_used_pct
 
     def _reserved_count(self, gpu_id: int) -> int:
         return sum(1 for gpu_ids in self._reservations.values() if gpu_id in gpu_ids)
