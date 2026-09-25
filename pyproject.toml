@@ -98,7 +98,11 @@ python-platform = "all"
 include = [
     "pyruns/utils/file_io.py",
     "pyruns/utils/info_io.py",
+    "pyruns/utils/log_search.py",
     "pyruns/utils/process_utils.py",
+    "pyruns/utils/search_query.py",
+    "pyruns/utils/shell_runtime.py",
+    "pyruns/utils/task_files.py",
     "pyruns/utils/track_store.py",
     "pyruns/cli/submission_protocol.py",
 ]

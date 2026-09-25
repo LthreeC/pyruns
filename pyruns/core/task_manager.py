@@ -14,7 +14,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, overload
 
 from omegaconf import OmegaConf
 
@@ -63,6 +63,7 @@ from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
 from pyruns.utils.sort_utils import sort_tasks_for_manager
 from pyruns.utils.task_files import (
+    TaskSearchResult,
     build_task_preview_and_search,
     build_task_search_result,
     filter_tasks_by_search_field,
@@ -319,6 +320,14 @@ class TaskManager:
     )
 
     @classmethod
+    @overload
+    def _snapshot_task_for_api(cls, task: None, *, summary: bool) -> None: ...
+
+    @classmethod
+    @overload
+    def _snapshot_task_for_api(cls, task: Dict[str, Any], *, summary: bool) -> Dict[str, Any]: ...
+
+    @classmethod
     def _snapshot_task_for_api(
         cls,
         task: Dict[str, Any] | None,
@@ -364,6 +373,14 @@ class TaskManager:
         else:
             data["gpu_wait"] = gpu_wait
         return data
+
+    @staticmethod
+    @overload
+    def serialize_task(task: None, *, summary: bool = False) -> None: ...
+
+    @staticmethod
+    @overload
+    def serialize_task(task: Dict[str, Any], *, summary: bool = False) -> Dict[str, Any]: ...
 
     @staticmethod
     def serialize_task(task: Dict[str, Any] | None, *, summary: bool = False) -> Dict[str, Any] | None:
@@ -615,7 +632,7 @@ class TaskManager:
         query: str,
         *,
         search_field: str = "all",
-    ) -> Dict[str, Dict[str, Any]]:
+    ) -> Dict[str, TaskSearchResult]:
         """Return bounded contexts and counts for a page of in-memory tasks."""
         return {
             name: build_task_search_result(task, query, search_field=search_field)

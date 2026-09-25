@@ -11,11 +11,12 @@ from collections.abc import Mapping
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import TypedDict
 
 from pyruns.utils.info_io import get_log_options
 from pyruns.utils.log_io import _log_decode_candidates, log_file_identity
 from pyruns.utils.search_query import SearchQuery, SearchQueryError, normalized_search_with_positions
-from pyruns.utils.task_files import _build_task_search_snippet
+from pyruns.utils.task_files import TaskSearchMatch, _build_task_search_snippet
 
 _CHUNK_CHARS = 16 * 1024
 _PREVIEW_LIMIT = 24
@@ -26,6 +27,23 @@ _CACHE_MISSES_PER_QUERY = 8192
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 _INCOMPLETE_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*)?$")
 _UNDECODABLE = re.compile("[\udc80-\udcff]")
+
+
+class LogSearchMatch(TaskSearchMatch):
+    log_file: str
+    line: int
+    offset: int
+    log_identity: str
+
+
+class _LogFileResult(TypedDict):
+    matches: list[LogSearchMatch]
+    match_count: int
+    found: set[str]
+
+
+class LogSearchResult(_LogFileResult):
+    errors: list[str]
 
 
 def _case_context(text, previous):
@@ -132,14 +150,14 @@ class LogSearch:
             signatures = {path: entry[0] for path, entry in cached[1].items()} if cached else {}
         return _MissCacheSnapshot(matcher.cache_key, MappingProxyType(signatures))
 
-    def search(self, task_dir, query, cancelled, matcher=None, *, miss_snapshot=None):
+    def search(self, task_dir, query, cancelled, matcher=None, *, miss_snapshot=None) -> LogSearchResult:
         matcher = matcher or SearchQuery(query)
         needles = matcher.needles
         known_misses = (
             miss_snapshot.signatures
             if miss_snapshot is not None and miss_snapshot.query_key == matcher.cache_key else None
         )
-        result = {"matches": [], "match_count": 0, "found": set(), "errors": []}
+        result: LogSearchResult = {"matches": [], "match_count": 0, "found": set(), "errors": []}
         try:
             options = get_log_options(task_dir)
         except OSError:
@@ -188,9 +206,9 @@ class LogSearch:
         return result
 
     @staticmethod
-    def _search_file_patterns(path, name, size, matcher, cancelled, encoding_hint=None):
+    def _search_file_patterns(path, name, size, matcher, cancelled, encoding_hint=None) -> _LogFileResult:
         """Evaluate complete lines so anchors, word boundaries and greedy matches are exact."""
-        result = {"matches": [], "match_count": 0, "found": set()}
+        result: _LogFileResult = {"matches": [], "match_count": 0, "found": set()}
         encoding = encoding_hint or _encoding(path)
         identity = log_file_identity(path)
         line = 0
@@ -236,8 +254,8 @@ class LogSearch:
         return result
 
     @staticmethod
-    def _search_file(path, name, size, needles, cancelled, encoding_hint=None, *, match_case=False):
-        result = {"matches": [], "match_count": 0, "found": set()}
+    def _search_file(path, name, size, needles, cancelled, encoding_hint=None, *, match_case=False) -> _LogFileResult:
+        result: _LogFileResult = {"matches": [], "match_count": 0, "found": set()}
         normalize = SearchQuery("", match_case=match_case).normalize
         contextual_case = not match_case and any("σ" in needle or "ς" in needle for needle in needles)
         case_prefix = "0"

@@ -73,7 +73,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
 from pyruns.utils.file_io import read_bounded_bytes
-from pyruns.utils.log_search import LogSearch
+from pyruns.utils.log_search import LogSearch, LogSearchResult
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
@@ -1237,7 +1237,7 @@ class PyrunsRuntime:
             selected = []
             errors = []
             miss_snapshot = self._log_search.snapshot_misses(matcher) if search_logs else None
-            empty_logs = {"matches": [], "match_count": 0, "found": set(), "errors": []}
+            empty_logs: LogSearchResult = {"matches": [], "match_count": 0, "found": set(), "errors": []}
             for task in ordered:
                 if cancelled.is_set():
                     raise CancelledError()

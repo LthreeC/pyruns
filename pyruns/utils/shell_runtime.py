@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from functools import lru_cache
-from typing import Any, Dict
+from typing import Any, TypedDict
 
 from pyruns._config import (
     ENV_KEY_CLI_SHELL_EXECUTABLE,
@@ -27,6 +27,19 @@ except ImportError:  # pragma: no cover - psutil is available in normal installs
 
 SHELL_MODE_FOLLOW = "follow"
 SHELL_MODE_CUSTOM = "custom"
+
+
+class DetectedShellRuntime(TypedDict):
+    source: str
+    terminal_kind: str
+    display_name: str
+    executable: str
+    available: bool
+
+
+class ShellRuntime(DetectedShellRuntime):
+    mode: str
+
 
 _SHELL_DISPLAY_NAMES = {
     "powershell": "PowerShell",
@@ -249,7 +262,7 @@ def _load_shell_preferences(settings_root: str | None = None) -> tuple[str, str]
     return mode, shell_executable
 
 
-def _find_shell_in_process_tree() -> Dict[str, str] | None:
+def _find_shell_in_process_tree() -> DetectedShellRuntime | None:
     """Inspect the current process ancestry to find the launching shell."""
 
     if psutil is None:
@@ -284,7 +297,7 @@ def _find_shell_in_process_tree() -> Dict[str, str] | None:
     return None
 
 
-def _fallback_follow_shell() -> Dict[str, str]:
+def _fallback_follow_shell() -> DetectedShellRuntime:
     """Build a best-effort shell fallback when ancestry detection is unavailable."""
 
     if os.name == "nt":
@@ -321,7 +334,7 @@ def _fallback_follow_shell() -> Dict[str, str]:
 
 
 @lru_cache(maxsize=1)
-def get_follow_shell_runtime() -> Dict[str, str]:
+def get_follow_shell_runtime() -> DetectedShellRuntime:
     """Return the cached runtime info for the current launching terminal."""
 
     explicit = str(os.getenv(ENV_KEY_CLI_SHELL_EXECUTABLE, "") or "").strip()
@@ -338,7 +351,7 @@ def get_follow_shell_runtime() -> Dict[str, str]:
     return _find_shell_in_process_tree() or _fallback_follow_shell()
 
 
-def get_shell_runtime_for_workspace(settings_root: str | None = None) -> Dict[str, Any]:
+def get_shell_runtime_for_workspace(settings_root: str | None = None) -> ShellRuntime:
     """Return the effective shell runtime configuration for one workspace."""
 
     mode, configured_shell = _load_shell_preferences(settings_root)
@@ -357,7 +370,7 @@ def get_shell_runtime_for_workspace(settings_root: str | None = None) -> Dict[st
             "available": available,
         }
 
-    runtime = dict(get_follow_shell_runtime())
+    runtime: ShellRuntime = {**get_follow_shell_runtime(), "mode": SHELL_MODE_FOLLOW}
     raw_executable = str(runtime.get("executable", "") or "").strip()
     resolved_path = _resolve_candidate_path(raw_executable)
     resolved = resolved_path or raw_executable
@@ -370,11 +383,10 @@ def get_shell_runtime_for_workspace(settings_root: str | None = None) -> Dict[st
     runtime["available"] = bool(
         resolved_path and _probe_shell_executable(resolved_path, runtime["terminal_kind"])
     )
-    runtime["mode"] = SHELL_MODE_FOLLOW
     return runtime
 
 
-def get_shell_runtime_for_task(task_dir: str | None = None) -> Dict[str, Any]:
+def get_shell_runtime_for_task(task_dir: str | None = None) -> ShellRuntime:
     """Return the effective shell runtime configuration for one task directory."""
 
     return get_shell_runtime_for_workspace(_shell_settings_root_for_task(task_dir))

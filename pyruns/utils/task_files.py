@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, TypeVar, TypedDict
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -41,6 +41,21 @@ TASK_KIND_ALIASES = {
     "python": TASK_KIND_CONFIG,
     TASK_KIND_SHELL: TASK_KIND_SHELL,
 }
+
+_Task = TypeVar("_Task", bound=Mapping[str, object])
+
+
+class TaskSearchMatch(TypedDict):
+    field: str
+    location: str
+    snippet: str
+    match_start: int
+    match_end: int
+
+
+class TaskSearchResult(TypedDict):
+    matches: list[TaskSearchMatch]
+    match_count: int
 
 
 def _empty_config() -> DictConfig:
@@ -285,9 +300,9 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, 
 
 
 def filter_tasks_by_search_field(
-    tasks: list, query: str, status: str = "All", search_field: str = "all",
+    tasks: list[_Task], query: str, status: str = "All", search_field: str = "all",
     *, matcher: SearchQuery | None = None, include_payload: bool = True,
-) -> list:
+) -> list[_Task]:
     """Filter metadata using the same sources as the displayed match previews."""
     candidates = filter_tasks(tasks, "", status)
     matcher = matcher or SearchQuery(query)
@@ -299,7 +314,9 @@ def filter_tasks_by_search_field(
     ]
 
 
-def task_search_found(task, matcher, search_field="all", *, include_payload=True):
+def task_search_found(
+    task: Mapping[str, Any], matcher: SearchQuery, search_field: str = "all", *, include_payload: bool = True,
+) -> set[str]:
     """Match cached text, optionally limiting uncached sources to metadata."""
     if matcher.plain and search_field == "all" and task.get("search_text"):
         # Preserve the cached metadata fast path, adding task-specific env values.
@@ -319,7 +336,7 @@ def build_task_search_matches(
     *,
     limit: int = _TASK_SEARCH_MATCH_LIMIT,
     max_snippet_chars: int = _TASK_SEARCH_SNIPPET_CHARS,
-) -> List[Dict[str, Any]]:
+) -> list[TaskSearchMatch]:
     """Build bounded, display-ready match context for one filtered task."""
 
     return build_task_search_result(
@@ -338,7 +355,7 @@ def build_task_search_result(
     matcher: SearchQuery | None = None,
     limit: int = _TASK_SEARCH_MATCH_LIMIT,
     max_snippet_chars: int = _TASK_SEARCH_SNIPPET_CHARS,
-) -> Dict[str, Any]:
+) -> TaskSearchResult:
     """Return bounded contexts and the exact in-memory match count for one task."""
 
     matcher = matcher or SearchQuery(query)
@@ -347,7 +364,7 @@ def build_task_search_result(
 
     safe_limit = max(0, int(limit))
     snippet_chars = max(32, int(max_snippet_chars))
-    matches: List[Dict[str, Any]] = []
+    matches: list[TaskSearchMatch] = []
     match_count = 0
     for field, location, source in _task_search_sources(task, search_field):
         result = matcher.scan(source, max(0, safe_limit - len(matches)))

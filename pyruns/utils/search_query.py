@@ -5,11 +5,18 @@ from __future__ import annotations
 import re
 from array import array
 from concurrent.futures import CancelledError
+from typing import TypedDict
 
 import regex
 
 REGEX_TIMEOUT_SECONDS = 0.2
 _COLON_SPACES = re.compile(r"[^\S\r\n]*:[^\S\r\n]*")
+
+
+class SearchScanResult(TypedDict):
+    match_count: int
+    found: set[str]
+    spans: list[tuple[int, int]]
 
 
 class SearchQueryError(ValueError):
@@ -65,12 +72,12 @@ class SearchQuery:
             except (regex.error, RecursionError, OverflowError) as exc:
                 raise SearchQueryError(f"Invalid regular expression: {exc}") from exc
 
-    def normalize(self, text):
+    def normalize(self, text: str) -> str:
         if self.use_regex:
             return text
         return _COLON_SPACES.sub(":", text if self.match_case else text.lower())
 
-    def found(self, text):
+    def found(self, text: object) -> set[str]:
         if self.cancelled is not None and self.cancelled.is_set():
             raise CancelledError()
         text = self.normalize(str(text or ""))
@@ -83,13 +90,15 @@ class SearchQuery:
         except TimeoutError as exc:
             raise SearchQueryError("Search pattern took too long. Simplify the regular expression.") from exc
 
-    def scan(self, text, limit=24):
+    def scan(self, text: object, limit: int = 24) -> SearchScanResult:
         """Count all matches, retaining only bounded original-character spans."""
         if self.cancelled is not None and self.cancelled.is_set():
             raise CancelledError()
         text = str(text or "")
         normalized = self.normalize(text)
-        count, found, spans = 0, set(), []
+        count = 0
+        found: set[str] = set()
+        spans: list[tuple[int, int]] = []
         try:
             for needle in self.needles:
                 if self.patterns:

@@ -2,7 +2,8 @@
 
 import math
 import re
-from typing import Dict, List
+from collections.abc import Iterable, Mapping
+from typing import List, TypeVar
 
 from omegaconf import OmegaConf
 
@@ -23,6 +24,7 @@ TASK_SORT_MODES = frozenset({
     "name_asc",
     "name_desc",
 })
+_Task = TypeVar("_Task", bound=Mapping[str, object])
 
 
 def normalize_task_search_text(value: object) -> str:
@@ -44,7 +46,7 @@ def task_search_needles(query: str) -> List[str]:
     return needles
 
 
-def _timestamp_weight(task: Dict[str, object]) -> int:
+def _timestamp_weight(task: Mapping[str, object]) -> int:
     """Convert the latest task activity timestamp to a sortable integer."""
     finishes = task.get("finish_times") or []
     starts = task.get("start_times") or []
@@ -64,7 +66,7 @@ def _timestamp_weight(task: Dict[str, object]) -> int:
     return int(digits) if digits else 0
 
 
-def task_sort_key(task: Dict[str, object]) -> tuple:
+def task_sort_key(task: Mapping[str, object]) -> tuple:
     """Sort active tasks first, then by latest activity, then by status priority."""
     status = str(task.get("status", "pending") or "pending")
     active_rank = 1 if status in _ACTIVE_STATUSES else 0
@@ -94,7 +96,7 @@ def _finite_task_order(value: object) -> float | None:
     return order if math.isfinite(order) else None
 
 
-def task_manager_sort_key(task: Dict[str, object]) -> tuple:
+def task_manager_sort_key(task: Mapping[str, object]) -> tuple:
     """Sort one task by the Manager page's logical order within its pin group."""
     active_rank, time_rank, inactive_tie = task_sort_key(task)
 
@@ -115,7 +117,7 @@ def task_manager_sort_key(task: Dict[str, object]) -> tuple:
     )
 
 
-def _manual_sort_key(task: Dict[str, object]) -> tuple:
+def _manual_sort_key(task: Mapping[str, object]) -> tuple:
     order = _finite_task_order(task.get("task_order"))
     if order is not None:
         return (0, order, *_natural_name_key(task.get("name", "")))
@@ -123,9 +125,9 @@ def _manual_sort_key(task: Dict[str, object]) -> tuple:
 
 
 def _sort_manager_group(
-    tasks: List[Dict[str, object]],
+    tasks: list[_Task],
     sort_mode: str,
-) -> List[Dict[str, object]]:
+) -> list[_Task]:
     if sort_mode == "priority":
         return sorted(tasks, key=task_manager_sort_key)
     if sort_mode == "manual":
@@ -152,9 +154,9 @@ def _sort_manager_group(
 
 
 def sort_tasks_for_manager(
-    tasks: List[Dict[str, object]],
+    tasks: Iterable[_Task | None],
     sort_mode: str = "priority",
-) -> List[Dict[str, object]]:
+) -> list[_Task]:
     """Sort Manager cards within pinned and unpinned groups."""
     if sort_mode not in TASK_SORT_MODES:
         raise ValueError(f"Unknown task sort mode: {sort_mode}")
@@ -170,7 +172,7 @@ def sort_tasks_for_manager(
     return pinned + others
 
 
-def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
+def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All") -> list[_Task]:
     """Apply status and multiline deep-search filtering."""
     tasks = [
         task for task in all_tasks
@@ -183,7 +185,7 @@ def filter_tasks(all_tasks: list, query: str, status_mode: str = "All") -> list:
     if not query_lines:
         return tasks
 
-    def matches_all(task: Dict[str, object]) -> bool:
+    def matches_all(task: Mapping[str, object]) -> bool:
         normalized_blob = normalize_task_search_text(task.get("search_text", ""))
         if not normalized_blob:
             try:
