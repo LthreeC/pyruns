@@ -16,6 +16,14 @@ import psutil
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 
 
+def _monotonic_ns() -> int:
+    """Return a monotonic nanosecond tick with a lightweight test fallback."""
+    clock = getattr(time, "monotonic_ns", None)
+    if callable(clock):
+        return int(clock())
+    return int(time.monotonic() * 1_000_000_000)
+
+
 class _SampleClock:
     """Keep one sample's clock reads consistent without losing elapsed time."""
 
@@ -23,10 +31,10 @@ class _SampleClock:
 
     def __init__(self) -> None:
         self.start = time.monotonic()
-        self._start_ns = time.monotonic_ns()
+        self._start_ns = _monotonic_ns()
 
     def now(self) -> float:
-        elapsed_ns = time.monotonic_ns() - self._start_ns
+        elapsed_ns = _monotonic_ns() - self._start_ns
         return self.start + max(0.0, elapsed_ns / 1_000_000_000)
 
 
