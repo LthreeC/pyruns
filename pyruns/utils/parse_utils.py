@@ -170,7 +170,7 @@ def _extract_value(node: ast.AST) -> Any:
     if isinstance(node, ast.Tuple):
         return tuple(_extract_value(x) for x in node.elts)
     if isinstance(node, ast.Dict):
-        return {_extract_value(k): _extract_value(v) for k, v in zip(node.keys, node.values)}
+        return {_extract_value(k): _extract_value(v) for k, v in zip(node.keys, node.values, strict=True)}
     return None
 
 

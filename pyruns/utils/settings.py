@@ -582,7 +582,7 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
                     val_text = _yaml_scalar_to_text(value)
                     pattern = _setting_block_pattern(key)
                     if pattern.search(new_text):
-                        new_text = pattern.sub(lambda _: f"{key}: {val_text}", new_text)
+                        new_text = pattern.sub(lambda _, text=f"{key}: {val_text}": text, new_text)
                     else:
                         separator = "" if not new_text or new_text.endswith("\n") else "\n"
                         new_text = f"{new_text}{separator}{key}: {val_text}\n"

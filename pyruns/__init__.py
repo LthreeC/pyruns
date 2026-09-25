@@ -112,7 +112,7 @@ def _write_metrics(
                 append_task_track(task_dir, track_data, run_index=run_index)
                 return
 
-            def _apply(info: Dict[str, Any]) -> None:
+            def _apply(info: Dict[str, Any], run_index: int | None = run_index) -> None:
                 target = run_index if run_index is not None else max(1, _lazy_export("run_slot_count")(info))
                 slot = _lazy_export("ensure_run_slot")(info, target)
                 apply_update(info, slot)

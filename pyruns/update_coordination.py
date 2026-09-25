@@ -79,7 +79,7 @@ def _bounded_json(
     try:
         with open(path, "rb") as handle:
             raw = handle.read(UPDATE_MAX_JSON_BYTES + 1)
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         if strict:
             parent = os.path.dirname(path) or "."
             try:
@@ -96,7 +96,7 @@ def _bounded_json(
             if not missing_ok:
                 raise UpdateCoordinationError(
                     f"Could not read shared Pyruns update state: {path}"
-                )
+                ) from exc
         return None
     except OSError as exc:
         if strict:
@@ -828,7 +828,7 @@ class EnvironmentActivityLease:
             ):
                 raise UpdateInProgressError(
                     "Pyruns is updating; new tasks are disabled until every UI restarts."
-                )
+                ) from exc
             self._disabled = True
             return self
         self._started = True

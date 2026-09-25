@@ -9,6 +9,7 @@
 .ruff_cache/
 .pytest_cache/
 .pytest-run/
+/test-results/
 .playwright-mcp/
 .pyruns-update/
 *.egg-info/

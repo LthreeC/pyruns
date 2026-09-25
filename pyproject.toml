@@ -57,6 +57,8 @@ test = [
 ]
 lint = [
     "flake8>=7,<8",
+    "ruff==0.16.9",
+    "ty==0.0.84",
 ]
 examples = [
     "hydra-core>=1.3,<2",
@@ -80,3 +82,23 @@ build_py = "pyruns._build.CleanBuildPy"
 
 [tool.setuptools.package-data]
 "pyruns" = ["*.css", "**/*.css", "*.html", "**/*.html", "*.js", "**/*.js", "*.txt", "**/*.txt", "*.svg", "**/*.svg"]
+
+[tool.ruff]
+target-version = "py310"
+extend-exclude = [".history", ".pytest-run", ".tmp", "docs/.vitepress", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "ASYNC"]
+
+[tool.ty.environment]
+python-platform = "all"
+
+[tool.ty.src]
+# Expand this boundary after reviewing each module's runtime contracts.
+include = [
+    "pyruns/utils/file_io.py",
+    "pyruns/utils/info_io.py",
+    "pyruns/utils/process_utils.py",
+    "pyruns/utils/track_store.py",
+    "pyruns/cli/submission_protocol.py",
+]

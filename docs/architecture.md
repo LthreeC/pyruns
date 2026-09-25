@@ -284,7 +284,25 @@ Monitor 页面依赖两种数据源：
 - 实时 FastAPI runtime
 - 真实任务调度
 
-## 8. 推荐补图位置
+## 8. 持续质量检查
+
+Python CI 覆盖 Linux Python 3.10–3.13、Windows/macOS Python 3.12，并为每个组合保存独立的 JUnit 测试报告，保留 14 天；测试失败时也上传已生成的报告。前端、三平台浏览器和隔离 wheel 另有检查。
+
+静态门槛包含原有 flake8 错误检查，以及 `pyruns/`、`scripts/` 的 Ruff E4/E7/E9/F/B/ASYNC 规则。ty 当前检查文件读取、任务持久化、指标存储、进程管理和提交协议五个模块，按全部平台解析类型；其余模块需逐步审阅后扩展覆盖。工具版本固定在 `lint` 可选依赖中。
+
+在仓库根目录、已激活的 Python 环境中运行：
+
+```bash
+python -m pip install -e ".[test,lint]"
+python -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+python -m ruff check pyruns scripts
+python -m ty check
+python -m pytest -q --junitxml=test-results/pytest.xml
+```
+
+如果 ty 与项目依赖安装在不同环境，使用 `ty check --python <项目虚拟环境目录>` 指定依赖环境。静态检查补充运行回归；小文档读取的分配上限检查仍随跨平台 pytest 执行。
+
+## 9. 推荐补图位置
 
 如果你想让这一页更有展示感，最适合补的图是：
 

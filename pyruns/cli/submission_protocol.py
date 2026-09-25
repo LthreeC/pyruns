@@ -325,7 +325,7 @@ def write_submission_payload(
         "submission_token": safe_token,
         "submissions": [
             {"name": name, "run_index": run_index}
-            for name, run_index in zip(normalized_names, normalized_run_indices)
+            for name, run_index in zip(normalized_names, normalized_run_indices, strict=True)
         ],
     }
     encoded = json.dumps(

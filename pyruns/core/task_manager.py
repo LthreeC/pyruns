@@ -554,7 +554,7 @@ class TaskManager:
         previous = self._search_view_cache.get(name)
         if previous is None or signature != previous[0]:
             view = MappingProxyType({
-                **dict(zip(self._SEARCH_VIEW_DEFAULTS, scalars)),
+                **dict(zip(self._SEARCH_VIEW_DEFAULTS, scalars, strict=True)),
                 "start_times": starts, "finish_times": finishes,
                 "config": {} if config is self._SEARCH_CONFIG_MISSING else config,
                 "env": MappingProxyType(dict(env_items)),
@@ -1306,7 +1306,7 @@ class TaskManager:
         )
         missing_metadata: list[tuple[Dict[str, Any], int]] = []
         for (task, revision), (info_stat, info_signature, payload_changed, probe_error) in zip(
-            current, probes,
+            current, probes, strict=True,
         ):
             info_path = os.path.join(task["dir"], TASK_INFO_FILENAME)
             if probe_error is not None:
@@ -3832,7 +3832,12 @@ class TaskManager:
             if not task_name or not task_dir:
                 continue
 
-            def _apply(info: Dict[str, Any]) -> None:
+            def _apply(
+                info: Dict[str, Any],
+                run_index: int = run_index,
+                queued_at: float = queued_at,
+                gpu_wait: Dict[str, Any] | None = gpu_wait,
+            ) -> None:
                 if str(info.get("status", "") or "").lower() != "queued":
                     raise TaskStateConflict("task is no longer queued")
                 if self._next_run_index(info) != run_index or self._queue_started_at_value(info) != queued_at:

@@ -193,7 +193,7 @@ def generate_batch_configs(
     # Build zip combos
     if zip_params:
         z_keys = list(zip_params.keys())
-        z_combos = list(zip(*[zip_params[k] for k in z_keys]))
+        z_combos = list(zip(*[zip_params[k] for k in z_keys], strict=True))
     else:
         z_keys = []
         z_combos = [()]
@@ -204,10 +204,10 @@ def generate_batch_configs(
         for z_combo in z_combos:
             temp_flat = fixed.copy()
             desc_parts = []
-            for k, v in zip(p_keys, p_combo):
+            for k, v in zip(p_keys, p_combo, strict=True):
                 temp_flat[k] = v
                 desc_parts.append(f"{k.split('.')[-1]}={v}")
-            for k, v in zip(z_keys, z_combo):
+            for k, v in zip(z_keys, z_combo, strict=True):
                 temp_flat[k] = v
                 desc_parts.append(f"{k.split('.')[-1]}={v}")
             config = OmegaConf.create(unflatten_dict(temp_flat))

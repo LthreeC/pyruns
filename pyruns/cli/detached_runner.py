@@ -157,7 +157,7 @@ def _stop_and_report(
         claimed=claimed,
         detail=detail,
     )
-    expected_runs = dict(zip(names, run_indices))
+    expected_runs = dict(zip(names, run_indices, strict=True))
     stopped = _claimed_tasks_stopped(tm, selected, claimed, expected_runs)
     status = stopped_status if stopped else "unresolved"
     final_detail = detail if stopped else f"{detail}; cleanup could not be confirmed"
@@ -265,7 +265,7 @@ def main() -> int:
             status="claiming",
             claimed=claimed,
         )
-        for name, expected_run_index in zip(names, run_indices):
+        for name, expected_run_index in zip(names, run_indices, strict=True):
             if abort_requested(abort_file, token=token):
                 return _stop_and_report(
                     tm,
@@ -348,7 +348,7 @@ def main() -> int:
                 return 1
             statuses = [
                 _submitted_run_status(info, run_index)
-                for info, run_index in zip(infos, run_indices)
+                for info, run_index in zip(infos, run_indices, strict=True)
             ]
             if any(status is None for status in statuses):
                 return 1

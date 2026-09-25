@@ -416,11 +416,11 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                 continue
             try:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            except FileExistsError:
+            except FileExistsError as exc:
                 if _remove_stale_lock_file(lock_path):
                     continue
                 if time.monotonic() - start >= timeout_sec:
-                    raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
+                    raise TimeoutError(f"Timed out acquiring file lock for {task_dir}") from exc
                 if queue.entry is None:
                     queue.register(timeout_sec - (time.monotonic() - start))
                 time.sleep(min(_LOCK_QUEUE_POLL_SEC, max(0.0, timeout_sec - (time.monotonic() - start))))
@@ -490,7 +490,8 @@ def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
     if TRACK_STORE_KEY not in info:
         return info
     try:
-        for attempt in range(_READ_RETRY_COUNT):
+        attempt = 0
+        while True:
             try:
                 if TRACK_STORE_KEY in info:
                     info["tracks"] = read_tracks(task_dir, info[TRACK_STORE_KEY], slots=run_slot_count(info))
@@ -498,8 +499,9 @@ def load_task_info(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
             except MissingTrackGeneration:
                 # Replacement commits the new generation before switching JSON.
                 # A pruned pointer is retried only when metadata actually changed.
+                attempt += 1
                 latest = load_task_metadata(task_dir, raise_error=True)
-                if attempt == _READ_RETRY_COUNT - 1 or latest.get(TRACK_STORE_KEY) == info.get(TRACK_STORE_KEY):
+                if attempt >= _READ_RETRY_COUNT or latest.get(TRACK_STORE_KEY) == info.get(TRACK_STORE_KEY):
                     raise
                 info = latest
     except Exception:

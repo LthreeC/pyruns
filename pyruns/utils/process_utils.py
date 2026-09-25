@@ -5,7 +5,7 @@ import math
 import os
 import subprocess
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 from pyruns.utils import get_logger
 
@@ -17,7 +17,11 @@ _PROCESS_EXIT_TIMEOUT_SEC = 5.0
 _PROCESS_CREATE_TIME_TOLERANCE_SEC = 0.01
 
 
-def hidden_subprocess_kwargs() -> dict[str, int]:
+class _HiddenSubprocessKwargs(TypedDict, total=False):
+    creationflags: int
+
+
+def hidden_subprocess_kwargs() -> _HiddenSubprocessKwargs:
     """Return flags that prevent console windows for background child processes."""
 
     if os.name == "nt":

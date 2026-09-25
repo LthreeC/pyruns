@@ -39,9 +39,20 @@ jobs:
           python -m pip install -e ".[test,lint]" pytest-github-actions-annotate-failures==0.4.2
       - name: Lint
         if: runner.os == 'Linux' && matrix.python-version == '3.12'
-        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          ruff check pyruns scripts --output-format github
+          ty check --output-format github --python "$(python -c 'import sys; print(sys.executable)')"
       - name: Test
-        run: pytest -q
+        run: pytest -q --junitxml=test-results/pytest.xml
+      - name: Upload Python test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pytest-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: test-results/pytest.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
   frontend:
     runs-on: ubuntu-latest

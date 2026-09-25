@@ -694,3 +694,33 @@ def test_replacement_between_read_batches_reloads_complete_new_generation(task, 
         assert reader.result(timeout=5)["tracks"] == [{"loss": [100, 101, 102]}]
     with sqlite3.connect(task / track_store.TRACK_STORE_FILENAME) as connection:
         assert connection.execute("SELECT count(*) FROM generations").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("replacements", [4, 5], ids=["last-attempt", "exhausted"])
+@pytest.mark.parametrize("raise_error", [False, True], ids=["best-effort", "strict"])
+def test_detail_read_bounds_retries_when_generations_keep_changing(task, monkeypatch, replacements, raise_error):
+    externalize(task)
+    original_read = track_store.read_tracks
+    calls = 0
+
+    def replace_before_read(task_dir, descriptor, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= replacements:
+            info = load_task_metadata(task_dir, raise_error=True)
+            info["tracks"] = [{"loss": [calls]}]
+            # A real replacement prunes the generation held by this reader.
+            save_task_info(task_dir, info)
+        return original_read(task_dir, descriptor, **kwargs)
+
+    monkeypatch.setattr(track_store, "read_tracks", replace_before_read)
+    if replacements == 5 and raise_error:
+        with pytest.raises(track_store.MissingTrackGeneration):
+            load_task_info(str(task), raise_error=True)
+    else:
+        result = load_task_info(str(task), raise_error=raise_error)
+        if replacements == 5:
+            assert result == {}
+        else:
+            assert result["tracks"] == [{"loss": [4]}]
+    assert calls == 5
