@@ -3,13 +3,32 @@
 import io
 import json
 import os
+from pathlib import Path
 import stat
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from pyruns.utils import file_io
 from pyruns.utils.file_io import read_bounded_bytes
+
+
+def test_small_document_readers_do_not_allocate_their_size_limits():
+    root = Path(__file__).resolve().parents[1]
+    # Keep tracing isolated from pytest/plugins; the shared Windows fixture
+    # ensures this child cannot create a console window.
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/benchmark_file_reads.py"), "--iterations", "0"],
+        cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["passed"]
+    assert {item["reader"] for item in report["readers"]} == {
+        "task", "yaml", "settings", "config", "template", "metadata", "submission",
+    }
 
 
 def test_empty_file_with_large_limit_returns_empty_bytes(tmp_path):
