@@ -2058,8 +2058,22 @@ class TestFlattenUnflatten:
 
 #  YAML / JSON I/O
 
+@pytest.fixture(params=["python", "libyaml"])
+def pyruns_yaml_backend(request, monkeypatch):
+    with monkeypatch.context() as patch:
+        if request.param == "python":
+            patch.delattr(yaml, "CSafeLoader", raising=False)
+        elif not hasattr(yaml, "CSafeLoader"):
+            pytest.skip("PyYAML was installed without libyaml")
+        config_utils._get_pyruns_yaml_loader.cache_clear()
+        try:
+            yield
+        finally:
+            config_utils._get_pyruns_yaml_loader.cache_clear()
+
+
 class TestYamlIO:
-    def test_config_parses_preserve_scalars_and_other_yaml_loaders(self):
+    def test_config_parses_preserve_scalars_and_other_yaml_loaders(self, pyruns_yaml_backend):
         text = (
             "batch: 1:3:1\nleading: 012\ninteger: -4\nhex: 0xff\n"
             "octal: 0o17\nbinary: 0b101\nrate: 1e-3\nflag: true\n"
@@ -2079,7 +2093,7 @@ class TestYamlIO:
         assert yaml.safe_load(text) == global_yaml
         assert OmegaConf.to_container(OmegaConf.create(text), resolve=False) == global_omegaconf
 
-    def test_config_parse_state_does_not_leak_between_documents_or_errors(self):
+    def test_config_parse_state_does_not_leak_between_documents_or_errors(self, pyruns_yaml_backend):
         text = "source: &data\n  value: 7\ncopy: *data\n"
         first = config_utils.load_config_text(text)
         first.source.value = 99
@@ -2087,12 +2101,34 @@ class TestYamlIO:
             ("copy: *data\n", "undefined alias"),
             ("value: 1\nvalue: 2\n", "duplicate key"),
             ("items: [1, 2\n", "expected"),
+            ("value: !!python/object/apply:os.system [forbidden]\n", "could not determine a constructor"),
         ]:
             with pytest.raises(yaml.YAMLError, match=message):
                 config_utils.load_config_text(invalid)
             assert config_utils.load_config_text(text) == {"source": {"value": 7}, "copy": {"value": 7}}
 
-    def test_concurrent_config_parses_keep_independent_anchors_and_values(self):
+    @pytest.mark.parametrize("document", [
+        "value: 1\nvalue: 2\n",
+        "items: [1, 2\n",
+        "copy: *undefined\n",
+        "name: \ud800\n",
+    ])
+    def test_config_errors_preserve_python_loader_diagnostics(self, pyruns_yaml_backend, document):
+        with pytest.raises(yaml.YAMLError) as original:
+            yaml.load(document, Loader=config_utils.get_yaml_loader())
+        with pytest.raises(yaml.YAMLError) as actual:
+            config_utils.load_config_text(document)
+        assert type(actual.value) is type(original.value)
+        assert str(actual.value) == str(original.value)
+
+    def test_config_keeps_unicode_accepted_by_python_parser(self, pyruns_yaml_backend):
+        document = 'source: &data {value: 7}\ncopy: *data\nname: "\\uD800"\n'
+        config = config_utils.load_config_text(document)
+        assert OmegaConf.to_container(config, resolve=False) == {
+            "source": {"value": 7}, "copy": {"value": 7}, "name": "\ud800",
+        }
+
+    def test_concurrent_config_parses_keep_independent_anchors_and_values(self, pyruns_yaml_backend):
         from concurrent.futures import ThreadPoolExecutor
 
         def parse(index):

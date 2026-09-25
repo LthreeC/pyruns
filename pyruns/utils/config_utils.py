@@ -29,9 +29,22 @@ _PYRUNS_INT_PATTERN = re.compile(
 )
 
 
-@lru_cache(maxsize=1)
-def _get_pyruns_yaml_loader() -> Any:
+@lru_cache(maxsize=2)
+def _get_pyruns_yaml_loader(*, pure_python: bool = False) -> Any:
     """Reuse the configured class; yaml.load creates a fresh parser per call."""
+    if not pure_python:
+        python_loader = _get_pyruns_yaml_loader(pure_python=True)
+        c_loader = getattr(yaml, "CSafeLoader", None)
+        if c_loader is None:
+            return python_loader
+
+        # Replace parsing while retaining OmegaConf's mapping constructor,
+        # duplicate-key checks and Pyruns' private scalar resolvers.
+        class PyrunsYamlLoader(c_loader, python_loader):
+            pass
+
+        return PyrunsYamlLoader
+
     loader = get_yaml_loader()
     loader.yaml_implicit_resolvers = {
         key: [
@@ -52,7 +65,16 @@ def _get_pyruns_yaml_loader() -> Any:
 def load_config_text(text: str) -> DictConfig | ListConfig:
     """Parse YAML text into an OmegaConf container using Pyruns semantics."""
 
-    parsed = yaml.load(text, Loader=_get_pyruns_yaml_loader())
+    loader = _get_pyruns_yaml_loader()
+    try:
+        parsed = yaml.load(text, Loader=loader)
+    except (yaml.YAMLError, UnicodeError):
+        python_loader = _get_pyruns_yaml_loader(pure_python=True)
+        if loader is python_loader:
+            raise
+        # libyaml omits source snippets from errors and rejects some Unicode
+        # accepted by the Python parser. Preserve existing input diagnostics.
+        parsed = yaml.load(text, Loader=python_loader)
     if parsed is None:
         parsed = {}
     config = OmegaConf.create(parsed)
