@@ -55,6 +55,7 @@ from pyruns.utils import get_now_str
 from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
 from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
 from pyruns.utils.config_utils import (
+    dump_config_text,
     load_config_text,
     list_template_files,
     preview_config_line,
@@ -1904,6 +1905,7 @@ class PyrunsRuntime:
                         "index": 1,
                         "preview": preview_text,
                         "config": {},
+                        "config_text": content,
                     }
                 ],
                 "task_kind": TASK_KIND_SHELL,
@@ -1944,11 +1946,13 @@ class PyrunsRuntime:
         preview_items: List[Dict[str, Any]] = []
         sample_configs = configs[: min(6, len(configs))]
         for index, config in enumerate(sample_configs, start=1):
+            container = to_container(config, resolve=False)
             preview_items.append(
                 {
                     "index": index,
                     "preview": preview_config_line(config),
-                    "config": to_container(config, resolve=False),
+                    "config": container,
+                    "config_text": dump_config_text(container),
                 }
             )
 

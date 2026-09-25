@@ -151,3 +151,34 @@ test('generator preserves floating types when editing integral floats', async ({
     await expectGeneratedConfig(page, runRoot, expected)
   })
 })
+
+test('generator batch previews retain numeric values and key types from saved tasks', async ({ page }) => {
+  const yaml = 'seed: 9007199254740993 | 9007199254740995\nrate: 1.0\nzero: -0.0\ncopy: ${seed}\n9007199254740993: numeric-key\n"9007199254740993": string-key\nrows: [1.0, {9007199254740993: nested}]\n'
+  await withGeneratorWorkspace(page, yaml, async runRoot => {
+    const responsePromise = page.waitForResponse(response => response.url().endsWith('/api/generator/preview'))
+    await page.getByRole('button', { name: 'Preview Batch Tasks', exact: true }).click()
+    const response = await responsePromise
+    expect(response.ok(), await response.text()).toBe(true)
+    const preview = await response.json()
+    expect(preview.count).toBe(2)
+    const expected = [9007199254740993n, 9007199254740995n].map(seed => parseConfig(yaml).set('seed', seed))
+    const dialog = page.getByRole('dialog')
+    for (const [index, config] of expected.entries()) {
+      const row = dialog.getByText(`#${index + 1}`, { exact: true }).locator('..')
+      await expect(row).toBeVisible()
+      const displayed = parseConfig(await row.getAttribute('title') || '')
+      displayed.delete('_meta_desc')
+      expect.soft(displayed).toEqual(config)
+    }
+    const createdPromise = page.waitForResponse(result => result.url().endsWith('/api/generator/create'))
+    await dialog.getByRole('button', { name: 'Generate All', exact: true }).click()
+    const createdResponse = await createdPromise
+    expect(createdResponse.ok(), await createdResponse.text()).toBe(true)
+    const created = await createdResponse.json()
+    expect(created.count).toBe(2)
+    for (const [index, item] of created.items.entries()) {
+      const saved = parseConfig(await readFile(join(runRoot, 'tasks', item.name, 'config.yaml'), 'utf8'))
+      expect(saved).toEqual(expected[index])
+    }
+  })
+})

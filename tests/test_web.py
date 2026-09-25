@@ -5531,6 +5531,8 @@ def test_generator_config_path_consumers_validate_and_search_literal_keys(tmp_pa
 
 
 def test_generator_batch_structure_survives_preview_create_and_disk(tmp_path):
+    import yaml
+
     from pyruns.utils.config_utils import load_yaml_strict
 
     workspace = _make_workspace(tmp_path, "main")
@@ -5549,6 +5551,10 @@ def test_generator_batch_structure_survives_preview_create_and_disk(tmp_path):
             assert preview.json()["count"] == 4
             assert [
                 {k: v for k, v in item["config"].items() if k != "_meta_desc"}
+                for item in preview.json()["items"]
+            ] == expected
+            assert [
+                {k: v for k, v in yaml.safe_load(item["config_text"]).items() if k != "_meta_desc"}
                 for item in preview.json()["items"]
             ] == expected
             created = client.post(
@@ -7793,6 +7799,7 @@ def test_runtime_generator_preview_and_create_error_edges(tmp_path, monkeypatch)
         shell_runtime.preview_tasks_from_template(mode="shell", shell_text="")
     shell_preview = shell_runtime.preview_tasks_from_template(mode="shell", shell_text="echo hi")
     assert shell_preview["task_kind"] == TASK_KIND_SHELL
+    assert shell_preview["items"][0]["config_text"] == "echo hi"
 
     shell_created = shell_runtime.create_tasks_from_template(
         name_prefix="shell-task",

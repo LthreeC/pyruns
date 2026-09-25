@@ -1432,8 +1432,6 @@ def test_react_batch_preview_uses_readable_summary_and_structured_rows():
     assert "function BatchPreviewList" in generator
     assert "Tasks to create" in generator
     assert "Task samples" in generator
-    assert "formatFullTaskTooltip" in generator
-    assert "title={formatFullTaskTooltip(item)}" in generator
     assert "grid-cols-[56px_minmax(0,1fr)]" in generator
     assert "size=\"lg\"" in generator
     assert "size?: 'md' | 'lg'" in dialog

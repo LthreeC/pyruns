@@ -281,6 +281,7 @@ export interface PreviewItem {
   index: number
   preview: string
   config: Record<string, any>
+  config_text?: string
 }
 
 export interface GeneratorPreview {

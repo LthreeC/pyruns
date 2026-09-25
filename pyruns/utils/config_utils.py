@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from omegaconf._utils import get_yaml_loader
+from omegaconf._utils import OmegaConfDumper, get_omega_conf_dumper, get_yaml_loader
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
 from pyruns.utils.info_io import _replace_with_retry, load_task_metadata
@@ -87,6 +87,31 @@ def _create_config(parsed: Any) -> DictConfig | ListConfig:
 def load_config_text(text: str) -> DictConfig | ListConfig:
     """Parse YAML text into an OmegaConf container using Pyruns semantics."""
     return _create_config(_parse_config_text(text))
+
+
+@lru_cache(maxsize=2)
+def _get_pyruns_yaml_dumper(*, pure_python: bool = False) -> Any:
+    """Use libyaml's emitter with OmegaConf's scalar representers when available."""
+    python_dumper = get_omega_conf_dumper()
+    c_dumper = None if pure_python else getattr(yaml, "CDumper", None)
+    if c_dumper is None:
+        return python_dumper
+
+    class PyrunsYamlDumper(c_dumper, OmegaConfDumper):
+        pass
+
+    return PyrunsYamlDumper
+
+
+def dump_config_text(config: Any) -> str:
+    """Serialize unresolved config values without changing scalar or key types."""
+    container = to_container(config, resolve=False)
+    options = {"default_flow_style": False, "allow_unicode": True, "sort_keys": False}
+    try:
+        return yaml.dump(container, Dumper=_get_pyruns_yaml_dumper(), **options)
+    except (yaml.YAMLError, UnicodeError):
+        # The Python emitter supports Unicode scalars rejected by libyaml.
+        return yaml.dump(container, Dumper=_get_pyruns_yaml_dumper(pure_python=True), **options)
 
 
 class _ConfigViewNeedsOmegaConf(Exception):

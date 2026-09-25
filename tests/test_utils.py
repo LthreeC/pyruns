@@ -2155,11 +2155,13 @@ class TestFlattenUnflatten:
 #  YAML / JSON I/O
 
 class TestYamlIO:
-    def test_config_parses_preserve_scalars_and_other_yaml_loaders(self, pyruns_yaml_backend):
+    def test_config_roundtrips_preserve_scalars_and_other_yaml_loaders(self, pyruns_yaml_backend):
         text = (
             "batch: 1:3:1\nleading: 012\ninteger: -4\nhex: 0xff\n"
             "octal: 0o17\nbinary: 0b101\nrate: 1e-3\nflag: true\n"
             "date: 2026-09-25\nbase: local\npointer: ${base}\n"
+            "large: 9007199254740993\nfloat: 1.0\nzero: -0.0\ntext: '1e-3'\n"
+            "7: number-key\n'7': string-key\n"
         )
         global_yaml = yaml.safe_load(text)
         global_omegaconf = OmegaConf.to_container(OmegaConf.create(text), resolve=False)
@@ -2167,10 +2169,16 @@ class TestYamlIO:
             "batch": "1:3:1", "leading": "012", "integer": -4, "hex": 255,
             "octal": 15, "binary": 5, "rate": 0.001, "flag": True,
             "date": "2026-09-25", "base": "local", "pointer": "${base}",
+            "large": 9007199254740993, "float": 1.0, "zero": -0.0, "text": "1e-3",
+            7: "number-key", "7": "string-key",
         }
         for _ in range(3):
             config = config_utils.load_config_text(text)
             assert OmegaConf.to_container(config, resolve=False) == expected
+            restored = config_utils.load_config_text(config_utils.dump_config_text(config))
+            assert OmegaConf.to_container(restored, resolve=False) == expected
+            assert type(restored["float"]) is float
+            assert repr(restored["zero"]) == "-0.0"
             config.base = "modified"
         assert yaml.safe_load(text) == global_yaml
         assert OmegaConf.to_container(OmegaConf.create(text), resolve=False) == global_omegaconf
@@ -2209,6 +2217,8 @@ class TestYamlIO:
         assert OmegaConf.to_container(config, resolve=False) == {
             "source": {"value": 7}, "copy": {"value": 7}, "name": "\ud800",
         }
+        restored = config_utils.load_config_text(config_utils.dump_config_text(config))
+        assert OmegaConf.to_container(restored, resolve=False) == OmegaConf.to_container(config, resolve=False)
 
     def test_concurrent_config_parses_keep_independent_anchors_and_values(self, pyruns_yaml_backend):
         from concurrent.futures import ThreadPoolExecutor

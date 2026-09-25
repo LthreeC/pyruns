@@ -32,7 +32,6 @@ import {
   Workflow,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { stringify as yamlStringify } from 'yaml'
 import { requestConfirmation, useGeneratorStore, useThemeStore, useWorkspaceStore } from '@/store'
 import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
@@ -170,15 +169,6 @@ function readStoredTreeOutlineWidth() {
 
 function compactPreviewText(text: string) {
   return String(text || '').replace(/,\s+/g, '  ·  ')
-}
-
-function formatFullTaskTooltip(item: PreviewItem) {
-  try {
-    const yaml = yamlStringify(item.config || {}).trim()
-    return yaml || item.preview
-  } catch {
-    return item.preview
-  }
 }
 
 function getShellConfigFilename(runtime?: ShellRuntimeInfo) {
@@ -1637,7 +1627,7 @@ function BatchPreviewList({
           <div
             key={item.index}
             className="grid grid-cols-[56px_minmax(0,1fr)] gap-2 rounded-md px-2 py-2 odd:bg-surface-overlay/40"
-            title={formatFullTaskTooltip(item)}
+            title={item.config_text?.trim() || item.preview}
           >
             <span className="text-center font-mono text-2xs font-semibold text-txt-secondary">
               #{item.index}
