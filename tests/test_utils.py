@@ -1294,6 +1294,31 @@ def test_sort_tasks_for_manager_uses_natural_name_tiebreaker():
     ]
 
 
+@pytest.mark.parametrize("sort_mode", [
+    "priority", "manual", "activity_desc", "activity_asc", "name_asc", "name_desc",
+])
+def test_task_sort_handles_non_decimal_unicode_digits(sort_mode):
+    names = ["²10", "task10", "①2", "２", "²", "2", "١", "①", "task2", "²2"]
+    tasks = [{"name": name, "status": "pending"} for name in names]
+    assert all(validate_task_name(name) is None for name in names)
+    expected = ["task2", "task10", "²", "²2", "²10", "①", "①2", "١", "２", "2"]
+    if sort_mode == "name_desc":
+        expected = ["２", "2", "١", "①2", "①", "²10", "²2", "²", "task10", "task2"]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, sort_mode)] == expected
+    assert [task["name"] for task in tasks] == names
+
+
+@pytest.mark.parametrize("field", ["created_at", "start_times", "finish_times"])
+@pytest.mark.parametrize("sort_mode", ["priority", "manual", "activity_desc", "activity_asc"])
+def test_task_sort_treats_unparseable_timestamp_as_unset(field, sort_mode):
+    invalid = "9" * 5000
+    broken = {"name": "invalid-time", field: invalid if field == "created_at" else [invalid]}
+    tasks = [broken, {"name": "recent", "created_at": "2026-09-25_10-00-00"}]
+    expected = ["invalid-time", "recent"] if sort_mode == "activity_asc" else ["recent", "invalid-time"]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, sort_mode)] == expected
+    assert broken[field] == (invalid if field == "created_at" else [invalid])
+
+
 def test_sort_tasks_for_manager_supports_explicit_card_orders():
     tasks = [
         {

@@ -57,6 +57,10 @@ def _timestamp_weight(task: Dict[str, object]) -> int:
         timestamp = task.get("created_at") or ""
 
     digits = _NON_DIGIT_PATTERN.sub("", str(timestamp))
+    # Real timestamps are short. Ignore corrupt values before integer parsing,
+    # whose limit varies between Python versions and interpreter settings.
+    if len(digits) > 64:
+        return 0
     return int(digits) if digits else 0
 
 
@@ -72,7 +76,7 @@ def task_sort_key(task: Dict[str, object]) -> tuple:
 def _natural_name_key(value: object) -> tuple:
     chunks = _NATURAL_CHUNK_PATTERN.split(str(value or ""))
     return tuple(
-        (1, int(chunk)) if chunk.isdigit() else (0, chunk.lower())
+        (1, int(chunk)) if chunk.isdecimal() else (0, chunk.lower())
         for chunk in chunks
         if chunk
     )

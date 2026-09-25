@@ -2832,6 +2832,41 @@ def test_task_list_only_copies_payloads_for_returned_page(tmp_path, summary):
     assert manager.get_task("first")["run_environments"] == [{"host": "original"}]
 
 
+@pytest.mark.parametrize("include_logs", [False, True], ids=["list", "search"])
+def test_task_pages_preserve_unicode_names_and_oversized_timestamps(tmp_path, include_logs):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("run10", "run2", "²", "①"):
+        _add_task(workspace, name)
+        update_task_info(str(workspace / TASKS_DIR / name), lambda info, name=name: info.update(
+            notes="needle", pinned=name == "²",
+            created_at="9" * 5000 if name == "run10" else "2026-03-17_12-00-00",
+        ))
+    runtime = _build_runtime(workspace)
+    orders = {
+        "priority": ["²", "run2", "①", "run10"],
+        "manual": ["²", "run2", "①", "run10"],
+        "activity_desc": ["²", "run2", "①", "run10"],
+        "activity_asc": ["²", "run10", "run2", "①"],
+        "name_asc": ["²", "run2", "run10", "①"],
+        "name_desc": ["²", "①", "run10", "run2"],
+    }
+    with TestClient(create_app(runtime)) as client:
+        for sort_mode, expected in orders.items():
+            names = []
+            for offset in (0, 2):
+                response = client.get("/api/tasks", params={
+                    "query": "needle", "search_field": "notes", "include_logs": include_logs,
+                    "sort": sort_mode, "summary": True, "offset": offset, "limit": 2, "refresh": False,
+                })
+                assert response.status_code == 200
+                page = response.json()
+                assert page["total"] == 4 and page["status_counts"]["pending"] == 4
+                assert page["has_more"] is (offset == 0) and not page["search_errors"]
+                names.extend(task["name"] for task in page["items"])
+            assert names == expected
+    assert load_task_info(str(workspace / TASKS_DIR / "run10"))["created_at"] == "9" * 5000
+
+
 def test_full_task_page_loads_curves_only_for_selected_tasks_without_registry_lock(tmp_path, monkeypatch):
     from pyruns.utils import track_store
 
