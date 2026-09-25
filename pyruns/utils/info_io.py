@@ -204,7 +204,13 @@ def _path_is_link_or_reparse(path: str) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(attributes & reparse_flag)
 
 
-def validate_workspace_file(path: str, workspace_dir: str, *, label: str) -> None:
+def validate_workspace_file(
+    path: str,
+    workspace_dir: str,
+    *,
+    label: str,
+    _resolved_paths: dict[str, str | None] | None = None,
+) -> None:
     """Reject a workspace file that aliases another path or is not a file."""
 
     absolute = os.path.abspath(path)
@@ -213,7 +219,7 @@ def validate_workspace_file(path: str, workspace_dir: str, *, label: str) -> Non
     exists = os.path.lexists(absolute)
     if exists and _path_is_link_or_reparse(absolute):
         raise ValueError(f"{label} must not be a symlink, junction, or reparse point: {path}")
-    if not _path_is_within(absolute, root):
+    if not _path_is_within(absolute, root, _resolved_paths=_resolved_paths):
         raise ValueError(f"{label} resolves outside its workspace boundary: {path}")
     if not exists:
         return

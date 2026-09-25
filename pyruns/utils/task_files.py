@@ -81,8 +81,11 @@ def resolve_task_config_file(
 
 
 def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
-    validate_task_directory(task_dir)
     base = os.path.abspath(task_dir)
+    # Retain the validated boundary for this resolution only. The candidate
+    # and all link/reparse checks remain fresh if a parent changes meanwhile.
+    resolved_paths: dict[str, str | None] = {base: None}
+    validate_task_directory(task_dir, _resolved_paths=resolved_paths)
     lexical_parent = os.path.abspath(os.path.dirname(base))
     try:
         if os.path.normcase(os.path.commonpath([base, lexical_parent])) != os.path.normcase(lexical_parent):
@@ -97,7 +100,7 @@ def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
         contained = False
     if not contained or candidate == base:
         raise ValueError(f"Config file resolves outside the task directory: {config_file}")
-    validate_workspace_file(candidate, base, label="Task payload")
+    validate_workspace_file(candidate, base, label="Task payload", _resolved_paths=resolved_paths)
     return candidate
 
 

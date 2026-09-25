@@ -137,6 +137,8 @@ CLI 不依赖 FastAPI，也没有交互式 REPL。`pyr exec --detach` 启动隐�
 - 统一 task payload 文件读写
 - 归一化 `workspace_kind` / `task_kind`
 
+配置或脚本载荷的单次路径解析固定已验证的任务目录边界，防止父项目链接在目录校验与文件校验之间切换后，把另一个目录当作合法边界。候选文件和链接状态仍重新检查；后续独立访问会重新解析项目位置。
+
 #### `info_io.py`
 
 - 读写 `task_info.json`

@@ -12,6 +12,7 @@ import pyruns.launcher as launcher
 import pyruns.utils.info_io as info_io
 import pyruns.utils.parse_utils as parse_utils
 import pyruns.utils.settings as settings
+import pyruns.utils.task_files as task_files
 from pyruns._config import (
     ACTIVE_WORKSPACE_FILENAME,
     CONFIG_DEFAULT_FILENAME,
@@ -277,3 +278,60 @@ def test_relative_managed_path_tracks_working_directory_changes(tmp_path, monkey
     finally:
         monkeypatch.chdir(tmp_path)
         _unlink_directory(second / DEFAULT_ROOT_NAME)
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_task_payload_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatch, operation):
+    relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks" / "sample"
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project, value in ((first, "first"), (second, "second")):
+        (project / relative).mkdir(parents=True)
+        (project / relative / CONFIG_FILENAME).write_text(f"value: {value}\n", encoding="utf-8")
+    alias = tmp_path / "project"
+    _link_directory(alias, first)
+    validate = task_files.validate_workspace_file
+
+    def switch_project_after_directory_check(path, workspace_dir, **kwargs):
+        _unlink_directory(alias)
+        _link_directory(alias, second)
+        return validate(path, workspace_dir, **kwargs)
+
+    monkeypatch.setattr(task_files, "validate_workspace_file", switch_project_after_directory_check)
+    try:
+        if operation == "read":
+            kind, config, text, error = read_task_payload(str(alias / relative), {})
+            assert (kind, config, text) == (TASK_KIND_CONFIG, {}, "")
+            assert "resolves outside" in error
+        else:
+            with pytest.raises(ValueError, match="resolves outside"):
+                write_task_payload(
+                    str(alias / relative), task_kind=TASK_KIND_CONFIG,
+                    config_file=CONFIG_FILENAME, config={"value": "changed"},
+                )
+    finally:
+        if os.path.lexists(alias):
+            _unlink_directory(alias)
+    assert (first / relative / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: first\n"
+    assert (second / relative / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: second\n"
+
+
+@pytest.mark.parametrize("relative_path", [False, True])
+def test_task_payload_resolves_current_project_on_each_call(tmp_path, monkeypatch, relative_path):
+    relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks" / "中文样本"
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project, value in ((first, 1), (second, 2)):
+        (project / relative).mkdir(parents=True)
+        (project / relative / CONFIG_FILENAME).write_text(f"value: {value}\n", encoding="utf-8")
+    alias = tmp_path / "project"
+    _link_directory(alias, first)
+    monkeypatch.chdir(tmp_path)
+    task_dir = (Path("project") if relative_path else alias) / relative
+    try:
+        assert read_task_payload(str(task_dir), {})[1]["value"] == 1
+        _unlink_directory(alias)
+        _link_directory(alias, second)
+        kind, config, text, error = read_task_payload(str(task_dir), {})
+        assert (kind, config, text, error) == (TASK_KIND_CONFIG, {"value": 2}, "", "")
+    finally:
+        if os.path.lexists(alias):
+            _unlink_directory(alias)
