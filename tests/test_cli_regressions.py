@@ -2335,7 +2335,7 @@ def test_cancel_reconciliation_uses_the_locked_run_index(tmp_path):
     with patch.object(TaskManager, "_scheduler_loop", lambda self: None):
         manager = TaskManager(tasks_dir=str(tasks_dir), lazy_scan=False)
 
-    dead_runner = "missing-host:9999:dead-token"
+    dead_runner = f"{manager.runner_host}:9999:dead-token"
     update_task_info(
         task["dir"],
         lambda info: info.update(
@@ -2343,6 +2343,7 @@ def test_cancel_reconciliation_uses_the_locked_run_index(tmp_path):
                 "status": "running",
                 "run_index": 2,
                 "runner_id": dead_runner,
+                "runner_host": manager.runner_host,
                 "run_statuses": ["completed", "running"],
             }
         ),

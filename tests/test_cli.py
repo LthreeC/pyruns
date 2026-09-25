@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -3093,7 +3094,7 @@ def test_stop_reaches_detached_runner(tmp_path):
     ("initial_status", "final_status", "return_code"),
     [("queued", "cancelled", 0), ("running", "failed", 1)],
 )
-def test_stop_reconciles_tasks_from_expired_foreign_runner(
+def test_stop_reconciles_tasks_from_expired_local_runner(
     tmp_path,
     initial_status,
     final_status,
@@ -3110,8 +3111,8 @@ def test_stop_reconciles_tasks_from_expired_foreign_runner(
         info.update(
             {
                 "status": initial_status,
-                "runner_id": "other-host:123:expired",
-                "runner_host": "other-host",
+                "runner_id": f"{socket.gethostname().lower()}:123:expired",
+                "runner_host": socket.gethostname().lower(),
                 "lease_heartbeat": time.time() - 120,
                 "lease_until": time.time() - 60,
             }

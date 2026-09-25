@@ -2279,6 +2279,15 @@ class TaskManager:
             if self._is_foreign_live_runner(info):
                 request_context["action"] = "request_foreign"
                 return
+            if status == "running" and self._running_info_has_live_owner(info):
+                # An expired heartbeat does not prove that a workload stopped.
+                # Only this host can verify and stop its recorded process tree.
+                request_context["action"] = "request_foreign"
+                runner_host = str(info.get("runner_host", "") or "").strip().lower()
+                pid, created_at = self._current_process_identity(info)
+                if runner_host == self.runner_host and pid and created_at is not None:
+                    request_context["action"] = "cancel_expired_local"
+                return
 
             final_status = "cancelled" if status == "queued" else "failed"
             _, finalized_run_slot = self._apply_terminal_status_to_info(
@@ -2302,6 +2311,8 @@ class TaskManager:
         self.trigger_update()
 
         action = request_context["action"]
+        if action == "cancel_expired_local":
+            return self._cancel_expired_local_run(task_name, task_dir, updated)
         if action == "cancel_local":
             cancelled = self.cancel_task(
                 task_name,
@@ -2356,6 +2367,58 @@ class TaskManager:
                 updated.get("status"),
             )
         return True
+
+    def _cancel_expired_local_run(
+        self,
+        task_name: str,
+        task_dir: str,
+        requested: Dict[str, Any],
+    ) -> bool:
+        """Stop an identified local orphan before publishing its terminal state."""
+        runner_id = str(requested.get("runner_id", "") or "")
+        run_index = active_task_run_index(requested)
+        pid, created_at = self._current_process_identity(requested)
+        try:
+            latest = load_task_metadata(task_dir, raise_error=True) or {}
+            if (
+                latest.get("status") != "running"
+                or str(latest.get("runner_id", "") or "") != runner_id
+                or active_task_run_index(latest) != run_index
+                or self._current_process_identity(latest) != (pid, created_at)
+                or str(latest.get("runner_host", "") or "").strip().lower() != self.runner_host
+            ):
+                return False
+            if self._is_foreign_live_runner(latest):
+                return True  # The recovered runner can honor the durable request.
+            if not pid or created_at is None or not kill_process(
+                pid, expected_create_time=created_at,
+            ):
+                return False
+            self._mark_failed_on_disk(
+                {"name": task_name, "dir": task_dir, "run_index": run_index},
+                event="stopped",
+                reason="cancelled_after_runner_expired",
+                lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
+                expected_statuses={"running"},
+                expected_runner_id=runner_id,
+                expected_run_index=run_index,
+                final_status="cancelled",
+            )
+        except (TaskClaimConflict, TaskStateConflict):
+            # The original worker may have finished while its tree was stopped.
+            pass
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not verify cancellation of %s yet: %s", task_name, exc)
+            return False
+
+        latest = load_task_metadata(task_dir) or {}
+        if latest:
+            self._refresh_memory_task_from_disk_info(task_name, task_dir, latest)
+            self.trigger_update()
+        return bool(
+            active_task_run_index(latest) == run_index
+            and latest.get("status") in {"completed", "failed", "cancelled"}
+        )
 
     def _process_cancel_requests(self) -> None:
         """Apply persisted requests only to tasks owned by this runner."""
@@ -3888,13 +3951,17 @@ class TaskManager:
                 )
             if next_status in {"queued", "running"} and current_status == "running" and self._is_foreign_live_runner(task_info):
                 raise TaskClaimConflict("task already owned by another live runner")
+            if next_status in {"queued", "running"} and current_status not in {"queued", "running"}:
+                # Stop markers belong to the previous attempt. Preserve any
+                # current request when dispatching an already queued run.
+                task_info.pop("cancel_requested_at", None)
+                task_info.pop("_pending_stop_summary", None)
             task_info["status"] = next_status
             if next_status == "running":
                 task_info["run_index"] = run_index
             task_info.pop("_queued_run_index", None)
             if next_status == "queued":
                 self._trim_run_slots(task_info, self._realized_run_slot_count(task_info))
-                task_info.pop("cancel_requested_at", None)
                 started_at = (
                     float(gpu_wait.get("started_at", 0.0) or 0.0)
                     if isinstance(gpu_wait, dict)

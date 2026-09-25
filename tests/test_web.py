@@ -4492,7 +4492,8 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
     assert cancel_response.json()["task"]["status"] == "cancelled"
 
 
-def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path):
+@pytest.mark.parametrize("lease_offset", [-60, 60])
+def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path, lease_offset):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     runtime = _build_runtime(workspace)
@@ -4505,7 +4506,7 @@ def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path):
                 "runner_id": "other-host:123:abcdef",
                 "runner_host": "other-host",
                 "lease_heartbeat": time.time(),
-                "lease_until": time.time() + 60,
+                "lease_until": time.time() + lease_offset,
                 "pids": [987654],
             }
         ),
@@ -4522,7 +4523,7 @@ def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path):
     assert info["runner_id"] == "other-host:123:abcdef"
 
 
-def test_cancel_task_endpoint_reconciles_expired_foreign_runner(tmp_path):
+def test_cancel_task_endpoint_reconciles_expired_local_runner(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     runtime = _build_runtime(workspace)
@@ -4532,8 +4533,8 @@ def test_cancel_task_endpoint_reconciles_expired_foreign_runner(tmp_path):
         str(task_dir),
         lambda info: info.update(
             {
-                "runner_id": "other-host:123:expired",
-                "runner_host": "other-host",
+                "runner_id": f"{runtime.task_manager.runner_host}:123:expired",
+                "runner_host": runtime.task_manager.runner_host,
                 "lease_heartbeat": time.time() - 120,
                 "lease_until": time.time() - 60,
                 "pids": [987654321],

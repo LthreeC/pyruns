@@ -391,7 +391,9 @@ pyr -w train stop baseline
 pyr -w train stop seed1 seed2 --timeout 15
 ```
 
-取消请求写入任务元数据，拥有任务的 runner 读取请求并终止对应任务，而不是让另一个 CLI 进程假装拥有它。成功停止后的终态是 `cancelled`，不会再与真正的执行失败 `failed` 混在一起；取消后的任务仍可用 `run TASK` 重跑。`stop --timeout 0` 表示无限等待。
+取消请求写入任务元数据，拥有任务的 runner 读取请求并终止对应任务。成功停止后的终态是 `cancelled`，取消后的任务仍可用 `run TASK` 重跑。`stop --timeout 0` 表示无限等待。
+
+本机 runner 心跳过期时，`stop` 会核验记录中的 PID 和进程创建时间，确认整个进程树退出后才将任务标为 `cancelled`。远程任务或无法核验进程身份的任务会保留停止请求和运行状态，等待所属 runner 处理；等待超时只结束当前等待。
 
 ## 11. 生命周期：`rm`、`restore`、`mv`、`pin`
 
