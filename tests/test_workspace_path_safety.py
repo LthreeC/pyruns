@@ -19,6 +19,7 @@ from pyruns._config import (
     DEFAULT_ROOT_NAME,
     SCRIPT_INFO_FILENAME,
     SETTINGS_FILENAME,
+    TASK_INFO_FILENAME,
     TASK_KIND_CONFIG,
 )
 from pyruns.utils.task_files import read_task_payload, write_task_payload
@@ -193,3 +194,86 @@ def test_artifact_dir_rejects_simulated_reparse_directory_before_write(
         pyruns.get_artifact_dir()
 
     assert list(artifacts_root.iterdir()) == []
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    try:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory link creation unavailable: {exc}")
+
+
+def _unlink_directory(link: Path) -> None:
+    if os.name == "nt":
+        link.rmdir()
+    else:
+        link.unlink()
+
+
+@pytest.mark.parametrize("level", ["managed_root", "workspace", "tasks", "task"])
+def test_task_metadata_rechecks_ancestors_after_directory_replacement(tmp_path, level):
+    managed_root = tmp_path / DEFAULT_ROOT_NAME
+    workspace = managed_root / "train"
+    task_dir = workspace / "tasks" / "safe"
+    task_dir.mkdir(parents=True)
+    (task_dir / TASK_INFO_FILENAME).write_text('{"name": "safe"}', encoding="utf-8")
+    original = info_io.load_task_metadata(str(task_dir), raise_error=True)
+    assert original["name"] == "safe"
+    target = {
+        "managed_root": managed_root, "workspace": workspace,
+        "tasks": task_dir.parent, "task": task_dir,
+    }[level]
+    displaced = tmp_path / "displaced"
+    target.rename(displaced)
+    _link_directory(target, displaced)
+    try:
+        with pytest.raises(ValueError, match="symlink, junction, or reparse point|resolves outside"):
+            info_io.load_task_metadata(str(task_dir), raise_error=True)
+        with pytest.raises(ValueError, match="symlink, junction, or reparse point|resolves outside"):
+            info_io.update_task_metadata(str(task_dir), lambda info: info.update(name="changed"))
+    finally:
+        _unlink_directory(target)
+        displaced.rename(target)
+    assert info_io.load_task_metadata(str(task_dir), raise_error=True) == original
+
+
+def test_managed_path_rechecks_a_previously_missing_directory(tmp_path):
+    managed_root = tmp_path / DEFAULT_ROOT_NAME
+    workspace = managed_root / "train"
+    info_io.validate_workspace_directory(str(workspace))
+    outside = tmp_path / "outside"
+    (outside / "train").mkdir(parents=True)
+    _link_directory(managed_root, outside)
+    try:
+        with pytest.raises(ValueError, match="Managed workspace path must not contain"):
+            info_io.validate_workspace_directory(str(workspace))
+    finally:
+        _unlink_directory(managed_root)
+    workspace.mkdir(parents=True)
+    info_io.validate_workspace_directory(str(workspace))
+
+
+def test_relative_managed_path_tracks_working_directory_changes(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks" / "safe"
+    (first / relative).mkdir(parents=True)
+    (first / relative / TASK_INFO_FILENAME).write_text('{"name": "safe"}', encoding="utf-8")
+    second.mkdir()
+    _link_directory(second / DEFAULT_ROOT_NAME, first / DEFAULT_ROOT_NAME)
+    try:
+        monkeypatch.chdir(first)
+        expected = info_io.load_task_metadata(str(relative), raise_error=True)
+        monkeypatch.chdir(second)
+        with pytest.raises(ValueError, match="Managed workspace path must not contain"):
+            info_io.load_task_metadata(str(relative), raise_error=True)
+        monkeypatch.chdir(first)
+        assert info_io.load_task_metadata(str(relative), raise_error=True) == expected
+    finally:
+        monkeypatch.chdir(tmp_path)
+        _unlink_directory(second / DEFAULT_ROOT_NAME)

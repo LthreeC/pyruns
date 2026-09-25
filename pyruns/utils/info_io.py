@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Any, Callable, Dict, Optional
 
 from pyruns._config import (
@@ -244,31 +245,27 @@ def validate_tasks_root(tasks_dir: str) -> None:
     validate_workspace_directory(os.path.dirname(absolute))
 
 
+@lru_cache(maxsize=1024)
+def _managed_ancestor_paths(absolute: str) -> tuple[str, ...]:
+    """Cache only lexical paths; filesystem state must always be checked fresh."""
+
+    ancestors = []
+    current = absolute
+    while True:
+        ancestors.append(current)
+        if os.path.normcase(os.path.basename(current)) == os.path.normcase(DEFAULT_ROOT_NAME):
+            return tuple(reversed(ancestors))
+        parent = os.path.dirname(current)
+        if parent == current:
+            return ()
+        current = parent
+
+
 def _validate_managed_ancestor_chain(path: str) -> None:
     """Reject links from ``_pyruns_`` through an existing managed path."""
 
-    absolute = os.path.abspath(path)
-    managed_root: str | None = None
-    current = absolute
-    while True:
-        if os.path.normcase(os.path.basename(current)) == os.path.normcase(DEFAULT_ROOT_NAME):
-            managed_root = current
-            break
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-
-    if managed_root is None:
-        return
-
-    relative = os.path.relpath(absolute, managed_root)
-    components = [] if relative == os.curdir else relative.split(os.sep)
-    current = managed_root
-    for component in ["", *components]:
-        if component:
-            current = os.path.join(current, component)
-        if os.path.lexists(current) and _path_is_link_or_reparse(current):
+    for current in _managed_ancestor_paths(os.path.abspath(path)):
+        if _path_is_link_or_reparse(current):
             raise ValueError(
                 "Managed workspace path must not contain a symlink, junction, "
                 f"or reparse point: {current}"
