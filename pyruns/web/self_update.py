@@ -26,6 +26,7 @@ from pyruns.update_coordination import (
     _coordination_write_is_denied,
     process_record,
 )
+from pyruns.utils.process_utils import hidden_subprocess_kwargs
 
 
 UI_PRODUCTION_RESTART_ENV = "PYRUNS_UI_PRODUCTION_RESTART"
@@ -627,7 +628,11 @@ def _replace_current_process(command: list[str], environment: dict[str, str]) ->
         # Windows has no reliable in-place exec here; waiting keeps `pyr ui`
         # attached to the replacement process and preserves its terminal output.
         try:
-            exit_code = subprocess.call(command, env=environment)
+            exit_code = subprocess.call(
+                command,
+                env=environment,
+                **hidden_subprocess_kwargs(),
+            )
         except OSError as exc:
             raise RuntimeError(f"Could not start the replacement Pyruns process: {exc}") from exc
         raise SystemExit(exit_code)
@@ -726,6 +731,7 @@ def _query_installed_version(fallback: str) -> str:
             capture_output=True,
             text=True,
             timeout=INSTALLED_VERSION_QUERY_TIMEOUT_SECONDS,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return fallback
@@ -747,6 +753,7 @@ def run_pip_upgrade(
             command,
             check=False,
             timeout=PIP_UPGRADE_TIMEOUT_SECONDS,
+            **hidden_subprocess_kwargs(),
         )
         exit_code = int(completed.returncode)
     except subprocess.TimeoutExpired:

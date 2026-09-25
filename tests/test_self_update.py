@@ -1380,6 +1380,42 @@ def test_windows_process_replacement_runs_child_in_inherited_terminal(monkeypatc
     ]
 
 
+def test_windows_update_processes_hide_console_windows(monkeypatch):
+    hidden_flags = {"creationflags": 0x08000000}
+    monkeypatch.setattr(self_update, "hidden_subprocess_kwargs", lambda: hidden_flags)
+    monkeypatch.setattr(self_update, "_WINDOWS_PROCESS_REPLACEMENT", True)
+
+    replacement_calls = []
+    monkeypatch.setattr(
+        self_update.subprocess,
+        "call",
+        lambda command, **kwargs: replacement_calls.append((command, kwargs)) or 0,
+    )
+    with pytest.raises(SystemExit) as raised:
+        self_update._replace_current_process(
+            ["python-test", "-m", "pyruns.web.self_update"],
+            {"PYRUNS_TEST": "1"},
+        )
+    assert raised.value.code == 0
+    assert replacement_calls[0][1]["creationflags"] == hidden_flags["creationflags"]
+
+    run_calls = []
+
+    def fake_run(command, **kwargs):
+        run_calls.append((command, kwargs))
+        if "pip" in command:
+            return SimpleNamespace(returncode=0, stdout="")
+        return SimpleNamespace(returncode=0, stdout="0.4.0\n")
+
+    monkeypatch.setattr(self_update.subprocess, "run", fake_run)
+    assert self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")["ok"] is True
+    assert len(run_calls) == 2
+    assert all(
+        call_kwargs["creationflags"] == hidden_flags["creationflags"]
+        for _command, call_kwargs in run_calls
+    )
+
+
 def test_updater_main_removes_token_before_pip_and_relaunches(monkeypatch):
     observed = {}
     monkeypatch.setenv(self_update.UI_TOKEN_ENV, "private-token")
