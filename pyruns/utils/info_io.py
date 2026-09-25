@@ -409,18 +409,28 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
     fd: Optional[int] = None
     owner = f"{os.getpid()} {threading.get_ident()} {_LOCK_OWNER_HOST} {time.time():.6f}"
     start = time.monotonic()
+    permission_failures = 0
     try:
         while True:
             try:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                os.write(fd, owner.encode("utf-8", errors="ignore"))
-                break
             except FileExistsError:
                 if _remove_stale_lock_file(lock_path):
                     continue
                 if time.monotonic() - start >= timeout_sec:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                 time.sleep(_LOCK_POLL_SEC)
+            except PermissionError:
+                # Windows can deny exclusive creation while a competing lock
+                # is being deleted. Keep permanent permission errors intact.
+                permission_failures += 1
+                remaining = timeout_sec - (time.monotonic() - start)
+                if permission_failures >= _REPLACE_RETRY_COUNT or remaining <= 0:
+                    raise
+                time.sleep(min(_LOCK_POLL_SEC, remaining))
+            else:
+                os.write(fd, owner.encode("utf-8", errors="ignore"))
+                break
         yield
     finally:
         if fd is not None:
@@ -428,7 +438,7 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                 os.close(fd)
             except OSError:
                 pass
-        _release_task_lock(lock_path, owner)
+            _release_task_lock(lock_path, owner)
         thread_lock.release()
 
 

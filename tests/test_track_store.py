@@ -513,6 +513,88 @@ def test_task_lock_release_retries_transient_windows_sharing_errors(task, monkey
     assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1]}]
 
 
+def test_task_lock_creation_retries_temporary_access_denied(task, monkeypatch):
+    lock_path = str(task / info_io._LOCK_FILENAME)
+    real_open = os.open
+    denied = []
+
+    def open_lock(path, *args, **kwargs):
+        if str(path) == lock_path and len(denied) < 2:
+            denied.append(path)
+            raise PermissionError(13, "lock deletion is still pending", path)
+        return real_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", open_lock)
+        append_task_track(str(task), {"loss": 1})
+
+    assert len(denied) == 2
+    assert not os.path.exists(lock_path)
+    append_task_track(str(task), {"loss": 2})
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [1, 2]}]
+
+
+@pytest.mark.parametrize("timeout", [0, 0.06, 10])
+def test_task_lock_creation_bounds_permission_retries(task, monkeypatch, timeout):
+    lock_path = str(task / info_io._LOCK_FILENAME)
+    real_open = os.open
+    clock = [0.0]
+    attempts = []
+    error = PermissionError(13, "persistent permission denial", lock_path)
+
+    def open_lock(path, *args, **kwargs):
+        if str(path) == lock_path:
+            attempts.append(clock[0])
+            raise error
+        return real_open(path, *args, **kwargs)
+
+    def advance(delay):
+        clock[0] += delay
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", open_lock)
+        patch.setattr(info_io.time, "monotonic", lambda: clock[0])
+        patch.setattr(info_io.time, "sleep", advance)
+        patch.setattr(
+            info_io, "_release_task_lock",
+            lambda *_: pytest.fail("an unacquired lock must not be inspected or released"),
+        )
+        with pytest.raises(PermissionError) as caught:
+            with task_info_lock(str(task), timeout_sec=timeout):
+                pytest.fail("must not enter without a lock")
+
+    assert caught.value is error
+    assert clock[0] <= timeout
+    assert len(attempts) <= info_io._REPLACE_RETRY_COUNT
+    if timeout:
+        assert len(attempts) > 1
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(append_task_track, str(task), {"loss": 3}).result(timeout=2)
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [3]}]
+
+
+def test_task_lock_creation_retry_preserves_a_competing_owner(task, monkeypatch):
+    lock_path = task / info_io._LOCK_FILENAME
+    real_open = os.open
+    owner = f"4242 1 {info_io._LOCK_OWNER_HOST}-other-host 1"
+    attempted = False
+
+    def open_lock(path, *args, **kwargs):
+        nonlocal attempted
+        if str(path) == str(lock_path) and not attempted:
+            attempted = True
+            lock_path.write_text(owner, encoding="utf-8")
+            raise PermissionError(13, "lock deletion is still pending", path)
+        return real_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", open_lock)
+        with pytest.raises(TimeoutError):
+            with task_info_lock(str(task), timeout_sec=0.1):
+                pytest.fail("must not steal a competing lock")
+    assert lock_path.read_text(encoding="utf-8") == owner
+
+
 def test_task_lock_release_does_not_remove_new_owner_after_retry(task, monkeypatch):
     lock_path = task / info_io._LOCK_FILENAME
     original_remove = os.remove
