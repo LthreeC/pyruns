@@ -1053,7 +1053,7 @@ class PyrunsRuntime:
             return parsed
         except ValueError:
             raise
-        except (OSError, ValueError, yaml.YAMLError) as exc:
+        except (OSError, yaml.YAMLError) as exc:
             raise ValueError(f"Could not load template '{template_value}': {exc}") from exc
 
     @property
