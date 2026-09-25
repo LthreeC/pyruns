@@ -30,6 +30,7 @@ _TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
 _LOCK_FILENAME = f".{TASK_INFO_FILENAME}.lock"
 _LOCK_POLL_SEC = 0.05
+_LOCK_QUEUE_POLL_SEC = 0.005
 _LOCK_TIMEOUT_SEC = 5.0
 _REPLACE_RETRY_COUNT = 15
 _REPLACE_RETRY_DELAY_SEC = 0.02
@@ -392,6 +393,8 @@ def _release_task_lock(lock_path: str, owner: str) -> None:
 @contextmanager
 def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, create_dir: bool = True):
     """Acquire a task-local thread/process lock for task_info.json updates."""
+    from pyruns.utils.lock_queue import TaskLockQueue
+
     validate_task_directory(task_dir)
     thread_lock = _thread_lock_for(task_dir)
     lock_path = os.path.join(task_dir, _LOCK_FILENAME)
@@ -407,8 +410,19 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
     owner = f"{os.getpid()} {threading.get_ident()} {_LOCK_OWNER_HOST} {time.time():.6f}"
     start = time.monotonic()
     permission_failures = 0
+    queue = TaskLockQueue(task_dir)
     try:
         while True:
+            remaining = timeout_sec - (time.monotonic() - start)
+            if queue.entry is None and queue.has_waiters():
+                if remaining <= 0:
+                    raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
+                queue.register(remaining)
+            if not queue.is_first():
+                if remaining <= 0:
+                    raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
+                time.sleep(min(_LOCK_QUEUE_POLL_SEC, remaining))
+                continue
             try:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
             except FileExistsError:
@@ -416,7 +430,9 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                     continue
                 if time.monotonic() - start >= timeout_sec:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
-                time.sleep(_LOCK_POLL_SEC)
+                if queue.entry is None:
+                    queue.register(timeout_sec - (time.monotonic() - start))
+                time.sleep(min(_LOCK_QUEUE_POLL_SEC, max(0.0, timeout_sec - (time.monotonic() - start))))
             except PermissionError:
                 # Windows can deny exclusive creation while a competing lock
                 # is being deleted. Keep permanent permission errors intact.
@@ -430,13 +446,18 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                 break
         yield
     finally:
-        if fd is not None:
+        try:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                _release_task_lock(lock_path, owner)
+        finally:
             try:
-                os.close(fd)
-            except OSError:
-                pass
-            _release_task_lock(lock_path, owner)
-        thread_lock.release()
+                queue.close()
+            finally:
+                thread_lock.release()
 
 
 def load_task_metadata(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:

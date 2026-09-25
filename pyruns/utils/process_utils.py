@@ -39,6 +39,10 @@ def _psutil_process_is_alive(pid: int) -> bool | None:
     if _psutil is None:
         return None
     try:
+        if os.name == "nt":
+            # Windows status() inspects thread suspension across the process
+            # table. Existence is sufficient here; suspended processes live.
+            return _psutil.pid_exists(pid)
         status = _psutil.Process(pid).status()
     except Exception:
         return None

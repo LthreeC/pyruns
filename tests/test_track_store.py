@@ -353,17 +353,26 @@ def _child(code, *args):
     )
 
 
-def test_multiple_processes_preserve_every_append_and_record(task):
+@pytest.mark.parametrize("commit_delay", [0, 0.08])
+def test_multiple_processes_preserve_every_append_and_record(task, commit_delay):
     externalize(task)
     code = """
-import sys
+import sys, time
+from pyruns.utils import info_io
 from pyruns.utils.info_io import append_task_track, update_task_metadata
 directory, worker = sys.argv[1], int(sys.argv[2])
+delay = float(sys.argv[3])
+original_write = info_io._write_task_info_unlocked
+def slow_write(*args, **kwargs):
+    if delay:
+        time.sleep(delay)
+    return original_write(*args, **kwargs)
+info_io._write_task_info_unlocked = slow_write
 for value in range(20):
     append_task_track(directory, {'worker': worker, 'value': worker * 100 + value})
     update_task_metadata(directory, lambda info: info['records'][0].update({str(worker): value}))
 """
-    processes = [_child(code, task, worker) for worker in range(4)]
+    processes = [_child(code, task, worker, commit_delay) for worker in range(4)]
     try:
         for process in processes:
             output, error = process.communicate(timeout=30)

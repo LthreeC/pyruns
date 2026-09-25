@@ -793,6 +793,7 @@ def test_process_utils_treats_terminal_psutil_status_as_exited(monkeypatch, term
             return TerminalProcess()
 
     monkeypatch.setattr(process_utils, "_psutil", TerminalPsutil())
+    monkeypatch.setattr(process_utils.os, "name", "posix")
 
     assert process_utils.is_pid_running(4242) is False
     assert process_utils._process_identity_is_alive((4242, 123.0)) is False
