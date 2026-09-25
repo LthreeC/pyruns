@@ -288,6 +288,14 @@ Monitor 页面依赖两种数据源：
 
 Python CI 覆盖 Linux Python 3.10–3.13、Windows/macOS Python 3.12，并为每个组合保存独立的 JUnit 测试报告，保留 14 天；测试失败时也上传已生成的报告。前端、三平台浏览器和隔离 wheel 另有检查。
 
+安装包作业将新构建的 wheel 安装到独立环境，在源码目录外创建临时项目。除命令入口和 shell 参数外，还检查配置快照、任务失败后重跑、两轮各 600 步的指标与记录、历史日志、CSV/JSON 导出，以及重命名、删除和恢复。检查结束时核对任务与 runner 进程已退出。命令输出和检查结果保存 14 天；失败时同时保留临时项目用于定位问题。
+
+使用只安装了 wheel 的 Python 环境可单独复现：
+
+```bash
+/path/to/wheel-venv/bin/python -I scripts/check_installed_lifecycle.py --output test-results/wheel/report.json
+```
+
 静态门槛包含原有 flake8 错误检查，以及 `pyruns/`、`scripts/` 的 Ruff E4/E7/E9/F/B/ASYNC 规则。ty 当前检查文件读取、任务持久化、指标存储、进程管理和提交协议五个模块，按全部平台解析类型；其余模块需逐步审阅后扩展覆盖。工具版本固定在 `lint` 可选依赖中。
 
 在仓库根目录、已激活的 Python 环境中运行：

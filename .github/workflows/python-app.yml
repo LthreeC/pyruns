@@ -123,7 +123,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.10"
-      - name: Build wheel and smoke installed app
+      - name: Build and install wheel
         run: |
           python -m pip install --upgrade pip build
           rm -rf build .tmp-dist
@@ -131,14 +131,15 @@ jobs:
           python scripts/check_wheel_static.py .tmp-dist/*.whl
           python -m venv .tmp-wheel-venv
           .tmp-wheel-venv/bin/pip install .tmp-dist/*.whl
-          mkdir .tmp-wheel-smoke
-          cd .tmp-wheel-smoke
-          expected_version="$(../.tmp-wheel-venv/bin/python -c "from importlib.metadata import version; print(version('pyruns'))")"
-          test "$(../.tmp-wheel-venv/bin/pyr --version)" = "pyr ${expected_version}"
-          test "$(../.tmp-wheel-venv/bin/pyruns --version)" = "pyruns ${expected_version}"
-          ../.tmp-wheel-venv/bin/pyr help
-          ../.tmp-wheel-venv/bin/python -c "from importlib.metadata import version; from pathlib import Path; import pyruns; from pyruns.web.app import create_app; source = Path('../pyruns').resolve(); installed = Path(pyruns.__file__).resolve(); assert source not in installed.parents, (source, installed); assert pyruns.__version__ == version('pyruns'); assert create_app().title == 'Pyruns API'; print(installed)"
-          ../.tmp-wheel-venv/bin/pyr exec -d -n wheel-smoke -- ../.tmp-wheel-venv/bin/python -c "print('wheel-smoke-ok')"
-          ../.tmp-wheel-venv/bin/pyr wait wheel-smoke
-          ../.tmp-wheel-venv/bin/pyr show wheel-smoke --json
-          ../.tmp-wheel-venv/bin/pyr log wheel-smoke | grep -Fx "wheel-smoke-ok"
+          .tmp-wheel-venv/bin/pip check
+      - name: Verify installed task lifecycle
+        timeout-minutes: 5
+        run: .tmp-wheel-venv/bin/python -I scripts/check_installed_lifecycle.py --output test-results/wheel/report.json
+      - name: Upload installed task diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installed-wheel-lifecycle
+          path: test-results/wheel/
+          if-no-files-found: ignore
+          retention-days: 14
