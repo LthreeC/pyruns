@@ -1212,12 +1212,17 @@ def create_app(
             return
 
         runtime = get_runtime()
+
+        def load_stream_context() -> tuple[str, str]:
+            root, task = runtime.get_task_log_stream_context(task_name)
+            return root, os.path.normcase(os.path.abspath(str(task["dir"])))
+
         try:
-            stream_root, stream_task = runtime.get_task_log_stream_context(task_name)
+            # The first lookup can read task metadata and a large metric history.
+            stream_root, stream_task_dir = await asyncio.to_thread(load_stream_context)
         except KeyError:
             await websocket.close(code=4404, reason="Task not found")
             return
-        stream_task_dir = os.path.normcase(os.path.abspath(str(stream_task["dir"])))
 
         requested_log_name = str(log_file_name or "").strip()
         requested_offset = None if offset is None else max(0, int(offset))

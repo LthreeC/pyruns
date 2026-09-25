@@ -6442,6 +6442,49 @@ def test_logs_websocket_ignores_emitter_for_another_run_log(tmp_path):
     assert payload["content"].replace("\r", "") == "current run\n"
 
 
+def test_logs_websocket_initial_lookup_does_not_block_http(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed", log_text="first\nsecond\n")
+    runtime = _build_runtime(workspace)
+    entered = threading.Event()
+    release = threading.Event()
+    original_lookup = runtime.get_task_log_stream_context
+
+    def slow_lookup(name):
+        entered.set()
+        assert release.wait(10), "test did not release the task lookup"
+        return original_lookup(name)
+
+    monkeypatch.setattr(runtime, "get_task_log_stream_context", slow_lookup)
+    # A shared TestClient lifespan keeps HTTP and WebSocket on the same loop.
+    with TestClient(create_app(runtime)) as client:
+        def receive_log():
+            with client.websocket_connect(
+                "/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset=0"
+            ) as websocket:
+                return websocket.receive_json()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            stream = workers.submit(receive_log)
+            try:
+                assert entered.wait(5)
+                request = workers.submit(client.get, "/api/system/info")
+                response = request.result(timeout=2)
+                assert response.status_code == 200
+                assert response.json()["version"] == __version__
+                assert not release.is_set()
+            finally:
+                release.set()
+            message = stream.result(timeout=5)
+
+    assert message["type"] == "chunk"
+    assert message["content"].replace("\r", "") == "first\nsecond\n"
+    assert message["log_file_name"] == "run1.log"
+    assert message["offset"] == (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").stat().st_size
+
+
 def test_logs_websocket_rejects_invalid_log_file_name(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
