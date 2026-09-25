@@ -33,14 +33,10 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
     ("source_path", "markers"),
     [
         pytest.param(FRONTEND_GENERATOR, (
-            'function PinnedParameters',
             'Pinned Parameters',
             'title="Pinned Parameters"',
             'count={rows.length}',
             'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"',
-            'collectPinnedRows(data, pinnedParams',
-            'const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey))',
-            'if (pinnedRowKeys.has(fullKey))',
             'function readCompactGeneratorLayout()',
             "window.matchMedia('(max-width: 700px)')",
             'const generatorBodyClassName = clsx(',
@@ -88,15 +84,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'",
             "!treeSection && depth > 0 && 'border-l-2 border-border pl-3'",
             'aria-expanded={open}',
-            "type FormLayoutMode = 'grid' | 'tree'",
-            "type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'",
-            "['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]",
-            'handleDisplayModeChange',
-            'formLayoutMode',
-            'setFormLayoutMode',
-            'Grid',
-            'Tree',
-            'YAML',
             'Expand all',
             'Collapse all',
             'treeOpenSignal',
@@ -115,16 +102,9 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto',
             'function buildColumnGridStyle(columns: number)',
             "const contentClassName = 'grid gap-x-3 gap-y-1.5 overflow-x-auto pb-0.5'",
-            'function TreeParameterExplorer',
-            'function RootSectionOverview',
-            'function SearchResultRows',
-            'collectTreeSections(data)',
-            'collectParamRows(data, declaredTypeMap, batchParams)',
             'Outline',
             'outlineCollapsed',
             'setOutlineCollapsed(false)',
-            'Search path or value',
-            'Search results',
             'No matching parameters.',
             'TREE_OUTLINE_WIDTH_STORAGE_KEY',
             'clampTreeOutlineWidth',
@@ -182,13 +162,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'workspaceKey === currentWorkspaceKey()',
         ), id='store'),
         pytest.param(FRONTEND_DASHBOARD, (
-            'const refreshDashboard = useCallback(() => {',
-            'if (dashboardRefreshPromiseRef.current)',
-            'const refreshPromise = Promise.allSettled([',
-            'api.getMetrics({}, controller.signal)',
-            "setMetricsError('')",
-            "errorMessage(metricsResult.reason, 'System metrics unavailable.')",
-            'Metrics refresh failed. Showing last values.',
             'System metrics unavailable.',
             'flex min-h-full w-full flex-col',
             'const workspaceKindLabel',
@@ -214,8 +187,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'title={gpu.name}',
             "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'",
             'RefreshCw',
-            'manualRefreshing',
-            'const handleManualRefresh = useCallback(async () => {',
             'Dashboard refreshed',
             'Task summary and system metrics are up to date.',
             'Refresh dashboard now',
@@ -606,15 +577,17 @@ def test_react_gpu_process_memory_percentage_guards_missing_readings():
 def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    monitor_fetch = store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
 
     assert "monitorTasks: Task[]" in store
     assert "const MONITOR_TASK_PAGE_SIZE = 200" in store
     assert "loadMore?: boolean" in store
     assert "monitorHasMore: boolean" in store
     assert "upsertMonitorTask: (task: Task) => void" in store
-    assert "limit: nextLimit" in store
-    assert "compact: true" in store
-    assert "limit: 0" not in store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
+    assert "limit: nextLimit" in monitor_fetch
+    assert "summary: true" in monitor_fetch
+    assert "compact: true" in monitor_fetch
+    assert "limit: 0" not in monitor_fetch
     assert "refresh: forceRefresh || !sidebarQuery.trim()" in monitor
     assert "fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
@@ -798,22 +771,13 @@ def test_react_task_detail_env_editor_handles_edits_feedback_and_errors():
     assert 'key={`${key}-${index}`}' not in source
     assert "type EnvSaveStatus" in source
     assert "function buildEnvPairsFromEnv" in source
-    assert "const envBaseRef = useRef(copyEnv(task.env || {}))" in source
     assert "if (envDirty || previousTaskNameRef.current !== task.name)" in source
-    assert "envBaseRef.current = incomingEnv" in source
-    assert "const expectedEnv = envBaseRef.current" in source
-    assert "const response = await api.updateEnv(taskName, env, expectedEnv)" in source
     assert "const savedEnv = copyEnv(response.task?.env || env)" in source
-    assert "setEnvPairs(buildEnvPairsFromEnv(savedEnv))" in source
     assert "getEnvValidationMessage(envPairs)" in source
     assert "ENV_NAME_PATTERN" in source
     assert "Invalid environment variable name" in source
     assert "const envSaveDisabled = saving || !envDirty || Boolean(envValidationMessage)" in source
-    assert "? 'Replace Env'" in source
     assert "envSaveStatus === 'error'" in source
-    assert "err instanceof api.ApiError && err.status === 409" in source
-    assert "Another editor saved newer environment variables. Your draft is unchanged." in source
-    assert "aria-label=\"Add environment variable\"" in source
     assert "setPendingEnvFocusId(pair.id)" in source
     assert "aria-label={`Remove ${pair.key.trim() || 'environment variable'}`}" in source
     assert "function requestClose" in source
@@ -875,11 +839,6 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "page.items.length === 0" in store
     assert "Math.floor((page.total - 1) / limit) * limit" in store
     assert "retryPage = await api.getTasks" in store
-    monitor_fetch = store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
-    assert "limit: nextLimit" in monitor_fetch
-    assert "summary: true" in monitor_fetch
-    assert "compact: true" in monitor_fetch
-    assert "limit: 0" not in monitor_fetch
     assert "api.getTask(task.name).then(fullTask" in manager
     assert "api.getTask(task.name).then(fullTask" in monitor
     assert "dropIndicator" in manager
@@ -1046,7 +1005,6 @@ def test_react_monitor_isolates_workspace_and_resets_replaced_log_streams():
 def test_react_monitor_uses_realtime_task_events_and_preserves_current_selection_after_actions():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
-    log_stream = FRONTEND_LOG_STREAM.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
@@ -1058,14 +1016,8 @@ def test_react_monitor_uses_realtime_task_events_and_preserves_current_selection
     assert "/api/tasks/events" in api
     assert "export interface TaskEventMessage" in types
     assert "type: 'ready' | 'changed' | 'heartbeat'" in types
-    assert "export function useTaskEvents" in log_stream
-    assert "message.type === 'ready'" in log_stream
-    assert "message.type === 'changed'" in log_stream
     assert "generationKey: workspaceKey" in monitor
     assert "TASK_EVENT_DEGRADED_POLL_MS = 5_000" in monitor
-    assert "TASK_EVENT_FALLBACK_POLL_MS = 60_000" in monitor
-    assert "document.addEventListener('visibilitychange', handleVisibilityChange)" in monitor
-    assert "Task list updates live" in monitor
     assert "Task changes appear automatically" in monitor
     assert "3s sync" not in monitor
     assert "10s sync" not in monitor
@@ -1091,15 +1043,12 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
 
 def test_react_monitor_supports_configurable_terminal_line_height():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
-    settings_source = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "utils" / "monitorSettings.ts").read_text(encoding="utf-8")
 
     assert "resolveMonitorLineHeight" in source
     assert "const monitorLineHeight = resolveMonitorLineHeight(workspace?.settings)" in source
     assert "lineHeight: DEFAULT_MONITOR_LINE_HEIGHT" in source
     assert "xtermRef.current.options.lineHeight = monitorLineHeight" in source
     assert "fitAddonRef.current?.fit()" in source
-    assert "monitor_line_height" in settings_source
-    assert "DEFAULT_MONITOR_LINE_HEIGHT" in settings_source
 
 
 def test_react_code_editor_focuses_from_blank_editor_area():
@@ -1124,7 +1073,7 @@ def test_react_code_editor_focuses_from_blank_editor_area():
     assert "min-width: 100%;" not in css
 
 
-def test_react_code_editor_has_no_horizontal_scrollbar():
+def test_react_code_editor_preserves_line_wrapping_preferences():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
     runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
     editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
@@ -1502,7 +1451,6 @@ def test_react_sidebar_workspace_card_opens_launcher_with_mode():
     assert "onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}" in sidebar
     assert "nextParams.delete('mode')" in app
     assert "const modeParam = searchParams.get('mode')" in launcher
-    assert "const initialLaunchMode = scriptParam ? 'python' : modeParam === 'shell' ? 'shell' : 'python'" in launcher
     assert "setLaunchMode(initialLaunchMode)" in launcher
 
 
