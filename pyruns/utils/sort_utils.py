@@ -74,12 +74,13 @@ def task_sort_key(task: Dict[str, object]) -> tuple:
 
 
 def _natural_name_key(value: object) -> tuple:
-    chunks = _NATURAL_CHUNK_PATTERN.split(str(value or ""))
-    return tuple(
-        (1, int(chunk)) if chunk.isdecimal() else (0, chunk.lower())
-        for chunk in chunks
-        if chunk
-    )
+    # Flat kind/value pairs preserve natural ordering without retaining a
+    # separate tuple for every chunk until the entire task sort finishes.
+    key = []
+    for chunk in _NATURAL_CHUNK_PATTERN.split(str(value or "")):
+        if chunk:
+            key.extend((1, int(chunk)) if chunk.isdecimal() else (0, chunk.lower()))
+    return tuple(key)
 
 
 def _finite_task_order(value: object) -> float | None:
@@ -110,14 +111,14 @@ def task_manager_sort_key(task: Dict[str, object]) -> tuple:
         order_rank,
         -inactive_tie,
         -time_rank,
-        _natural_name_key(task.get("name", "")),
+        *_natural_name_key(task.get("name", "")),
     )
 
 
 def _manual_sort_key(task: Dict[str, object]) -> tuple:
     order = _finite_task_order(task.get("task_order"))
     if order is not None:
-        return (0, order, _natural_name_key(task.get("name", "")))
+        return (0, order, *_natural_name_key(task.get("name", "")))
     return (1, *task_manager_sort_key(task))
 
 
@@ -132,12 +133,12 @@ def _sort_manager_group(
     if sort_mode == "activity_desc":
         return sorted(
             tasks,
-            key=lambda task: (-_timestamp_weight(task), _natural_name_key(task.get("name", ""))),
+            key=lambda task: (-_timestamp_weight(task), *_natural_name_key(task.get("name", ""))),
         )
     if sort_mode == "activity_asc":
         return sorted(
             tasks,
-            key=lambda task: (_timestamp_weight(task), _natural_name_key(task.get("name", ""))),
+            key=lambda task: (_timestamp_weight(task), *_natural_name_key(task.get("name", ""))),
         )
     if sort_mode == "name_asc":
         return sorted(tasks, key=lambda task: _natural_name_key(task.get("name", "")))

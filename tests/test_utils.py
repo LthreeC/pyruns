@@ -1319,6 +1319,19 @@ def test_task_sort_treats_unparseable_timestamp_as_unset(field, sort_mode):
     assert broken[field] == (invalid if field == "created_at" else [invalid])
 
 
+@pytest.mark.parametrize("sort_mode", [
+    "priority", "manual", "activity_desc", "activity_asc", "name_asc", "name_desc",
+])
+def test_natural_sort_keeps_prefixes_and_stable_equal_numeric_chunks(sort_mode):
+    tasks = [{"name": name} for name in [
+        "a10", "a1b10", "A1", "a01", "a1", "a1b2", "a2", "a", "a1b", "a1b0", "a1c",
+    ]]
+    expected = ["a", "A1", "a01", "a1", "a1b", "a1b0", "a1b2", "a1b10", "a1c", "a2", "a10"]
+    if sort_mode == "name_desc":
+        expected = ["a10", "a2", "a1c", "a1b10", "a1b2", "a1b0", "a1b", "A1", "a01", "a1", "a"]
+    assert [task["name"] for task in sort_tasks_for_manager(tasks, sort_mode)] == expected
+
+
 def test_sort_tasks_for_manager_supports_explicit_card_orders():
     tasks = [
         {
