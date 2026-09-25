@@ -1208,8 +1208,10 @@ def test_check_latest_version_handles_offline_and_invalid_responses(monkeypatch)
         self_update.check_latest_version("0.3.0")
 
 
-def test_run_pip_upgrade_uses_current_interpreter(monkeypatch):
+@pytest.mark.parametrize("hidden_flags", [{}, {"creationflags": 0x08000000}])
+def test_run_pip_upgrade_uses_current_interpreter(monkeypatch, hidden_flags):
     calls = []
+    monkeypatch.setattr(self_update, "hidden_subprocess_kwargs", lambda: hidden_flags)
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
@@ -1232,6 +1234,7 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch):
     assert calls[0][1] == {
         "check": False,
         "timeout": self_update.PIP_UPGRADE_TIMEOUT_SECONDS,
+        **hidden_flags,
     }
     assert result == {
         "ok": True,
@@ -1356,8 +1359,10 @@ def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
     assert json.loads(server_exec[2][self_update.UI_UPDATE_RESULT_ENV]) == result
 
 
-def test_windows_process_replacement_runs_child_in_inherited_terminal(monkeypatch):
+def test_windows_process_replacement_waits_for_hidden_child(monkeypatch):
     calls = []
+    hidden_flags = {"creationflags": 0x08000000}
+    monkeypatch.setattr(self_update, "hidden_subprocess_kwargs", lambda: hidden_flags)
     monkeypatch.setattr(self_update, "_WINDOWS_PROCESS_REPLACEMENT", True)
     monkeypatch.setattr(
         self_update.subprocess,
@@ -1375,7 +1380,7 @@ def test_windows_process_replacement_runs_child_in_inherited_terminal(monkeypatc
     assert calls == [
         (
             ["python-test", "-m", "pyruns.web.self_update"],
-            {"env": {"PYRUNS_TEST": "1"}},
+            {"env": {"PYRUNS_TEST": "1"}, **hidden_flags},
         )
     ]
 
