@@ -300,7 +300,7 @@ Python CI 覆盖 Linux Python 3.10–3.13、Windows/macOS Python 3.12，并为�
 /path/to/wheel-venv/bin/python -I scripts/check_installed_lifecycle.py --output test-results/wheel/report.json
 ```
 
-静态门槛包含原有 flake8 错误检查，以及 `pyruns/`、`scripts/` 的 Ruff E4/E7/E9/F/B/ASYNC 规则。ty 当前检查文件读取、任务持久化、指标存储、进程管理和提交协议五个模块，按全部平台解析类型；其余模块需逐步审阅后扩展覆盖。工具版本固定在 `lint` 可选依赖中。
+静态门槛包含原有 flake8 错误检查，以及 `pyruns/`、`scripts/` 的 Ruff E4/E7/E9/F/B/ASYNC 规则。ty 当前检查文件读取、任务持久化、指标存储、进程管理、提交协议，以及 Shell 运行时、查询匹配、任务文件和日志搜索，共九个模块，按全部平台解析类型；其余模块需逐步审阅后扩展覆盖。工具版本固定在 `lint` 可选依赖中。
 
 在仓库根目录、已激活的 Python 环境中运行：
 
