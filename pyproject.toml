@@ -48,6 +48,7 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "httpx>=0.24,<0.28",
+    "httpx2>=2.13,<3",
     "pytest>=8,<10",
     "pytest-cov>=6,<8",
     "setuptools>=77",

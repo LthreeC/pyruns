@@ -98,6 +98,7 @@ def test_ci_installs_declared_web_test_dependencies():
     assert "test" in optional
     assert "lint" in optional
     assert any(item.startswith("httpx>=") for item in optional["test"])
+    assert any(item.startswith("httpx2>=") for item in optional["test"])
     assert any(item.startswith("tomli>=") for item in optional["test"])
     assert any(item.startswith("flake8>=") for item in optional["lint"])
     assert 'pip install -e ".[test,lint]"' in workflow
