@@ -6,6 +6,7 @@ import json
 import multiprocessing
 import os
 import queue
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -689,6 +690,146 @@ def test_batch_failure_does_not_mutate_replacement_task(tmp_path, monkeypatch, r
     assert info_io.load_task_info(str(first_task_dir), raise_error=True)["status"] == "pending"
     assert info_io.load_task_info(str(moved_task_dir), raise_error=True)["status"] == "pending"
     assert {path.name for path in tasks_root.iterdir()} == {first_task_dir.name, moved_task_dir.name}
+
+
+@pytest.mark.parametrize("operation, phase, copy_marker", [
+    ("rename", "before_begin", False), ("rename", "after_begin", False),
+    ("rename", "before_finish", False), ("rename", "before_finish", True),
+    ("delete", "before_begin", False), ("delete", "after_begin", False),
+])
+def test_directory_operation_preserves_replacement_task(
+    tmp_path, monkeypatch, operation, phase, copy_marker,
+):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(str(tasks_root))
+    generator.create_task("original", {"value": "original"}, exact_name=True)
+    manager = TaskManager(str(tasks_root), lazy_scan=False, owns_task_lifecycle=False)
+    replacement_dir = tasks_root / ("renamed" if phase == "before_finish" else "original")
+    preserved_dir = tasks_root / "preserved-original"
+    replacement_bytes = {}
+    method_name = "_finish_namespace_operation" if phase == "before_finish" else "_begin_namespace_operation"
+    original_method = getattr(manager, method_name)
+
+    def replace_task():
+        replacement_dir.rename(preserved_dir)
+        if copy_marker:
+            shutil.copytree(preserved_dir, replacement_dir)
+        else:
+            generator.create_task(replacement_dir.name, {"value": "replacement"}, exact_name=True)
+        # An external producer may use different JSON formatting; a rejected
+        # action must leave its bytes untouched as well as preserve its fields.
+        info_path = replacement_dir / "task_info.json"
+        info_path.write_text(json.dumps(json.loads(info_path.read_text(encoding="utf-8"))), encoding="utf-8")
+        replacement_bytes.update({
+            path.name: path.read_bytes() for path in replacement_dir.iterdir() if path.is_file()
+        })
+
+    def replace_around_operation(*args, **kwargs):
+        if phase == "after_begin":
+            result = original_method(*args, **kwargs)
+            replace_task()
+            return result
+        replace_task()
+        return original_method(*args, **kwargs)
+
+    monkeypatch.setattr(manager, method_name, replace_around_operation)
+    try:
+        if operation == "rename":
+            assert manager.rename_task("original", "renamed")[0] is False
+        else:
+            assert manager.delete_tasks(["original"]) == []
+        assert replacement_dir.is_dir()
+        assert {path.name: path.read_bytes() for path in replacement_dir.iterdir() if path.is_file()} == replacement_bytes
+        assert (preserved_dir / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: original\n"
+        other_path = tasks_root / ("original" if phase == "before_finish" else "renamed")
+        assert not other_path.exists()
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("phase", ["after_begin", "before_finish"])
+def test_rename_preserves_directory_claimed_by_another_operation(tmp_path, monkeypatch, phase):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(str(tasks_root))
+    generator.create_task("original", {"value": "original"}, exact_name=True)
+    manager = TaskManager(str(tasks_root), lazy_scan=False, owns_task_lifecycle=False)
+    claimed_dir = tasks_root / ("original" if phase == "after_begin" else "renamed")
+    method_name = "_begin_namespace_operation" if phase == "after_begin" else "_finish_namespace_operation"
+    original_method = getattr(manager, method_name)
+    claimed_bytes = []
+
+    def change_owner():
+        def update(info):
+            info["_namespace_operation"]["token"] = "another-operation"
+        info_io.update_task_metadata(str(claimed_dir), update)
+        claimed_bytes.append((claimed_dir / "task_info.json").read_bytes())
+
+    def change_operation_owner(*args, **kwargs):
+        if phase == "after_begin":
+            token = original_method(*args, **kwargs)
+            change_owner()
+            return token
+        change_owner()
+        return original_method(*args, **kwargs)
+
+    monkeypatch.setattr(manager, method_name, change_operation_owner)
+    try:
+        assert manager.rename_task("original", "renamed")[0] is False
+        assert claimed_dir.is_dir()
+        assert (claimed_dir / "task_info.json").read_bytes() == claimed_bytes[0]
+        other_path = tasks_root / ("renamed" if phase == "after_begin" else "original")
+        assert not other_path.exists()
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("occupied", ["empty_directory", "new_task"])
+def test_rename_rollback_preserves_reoccupied_original_path(tmp_path, monkeypatch, occupied):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(str(tasks_root))
+    generator.create_task("original", {"value": "original"}, exact_name=True)
+    manager = TaskManager(str(tasks_root), lazy_scan=False, owns_task_lifecycle=False)
+    original_dir = tasks_root / "original"
+    replacement_bytes = {}
+
+    def occupy_original_then_fail(*args, **kwargs):
+        if occupied == "empty_directory":
+            original_dir.mkdir()
+        else:
+            generator.create_task("original", {"value": "new task"}, exact_name=True)
+            replacement_bytes.update({
+                path.name: path.read_bytes() for path in original_dir.iterdir() if path.is_file()
+            })
+        raise OSError("metadata commit failed")
+
+    monkeypatch.setattr(manager, "_finish_namespace_operation", occupy_original_then_fail)
+    try:
+        ok, message = manager.rename_task("original", "renamed")
+        assert original_dir.is_dir()
+        assert {path.name: path.read_bytes() for path in original_dir.iterdir() if path.is_file()} == replacement_bytes
+        assert (tasks_root / "renamed" / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: original\n"
+        assert ok is False and "rollback" in message.lower()
+    finally:
+        manager.shutdown()
+
+
+def test_rename_metadata_failure_rolls_back_owned_directory(tmp_path, monkeypatch):
+    tasks_root = tmp_path / "tasks"
+    generator = TaskGenerator(str(tasks_root))
+    task = generator.create_task("original", {"value": "original"}, exact_name=True)
+    manager = TaskManager(str(tasks_root), lazy_scan=False, owns_task_lifecycle=False)
+    original_bytes = (Path(task["dir"]) / "task_info.json").read_bytes()
+
+    def fail_metadata_commit(*args, **kwargs):
+        raise OSError("metadata commit failed")
+
+    monkeypatch.setattr(manager, "_finish_namespace_operation", fail_metadata_commit)
+    try:
+        assert manager.rename_task("original", "renamed") == (False, "metadata commit failed")
+        assert not (tasks_root / "renamed").exists()
+        assert (Path(task["dir"]) / "task_info.json").read_bytes() == original_bytes
+    finally:
+        manager.shutdown()
 
 
 def test_task_generator_rejects_symlinked_tasks_root_before_writing(tmp_path):

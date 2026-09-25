@@ -1023,6 +1023,7 @@ class TaskManager:
         *,
         kind: str,
         expected_run_index: int,
+        expected_identity: tuple[int, int],
     ) -> str:
         """Reserve one inactive task directory against concurrent reruns."""
 
@@ -1037,6 +1038,8 @@ class TaskManager:
         }
 
         def _apply(info: Dict[str, Any]) -> None:
+            if self._directory_identity(task_dir) != expected_identity:
+                raise TaskStateConflict("task directory identity changed before move")
             self._guard_namespace_operation(info)
             if str(info.get("name", "") or "") != task_name:
                 raise TaskStateConflict("task name changed before directory move")
@@ -1050,37 +1053,54 @@ class TaskManager:
         update_task_metadata(task_dir, _apply)
         return token
 
-    @staticmethod
+    def _require_namespace_operation(
+        self,
+        task_dir: str,
+        info: Dict[str, Any],
+        token: str,
+        expected_identity: tuple[int, int],
+    ) -> None:
+        """Require both the original directory and this caller's move marker."""
+        if self._directory_identity(task_dir) != expected_identity:
+            raise TaskStateConflict("task directory identity changed during move")
+        operation = info.get(_NAMESPACE_OPERATION_KEY)
+        if not isinstance(operation, dict) or operation.get("token") != token:
+            raise TaskStateConflict("task directory move marker changed")
+
     def _finish_namespace_operation(
+        self,
         task_dir: str,
         token: str,
         *,
+        expected_identity: tuple[int, int],
         new_name: str | None = None,
     ) -> Dict[str, Any]:
         """Clear only the caller's move marker and optionally commit a new name."""
 
         def _apply(info: Dict[str, Any]) -> None:
-            operation = info.get(_NAMESPACE_OPERATION_KEY)
-            if not isinstance(operation, dict) or operation.get("token") != token:
-                raise TaskStateConflict("task directory move marker changed")
+            self._require_namespace_operation(task_dir, info, token, expected_identity)
             if new_name is not None:
                 info["name"] = new_name
             info.pop(_NAMESPACE_OPERATION_KEY, None)
 
         return update_task_metadata(task_dir, _apply)
 
-    @staticmethod
-    def _rollback_namespace_operation(task_dir: str, token: str) -> None:
+    def _rollback_namespace_operation(
+        self,
+        task_dir: str,
+        token: str,
+        *,
+        expected_identity: tuple[int, int],
+    ) -> None:
         """Best-effort cleanup after a task-directory move does not complete."""
 
         def _apply(info: Dict[str, Any]) -> None:
-            operation = info.get(_NAMESPACE_OPERATION_KEY)
-            if isinstance(operation, dict) and operation.get("token") == token:
-                info.pop(_NAMESPACE_OPERATION_KEY, None)
+            self._require_namespace_operation(task_dir, info, token, expected_identity)
+            info.pop(_NAMESPACE_OPERATION_KEY, None)
 
         try:
             update_task_metadata(task_dir, _apply)
-        except (FileNotFoundError, OSError, TimeoutError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError, TaskStateConflict):
             pass
 
     def _refresh_memory_task_from_disk_info(
@@ -2189,34 +2209,53 @@ class TaskManager:
                 return False, f"Task name '{new_name}' already exists in the current workspace"
 
             try:
+                source_identity = self._directory_identity(old_dir)
+                if source_identity is None:
+                    raise FileNotFoundError("task directory disappeared before rename")
                 disk_info = load_task_metadata(old_dir, raise_error=True)
                 move_token = self._begin_namespace_operation(
                     old_dir,
                     str(target["name"]),
                     kind="rename",
                     expected_run_index=active_task_run_index(disk_info),
+                    expected_identity=source_identity,
                 )
             except Exception as exc:
                 return False, str(exc)
 
             try:
+                self._require_namespace_operation(
+                    old_dir, load_task_metadata(old_dir, raise_error=True),
+                    move_token, source_identity,
+                )
                 os.rename(old_dir, new_dir)
-            except OSError as exc:
-                self._rollback_namespace_operation(old_dir, move_token)
+            except (OSError, ValueError, TaskStateConflict) as exc:
+                self._rollback_namespace_operation(
+                    old_dir, move_token, expected_identity=source_identity,
+                )
                 return False, str(exc)
 
             try:
                 updated = self._finish_namespace_operation(
                     new_dir,
                     move_token,
+                    expected_identity=source_identity,
                     new_name=new_name,
                 )
             except Exception as exc:
                 try:
+                    self._require_namespace_operation(
+                        new_dir, load_task_metadata(new_dir, raise_error=True),
+                        move_token, source_identity,
+                    )
+                    if os.path.lexists(old_dir):
+                        raise FileExistsError("original task path is occupied")
                     os.rename(new_dir, old_dir)
-                except OSError:
-                    pass
-                self._rollback_namespace_operation(old_dir, move_token)
+                except Exception as rollback_exc:
+                    return False, f"Rename failed ({exc}); rollback incomplete: {rollback_exc}"
+                self._rollback_namespace_operation(
+                    old_dir, move_token, expected_identity=source_identity,
+                )
                 return False, str(exc)
 
             target["dir"] = new_dir.replace("\\", "/")
@@ -2810,6 +2849,7 @@ class TaskManager:
                     str(target["name"]),
                     kind="delete",
                     expected_run_index=int(target["run_index"]),
+                    expected_identity=target["identity"],
                 )
                 # One shared namespace lock coordinates delete with restore.  The
                 # destination stays on the same filesystem and os.rename never
@@ -2818,8 +2858,10 @@ class TaskManager:
                     validate_tasks_root(self.tasks_dir)
                     validate_tasks_root(trash_dir)
                     validate_task_directory(target["dir"])
-                    if self._directory_identity(target["dir"]) != target["identity"]:
-                        raise OSError("task directory identity changed before delete")
+                    self._require_namespace_operation(
+                        target["dir"], load_task_metadata(target["dir"], raise_error=True),
+                        move_token, target["identity"],
+                    )
 
                     for attempt in range(3):
                         destination = os.path.join(trash_dir, folder)
@@ -2842,7 +2884,9 @@ class TaskManager:
                             time.sleep(0.2)
                     if moved:
                         try:
-                            self._finish_namespace_operation(destination, move_token)
+                            self._finish_namespace_operation(
+                                destination, move_token, expected_identity=target["identity"],
+                            )
                         except Exception as exc:
                             logger.warning(
                                 "Moved %s to trash but could not clear its move marker: %s",
@@ -2852,7 +2896,9 @@ class TaskManager:
             except Exception as exc:
                 logger.error("Error moving task to trash safely: %s", exc)
             if not moved and move_token:
-                self._rollback_namespace_operation(target["dir"], move_token)
+                self._rollback_namespace_operation(
+                    target["dir"], move_token, expected_identity=target["identity"],
+                )
             if moved:
                 deleted_names.append(str(target["name"]))
 
