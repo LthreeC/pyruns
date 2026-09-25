@@ -1,4 +1,4 @@
-export type ConfigKey = string | number | boolean
+export type ConfigKey = string | number | bigint | boolean
 export type ConfigPath = readonly ConfigKey[]
 export type ConfigMap = Map<ConfigKey, unknown>
 
@@ -8,7 +8,8 @@ export function isConfigMap(value: unknown): value is ConfigMap {
 
 // Include key types: YAML permits both 1 and "1" in the same mapping.
 export function configPathId(path: ConfigPath): string {
-  return JSON.stringify(path.map(key => [typeof key, String(key)]))
+  // Keep v2 numeric pins compatible when YAML integers are represented as bigint.
+  return JSON.stringify(path.map(key => [typeof key === 'bigint' ? 'number' : typeof key, String(key)]))
 }
 
 export function configPathFromId(id: string): ConfigKey[] | null {
@@ -20,7 +21,7 @@ export function configPathFromId(id: string): ConfigKey[] | null {
       if (!Array.isArray(part) || part.length !== 2 || typeof part[1] !== 'string') return null
       const [type, value] = part
       if (type === 'string') path.push(value)
-      else if (type === 'number') path.push(Number(value))
+      else if (type === 'number') path.push(/^-?\d+$/.test(value) ? BigInt(value) : Number(value))
       else if (type === 'boolean' && (value === 'true' || value === 'false')) path.push(value === 'true')
       else return null
     }
@@ -42,16 +43,27 @@ export function getConfigValue(data: ConfigMap, path: ConfigPath): unknown {
   let current: unknown = data
   for (const key of path) {
     if (!isConfigMap(current)) return undefined
-    current = current.get(key)
+    current = current.get(resolveConfigKey(current, key))
   }
   return current
 }
 
 export function updateConfigValue(data: ConfigMap, path: ConfigPath, value: unknown): ConfigMap {
-  if (!path.length || !data.has(path[0])) return data
-  const [key, ...tail] = path
+  if (!path.length) return data
+  const [head, ...tail] = path
+  const key = resolveConfigKey(data, head)
+  if (!data.has(key)) return data
   if (!tail.length) return new Map(data).set(key, value)
   const child = data.get(key)
   if (!isConfigMap(child)) return data
   return new Map(data).set(key, updateConfigValue(child, tail, value))
+}
+
+function resolveConfigKey(data: ConfigMap, key: ConfigKey): ConfigKey {
+  // A persisted [1] path may refer to an integral float key (1.0).
+  if (typeof key === 'bigint' && !data.has(key)) {
+    const number = Number(key)
+    if (Number.isFinite(number) && BigInt(number) === key && data.has(number)) return number
+  }
+  return key
 }

@@ -32,7 +32,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { parse as yamlParse, stringify as yamlStringify } from 'yaml'
+import { stringify as yamlStringify } from 'yaml'
 import { requestConfirmation, useGeneratorStore, useThemeStore, useWorkspaceStore } from '@/store'
 import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
@@ -43,6 +43,7 @@ import ToggleSwitch from '@/components/shared/ToggleSwitch'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
 import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
+import { parseConfigYaml, parseIntegerInput, stringifyConfigYaml } from '@/utils/configYaml'
 import {
   configPathId, configPathFromId, formatConfigPath, getConfigValue,
   isConfigMap as isNestedGroup, updateConfigValue,
@@ -426,7 +427,7 @@ interface TreeSectionNode {
 
 function parseFormConfig(text: string): ConfigMap | null {
   try {
-    const value: unknown = yamlParse(text, { mapAsMap: true })
+    const value = parseConfigYaml(text)
     return value == null ? new Map() : isNestedGroup(value) ? value : null
   } catch {
     return null
@@ -440,9 +441,8 @@ function inferParamType(value: any): ParamType {
   if (typeof value === 'boolean') {
     return 'bool'
   }
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? 'int' : 'float'
-  }
+  if (typeof value === 'bigint') return 'int'
+  if (typeof value === 'number') return 'float'
   if (Array.isArray(value)) {
     return 'list'
   }
@@ -1251,7 +1251,7 @@ export default function GeneratorPage() {
                 batchParams={batchParams}
                 onTogglePin={togglePin}
                 onSetAllSections={setAllTreeSections}
-                onChange={data => setYamlText(yamlStringify(data))}
+                onChange={data => setYamlText(stringifyConfigYaml(data))}
               />
             </GeneratorDraftEditContext.Provider>
           ) : editorMode === 'yaml' ? (
@@ -2627,13 +2627,21 @@ function ParamRow({
         return
       }
     }
-    if ((originalType === 'int' || originalType === 'float') && !hasBatch && next !== '' && !Number.isNaN(Number(next))) {
-      onChange(originalType === 'int' ? Math.round(Number(next)) : Number(next))
-      return
+    if (!hasBatch && next !== '') {
+      if (originalType === 'int') {
+        const integer = parseIntegerInput(next)
+        if (integer !== null) {
+          onChange(integer)
+          return
+        }
+      } else if (originalType === 'float' && (!Number.isNaN(Number(next)) || /^\.?nan$/i.test(next))) {
+        onChange(Number(next))
+        return
+      }
     }
     if (originalType === 'list') {
       try {
-        const parsed = yamlParse(localValue, { mapAsMap: true })
+        const parsed = parseConfigYaml(localValue)
         if (Array.isArray(parsed)) {
           onChange(parsed)
           return
@@ -2842,10 +2850,10 @@ function ParamRow({
 function stringifyEditable(value: any) {
   if (Array.isArray(value)) {
     try {
-      return yamlStringify(value, { collectionStyle: 'flow', lineWidth: 0 }).trim()
+      return stringifyConfigYaml(value, { collectionStyle: 'flow', lineWidth: 0 }).trim()
     } catch {
       return String(value)
     }
   }
-  return String(value ?? '')
+  return Object.is(value, -0) ? '-0.0' : String(value ?? '')
 }

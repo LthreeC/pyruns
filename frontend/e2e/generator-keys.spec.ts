@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parse } from 'yaml'
 
+const parseConfig = (yaml: string) => parse(yaml, { mapAsMap: true, intAsBigInt: true })
+
 async function withGeneratorWorkspace(page: Page, yaml: string, check: (runRoot: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'pyruns-generator-keys-'))
   const script = join(root, 'train.py')
@@ -34,10 +36,10 @@ async function expectGeneratedConfig(page: Page, runRoot: string, expected: Map<
   expect(response.ok(), await response.text()).toBe(true)
   const payload = response.request().postDataJSON()
   expect(payload.mode).toBe('form')
-  expect(parse(payload.yaml_text, { mapAsMap: true })).toEqual(expected)
+  expect(parseConfig(payload.yaml_text)).toEqual(expected)
   const created = await response.json()
   expect(created.count).toBe(1)
-  const saved = parse(await readFile(join(runRoot, 'tasks', created.items[0].name, 'config.yaml'), 'utf8'), { mapAsMap: true })
+  const saved = parseConfig(await readFile(join(runRoot, 'tasks', created.items[0].name, 'config.yaml'), 'utf8'))
   expect(saved).toEqual(expectedSaved)
 }
 
@@ -53,8 +55,8 @@ test('generator edits pinned literal keys independently and restores legacy pins
     await literal.fill('27')
     await page.getByRole('button', { name: 'Pin b', exact: true }).click()
     await expect(page.getByRole('textbox', { name: 'a.b parameter value', exact: true })).toHaveValue('nested')
-    const expected = parse(yaml, { mapAsMap: true })
-    expected.set('a.b', 27)
+    const expected = parseConfig(yaml)
+    expected.set('a.b', 27n)
     const expectedSaved = new Map(expected)
     expectedSaved.delete('_meta_hint') // Task creation strips top-level template metadata.
     await expectGeneratedConfig(page, runRoot, expected, expectedSaved)
@@ -66,15 +68,18 @@ test('generator edits pinned literal keys independently and restores legacy pins
 })
 
 test('generator preserves typed keys and fixed list mappings through edits and creation', async ({ page }) => {
+  // Existing v2 numeric pins must survive changes to the internal integer representation.
+  await page.addInitScript(() => localStorage.setItem('pyruns_pinned_params_v2', JSON.stringify(['[["number","7"]]'])))
   const yaml = '7: numeric\n"7": string\ntrue: boolean\n"true": text\n0.5: ratio\neditable: 1\nrows: [{1: numeric, "1": string}, {}, "x | y"]\n'
   await withGeneratorWorkspace(page, yaml, async runRoot => {
+    await expect(page.getByRole('button', { name: 'Unpin [7]', exact: true })).toBeVisible()
     const editable = page.getByRole('textbox', { name: 'editable parameter value', exact: true })
     await expect(editable).toHaveValue('1')
     await editable.fill('2')
     await page.getByRole('button', { name: 'YAML', exact: true }).click()
-    const expected = parse(yaml, { mapAsMap: true })
-    expected.set('editable', 2)
-    expect(parse(await page.getByRole('textbox', { name: 'Task YAML editor' }).innerText(), { mapAsMap: true })).toEqual(expected)
+    const expected = parseConfig(yaml)
+    expected.set('editable', 2n)
+    expect(parseConfig(await page.getByRole('textbox', { name: 'Task YAML editor' }).innerText())).toEqual(expected)
     await page.getByRole('button', { name: 'Grid', exact: true }).click()
     const rows = page.getByRole('textbox', { name: 'rows parameter value', exact: true })
     // Focus/blur must also preserve the Map values displayed in a list field.
@@ -100,9 +105,49 @@ test('generator tree retains empty parent keys and edits search results at their
     const dotted = page.getByRole('textbox', { name: 'value parameter value', exact: true })
     await expect(dotted).toHaveValue('original')
     await dotted.fill('updated')
-    const expected = parse(yaml, { mapAsMap: true })
+    const expected = parseConfig(yaml)
     expected.get('').set('child', 'changed')
     expected.get('section.dot').set('value', 'updated')
+    await expectGeneratedConfig(page, runRoot, expected)
+  })
+})
+
+test('generator preserves integer precision in values, keys and lists', async ({ page }) => {
+  const yaml = 'seed: 9007199254740993\n9007199254740992: first\n9007199254740993: second\n"9007199254740993": text\nrows: [9007199254740993, {9007199254740993: nested}]\n'
+  await withGeneratorWorkspace(page, yaml, async runRoot => {
+    const seed = page.getByRole('textbox', { name: 'seed parameter value', exact: true })
+    await expect(seed).toHaveValue('9007199254740993')
+    await seed.fill('9007199254740995')
+    await seed.press('Tab')
+    await page.getByRole('button', { name: 'Pin [9007199254740993]', exact: true }).click()
+    const pinned = page.getByRole('textbox', { name: '[9007199254740993] parameter value', exact: true })
+    await expect(pinned).toHaveValue('second')
+    await pinned.fill('updated')
+    const rows = page.getByRole('textbox', { name: 'rows parameter value', exact: true })
+    await rows.focus()
+    await rows.press('Tab')
+    const expected = parseConfig(yaml)
+    expected.set('seed', 9007199254740995n)
+    expected.set(9007199254740993n, 'updated')
+    await expectGeneratedConfig(page, runRoot, expected)
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'Unpin [9007199254740993]', exact: true })).toBeVisible()
+  })
+})
+
+test('generator preserves floating types when editing integral floats', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pyruns_pinned_params_v2', JSON.stringify(['[["number","1"]]'])))
+  const yaml = 'rate: 1.0\nzero: 0.0\nnegative_zero: -0.0\nsmall: 1.0e-7\nrows: [1.0, 9007199254740993]\n1.0: float-key\n'
+  await withGeneratorWorkspace(page, yaml, async runRoot => {
+    await expect(page.getByRole('button', { name: 'Unpin [1]', exact: true })).toBeVisible()
+    await page.getByRole('textbox', { name: 'rate parameter value', exact: true }).fill('1.25')
+    const rows = page.getByRole('textbox', { name: 'rows parameter value', exact: true })
+    await rows.focus()
+    await rows.press('Tab')
+    await page.getByRole('textbox', { name: '[1] parameter value', exact: true }).fill('updated')
+    const expected = parseConfig(yaml)
+    expected.set('rate', 1.25)
+    expected.set(1, 'updated')
     await expectGeneratedConfig(page, runRoot, expected)
   })
 })

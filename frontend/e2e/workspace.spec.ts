@@ -2012,7 +2012,9 @@ test('generator keeps shell scripts scrollable and preserves drafts across navig
     if (!editorBox) throw new Error('Shell editor must have a stable layout box')
     expect(editorBox.y + editorBox.height).toBeLessThanOrEqual(viewport.height + 0.5)
   }
-  await shellEditor.fill('echo shell-draft-kept')
+  // Select the complete editor document, including lines outside the rendered viewport.
+  await shellEditor.press('ControlOrMeta+a')
+  await shellEditor.pressSequentially('echo shell-draft-kept')
 
   await page.getByRole('link', { name: 'Manager' }).click()
   await page.getByRole('link', { name: 'Generator' }).click()
@@ -2065,15 +2067,18 @@ test('generator preserves inferred parameter types without a template', async ({
   await page.goto('/generator?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'YAML', exact: true }).click()
   const yamlEditor = page.getByRole('textbox', { name: 'Task YAML editor' })
-  await yamlEditor.fill('epochs: 10\n')
+  await yamlEditor.fill('epochs: 10\nrate: 1.0\n')
 
   await page.getByRole('button', { name: 'Grid', exact: true }).click()
   const epochs = page.getByRole('textbox', { name: 'epochs parameter value' })
   await expect(epochs).toHaveValue('10')
   await epochs.fill('27')
+  const rate = page.getByRole('textbox', { name: 'rate parameter value', exact: true })
+  await rate.fill('1.25')
   await page.getByRole('button', { name: 'YAML', exact: true }).click()
 
   await expect(page.getByRole('textbox', { name: 'Task YAML editor' })).toContainText('epochs: 27')
+  await expect(page.getByRole('textbox', { name: 'Task YAML editor' })).toContainText('rate: 1.25')
 })
 
 test('manager applies and remembers the selected card order', async ({ page }) => {
