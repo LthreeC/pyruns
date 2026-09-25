@@ -13,7 +13,7 @@ import pytest
 
 import pyruns
 from pyruns._config import ENV_KEY_CONFIG, ENV_KEY_RUN_INDEX
-from pyruns.utils import info_io, track_store
+from pyruns.utils import info_io, lock_queue, track_store
 from pyruns.utils.info_io import (
     append_task_track, load_task_info, load_task_metadata, save_task_info,
     task_info_lock, update_task_info, update_task_metadata,
@@ -377,7 +377,13 @@ for value in range(20):
         for process in processes:
             output, error = process.communicate(timeout=30)
             if process.returncode != 0:
-                pytest.fail((output + error).decode("utf-8", errors="replace"))
+                owner = info_io._read_lock_owner(str(task / info_io._LOCK_FILENAME))
+                waiters = sorted(path.name for path in (task / lock_queue._QUEUE_DIR).glob("*.wait"))
+                workers = {worker.pid: worker.poll() for worker in processes}
+                pytest.fail(
+                    (output + error).decode("utf-8", errors="replace")
+                    + f"\nlock_owner={owner}\nwaiters={waiters}\nworkers={workers}"
+                )
     finally:
         for process in processes:
             if process.poll() is None:
@@ -626,6 +632,67 @@ def test_task_lock_release_does_not_remove_new_owner_after_retry(task, monkeypat
         assert lock_path.read_text(encoding="utf-8") == "different owner"
     finally:
         lock_path.unlink(missing_ok=True)
+
+
+def test_detail_read_recovers_from_writer_lock_without_including_later_append(task, monkeypatch):
+    externalize(task)
+    append_task_track(str(task), {"loss": 4})
+    descriptor = load_task_metadata(str(task), raise_error=True)["track_store"]
+    start_writer, locked, busy, released = (threading.Event() for _ in range(4))
+    busy_errors = []
+    original_connect, original_loads = sqlite3.connect, json.loads
+
+    class ObservedReader(sqlite3.Connection):
+        def execute(self, *args, **kwargs):
+            try:
+                return super().execute(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if str(exc) == "database is locked":
+                    busy_errors.append(exc)
+                    busy.set()
+                    assert released.wait(10), "writer did not release its lock"
+                raise
+
+    def connect(*args, **kwargs):
+        if "mode=ro" not in str(args[0]):
+            return original_connect(*args, **kwargs)
+        connection = original_connect(*args, **kwargs, factory=ObservedReader)
+        connection.execute("PRAGMA busy_timeout=0")
+        return connection
+
+    def decode(text, *args, **kwargs):
+        if text == '[{"loss":[0,1,2,3]}]' and not start_writer.is_set():
+            start_writer.set()
+            assert locked.wait(10), "writer did not acquire its lock"
+        return original_loads(text, *args, **kwargs)
+
+    def write():
+        try:
+            assert start_writer.wait(10)
+            with original_connect(task / track_store.TRACK_STORE_FILENAME) as connection:
+                connection.execute("BEGIN EXCLUSIVE")
+                connection.execute(
+                    "INSERT INTO points(generation,operation,run_index,payload) VALUES (?,?,?,?)",
+                    (descriptor["generation"], "contending-writer", 1, '{"loss":5}'),
+                )
+                locked.set()
+                assert busy.wait(10), "reader never encountered the writer lock"
+        finally:
+            released.set()
+
+    monkeypatch.setattr(track_store.sqlite3, "connect", connect)
+    monkeypatch.setattr(track_store.json, "loads", decode)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        writer = pool.submit(write)
+        try:
+            captured = load_task_info(str(task), raise_error=True)
+        finally:
+            start_writer.set()
+            busy.set()
+            writer.result(timeout=10)
+    assert busy_errors
+    assert captured["tracks"] == [{"loss": [0, 1, 2, 3, 4]}]
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1, 2, 3, 4, 5]}]
 
 
 @pytest.mark.parametrize("pause_at", ["snapshot", "point", "bounded batch"])

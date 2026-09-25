@@ -16,7 +16,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 
 TRACK_STORE_KEY = "track_store"
@@ -28,6 +28,7 @@ _SCHEMA_VERSION = 1
 _GENERATION_RE = re.compile(r"[0-9a-f]{32}\Z")
 _READ_BATCH_POINTS = 1024
 _READ_BATCH_CHARS = 256 * 1024
+_ReadResult = TypeVar("_ReadResult")
 
 
 class MissingTrackGeneration(ValueError):
@@ -151,9 +152,37 @@ def prune_generations(task_dir: str, descriptor: dict[str, Any]) -> None:
         connection.execute("DELETE FROM generations WHERE generation<>?", (generation,))
 
 
+def _read_transaction(connection: sqlite3.Connection, read: Callable[[], _ReadResult]) -> _ReadResult:
+    """Retry busy reads only after releasing the failed transaction's locks."""
+    attempt = 0
+    while True:
+        try:
+            with connection:
+                connection.execute("BEGIN")
+                return read()
+        except sqlite3.OperationalError as exc:
+            attempt += 1
+            # sqlite_errorname is unavailable on Python 3.10. SQLITE_LOCKED is
+            # distinct from another connection's temporary SQLITE_BUSY lock.
+            busy = (getattr(exc, "sqlite_errorname", "").startswith("SQLITE_BUSY")
+                    or str(exc) == "database is locked")
+            if not busy or attempt >= 5:
+                raise
+            time.sleep(0.05)
+
+
+def _read_snapshot(connection: sqlite3.Connection, generation: str) -> tuple[str, int]:
+    row = connection.execute("SELECT snapshot FROM generations WHERE generation=?", (generation,)).fetchone()
+    if row is None:
+        raise MissingTrackGeneration("Referenced track generation is missing")
+    maximum = connection.execute(
+        "SELECT max(sequence) FROM points WHERE generation=?", (generation,),
+    ).fetchone()[0] or 0
+    return row[0], maximum
+
+
 def _read_point_batch(connection: sqlite3.Connection, generation: str, after: int, maximum: int) -> list:
-    """Copy a bounded batch, releasing SQLite's read lock before decoding it."""
-    connection.execute("BEGIN")
+    """Copy a bounded batch inside the caller's short read transaction."""
     if connection.execute("SELECT 1 FROM generations WHERE generation=?", (generation,)).fetchone() is None:
         raise MissingTrackGeneration("Referenced track generation is missing")
     cursor = connection.execute(
@@ -172,7 +201,6 @@ def _read_point_batch(connection: sqlite3.Connection, generation: str, after: in
     finally:
         # An unfinished SELECT cursor can retain a read lock after COMMIT.
         cursor.close()
-    connection.commit()
     return rows
 
 
@@ -180,15 +208,8 @@ def read_tracks(task_dir: str, descriptor: dict[str, Any], *, slots: int) -> lis
     """Read a fixed history using short transactions, then decode without locks."""
     generation = _generation(descriptor)
     with _connect(task_dir, readonly=True) as connection:
-        connection.execute("BEGIN")
-        row = connection.execute("SELECT snapshot FROM generations WHERE generation=?", (generation,)).fetchone()
-        if row is None:
-            raise MissingTrackGeneration("Referenced track generation is missing")
-        maximum = connection.execute(
-            "SELECT max(sequence) FROM points WHERE generation=?", (generation,),
-        ).fetchone()[0] or 0
-        connection.commit()
-        tracks = json.loads(row[0])
+        snapshot, maximum = _read_transaction(connection, lambda: _read_snapshot(connection, generation))
+        tracks = json.loads(snapshot)
         if not isinstance(tracks, list) or any(not isinstance(run, dict) for run in tracks):
             raise ValueError("Invalid track snapshot")
         if len(tracks) > slots:
@@ -196,7 +217,9 @@ def read_tracks(task_dir: str, descriptor: dict[str, Any], *, slots: int) -> lis
         tracks.extend({} for _ in range(slots - len(tracks)))
         previous = 0
         while previous < maximum:
-            rows = _read_point_batch(connection, generation, previous, maximum)
+            rows = _read_transaction(
+                connection, lambda after=previous: _read_point_batch(connection, generation, after, maximum),
+            )
             if not rows:
                 raise ValueError("Track events disappeared during read")
             previous = rows[-1][0]
