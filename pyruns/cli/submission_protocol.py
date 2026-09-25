@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from pyruns.utils.file_io import read_bounded_bytes
+
 
 SCHEMA_VERSION = 2
 MAX_SUBMISSION_PAYLOAD_BYTES = 32 * 1024 * 1024
@@ -344,7 +346,7 @@ def read_submission_payload(path: str, *, token: str) -> SubmissionPayload:
 
     expected_token = validate_submission_token(token)
     with open(path, "rb") as handle:
-        raw = handle.read(MAX_SUBMISSION_PAYLOAD_BYTES + 1)
+        raw = read_bounded_bytes(handle, MAX_SUBMISSION_PAYLOAD_BYTES + 1)
     if len(raw) > MAX_SUBMISSION_PAYLOAD_BYTES:
         raise ValueError(
             "submission payload is too large "

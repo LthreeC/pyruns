@@ -13,6 +13,7 @@ from omegaconf._utils import get_yaml_loader
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
 from pyruns.utils.info_io import _replace_with_retry, load_task_metadata
+from pyruns.utils.file_io import read_bounded_bytes
 from pyruns.utils.sort_utils import normalize_task_search_text, sort_tasks_for_manager
 
 
@@ -139,7 +140,7 @@ def load_yaml(path: str) -> DictConfig:
 
 def _read_yaml_text_limited(path: str) -> str:
     with open(path, "rb") as handle:
-        raw = handle.read(MAX_CONFIG_FILE_BYTES + 1)
+        raw = read_bounded_bytes(handle, MAX_CONFIG_FILE_BYTES + 1)
     if len(raw) > MAX_CONFIG_FILE_BYTES:
         raise ValueError(
             f"YAML file is too large (max {MAX_CONFIG_FILE_BYTES} bytes): {path}"

@@ -28,6 +28,7 @@ from pyruns.utils.info_io import (
     validate_task_directory,
     validate_workspace_file,
 )
+from pyruns.utils.file_io import read_bounded_bytes
 from pyruns.utils.sort_utils import filter_tasks
 from pyruns.utils.search_query import SearchQuery
 
@@ -102,7 +103,7 @@ def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
 
 def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) -> str:
     with open(path, "rb") as handle:
-        raw = handle.read(max_bytes + 1)
+        raw = read_bounded_bytes(handle, max_bytes + 1)
     if len(raw) > max_bytes:
         raise ValueError(f"Task payload is too large (max {max_bytes} bytes): {path}")
     return raw.decode("utf-8")

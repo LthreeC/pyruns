@@ -21,6 +21,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.info_io import validate_workspace_file
+from pyruns.utils.file_io import read_bounded_bytes
 
 from pyruns._config import (
     SETTINGS_FILENAME,
@@ -380,7 +381,7 @@ def _read_settings_text(path: str) -> str:
 
     try:
         with open(path, "rb") as handle:
-            raw = handle.read(MAX_CONFIG_FILE_BYTES + 1)
+            raw = read_bounded_bytes(handle, MAX_CONFIG_FILE_BYTES + 1)
     except OSError as exc:
         raise ValueError(f"Could not read settings file '{path}': {exc}") from exc
     if len(raw) > MAX_CONFIG_FILE_BYTES:

@@ -25,6 +25,7 @@ from pyruns._config import (
     TASK_INFO_FILENAME,
 )
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
+from pyruns.utils.file_io import read_bounded_bytes
 
 _TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
@@ -352,19 +353,9 @@ def _validate_contained_path(path: str, root: str, *, label: str) -> None:
 
 def _load_json_object(path: str, *, max_bytes: int, label: str) -> Dict[str, Any]:
     with open(path, "rb") as handle:
-        # BufferedReader.read(limit) reserves the entire limit even for tiny
-        # metadata files. Bound each allocation while still detecting growth.
-        chunks = []
-        total = 0
-        while True:
-            chunk = handle.read(min(64 * 1024, max_bytes + 1 - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > max_bytes:
-                raise ValueError(f"{label} is too large (max {max_bytes} bytes): {path}")
-    raw = b"".join(chunks)
+        raw = read_bounded_bytes(handle, max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"{label} is too large (max {max_bytes} bytes): {path}")
     data = json.loads(raw.decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{label} root must be a JSON object: {path}")
