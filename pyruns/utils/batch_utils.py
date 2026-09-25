@@ -6,16 +6,42 @@ Syntax (in YAML string values):
     param: (val1 | val2 | val3)      →  zip (paired, all same length)
 """
 import itertools
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from omegaconf import DictConfig, OmegaConf
 
-from pyruns.utils.config_utils import flatten_dict, unflatten_dict, parse_value
+from pyruns.utils.config_utils import parse_value
 from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE, DEFAULT_BATCH_CONFIG_LIMIT
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
+
+_ConfigPath = tuple[Any, ...]
+
+
+def _iter_batch_fields(
+    config: Mapping[Any, Any] | DictConfig,
+    parent: _ConfigPath = (),
+) -> Iterator[tuple[_ConfigPath, Any]]:
+    """Keep literal dots, key types, and empty mappings intact during expansion."""
+    items = config.items_ex(resolve=False) if isinstance(config, DictConfig) else config.items()
+    for key, value in items:
+        path = (*parent, key)
+        if isinstance(value, (Mapping, DictConfig)) and value:
+            yield from _iter_batch_fields(value, path)
+        else:
+            yield path, value
+
+
+def _restore_batch_fields(fields: Mapping[_ConfigPath, Any]) -> dict[Any, Any]:
+    result: dict[Any, Any] = {}
+    for path, value in fields.items():
+        target = result
+        for key in path[:-1]:
+            target = target.setdefault(key, {})
+        target[path[-1]] = value
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -114,7 +140,7 @@ def _parse_pipe_value(value) -> Optional[Tuple[Sequence[Any], str]]:
 # ═══════════════════════════════════════════════════════════════
 
 def generate_batch_configs(
-    base_config: Mapping[str, Any] | DictConfig,
+    base_config: Mapping[Any, Any] | DictConfig,
     *,
     max_configs: int | None = DEFAULT_BATCH_CONFIG_LIMIT,
 ) -> List[DictConfig]:
@@ -151,13 +177,11 @@ def generate_batch_configs(
             "Narrow the range or split it into smaller batches."
         )
 
-    flat = flatten_dict(normalized_config)
+    product_params: Dict[_ConfigPath, List] = {}  # path → [typed values]
+    zip_params: Dict[_ConfigPath, List] = {}      # path → [typed values]
+    fixed: Dict[_ConfigPath, Any] = {}           # path → value
 
-    product_params: Dict[str, List] = {}  # key → [typed values]
-    zip_params: Dict[str, List] = {}      # key → [typed values]
-    fixed: Dict[str, Any] = {}            # key → value
-
-    for k, v in flat.items():
+    for k, v in _iter_batch_fields(normalized_config):
         parsed = _parse_pipe_value(v)
         if parsed is not None:
             values, mode = parsed
@@ -177,7 +201,7 @@ def generate_batch_configs(
         lengths = {k: len(v) for k, v in zip_params.items()}
         unique_lens = set(lengths.values())
         if len(unique_lens) > 1:
-            detail = ", ".join(f"{k}={n}" for k, n in lengths.items())
+            detail = ", ".join(f"{'.'.join(map(str, k))}={n}" for k, n in lengths.items())
             raise ValueError(
                 f"All (zip) parameters must have equal length. Got: {detail}"
             )
@@ -206,11 +230,11 @@ def generate_batch_configs(
             desc_parts = []
             for k, v in zip(p_keys, p_combo, strict=True):
                 temp_flat[k] = v
-                desc_parts.append(f"{k.split('.')[-1]}={v}")
+                desc_parts.append(f"{k[-1]}={v}")
             for k, v in zip(z_keys, z_combo, strict=True):
                 temp_flat[k] = v
-                desc_parts.append(f"{k.split('.')[-1]}={v}")
-            config = OmegaConf.create(unflatten_dict(temp_flat))
+                desc_parts.append(f"{k[-1]}={v}")
+            config = OmegaConf.create(_restore_batch_fields(temp_flat))
             if not isinstance(config, DictConfig):
                 raise ValueError("Generated batch configuration root must be a mapping")
             config["_meta_desc"] = ", ".join(desc_parts)
@@ -219,16 +243,15 @@ def generate_batch_configs(
     return configs
 
 
-def count_batch_configs(base_config: Mapping[str, Any] | DictConfig) -> int:
+def count_batch_configs(base_config: Mapping[Any, Any] | DictConfig) -> int:
     """Preview how many configs would be generated (without building them).
 
     Returns 0 if zip params have mismatched lengths (invalid).
     """
-    flat = flatten_dict(base_config)
     product_counts: List[int] = []
     zip_counts: List[int] = []
 
-    for v in flat.values():
+    for _path, v in _iter_batch_fields(base_config):
         parsed = _parse_pipe_value(v)
         if parsed is None:
             continue
@@ -253,22 +276,21 @@ def count_batch_configs(base_config: Mapping[str, Any] | DictConfig) -> int:
     return product_total * zip_total
 
 
-def strip_batch_pipes(config: Mapping[str, Any] | DictConfig) -> DictConfig:
+def strip_batch_pipes(config: Mapping[Any, Any] | DictConfig) -> DictConfig:
     """Strip pipe syntax, keeping only the first value from each pipe-separated field.
 
     Used when generating a single task — ensures config.yaml has clean typed values
     (not raw pipe strings like "0.001 | 0.01").
     """
-    flat = flatten_dict(config)
-    result: Dict[str, Any] = {}
-    for k, v in flat.items():
+    result: Dict[_ConfigPath, Any] = {}
+    for k, v in _iter_batch_fields(config):
         parsed = _parse_pipe_value(v)
         if parsed is not None:
             values, _ = parsed
             result[k] = parse_value(values[0])
         else:
             result[k] = v
-    normalized = OmegaConf.create(unflatten_dict(result))
+    normalized = OmegaConf.create(_restore_batch_fields(result))
     if not isinstance(normalized, DictConfig):
         raise ValueError("Configuration root must be a mapping")
     return normalized

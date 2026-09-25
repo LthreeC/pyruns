@@ -5497,6 +5497,42 @@ def test_template_and_generator_inputs_have_hard_size_limits(tmp_path, monkeypat
         runtime.preview_tasks_from_template(mode="yaml", yaml_text="value: 123456789")
 
 
+def test_generator_batch_structure_survives_preview_create_and_disk(tmp_path):
+    from pyruns.utils.config_utils import load_yaml_strict
+
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    yaml_text = "a.b: 1 | 2\na:\n  b: (x | y)\nempty: {}\n"
+    expected = [
+        {"a.b": a, "a": {"b": b}, "empty": {}}
+        for a in (1, 2) for b in ("x", "y")
+    ]
+    try:
+        with TestClient(create_app(runtime)) as client:
+            preview = client.post(
+                "/api/generator/preview", json={"mode": "form", "yaml_text": yaml_text},
+            )
+            assert preview.status_code == 200
+            assert preview.json()["count"] == 4
+            assert [
+                {k: v for k, v in item["config"].items() if k != "_meta_desc"}
+                for item in preview.json()["items"]
+            ] == expected
+            created = client.post(
+                "/api/generator/create",
+                json={"name_prefix": "keys", "mode": "form", "yaml_text": yaml_text, "append_timestamp": False},
+            )
+            assert created.status_code == 200
+            assert created.json()["count"] == 4
+            assert [item["config"] for item in created.json()["items"]] == expected
+            assert [
+                load_yaml_strict(str(workspace / TASKS_DIR / item["name"] / CONFIG_FILENAME))
+                for item in created.json()["items"]
+            ] == expected
+    finally:
+        runtime.shutdown()
+
+
 def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

@@ -2421,6 +2421,42 @@ class TestParsePipeValue:
 #  generate_batch_configs
 
 class TestGenerateBatchConfigs:
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            pytest.param(
+                {"a.b": "1 | 2", "a": {"b": "(x | y)"}},
+                [{"a.b": a, "a": {"b": b}} for a in (1, 2) for b in ("x", "y")],
+                id="literal-dots",
+            ),
+            pytest.param(
+                {"choice": "1 | 2", "empty": {}, "nested": {"empty": {}}, "rows": [{}, "x | y"]},
+                [{"choice": v, "empty": {}, "nested": {"empty": {}}, "rows": [{}, "x | y"]} for v in (1, 2)],
+                id="empty-mappings-and-fixed-list",
+            ),
+            pytest.param(
+                {0: {"choice": "1 | 2"}, "choice": "fixed", "": {"tag": "(x | y)"}},
+                [{0: {"choice": v}, "choice": "fixed", "": {"tag": tag}} for v in (1, 2) for tag in ("x", "y")],
+                id="falsy-parent-keys",
+            ),
+            pytest.param(
+                {7: "1 | 2", "7": "fixed", 0.5: "(x | y)"},
+                [{7: v, "7": "fixed", 0.5: tag} for v in (1, 2) for tag in ("x", "y")],
+                id="typed-leaf-keys",
+            ),
+        ],
+    )
+    def test_batch_structure_preserves_keys_and_empty_mappings(self, source, expected):
+        config = OmegaConf.create(source)
+        assert count_batch_configs(config) == len(expected)
+        with pytest.raises(ValueError, match="Batch expansion would create"):
+            generate_batch_configs(config, max_configs=len(expected) - 1)
+        generated = generate_batch_configs(config)
+        actual = [OmegaConf.to_container(item, resolve=False) for item in generated]
+        assert [{k: v for k, v in item.items() if k != "_meta_desc"} for item in actual] == expected
+        assert strip_batch_pipes(config) == expected[0]
+        assert OmegaConf.to_container(config, resolve=False) == source
+
     def test_no_pipes_returns_original(self, sample_config):
         """No pipe syntax → returns [original_config]."""
         configs = generate_batch_configs(sample_config)
@@ -2534,6 +2570,11 @@ class TestCountBatchConfigs:
 #  strip_batch_pipes
 
 class TestStripBatchPipes:
+    def test_batch_structure_roundtrip_without_pipes(self):
+        source = {"a.b": 1, "a": {"b": 2, "empty": {}}, 7: "fixed", "rows": [{}, "x | y"]}
+        stripped = strip_batch_pipes(OmegaConf.create(source))
+        assert OmegaConf.to_container(stripped, resolve=False) == source
+
     def test_keeps_first_batch_values_and_preserves_plain_nested_data(self, sample_config):
         product = strip_batch_pipes({"lr": "0.001 | 0.01 | 0.1", "bs": "32 | 64"})
         assert product == {"lr": 0.001, "bs": 32}
