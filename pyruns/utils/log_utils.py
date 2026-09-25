@@ -17,12 +17,14 @@ _LOG_CONFIG = {
 }
 
 _LOGGER_LOCK = threading.RLock()
-_LIBRARY_ROOT_LOGGER = None
+_LIBRARY_ROOT_LOGGER: logging.Logger | None = None
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class _CloseAwareStreamHandler(logging.StreamHandler):
     """Ignore writes only after an embedding application closes the stream."""
+
+    _pyruns_console_handler = True
 
     def emit(self, record: logging.LogRecord) -> None:
         stream = self.stream
@@ -41,7 +43,7 @@ def _console_format_for_stream(stream, configured_format: str) -> str:
     return configured_format if interactive else _ANSI_ESCAPE_RE.sub("", configured_format)
 
 
-def get_library_root():
+def get_library_root() -> str:
     return __name__.split(".")[0]
 
 
@@ -49,7 +51,7 @@ def configure_project_root_logger(
         log_config: Optional[Dict] = None,
         *,
         force: bool = False,
-):
+) -> None:
     global _LIBRARY_ROOT_LOGGER
     log_config = log_config or _LOG_CONFIG
 
@@ -86,7 +88,6 @@ def configure_project_root_logger(
 
         # Keep stdout reserved for command results and machine-readable JSON.
         console_handler = _CloseAwareStreamHandler(sys.stderr)
-        console_handler._pyruns_console_handler = True
         console_handler.setFormatter(logging.Formatter(
             _console_format_for_stream(sys.stderr, log_config["console"]["format"]),
             datefmt=log_config["console"].get("datefmt"),
@@ -99,15 +100,16 @@ def configure_project_root_logger(
 
 def attach_file_handler(log_path: str, log_config: Optional[Dict] = None) -> None:
     log_config = log_config or _LOG_CONFIG
+    configure_project_root_logger(log_config)
 
     file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(log_config["file"]["format"], datefmt=log_config["console"].get("datefmt", None)))
     file_handler.setLevel(log_config["file"]["level"])
 
-    _LIBRARY_ROOT_LOGGER.addHandler(file_handler)
+    logging.getLogger(get_library_root()).addHandler(file_handler)
 
 
-def get_logger(name: str = None):
+def get_logger(name: str | None = None) -> logging.Logger:
     if name == "__main__":
         name = get_library_root() + ".__main__"
     configure_project_root_logger()

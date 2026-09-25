@@ -3008,14 +3008,15 @@ def test_logger_configuration_can_disable_or_attach_file_handler(
 
     log_utils._LIBRARY_ROOT_LOGGER = None
     monkeypatch.setattr("pyruns.utils.settings.get", lambda key, default=None: "DEBUG" if key == "log_level" else default)
+
+    log_file = tmp_path / "pyruns.log"
+    log_utils.attach_file_handler(str(log_file))
     logger = log_utils.get_logger("__main__")
     assert logger.name.endswith(".__main__")
     assert log_utils._LIBRARY_ROOT_LOGGER.handlers
 
-    log_file = tmp_path / "pyruns.log"
-    log_utils.attach_file_handler(str(log_file))
-    log_utils._LIBRARY_ROOT_LOGGER.debug("written")
-    assert log_file.exists()
+    logger.debug("written after cold attachment")
+    assert "written after cold attachment" in log_file.read_text(encoding="utf-8")
 
 
 def test_logger_configuration_is_idempotent_during_settings_import(
