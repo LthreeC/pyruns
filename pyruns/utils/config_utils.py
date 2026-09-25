@@ -63,9 +63,7 @@ def _get_pyruns_yaml_loader(*, pure_python: bool = False) -> Any:
     return loader
 
 
-def load_config_text(text: str) -> DictConfig | ListConfig:
-    """Parse YAML text into an OmegaConf container using Pyruns semantics."""
-
+def _parse_config_text(text: str) -> Any:
     loader = _get_pyruns_yaml_loader()
     try:
         parsed = yaml.load(text, Loader=loader)
@@ -76,12 +74,49 @@ def load_config_text(text: str) -> DictConfig | ListConfig:
         # libyaml omits source snippets from errors and rejects some Unicode
         # accepted by the Python parser. Preserve existing input diagnostics.
         parsed = yaml.load(text, Loader=python_loader)
-    if parsed is None:
-        parsed = {}
+    return {} if parsed is None else parsed
+
+
+def _create_config(parsed: Any) -> DictConfig | ListConfig:
     config = OmegaConf.create(parsed)
     if not isinstance(config, (DictConfig, ListConfig)):
         raise ValueError("Configuration root must be a mapping or list")
     return config
+
+
+def load_config_text(text: str) -> DictConfig | ListConfig:
+    """Parse YAML text into an OmegaConf container using Pyruns semantics."""
+    return _create_config(_parse_config_text(text))
+
+
+class _ConfigViewNeedsOmegaConf(Exception):
+    pass
+
+
+def _copy_config_view(value: Any, depth: int = 0) -> Any:
+    if value is None or type(value) in (bool, int, float):
+        return value
+    if type(value) is str and "${" not in value and value != "???":
+        return value
+    # Keep deep/recursive YAML and special values on OmegaConf's standard path.
+    if depth < 16:
+        if type(value) is dict and all(type(key) is str for key in value):
+            return {key: _copy_config_view(item, depth + 1) for key, item in value.items()}
+        if type(value) is list:
+            return [_copy_config_view(item, depth + 1) for item in value]
+    raise _ConfigViewNeedsOmegaConf
+
+
+def load_config_view_text(text: str) -> DictConfig | ListConfig | dict[str, Any]:
+    """Load a task view without wrapping ordinary values in OmegaConf nodes."""
+    parsed = _parse_config_text(text)
+    if type(parsed) is dict:
+        try:
+            # Copy each alias branch independently, as OmegaConf does.
+            return _copy_config_view(parsed)
+        except _ConfigViewNeedsOmegaConf:
+            pass
+    return _create_config(parsed)
 
 
 def to_container(value: Any, *, resolve: bool = False) -> Any:

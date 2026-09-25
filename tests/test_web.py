@@ -4878,6 +4878,68 @@ def test_default_runtime_first_task_read_loads_only_requested_task(
                 runtime.shutdown()
 
 
+def test_config_views_preserve_complete_web_responses(tmp_path, monkeypatch):
+    from pyruns.core import task_manager as manager_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    documents = {
+        "plain": "value: 7\nnested: {items: [1, 2]}\n",
+        "aliases": "base: &base {items: [1, 2]}\ncopy: *base\n",
+        "interpolated": "base: 8\nvalue: ${base}\n",
+        "environment": "value: ${oc.env:PYRUNS_VIEW_ENV}\n",
+        "missing": "value: ???\n",
+        "special": "value: !!binary YQ==\nnested: {1: one}\n",
+        "deep": "{node: " * 20 + "1" + "}" * 20,
+        "invalid_yaml": "value: [broken",
+        "invalid_interpolation": "value: ${broken\n",
+    }
+    for name, document in documents.items():
+        _add_task(workspace, name)
+        (workspace / TASKS_DIR / name / CONFIG_FILENAME).write_text(document, encoding="utf-8")
+
+    original_read = manager_mod.read_task_payload
+
+    def full_config_read(task_dir, info, **_kwargs):
+        return original_read(task_dir, info, config_view=False)
+
+    captures = []
+    for reader in (full_config_read, original_read):
+        monkeypatch.setattr(manager_mod, "read_task_payload", reader)
+        monkeypatch.setenv("PYRUNS_VIEW_ENV", "first")
+        runtime = PyrunsRuntime(str(workspace))
+        captured = []
+        try:
+            with TestClient(create_app(runtime)) as client:
+                for summary in (True, False):
+                    response = client.get("/api/tasks", params={
+                        "summary": summary, "refresh": False, "sort": "name_asc", "limit": 100,
+                    })
+                    assert response.status_code == 200
+                    payload = response.json()
+                    assert {task["name"] for task in payload["items"]} == set(documents)
+                    captured.append(payload)
+                monkeypatch.setenv("PYRUNS_VIEW_ENV", "second")
+                for name in documents:
+                    response = client.get(f"/api/tasks/{name}")
+                    assert response.status_code == 200
+                    payload = response.json()
+                    assert bool(payload.get("_load_error")) is name.startswith("invalid_")
+                    if name == "environment":
+                        assert payload["config"]["value"] == "${oc.env:PYRUNS_VIEW_ENV}"
+                    captured.append(payload)
+                for query in ("value", "oc.env", "items"):
+                    response = client.get("/api/tasks", params={
+                        "query": query, "search_field": "config", "summary": True, "refresh": False,
+                    })
+                    assert response.status_code == 200
+                    assert response.json()["total"] > 0
+                    captured.append(response.json())
+        finally:
+            runtime.shutdown()
+        captures.append(captured)
+    assert captures[0] == captures[1]
+
+
 def test_default_runtime_partial_task_cache_preserves_refresh_behavior(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")

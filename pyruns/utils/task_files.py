@@ -22,6 +22,7 @@ from pyruns.utils.config_utils import (
     build_config_preview_and_search_text,
     flatten_dict,
     load_config_text,
+    load_config_view_text,
     save_yaml,
 )
 from pyruns.utils.info_io import (
@@ -112,7 +113,9 @@ def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) ->
     return raw.decode("utf-8")
 
 
-def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, DictConfig, str, str]:
+def read_task_payload(
+    task_dir: str, info: Dict[str, Any], *, config_view: bool = False,
+) -> Tuple[str, DictConfig | Dict[str, Any], str, str]:
     """Return ``(task_kind, config, config_text, load_error)`` for one task."""
 
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
@@ -132,8 +135,9 @@ def read_task_payload(task_dir: str, info: Dict[str, Any]) -> Tuple[str, DictCon
             return task_kind, _empty_config(), "", str(exc)
 
     try:
-        parsed = load_config_text(_read_text_limited(config_path))
-        if not isinstance(parsed, DictConfig):
+        parse = load_config_view_text if config_view else load_config_text
+        parsed = parse(_read_text_limited(config_path))
+        if not isinstance(parsed, DictConfig) and not (config_view and isinstance(parsed, dict)):
             raise ValueError(f"YAML root must be a mapping: {config_path}")
         return task_kind, parsed, "", ""
     except Exception as exc:

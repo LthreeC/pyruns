@@ -16,6 +16,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from omegaconf import OmegaConf
+
 from pyruns._config import (
     DEFAULT_RUNNER_HEARTBEAT_SECONDS,
     DEFAULT_RUNNER_LEASE_SECONDS,
@@ -1196,7 +1198,7 @@ class TaskManager:
 
         config_file = resolve_task_config_file(info, None, task_dir)
         payload_signature = self._payload_signature(task_dir, config_file)
-        task_kind, config_data, config_text, payload_error = read_task_payload(task_dir, info)
+        task_kind, config_data, config_text, payload_error = read_task_payload(task_dir, info, config_view=True)
         task_name = dir_name
         if info:
             info, _ = self._fail_unowned_running_info_if_needed(
@@ -3324,6 +3326,9 @@ class TaskManager:
                 executor = self._executor
 
             assert executor is not None
+            run_config = target["config"]
+            if isinstance(run_config, dict):
+                run_config = OmegaConf.create(run_config)
             task_env = {str(k): str(v) for k, v in (target.get("env", {}) or {}).items()}
             task_env.update({str(k): str(v) for k, v in (target.get("_scheduled_env", {}) or {}).items()})
             future = executor.submit(
@@ -3331,7 +3336,7 @@ class TaskManager:
                 target["dir"],
                 target["name"],
                 target["created_at"],
-                target["config"],
+                run_config,
                 task_env,
                 run_index,
                 self.runner_id,
@@ -4982,7 +4987,7 @@ class TaskManager:
         # causing every subsequent refresh to skip that writer's changes.
         task["_info_signature"] = info_signature
         task["_payload_signature"] = self._payload_signature(task["dir"], task["config_file"])
-        loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info)
+        loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info, config_view=True)
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
         task["config"] = loaded_config
         task["config_text"] = loaded_text
