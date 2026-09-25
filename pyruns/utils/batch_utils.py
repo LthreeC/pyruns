@@ -6,35 +6,18 @@ Syntax (in YAML string values):
     param: (val1 | val2 | val3)      →  zip (paired, all same length)
 """
 import itertools
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from omegaconf import DictConfig, OmegaConf
 
-from pyruns.utils.config_utils import parse_value
+from pyruns.utils.config_utils import ConfigPath, iter_config_fields, parse_value
 from pyruns._config import BATCH_SEPARATOR, BATCH_ESCAPE, DEFAULT_BATCH_CONFIG_LIMIT
 from pyruns.utils import get_logger
 
 logger = get_logger(__name__)
 
-_ConfigPath = tuple[Any, ...]
-
-
-def _iter_batch_fields(
-    config: Mapping[Any, Any] | DictConfig,
-    parent: _ConfigPath = (),
-) -> Iterator[tuple[_ConfigPath, Any]]:
-    """Keep literal dots, key types, and empty mappings intact during expansion."""
-    items = config.items_ex(resolve=False) if isinstance(config, DictConfig) else config.items()
-    for key, value in items:
-        path = (*parent, key)
-        if isinstance(value, (Mapping, DictConfig)) and value:
-            yield from _iter_batch_fields(value, path)
-        else:
-            yield path, value
-
-
-def _restore_batch_fields(fields: Mapping[_ConfigPath, Any]) -> dict[Any, Any]:
+def _restore_batch_fields(fields: Mapping[ConfigPath, Any]) -> dict[Any, Any]:
     result: dict[Any, Any] = {}
     for path, value in fields.items():
         target = result
@@ -177,11 +160,11 @@ def generate_batch_configs(
             "Narrow the range or split it into smaller batches."
         )
 
-    product_params: Dict[_ConfigPath, List] = {}  # path → [typed values]
-    zip_params: Dict[_ConfigPath, List] = {}      # path → [typed values]
-    fixed: Dict[_ConfigPath, Any] = {}           # path → value
+    product_params: Dict[ConfigPath, List] = {}  # path → [typed values]
+    zip_params: Dict[ConfigPath, List] = {}      # path → [typed values]
+    fixed: Dict[ConfigPath, Any] = {}           # path → value
 
-    for k, v in _iter_batch_fields(normalized_config):
+    for k, v in iter_config_fields(normalized_config, include_empty=True):
         parsed = _parse_pipe_value(v)
         if parsed is not None:
             values, mode = parsed
@@ -251,7 +234,7 @@ def count_batch_configs(base_config: Mapping[Any, Any] | DictConfig) -> int:
     product_counts: List[int] = []
     zip_counts: List[int] = []
 
-    for _path, v in _iter_batch_fields(base_config):
+    for _path, v in iter_config_fields(base_config):
         parsed = _parse_pipe_value(v)
         if parsed is None:
             continue
@@ -282,8 +265,8 @@ def strip_batch_pipes(config: Mapping[Any, Any] | DictConfig) -> DictConfig:
     Used when generating a single task — ensures config.yaml has clean typed values
     (not raw pipe strings like "0.001 | 0.01").
     """
-    result: Dict[_ConfigPath, Any] = {}
-    for k, v in _iter_batch_fields(config):
+    result: Dict[ConfigPath, Any] = {}
+    for k, v in iter_config_fields(config, include_empty=True):
         parsed = _parse_pipe_value(v)
         if parsed is not None:
             values, _ = parsed

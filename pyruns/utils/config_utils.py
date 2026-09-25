@@ -2,7 +2,7 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import date, datetime, time as datetime_time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
@@ -250,6 +250,28 @@ def parse_value(val_str: Any) -> Any:
         return val_str
 
 
+ConfigPath = tuple[Any, ...]
+
+
+def iter_config_fields(
+    config: Mapping[Any, Any] | DictConfig,
+    parent: ConfigPath = (),
+    *,
+    include_empty: bool = False,
+) -> Iterator[tuple[ConfigPath, Any]]:
+    """Yield raw key paths and unresolved values; lists remain single fields."""
+    items = config.items_ex(resolve=False) if isinstance(config, DictConfig) else config.items()
+    for key, value in items:
+        path = (*parent, key)
+        if isinstance(value, Mapping):
+            if value:
+                yield from iter_config_fields(value, path, include_empty=include_empty)
+            elif include_empty:
+                yield path, value
+        else:
+            yield path, value
+
+
 def flatten_dict(d: Mapping[str, Any] | DictConfig, parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
     """Flatten a nested dict using dotted keys: ``{a: {b: 1}}`` → ``{'a.b': 1}``."""
     items = []
@@ -364,22 +386,20 @@ def list_template_files(run_root: str) -> Dict[str, str]:
     return options
 
 
-def preview_config_line(cfg: Mapping[str, Any], max_items: int = 6, max_len: int = 120) -> str:
+def preview_config_line(cfg: Mapping[Any, Any] | DictConfig, max_items: int = 6, max_len: int = 120) -> str:
     """Build a short preview string from config values (including nested).
 
-    Flattens the dict so nested values like model.name=resnet50 are included.
+    Visits nested fields without merging literal dotted keys with key paths.
     Truncates long values and adds ellipsis when exceeding max_items or max_len.
     """
     if not isinstance(cfg, Mapping):
         return ""
-    flat = flatten_dict(cfg)
+    fields = list(iter_config_fields(cfg))
     items = []
-    for k, v in flat.items():
-        key_text = str(k)
-        if key_text.startswith("_meta"):
+    for path, v in fields:
+        if str(path[0]).startswith("_meta"):
             continue
-        # Use short key (last part of dotted path) for compactness
-        short_key = key_text.rsplit(".", 1)[-1] if isinstance(k, str) else key_text
+        short_key = str(path[-1])
         # Truncate long values
         v_str = str(v)
         if len(v_str) > 20:
@@ -389,7 +409,7 @@ def preview_config_line(cfg: Mapping[str, Any], max_items: int = 6, max_len: int
             break
 
     result = ", ".join(items)
-    remaining = len(flat) - len(items)
+    remaining = len(fields) - len(items)
     if remaining > 0:
         result += f" …+{remaining}"
     if len(result) > max_len:
@@ -398,7 +418,7 @@ def preview_config_line(cfg: Mapping[str, Any], max_items: int = 6, max_len: int
 
 
 def build_config_preview_and_search_text(
-    cfg: Mapping[str, Any],
+    cfg: Mapping[Any, Any] | DictConfig,
     *,
     task_name: str = "",
     notes: str = "",
@@ -410,14 +430,14 @@ def build_config_preview_and_search_text(
     if not isinstance(cfg, Mapping):
         cfg = {}
 
-    flat = flatten_dict(cfg)
     search_lines = [str(task_name or ""), str(notes or "")]
-    for key, value in flat.items():
-        key_text = str(key)
-        if key_text.startswith("_meta"):
+    for path, value in iter_config_fields(cfg):
+        root_key = str(path[0])
+        if root_key.startswith("_meta"):
             continue
+        key_text = root_key if len(path) == 1 else ".".join(map(str, path))
         search_lines.append(f"{key_text}: {value}")
-        short_key = key_text.rsplit(".", 1)[-1] if isinstance(key, str) else key_text
+        short_key = str(path[-1])
         if short_key != key_text:
             search_lines.append(f"{short_key}: {value}")
 
@@ -427,8 +447,8 @@ def build_config_preview_and_search_text(
 
 
 def validate_config_types_against_template(
-    orig_config: Mapping[str, Any],
-    new_configs: List[Mapping[str, Any]],
+    orig_config: Mapping[Any, Any] | DictConfig,
+    new_configs: Sequence[Mapping[Any, Any] | DictConfig],
 ) -> Optional[str]:
     """Ensure generated configs match the primitive types of the original template.
 
@@ -436,10 +456,9 @@ def validate_config_types_against_template(
     as wildcards (any type can parse from a string input).  Returns an
     error message string if a mismatch is found, or None if fully valid.
     """
-    flat_orig = flatten_dict(orig_config)
+    flat_orig = dict(iter_config_fields(orig_config))
     for config in new_configs:
-        flat_new = flatten_dict(config)
-        for k, v in flat_new.items():
+        for k, v in iter_config_fields(config):
             if k in flat_orig:
                 ov = flat_orig[k]
                 if ov is None or isinstance(ov, str):
@@ -452,9 +471,10 @@ def validate_config_types_against_template(
                     continue  # safe coercion
                     
                 if t_o is not t_n:
+                    key_text = ".".join(map(str, k))
                     return (
                         f"输入类型错误!\n"
-                        f"参数 '{k}' 原本是 {t_o.__name__}，"
+                        f"参数 '{key_text}' 原本是 {t_o.__name__}，"
                         f"但实际生成了 {t_n.__name__} 类型的 '{v}'。\n"
                         f"请检查并在生成器中重新输入纯{t_o.__name__}内容。"
                     )

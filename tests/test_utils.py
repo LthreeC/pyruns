@@ -2369,6 +2369,24 @@ class TestListTemplateFiles:
 
 #  preview_config_line
 
+@pytest.mark.parametrize("config, needle", [
+    ({"a.b": "literal-needle", "a": {"b": "nested-value"}}, "literal-needle"),
+    (OmegaConf.create({0: {"choice": "zero-needle"}, "choice": "root-value"}), "zero-needle"),
+])
+def test_config_path_consumers_preserve_each_searchable_field(config, needle):
+    original = config_utils.to_container(config, resolve=False)
+    preview, search = build_config_preview_and_search_text(config)
+    assert needle in preview
+    assert needle in search
+    result = build_task_search_result(
+        {"task_kind": TASK_KIND_CONFIG, "config": config}, needle, search_field="config",
+    )
+    assert result["match_count"] == 1
+    match = result["matches"][0]
+    assert match["snippet"][match["match_start"]:match["match_end"]] == needle
+    assert config_utils.to_container(config, resolve=False) == original
+
+
 def test_preview_config_line_formats_scalars_and_applies_display_limits():
     line = preview_config_line({"lr": 0.01, "bs": 32, "opt": "adam"})
     assert "lr=0.01" in line
@@ -2638,10 +2656,23 @@ class TestValidateTaskName:
 
 
 class TestTypeValidation:
+    @pytest.mark.parametrize("original, changed", [
+        ({"a.b": 1, "a": {"b": "text"}}, {"a.b": "wrong-type", "a": {"b": "text"}}),
+        ({0: {"value": 1}, "value": "text"}, {0: {"value": "wrong-type"}, "value": "text"}),
+    ])
+    def test_config_path_consumers_preserve_template_constraints(self, original, changed):
+        error = validate_config_types_against_template(
+            OmegaConf.create(original), [OmegaConf.create(changed)],
+        )
+        assert error is not None
+        assert "int" in error and "str" in error and "wrong-type" in error
+
     def test_accepts_exact_types_and_int_values_for_float_templates(self):
         cases = [
             ({"lr": 0.01, "name": "resnet"}, [{"lr": 0.05, "name": "vgg"}]),
             ({"lr": 0.01}, [{"lr": 1}]),
+            (OmegaConf.create({"empty": {}, "value": None, "unresolved": "${missing}"}),
+             [OmegaConf.create({"empty": {}, "value": 1, "unresolved": "${missing}", "extra": True})]),
         ]
         for template, configs in cases:
             assert validate_config_types_against_template(template, configs) is None

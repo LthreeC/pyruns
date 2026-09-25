@@ -5497,6 +5497,39 @@ def test_template_and_generator_inputs_have_hard_size_limits(tmp_path, monkeypat
         runtime.preview_tasks_from_template(mode="yaml", yaml_text="value: 123456789")
 
 
+def test_generator_config_path_consumers_validate_and_search_literal_keys(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    (workspace / CONFIG_DEFAULT_FILENAME).write_text("a.b: 1\na:\n  b: text\n", encoding="utf-8")
+    runtime = _build_runtime(workspace)
+    try:
+        with TestClient(create_app(runtime)) as client:
+            rejected = client.post("/api/generator/preview", json={
+                "mode": "form", "yaml_text": "a.b: wrong-type\na:\n  b: text\n",
+                "template_value": CONFIG_DEFAULT_FILENAME,
+            })
+            assert rejected.status_code == 400
+            assert "a.b" in rejected.json()["detail"]
+            created = client.post("/api/generator/create", json={
+                "name_prefix": "literal-key", "mode": "form",
+                "yaml_text": "a.b: 111042\na:\n  b: text\n",
+                "template_value": CONFIG_DEFAULT_FILENAME, "append_timestamp": False,
+            })
+            assert created.status_code == 200
+            assert created.json()["items"][0]["config"]["a.b"] == 111042
+            for field in ("all", "config"):
+                response = client.get("/api/tasks", params={
+                    "query": "111042", "search_field": field, "summary": True, "refresh": False,
+                })
+                assert response.status_code == 200
+                assert response.json()["total"] == 1
+                task = response.json()["items"][0]
+                assert task["name"] == "literal-key"
+                assert task["search_match_count"] == 1
+                assert task["search_matches"][0]["location"] == "a.b"
+    finally:
+        runtime.shutdown()
+
+
 def test_generator_batch_structure_survives_preview_create_and_disk(tmp_path):
     from pyruns.utils.config_utils import load_yaml_strict
 

@@ -20,7 +20,7 @@ from pyruns._config import (
 )
 from pyruns.utils.config_utils import (
     build_config_preview_and_search_text,
-    flatten_dict,
+    iter_config_fields,
     load_config_text,
     load_config_view_text,
     save_yaml,
@@ -273,10 +273,11 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, 
     config = task.get("config", {}) or {}
     if not isinstance(config, (Mapping, DictConfig)):
         return
-    for key, value in flatten_dict(config).items():
-        key_text = str(key)
-        if key_text.startswith("_meta"):
+    for path, value in iter_config_fields(config):
+        root_key = str(path[0])
+        if root_key.startswith("_meta"):
             continue
+        key_text = root_key if len(path) == 1 else ".".join(map(str, path))
         detail_lines = f"{key_text}: {value}".splitlines()
         for line in detail_lines:
             if line.strip():
