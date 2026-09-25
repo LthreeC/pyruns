@@ -4889,6 +4889,7 @@ def test_config_views_preserve_complete_web_responses(tmp_path, monkeypatch):
         "environment": "value: ${oc.env:PYRUNS_VIEW_ENV}\n",
         "missing": "value: ???\n",
         "special": "value: !!binary YQ==\nnested: {1: one}\n",
+        "nonstring": "1: one\nfalse: no\n0.5: ratio\n",
         "deep": "{node: " * 20 + "1" + "}" * 20,
         "invalid_yaml": "value: [broken",
         "invalid_interpolation": "value: ${broken\n",
@@ -4926,6 +4927,8 @@ def test_config_views_preserve_complete_web_responses(tmp_path, monkeypatch):
                     assert bool(payload.get("_load_error")) is name.startswith("invalid_")
                     if name == "environment":
                         assert payload["config"]["value"] == "${oc.env:PYRUNS_VIEW_ENV}"
+                    if name == "nonstring":
+                        assert payload["config"] == {"1": "one", "false": False, "0.5": "ratio"}
                     captured.append(payload)
                 for query in ("value", "oc.env", "items"):
                     response = client.get("/api/tasks", params={

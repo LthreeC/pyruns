@@ -375,10 +375,11 @@ def preview_config_line(cfg: Mapping[str, Any], max_items: int = 6, max_len: int
     flat = flatten_dict(cfg)
     items = []
     for k, v in flat.items():
-        if k.startswith("_meta"):
+        key_text = str(k)
+        if key_text.startswith("_meta"):
             continue
         # Use short key (last part of dotted path) for compactness
-        short_key = k.rsplit(".", 1)[-1] if "." in k else k
+        short_key = key_text.rsplit(".", 1)[-1] if isinstance(k, str) else key_text
         # Truncate long values
         v_str = str(v)
         if len(v_str) > 20:
@@ -412,11 +413,12 @@ def build_config_preview_and_search_text(
     flat = flatten_dict(cfg)
     search_lines = [str(task_name or ""), str(notes or "")]
     for key, value in flat.items():
-        if str(key).startswith("_meta"):
+        key_text = str(key)
+        if key_text.startswith("_meta"):
             continue
-        search_lines.append(f"{key}: {value}")
-        short_key = key.rsplit(".", 1)[-1]
-        if short_key != key:
+        search_lines.append(f"{key_text}: {value}")
+        short_key = key_text.rsplit(".", 1)[-1] if isinstance(key, str) else key_text
+        if short_key != key_text:
             search_lines.append(f"{short_key}: {value}")
 
     blob = "\n".join(search_lines)

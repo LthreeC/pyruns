@@ -50,6 +50,26 @@ def test_view_aliases_and_documents_are_independent(yaml_backend):
     assert second["base"] == second["copy"] == first["copy"]
 
 
+@pytest.mark.parametrize("as_omegaconf", [False, True])
+@pytest.mark.parametrize("document, preview, search_terms", [
+    ("1: one\n", "1=one", ["1:one"]),
+    ("false: no\n", "False=False", ["false:false"]),
+    ("0.5: ratio\n", "0.5=ratio", ["0.5:ratio"]),
+    ('1: numeric\n"1": text\n', "1=numeric, 1=text", ["1:numeric", "1:text"]),
+])
+def test_nonstring_config_keys_preserve_preview_search_and_values(
+    as_omegaconf, document, preview, search_terms,
+):
+    config = config_utils.load_config_text(document)
+    before = config_utils.to_container(config, resolve=False)
+    if not as_omegaconf:
+        config = before.copy()
+    actual_preview, search = config_utils.build_config_preview_and_search_text(config)
+    assert actual_preview == preview
+    assert all(term in search for term in search_terms)
+    assert config_utils.to_container(config, resolve=False) == before
+
+
 @pytest.mark.parametrize("document", [
     "base: 7\nvalue: ${base}\n",
     "value: ${oc.env:PYRUNS_VIEW_ENV}\n",
