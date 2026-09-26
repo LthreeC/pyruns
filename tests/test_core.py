@@ -6575,7 +6575,7 @@ def test_task_manager_full_scan_reconciles_edited_task_after_concurrent_add(tmp_
 
 
 def test_task_manager_parallel_directory_scan_keeps_order_and_skips_unsafe_paths(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, simulate_reparse,
 ):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
@@ -6592,8 +6592,11 @@ def test_task_manager_parallel_directory_scan_keeps_order_and_skips_unsafe_paths
         (tasks_dir / "unsafe").symlink_to(outside, target_is_directory=True)
     except OSError:
         pass
+    reparse = tasks_dir / "reparse"
+    reparse.mkdir()
+    simulate_reparse(reparse)
     manager = _make_task_manager(tasks_dir, lazy_scan=None, owns_task_lifecycle=False)
-    validate = task_manager_module.validate_task_directory
+    validate = task_manager_module.validate_workspace_directory
     worker_threads = []
     main_thread = threading.get_ident()
 
@@ -6601,7 +6604,7 @@ def test_task_manager_parallel_directory_scan_keeps_order_and_skips_unsafe_paths
         worker_threads.append(threading.get_ident())
         return validate(path)
 
-    monkeypatch.setattr(task_manager_module, "validate_task_directory", observed_validate)
+    monkeypatch.setattr(task_manager_module, "validate_workspace_directory", observed_validate)
     monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
 
     ok, names = manager._scan_task_dir_names()

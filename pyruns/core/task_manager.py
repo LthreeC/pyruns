@@ -50,6 +50,7 @@ from pyruns.utils.info_io import (
     validate_task_directory,
     validate_task_name,
     validate_tasks_root,
+    validate_workspace_directory,
 )
 from pyruns.utils.process_utils import (
     get_process_create_time,
@@ -765,12 +766,13 @@ class TaskManager:
         try:
             validate_tasks_root(self.tasks_dir)
             def inspect_entry(entry: os.DirEntry) -> tuple[str, int] | None:
+                if not entry.is_dir(follow_symlinks=False):
+                    return None
                 try:
-                    validate_task_directory(entry.path)
+                    validate_tasks_root(self.tasks_dir)
+                    validate_workspace_directory(entry.path)
                 except ValueError as exc:
                     logger.warning("Ignoring unsafe task directory %s: %s", entry.path, exc)
-                    return None
-                if not entry.is_dir(follow_symlinks=False):
                     return None
                 try:
                     mtime_ns = entry.stat().st_mtime_ns
