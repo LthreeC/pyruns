@@ -3055,13 +3055,14 @@ def test_task_pages_preserve_unicode_names_and_oversized_timestamps(tmp_path, in
 
 def test_full_task_page_loads_curves_only_for_selected_tasks_without_registry_lock(tmp_path, monkeypatch):
     from pyruns.utils import track_store
+    from pyruns.utils.info_io import append_task_track, update_task_metadata
 
     monkeypatch.setattr(track_store, "INLINE_TRACK_POINTS", 4)
     workspace = _make_workspace(tmp_path, "main")
     for name in ("first", "second", "third"):
-        _add_task(workspace, name)
+        _add_task(workspace, name, status="completed")
         update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update(tracks=[{"loss": [0, 1, 2, 3]}]))
-    runtime = _build_runtime(workspace)
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     runtime.ensure_tasks_loaded(full_refresh=False)
     manager = runtime.task_manager
     original_read = track_store.read_tracks
@@ -3093,6 +3094,31 @@ def test_full_task_page_loads_curves_only_for_selected_tasks_without_registry_lo
     assert reads == ["second"]
     assert client.get("/api/tasks", params={"offset": 10, "refresh": False}).json()["items"] == []
     assert reads == ["second"]
+
+    # External appends must stay within the captured snapshot's run history.
+    task_dir = str(workspace / TASKS_DIR / "second")
+    append_task_track(task_dir, {"loss": 4}, run_index=1)
+    update_task_metadata(task_dir, lambda info: info.update(
+        status="running", run_index=2, start_times=["first-start", "second-start"],
+        records=[{"loss": 0.1}, {"loss": 0.9}],
+    ))
+    append_task_track(task_dir, {"loss": 9}, run_index=2)
+    cached = client.get("/api/tasks/second", params={"refresh": False}).json()
+    assert cached["status"] == "completed" and cached["run_index"] == 1
+    assert cached["tracks"] == [{"loss": [0, 1, 2, 3, 4]}]
+    assert manager.get_task_page(offset=1, limit=1, sort_mode="name_asc")[0][0] == cached
+
+    # A new generation cannot silently supply curves for old control metadata.
+    update_task_info(task_dir, lambda info: info.update(tracks=[{"loss": [7]}, {"loss": [8]}]))
+    replaced = client.get("/api/tasks/second", params={"refresh": False}).json()
+    assert "Could not load tracks" in replaced["_load_error"]
+    assert replaced["tracks"] == [{}]
+    refreshed = client.get("/api/tasks/second", params={"refresh": True}).json()
+    assert refreshed["status"] == "running" and refreshed["run_index"] == 2
+    assert refreshed["start_times"] == ["first-start", "second-start"]
+    assert refreshed["records"] == [{"loss": 0.1}, {"loss": 0.9}]
+    assert refreshed["tracks"] == [{"loss": [7]}, {"loss": [8]}]
+    assert not refreshed["_load_error"]
 
 
 @pytest.mark.parametrize("include_logs", [False, True], ids=["metadata", "log-search"])

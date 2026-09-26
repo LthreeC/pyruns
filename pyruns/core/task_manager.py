@@ -350,11 +350,11 @@ class TaskManager:
     def _finalize_full_task_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply derived API fields to an already detached full-task snapshot."""
         if data.get("track_store"):
-            from pyruns.utils.info_io import load_task_info
+            from pyruns.utils.track_store import read_tracks
 
             try:
-                info = load_task_info(str(data["dir"]), raise_error=True)
-                data["tracks"] = info["tracks"]
+                # Keep the captured generation and run slots while including new points.
+                data["tracks"] = read_tracks(str(data["dir"]), data["track_store"], slots=run_slot_count(data))
             except Exception as exc:
                 data["_load_error"] = "; ".join(
                     message for message in (data.get("_load_error"), f"Could not load tracks: {exc}") if message
