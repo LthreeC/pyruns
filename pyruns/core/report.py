@@ -10,7 +10,7 @@ import json
 from typing import Dict, Any, List
 
 # Imported for internal use
-from pyruns.utils.info_io import load_record_data, run_slot_count
+from pyruns.utils.info_io import load_task_metadata, run_slot_count
 from pyruns.utils import get_now_str
 
 
@@ -78,7 +78,10 @@ def _build_export_rows(
         durations = t.get("durations") or []
         exit_codes = t.get("exit_codes") or []
         run_statuses = t.get("run_statuses") or []
-        data = load_record_data(t["dir"])
+        try:
+            data = load_task_metadata(t["dir"], raise_error=True).get("records", [])
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Cannot export task '{name}': could not read task metadata ({exc})") from exc
 
         n_runs = max(run_slot_count(t), len(data))
 
@@ -182,9 +185,10 @@ def build_export_json(
 ) -> str:
     """Build JSON with the same one-row-per-run semantics as CSV export."""
 
+    rows = _build_export_rows(tasks, statuses=statuses)
     try:
         return json.dumps(
-            _build_export_rows(tasks, statuses=statuses),
+            rows,
             indent=2,
             ensure_ascii=True,
             allow_nan=False,

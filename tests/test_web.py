@@ -7845,6 +7845,44 @@ def test_runtime_export_tasks_csv_handles_duplicate_names_and_empty_monitor_data
         runtime.export_tasks_csv(["", " "])
 
 
+def test_export_reports_unreadable_metadata_without_overwriting_output_and_recovers(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("damaged", "healthy"):
+        _add_task(workspace, name, status="completed")
+        update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update(records=[{"loss": 0.12}]))
+    runtime = _build_runtime(workspace)
+    selected = {"task_names": ["damaged", "healthy"]}
+    info_path = workspace / TASKS_DIR / "damaged" / TASK_INFO_FILENAME
+    original = info_path.read_bytes()
+    output = tmp_path / "report.json"
+    output.write_text("previous complete report\n", encoding="utf-8")
+
+    with TestClient(create_app(runtime)) as client:
+        before = client.post("/api/tasks/export/csv", json=selected)
+        assert before.status_code == 200
+        assert all(name in before.text for name in selected["task_names"])
+        info_path.write_text("{broken", encoding="utf-8")
+        failed = client.post("/api/tasks/export/csv", json=selected)
+        assert failed.status_code == 400
+        assert "Cannot export task 'damaged'" in failed.json()["detail"]
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pyruns.cli.app", "-w", str(workspace), "export", "damaged", "healthy",
+             "--format", "json", "--output", str(output)],
+            cwd=tmp_path, capture_output=True, text=True, timeout=15,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        )
+        assert result.returncode == 1, result.stderr
+        assert "Cannot export task 'damaged'" in result.stderr
+        assert result.stdout == ""
+        assert output.read_text(encoding="utf-8") == "previous complete report\n"
+
+        info_path.write_bytes(original)
+        recovered = client.post("/api/tasks/export/csv", json=selected)
+        assert recovered.status_code == 200
+        assert recovered.content == before.content
+
+
 def test_runtime_log_selection_and_launcher_picker_edges(tmp_path, monkeypatch):
     from pyruns.web import runtime as runtime_mod
 
