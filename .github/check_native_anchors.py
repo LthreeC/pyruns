@@ -23,6 +23,7 @@ candidate = info_io._path_is_within
 checks = []
 skipped = []
 traces = []
+mismatches = []
 output = Path(sys.argv[1])
 output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -42,8 +43,10 @@ def compare(label, call):
             values.append(capture(call))
     traces.append({'label': label, 'values': values})
     checkpoint()
-    assert values[0] == values[1], (label, values)
-    checks.append({'label': label, 'equal': True, 'outcome': values[1]})
+    equal = values[0] == values[1]
+    if not equal:
+        mismatches.append({'label': label, 'values': values})
+    checks.append({'label': label, 'equal': equal, 'outcome': values[1]})
 
 def payload(directory, filename):
     resolution = capture(lambda: task_files.resolve_task_payload_path(str(directory), filename))
@@ -123,9 +126,11 @@ with tempfile.TemporaryDirectory(prefix='pyruns-native-anchors-') as directory:
             os.unlink(special + '\\run.sh')
             os.rmdir(special)
 
-report = {'passed': True, 'comparisons': len(checks), 'checks': checks, 'skipped': skipped,
+report = {'passed': not mismatches, 'comparisons': len(checks), 'checks': checks, 'skipped': skipped,
+          'mismatches': mismatches,
           'traces': traces,
           'baseline_info_io_sha256': hashlib.sha256(source).hexdigest(),
           'candidate_info_io_sha256': hashlib.sha256(Path(info_io.__file__).read_bytes()).hexdigest()}
 output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
 print(json.dumps({'passed': True, 'comparisons': len(checks), 'skipped': skipped}))
+assert not mismatches, mismatches

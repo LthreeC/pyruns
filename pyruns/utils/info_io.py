@@ -212,7 +212,10 @@ def _path_is_within(path: str, root: str, *, _resolved_paths: dict[str, str | No
             # Candidates are always fresh. Preserve a frozen anchor even when
             # its ordinary DOS spelling now resolves to a different location.
             resolved_path = os.path.realpath(absolute)
-            resolved_root = os.path.realpath(absolute_root) if anchor is None else _realpath_anchor(anchor)
+            if anchor is None:
+                resolved_root = os.path.realpath(absolute_root)
+            else:
+                resolved_root = anchor if absolute_root.startswith("\\\\?\\") else _realpath_anchor(anchor)
         common = os.path.commonpath([resolved_path, resolved_root])
     except (OSError, ValueError):
         return False
