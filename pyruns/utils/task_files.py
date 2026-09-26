@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Mapping
-from typing import Any, BinaryIO, Dict, List, NamedTuple, Tuple, TypeVar, TypedDict
+from typing import Any, Dict, List, NamedTuple, Tuple, TypeVar, TypedDict
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -43,6 +44,7 @@ TASK_KIND_ALIASES = {
 }
 
 _Task = TypeVar("_Task", bound=Mapping[str, object])
+TaskPayloadSignature = tuple[tuple[int, ...] | None, bytes]
 
 
 class TaskPayloadSnapshot(NamedTuple):
@@ -50,7 +52,7 @@ class TaskPayloadSnapshot(NamedTuple):
     config: DictConfig | Dict[str, Any]
     config_text: str
     load_error: str
-    signature: tuple[int, ...] | None
+    signature: TaskPayloadSignature | None
 
 
 class TaskSearchMatch(TypedDict):
@@ -128,16 +130,39 @@ def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
     return candidate
 
 
-def _read_payload_text(handle: BinaryIO, path: str, max_bytes: int) -> str:
-    raw = read_bounded_bytes(handle, max_bytes + 1)
+def _read_payload_bytes(path: str, max_bytes: int) -> tuple[bytes, TaskPayloadSignature]:
+    with open(path, "rb") as handle:
+        attributes = None
+        try:
+            stat = os.fstat(handle.fileno())
+            attributes = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        except (AttributeError, OSError, ValueError):
+            pass
+        raw = read_bounded_bytes(handle, max_bytes + 1)
+    # File attributes alone can miss an equal-size edit within one clock tick.
+    # Hash the bytes we read, never a later version reopened through the path.
+    return raw, (attributes, hashlib.sha256(raw).digest())
+
+
+def _decode_payload_text(raw: bytes, path: str, max_bytes: int) -> str:
     if len(raw) > max_bytes:
         raise ValueError(f"Task payload is too large (max {max_bytes} bytes): {path}")
     return raw.decode("utf-8")
 
 
 def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) -> str:
-    with open(path, "rb") as handle:
-        return _read_payload_text(handle, path, max_bytes)
+    raw, _signature = _read_payload_bytes(path, max_bytes)
+    return _decode_payload_text(raw, path, max_bytes)
+
+
+def read_task_payload_signature(task_dir: str, config_file: str) -> TaskPayloadSignature | None:
+    """Probe content changes without constructing or parsing a configuration."""
+    try:
+        path = resolve_task_payload_path(task_dir, config_file)
+        _raw, signature = _read_payload_bytes(path, MAX_TASK_PAYLOAD_BYTES)
+        return signature
+    except (OSError, ValueError):
+        return None
 
 
 def read_task_payload(
@@ -152,7 +177,7 @@ def read_task_payload(
 def read_task_payload_snapshot(
     task_dir: str, info: Dict[str, Any], *, config_view: bool = False,
 ) -> TaskPayloadSnapshot:
-    """Read task content and retain the opened file's identity before reading."""
+    """Read task content with its initial file attributes and content digest."""
 
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
     config_file = resolve_task_config_file(info, task_kind, task_dir)
@@ -166,15 +191,9 @@ def read_task_payload_snapshot(
 
     signature = None
     try:
-        with open(config_path, "rb") as handle:
-            try:
-                stat = os.fstat(handle.fileno())
-                signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-            except (AttributeError, OSError, ValueError):
-                pass
-            # A later file change must remain visible to the next refresh,
-            # even if this read or parsing fails after obtaining the signature.
-            text = _read_payload_text(handle, config_path, MAX_TASK_PAYLOAD_BYTES)
+        raw, signature = _read_payload_bytes(config_path, MAX_TASK_PAYLOAD_BYTES)
+        text = _decode_payload_text(raw, config_path, MAX_TASK_PAYLOAD_BYTES)
+        del raw
         if task_kind == TASK_KIND_SHELL:
             return TaskPayloadSnapshot(task_kind, _empty_config(), text, "", signature)
         parse = load_config_view_text if config_view else load_config_text

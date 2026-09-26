@@ -143,10 +143,14 @@ def test_manager_view_refresh_search_and_snapshot_isolation(tmp_path):
 
 
 @pytest.mark.parametrize("change_at", ["before_open", "during_read", "after_read"])
-def test_manager_payload_snapshot_keeps_file_changes_visible(tmp_path, monkeypatch, change_at):
+def test_manager_payload_snapshot_keeps_file_changes_visible(
+    tmp_path, monkeypatch, change_at, freeze_file_attributes,
+):
     tasks = tmp_path / "tasks"
     task = _write_task(tasks, "sample", "value: 7\n")
     payload = task / CONFIG_FILENAME
+    if change_at == "during_read":
+        freeze_file_attributes(payload)
     replacement = tmp_path / "replacement.yaml"
     replacement.write_text("value: 8\n", encoding="utf-8")
     manager = TaskManager(str(tasks), lazy_scan=None, owns_task_lifecycle=False)
@@ -160,8 +164,7 @@ def test_manager_payload_snapshot_keeps_file_changes_visible(tmp_path, monkeypat
 
     def edit_after_bytes_read(handle, limit):
         raw = original_read(handle, limit)
-        # A size change makes the edit observable even with coarse timestamps.
-        payload.write_text("value: 8 # changed\n", encoding="utf-8")
+        payload.write_text("value: 8\n", encoding="utf-8")
         return raw
 
     def replace_after_read(text):

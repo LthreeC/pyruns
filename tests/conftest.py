@@ -169,6 +169,32 @@ def sample_config():
     }
 
 
+@pytest.fixture()
+def freeze_file_attributes(monkeypatch):
+    """Model a filesystem that reports unchanged attributes for one edited file."""
+    original_stat, original_fstat = os.stat, os.fstat
+
+    def freeze(path):
+        target = str(path)
+        before = original_stat(target)
+
+        def stat(candidate, *args, **kwargs):
+            if isinstance(candidate, (str, os.PathLike)) and os.fspath(candidate) == target:
+                return before
+            return original_stat(candidate, *args, **kwargs)
+
+        def fstat(fd):
+            current = original_fstat(fd)
+            if (current.st_dev, current.st_ino) == (before.st_dev, before.st_ino):
+                return before
+            return current
+
+        monkeypatch.setattr(os, "stat", stat)
+        monkeypatch.setattr(os, "fstat", fstat)
+
+    return freeze
+
+
 @pytest.fixture(params=["python", "libyaml"])
 def pyruns_yaml_backend(request, monkeypatch):
     """Exercise YAML parsing and serialization with either backend and reset caches."""
