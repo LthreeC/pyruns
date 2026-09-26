@@ -497,7 +497,7 @@ def test_failed_append_to_new_slot_can_resume_without_losing_existing_runs(task,
     assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1, 2, 3]}, {"loss": [11]}]
 
 
-@pytest.mark.parametrize("blocked_operation", ["read", "remove"])
+@pytest.mark.parametrize("blocked_operation", ["read", "remove", "remove-exhausted"])
 def test_task_lock_release_retries_transient_windows_sharing_errors(task, monkeypatch, blocked_operation):
     import builtins
 
@@ -505,9 +505,10 @@ def test_task_lock_release_retries_transient_windows_sharing_errors(task, monkey
     original_remove = os.remove
     original_open = builtins.open
     failures = []
+    limit = info_io._REPLACE_RETRY_COUNT if blocked_operation == "remove-exhausted" else 1
 
     def remove(path, *args, **kwargs):
-        if str(path) == lock_path and blocked_operation == "remove" and not failures:
+        if str(path) == lock_path and blocked_operation.startswith("remove") and len(failures) < limit:
             failures.append(path)
             raise PermissionError("file is being read by a competing process")
         return original_remove(path, *args, **kwargs)
@@ -522,9 +523,10 @@ def test_task_lock_release_retries_transient_windows_sharing_errors(task, monkey
         patch.setattr(os, "remove", remove)
         patch.setattr(builtins, "open", open_file)
         append_task_track(str(task), {"loss": 0})
-    assert failures
-    assert not os.path.exists(lock_path), "failed lock cleanup blocks the still-live owner on its next write"
+    assert len(failures) == limit
+    assert os.path.exists(lock_path) == (blocked_operation == "remove-exhausted")
     append_task_track(str(task), {"loss": 1})
+    assert not os.path.exists(lock_path), "a completed owner must not block the next write"
     assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1]}]
 
 
