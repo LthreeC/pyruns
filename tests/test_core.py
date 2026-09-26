@@ -149,6 +149,27 @@ def _write_worker_task_info(task_dir: Path, name: str) -> str:
     return str(task_dir)
 
 
+def _write_running_config_task(task_dir: Path) -> None:
+    """Seed the common running task used by cancellation and deletion tests."""
+    save_task_info(
+        str(task_dir),
+        {
+            "name": "runner",
+            "status": "running",
+            "created_at": "2026-03-20_00-00-00",
+            "task_kind": TASK_KIND_CONFIG,
+            "config_file": CONFIG_FILENAME,
+            "run_index": 1,
+            "start_times": ["2026-03-20_00-00-01"],
+            "finish_times": [""],
+            "pids": [12345],
+            "records": [],
+            "tracks": [],
+        },
+    )
+    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+
+
 def _write_fake_pyruns_package(
     parent: Path,
     *,
@@ -5151,23 +5172,7 @@ def test_task_manager_cancel_task_persists_reason_before_verified_termination(tm
     task_dir = tasks_dir / "runner"
     task_dir.mkdir()
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    save_task_info(
-        str(task_dir),
-        {
-            "name": "runner",
-            "status": "running",
-            "created_at": "2026-03-20_00-00-00",
-            "task_kind": TASK_KIND_CONFIG,
-            "config_file": CONFIG_FILENAME,
-            "run_index": 1,
-            "start_times": ["2026-03-20_00-00-01"],
-            "finish_times": [""],
-            "pids": [12345],
-            "records": [],
-            "tracks": [],
-        },
-    )
-    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    _write_running_config_task(task_dir)
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
@@ -5201,23 +5206,7 @@ def test_task_manager_request_cancel_keeps_retrying_a_persisted_local_request(tm
     tasks_dir.mkdir()
     task_dir = tasks_dir / "runner"
     task_dir.mkdir()
-    save_task_info(
-        str(task_dir),
-        {
-            "name": "runner",
-            "status": "running",
-            "created_at": "2026-03-20_00-00-00",
-            "task_kind": TASK_KIND_CONFIG,
-            "config_file": CONFIG_FILENAME,
-            "run_index": 1,
-            "start_times": ["2026-03-20_00-00-01"],
-            "finish_times": [""],
-            "pids": [12345],
-            "records": [],
-            "tracks": [],
-        },
-    )
-    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    _write_running_config_task(task_dir)
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
@@ -5238,23 +5227,7 @@ def test_task_manager_request_cancel_rejects_unverified_stop_with_stale_marker(t
     tasks_dir.mkdir()
     task_dir = tasks_dir / "runner"
     task_dir.mkdir()
-    save_task_info(
-        str(task_dir),
-        {
-            "name": "runner",
-            "status": "running",
-            "created_at": "2026-03-20_00-00-00",
-            "task_kind": TASK_KIND_CONFIG,
-            "config_file": CONFIG_FILENAME,
-            "run_index": 1,
-            "start_times": ["2026-03-20_00-00-01"],
-            "finish_times": [""],
-            "pids": [12345],
-            "records": [],
-            "tracks": [],
-        },
-    )
-    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    _write_running_config_task(task_dir)
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
@@ -5277,23 +5250,7 @@ def test_task_manager_cancel_task_fails_closed_when_task_info_is_busy(tmp_path, 
     task_dir = tasks_dir / "runner"
     task_dir.mkdir()
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    save_task_info(
-        str(task_dir),
-        {
-            "name": "runner",
-            "status": "running",
-            "created_at": "2026-03-20_00-00-00",
-            "task_kind": TASK_KIND_CONFIG,
-            "config_file": CONFIG_FILENAME,
-            "run_index": 1,
-            "start_times": ["2026-03-20_00-00-01"],
-            "finish_times": [""],
-            "pids": [12345],
-            "records": [],
-            "tracks": [],
-        },
-    )
-    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    _write_running_config_task(task_dir)
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
@@ -5317,23 +5274,7 @@ def test_task_manager_cancel_task_uses_short_task_info_lock(tmp_path, monkeypatc
     task_dir = tasks_dir / "runner"
     task_dir.mkdir()
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    save_task_info(
-        str(task_dir),
-        {
-            "name": "runner",
-            "status": "running",
-            "created_at": "2026-03-20_00-00-00",
-            "task_kind": TASK_KIND_CONFIG,
-            "config_file": CONFIG_FILENAME,
-            "run_index": 1,
-            "start_times": ["2026-03-20_00-00-01"],
-            "finish_times": [""],
-            "pids": [12345],
-            "records": [],
-            "tracks": [],
-        },
-    )
-    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    _write_running_config_task(task_dir)
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
@@ -5588,23 +5529,7 @@ def test_task_manager_delete_running_task_kills_outside_lock(tmp_path, monkeypat
     task_dir = tasks_dir / "runner"
     task_dir.mkdir()
     monkeypatch.setattr("pyruns.core.task_manager.is_pid_running", lambda pid: True)
-    save_task_info(
-        str(task_dir),
-        {
-            "name": "runner",
-            "status": "running",
-            "created_at": "2026-03-20_00-00-00",
-            "task_kind": TASK_KIND_CONFIG,
-            "config_file": CONFIG_FILENAME,
-            "run_index": 1,
-            "start_times": ["2026-03-20_00-00-01"],
-            "finish_times": [""],
-            "pids": [12345],
-            "records": [],
-            "tracks": [],
-        },
-    )
-    save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.01})
+    _write_running_config_task(task_dir)
 
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)

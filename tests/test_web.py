@@ -71,6 +71,21 @@ def log_stream_idle(monkeypatch):
     return idle
 
 
+def _watch_log_stream_initialization(runtime: PyrunsRuntime) -> threading.Event:
+    """Signal when this runtime finishes the stream's initial metadata read."""
+    initialized = threading.Event()
+    original_get_logs = runtime.get_task_logs
+
+    def tracked_get_logs(*args, **kwargs):
+        payload = original_get_logs(*args, **kwargs)
+        if kwargs.get("tail_lines") == 0:
+            initialized.set()
+        return payload
+
+    runtime.get_task_logs = tracked_get_logs
+    return initialized
+
+
 class _TestClientScope:
     """Normalize the client address omitted by older Starlette TestClients."""
 
@@ -6171,16 +6186,7 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
     log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
     log_file.write_text("existing\n", encoding="utf-8")
     runtime = _build_runtime(workspace)
-    initialized = threading.Event()
-    original_get_logs = runtime.get_task_logs
-
-    def tracked_get_logs(*args, **kwargs):
-        payload = original_get_logs(*args, **kwargs)
-        if kwargs.get("tail_lines") == 0:
-            initialized.set()
-        return payload
-
-    runtime.get_task_logs = tracked_get_logs
+    initialized = _watch_log_stream_initialization(runtime)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
@@ -6207,16 +6213,7 @@ def test_logs_websocket_closes_when_active_workspace_changes(tmp_path):
     _add_task(workspace_a, "same-name", status="completed", log_text="workspace-a\n")
     _add_task(workspace_b, "same-name", status="completed", log_text="workspace-b\n")
     runtime = _build_runtime(workspace_a)
-    initialized = threading.Event()
-    original_get_logs = runtime.get_task_logs
-
-    def tracked_get_logs(*args, **kwargs):
-        payload = original_get_logs(*args, **kwargs)
-        if kwargs.get("tail_lines") == 0:
-            initialized.set()
-        return payload
-
-    runtime.get_task_logs = tracked_get_logs
+    initialized = _watch_log_stream_initialization(runtime)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/same-name/logs/stream") as websocket:
@@ -7051,16 +7048,7 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
     log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
     log_file.write_text("existing\n", encoding="utf-8")
     runtime = _build_runtime(workspace)
-    initialized = threading.Event()
-    original_get_logs = runtime.get_task_logs
-
-    def tracked_get_logs(*args, **kwargs):
-        payload = original_get_logs(*args, **kwargs)
-        if kwargs.get("tail_lines") == 0:
-            initialized.set()
-        return payload
-
-    runtime.get_task_logs = tracked_get_logs
+    initialized = _watch_log_stream_initialization(runtime)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
@@ -7244,16 +7232,7 @@ def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_pa
     log_file = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
     assert not log_file.exists()
     runtime = _build_runtime(workspace)
-    initialized = threading.Event()
-    original_get_logs = runtime.get_task_logs
-
-    def tracked_get_logs(*args, **kwargs):
-        payload = original_get_logs(*args, **kwargs)
-        if kwargs.get("tail_lines") == 0:
-            initialized.set()
-        return payload
-
-    runtime.get_task_logs = tracked_get_logs
+    initialized = _watch_log_stream_initialization(runtime)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
@@ -7305,16 +7284,7 @@ def test_logs_websocket_stream_switches_from_queue_log_to_active_run_log(tmp_pat
     queue_log.write_text("waiting\n", encoding="utf-8")
     run_log = task_dir / "run_logs" / "run1.log"
     runtime = _build_runtime(workspace)
-    initialized = threading.Event()
-    original_get_logs = runtime.get_task_logs
-
-    def tracked_get_logs(*args, **kwargs):
-        payload = original_get_logs(*args, **kwargs)
-        if kwargs.get("tail_lines") == 0:
-            initialized.set()
-        return payload
-
-    runtime.get_task_logs = tracked_get_logs
+    initialized = _watch_log_stream_initialization(runtime)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
@@ -7340,16 +7310,7 @@ def test_logs_websocket_stream_accepts_run_log_emitter_chunk_after_queue_offset(
     queue_log.write_text("waiting in a much larger queue log\n", encoding="utf-8")
     run_log = task_dir / "run_logs" / "run1.log"
     runtime = _build_runtime(workspace)
-    initialized = threading.Event()
-    original_get_logs = runtime.get_task_logs
-
-    def tracked_get_logs(*args, **kwargs):
-        payload = original_get_logs(*args, **kwargs)
-        if kwargs.get("tail_lines") == 0:
-            initialized.set()
-        return payload
-
-    runtime.get_task_logs = tracked_get_logs
+    initialized = _watch_log_stream_initialization(runtime)
     client = TestClient(create_app(runtime))
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
