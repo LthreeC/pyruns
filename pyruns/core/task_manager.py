@@ -720,6 +720,7 @@ class TaskManager:
 
         results = []
         sample_count = min(3, len(items))
+        waiting_samples = 0
         for index in range(sample_count):
             started = time.perf_counter()
             cpu_started = time.thread_time()
@@ -727,6 +728,9 @@ class TaskManager:
             elapsed = time.perf_counter() - started
             cpu_time = time.thread_time() - cpu_started
             if self._parallel_loading_worthwhile(elapsed, cpu_time):
+                waiting_samples += 1
+            # One transient stall is not representative of the remaining batch.
+            if waiting_samples >= 2:
                 remaining = items[index + 1:]
                 if remaining:
                     with ThreadPoolExecutor(max_workers=min(16, len(remaining))) as pool:
@@ -742,7 +746,7 @@ class TaskManager:
         *,
         raise_on_error: bool = False,
     ) -> list[Dict[str, Any]]:
-        """Load in disk order, using threads only when a sample waits on I/O."""
+        """Load in disk order, using threads when samples indicate sustained I/O waits."""
         def load(name: str) -> Dict[str, Any] | None:
             return self._load_task_dir(name, raise_on_error=raise_on_error)
 

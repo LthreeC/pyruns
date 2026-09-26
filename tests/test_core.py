@@ -6811,8 +6811,12 @@ def test_task_manager_parallel_refresh_preserves_order_and_error_semantics(tmp_p
     assert any(thread != main_thread for thread in probe_threads)
 
 
-@pytest.mark.parametrize("parallel", [False, True])
-def test_task_manager_loads_many_task_dirs_in_order(tmp_path, monkeypatch, parallel):
+@pytest.mark.parametrize("samples,parallel", [
+    pytest.param([(0.020, 0.019)] * 3, False, id="cpu-bound"),
+    pytest.param([(0.008689, 0.000459), (0.0004, 0.0004), (0.0004, 0.0004)], False, id="one-io-stall"),
+    pytest.param([(0.020, 0.001)] * 3, True, id="sustained-io"),
+])
+def test_task_manager_loads_many_task_dirs_in_order(tmp_path, monkeypatch, samples, parallel):
     manager = _make_task_manager(tmp_path, lazy_scan=None, owns_task_lifecycle=False)
     names = [f"task-{index}" for index in range(12)]
     loader_threads = []
@@ -6823,7 +6827,10 @@ def test_task_manager_loads_many_task_dirs_in_order(tmp_path, monkeypatch, paral
         return None if name == "task-4" else {"name": name}
 
     monkeypatch.setattr(manager, "_load_task_dir", load)
-    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: parallel)
+    clock = MagicMock(wraps=task_manager_module.time)
+    clock.perf_counter.side_effect = [value for wall, _ in samples for value in (0.0, wall)]
+    clock.thread_time.side_effect = [value for _, cpu in samples for value in (0.0, cpu)]
+    monkeypatch.setattr(task_manager_module, "time", clock)
 
     loaded = manager._load_task_dirs(names)
 
