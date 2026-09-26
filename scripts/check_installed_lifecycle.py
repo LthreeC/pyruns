@@ -161,10 +161,11 @@ def _verify(project, report, identities):
     report["checks"].append("installed imports, app, and both entry points")
 
     # Exact argv must survive spaces, Unicode, and literal shell syntax.
+    # -I ignores PYTHONUTF8, so select UTF-8 explicitly for Windows pipe output.
     report["phase"] = "shell execution"
     arguments = ["two words", "literal;$(echo unexpected)", "中文"]
     payload = 'import json, sys; print(json.dumps(sys.argv[1:], ensure_ascii=False))'
-    cli("exec", "-d", "-n", "wheel-shell", "--", sys.executable, "-I", "-c", payload, *arguments)
+    cli("exec", "-d", "-n", "wheel-shell", "--", sys.executable, "-I", "-X", "utf8", "-c", payload, *arguments)
     cli("-w", "shell", "wait", "wheel-shell", "--timeout", "60")
     shell = show("shell", "wheel-shell")
     assert shell["status"] == "completed" and shell["exit_codes"] == [0]
