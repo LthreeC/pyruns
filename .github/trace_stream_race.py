@@ -1,5 +1,4 @@
 """Temporary bounded diagnosis of the existing queued log-switch regression."""
-from collections import deque
 import json
 import os
 from pathlib import Path
@@ -22,7 +21,7 @@ class Trace:
 
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_call(self, item):
-        events = deque(maxlen=200)
+        events = []
         runtimes = []
         started = time.monotonic()
         module = item.module
@@ -30,7 +29,8 @@ class Trace:
         original_receive = WebSocketTestSession.receive
 
         def record(kind, **data):
-            events.append({"seconds": time.monotonic() - started, "kind": kind, **data})
+            if len(events) < 1000:
+                events.append({"seconds": time.monotonic() - started, "kind": kind, **data})
 
         def traced_build(*args, **kwargs):
             runtime = build(*args, **kwargs)
@@ -101,6 +101,19 @@ class Trace:
 
 
 if __name__ == "__main__":
+    if os.environ.get("PYRUNS_AUDIT_HANDLE_PROBE") == "1":
+        from pyruns.core.task_manager import TaskManager
+        from pyruns.utils.task_files import resolve_task_payload_path
+
+        def aligned_signature(task_dir, config_file):
+            try:
+                path = resolve_task_payload_path(task_dir, config_file)
+                with open(path, "rb") as handle:
+                    return TaskManager._stat_signature(os.fstat(handle.fileno()))
+            except (OSError, ValueError):
+                return None
+
+        TaskManager._payload_signature = staticmethod(aligned_signature)
     output = Path(sys.argv[1])
     output.parent.mkdir(parents=True, exist_ok=True)
     attempts = int(sys.argv[2]) if len(sys.argv) > 2 else 20

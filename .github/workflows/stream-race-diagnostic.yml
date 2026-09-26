@@ -14,11 +14,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        revision:
-          - eb40c10b46ed17638c6e314c53f57e621688713b
-          - 11bd067e7d52fe9f7fe332a0aa8353640b7fc077
+        include:
+          - label: old
+            revision: eb40c10b46ed17638c6e314c53f57e621688713b
+            handle_probe: "0"
+          - label: old-aligned
+            revision: eb40c10b46ed17638c6e314c53f57e621688713b
+            handle_probe: "1"
+          - label: current
+            revision: 11bd067e7d52fe9f7fe332a0aa8353640b7fc077
+            handle_probe: "0"
     env:
       PYRUNS_AUDIT_ROOT: ${{ github.workspace }}
+      PYRUNS_AUDIT_HANDLE_PROBE: ${{ matrix.handle_probe }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -43,6 +51,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: stream-race-${{ matrix.revision }}
+          name: stream-race-${{ matrix.label }}
           path: test-results/
           retention-days: 14
