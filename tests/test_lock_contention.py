@@ -1,4 +1,6 @@
-"""Sharing-error recovery must release only the caller's own file locks."""
+"""File-lock initialization, ownership, and sharing-error recovery."""
+from contextlib import contextmanager
+import errno
 import json
 import os
 from pathlib import Path
@@ -7,7 +9,90 @@ import pytest
 
 import pyruns.core.task_generator as task_generator_module
 from pyruns.core.task_generator import TaskGenerator
-from pyruns.utils import settings
+from pyruns.utils import info_io, settings
+
+
+@pytest.fixture(params=["task", "settings"])
+def initializing_lock(request, tmp_path):
+    if request.param == "task":
+        task = tmp_path / "tasks" / "sample"
+        task.mkdir(parents=True)
+        return lambda: info_io.task_info_lock(str(task), timeout_sec=0), task / info_io._LOCK_FILENAME
+
+    settings_path = tmp_path / "settings.yaml"
+
+    @contextmanager
+    def acquire():
+        fd, lock_path, owner = settings._open_settings_lock(str(settings_path), timeout_sec=0)
+        try:
+            yield
+        finally:
+            os.close(fd)
+            settings._release_settings_lock(lock_path, owner)
+
+    return acquire, Path(f"{settings_path}.lock")
+
+
+@pytest.mark.parametrize("failure", ["short", "interrupt"])
+def test_lock_owner_initialization_failure_closes_and_releases(initializing_lock, monkeypatch, failure):
+    acquire, lock_path = initializing_lock
+    original_write = os.write
+    owner_fd = None
+
+    def incomplete_write(fd, data):
+        nonlocal owner_fd
+        owner_fd = fd
+        written = original_write(fd, data[:-1])
+        if failure == "interrupt":
+            raise KeyboardInterrupt("lock owner interrupted")
+        return written
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", incomplete_write)
+        with pytest.raises(OSError if failure == "short" else KeyboardInterrupt):
+            with acquire():
+                pytest.fail("must not enter with an incomplete lock owner")
+    assert owner_fd is not None
+    try:
+        os.fstat(owner_fd)
+    except OSError as exc:
+        assert exc.errno == errno.EBADF
+    else:
+        os.close(owner_fd)
+        pytest.fail("failed lock initialization leaked its descriptor")
+    assert not lock_path.exists()
+    with acquire():
+        pass
+
+
+def test_lock_initialization_cleanup_keeps_a_replacement_owner(initializing_lock, monkeypatch):
+    acquire, lock_path = initializing_lock
+    original_close = os.close
+    owner_fd = None
+    replacement = b"new owner acquired after the failed initializer closed"
+    replaced = False
+
+    def fail_write(fd, data):
+        nonlocal owner_fd
+        owner_fd = fd
+        raise OSError("cannot initialize lock owner")
+
+    def replace_after_close(fd):
+        nonlocal replaced
+        original_close(fd)
+        if fd == owner_fd and not replaced:
+            replaced = True
+            lock_path.rename(lock_path.with_suffix(".displaced"))
+            lock_path.write_bytes(replacement)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", fail_write)
+        patch.setattr(os, "close", replace_after_close)
+        with pytest.raises(OSError, match="cannot initialize lock owner"):
+            with acquire():
+                pytest.fail("failed initialization entered the protected body")
+    assert replaced
+    assert lock_path.read_bytes() == replacement
 
 
 @pytest.mark.parametrize("failure_at", ["identity", "unlink"])

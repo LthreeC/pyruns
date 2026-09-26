@@ -307,20 +307,26 @@ def _open_settings_lock(
             time.sleep(_SETTINGS_LOCK_POLL_SEC)
             continue
 
-        owner = _settings_lock_owner_bytes()
         try:
+            owner = _settings_lock_owner_bytes()
             written = os.write(fd, owner)
             if written != len(owner):
                 raise OSError("Could not write the complete settings lock owner")
             os.fsync(fd)
             return fd, lock_path, owner
-        except Exception:
+        except BaseException:
+            identity = None
+            try:
+                info = os.fstat(fd)
+                identity = info.st_dev, info.st_ino
+            except OSError:
+                pass
             try:
                 os.close(fd)
             except OSError:
                 pass
             snapshot = _settings_lock_snapshot(lock_path)
-            if snapshot is not None:
+            if snapshot is not None and snapshot[0][:2] == identity:
                 _quarantine_settings_lock(lock_path, snapshot)
             raise
 
