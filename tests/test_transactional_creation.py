@@ -186,13 +186,11 @@ def test_reserved_empty_target_is_not_replaced_by_another_creator(tmp_path):
 
 def test_processes_reserve_distinct_names_before_publishing(tmp_path):
     if os.name == "nt":
-        pytest.skip("fork-only process test avoids creating Windows console processes")
-    if "fork" not in multiprocessing.get_all_start_methods():
-        pytest.skip("fork multiprocessing is unavailable")
+        pytest.skip("process-creation regression runs in POSIX environments")
 
     tasks_root = tmp_path / "tasks"
     TaskGenerator(root_dir=str(tasks_root))
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(2)
     result_queue = context.Queue()
     processes = [
