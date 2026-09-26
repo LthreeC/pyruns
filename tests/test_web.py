@@ -4937,7 +4937,9 @@ def test_config_views_preserve_complete_web_responses(tmp_path, monkeypatch):
     assert captures[0] == captures[1]
 
 
-def test_default_runtime_partial_task_cache_preserves_refresh_behavior(tmp_path, monkeypatch):
+def test_default_runtime_partial_task_cache_preserves_refresh_behavior(
+    tmp_path, monkeypatch, freeze_file_attributes,
+):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
     _add_task(workspace, "beta")
@@ -4946,7 +4948,10 @@ def test_default_runtime_partial_task_cache_preserves_refresh_behavior(tmp_path,
     try:
         assert runtime.get_task("alpha", refresh=False)["config"]["lr"] == 0.01
         task_dir = workspace / TASKS_DIR / "alpha"
-        save_yaml(str(task_dir / CONFIG_FILENAME), {"lr": 0.2})
+        config_path = task_dir / CONFIG_FILENAME
+        original_size = config_path.stat().st_size
+        freeze_file_attributes(config_path)
+        config_path.write_text("lr: 0.2\n".ljust(original_size), encoding="utf-8", newline="")
         assert runtime.get_task("alpha", refresh=False)["config"]["lr"] == 0.01
         assert runtime.get_task("alpha", refresh=True)["config"] == {"lr": 0.2}
         assert runtime.get_task("beta", refresh=False)["name"] == "beta"

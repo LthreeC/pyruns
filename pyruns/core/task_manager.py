@@ -63,14 +63,15 @@ from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
 from pyruns.utils.sort_utils import sort_tasks_for_manager
 from pyruns.utils.task_files import (
+    TaskPayloadSignature,
     TaskSearchResult,
     build_task_preview_and_search,
     build_task_search_result,
     filter_tasks_by_search_field,
     normalize_task_kind,
     read_task_payload_snapshot,
+    read_task_payload_signature,
     resolve_task_config_file,
-    resolve_task_payload_path,
 )
 
 logger = get_logger(__name__)
@@ -1145,15 +1146,10 @@ class TaskManager:
     def _stat_signature(stat: os.stat_result) -> tuple[int, ...]:
         return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
-    @classmethod
-    def _payload_signature(cls, task_dir: str, config_file: str) -> tuple[int, ...] | None:
+    @staticmethod
+    def _payload_signature(task_dir: str, config_file: str) -> TaskPayloadSignature | None:
         """Detect edits to a task payload independently of task_info.json."""
-        try:
-            path = resolve_task_payload_path(task_dir, config_file)
-            stat = os.stat(path)
-        except (OSError, ValueError):
-            return None
-        return cls._stat_signature(stat)
+        return read_task_payload_signature(task_dir, config_file)
 
     def _probe_refresh_task(
         self,
