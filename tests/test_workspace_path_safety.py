@@ -26,18 +26,6 @@ from pyruns._config import (
 from pyruns.utils.task_files import read_task_payload, write_task_payload
 
 
-def _simulate_reparse(monkeypatch, *paths: Path) -> None:
-    targets = {os.path.normcase(os.path.abspath(path)) for path in paths}
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(candidate):
-        if os.path.normcase(os.path.abspath(candidate)) in targets:
-            return True
-        return real_check(candidate)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
-
-
 @pytest.mark.skipif(os.name != "nt", reason="Windows extended paths and DOS filename rules")
 def test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names(tmp_path):
     root = tmp_path / "workspace"
@@ -62,13 +50,13 @@ def test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names
         os.rmdir(special)
 
 
-def test_script_info_rejects_simulated_reparse_workspace_before_io(tmp_path, monkeypatch):
+def test_script_info_rejects_simulated_reparse_workspace_before_io(tmp_path, simulate_reparse):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     workspace.mkdir(parents=True)
     script_info = workspace / SCRIPT_INFO_FILENAME
     original = '{"script_name": "keep"}\n'
     script_info.write_text(original, encoding="utf-8")
-    _simulate_reparse(monkeypatch, workspace)
+    simulate_reparse(workspace)
 
     assert info_io.load_script_info(str(workspace)) == {}
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
@@ -110,13 +98,13 @@ def test_workspace_is_revalidated_after_creation(tmp_path, monkeypatch, target_n
 
 def test_bootstrap_rejects_simulated_reparse_workspace_before_initialization(
     tmp_path,
-    monkeypatch,
+    simulate_reparse,
 ):
     script = tmp_path / "train.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     workspace = Path(launcher.workspace_root_for_script(str(script)))
     workspace.mkdir(parents=True)
-    _simulate_reparse(monkeypatch, workspace)
+    simulate_reparse(workspace)
 
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
         launcher.bootstrap_workspace(str(script))
@@ -124,12 +112,12 @@ def test_bootstrap_rejects_simulated_reparse_workspace_before_initialization(
     assert list(workspace.iterdir()) == []
 
 
-def test_active_marker_rejects_simulated_reparse_file_before_write(tmp_path, monkeypatch):
+def test_active_marker_rejects_simulated_reparse_file_before_write(tmp_path, simulate_reparse):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     workspace.mkdir(parents=True)
     marker = workspace.parent / ACTIVE_WORKSPACE_FILENAME
     marker.write_text("keep", encoding="utf-8")
-    _simulate_reparse(monkeypatch, marker)
+    simulate_reparse(marker)
 
     with pytest.raises(ValueError, match="must not be a symlink"):
         launcher.mark_workspace_active(str(workspace))
@@ -140,13 +128,13 @@ def test_active_marker_rejects_simulated_reparse_file_before_write(tmp_path, mon
 
 def test_argparse_config_rejects_simulated_reparse_workspace_before_write(
     tmp_path,
-    monkeypatch,
+    simulate_reparse,
 ):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     workspace.mkdir(parents=True)
     script = tmp_path / "train.py"
     script.write_text("print('ok')\n", encoding="utf-8")
-    _simulate_reparse(monkeypatch, workspace)
+    simulate_reparse(workspace)
 
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
         parse_utils.generate_config_file(str(workspace), str(script), {})
@@ -157,14 +145,14 @@ def test_argparse_config_rejects_simulated_reparse_workspace_before_write(
 
 def test_task_payload_rejects_simulated_reparse_file_before_read_or_write(
     tmp_path,
-    monkeypatch,
+    simulate_reparse,
 ):
     task_dir = tmp_path / DEFAULT_ROOT_NAME / "train" / "tasks" / "safe"
     task_dir.mkdir(parents=True)
     payload = task_dir / CONFIG_FILENAME
     original = "value: keep\n"
     payload.write_text(original, encoding="utf-8")
-    _simulate_reparse(monkeypatch, payload)
+    simulate_reparse(payload)
 
     kind, config, text, error = read_task_payload(
         str(task_dir),
@@ -183,7 +171,7 @@ def test_task_payload_rejects_simulated_reparse_file_before_read_or_write(
     assert payload.read_text(encoding="utf-8") == original
 
 
-def test_settings_rejects_simulated_reparse_lock_before_write(tmp_path, monkeypatch):
+def test_settings_rejects_simulated_reparse_lock_before_write(tmp_path, simulate_reparse):
     managed_root = tmp_path / DEFAULT_ROOT_NAME
     managed_root.mkdir()
     settings_path = managed_root / SETTINGS_FILENAME
@@ -191,7 +179,7 @@ def test_settings_rejects_simulated_reparse_lock_before_write(tmp_path, monkeypa
     settings_path.write_text(original, encoding="utf-8")
     lock_path = Path(f"{settings_path}.lock")
     lock_path.write_text("keep", encoding="utf-8")
-    _simulate_reparse(monkeypatch, lock_path)
+    simulate_reparse(lock_path)
 
     with pytest.raises(ValueError, match="Settings lock file must not be"):
         settings.save_setting_for_root(str(managed_root), "ui_port", 8123)
@@ -204,6 +192,7 @@ def test_settings_rejects_simulated_reparse_lock_before_write(tmp_path, monkeypa
 def test_artifact_dir_rejects_simulated_reparse_directory_before_write(
     tmp_path,
     monkeypatch,
+    simulate_reparse,
 ):
     task_dir = tmp_path / DEFAULT_ROOT_NAME / "train" / "tasks" / "safe"
     task_dir.mkdir(parents=True)
@@ -211,7 +200,7 @@ def test_artifact_dir_rejects_simulated_reparse_directory_before_write(
     config_path.write_text("value: 1\n", encoding="utf-8")
     artifacts_root = task_dir / "artifacts"
     artifacts_root.mkdir()
-    _simulate_reparse(monkeypatch, artifacts_root)
+    simulate_reparse(artifacts_root)
     monkeypatch.setenv("__PYRUNS_CONFIG__", str(config_path))
     monkeypatch.setenv("PYRUNS_RUN_INDEX", "1")
 

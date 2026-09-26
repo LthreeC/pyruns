@@ -38,8 +38,7 @@ from pyruns.utils.info_io import load_task_info, update_task_info
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_cli_log_path_rejects_simulated_reparse_file(tmp_path, monkeypatch):
-    import pyruns.utils.info_io as info_io
+def test_cli_log_path_rejects_simulated_reparse_file(tmp_path, simulate_reparse):
     from pyruns.cli import commands
 
     task_dir = tmp_path / TASKS_DIR / "safe"
@@ -51,14 +50,7 @@ def test_cli_log_path_rejects_simulated_reparse_file(tmp_path, monkeypatch):
         json.dumps({"name": "safe", "status": "completed", "run_index": 1}),
         encoding="utf-8",
     )
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(path):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(log_path)):
-            return True
-        return real_check(path)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(log_path)
 
     with pytest.raises(commands.CliError, match="unsafe log path"):
         commands._resolve_log_reference({"name": "safe", "dir": str(task_dir)})

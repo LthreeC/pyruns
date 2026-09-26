@@ -3,6 +3,7 @@ Shared fixtures for pyruns tests.
 """
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import uuid
@@ -168,6 +169,29 @@ def sample_config():
             "layers": 50,
         },
     }
+
+
+@pytest.fixture()
+def simulate_reparse(monkeypatch):
+    """Mark selected paths as Windows reparse points without symlink privileges."""
+    original_lstat = os.lstat
+    targets = set()
+
+    def lstat(path, *args, **kwargs):
+        info = original_lstat(path, *args, **kwargs)
+        if os.path.normcase(os.path.abspath(path)) not in targets:
+            return info
+        attributes = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        attributes["st_file_attributes"] = (
+            int(attributes.get("st_file_attributes", 0)) | stat.FILE_ATTRIBUTE_REPARSE_POINT
+        )
+        return SimpleNamespace(**attributes)
+
+    def mark(*paths):
+        targets.update(os.path.normcase(os.path.abspath(path)) for path in paths)
+        monkeypatch.setattr(os, "lstat", lstat)
+
+    return mark
 
 
 @pytest.fixture()

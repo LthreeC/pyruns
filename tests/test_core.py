@@ -9049,20 +9049,11 @@ def test_executor_rejects_symlinked_run_log_file(tmp_path):
     assert victim.read_text(encoding="utf-8") == "keep\n"
 
 
-def test_executor_rejects_simulated_reparse_run_logs_directory(tmp_path, monkeypatch):
-    import pyruns.utils.info_io as info_io
-
+def test_executor_rejects_simulated_reparse_run_logs_directory(tmp_path, simulate_reparse):
     task_dir = tmp_path / "tasks" / "safe"
     run_logs = task_dir / RUN_LOGS_DIR
     run_logs.mkdir(parents=True)
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(path):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(run_logs)):
-            return True
-        return real_check(path)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(run_logs)
 
     with pytest.raises(ValueError, match="Run logs directory must not be"):
         executor._get_log_path(str(task_dir), 1)
