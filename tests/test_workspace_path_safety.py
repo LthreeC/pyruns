@@ -293,28 +293,36 @@ def test_relative_managed_path_tracks_working_directory_changes(tmp_path, monkey
         _unlink_directory(second / DEFAULT_ROOT_NAME)
 
 
-@pytest.mark.parametrize("operation", ["read", "write"])
-def test_task_payload_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatch, operation):
+@pytest.mark.parametrize("operation", ["read", "write", "metadata"])
+def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatch, operation):
     relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks" / "sample"
     first, second = tmp_path / "first", tmp_path / "second"
     for project, value in ((first, "first"), (second, "second")):
         (project / relative).mkdir(parents=True)
         (project / relative / CONFIG_FILENAME).write_text(f"value: {value}\n", encoding="utf-8")
+        (project / relative / TASK_INFO_FILENAME).write_text(f'{{"notes": "{value}"}}', encoding="utf-8")
     alias = tmp_path / "project"
     _link_directory(alias, first)
-    validate = task_files.validate_workspace_file
+    module = info_io if operation == "metadata" else task_files
+    validator = "_validate_contained_path" if operation == "metadata" else "validate_workspace_file"
+    validate = getattr(module, validator)
 
     def switch_project_after_directory_check(path, workspace_dir, **kwargs):
         _unlink_directory(alias)
         _link_directory(alias, second)
         return validate(path, workspace_dir, **kwargs)
 
-    monkeypatch.setattr(task_files, "validate_workspace_file", switch_project_after_directory_check)
+    monkeypatch.setattr(module, validator, switch_project_after_directory_check)
     try:
         if operation == "read":
             kind, config, text, error = read_task_payload(str(alias / relative), {})
             assert (kind, config, text) == (TASK_KIND_CONFIG, {}, "")
             assert "resolves outside" in error
+        elif operation == "metadata":
+            with pytest.raises(ValueError, match="resolves outside"):
+                info_io.load_task_metadata(str(alias / relative), raise_error=True)
+            monkeypatch.setattr(module, validator, validate)
+            assert info_io.load_task_metadata(str(alias / relative), raise_error=True)["notes"] == "second"
         else:
             with pytest.raises(ValueError, match="resolves outside"):
                 write_task_payload(
