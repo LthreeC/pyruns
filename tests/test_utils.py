@@ -3384,11 +3384,16 @@ def test_save_and_unset_empty_structured_setting_remove_unindented_yaml_items(tm
     assert saved["ui_port"] == 8099
 
 
-def test_save_settings_for_root_commits_batch_with_one_file_replace(tmp_path, monkeypatch):
+@pytest.mark.parametrize("original", [
+    "# Keep local notes\nui_port: 8101\nconda_env: ''\n",
+    "{ui_port: 8101, conda_env: ''}\n",
+    "\"ui_port\": 8101\nconda_env: ''\n",
+], ids=["block", "flow", "quoted"])
+def test_settings_edits_commit_expected_mapping_with_one_replace(tmp_path, monkeypatch, original):
     root = tmp_path / "root"
     root.mkdir()
     path = root / SETTINGS_FILENAME
-    path.write_text("ui_port: 8099\nconda_env: ''\n", encoding="utf-8")
+    path.write_text(original, encoding="utf-8")
     real_replace = settings.os.replace
     settings_replaces = []
 
@@ -3404,10 +3409,17 @@ def test_save_settings_for_root_commits_batch_with_one_file_replace(tmp_path, mo
     )
 
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert saved["ui_port"] == 8123
-    assert saved["conda_env"] == "training"
-    assert saved["log_enabled"] is True
+    assert saved == {"ui_port": 8123, "conda_env": "training", "log_enabled": True}
+    assert settings.reload_settings(str(root))["ui_port"] == 8123
     assert len(settings_replaces) == 1
+    if original.startswith("#"):
+        assert path.read_text(encoding="utf-8").startswith("# Keep local notes\n")
+
+    path.write_text(original, encoding="utf-8")
+    settings.unset_setting_for_root(str(root), "ui_port")
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {"conda_env": ""}
+    assert settings.reload_settings(str(root))["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
+    assert len(settings_replaces) == 2
 
 
 def test_save_settings_for_root_validates_complete_batch_before_writing(tmp_path):

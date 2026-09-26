@@ -4593,12 +4593,9 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
 
     token = "live-update-smoke-token"
     code = (
-        "import faulthandler, json, threading; "
+        "import faulthandler, json; "
         "faulthandler.dump_traceback_later(5, repeat=True); "
         "from pyruns.web import app; "
-        "original_shutdown = app._request_server_shutdown; "
-        "app._request_server_shutdown = lambda: "
-        "(print('SHUTDOWN_THREAD=' + threading.current_thread().name, flush=True), original_shutdown())[1]; "
         "app.replace_process_with_updater = "
         "lambda **kwargs: print('REPLACED=' + json.dumps(kwargs, sort_keys=True), flush=True); "
         f"app.main(open_browser=False, port={port}, access_token={token!r})"

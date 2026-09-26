@@ -531,6 +531,18 @@ def _setting_block_pattern(key: str) -> re.Pattern[str]:
     )
 
 
+def _render_settings_mapping(values: Dict[str, Any], edited_text: str, path: str) -> str:
+    """Keep a text edit only when it preserves the intended YAML mapping."""
+
+    if edited_text:
+        try:
+            if _parse_settings_mapping(edited_text, path) == values:
+                return edited_text
+        except ValueError:
+            pass
+    return OmegaConf.to_yaml(OmegaConf.create(values), resolve=False)
+
+
 def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
     """Persist known settings together with one exclusive, atomic replace."""
 
@@ -574,18 +586,12 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
                 if item_key in SETTINGS_DEFAULTS
             }
 
-            # Scalars use surgical replacements to preserve template comments.
-            # Mapping/list values use one canonical dump, matching the prior
-            # single-setting behavior while still committing the whole batch once.
-            if not loaded or has_unknown_keys or any(
+            # Try to preserve template comments for scalar edits; the complete
+            # parsed result must still match the intended mapping before writing.
+            new_text = ""
+            if loaded and not has_unknown_keys and not any(
                 isinstance(value, (dict, list)) for value in updates.values()
             ):
-                loaded.update(updates)
-                new_text = OmegaConf.to_yaml(
-                    OmegaConf.create(loaded),
-                    resolve=False,
-                )
-            else:
                 new_text = text
                 for key, value in updates.items():
                     val_text = _yaml_scalar_to_text(value)
@@ -595,6 +601,8 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
                     else:
                         separator = "" if not new_text or new_text.endswith("\n") else "\n"
                         new_text = f"{new_text}{separator}{key}: {val_text}\n"
+            loaded.update(updates)
+            new_text = _render_settings_mapping(loaded, new_text, path)
 
             fd, tmp_path = tempfile.mkstemp(
                 prefix=f".{os.path.basename(path)}.",
@@ -657,14 +665,11 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
                 for item_key, item_value in loaded.items()
                 if item_key in SETTINGS_DEFAULTS and item_key != key
             }
-            if not known or has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
-                new_text = OmegaConf.to_yaml(
-                    OmegaConf.create(known),
-                    resolve=False,
-                )
-            else:
+            new_text = ""
+            if known and not has_unknown_keys and not isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
                 new_text = _setting_block_pattern(key).sub("", text)
                 new_text = re.sub(r"\n{3,}", "\n\n", new_text).lstrip("\n")
+            new_text = _render_settings_mapping(known, new_text, path)
 
             fd, tmp_path = tempfile.mkstemp(
                 prefix=f".{os.path.basename(path)}.",
