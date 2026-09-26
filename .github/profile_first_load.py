@@ -1,5 +1,6 @@
 """Observe the existing first-list workload and its disk-I/O decisions."""
 import cProfile
+import hashlib
 import importlib.util
 import io
 import json
@@ -25,15 +26,17 @@ from pyruns.web.runtime import PyrunsRuntime
 output = Path(sys.argv[1])
 output.mkdir(parents=True, exist_ok=True)
 count = int(sys.argv[2]) if len(sys.argv) > 2 else 10000
-report = {"tasks": count, "source": scaling._source_state(), "passed": False, "observations": []}
+mode = sys.argv[3] if len(sys.argv) > 3 else "profile"
+report = {"tasks": count, "mode": mode, "source": scaling._source_state(), "passed": False, "observations": []}
 profile = cProfile.Profile()
 original_map = TaskManager._map_task_disk_io
 original_decision = TaskManager._parallel_loading_worthwhile
 context = threading.local()
+policy = "auto"
 
 
 def decision(elapsed, cpu):
-    parallel = original_decision(elapsed, cpu)
+    parallel = policy == "parallel" or original_decision(elapsed, cpu)
     if getattr(context, "phase", None) is not None:
         context.phase["samples"].append({"elapsed": elapsed, "cpu": cpu, "parallel": parallel})
     return parallel
@@ -57,8 +60,12 @@ TaskManager._map_task_disk_io = map_io
 try:
     with tempfile.TemporaryDirectory(prefix="pyruns-first-load-profile-") as directory:
         workspace, fixtures = scaling._make_workspace(Path(directory), count)
-        for profiled in (False, True):
-            observations = {"profiled": profiled, "phases": [], "validated": False}
+        variants = [("auto", False), ("auto", True)] if mode == "profile" else [
+            (name, False) for name in ("auto", "parallel", "parallel", "auto")
+        ]
+        reference = None
+        for policy, profiled in variants:
+            observations = {"policy": policy, "profiled": profiled, "phases": [], "validated": False}
             runtime = PyrunsRuntime(str(workspace))
             original_ensure = runtime.ensure_tasks_loaded
             if profiled:
@@ -79,6 +86,14 @@ try:
                     assert len(tasks) == count
                     for task in tasks:
                         scaling._check_task(task, fixtures, summary=False)
+                    snapshot = {"response": response.json(), "tasks": tasks}
+                    if reference is None:
+                        reference = snapshot
+                    else:
+                        assert snapshot == reference
+                    observations["snapshot_sha256"] = hashlib.sha256(
+                        json.dumps(snapshot, sort_keys=True).encode()
+                    ).hexdigest()
                     observations["validated"] = True
             finally:
                 runtime.shutdown()
@@ -88,11 +103,12 @@ try:
 finally:
     TaskManager._map_task_disk_io = original_map
     TaskManager._parallel_loading_worthwhile = staticmethod(original_decision)
-    profile.dump_stats(str(output / "first-load.pstats"))
-    stream = io.StringIO()
-    stats = pstats.Stats(profile, stream=stream).sort_stats("cumulative")
-    stats.print_stats(45)
-    stats.sort_stats("tottime").print_stats(25)
-    (output / "profile.txt").write_text(stream.getvalue(), encoding="utf-8")
+    if mode == "profile":
+        profile.dump_stats(str(output / "first-load.pstats"))
+        stream = io.StringIO()
+        stats = pstats.Stats(profile, stream=stream).sort_stats("cumulative")
+        stats.print_stats(45)
+        stats.sort_stats("tottime").print_stats(25)
+        (output / "profile.txt").write_text(stream.getvalue(), encoding="utf-8")
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))
