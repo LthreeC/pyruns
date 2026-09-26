@@ -53,7 +53,7 @@ from pyruns.launcher import (
 )
 from pyruns.utils import get_now_str
 from pyruns.utils.env_utils import is_valid_environment_name, normalize_environment
-from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs
+from pyruns.utils.batch_utils import count_batch_configs, generate_batch_configs, preview_batch_configs
 from pyruns.utils.config_utils import (
     dump_config_text,
     load_config_text,
@@ -1930,22 +1930,21 @@ class PyrunsRuntime:
 
         if editor_mode == "form":
             try:
-                configs = generate_batch_configs(base_config)
+                total_count, configs = preview_batch_configs(base_config, template_config=orig_config)
             except ValueError as exc:
                 raise ValueError(str(exc)) from exc
         else:
             if count_batch_configs(base_config) != 1:
                 raise ValueError("YAML mode does not support batch syntax. Switch to Grid or Tree mode.")
             configs = [base_config]
-
-        if template_value and orig_config:
-            err_msg = validate_config_types_against_template(orig_config, configs)
-            if err_msg:
-                raise ValueError(err_msg)
+            total_count = 1
+            if template_value and orig_config:
+                err_msg = validate_config_types_against_template(orig_config, configs)
+                if err_msg:
+                    raise ValueError(err_msg)
 
         preview_items: List[Dict[str, Any]] = []
-        sample_configs = configs[: min(6, len(configs))]
-        for index, config in enumerate(sample_configs, start=1):
+        for index, config in enumerate(configs, start=1):
             container = to_container(config, resolve=False)
             preview_items.append(
                 {
@@ -1957,7 +1956,7 @@ class PyrunsRuntime:
             )
 
         return {
-            "count": len(configs),
+            "count": total_count,
             "items": preview_items,
             "task_kind": TASK_KIND_CONFIG,
         }

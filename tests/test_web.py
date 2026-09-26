@@ -5572,24 +5572,39 @@ def test_generator_batch_structure_survives_preview_create_and_disk(tmp_path):
         runtime.shutdown()
 
 
-def test_generator_preview_endpoint_returns_expansion_summary(tmp_path):
+def test_generator_preview_endpoint_returns_expansion_summary(tmp_path, monkeypatch):
+    from omegaconf import OmegaConf
+
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
+    original_create = OmegaConf.create
+    full_config_builds = []
+
+    def count_full_config_builds(*args, **kwargs):
+        value = args[0] if args else kwargs.get("obj")
+        if isinstance(value, dict) and "lr" in value and "model" in value:
+            full_config_builds.append(None)
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(OmegaConf, "create", count_full_config_builds)
 
     response = client.post(
         "/api/generator/preview",
         json={
             "mode": "form",
-            "yaml_text": "lr: 0.1 | 0.2\nmodel: tiny\n",
+            "yaml_text": "lr: 0:128\nmodel: tiny\n",
             "template_value": "config_default.yaml",
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["count"] == 2
+    assert payload["count"] == 128
+    assert [item["config"]["lr"] for item in payload["items"]] == list(range(6))
     assert payload["items"][0]["preview"]
+    # One input, one template and six samples; cost must not follow all 128 tasks.
+    assert len(full_config_builds) <= 8
 
 
 def test_yaml_mode_rejects_batch_syntax_without_expanding(tmp_path, monkeypatch):
@@ -7778,6 +7793,30 @@ def test_runtime_generator_preview_and_create_error_edges(tmp_path, monkeypatch)
     template.write_text("lr: 1\n", encoding="utf-8")
     with pytest.raises(ValueError, match="类型错误"):
         runtime.preview_tasks_from_template(mode="form", yaml_text="lr: text", template_value=CONFIG_DEFAULT_FILENAME)
+    with pytest.raises(ValueError, match="类型错误"):
+        runtime.preview_tasks_from_template(
+            mode="form", yaml_text="lr: 0 | 1 | 2 | 3 | 4 | 5 | 6 | late-invalid\n",
+            template_value=CONFIG_DEFAULT_FILENAME,
+        )
+    with TestClient(create_app(runtime)) as client:
+        oversized = client.post(
+            "/api/generator/preview", json={"mode": "form", "yaml_text": f"lr: 0:{10**30}\n"},
+        )
+        malformed_late_candidate = client.post(
+            "/api/generator/preview",
+            json={"mode": "form", "yaml_text": "lr: >-\n  0 | 1 | 2 | 3 | 4 | 5 | 6 | ${oc.select:missing,'a|b'}\n"},
+        )
+        malformed_create = client.post(
+            "/api/generator/create",
+            json={"name_prefix": "invalid-interpolation", "mode": "yaml", "yaml_text": "lr: '${unclosed'\n", "append_timestamp": False},
+        )
+    assert oversized.status_code == 400
+    assert "limit is 10000" in oversized.json()["detail"]
+    assert malformed_late_candidate.status_code == 400
+    assert "lr" in malformed_late_candidate.json()["detail"]
+    assert malformed_create.status_code == 400
+    assert "lr" in malformed_create.json()["detail"]
+    assert not (workspace / TASKS_DIR / "invalid-interpolation").exists()
 
     result = runtime.preview_tasks_from_template(mode="form", yaml_text="lr: 1 | 2")
     assert result["count"] == 2

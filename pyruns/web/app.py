@@ -22,6 +22,7 @@ from anyio import CancelScope
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from omegaconf.errors import OmegaConfBaseException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -812,7 +813,7 @@ def create_app(
                 )
         except UpdateInProgressError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except ValueError as exc:
+        except (ValueError, OmegaConfBaseException) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/generator/preview")
@@ -824,7 +825,7 @@ def create_app(
                 shell_text=payload.shell_text,
                 template_value=payload.template_value,
             )
-        except ValueError as exc:
+        except (ValueError, OmegaConfBaseException) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/generator/pick-shell-file")

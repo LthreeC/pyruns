@@ -2,7 +2,7 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Hashable, Iterator, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Iterator, Mapping
 from datetime import date, datetime, time as datetime_time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
@@ -478,7 +478,7 @@ def build_config_preview_and_search_text(
 
 def validate_config_types_against_template(
     orig_config: Mapping[Any, Any] | DictConfig,
-    new_configs: Sequence[Mapping[Any, Any] | DictConfig],
+    new_configs: Iterable[Mapping[Any, Any] | DictConfig],
 ) -> Optional[str]:
     """Ensure generated configs match the primitive types of the original template.
 

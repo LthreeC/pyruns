@@ -34,7 +34,7 @@ from pyruns._config import (
 )
 from pyruns.utils.batch_utils import (
     _parse_pipe_value, _split_by_pipe,
-    generate_batch_configs, count_batch_configs, strip_batch_pipes,
+    generate_batch_configs, count_batch_configs, preview_batch_configs, strip_batch_pipes,
 )
 from pyruns.utils.config_utils import (
     safe_filename, parse_value, flatten_dict, unflatten_dict,
@@ -2126,13 +2126,13 @@ class TestFlattenUnflatten:
             {"choice": "${oc.env:PYRUNS_TEST_SECRET} | public"}
         )
 
-        generated = generate_batch_configs(config)
-        values = [
-            OmegaConf.to_container(item, resolve=False)["choice"]
-            for item in generated
-        ]
-        assert values == ["${oc.env:PYRUNS_TEST_SECRET}", "public"]
-        assert all("must-not-leak" not in str(value) for value in values)
+        for generated in (generate_batch_configs(config), preview_batch_configs(config)[1]):
+            values = [
+                OmegaConf.to_container(item, resolve=False)["choice"]
+                for item in generated
+            ]
+            assert values == ["${oc.env:PYRUNS_TEST_SECRET}", "public"]
+            assert all("must-not-leak" not in str(value) for value in values)
 
     def test_missing_environment_interpolation_does_not_break_preview_or_batch(self, monkeypatch):
         monkeypatch.delenv("PYRUNS_TEST_MISSING", raising=False)
@@ -2482,6 +2482,12 @@ class TestGenerateBatchConfigs:
         generated = generate_batch_configs(config)
         actual = [OmegaConf.to_container(item, resolve=False) for item in generated]
         assert [{k: v for k, v in item.items() if k != "_meta_desc"} for item in actual] == expected
+        total, samples = preview_batch_configs(config, template_config=OmegaConf.create(expected[0]))
+        assert total == len(expected)
+        assert [OmegaConf.to_container(item, resolve=False) for item in samples] == actual[:6]
+        if "rows" in config:
+            samples[0]["rows"].append("preview-only edit")
+            assert samples[1]["rows"] == source["rows"]
         assert strip_batch_pipes(config) == expected[0]
         assert OmegaConf.to_container(config, resolve=False) == source
 
@@ -2550,6 +2556,12 @@ class TestGenerateBatchConfigs:
         assert all(item["optimizer"] == "adam" for item in configs)
 
     def test_generation_rejects_oversized_batches_before_iterating_ranges(self, monkeypatch):
+        huge_count = 10**30
+        for expression in (f"0:{huge_count}", f"(0, {-huge_count}, -1)"):
+            assert count_batch_configs({"epochs": expression}) == huge_count
+            with pytest.raises(ValueError, match=f"Batch expansion would create {huge_count} tasks"):
+                generate_batch_configs({"epochs": expression})
+
         class HugeRange:
             def __len__(self):
                 return 1_000_000
@@ -2561,6 +2573,8 @@ class TestGenerateBatchConfigs:
 
         with pytest.raises(ValueError, match="Batch expansion would create 1000000 tasks"):
             generate_batch_configs({"epochs": "0:1000000:1"}, max_configs=999)
+        with pytest.raises(ValueError, match="equal length"):
+            generate_batch_configs({"epochs": "0:1000000:1", "seed": "(1 | 2)", "tag": "(a | b | c)"})
 
 
 #  count_batch_configs
