@@ -1,0 +1,41 @@
+name: macOS short command output diagnosis
+
+on:
+  push:
+    branches: [codex/macos-output-profile]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        revision:
+          - c0870582668755ba4259533d9fb502f3b02e8e99
+          - f3b1a5e9eac0811dc2986eda617c23c0e5e29ce8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: diagnosis
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.revision }}
+          path: product
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e './product[test]'
+      - name: Compare terminal bytes and persisted logs
+        run: python -u diagnosis/.github/probe_posix_output.py --root product --output test-results/output.json
+      - name: Preserve output at every layer
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-output-${{ matrix.revision }}
+          path: test-results/
+          retention-days: 14
