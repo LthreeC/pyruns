@@ -11,7 +11,6 @@ import sys
 import tempfile
 import time
 import traceback
-import types
 
 ROOT = Path(os.environ.get("PYRUNS_AUDIT_ROOT", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(ROOT))
@@ -31,28 +30,20 @@ original = info_io._path_is_within
 native_resolve = getattr(os.path, "_getfinalpathname", None)
 
 
-def boundary_path(path):
-    if native_resolve is None:
-        return os.path.realpath(path)
+def candidate(path, root, *, _resolved_paths=None):
+    # Keep the existing anchor and missing-path contracts exactly as they are.
+    if native_resolve is None or _resolved_paths is not None:
+        return original(path, root, _resolved_paths=_resolved_paths)
     try:
         # Same input as realpath, without its second prefix-removal lookup.
-        return native_resolve(path)
+        resolved_path = native_resolve(os.path.abspath(path))
+        resolved_root = native_resolve(os.path.abspath(root))
     except (OSError, ValueError):
-        resolved = os.path.realpath(path)
-    if resolved.startswith("\\\\?\\"):
-        return resolved
-    if resolved.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + resolved[2:]
-    return "\\\\?\\" + resolved
-
-
-path_proxy = types.SimpleNamespace(**vars(os.path))
-path_proxy.realpath = boundary_path
-candidate = types.FunctionType(
-    original.__code__, {**original.__globals__, "os": types.SimpleNamespace(path=path_proxy)},
-    original.__name__, original.__defaults__, original.__closure__,
-)
-candidate.__kwdefaults__ = original.__kwdefaults__
+        return original(path, root, _resolved_paths=_resolved_paths)
+    try:
+        return os.path.normcase(os.path.commonpath([resolved_path, resolved_root])) == os.path.normcase(resolved_root)
+    except (OSError, ValueError):
+        return False
 
 report = {"source": scaling._source_state(), "platform": platform.platform(), "python": sys.version,
           "dependencies": scaling._dependencies(), "tasks": count, "native_available": native_resolve is not None,
