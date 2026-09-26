@@ -30,6 +30,7 @@ from pyruns.utils.info_io import (
     validate_tasks_root,
 )
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
+from pyruns.utils.lock_owner import RELEASED_LOCK_SUFFIX, mark_json_lock_released, parse_json_lock_owner
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
@@ -289,20 +290,7 @@ class TaskGenerator:
 
     @staticmethod
     def _task_name_lock_owner(content: bytes) -> Dict[str, Any] | None:
-        try:
-            owner = json.loads(content.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        if not isinstance(owner, dict):
-            return None
-        pid = owner.get("pid")
-        host = owner.get("host")
-        token = owner.get("token")
-        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-            return None
-        if not isinstance(host, str) or not host or not isinstance(token, str) or not token:
-            return None
-        return owner
+        return parse_json_lock_owner(content)
 
     @classmethod
     def _task_name_lock_is_stale(
@@ -316,6 +304,8 @@ class TaskGenerator:
         owner = cls._task_name_lock_owner(snapshot[1])
         if owner is None:
             return age >= max(0.0, min_age_sec)
+        if snapshot[1].endswith(RELEASED_LOCK_SUFFIX):
+            return True
         if owner["host"].lower() != _TASK_NAME_LOCK_OWNER_HOST:
             return False
 
@@ -386,7 +376,7 @@ class TaskGenerator:
 
         validate_tasks_root(self.root_dir)
         lock_path = self._task_name_lock_path(task_name)
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
         flags |= int(getattr(os, "O_BINARY", 0))
         flags |= int(getattr(os, "O_CLOEXEC", 0))
         while True:
@@ -451,10 +441,19 @@ class TaskGenerator:
 
         lock_path, fd, identity = reservation
         try:
-            os.close(fd)
-        except OSError as exc:
-            logger.warning("Could not close task name reservation %s: %s", lock_path, exc)
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) == identity:
+                mark_json_lock_released(fd)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                logger.warning("Could not close task name reservation %s: %s", lock_path, exc)
+            self._remove_task_name_reservation(lock_path, identity)
 
+    def _remove_task_name_reservation(self, lock_path: str, identity: tuple[int, int]) -> None:
         for attempt in range(_TASK_NAME_LOCK_RELEASE_ATTEMPTS):
             try:
                 validate_tasks_root(self.root_dir)
