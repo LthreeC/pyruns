@@ -3102,8 +3102,13 @@ def test_initial_task_load_does_not_parse_metadata_twice(tmp_path):
     assert load.call_count == 2
 
 
-def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path):
+def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path, monkeypatch):
     import pyruns.web.runtime as runtime_module
+
+    clock = MagicMock()
+    clock.time.return_value = 1_000_000_000.0
+    clock.monotonic.return_value = 100.0
+    monkeypatch.setattr(runtime_module, "time", clock)
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "first")
@@ -3111,9 +3116,8 @@ def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path):
     assert runtime.list_tasks(summary=True).total == 1
 
     _add_task(workspace, "second")
-    clock = MagicMock()
     clock.time.return_value = -1_000_000_000.0
-    clock.monotonic.return_value = runtime._last_full_refresh_time + 5.0
+    clock.monotonic.return_value += 5.0
     original_refresh = runtime.task_manager.refresh_from_disk
 
     def slow_refresh(*args, **kwargs):
@@ -3121,10 +3125,7 @@ def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path):
         clock.monotonic.return_value += 5.0
         return result
 
-    with (
-        patch.object(runtime_module, "time", clock),
-        patch.object(runtime.task_manager, "refresh_from_disk", side_effect=slow_refresh) as refresh,
-    ):
+    with patch.object(runtime.task_manager, "refresh_from_disk", side_effect=slow_refresh) as refresh:
         assert runtime.list_tasks(summary=True).total == 2
         _add_task(workspace, "third")
         assert runtime.list_tasks(summary=True).total == 2
