@@ -20,6 +20,7 @@ jobs:
         timeout-minutes: 12
         run: python scripts/benchmark_refresh_completion.py --tasks 10000 --output test-results/refresh/report.json
       - name: Check refresh behavior
+        if: always()
         run: python -m pytest -q tests/test_web.py -k "task_refresh_interval or search_api_honors_refresh or partial_task_cache_preserves_refresh"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import zipfile
 
 
@@ -60,6 +61,18 @@ def child(args):
             started = time.perf_counter()
             following = client.get('/api/tasks', params={**params, 'refresh': 'true'})
             following_seconds = time.perf_counter() - started
+            result = {
+                'label': args.label, 'forced_seconds': forced_seconds,
+                'following_seconds': following_seconds, 'refresh_seconds': calls,
+                'statuses': [initial.status_code, forced.status_code, following.status_code],
+                'response_digests': [hashlib.sha256(response.content).hexdigest()
+                                     for response in (initial, forced, following)],
+                'passed': False,
+            }
+            Path(args.output).write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+            if initial.content != forced.content or forced.content != following.content:
+                for label, response in zip(('initial', 'forced', 'following'), (initial, forced, following), strict=True):
+                    Path(args.output).with_suffix('.' + label + '.json').write_bytes(response.content)
             assert forced.status_code == following.status_code == 200
             assert initial.content == forced.content == following.content
             _check_page(following.json(), fixtures, params)
@@ -104,12 +117,15 @@ def parent(args):
             workspace, _fixtures = _make_workspace(root, args.tasks)
             for index, label in enumerate(('baseline', 'candidate', 'candidate', 'baseline')):
                 path = output.parent / f'round-{index}-{label}.json'
-                subprocess.run([
+                process = subprocess.run([
                     sys.executable, str(Path(__file__).resolve()), '--child',
                     '--source', str(baseline if label == 'baseline' else ROOT),
                     '--workspace', str(workspace), '--tasks', str(args.tasks),
                     '--label', label, '--output', str(path),
-                ], check=True, timeout=240)
+                ], capture_output=True, encoding='utf-8', errors='replace', timeout=240)
+                path.with_suffix('.stdout.log').write_text(process.stdout, encoding='utf-8')
+                path.with_suffix('.stderr.log').write_text(process.stderr, encoding='utf-8')
+                process.check_returncode()
                 result = json.loads(path.read_text(encoding='utf-8'))
                 report['runs'].append(result)
                 output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -120,6 +136,9 @@ def parent(args):
                 for label in ('baseline', 'candidate')
             }
             report['passed'] = True
+    except Exception:
+        report['error'] = traceback.format_exc()
+        raise
     finally:
         output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(report, indent=2))
