@@ -4593,7 +4593,8 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
 
     token = "live-update-smoke-token"
     code = (
-        "import json; "
+        "import faulthandler, json; "
+        "faulthandler.dump_traceback_later(5, repeat=True); "
         "from pyruns.web import app; "
         "app.replace_process_with_updater = "
         "lambda **kwargs: print('REPLACED=' + json.dumps(kwargs, sort_keys=True), flush=True); "
@@ -4634,7 +4635,12 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
         with opener.open(request, timeout=5) as response:
             assert response.status == 202
 
-        stdout, stderr = process.communicate(timeout=15)
+        try:
+            stdout, stderr = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+            pytest.fail(f"UI handoff exceeded 15 seconds.\nstdout:\n{stdout}\nstderr:\n{stderr}")
     finally:
         if process.poll() is None:
             process.kill()
