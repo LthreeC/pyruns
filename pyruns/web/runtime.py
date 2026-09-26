@@ -487,6 +487,7 @@ class PyrunsRuntime:
                 check_all=not force_all,
                 discover=True,
                 raise_on_error=force_all,
+                check_payload=force_all,
             )
             manager_count = sum(
                 1
@@ -500,7 +501,7 @@ class PyrunsRuntime:
 
     @_with_stable_workspace
     def active_task_count(self) -> int:
-        """Count active work while skipping unchanged task metadata."""
+        """Count active work without probing unchanged tasks' payloads."""
 
         return self._active_task_count(force_all=False)
 

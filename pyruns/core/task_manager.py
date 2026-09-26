@@ -1296,8 +1296,14 @@ class TaskManager:
         check_all: bool = False,
         discover: bool = False,
         raise_on_error: bool = False,
+        *,
+        check_payload: bool = True,
     ) -> bool:
-        """Refresh active or requested tasks from task_info.json files."""
+        """Refresh active or requested tasks from task_info.json files.
+
+        State-only callers can skip payload probes for unchanged metadata.
+        New tasks and changed metadata still load their complete payloads.
+        """
         known_names = None
         if discover:
             with self._lock:
@@ -1329,7 +1335,7 @@ class TaskManager:
             if force_all or check_all or target_ids or task["status"] in ("running", "queued")
             or task.get("_terminal_write_pending")
         ]
-        check_payload = check_all or target_ids is not None
+        check_payload = check_payload and (check_all or target_ids is not None)
         probes = self._map_task_disk_io(
             current,
             lambda entry: self._probe_refresh_task(entry[0], check_payload=check_payload),

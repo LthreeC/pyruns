@@ -6281,6 +6281,10 @@ def test_task_manager_refreshes_edited_payload_and_clears_parse_error(tmp_path):
     info_mtime = (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns
 
     config_path.write_text("epochs: [broken\n", encoding="utf-8")
+    with patch.object(manager, "_payload_signature", wraps=manager._payload_signature) as probe:
+        assert manager.refresh_from_disk(check_all=True, check_payload=False) is False
+        probe.assert_not_called()
+    assert manager.get_task("sample")["config"]["epochs"] == 1
     assert manager.refresh_from_disk(task_ids=["sample"]) is True
     assert manager.get_task("sample")["_load_error"]
     with patch("pyruns.utils.task_files.load_config_view_text") as parse:
@@ -6355,11 +6359,11 @@ def test_task_manager_reports_corrupt_metadata_and_recovers(tmp_path):
     info_path = task_dir / TASK_INFO_FILENAME
 
     info_path.write_text("{broken", encoding="utf-8")
-    assert manager.refresh_from_disk(check_all=True) is True
+    assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
     assert "Could not load task metadata" in manager.get_task("sample")["_load_error"]
 
     save_task_info(str(task_dir), {"status": "pending"})
-    assert manager.refresh_from_disk(check_all=True) is True
+    assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
     assert manager.get_task("sample")["_load_error"] == ""
 
 

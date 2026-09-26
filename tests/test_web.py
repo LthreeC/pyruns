@@ -275,67 +275,47 @@ def test_system_update_refuses_active_tasks_without_stopping_server():
 
 
 def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
-    refreshes = []
-
-    class CountingManager:
-        def __init__(self):
-            self.tasks = [
-                {"name": "running", "status": "running"},
-                {"name": "pending", "status": "pending"},
-            ]
-            self.is_processing = False
-            self.callback = None
-
-        def refresh_from_disk(self, **kwargs):
-            refreshes.append(kwargs)
-
-        def list_tasks(self, *, summary=False):
-            return [dict(task) for task in self.tasks]
-
-        def on_change(self, callback):
-            self.callback = callback
-
-        def off_change(self, callback):
-            assert callback is self.callback
-            self.callback = None
-
-        def shutdown(self):
-            pass
-
-    manager = CountingManager()
-    runtime = PyrunsRuntime(
-        root_dir=str(tmp_path),
-        task_manager_factory=lambda _tasks_dir: manager,
-    )
+    workspace_a = _make_workspace(tmp_path, "main")
+    workspace_b = _make_workspace(tmp_path, "alt")
+    _add_task(workspace_a, "running", status="running")
+    _add_task(workspace_a, "pending")
+    _add_task(workspace_b, "queued", status="queued")
+    runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
     try:
         assert runtime.active_task_count() == 1
-        assert any(
-            call
-            == {
-                "force_all": False,
-                "check_all": True,
-                "discover": True,
-                "raise_on_error": False,
-            }
-            for call in refreshes
-        )
-        assert runtime.strict_active_task_count() == 1
-        assert any(
-            call
-            == {
-                "force_all": True,
-                "check_all": False,
-                "discover": True,
-                "raise_on_error": True,
-            }
-            for call in refreshes
-        )
+        manager_a = runtime.task_manager
+        runtime.reload(str(workspace_b))
+        assert runtime.active_task_count() == 2
+        manager_b = runtime.task_manager
 
-        manager.tasks[0]["status"] = "completed"
+        with patch.object(TaskManager, "_payload_signature", wraps=TaskManager._payload_signature) as probe:
+            assert runtime.active_task_count() == 2
+            update_task_info(str(workspace_a / TASKS_DIR / "running"),
+                             lambda info: info.update(status="completed"))
+            update_task_info(str(workspace_a / TASKS_DIR / "pending"),
+                             lambda info: info.update(status="queued"))
+            update_task_info(str(workspace_b / TASKS_DIR / "queued"),
+                             lambda info: info.update(status="completed"))
+            _add_task(workspace_b, "external", status="queued")
+            assert runtime.active_task_count() == 2
+            probe.assert_not_called()
+        assert manager_a.get_task("running")["status"] == "completed"
+        assert manager_a.get_task("pending")["status"] == "queued"
+        assert manager_b.get_task("queued")["status"] == "completed"
+        assert manager_b.get_task("external")["config"]["lr"] == 0.01
+        assert runtime.strict_active_task_count() == 2
+
+        for workspace, name in ((workspace_a, "pending"), (workspace_b, "external")):
+            update_task_info(str(workspace / TASKS_DIR / name),
+                             lambda info: info.update(status="completed"))
         assert runtime.active_task_count() == 0
-
-        manager.is_processing = True
+        manager_b.is_processing = True
         assert runtime.active_task_count() == 1
+        manager_b.is_processing = False
+
+        (workspace_b / TASKS_DIR / "external" / TASK_INFO_FILENAME).write_text("{broken", encoding="utf-8")
+        with pytest.raises(ValueError):
+            runtime.strict_active_task_count()
     finally:
         runtime.shutdown()
 
