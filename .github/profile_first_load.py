@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 REPO = Path(os.environ.get("PYRUNS_AUDIT_ROOT", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(REPO))
@@ -90,6 +91,9 @@ try:
                     if reference is None:
                         reference = snapshot
                     else:
+                        if snapshot != reference:
+                            (output / "reference.json").write_text(json.dumps(reference, indent=2), encoding="utf-8")
+                            (output / "different.json").write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
                         assert snapshot == reference
                     observations["snapshot_sha256"] = hashlib.sha256(
                         json.dumps(snapshot, sort_keys=True).encode()
@@ -100,6 +104,9 @@ try:
                 report["observations"].append(observations)
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     report["passed"] = True
+except Exception:
+    report["error"] = traceback.format_exc()
+    raise
 finally:
     TaskManager._map_task_disk_io = original_map
     TaskManager._parallel_loading_worthwhile = staticmethod(original_decision)
