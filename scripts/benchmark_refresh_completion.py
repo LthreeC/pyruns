@@ -37,12 +37,17 @@ def child(args):
         fixtures[metadata['name']] = (config, metadata)
     runtime = PyrunsRuntime(args.workspace)
     calls = []
+    background_calls = []
     original = runtime.task_manager.refresh_from_disk
 
     def counted(*call_args, **kwargs):
         started = time.perf_counter()
         result = original(*call_args, **kwargs)
-        calls.append(time.perf_counter() - started)
+        elapsed = time.perf_counter() - started
+        if kwargs.get('check_all') and kwargs.get('discover'):
+            calls.append(elapsed)
+        else:
+            background_calls.append(elapsed)
         return result
 
     runtime.task_manager.refresh_from_disk = counted
@@ -55,6 +60,7 @@ def child(args):
             assert initial.status_code == 200
             _check_page(initial.json(), fixtures, params)
             calls.clear()
+            background_calls.clear()
             started = time.perf_counter()
             forced = client.get('/api/tasks', params={**params, 'force_refresh': 'true'})
             forced_seconds = time.perf_counter() - started
@@ -64,6 +70,7 @@ def child(args):
             result = {
                 'label': args.label, 'forced_seconds': forced_seconds,
                 'following_seconds': following_seconds, 'refresh_seconds': calls,
+                'background_refresh_count': len(background_calls),
                 'statuses': [initial.status_code, forced.status_code, following.status_code],
                 'response_digests': [hashlib.sha256(response.content).hexdigest()
                                      for response in (initial, forced, following)],
@@ -87,6 +94,7 @@ def child(args):
             result = {
                 'label': args.label, 'forced_seconds': forced_seconds,
                 'following_seconds': following_seconds, 'refresh_seconds': calls,
+                'background_refresh_count': len(background_calls),
                 'slow_refresh': slow, 'expected_refresh_calls': expected_calls,
                 'response_sha256': hashlib.sha256(initial.content).hexdigest(),
                 'snapshot_sha256': snapshot,
