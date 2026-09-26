@@ -762,9 +762,12 @@ def test_stop_verifies_the_entire_managed_process_tree_has_exited(tmp_path):
     parent_code = (
         "import json,pathlib,psutil,subprocess,sys,time; "
         "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(20)']); "
-        f"pathlib.Path({str(child_identity_file)!r}).write_text("
+        f"identity_path=pathlib.Path({str(child_identity_file)!r}); "
+        "identity_tmp=identity_path.with_suffix('.tmp'); "
+        "identity_tmp.write_text("
         "json.dumps({'pid': child.pid, 'created_at': psutil.Process(child.pid).create_time()}),"
         "encoding='utf-8'); "
+        "identity_tmp.replace(identity_path); "
         "time.sleep(20)"
     )
     submitted = subprocess.run(
