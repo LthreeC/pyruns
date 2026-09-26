@@ -26,7 +26,9 @@ jobs:
         run: python -X utf8 -u .github/check_task_scan.py test-results/scan-entry/contracts.json
       - name: Check existing safety and discovery regressions
         run: python -X utf8 -u -m pytest -q tests/test_workspace_path_safety.py tests/test_core.py tests/test_utils.py tests/test_cli.py tests/test_transactional_creation.py -k "reparse or symlink or junction or parallel_directory_scan or scan_disk or task_payload_keeps or task_payload_resolves" --junitxml=test-results/scan-entry/pytest.xml
-      - name: Compare full first-list requests
+      - name: Compare directory order with identical source
+        run: python -X utf8 -u .github/compare_task_scan.py test-results/order-control 10000 --order-control
+      - name: Compare full first-list requests with fixed directory timestamps
         timeout-minutes: 12
         run: python -X utf8 -u .github/compare_task_scan.py test-results/scan-entry 10000
       - name: Preserve diagnostic results
@@ -34,5 +36,5 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: scan-entry-windows
-          path: test-results/scan-entry/
+          path: test-results/
           retention-days: 14

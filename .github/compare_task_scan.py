@@ -41,7 +41,7 @@ def worker(repo, workspace, fixtures_path, output):
 
     assert Path(info_io.__file__).resolve().is_relative_to(repo.resolve()), info_io.__file__
     fixtures = json.loads(fixtures_path.read_text(encoding="utf-8"))
-    decisions, pool_phases = [], []
+    decisions, pool_phases, directory_scans = [], [], []
     context = threading.local()
     original_decision = TaskManager._parallel_loading_worthwhile
     original_map = TaskManager._map_task_disk_io
@@ -57,7 +57,10 @@ def worker(repo, workspace, fixtures_path, output):
         previous = getattr(context, "phase", "")
         context.phase = load.__qualname__
         try:
-            return original_map(self, items, load)
+            result = original_map(self, items, load)
+            if context.phase == "TaskManager._scan_task_dir_names.<locals>.inspect_entry":
+                directory_scans.append([row for row in result if row is not None])
+            return result
         finally:
             context.phase = previous
 
@@ -83,6 +86,9 @@ def worker(repo, workspace, fixtures_path, output):
             assert len(tasks) == len(fixtures)
             for task in tasks:
                 scaling._check_task(task, fixtures, summary=False)
+            assert len(directory_scans) == 1, len(directory_scans)
+            expected_order = [name for name, _ in sorted(directory_scans[0], key=lambda row: row[1], reverse=True)]
+            assert [task["name"] for task in tasks] == expected_order
             params["sort"] = "priority"
             priority = client.get("/api/tasks", params=params)
             assert priority.status_code == 200
@@ -90,6 +96,7 @@ def worker(repo, workspace, fixtures_path, output):
                         "priority": priority.json()}
             save(output, {"seconds": seconds, "snapshot": snapshot, "validated": True,
                           "raw_order_sha256": scaling._digest([task["name"] for task in tasks]),
+                          "directory_scan": directory_scans[0],
                           "snapshot_sha256": scaling._digest(snapshot), "decisions": decisions, "pool_phases": pool_phases,
                           "task_manager_sha256": hashlib.sha256(Path(sys.modules[TaskManager.__module__].__file__).read_bytes()).hexdigest()})
     finally:
@@ -99,11 +106,12 @@ def worker(repo, workspace, fixtures_path, output):
         task_manager.ThreadPoolExecutor = original_pool
 
 
-def compare(output, count):
+def compare(output, count, order_control=False):
     repo = Path(os.environ["PYRUNS_AUDIT_ROOT"]).resolve()
     output.mkdir(parents=True, exist_ok=True)
     scaling = load_scaling(repo)
     report = {"baseline": BASELINE, "candidate": scaling._source_state(), "tasks": count,
+              "mode": "same-source-order-control" if order_control else "stable-directory-times-abba",
               "python": sys.version, "platform": platform.platform(), "dependencies": scaling._dependencies(),
               "passed": False, "observations": []}
     try:
@@ -119,11 +127,19 @@ def compare(output, count):
                 for variant, source_root in (("baseline", baseline_root), ("candidate", repo))
             }
             workspace, fixtures = scaling._make_workspace(root, count)
+            if not order_control:
+                # Untimed fixture preparation: establish the same explicit order
+                # before either product reads the directory enumeration metadata.
+                for index, name in enumerate(fixtures):
+                    stamp = (1_700_000_000 + index) * 1_000_000_000
+                    os.utime(workspace / "tasks" / name, ns=(stamp, stamp))
+                report["expected_order_sha256"] = scaling._digest(list(reversed(fixtures)))
             fixture_path = root / "fixtures.json"
             save(fixture_path, fixtures)
             reference = None
             reference_order = None
-            for index, variant in enumerate(("baseline", "candidate", "candidate", "baseline") * 2):
+            variants = ("baseline", "baseline") if order_control else ("baseline", "candidate", "candidate", "baseline") * 2
+            for index, variant in enumerate(variants):
                 source_root = baseline_root if variant == "baseline" else repo
                 result_path = root / f"sample-{index}.json"
                 result = subprocess.run(
@@ -145,14 +161,23 @@ def compare(output, count):
                     save(output / "reference.json", reference)
                     save(output / "different.json", snapshot)
                     raise AssertionError("complete response/task/priority snapshot differs")
-                assert sample["raw_order_sha256"] == reference_order, sample
+                if not order_control:
+                    assert sample["raw_order_sha256"] == reference_order == report["expected_order_sha256"], sample
                 save(output / "report.json", report)
                 print(json.dumps({"index": index, "variant": variant, "seconds": sample["seconds"],
                                   "validated": True}), flush=True)
             report["median_seconds"] = {
                 name: statistics.median(row["seconds"] for row in report["observations"] if row["variant"] == name)
-                for name in ("baseline", "candidate")
+                for name in sorted(set(variants))
             }
+            if order_control:
+                first, second = report["observations"]
+                report["raw_order_equal"] = first["raw_order_sha256"] == second["raw_order_sha256"]
+                first_times, second_times = dict(first["directory_scan"]), dict(second["directory_scan"])
+                report["changed_directory_times"] = [
+                    {"name": name, "first": value, "second": second_times[name]}
+                    for name, value in first_times.items() if second_times[name] != value
+                ]
         report["passed"] = True
     except Exception:
         report["error"] = traceback.format_exc()
@@ -166,4 +191,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "--worker":
         worker(*(Path(value) for value in sys.argv[2:]))
     else:
-        compare(Path(sys.argv[1]).resolve(), int(sys.argv[2]))
+        compare(Path(sys.argv[1]).resolve(), int(sys.argv[2]), "--order-control" in sys.argv[3:])
