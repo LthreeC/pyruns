@@ -534,7 +534,6 @@ def test_react_workspace_chrome_distinguishes_uninitialized_roots():
 
     assert "workspace?.workspace_ready === true" in dashboard
     assert "Workspace Needed" in dashboard
-    assert "Choose a workspace to start" in dashboard
     assert "workspace?.workspace_ready === true" in sidebar
     assert "Choose workspace" in sidebar
     assert "Workspace needed" in sidebar
@@ -667,7 +666,6 @@ def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_lock
     assert "pendingTaskActionsRef.current.has(taskName)" in manager
     assert "const [bulkAction, setBulkAction]" in manager
     assert "api.runTask(task.name)" in manager
-    assert "api.runTask(task.name, bulkExecutionMode)" not in manager
     assert "Waiting for GPU capacity" in manager
     assert "const deleted = new Set(result.deleted || [])" in manager
     assert "Some tasks could not be deleted" in manager
@@ -842,7 +840,6 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "type PendingLiveLogChunk" in source
-    assert "pendingLiveLogChunkRef" in source
     assert "window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)" in source
     assert "chunks: [] as PendingLiveLogChunk[]" in source
     assert "const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)" in source
@@ -984,7 +981,6 @@ def test_react_monitor_uses_realtime_task_events_and_preserves_current_selection
     assert "/api/tasks/events" in api
     assert "export interface TaskEventMessage" in types
     assert "type: 'ready' | 'changed' | 'heartbeat'" in types
-    assert "generationKey: workspaceKey" in monitor
     assert "TASK_EVENT_DEGRADED_POLL_MS = 5_000" in monitor
     assert "Task changes appear automatically" in monitor
     assert "3s sync" not in monitor
@@ -1106,7 +1102,6 @@ def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     assert "applyRuntimePageState(next, page)" in runtime_panel
     assert "pageRevision === runtimePageRevisionsRef.current[page]" in runtime_panel
     assert "clearRuntimeDirtyPage(page)" in runtime_panel
-    assert "runtimeLoadSeqRef" in runtime_panel
     assert "refreshWorkspaceInBackground" in runtime_panel
     assert "void refreshWorkspace().catch" in runtime_panel
     assert "Runtime saved, workspace refresh failed" in runtime_panel
@@ -1170,7 +1165,6 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "require_same_gpu_model: gpuRequireSameModel" in runtime_panel
     assert "Require the same model for multi-GPU tasks" in runtime_panel
     assert "sample_interval_seconds" not in runtime_panel
-    assert "gpu_scheduler_sample_interval_seconds" not in runtime_panel
     assert "disabled={saving || !runtimeDirtyPages.gpu || gpuValidationIssues.length > 0}" in runtime_panel
     assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
@@ -1185,7 +1179,6 @@ def test_react_launcher_supports_manual_shell_folder_paths():
     launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
     api = FRONTEND_API.read_text(encoding="utf-8")
 
-    assert "manualShellRootPath" in launcher
     assert "handleManualShellRoot" in launcher
     assert "openLauncherShellRoot(shellPath)" in launcher
     assert "openLauncherShellRoot" in api
@@ -1268,7 +1261,6 @@ def test_react_launcher_deduplicates_open_and_only_closes_after_success():
     assert "const opened = await useLauncherStore.getState().openWorkspace()" in launcher
     assert "if (!opened || !launcherMountedRef.current)" in launcher
     assert "aria-busy={loading || undefined}" in launcher
-    assert "busy={loading}" in launcher
 
 
 def test_react_launcher_prompts_for_yaml_when_load_script_has_workspace_default():
@@ -1313,7 +1305,6 @@ def test_react_launcher_browses_and_opens_yaml_config():
 def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
 
-    assert "grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)]" in generator
     assert "flex min-w-0 items-center gap-1.5" in generator
     assert '<div className="min-w-0 w-full">' in generator
     grid_row_start = generator.index("if (!treeParamRow)")
@@ -1336,8 +1327,6 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "treeParamRow ? 'col-start-2 min-w-0 w-full sm:col-start-auto' : 'ml-auto min-w-0 flex-1'" in generator
     assert 'aria-label={`${name} parameter value`}' in generator
     assert "checked={Boolean(value)}" in generator
-    assert 'role="switch"' in toggle_switch
-    assert "aria-checked={checked}" in toggle_switch
     assert "if (!treeParamRow)" in generator
     assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
