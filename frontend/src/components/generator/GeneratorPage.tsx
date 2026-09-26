@@ -1751,29 +1751,22 @@ function FormEditor({
   onSetAllSections: (open: boolean) => void
   onChange: (data: ConfigMap) => void
 }) {
-  const [data, setData] = useState<ConfigMap>(config || new Map())
   const pinnedRows = useMemo(
-    () => collectPinnedRows(data, pinnedParams, declaredTypeMap, batchParams),
-    [batchParams, data, declaredTypeMap, pinnedParams]
+    () => config ? collectPinnedRows(config, pinnedParams, declaredTypeMap, batchParams) : [],
+    [batchParams, config, declaredTypeMap, pinnedParams]
   )
   const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey)), [pinnedRows])
-
-  useEffect(() => {
-    if (config) {
-      setData(config)
-    }
-  }, [config])
 
   if (!config || config.size === 0) {
     return <EmptyState title="No parameters" description="Load a template to edit parameters" />
   }
+  const data = config
 
   const allKeys = [...data.keys()].filter(key => !String(key).startsWith('_meta'))
   const hasNestedSections = allKeys.some(key => isNestedGroup(data.get(key)))
 
   const handleChange = (key: ConfigKey, value: any) => {
     const next = new Map(data).set(key, value)
-    setData(next)
     onChange(next)
   }
 
@@ -1781,7 +1774,6 @@ function FormEditor({
     const path = configPathFromId(fullKey)
     if (!path) return
     const next = updateConfigValue(data, path, value)
-    setData(next)
     onChange(next)
   }
 
