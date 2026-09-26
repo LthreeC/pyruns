@@ -1,4 +1,4 @@
-name: Windows anchored path profile
+name: Windows validation stat comparison
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   profile:
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     env:
       PYRUNS_AUDIT_ROOT: ${{ github.workspace }}
     steps:
@@ -20,8 +20,11 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install -e ".[test]"
-      - name: Profile the current first request
-        run: python -u .github/profile_first_load.py test-results/first-load 10000 profile
+      - name: Compare path results and existing regressions
+        run: python -u .github/check_validation_stat.py test-results/first-load
+      - name: Compare the default first request in ABBA order
+        timeout-minutes: 12
+        run: python -u .github/profile_first_load.py test-results/first-load 10000 validation-stat
       - name: Preserve current timings and correctness checks
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

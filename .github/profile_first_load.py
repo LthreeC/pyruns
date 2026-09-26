@@ -31,6 +31,8 @@ output = Path(sys.argv[1])
 output.mkdir(parents=True, exist_ok=True)
 count = int(sys.argv[2]) if len(sys.argv) > 2 else 10000
 mode = sys.argv[3] if len(sys.argv) > 3 else "profile"
+if mode == "validation-stat":
+    from validation_stat_prototype import install as install_stat_checks
 report = {"tasks": count, "mode": mode, "source": scaling._source_state(),
           "product_revision": "958c8ed1ea3011f5d750c988af88c1d794020566",
           "platform": platform.platform(), "python": sys.version,
@@ -68,7 +70,9 @@ TaskManager._map_task_disk_io = map_io
 try:
     with tempfile.TemporaryDirectory(prefix="pyruns-first-load-profile-") as directory:
         workspace, fixtures = scaling._make_workspace(Path(directory), count)
-        if mode == "workspace-stat":
+        if mode == "validation-stat":
+            variants = [(name, False) for name in ("baseline", "candidate", "candidate", "baseline") * 2]
+        elif mode == "workspace-stat":
             from workspace_stat_prototype import validate_workspace_directory as candidate_workspace_check
             variants = [(name, False) for name in ("baseline", "candidate", "candidate", "baseline") * 2]
         elif mode == "profile":
@@ -77,7 +81,9 @@ try:
             variants = [(name, False) for name in ("auto", "parallel", "parallel", "auto")]
         reference = None
         for variant, profiled in variants:
-            policy = "auto" if mode == "workspace-stat" else variant
+            policy = "auto" if mode in {"workspace-stat", "validation-stat"} else variant
+            if mode == "validation-stat":
+                install_stat_checks(variant == "candidate")
             if mode == "workspace-stat":
                 info_io.validate_workspace_directory = (
                     original_workspace_check if variant == "baseline" else candidate_workspace_check
@@ -127,7 +133,7 @@ try:
                 runtime.shutdown()
                 report["observations"].append(observations)
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        if mode == "workspace-stat":
+        if mode in {"workspace-stat", "validation-stat"}:
             report["median_seconds"] = {
                 name: statistics.median(row["seconds"] for row in report["observations"] if row["variant"] == name)
                 for name in ("baseline", "candidate")
@@ -137,6 +143,8 @@ except Exception:
     report["error"] = traceback.format_exc()
     raise
 finally:
+    if mode == "validation-stat":
+        install_stat_checks(False)
     TaskManager._map_task_disk_io = original_map
     info_io.validate_workspace_directory = original_workspace_check
     TaskManager._parallel_loading_worthwhile = staticmethod(original_decision)
