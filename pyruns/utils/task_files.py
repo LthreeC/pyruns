@@ -27,6 +27,7 @@ from pyruns.utils.config_utils import (
     save_yaml,
 )
 from pyruns.utils.info_io import (
+    _workspace_abspath,
     validate_task_directory,
     validate_workspace_file,
 )
@@ -107,19 +108,19 @@ def resolve_task_config_file(
 
 
 def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
-    base = os.path.abspath(task_dir)
+    base = _workspace_abspath(task_dir)
     # Retain the validated boundary for this resolution only. The candidate
     # and all link/reparse checks remain fresh if a parent changes meanwhile.
     resolved_paths: dict[str, str | None] = {base: None}
     validate_task_directory(task_dir, _resolved_paths=resolved_paths)
-    lexical_parent = os.path.abspath(os.path.dirname(base))
+    lexical_parent = _workspace_abspath(os.path.dirname(base))
     try:
         if os.path.normcase(os.path.commonpath([base, lexical_parent])) != os.path.normcase(lexical_parent):
             raise ValueError("Task directory resolves outside the tasks directory")
     except (OSError, ValueError) as exc:
         raise ValueError("Task directory resolves outside the tasks directory") from exc
 
-    candidate = os.path.abspath(os.path.join(task_dir, config_file))
+    candidate = _workspace_abspath(os.path.join(task_dir, config_file))
     try:
         contained = os.path.normcase(os.path.commonpath([candidate, base])) == os.path.normcase(base)
     except (OSError, ValueError):

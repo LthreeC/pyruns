@@ -98,7 +98,7 @@ def worker(repo, workspace, fixtures_path, output):
                           "raw_order_sha256": scaling._digest([task["name"] for task in tasks]),
                           "directory_scan": directory_scans[0],
                           "snapshot_sha256": scaling._digest(snapshot), "decisions": decisions, "pool_phases": pool_phases,
-                          "info_io_sha256": hashlib.sha256(Path(info_io.__file__).read_bytes()).hexdigest()})
+                          "module_sha256": {name: hashlib.sha256((repo / name).read_bytes()).hexdigest() for name in ("pyruns/utils/info_io.py", "pyruns/utils/task_files.py")}})
     finally:
         runtime.shutdown()
         TaskManager._parallel_loading_worthwhile = staticmethod(original_decision)
@@ -123,7 +123,7 @@ def compare(output, count, order_control=False):
             with tarfile.open(fileobj=io.BytesIO(archive)) as source:
                 source.extractall(baseline_root, filter="data")
             report["source_hashes"] = {
-                variant: hashlib.sha256((source_root / "pyruns/utils/info_io.py").read_bytes()).hexdigest()
+                variant: {name: hashlib.sha256((source_root / name).read_bytes()).hexdigest() for name in ("pyruns/utils/info_io.py", "pyruns/utils/task_files.py")}
                 for variant, source_root in (("baseline", baseline_root), ("candidate", repo))
             }
             workspace, fixtures = scaling._make_workspace(root, count)
@@ -153,7 +153,7 @@ def compare(output, count, order_control=False):
                 snapshot = sample.pop("snapshot")
                 sample["variant"] = variant
                 report["observations"].append(sample)
-                assert sample["info_io_sha256"] == report["source_hashes"][variant], sample
+                assert sample["module_sha256"] == report["source_hashes"][variant], sample
                 if reference is None:
                     reference = snapshot
                     reference_order = sample["raw_order_sha256"]

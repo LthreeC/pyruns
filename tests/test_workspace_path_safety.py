@@ -45,6 +45,8 @@ def test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names
         info_io.validate_workspace_file(payload, special, label="Payload")
         with pytest.raises(ValueError, match="outside its workspace boundary"):
             info_io.validate_workspace_file(payload, str(root / "trailing"), label="Payload")
+        (root / "trailing").mkdir()
+        (root / "trailing" / "config.yaml").write_text("other directory", encoding="utf-8")
         for directory, filename, content in (
             (str(root), "inside.txt", "inside"), (special, "config.yaml", "value: keep\n"),
         ):

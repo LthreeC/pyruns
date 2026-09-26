@@ -19,7 +19,14 @@ source = subprocess.check_output([
 ], cwd=ROOT)
 baseline = types.ModuleType('pyruns_anchor_before')
 exec(compile(source, '<verified-anchor-baseline>', 'exec'), baseline.__dict__)
-candidate = info_io._path_is_within
+payload_source = subprocess.check_output([
+    'git', 'show', '733519318293eaca3901e70227ca72e730f16875:pyruns/utils/task_files.py',
+], cwd=ROOT)
+baseline_payload = types.ModuleType('pyruns_payload_before')
+with patch.dict(sys.modules, {'pyruns.utils.info_io': baseline}):
+    exec(compile(payload_source, '<verified-payload-baseline>', 'exec'), baseline_payload.__dict__)
+assert baseline_payload.validate_task_directory is baseline.validate_task_directory
+candidate_info, candidate_payload = info_io, task_files
 checks = []
 skipped = []
 traces = []
@@ -38,15 +45,34 @@ def capture(call):
 
 def compare(label, call):
     values = []
-    for implementation in (baseline._path_is_within, candidate):
-        with patch.object(info_io, '_path_is_within', implementation):
+    for modules in ((baseline, baseline_payload), (candidate_info, candidate_payload)):
+        with patch.dict(globals(), info_io=modules[0], task_files=modules[1]):
             values.append(capture(call))
     traces.append({'label': label, 'values': values})
     checkpoint()
     equal = values[0] == values[1]
-    if not equal:
+    literal = label.startswith(('literal.', 'literal '))
+    expected_fix = False
+    if literal and ' payload ' in label:
+        filename = label.split(' payload ', 1)[1]
+        if filename == 'run.sh':
+            assert values[1] == {'result': ('shell', 'echo literal\n', '')}, values
+        elif filename in ('missing.sh', 'missing/child.sh', 'directory'):
+            assert values[1] == {'result': ('shell', '', f'{filename} is missing')}, values
+        else:
+            result = values[1]['result']
+            assert result[0] == 'shell' and result[1] == '' and 'resolves outside' in result[2], values
+        expected_fix = not equal
+    elif literal and ' frozen file ' in label:
+        filename = label.split(' frozen file ', 1)[1]
+        if filename != '../escape.sh':
+            assert values[1] == {'result': None}, values
+        else:
+            assert values[1].get('exception') == 'ValueError' and 'resolves outside' in values[1]['message'], values
+        expected_fix = not equal
+    if not equal and not expected_fix:
         mismatches.append({'label': label, 'values': values})
-    checks.append({'label': label, 'equal': equal, 'outcome': values[1]})
+    checks.append({'label': label, 'equal': equal, 'literal_name_fix': expected_fix, 'outcome': values[1]})
 
 def payload(directory, filename):
     resolution = capture(lambda: task_files.resolve_task_payload_path(str(directory), filename))
@@ -60,7 +86,8 @@ def payload(directory, filename):
     return kind, text, error
 
 def validate_frozen(directory, filename):
-    directory = os.path.abspath(directory)
+    normalize = getattr(info_io, '_workspace_abspath', os.path.abspath)
+    directory = normalize(directory)
     anchors = {directory: None}
     info_io.validate_task_directory(directory, _resolved_paths=anchors)
     info_io.validate_workspace_file(os.path.join(directory, filename), directory,
@@ -105,9 +132,9 @@ with tempfile.TemporaryDirectory(prefix='pyruns-native-anchors-') as directory:
                 compare('missing DOS name against literal ' + special[-1], lambda s=special:
                         info_io.validate_workspace_file(s + '\\run.sh', str(root / 'literal'), label='Payload'))
 
-        for implementation in (baseline._path_is_within, candidate):
+        for module in (baseline, candidate_info):
             anchors = {str(task): None}
-            with patch.object(info_io, '_path_is_within', implementation):
+            with patch.dict(globals(), info_io=module):
                 info_io.validate_task_directory(str(task), _resolved_paths=anchors)
                 displaced = root / 'displaced'
                 project.rename(displaced)
@@ -132,5 +159,5 @@ report = {'passed': not mismatches, 'comparisons': len(checks), 'checks': checks
           'baseline_info_io_sha256': hashlib.sha256(source).hexdigest(),
           'candidate_info_io_sha256': hashlib.sha256(Path(info_io.__file__).read_bytes()).hexdigest()}
 output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
-print(json.dumps({'passed': True, 'comparisons': len(checks), 'skipped': skipped}))
+print(json.dumps({'passed': not mismatches, 'comparisons': len(checks), 'skipped': skipped}))
 assert not mismatches, mismatches
