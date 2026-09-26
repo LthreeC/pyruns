@@ -415,12 +415,15 @@ interface TreeSectionNode {
   leafCount: number
 }
 
-function parseFormConfig(text: string): ConfigMap | null {
+function parseFormConfig(text: string): { config: ConfigMap | null; error?: string } {
   try {
     const value = parseConfigYaml(text)
-    return value == null ? new Map() : isNestedGroup(value) ? value : null
-  } catch {
-    return null
+    if (value == null) return { config: new Map() }
+    return isNestedGroup(value)
+      ? { config: value }
+      : { config: null, error: 'Form editing requires a YAML mapping at the top level.' }
+  } catch (error) {
+    return { config: null, error: error instanceof Error ? error.message : 'Could not parse this YAML.' }
   }
 }
 
@@ -862,13 +865,14 @@ export default function GeneratorPage() {
     workspace?.run_root,
   ])
 
-  const parsedConfig = useMemo(() => {
+  const formConfig = useMemo<ReturnType<typeof parseFormConfig>>(() => {
     if (editorMode !== 'form') {
-      return null
+      return { config: null }
     }
 
     return parseFormConfig(yamlText)
   }, [editorMode, yamlText])
+  const parsedConfig = formConfig.config
 
   const batchTriggerDetails = useMemo(() => {
     if (!parsedConfig) {
@@ -902,7 +906,7 @@ export default function GeneratorPage() {
   }, [parsedConfig])
   const batchParams = useMemo(() => batchTriggerDetails.map(item => item.key), [batchTriggerDetails])
   const declaredTypeMap = useMemo(
-    () => buildTypeMap(templateContent ? parseFormConfig(templateContent.content) : parsedConfig),
+    () => buildTypeMap(templateContent ? parseFormConfig(templateContent.content).config : parsedConfig),
     [parsedConfig, templateContent]
   )
 
@@ -1232,6 +1236,7 @@ export default function GeneratorPage() {
             <GeneratorDraftEditContext.Provider value={markGeneratorDraftEdited}>
               <FormEditor
                 config={parsedConfig}
+                parseError={formConfig.error}
                 columns={columns}
                 layoutMode={formLayoutMode}
                 openSignalValue={treeOpenValue}
@@ -1389,7 +1394,7 @@ export default function GeneratorPage() {
               size="md"
               className="w-full"
               onClick={handleGenerate}
-              disabled={generationBusy}
+              disabled={generationBusy || Boolean(formConfig.error)}
             >
               {generationStatus === 'previewing'
                 ? 'Previewing...'
@@ -1728,6 +1733,7 @@ function SectionExpandControls({
 
 function FormEditor({
   config,
+  parseError,
   columns,
   layoutMode,
   openSignalValue,
@@ -1740,6 +1746,7 @@ function FormEditor({
   onChange,
 }: {
   config: ConfigMap | null
+  parseError?: string
   columns: number
   layoutMode: FormLayoutMode
   openSignalValue: boolean
@@ -1757,6 +1764,13 @@ function FormEditor({
   )
   const pinnedRowKeys = useMemo(() => new Set(pinnedRows.map(row => row.fullKey)), [pinnedRows])
 
+  if (parseError) {
+    return (
+      <div role="alert" className="h-full overflow-y-auto">
+        <EmptyState title="Cannot edit this YAML" description={`${parseError} Switch to YAML to correct it.`} />
+      </div>
+    )
+  }
   if (!config || config.size === 0) {
     return <EmptyState title="No parameters" description="Load a template to edit parameters" />
   }

@@ -67,6 +67,31 @@ test('generator edits pinned literal keys independently and restores legacy pins
   })
 })
 
+test('generator reports recursive YAML aliases and keeps the draft editable', async ({ page }) => {
+  const shared = 'first: &shared\n  value: 1\nsecond: *shared\n'
+  const recursive = 'root: &root\n  again: *root\n'
+  await withGeneratorWorkspace(page, shared, async runRoot => {
+    await page.getByRole('button', { name: 'YAML', exact: true }).click()
+    const editor = page.getByRole('textbox', { name: 'Task YAML editor' })
+    await editor.fill(recursive)
+    await page.getByRole('button', { name: 'Grid', exact: true }).click()
+    await expect(page.getByRole('alert')).toContainText('Recursive YAML aliases are not supported')
+    await expect(page.getByRole('button', { name: 'Generate Tasks', exact: true })).toBeDisabled()
+
+    await page.getByRole('button', { name: 'YAML', exact: true }).click()
+    await expect(editor).toContainText('root: &root\n  again: *root')
+    await editor.fill(shared)
+    await page.getByRole('button', { name: 'Grid', exact: true }).click()
+    const fields = page.getByRole('textbox', { name: 'value parameter value', exact: true })
+    await expect(fields).toHaveCount(2)
+    await fields.first().fill('2')
+    await fields.first().press('Tab')
+    const expected = parseConfig(shared)
+    expected.set('first', new Map([['value', 2n]]))
+    await expectGeneratedConfig(page, runRoot, expected)
+  })
+})
+
 test('generator preserves typed keys and fixed list mappings through edits and creation', async ({ page }) => {
   // Existing v2 numeric pins must survive changes to the internal integer representation.
   await page.addInitScript(() => localStorage.setItem('pyruns_pinned_params_v2', JSON.stringify(['[["number","7"]]'])))

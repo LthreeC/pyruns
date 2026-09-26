@@ -2,7 +2,7 @@ import { isScalar, parse, stringify, type Scalar, type SchemaOptions, type ToStr
 
 // Keep YAML integers distinct from floats, including 1 and 1.0.
 export function parseConfigYaml(text: string): unknown {
-  return parse(text, {
+  const value: unknown = parse(text, {
     mapAsMap: true,
     intAsBigInt: true,
     uniqueKeys: (first, second) => {
@@ -16,6 +16,30 @@ export function parseConfigYaml(text: string): unknown {
         && Number.isInteger(floating) && integer === BigInt(floating)
     },
   })
+  rejectRecursiveAliases(value)
+  return value
+}
+
+function rejectRecursiveAliases(value: unknown): void {
+  const ancestors = new Set<object>()
+  const checked = new Set<object>()
+  const visit = (current: unknown) => {
+    if (!(current instanceof Map) && !Array.isArray(current) && !(current instanceof Set)) return
+    if (ancestors.has(current)) throw new Error('Recursive YAML aliases are not supported.')
+    if (checked.has(current)) return
+    ancestors.add(current)
+    if (current instanceof Map) {
+      for (const [key, item] of current) {
+        visit(key)
+        visit(item)
+      }
+    } else {
+      for (const item of current) visit(item)
+    }
+    ancestors.delete(current)
+    checked.add(current)
+  }
+  visit(value)
 }
 
 function stringifyFloat({ value }: Scalar): string {
