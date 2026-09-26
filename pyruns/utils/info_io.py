@@ -178,28 +178,41 @@ def _remove_stale_lock_file(lock_path: str) -> bool:
     return True
 
 
+def _realpath_anchor(resolved: str) -> str:
+    """Remove a Windows prefix only if the plain name still denotes this anchor."""
+    if _GET_FINAL_PATH is None or not resolved.startswith("\\\\?\\"):
+        return resolved
+    plain = "\\\\" + resolved[8:] if resolved[:8].upper() == "\\\\?\\UNC\\" else resolved[4:]
+    try:
+        if os.path.normcase(_GET_FINAL_PATH(plain)) == os.path.normcase(resolved):
+            return plain
+    except (OSError, ValueError):
+        pass
+    return resolved
+
+
 def _path_is_within(path: str, root: str, *, _resolved_paths: dict[str, str | None] | None = None) -> bool:
     try:
         absolute = os.path.abspath(path)
         absolute_root = os.path.abspath(root)
-        if _GET_FINAL_PATH is not None and _resolved_paths is None:
+        anchor = _resolved_paths.get(absolute_root) if _resolved_paths is not None else None
+        native_paths = False
+        if _GET_FINAL_PATH is not None and (anchor is None or anchor.startswith("\\\\?\\")):
             try:
                 # Compare existing Windows paths in their native form. realpath
                 # otherwise opens each again just to remove the extended prefix.
+                # Frozen native anchors can be compared without reopening them.
                 resolved_path = _GET_FINAL_PATH(absolute)
-                resolved_root = _GET_FINAL_PATH(absolute_root)
+                resolved_root = anchor if anchor is not None else _GET_FINAL_PATH(absolute_root)
+                native_paths = True
             except (OSError, ValueError):
-                # Missing paths need realpath's non-strict rules; mixing its
-                # result with a native path can accept a different DOS name.
+                # Missing paths need realpath's non-strict naming rules.
                 pass
-            else:
-                common = os.path.commonpath([resolved_path, resolved_root])
-                return os.path.normcase(common) == os.path.normcase(resolved_root)
-        # Candidates are always fresh; an anchor can belong to this operation.
-        resolved_path = os.path.realpath(absolute)
-        resolved_root = _resolved_paths.get(absolute_root) if _resolved_paths is not None else None
-        if resolved_root is None:
-            resolved_root = os.path.realpath(absolute_root)
+        if not native_paths:
+            # Candidates are always fresh. Preserve a frozen anchor even when
+            # its ordinary DOS spelling now resolves to a different location.
+            resolved_path = os.path.realpath(absolute)
+            resolved_root = os.path.realpath(absolute_root) if anchor is None else _realpath_anchor(anchor)
         common = os.path.commonpath([resolved_path, resolved_root])
     except (OSError, ValueError):
         return False

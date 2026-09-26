@@ -25,6 +25,9 @@ jobs:
       - name: Verify existing metadata, task loading, and path contracts
         timeout-minutes: 5
         run: python -X utf8 -u -m pytest -q tests/test_core.py tests/test_utils.py tests/test_workspace_path_safety.py tests/test_task_generator.py --junitxml=test-results/metadata-anchor/pytest.xml
+      - name: Compare native anchors and missing Windows names
+        timeout-minutes: 2
+        run: python -X utf8 -u .github/check_native_anchors.py test-results/metadata-anchor/native-paths.json
       - name: Compare complete first-list requests on the same fixture
         timeout-minutes: 10
         run: python -X utf8 -u .github/compare_metadata_anchor.py test-results/metadata-anchor 10000
