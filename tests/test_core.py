@@ -6386,7 +6386,8 @@ def test_task_manager_refreshes_edited_shell_payload(tmp_path):
     assert manager.get_task_summary_page(query="after", search_field="script")[1] == 1
 
 
-def test_task_manager_discovers_implicit_shell_payload_after_creation(tmp_path):
+@pytest.mark.parametrize("read_mode", ["load", "refresh"])
+def test_task_manager_discovers_implicit_shell_payload_after_creation(tmp_path, monkeypatch, read_mode):
     task_dir = tmp_path / "shell-task"
     task_dir.mkdir()
     save_task_info(str(task_dir), {"status": "pending", "task_kind": TASK_KIND_SHELL})
@@ -6399,6 +6400,27 @@ def test_task_manager_discovers_implicit_shell_payload_after_creation(tmp_path):
     assert task["config_file"] == POWERSHELL_CONFIG_FILENAME
     assert task["config_text"] == "Write-Output ready\n"
     assert task["_load_error"] == ""
+
+    read_payload = task_manager_module.read_task_payload_snapshot
+
+    def read_after_preferred_file_appears(*args, **kwargs):
+        (task_dir / SHELL_CONFIG_FILENAME).write_text("echo preferred\n", encoding="utf-8")
+        return read_payload(*args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(task_manager_module, "read_task_payload_snapshot", read_after_preferred_file_appears)
+        if read_mode == "load":
+            manager.load_task_by_name("shell-task")
+        else:
+            manager.refresh_from_disk(force_all=True)
+    task = manager.get_task("shell-task")
+    assert task["config_file"] == POWERSHELL_CONFIG_FILENAME
+    assert task["config_text"] == "Write-Output ready\n"
+
+    assert manager.refresh_from_disk(check_all=True) is True
+    task = manager.get_task("shell-task")
+    assert task["config_file"] == SHELL_CONFIG_FILENAME
+    assert task["config_text"] == "echo preferred\n"
 
 
 def test_task_manager_add_tasks_upserts_existing_name(tmp_path):

@@ -1217,7 +1217,7 @@ class TaskManager:
 
         config_file = resolve_task_config_file(info, None, task_dir)
         task_kind, config_data, config_text, payload_error, payload_signature = read_task_payload_snapshot(
-            task_dir, info, config_view=True,
+            task_dir, {**info, "config_file": config_file}, config_view=True,
         )
         task_name = dir_name
         if info:
@@ -5020,7 +5020,7 @@ class TaskManager:
         # causing every subsequent refresh to skip that writer's changes.
         task["_info_signature"] = info_signature
         loaded_kind, loaded_config, loaded_text, load_error, payload_signature = read_task_payload_snapshot(
-            task["dir"], info, config_view=True,
+            task["dir"], {**info, "config_file": task["config_file"]}, config_view=True,
         )
         task["_payload_signature"] = payload_signature
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
