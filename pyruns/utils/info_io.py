@@ -915,8 +915,15 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         # Discard earlier entries too if their parent was redirected while
         # later files were being enumerated (queue.log is collected first).
         try:
-            if opts and os.path.realpath(run_dir) != resolved_paths[run_dir]:
-                return {}
+            if opts:
+                anchor = resolved_paths[run_dir]
+                current = (
+                    _GET_FINAL_PATH(run_dir)
+                    if _GET_FINAL_PATH is not None and anchor is not None and anchor.startswith("\\\\?\\")
+                    else os.path.realpath(run_dir)
+                )
+                if current != anchor:
+                    return {}
         except (OSError, ValueError):
             return {}
 

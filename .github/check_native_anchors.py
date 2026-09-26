@@ -22,6 +22,12 @@ exec(compile(source, '<verified-anchor-baseline>', 'exec'), baseline.__dict__)
 candidate = info_io._path_is_within
 checks = []
 skipped = []
+traces = []
+output = Path(sys.argv[1])
+output.parent.mkdir(parents=True, exist_ok=True)
+
+def checkpoint():
+    output.write_text(json.dumps({'checks': checks, 'traces': traces, 'skipped': skipped}, indent=2) + '\n', encoding='utf-8')
 
 def capture(call):
     try:
@@ -34,10 +40,17 @@ def compare(label, call):
     for implementation in (baseline._path_is_within, candidate):
         with patch.object(info_io, '_path_is_within', implementation):
             values.append(capture(call))
+    traces.append({'label': label, 'values': values})
+    checkpoint()
     assert values[0] == values[1], (label, values)
     checks.append({'label': label, 'equal': True, 'outcome': values[1]})
 
 def payload(directory, filename):
+    resolution = capture(lambda: task_files.resolve_task_payload_path(str(directory), filename))
+    traces.append({'directory': str(directory), 'file': filename, 'resolution': resolution,
+                   'direct_exists': os.path.exists(os.path.join(directory, filename)),
+                   'resolved_exists': os.path.exists(resolution['result']) if 'result' in resolution else False})
+    checkpoint()
     kind, _config, text, error = task_files.read_task_payload(
         str(directory), {'task_kind': 'shell', 'config_file': filename},
     )
@@ -111,9 +124,8 @@ with tempfile.TemporaryDirectory(prefix='pyruns-native-anchors-') as directory:
             os.rmdir(special)
 
 report = {'passed': True, 'comparisons': len(checks), 'checks': checks, 'skipped': skipped,
+          'traces': traces,
           'baseline_info_io_sha256': hashlib.sha256(source).hexdigest(),
           'candidate_info_io_sha256': hashlib.sha256(Path(info_io.__file__).read_bytes()).hexdigest()}
-output = Path(sys.argv[1])
-output.parent.mkdir(parents=True, exist_ok=True)
 output.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
 print(json.dumps({'passed': True, 'comparisons': len(checks), 'skipped': skipped}))

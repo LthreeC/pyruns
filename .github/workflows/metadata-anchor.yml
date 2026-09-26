@@ -26,6 +26,7 @@ jobs:
         timeout-minutes: 5
         run: python -X utf8 -u -m pytest -q tests/test_core.py tests/test_utils.py tests/test_workspace_path_safety.py tests/test_task_generator.py --junitxml=test-results/metadata-anchor/pytest.xml
       - name: Compare native anchors and missing Windows names
+        if: always()
         timeout-minutes: 2
         run: python -X utf8 -u .github/check_native_anchors.py test-results/metadata-anchor/native-paths.json
       - name: Compare complete first-list requests on the same fixture
