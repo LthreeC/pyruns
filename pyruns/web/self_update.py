@@ -75,6 +75,7 @@ class UiUpdateCoordinator:
     ) -> None:
         self._shutdown_callback = shutdown_callback
         self._lock = threading.RLock()
+        self._instance_lock = threading.Lock()
         self._requested = False
         self._shutdown_triggered = False
         self._runtime: Any = None
@@ -185,15 +186,20 @@ class UiUpdateCoordinator:
     ) -> None:
         if self._store is None:
             return
-        self._store.write_record(
-            "instances",
-            self._instance_id,
-            self._instance_payload(
-                phase=phase,
-                active_count=active_count,
-                request_id=request_id,
-            ),
-        )
+        with self._instance_lock:
+            # A monitor may finish I/O after its bounded join has expired.
+            # Only the explicit handoff may publish once monitoring has stopped.
+            if self._stop.is_set() and phase != "handoff":
+                return
+            self._store.write_record(
+                "instances",
+                self._instance_id,
+                self._instance_payload(
+                    phase=phase,
+                    active_count=active_count,
+                    request_id=request_id,
+                ),
+            )
 
     def _join_request(self, request: dict[str, Any]) -> None:
         with self._lock:
@@ -422,7 +428,7 @@ class UiUpdateCoordinator:
         """Ask Uvicorn to finish after the update response has been sent."""
 
         with self._lock:
-            if self._shutdown_triggered:
+            if self._shutdown_triggered or self._stop.is_set():
                 return
             self._shutdown_triggered = True
         try:
@@ -541,7 +547,8 @@ class UiUpdateCoordinator:
                         and self._store.request_is_active(request)
                     ):
                         self._store.recover_stale_request_locked(request)
-            self._store.remove_record("instances", self._instance_id)
+            with self._instance_lock:
+                self._store.remove_record("instances", self._instance_id)
         except (OSError, UpdateCoordinationError, ValueError):
             pass
 

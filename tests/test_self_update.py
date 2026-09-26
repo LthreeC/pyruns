@@ -207,6 +207,56 @@ def test_owner_handoff_refreshes_request_after_slow_runtime_shutdown(tmp_path, m
         owner.close(failed_handoff=True)
 
 
+@pytest.mark.parametrize("action", ["close", "handoff"])
+def test_ui_retirement_preserves_final_state_after_pending_monitor_write(tmp_path, monkeypatch, action):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+    shutdowns = []
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append("shutdown"),
+        state_dir=str(tmp_path / "coordination"), shared=True, current_version="0.3.0",
+    )
+    coordinator.prepare(_Runtime(0))
+    store = coordinator._store
+    assert store is not None
+    entered, release, join_attempted = threading.Event(), threading.Event(), threading.Event()
+    monitor = threading.Thread(target=coordinator._monitor_tick, daemon=True)
+    coordinator._monitor = monitor
+    original_write = store.write_record
+    original_join = monitor.join
+
+    def delayed_write(group, identifier, payload):
+        if threading.current_thread() is monitor:
+            entered.set()
+            assert release.wait(5), "pending monitor write was not released"
+        return original_write(group, identifier, payload)
+
+    monkeypatch.setattr(store, "write_record", delayed_write)
+    # Model the bounded monitor join expiring while its record write is pending.
+    monkeypatch.setattr(monitor, "join", lambda timeout: join_attempted.set())
+    monitor.start()
+    try:
+        assert entered.wait(3)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            retired = executor.submit(getattr(coordinator, action))
+            try:
+                assert join_attempted.wait(3)
+                with pytest.raises(FutureTimeout):
+                    retired.result(timeout=0.1)
+            finally:
+                release.set()
+                original_join(timeout=3)
+            retired.result(timeout=3)
+        assert not monitor.is_alive()
+        records = store.live_records_locked("instances")
+        assert [record["phase"] for record in records] == ([] if action == "close" else ["handoff"])
+        assert shutdowns == []
+    finally:
+        release.set()
+        original_join(timeout=3)
+        coordinator.close(failed_handoff=True)
+
+
 @pytest.mark.parametrize("legacy_0_3_0", [False, True])
 def test_original_updater_resumes_owner_exit_recovery(tmp_path, legacy_0_3_0):
     state_dir = tmp_path / "coordination"
