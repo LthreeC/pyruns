@@ -68,7 +68,7 @@ from pyruns.utils.task_files import (
     build_task_search_result,
     filter_tasks_by_search_field,
     normalize_task_kind,
-    read_task_payload,
+    read_task_payload_snapshot,
     resolve_task_config_file,
     resolve_task_payload_path,
 )
@@ -1214,8 +1214,9 @@ class TaskManager:
             info = self._strip_queued_placeholder_run(info)
 
         config_file = resolve_task_config_file(info, None, task_dir)
-        payload_signature = self._payload_signature(task_dir, config_file)
-        task_kind, config_data, config_text, payload_error = read_task_payload(task_dir, info, config_view=True)
+        task_kind, config_data, config_text, payload_error, payload_signature = read_task_payload_snapshot(
+            task_dir, info, config_view=True,
+        )
         task_name = dir_name
         if info:
             info, _ = self._fail_unowned_running_info_if_needed(
@@ -5008,8 +5009,10 @@ class TaskManager:
         # A stat here could tag old info with a newer writer's file identity,
         # causing every subsequent refresh to skip that writer's changes.
         task["_info_signature"] = info_signature
-        task["_payload_signature"] = self._payload_signature(task["dir"], task["config_file"])
-        loaded_kind, loaded_config, loaded_text, load_error = read_task_payload(task["dir"], info, config_view=True)
+        loaded_kind, loaded_config, loaded_text, load_error, payload_signature = read_task_payload_snapshot(
+            task["dir"], info, config_view=True,
+        )
+        task["_payload_signature"] = payload_signature
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
         task["config"] = loaded_config
         task["config_text"] = loaded_text

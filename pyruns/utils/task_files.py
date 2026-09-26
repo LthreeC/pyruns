@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Any, Dict, List, Tuple, TypeVar, TypedDict
+from typing import Any, BinaryIO, Dict, List, NamedTuple, Tuple, TypeVar, TypedDict
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -43,6 +43,14 @@ TASK_KIND_ALIASES = {
 }
 
 _Task = TypeVar("_Task", bound=Mapping[str, object])
+
+
+class TaskPayloadSnapshot(NamedTuple):
+    task_kind: str
+    config: DictConfig | Dict[str, Any]
+    config_text: str
+    load_error: str
+    signature: tuple[int, ...] | None
 
 
 class TaskSearchMatch(TypedDict):
@@ -120,12 +128,16 @@ def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
     return candidate
 
 
-def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) -> str:
-    with open(path, "rb") as handle:
-        raw = read_bounded_bytes(handle, max_bytes + 1)
+def _read_payload_text(handle: BinaryIO, path: str, max_bytes: int) -> str:
+    raw = read_bounded_bytes(handle, max_bytes + 1)
     if len(raw) > max_bytes:
         raise ValueError(f"Task payload is too large (max {max_bytes} bytes): {path}")
     return raw.decode("utf-8")
+
+
+def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) -> str:
+    with open(path, "rb") as handle:
+        return _read_payload_text(handle, path, max_bytes)
 
 
 def read_task_payload(
@@ -133,30 +145,45 @@ def read_task_payload(
 ) -> Tuple[str, DictConfig | Dict[str, Any], str, str]:
     """Return ``(task_kind, config, config_text, load_error)`` for one task."""
 
+    snapshot = read_task_payload_snapshot(task_dir, info, config_view=config_view)
+    return snapshot.task_kind, snapshot.config, snapshot.config_text, snapshot.load_error
+
+
+def read_task_payload_snapshot(
+    task_dir: str, info: Dict[str, Any], *, config_view: bool = False,
+) -> TaskPayloadSnapshot:
+    """Read task content and retain the opened file's identity before reading."""
+
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
     config_file = resolve_task_config_file(info, task_kind, task_dir)
     try:
         config_path = resolve_task_payload_path(task_dir, config_file)
     except ValueError as exc:
-        return task_kind, _empty_config(), "", str(exc)
+        return TaskPayloadSnapshot(task_kind, _empty_config(), "", str(exc), None)
 
     if not os.path.exists(config_path):
-        return task_kind, _empty_config(), "", f"{config_file} is missing"
+        return TaskPayloadSnapshot(task_kind, _empty_config(), "", f"{config_file} is missing", None)
 
-    if task_kind == TASK_KIND_SHELL:
-        try:
-            return task_kind, _empty_config(), _read_text_limited(config_path), ""
-        except Exception as exc:
-            return task_kind, _empty_config(), "", str(exc)
-
+    signature = None
     try:
+        with open(config_path, "rb") as handle:
+            try:
+                stat = os.fstat(handle.fileno())
+                signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            except (AttributeError, OSError, ValueError):
+                pass
+            # A later file change must remain visible to the next refresh,
+            # even if this read or parsing fails after obtaining the signature.
+            text = _read_payload_text(handle, config_path, MAX_TASK_PAYLOAD_BYTES)
+        if task_kind == TASK_KIND_SHELL:
+            return TaskPayloadSnapshot(task_kind, _empty_config(), text, "", signature)
         parse = load_config_view_text if config_view else load_config_text
-        parsed = parse(_read_text_limited(config_path))
+        parsed = parse(text)
         if not isinstance(parsed, DictConfig) and not (config_view and isinstance(parsed, dict)):
             raise ValueError(f"YAML root must be a mapping: {config_path}")
-        return task_kind, parsed, "", ""
+        return TaskPayloadSnapshot(task_kind, parsed, "", "", signature)
     except Exception as exc:
-        return task_kind, _empty_config(), "", str(exc)
+        return TaskPayloadSnapshot(task_kind, _empty_config(), "", str(exc), signature)
 
 
 def write_task_payload(

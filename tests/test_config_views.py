@@ -10,6 +10,7 @@ import yaml
 from pyruns._config import CONFIG_FILENAME, TASK_INFO_FILENAME
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils import config_utils
+from pyruns.utils import task_files
 from pyruns.utils.info_io import load_task_info
 from pyruns.utils.task_files import read_task_payload
 
@@ -137,6 +138,52 @@ def test_manager_view_refresh_search_and_snapshot_isolation(tmp_path):
         assert type(manager.tasks[0]["config"]) is dict
         assert manager.get_task_summary_page(query="value:9", search_field="config")[1] == 1
         assert manager.get_task_summary_page(query="value:7", search_field="config")[1] == 0
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("change_at", ["before_open", "during_read", "after_read"])
+def test_manager_payload_snapshot_keeps_file_changes_visible(tmp_path, monkeypatch, change_at):
+    tasks = tmp_path / "tasks"
+    task = _write_task(tasks, "sample", "value: 7\n")
+    payload = task / CONFIG_FILENAME
+    replacement = tmp_path / "replacement.yaml"
+    replacement.write_text("value: 8\n", encoding="utf-8")
+    manager = TaskManager(str(tasks), lazy_scan=None, owns_task_lifecycle=False)
+    original_open = open
+    original_read = task_files.read_bounded_bytes
+    original_parse = task_files.load_config_view_text
+
+    def open_replacement(path, *args, **kwargs):
+        replacement.replace(payload)
+        return original_open(path, *args, **kwargs)
+
+    def edit_after_bytes_read(handle, limit):
+        raw = original_read(handle, limit)
+        # A size change makes the edit observable even with coarse timestamps.
+        payload.write_text("value: 8 # changed\n", encoding="utf-8")
+        return raw
+
+    def replace_after_read(text):
+        result = original_parse(text)
+        replacement.replace(payload)
+        return result
+
+    try:
+        with monkeypatch.context() as patch:
+            if change_at == "before_open":
+                patch.setattr(task_files, "open", open_replacement, raising=False)
+            elif change_at == "during_read":
+                patch.setattr(task_files, "read_bounded_bytes", edit_after_bytes_read)
+            else:
+                patch.setattr(task_files, "load_config_view_text", replace_after_read)
+            loaded = manager.load_task_by_name("sample")
+        assert loaded["config"]["value"] == (8 if change_at == "before_open" else 7)
+        # An already-observed replacement needs no reload; changes after the
+        # captured bytes must still be picked up by the next refresh.
+        assert manager.refresh_from_disk(task_ids=["sample"]) is (change_at != "before_open")
+        assert manager.get_task("sample")["config"]["value"] == 8
+        assert manager.refresh_from_disk(task_ids=["sample"]) is False
     finally:
         manager.shutdown()
 

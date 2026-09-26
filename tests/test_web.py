@@ -4892,14 +4892,14 @@ def test_config_views_preserve_complete_web_responses(tmp_path, monkeypatch):
         _add_task(workspace, name)
         (workspace / TASKS_DIR / name / CONFIG_FILENAME).write_text(document, encoding="utf-8")
 
-    original_read = manager_mod.read_task_payload
+    original_read = manager_mod.read_task_payload_snapshot
 
     def full_config_read(task_dir, info, **_kwargs):
         return original_read(task_dir, info, config_view=False)
 
     captures = []
     for reader in (full_config_read, original_read):
-        monkeypatch.setattr(manager_mod, "read_task_payload", reader)
+        monkeypatch.setattr(manager_mod, "read_task_payload_snapshot", reader)
         monkeypatch.setenv("PYRUNS_VIEW_ENV", "first")
         runtime = PyrunsRuntime(str(workspace))
         captured = []

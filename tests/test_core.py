@@ -6358,6 +6358,9 @@ def test_task_manager_refreshes_edited_payload_and_clears_parse_error(tmp_path):
     config_path.write_text("epochs: [broken\n", encoding="utf-8")
     assert manager.refresh_from_disk(task_ids=["sample"]) is True
     assert manager.get_task("sample")["_load_error"]
+    with patch("pyruns.utils.task_files.load_config_view_text") as parse:
+        assert manager.refresh_from_disk(task_ids=["sample"]) is False
+        parse.assert_not_called()
 
     config_path.write_text("epochs: 2\n", encoding="utf-8")
     assert manager.refresh_from_disk(task_ids=["sample"]) is True
