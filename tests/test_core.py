@@ -6259,17 +6259,22 @@ def test_task_manager_refresh_discovers_external_added_and_removed_tasks(tmp_pat
     tasks_dir.mkdir()
     generator = TaskGenerator(root_dir=str(tasks_dir))
     alpha = generator.create_task("alpha", {"value": 1})
+    retained = generator.create_task("retained", {"value": 3})
 
     manager = _make_task_manager(tasks_dir)
 
     generator.create_task("beta", {"value": 2})
     shutil.rmtree(alpha["dir"])
+    Path(retained["dir"], CONFIG_FILENAME).write_text("value: 4\n", encoding="utf-8")
 
-    assert manager.refresh_from_disk(check_all=True, discover=True) is True
+    with patch.object(manager, "_probe_refresh_task", wraps=manager._probe_refresh_task) as probe:
+        assert manager.refresh_from_disk(check_all=True, discover=True) is True
+    assert [call.args[0]["name"] for call in probe.call_args_list] == ["retained"]
 
     tasks = {task["name"]: task for task in manager.list_tasks()}
-    assert set(tasks) == {"beta"}
+    assert set(tasks) == {"beta", "retained"}
     assert tasks["beta"]["config"]["value"] == 2
+    assert tasks["retained"]["config"]["value"] == 4
 
 
 def test_task_manager_refreshes_edited_payload_and_clears_parse_error(tmp_path):
