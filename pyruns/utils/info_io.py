@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Callable, Dict, Optional
+from weakref import WeakValueDictionary
 
 from pyruns._config import (
     DEFAULT_ROOT_NAME,
@@ -27,7 +28,8 @@ from pyruns._config import (
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.file_io import read_bounded_bytes
 
-_TASK_FILE_LOCKS: Dict[str, threading.RLock] = {}
+# Active holders and waiters keep strong references; idle task paths can retire.
+_TASK_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
 _LOCK_FILENAME = f".{TASK_INFO_FILENAME}.lock"
 _LOCK_POLL_SEC = 0.05

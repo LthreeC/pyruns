@@ -3166,6 +3166,50 @@ def test_task_info_lock_keeps_valid_foreign_owner_even_when_old(tmp_path, monkey
     assert info_io._lock_file_is_stale(str(lock_path), min_age_sec=0) is False
 
 
+@pytest.mark.parametrize("module_name", ["info_io", "settings"])
+def test_file_thread_locks_keep_waiters_then_release_idle_entries(tmp_path, module_name):
+    import gc
+    import weakref
+    from concurrent.futures import ThreadPoolExecutor
+
+    module = importlib.import_module(f"pyruns.utils.{module_name}")
+    path = str(tmp_path / "shared")
+    waiting = threading.Event()
+    entered = threading.Event()
+    release = threading.Event()
+    observed = []
+
+    def wait_for_lock():
+        lock = module._thread_lock_for(path)
+        observed.append(weakref.ref(lock))
+        waiting.set()
+        with lock:
+            entered.set()
+            assert release.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        try:
+            with module._thread_lock_for(path):
+                retired = weakref.ref(module._thread_lock_for(path))
+                future = pool.submit(wait_for_lock)
+                assert waiting.wait(timeout=5)
+                gc.collect()
+                assert observed[0]() is retired()
+                assert not entered.is_set(), "a waiter bypassed the active lock"
+            assert entered.wait(timeout=5)
+            gc.collect()
+            # The original holder is gone; the waiting thread now owns it.
+            assert module._thread_lock_for(path) is retired()
+        finally:
+            release.set()
+        future.result(timeout=5)
+
+    gc.collect()
+    assert retired() is None, "completed writes must not retain every visited path's lock"
+    with module._thread_lock_for(path):
+        pass
+
+
 def test_task_info_lock_times_out_when_live_lock_persists(tmp_path, monkeypatch):
     import pyruns.utils.info_io as info_io
 
