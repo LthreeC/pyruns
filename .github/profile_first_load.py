@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import pstats
+import statistics
 import sys
 import tempfile
 import threading
@@ -22,6 +23,7 @@ spec.loader.exec_module(scaling)
 
 from fastapi.testclient import TestClient
 from pyruns.core.task_manager import TaskManager
+from pyruns.utils import info_io
 from pyruns.web.app import create_app
 from pyruns.web.runtime import PyrunsRuntime
 
@@ -36,6 +38,7 @@ report = {"tasks": count, "mode": mode, "source": scaling._source_state(),
 profile = cProfile.Profile()
 original_map = TaskManager._map_task_disk_io
 original_decision = TaskManager._parallel_loading_worthwhile
+original_workspace_check = info_io.validate_workspace_directory
 context = threading.local()
 policy = "auto"
 
@@ -65,12 +68,22 @@ TaskManager._map_task_disk_io = map_io
 try:
     with tempfile.TemporaryDirectory(prefix="pyruns-first-load-profile-") as directory:
         workspace, fixtures = scaling._make_workspace(Path(directory), count)
-        variants = [("auto", False), ("auto", True)] if mode == "profile" else [
-            (name, False) for name in ("auto", "parallel", "parallel", "auto")
-        ]
+        if mode == "workspace-stat":
+            from workspace_stat_prototype import validate_workspace_directory as candidate_workspace_check
+            variants = [(name, False) for name in ("baseline", "candidate", "candidate", "baseline") * 2]
+        elif mode == "profile":
+            variants = [("auto", False), ("auto", True)]
+        else:
+            variants = [(name, False) for name in ("auto", "parallel", "parallel", "auto")]
         reference = None
-        for policy, profiled in variants:
-            observations = {"policy": policy, "profiled": profiled, "phases": [], "validated": False}
+        for variant, profiled in variants:
+            policy = "auto" if mode == "workspace-stat" else variant
+            if mode == "workspace-stat":
+                info_io.validate_workspace_directory = (
+                    original_workspace_check if variant == "baseline" else candidate_workspace_check
+                )
+            observations = {"variant": variant, "policy": policy, "profiled": profiled,
+                            "phases": [], "validated": False}
             runtime = PyrunsRuntime(str(workspace))
             original_ensure = runtime.ensure_tasks_loaded
             if profiled:
@@ -114,12 +127,18 @@ try:
                 runtime.shutdown()
                 report["observations"].append(observations)
                 (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        if mode == "workspace-stat":
+            report["median_seconds"] = {
+                name: statistics.median(row["seconds"] for row in report["observations"] if row["variant"] == name)
+                for name in ("baseline", "candidate")
+            }
     report["passed"] = True
 except Exception:
     report["error"] = traceback.format_exc()
     raise
 finally:
     TaskManager._map_task_disk_io = original_map
+    info_io.validate_workspace_directory = original_workspace_check
     TaskManager._parallel_loading_worthwhile = staticmethod(original_decision)
     if mode == "profile":
         profile.dump_stats(str(output / "first-load.pstats"))
