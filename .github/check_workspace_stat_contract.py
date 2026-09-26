@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
+import subprocess
 from unittest.mock import patch
 
 ROOT = Path(os.environ.get("PYRUNS_AUDIT_ROOT", Path(__file__).resolve().parents[2]))
@@ -12,6 +14,14 @@ from pyruns.utils import config_utils, info_io, task_files
 from workspace_stat_prototype import validate_workspace_directory as candidate
 
 original = info_io.validate_workspace_directory
+if "--product" in sys.argv:
+    candidate = original
+    before = subprocess.check_output(
+        ["git", "show", "1eaff82a2def3ff6fd70fc1b8fb54bb164f2d19b:pyruns/utils/info_io.py"], cwd=ROOT,
+    )
+    baseline = types.ModuleType("pyruns_workspace_stat_before")
+    exec(compile(before, "1eaff82/pyruns/utils/info_io.py", "exec"), baseline.__dict__)
+    original = baseline.validate_workspace_directory
 checks = []
 skipped = []
 
