@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -171,16 +172,20 @@ def sample_config():
 
 @pytest.fixture()
 def freeze_file_attributes(monkeypatch):
-    """Model a filesystem that reports unchanged attributes for one edited file."""
+    """Keep attributes fixed, with distinct path/handle ctime as seen on Windows."""
     original_stat, original_fstat = os.stat, os.fstat
 
     def freeze(path):
         target = str(path)
         before = original_stat(target)
+        path_attributes = SimpleNamespace(**{
+            name: getattr(before, name) for name in dir(before) if name.startswith("st_")
+        })
+        path_attributes.st_ctime_ns += 1
 
         def stat(candidate, *args, **kwargs):
             if isinstance(candidate, (str, os.PathLike)) and os.fspath(candidate) == target:
-                return before
+                return path_attributes
             return original_stat(candidate, *args, **kwargs)
 
         def fstat(fd):

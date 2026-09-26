@@ -159,6 +159,7 @@ def read_task_payload_signature(task_dir: str, config_file: str) -> TaskPayloadS
     """Probe content changes without constructing or parsing a configuration."""
     try:
         path = resolve_task_payload_path(task_dir, config_file)
+        # Match the snapshot's fstat: Windows path stat can report a different ctime.
         _raw, signature = _read_payload_bytes(path, MAX_TASK_PAYLOAD_BYTES)
         return signature
     except (OSError, ValueError):

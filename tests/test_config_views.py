@@ -2,6 +2,7 @@
 
 import json
 import time
+from unittest import mock
 
 from omegaconf import DictConfig
 import pytest
@@ -186,7 +187,9 @@ def test_manager_payload_snapshot_keeps_file_changes_visible(
         # captured bytes must still be picked up by the next refresh.
         assert manager.refresh_from_disk(task_ids=["sample"]) is (change_at != "before_open")
         assert manager.get_task("sample")["config"]["value"] == 8
-        assert manager.refresh_from_disk(task_ids=["sample"]) is False
+        with mock.patch.object(task_files, "load_config_view_text", wraps=original_parse) as parse:
+            assert manager.refresh_from_disk(task_ids=["sample"]) is False
+            parse.assert_not_called()
     finally:
         manager.shutdown()
 
