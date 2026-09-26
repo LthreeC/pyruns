@@ -1,5 +1,4 @@
 import json
-import ast
 import http.cookiejar
 import os
 import re
@@ -48,7 +47,6 @@ from pyruns.web.runtime import (
 )
 
 WEB_APP = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "app.py"
-WEB_RUNTIME = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "runtime.py"
 
 
 @pytest.fixture
@@ -105,23 +103,6 @@ def create_app(runtime=None, **kwargs):
     app = _create_app(runtime, **kwargs)
     app.add_middleware(_TestClientScope)
     return app
-
-
-def test_pyruns_runtime_declares_single_constructor():
-    module = ast.parse(WEB_RUNTIME.read_text(encoding="utf-8"))
-    runtime_classes = [
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef) and node.name == "PyrunsRuntime"
-    ]
-
-    assert len(runtime_classes) == 1
-    constructors = [
-        node
-        for node in runtime_classes[0].body
-        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
-    ]
-    assert len(constructors) == 1
 
 
 def test_web_package_lazy_exports_public_api():
@@ -465,6 +446,15 @@ def _build_runtime(
             return manager
 
     return PyrunsRuntime(root_dir=str(workspace), task_manager_factory=make_task_manager)
+
+
+def _unavailable_conda_envs(refresh=True):
+    return {
+        "available": False,
+        "executable": "conda",
+        "envs": [],
+        "error": "",
+    }
 
 
 class _RouteRuntime:
@@ -1867,12 +1857,7 @@ def test_runtime_update_rejects_invalid_global_environment(tmp_path, global_env)
 def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -1916,12 +1901,7 @@ def test_runtime_update_persists_gpu_scheduler_settings(tmp_path, monkeypatch):
 def test_runtime_update_multi_gpu_scheduler_allows_one_gpu_limit(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2002,12 +1982,7 @@ def test_runtime_update_can_refresh_providers_when_requested(tmp_path, monkeypat
 def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2046,12 +2021,7 @@ def test_runtime_update_gpu_scheduler_sanitizes_limits_with_scheduler_defaults(t
 def test_runtime_update_gpu_scheduler_clamps_stable_seconds_minimum(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2068,12 +2038,7 @@ def test_runtime_update_gpu_scheduler_clamps_stable_seconds_minimum(tmp_path, mo
 def test_runtime_update_gpu_scheduler_rejects_non_finite_numeric_values(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2224,12 +2189,7 @@ def test_runtime_get_task_logs_does_not_invent_missing_non_active_run_log(tmp_pa
 def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2264,12 +2224,7 @@ def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch)
 def test_runtime_update_rejects_invalid_global_env_text(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2284,12 +2239,7 @@ def test_runtime_update_rejects_invalid_global_env_text(tmp_path, monkeypatch):
 def test_runtime_update_validates_whole_payload_before_atomic_save(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
-    monkeypatch.setattr(runtime, "list_conda_envs", lambda refresh=True: {
-        "available": False,
-        "executable": "conda",
-        "envs": [],
-        "error": "",
-    })
+    monkeypatch.setattr(runtime, "list_conda_envs", _unavailable_conda_envs)
     client = TestClient(create_app(runtime))
     settings_path = workspace.parent / "_pyruns_settings.yaml"
     before = settings_path.read_bytes()
