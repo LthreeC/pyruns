@@ -39,6 +39,7 @@ _READ_RETRY_COUNT = 5
 _READ_RETRY_DELAY_SEC = 0.02
 _STALE_LOCK_MIN_AGE_SEC = 30.0
 _LOCK_OWNER_HOST = socket.gethostname().lower()
+_GET_FINAL_PATH = getattr(os.path, "_getfinalpathname", None)
 MAX_TASK_INFO_BYTES = 16 * 1024 * 1024
 MAX_SCRIPT_INFO_BYTES = 1024 * 1024
 MAX_RUN_HISTORY_SLOTS = 1_000
@@ -175,6 +176,19 @@ def _path_is_within(path: str, root: str, *, _resolved_paths: dict[str, str | No
     try:
         absolute = os.path.abspath(path)
         absolute_root = os.path.abspath(root)
+        if _GET_FINAL_PATH is not None and _resolved_paths is None:
+            try:
+                # Compare existing Windows paths in their native form. realpath
+                # otherwise opens each again just to remove the extended prefix.
+                resolved_path = _GET_FINAL_PATH(absolute)
+                resolved_root = _GET_FINAL_PATH(absolute_root)
+            except (OSError, ValueError):
+                # Missing paths need realpath's non-strict rules; mixing its
+                # result with a native path can accept a different DOS name.
+                pass
+            else:
+                common = os.path.commonpath([resolved_path, resolved_root])
+                return os.path.normcase(common) == os.path.normcase(resolved_root)
         # Candidates are always fresh; an anchor can belong to this operation.
         resolved_path = os.path.realpath(absolute)
         resolved_root = _resolved_paths.get(absolute_root) if _resolved_paths is not None else None
