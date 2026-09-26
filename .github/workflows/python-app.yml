@@ -214,6 +214,7 @@ jobs:
         with:
           name: installed-wheel-lifecycle-${{ matrix.os }}
           path: test-results/wheel/
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 

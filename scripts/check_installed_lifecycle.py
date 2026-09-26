@@ -23,11 +23,13 @@ import time
 import traceback
 
 
-WORKLOAD = '''import hashlib
+WORKLOAD = '''import faulthandler
+import hashlib
 import sys
 from pathlib import Path
 import pyruns
 
+faulthandler.dump_traceback_later(30, repeat=True)
 cfg = pyruns.load()
 run = pyruns.get_run_index()
 package = Path(pyruns.__file__).resolve().parent
@@ -38,6 +40,8 @@ for path in sorted(package.rglob("*")):
         digest.update(hashlib.sha256(path.read_bytes()).digest())
 for step in range(cfg.steps):
     pyruns.track(step=step, score=run * 10000 + step)
+    if step % 100 == 0:
+        print(f"wheel-step-{run}:{step}", flush=True)
 pyruns.record(attempt=run, steps=cfg.steps, label=cfg.label,
               enabled=cfg.nested.enabled, values=list(cfg.nested["values"]),
               package_sha256=digest.hexdigest(), package_version=pyruns.__version__,
@@ -138,8 +142,9 @@ def _verify(project, report, identities):
             result = subprocess.run(command, cwd=project, env=env, capture_output=True,
                                     encoding="utf-8", errors="replace", timeout=90)
         except subprocess.TimeoutExpired as error:
-            entry.update(timeout=True, stdout=(error.stdout or b"").decode("utf-8", "replace"),
-                         stderr=(error.stderr or b"").decode("utf-8", "replace"))
+            stdout = error.stdout.decode("utf-8", "replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
+            stderr = error.stderr.decode("utf-8", "replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
+            entry.update(timeout=True, stdout=stdout, stderr=stderr)
             raise
         finally:
             entry["seconds"] = time.monotonic() - started
