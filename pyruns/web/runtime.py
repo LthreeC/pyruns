@@ -1103,7 +1103,7 @@ class PyrunsRuntime:
             if force_refresh or elapsed >= 4.0:
                 manager.refresh_from_disk(check_all=True, discover=True)
                 with self._lock:
-                    self._last_full_refresh_time = now
+                    self._last_full_refresh_time = time.monotonic()
 
     @_with_stable_workspace
     def get_task_event_stream_context(self) -> tuple[str, TaskManager]:

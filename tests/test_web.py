@@ -3114,8 +3114,34 @@ def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path):
     clock = MagicMock()
     clock.time.return_value = -1_000_000_000.0
     clock.monotonic.return_value = runtime._last_full_refresh_time + 5.0
-    with patch.object(runtime_module, "time", clock):
+    original_refresh = runtime.task_manager.refresh_from_disk
+
+    def slow_refresh(*args, **kwargs):
+        result = original_refresh(*args, **kwargs)
+        clock.monotonic.return_value += 5.0
+        return result
+
+    with (
+        patch.object(runtime_module, "time", clock),
+        patch.object(runtime.task_manager, "refresh_from_disk", side_effect=slow_refresh) as refresh,
+    ):
         assert runtime.list_tasks(summary=True).total == 2
+        _add_task(workspace, "third")
+        assert runtime.list_tasks(summary=True).total == 2
+        assert refresh.call_count == 1
+
+        clock.monotonic.return_value += 4.0
+        assert runtime.list_tasks(summary=True).total == 3
+        assert refresh.call_count == 2
+
+        _add_task(workspace, "fourth")
+        assert runtime.list_tasks(summary=True, force_refresh=True).total == 4
+        assert refresh.call_count == 3
+
+        _add_task(workspace, "fifth")
+        runtime.invalidate_cache()
+        assert runtime.list_tasks(summary=True).total == 5
+        assert refresh.call_count == 4
 
 
 def test_metadata_search_cancels_between_lines_without_holding_task_lock(tmp_path, monkeypatch):
