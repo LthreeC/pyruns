@@ -61,7 +61,7 @@ _RUN_HISTORY_KEYS = (
 
 
 def _thread_lock_for(task_dir: str) -> threading.RLock:
-    key = os.path.abspath(task_dir)
+    key = _workspace_abspath(task_dir)
     with _TASK_FILE_LOCKS_GUARD:
         lock = _TASK_FILE_LOCKS.get(key)
         if lock is None:
@@ -178,28 +178,59 @@ def _remove_stale_lock_file(lock_path: str) -> bool:
     return True
 
 
+def _workspace_abspath(path: str) -> str:
+    """Preserve literal names in explicitly extended Windows paths."""
+    if os.name == "nt":
+        value = os.fspath(path)
+        if value[:4].replace("/", "\\") == "\\\\?\\":
+            return os.path.normpath(value)
+    return os.path.abspath(path)
+
+
+if os.name != "nt":
+    _workspace_abspath: Callable[[str], str] = os.path.abspath
+
+
+def _realpath_anchor(resolved: str) -> str:
+    """Remove a Windows prefix only if the plain name still denotes this anchor."""
+    if _GET_FINAL_PATH is None or not resolved.startswith("\\\\?\\"):
+        return resolved
+    plain = "\\\\" + resolved[8:] if resolved[:8].upper() == "\\\\?\\UNC\\" else resolved[4:]
+    try:
+        if os.path.normcase(_GET_FINAL_PATH(plain)) == os.path.normcase(resolved):
+            return plain
+    except (OSError, ValueError):
+        pass
+    return resolved
+
+
 def _path_is_within(path: str, root: str, *, _resolved_paths: dict[str, str | None] | None = None) -> bool:
     try:
-        absolute = os.path.abspath(path)
-        absolute_root = os.path.abspath(root)
-        if _GET_FINAL_PATH is not None and _resolved_paths is None:
+        absolute = _workspace_abspath(path)
+        absolute_root = _workspace_abspath(root)
+        anchor = _resolved_paths.get(absolute_root) if _resolved_paths is not None else None
+        native_paths = False
+        if _GET_FINAL_PATH is not None and (anchor is None or anchor.startswith("\\\\?\\")):
             try:
                 # Compare existing Windows paths in their native form. realpath
                 # otherwise opens each again just to remove the extended prefix.
+                # Frozen native anchors can be compared without reopening them.
                 resolved_path = _GET_FINAL_PATH(absolute)
-                resolved_root = _GET_FINAL_PATH(absolute_root)
+                resolved_root = anchor if anchor is not None else _GET_FINAL_PATH(absolute_root)
+                native_paths = True
             except (OSError, ValueError):
-                # Missing paths need realpath's non-strict rules; mixing its
-                # result with a native path can accept a different DOS name.
+                # Missing paths need realpath's non-strict naming rules.
                 pass
+        if not native_paths:
+            # Candidates are always fresh. Preserve a frozen anchor even when
+            # its ordinary DOS spelling now resolves to a different location.
+            resolved_path = os.path.realpath(absolute)
+            if anchor is None:
+                resolved_root = os.path.realpath(absolute_root)
+            elif _GET_FINAL_PATH is None or absolute_root.startswith("\\\\?\\"):
+                resolved_root = anchor
             else:
-                common = os.path.commonpath([resolved_path, resolved_root])
-                return os.path.normcase(common) == os.path.normcase(resolved_root)
-        # Candidates are always fresh; an anchor can belong to this operation.
-        resolved_path = os.path.realpath(absolute)
-        resolved_root = _resolved_paths.get(absolute_root) if _resolved_paths is not None else None
-        if resolved_root is None:
-            resolved_root = os.path.realpath(absolute_root)
+                resolved_root = _realpath_anchor(anchor)
         common = os.path.commonpath([resolved_path, resolved_root])
     except (OSError, ValueError):
         return False
@@ -239,8 +270,8 @@ def validate_workspace_file(
 ) -> None:
     """Reject a workspace file that aliases another path or is not a file."""
 
-    absolute = os.path.abspath(path)
-    root = os.path.abspath(workspace_dir)
+    absolute = _workspace_abspath(path)
+    root = _workspace_abspath(workspace_dir)
     validate_workspace_directory(root)
     exists = os.path.lexists(absolute)
     if exists and _path_is_link_or_reparse(absolute):
@@ -256,7 +287,7 @@ def validate_workspace_file(
 def validate_workspace_directory(workspace_dir: str) -> None:
     """Reject a managed workspace directory redirected through link metadata."""
 
-    absolute = os.path.abspath(workspace_dir)
+    absolute = _workspace_abspath(workspace_dir)
     info = _validate_managed_ancestor_chain(absolute)
     if info is None:
         try:
@@ -275,7 +306,7 @@ def validate_workspace_directory(workspace_dir: str) -> None:
 def validate_tasks_root(tasks_dir: str) -> None:
     """Reject a tasks root that can redirect task I/O through a link/reparse point."""
 
-    absolute = os.path.abspath(tasks_dir)
+    absolute = _workspace_abspath(tasks_dir)
     if os.path.lexists(absolute) and _path_is_link_or_reparse(absolute):
         raise ValueError(
             f"Tasks directory must not be a symlink, junction, or reparse point: {tasks_dir}"
@@ -303,7 +334,7 @@ def _validate_managed_ancestor_chain(path: str) -> os.stat_result | None:
     """Recheck managed ancestors and return this call's leaf metadata for reuse."""
 
     info = None
-    for current in _managed_ancestor_paths(os.path.abspath(path)):
+    for current in _managed_ancestor_paths(_workspace_abspath(path)):
         try:
             info = os.lstat(current)
         except OSError:
@@ -319,7 +350,7 @@ def _validate_managed_ancestor_chain(path: str) -> os.stat_result | None:
 def validate_task_directory(task_dir: str, *, _resolved_paths: dict[str, str | None] | None = None) -> None:
     """Reject task paths that can alias another directory through reparse metadata."""
 
-    absolute = os.path.abspath(task_dir)
+    absolute = _workspace_abspath(task_dir)
     validate_tasks_root(os.path.dirname(absolute))
     exists = os.path.lexists(absolute)
     if exists and not _path_is_within(absolute, os.path.dirname(absolute), _resolved_paths=_resolved_paths):
@@ -332,7 +363,7 @@ def validate_task_directory(task_dir: str, *, _resolved_paths: dict[str, str | N
 
 def _task_log_directory(task_dir: str, *, create: bool, _resolved_paths: dict[str, str | None] | None = None) -> str:
     validate_task_directory(task_dir, _resolved_paths=_resolved_paths)
-    absolute_task = os.path.abspath(task_dir)
+    absolute_task = _workspace_abspath(task_dir)
     log_dir = os.path.join(absolute_task, RUN_LOGS_DIR)
     if os.path.lexists(log_dir):
         if _path_is_link_or_reparse(log_dir):
@@ -542,7 +573,7 @@ def load_task_metadata(task_dir: str, raise_error: bool = False) -> Dict[str, An
     """Load task control data without materializing externally stored curves."""
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
     try:
-        resolved_paths: dict[str, str | None] = {os.path.abspath(task_dir): None}
+        resolved_paths: dict[str, str | None] = {_workspace_abspath(task_dir): None}
         validate_task_directory(task_dir, _resolved_paths=resolved_paths)
         if not os.path.exists(info_path):
             if raise_error:
@@ -858,7 +889,7 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
 def get_log_options(task_dir: str) -> Dict[str, str]:
     """Return ``{display_name: file_path}`` for all available log files."""
     opts: Dict[str, str] = {}
-    absolute_task = os.path.abspath(task_dir)
+    absolute_task = _workspace_abspath(task_dir)
     # Retain only these three directory anchors, for this enumeration alone.
     # A redirected parent must not change the boundary of later file checks.
     resolved_paths: dict[str, str | None] = dict.fromkeys((
@@ -902,8 +933,15 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         # Discard earlier entries too if their parent was redirected while
         # later files were being enumerated (queue.log is collected first).
         try:
-            if opts and os.path.realpath(run_dir) != resolved_paths[run_dir]:
-                return {}
+            if opts:
+                anchor = resolved_paths[run_dir]
+                current = (
+                    _GET_FINAL_PATH(run_dir)
+                    if _GET_FINAL_PATH is not None and anchor is not None and anchor.startswith("\\\\?\\")
+                    else os.path.realpath(run_dir)
+                )
+                if current != anchor:
+                    return {}
         except (OSError, ValueError):
             return {}
 

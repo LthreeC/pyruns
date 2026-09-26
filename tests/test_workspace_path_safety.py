@@ -22,6 +22,7 @@ from pyruns._config import (
     SETTINGS_FILENAME,
     TASK_INFO_FILENAME,
     TASK_KIND_CONFIG,
+    TASK_KIND_SHELL,
 )
 from pyruns.utils.task_files import read_task_payload, write_task_payload
 
@@ -39,11 +40,23 @@ def test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names
     os.mkdir(special)
     payload = special + "\\config.yaml"
     try:
-        with open(payload, "w", encoding="utf-8") as handle:
+        with open(payload, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("value: keep\n")
         info_io.validate_workspace_file(payload, special, label="Payload")
         with pytest.raises(ValueError, match="outside its workspace boundary"):
             info_io.validate_workspace_file(payload, str(root / "trailing"), label="Payload")
+        (root / "trailing").mkdir()
+        (root / "trailing" / "config.yaml").write_text("other directory", encoding="utf-8")
+        for directory, filename, content in (
+            (str(root), "inside.txt", "inside"), (special, "config.yaml", "value: keep\n"),
+        ):
+            for config_file, expected_text, expected_error in (
+                (filename, content, ""), ("missing.sh", "", "missing.sh is missing"),
+            ):
+                kind, _config, text, error = read_task_payload(
+                    directory, {"task_kind": TASK_KIND_SHELL, "config_file": config_file},
+                )
+                assert (kind, text, error) == (TASK_KIND_SHELL, expected_text, expected_error)
     finally:
         if os.path.exists(payload):
             os.unlink(payload)
