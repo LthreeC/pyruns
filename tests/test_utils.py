@@ -539,27 +539,20 @@ def test_task_info_rejects_symlinked_workspace_ancestor(tmp_path):
     assert load_task_info(str(linked_task)) == {}
 
 
-def test_task_info_rejects_simulated_reparse_workspace_ancestor(tmp_path, monkeypatch):
+def test_task_info_rejects_simulated_reparse_workspace_ancestor(tmp_path, simulate_reparse):
     import pyruns.utils.info_io as info_io
 
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     task_dir = workspace / "tasks" / "safe"
     task_dir.mkdir(parents=True)
     (task_dir / TASK_INFO_FILENAME).write_text('{"name":"safe"}', encoding="utf-8")
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(path):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(workspace)):
-            return True
-        return real_check(path)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(workspace)
 
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
         info_io.validate_task_directory(str(task_dir))
 
 
-def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, monkeypatch):
+def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, simulate_reparse):
     import pyruns.utils.info_io as info_io
 
     tasks_dir = tmp_path / "tasks"
@@ -567,19 +560,11 @@ def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, mon
     task_dir.mkdir(parents=True)
     (task_dir / TASK_INFO_FILENAME).write_text('{"name":"safe"}', encoding="utf-8")
 
-    class ReparseStat:
-        st_mode = 0
-        st_file_attributes = 0x400
+    simulate_reparse(tasks_dir)
 
-    with monkeypatch.context() as patcher:
-        patcher.setattr(info_io.os.path, "islink", lambda _path: False)
-        if hasattr(info_io.os.path, "isjunction"):
-            patcher.setattr(info_io.os.path, "isjunction", lambda _path: False)
-        patcher.setattr(info_io.os, "lstat", lambda _path: ReparseStat())
-
-        assert info_io._path_is_link_or_reparse(str(tasks_dir)) is True
-        with pytest.raises(ValueError, match="reparse point"):
-            load_task_info(str(task_dir), raise_error=True)
+    assert info_io._path_is_link_or_reparse(str(tasks_dir)) is True
+    with pytest.raises(ValueError, match="reparse point"):
+        load_task_info(str(task_dir), raise_error=True)
 
 
 @pytest.mark.parametrize("kind", ["file", "directory", "missing"])
@@ -3327,21 +3312,12 @@ def test_load_settings_rejects_empty_non_mapping_and_unreadable_files(tmp_path, 
         settings.load_settings(str(tmp_path))
 
 
-def test_settings_reject_simulated_reparse_file_before_read_or_write(tmp_path, monkeypatch):
-    import pyruns.utils.info_io as info_io
-
+def test_settings_reject_simulated_reparse_file_before_read_or_write(tmp_path, simulate_reparse):
     root = tmp_path / DEFAULT_ROOT_NAME
     root.mkdir()
     path = root / SETTINGS_FILENAME
     path.write_text("ui_port: 8099\n", encoding="utf-8")
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(candidate):
-        if os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(str(path)):
-            return True
-        return real_check(candidate)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(path)
 
     for operation in (
         lambda: settings.ensure_settings_file(str(root)),
@@ -3354,20 +3330,11 @@ def test_settings_reject_simulated_reparse_file_before_read_or_write(tmp_path, m
     assert path.read_text(encoding="utf-8") == "ui_port: 8099\n"
 
 
-def test_settings_reject_simulated_reparse_managed_root(tmp_path, monkeypatch):
-    import pyruns.utils.info_io as info_io
-
+def test_settings_reject_simulated_reparse_managed_root(tmp_path, simulate_reparse):
     root = tmp_path / DEFAULT_ROOT_NAME
     root.mkdir()
     (root / SETTINGS_FILENAME).write_text("ui_port: 8099\n", encoding="utf-8")
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(candidate):
-        if os.path.normcase(os.path.abspath(candidate)) == os.path.normcase(str(root)):
-            return True
-        return real_check(candidate)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(root)
 
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
         settings.load_settings(str(root))

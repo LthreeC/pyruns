@@ -180,12 +180,10 @@ def test_missing_waiter_cannot_claim_the_task_lock(task_dir):
         waiter.is_first()
 
 
-def test_waiter_directory_reparse_is_rejected_before_use(task_dir, monkeypatch):
+def test_waiter_directory_reparse_is_rejected_before_use(task_dir, simulate_reparse):
     directory = task_dir / lock_queue._QUEUE_DIR
     directory.mkdir()
-    real_check = info_io._path_is_link_or_reparse
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", lambda path:
-                        os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(directory)) or real_check(path))
+    simulate_reparse(directory)
     with pytest.raises(ValueError, match="reparse point"):
         with info_io.task_info_lock(str(task_dir)):
             pytest.fail("must reject a redirected waiter directory")

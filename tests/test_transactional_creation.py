@@ -296,17 +296,10 @@ def test_bootstrap_rejects_linked_config_default_without_touching_target(tmp_pat
     assert config_default.is_symlink()
 
 
-def test_ensure_config_default_rejects_simulated_reparse_file(tmp_path, monkeypatch):
+def test_ensure_config_default_rejects_simulated_reparse_file(tmp_path, simulate_reparse):
     config_default = tmp_path / "config_default.yaml"
     config_default.write_text("value: keep\n", encoding="utf-8")
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(path):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(config_default)):
-            return True
-        return real_check(path)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(config_default)
 
     with pytest.raises(ValueError, match="regular file"):
         pyruns.ensure_config_default(str(tmp_path))
@@ -314,37 +307,23 @@ def test_ensure_config_default_rejects_simulated_reparse_file(tmp_path, monkeypa
     assert config_default.read_text(encoding="utf-8") == "value: keep\n"
 
 
-def test_ensure_config_default_rejects_simulated_reparse_workspace(tmp_path, monkeypatch):
+def test_ensure_config_default_rejects_simulated_reparse_workspace(tmp_path, simulate_reparse):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     workspace.mkdir(parents=True)
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(path):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(workspace)):
-            return True
-        return real_check(path)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(workspace)
 
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
         pyruns.ensure_config_default(str(workspace))
     assert not (workspace / CONFIG_DEFAULT_FILENAME).exists()
 
 
-def test_delete_rejects_reparse_trash_before_mutating_task(tmp_path, monkeypatch):
+def test_delete_rejects_reparse_trash_before_mutating_task(tmp_path, simulate_reparse):
     tasks_root = tmp_path / "tasks"
     generator = TaskGenerator(root_dir=str(tasks_root))
     task = generator.create_task("keep", {"value": 1})
     trash = tasks_root / ".trash"
     trash.mkdir()
-    real_check = info_io._path_is_link_or_reparse
-
-    def fake_reparse(path):
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(trash.resolve())):
-            return True
-        return real_check(path)
-
-    monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
+    simulate_reparse(trash)
     manager = TaskManager(tasks_dir=str(tasks_root), lazy_scan=False)
     try:
         with pytest.raises(ValueError, match="reparse point"):
