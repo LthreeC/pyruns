@@ -5189,6 +5189,35 @@ def test_task_list_force_refresh_discards_missing_metadata(tmp_path):
     assert client.get("/api/tasks", params={"force_refresh": True, "summary": True}).json()["total"] == 0
 
 
+def test_task_list_isolates_invalid_environment_metadata_and_recovers(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "broken")
+    _add_task(workspace, "healthy", status="completed")
+    info_path = workspace / TASKS_DIR / "broken" / TASK_INFO_FILENAME
+    original = json.loads(info_path.read_text(encoding="utf-8"))
+    healthy = None
+
+    with TestClient(create_app(PyrunsRuntime(str(workspace))), raise_server_exceptions=False) as client:
+        # Exercise a cold load, repair, a corrupt refresh, and legacy null env.
+        for environment in ("BROKEN", {"COUNT": 2}, "BROKEN", None):
+            contents = json.dumps({**original, "env": environment}).encode("utf-8")
+            info_path.write_bytes(contents)
+            response = client.get("/api/tasks", params={"summary": True, "force_refresh": True})
+            assert response.status_code == 200, response.text
+            assert response.json()["total"] == 2
+            tasks = {task["name"]: task for task in response.json()["items"]}
+            if healthy is None:
+                healthy = tasks["healthy"]
+            assert tasks["healthy"] == healthy
+            if environment == "BROKEN":
+                assert "Invalid task environment" in tasks["broken"]["_load_error"]
+                assert isinstance(tasks["broken"]["env"], dict)
+            else:
+                assert tasks["broken"]["_load_error"] == ""
+                assert (tasks["broken"]["env"] or {}) == (environment or {})
+            assert info_path.read_bytes() == contents
+
+
 def test_task_endpoint_refresh_checks_only_selected_pending_payload(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     for name in ("alpha", "beta", "gamma"):

@@ -527,6 +527,8 @@ def load_task_metadata(task_dir: str, raise_error: bool = False) -> Dict[str, An
                     max_bytes=MAX_TASK_INFO_BYTES,
                     label=TASK_INFO_FILENAME,
                 )
+                if info.get("env") is not None and not isinstance(info["env"], dict):
+                    raise ValueError("Invalid task environment: expected an object")
                 info.pop("id", None)
                 normalize_run_history(info)
                 return info
