@@ -100,6 +100,8 @@ def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str, Optional[float
             acquired_at = float(parts[3])
         except (TypeError, ValueError, OverflowError):
             acquired_at = None
+    if pid is not None and len(parts) == 5 and parts[4] == "released":
+        pid = 0
     return pid, host, acquired_at
 
 
@@ -110,6 +112,8 @@ def _lock_file_is_stale(lock_path: str, *, min_age_sec: float = _STALE_LOCK_MIN_
         return False
 
     pid, host, acquired_at = _read_lock_owner(lock_path)
+    if pid == 0:
+        return True
     if pid is not None and host and host != _LOCK_OWNER_HOST:
         return False
     if pid is not None:
@@ -400,6 +404,20 @@ def _load_json_object(path: str, *, max_bytes: int, label: str) -> Dict[str, Any
     return data
 
 
+def _mark_task_lock_released(fd: int, owner: str) -> str:
+    """Let waiters recover a completed lock if Windows delays its deletion."""
+    owner_bytes = owner.encode("utf-8", errors="ignore")
+    marker = b" released"
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.read(fd, len(owner_bytes) + 1) == owner_bytes:
+            written = os.write(fd, marker)
+            return (owner + marker[:written].decode("ascii")).rstrip()
+    except OSError:
+        pass
+    return owner
+
+
 def _release_task_lock(lock_path: str, owner: str, *, identity: tuple[int, int] | None = None) -> None:
     """Retry temporary sharing violations without deleting another owner's lock."""
     for attempt in range(_REPLACE_RETRY_COUNT):
@@ -487,22 +505,26 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
         try:
             if fd is not None:
                 failed_identity = None
-                if not owner_written:
-                    # A partial owner cannot identify the lock. Capture its
-                    # file identity before close allows a replacement owner.
+                try:
+                    if owner_written:
+                        owner = _mark_task_lock_released(fd, owner)
+                    else:
+                        # A partial owner cannot identify the lock. Capture its
+                        # file identity before close allows a replacement owner.
+                        try:
+                            info = os.fstat(fd)
+                            failed_identity = info.st_dev, info.st_ino
+                        except OSError:
+                            pass
+                finally:
                     try:
-                        info = os.fstat(fd)
-                        failed_identity = info.st_dev, info.st_ino
+                        os.close(fd)
                     except OSError:
                         pass
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-                if owner_written:
-                    _release_task_lock(lock_path, owner)
-                elif failed_identity is not None:
-                    _release_task_lock(lock_path, owner, identity=failed_identity)
+                    if owner_written:
+                        _release_task_lock(lock_path, owner)
+                    elif failed_identity is not None:
+                        _release_task_lock(lock_path, owner, identity=failed_identity)
         finally:
             try:
                 queue.close()

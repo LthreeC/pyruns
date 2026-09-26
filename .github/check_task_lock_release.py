@@ -6,11 +6,27 @@ import importlib
 import json
 import os
 from pathlib import Path
+import statistics
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import traceback
+import types
+
+
+def benchmark_update(info_io, directory):
+    info_io.save_task_info(str(directory), {"notes": "before"})
+    for value in range(20):
+        info_io.update_task_metadata(str(directory), lambda data, value=value: data.update(notes=str(value)))
+    started = time.perf_counter()
+    for value in range(200):
+        info_io.update_task_metadata(str(directory), lambda data, value=value: data.update(notes=str(value)))
+    elapsed = time.perf_counter() - started
+    assert info_io.load_task_metadata(str(directory), raise_error=True)["notes"] == "199"
+    assert not (directory / info_io._LOCK_FILENAME).exists()
+    return elapsed
 
 
 def observe(directory, mode, info_io, kernel):
@@ -99,13 +115,19 @@ def main(output):
     sys.path.insert(0, str(root))
     info_io = importlib.import_module("pyruns.utils.info_io")
     assert Path(info_io.__file__).resolve().is_relative_to(root)
+    baseline_source = subprocess.check_output([
+        "git", "show", "daf97897e66a999350a9b97a474cf46e58c88465:pyruns/utils/info_io.py",
+    ], cwd=root)
+    baseline = types.ModuleType("pyruns_release_baseline")
+    exec(compile(baseline_source, "baseline-info_io.py", "exec"), baseline.__dict__)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
                                   wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
-    report = {"observations": [], "completed": False,
+    report = {"observations": [], "benchmarks": [], "completed": False,
+              "baseline_info_io_sha256": hashlib.sha256(baseline_source).hexdigest(),
               "info_io_sha256": hashlib.sha256(Path(info_io.__file__).read_bytes()).hexdigest(),
               "timeout_seconds": info_io._LOCK_TIMEOUT_SEC,
               "release_attempts": info_io._REPLACE_RETRY_COUNT,
@@ -113,10 +135,22 @@ def main(output):
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="pyruns-release-boundary-") as directory:
+            report["baseline"] = observe(Path(directory) / "baseline", "reader-through-release", baseline, kernel)
+            assert report["baseline"]["next_write"]["status"] == "timeout"
             for mode in ("unblocked", "short-reader", "reader-through-release"):
                 report["observations"].append(observe(Path(directory) / mode, mode, info_io, kernel))
                 output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        assert all(row["next_write"]["status"] == "completed" for row in report["observations"][:2])
+            for index, variant in enumerate(["baseline", "candidate", "candidate", "baseline"] * 2):
+                module = baseline if variant == "baseline" else info_io
+                seconds = benchmark_update(module, Path(directory) / f"benchmark-{index}")
+                report["benchmarks"].append({"variant": variant, "updates": 200, "seconds": seconds})
+        assert all(row["next_write"]["status"] == "completed" and row["saved_notes"] == "after"
+                   for row in report["observations"])
+        assert report["observations"][2]["considered_stale"] is True
+        report["update_medians_seconds"] = {
+            variant: statistics.median(row["seconds"] for row in report["benchmarks"] if row["variant"] == variant)
+            for variant in ("baseline", "candidate")
+        }
         report["completed"] = True
     except Exception:
         report["error"] = traceback.format_exc()
