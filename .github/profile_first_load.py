@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import pstats
 import sys
 import tempfile
@@ -28,7 +29,10 @@ output = Path(sys.argv[1])
 output.mkdir(parents=True, exist_ok=True)
 count = int(sys.argv[2]) if len(sys.argv) > 2 else 10000
 mode = sys.argv[3] if len(sys.argv) > 3 else "profile"
-report = {"tasks": count, "mode": mode, "source": scaling._source_state(), "passed": False, "observations": []}
+report = {"tasks": count, "mode": mode, "source": scaling._source_state(),
+          "product_revision": "1eaff82a2def3ff6fd70fc1b8fb54bb164f2d19b",
+          "platform": platform.platform(), "python": sys.version,
+          "dependencies": scaling._dependencies(), "passed": False, "observations": []}
 profile = cProfile.Profile()
 original_map = TaskManager._map_task_disk_io
 original_decision = TaskManager._parallel_loading_worthwhile
@@ -87,7 +91,7 @@ try:
                     assert len(tasks) == count
                     for task in tasks:
                         scaling._check_task(task, fixtures, summary=False)
-                    snapshot = {"response": response.json(), "tasks": tasks}
+                    snapshot = {"response": response.json(), "tasks": {task["name"]: task for task in tasks}}
                     if reference is None:
                         reference = snapshot
                     else:
@@ -98,6 +102,13 @@ try:
                     observations["snapshot_sha256"] = hashlib.sha256(
                         json.dumps(snapshot, sort_keys=True).encode()
                     ).hexdigest()
+                    observations["raw_order_sha256"] = scaling._digest([task["name"] for task in tasks])
+                    params["sort"] = "priority"
+                    priority = client.get("/api/tasks", params=params)
+                    assert priority.status_code == 200
+                    if "priority_reference" not in report:
+                        report["priority_reference"] = priority.json()
+                    assert priority.json() == report["priority_reference"]
                     observations["validated"] = True
             finally:
                 runtime.shutdown()
@@ -114,8 +125,8 @@ finally:
         profile.dump_stats(str(output / "first-load.pstats"))
         stream = io.StringIO()
         stats = pstats.Stats(profile, stream=stream).sort_stats("cumulative")
-        stats.print_stats(45)
-        stats.sort_stats("tottime").print_stats(25)
+        stats.print_stats(70)
+        stats.sort_stats("tottime").print_stats(35)
         (output / "profile.txt").write_text(stream.getvalue(), encoding="utf-8")
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))

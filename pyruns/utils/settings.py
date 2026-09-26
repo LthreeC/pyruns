@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Mapping
 from typing import Any, Dict
+from weakref import WeakValueDictionary
 
 import yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -127,7 +128,8 @@ gpu_scheduler_require_same_gpu_model: {SETTINGS_DEFAULTS.get("gpu_scheduler_requ
 
 
 _cached: Dict[str, Any] = {}
-_SETTINGS_FILE_LOCKS: Dict[str, threading.RLock] = {}
+# The active with-contexts retain their locks; old workspace paths can retire.
+_SETTINGS_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
 _SETTINGS_FILE_LOCKS_GUARD = threading.Lock()
 _SETTINGS_LOCK_TIMEOUT_SEC = 5.0
 _SETTINGS_LOCK_POLL_SEC = 0.05
