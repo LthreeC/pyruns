@@ -1217,7 +1217,7 @@ class TaskManager:
 
         config_file = resolve_task_config_file(info, None, task_dir)
         task_kind, config_data, config_text, payload_error, payload_signature = read_task_payload_snapshot(
-            task_dir, info, config_view=True,
+            task_dir, {**info, "config_file": config_file}, config_view=True,
         )
         task_name = dir_name
         if info:
@@ -1298,6 +1298,10 @@ class TaskManager:
         raise_on_error: bool = False,
     ) -> bool:
         """Refresh active or requested tasks from task_info.json files."""
+        known_names = None
+        if discover:
+            with self._lock:
+                known_names = set(self._tasks_by_name)
         has_changed = (
             self.sync_task_dirs_from_disk(raise_on_error=raise_on_error)
             if discover
@@ -1314,7 +1318,11 @@ class TaskManager:
                 ]
             else:
                 selected = list(self.tasks)
-            current = [(task, task.get("_registry_revision", 0)) for task in selected if task]
+            # Discovery already loaded new tasks, including their payloads.
+            current = [
+                (task, task.get("_registry_revision", 0)) for task in selected
+                if task and (known_names is None or task["name"] in known_names)
+            ]
 
         current = [
             (task, revision) for task, revision in current
@@ -5012,7 +5020,7 @@ class TaskManager:
         # causing every subsequent refresh to skip that writer's changes.
         task["_info_signature"] = info_signature
         loaded_kind, loaded_config, loaded_text, load_error, payload_signature = read_task_payload_snapshot(
-            task["dir"], info, config_view=True,
+            task["dir"], {**info, "config_file": task["config_file"]}, config_view=True,
         )
         task["_payload_signature"] = payload_signature
         task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
