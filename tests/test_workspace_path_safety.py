@@ -38,6 +38,30 @@ def _simulate_reparse(monkeypatch, *paths: Path) -> None:
     monkeypatch.setattr(info_io, "_path_is_link_or_reparse", fake_reparse)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended paths and DOS filename rules")
+def test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "inside.txt").write_text("inside", encoding="utf-8")
+    extended_root = "\\\\?\\" + str(root)
+    info_io.validate_workspace_file(extended_root + "\\inside.txt", str(root), label="Payload")
+
+    # A literal trailing dot is a different directory from the missing plain name.
+    special = extended_root + "\\trailing."
+    os.mkdir(special)
+    payload = special + "\\config.yaml"
+    try:
+        with open(payload, "w", encoding="utf-8") as handle:
+            handle.write("value: keep\n")
+        info_io.validate_workspace_file(payload, special, label="Payload")
+        with pytest.raises(ValueError, match="outside its workspace boundary"):
+            info_io.validate_workspace_file(payload, str(root / "trailing"), label="Payload")
+    finally:
+        if os.path.exists(payload):
+            os.unlink(payload)
+        os.rmdir(special)
+
+
 def test_script_info_rejects_simulated_reparse_workspace_before_io(tmp_path, monkeypatch):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     workspace.mkdir(parents=True)

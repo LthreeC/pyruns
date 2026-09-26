@@ -1,4 +1,5 @@
-"""Isolated Windows boundary-resolution prototype; never edits runtime source."""
+"""Compare the actual product function against the exact pre-change function."""
+import ast
 import gc
 import hashlib
 import importlib.util
@@ -7,10 +8,13 @@ import os
 from pathlib import Path
 import platform
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
 import traceback
+import types
+import xml.etree.ElementTree as ET
 
 ROOT = Path(os.environ.get("PYRUNS_AUDIT_ROOT", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(ROOT))
@@ -26,27 +30,30 @@ from pyruns.web.runtime import PyrunsRuntime
 output = Path(sys.argv[1])
 output.mkdir(parents=True, exist_ok=True)
 count = int(sys.argv[2]) if len(sys.argv) > 2 else 10000
-original = info_io._path_is_within
+BASELINE = "e0ab12a003230de6171ad2683f1f044c9dc2dff5"
+
+
+def source_at(revision, name):
+    return subprocess.run(["git", "show", revision + ":" + name], cwd=ROOT,
+                          check=True, capture_output=True, text=True, encoding="utf-8").stdout
+
+
+def load_function(source, name, namespace):
+    node = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == name)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "<isolated-baseline>", "exec"), namespace)
+    return namespace[name]
+
+
+baseline_source = source_at(BASELINE, "pyruns/utils/info_io.py")
+original = load_function(baseline_source, "_path_is_within", dict(vars(info_io)))
+candidate = info_io._path_is_within
 native_resolve = getattr(os.path, "_getfinalpathname", None)
-
-
-def candidate(path, root, *, _resolved_paths=None):
-    # Keep the existing anchor and missing-path contracts exactly as they are.
-    if native_resolve is None or _resolved_paths is not None:
-        return original(path, root, _resolved_paths=_resolved_paths)
-    try:
-        # Same input as realpath, without its second prefix-removal lookup.
-        resolved_path = native_resolve(os.path.abspath(path))
-        resolved_root = native_resolve(os.path.abspath(root))
-    except (OSError, ValueError):
-        return original(path, root, _resolved_paths=_resolved_paths)
-    try:
-        return os.path.normcase(os.path.commonpath([resolved_path, resolved_root])) == os.path.normcase(resolved_root)
-    except (OSError, ValueError):
-        return False
 
 report = {"source": scaling._source_state(), "platform": platform.platform(), "python": sys.version,
           "dependencies": scaling._dependencies(), "tasks": count, "native_available": native_resolve is not None,
+          "baseline_revision": BASELINE,
+          "product_sha256": hashlib.sha256(Path(info_io.__file__).read_bytes()).hexdigest(),
           "passed": False, "path_cases": [], "observations": []}
 
 
@@ -119,6 +126,28 @@ try:
     if "--checks" in sys.argv:
         import pytest
 
+        if os.name == "nt":
+            rejected_source = source_at("a5c7a2f", ".github/profile_boundary.py")
+            bad_resolve = load_function(rejected_source, "boundary_path", dict(globals()))
+            path_proxy = types.SimpleNamespace(**vars(os.path))
+            path_proxy.realpath = bad_resolve
+            rejected = types.FunctionType(
+                original.__code__, {**original.__globals__, "os": types.SimpleNamespace(path=path_proxy)},
+                original.__name__, original.__defaults__, original.__closure__,
+            )
+            rejected.__kwdefaults__ = original.__kwdefaults__
+            info_io._path_is_within = rejected
+            negative_xml = output / "rejected-prototype.xml"
+            negative = pytest.main([
+                "tests/test_workspace_path_safety.py::test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names",
+                "-q", "-p", "no:cacheprovider", "--junitxml=" + str(negative_xml),
+            ])
+            failures = ET.parse(negative_xml).findall(".//failure")
+            assert negative == 1 and len(failures) == 1
+            assert "DID NOT RAISE" in failures[0].get("message", "")
+            report["rejected_prototype_caught_by_new_regression"] = True
+            save()
+
         info_io._path_is_within = candidate
         result = pytest.main(["tests/test_workspace_path_safety.py", "tests/test_config_views.py",
                               "tests/test_transactional_creation.py", "-q",
@@ -180,5 +209,5 @@ except Exception:
     report["error"] = traceback.format_exc()
     raise
 finally:
-    info_io._path_is_within = original
+    info_io._path_is_within = candidate
     save()
