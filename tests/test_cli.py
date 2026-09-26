@@ -1808,6 +1808,8 @@ def test_exec_command_string_preserves_expression(tmp_path, monkeypatch, capsys)
     info = load_task_info(str(task_dir))
     payload = task_dir / info["config_file"]
     assert payload.read_text(encoding="utf-8").strip() == expression
+    run_log = (task_dir / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
+    assert "alpha" in run_log and "beta" in run_log
 
 
 def test_exec_failure_propagates_nonzero(tmp_path):

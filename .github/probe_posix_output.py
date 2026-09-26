@@ -59,26 +59,39 @@ def adapter_probe():
 
 
 def cli_probe(wait_before_reader):
-    from pyruns.cli import commands
+    from pyruns.cli import commands, runner
     from pyruns.cli.app import main
-    from pyruns.core import executor
 
-    original_spawn = executor._spawn_captured_process
-
-    def spawn(*args, **kwargs):
-        process = original_spawn(*args, **kwargs)
-        if wait_before_reader:
-            process.wait(timeout=5)
-        return process
+    original_popen = runner._detached_popen
 
     original_directory = Path.cwd()
     with tempfile.TemporaryDirectory(prefix="pyruns-output-probe-") as directory:
         os.chdir(directory)
         captured = io.StringIO()
+        marker = Path(directory, "injection.json")
+
+        def spawn(command, env):
+            if wait_before_reader:
+                bootstrap = (
+                    "import json\nfrom pathlib import Path\n"
+                    "from pyruns.core import executor\n"
+                    "original = executor._spawn_captured_process\n"
+                    "def spawn(*args, **kwargs):\n"
+                    "    process = original(*args, **kwargs)\n"
+                    "    code = process.wait(timeout=5)\n"
+                    f"    Path({str(marker)!r}).write_text(json.dumps({{'type': type(process).__name__, 'exit': code}}))\n"
+                    "    return process\n"
+                    "executor._spawn_captured_process = spawn\n"
+                    "from pyruns.cli.detached_runner import main\n"
+                    "raise SystemExit(main())\n"
+                )
+                command = [command[0], "-c", bootstrap, *command[3:]]
+            return original_popen(command, env)
+
         try:
             with (
                 patch.object(commands, "_find_project_root", return_value=None),
-                patch.object(executor, "_spawn_captured_process", side_effect=spawn),
+                patch.object(runner, "_detached_popen", side_effect=spawn),
                 contextlib.redirect_stdout(captured),
             ):
                 status = main(["exec", "--name", "shell-expression", "-c", EXPRESSION])
@@ -87,8 +100,11 @@ def cli_probe(wait_before_reader):
                     for path in task.rglob("run*.log")}
             info = {str(path.relative_to(task)): path.read_text(errors="replace")
                     for path in task.glob("task_info.*")}
+            injection = json.loads(marker.read_text()) if marker.exists() else None
+            if wait_before_reader:
+                assert injection and injection["type"] == "PosixPtyProcessAdapter", injection
             return {"status": status, "output": captured.getvalue(),
-                    "logs": logs, "task_info": info}
+                    "logs": logs, "task_info": info, "injection": injection}
         finally:
             os.chdir(original_directory)
 

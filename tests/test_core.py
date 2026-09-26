@@ -3821,6 +3821,7 @@ def test_run_task_worker_stops_process_when_ownership_changes_during_launch(
     assert result["child_process_terminated"] is True
     assert killed == [(9878, 1000.0)]
     mock_proc.wait.assert_called_once_with(timeout=1)
+    mock_proc.close_output.assert_called_once_with()
     final_info = load_task_info(str(task_dir))
     assert final_info["status"] == "running"
     assert final_info["progress"] == 0.5

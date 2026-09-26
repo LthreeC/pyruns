@@ -15,15 +15,15 @@ jobs:
       fail-fast: false
       matrix:
         revision:
+          - candidate
           - c0870582668755ba4259533d9fb502f3b02e8e99
-          - f3b1a5e9eac0811dc2986eda617c23c0e5e29ce8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           path: diagnosis
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ matrix.revision }}
+          ref: ${{ matrix.revision == 'candidate' && github.sha || matrix.revision }}
           path: product
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
@@ -32,6 +32,25 @@ jobs:
         run: python -m pip install -e './product[test]'
       - name: Compare terminal bytes and persisted logs
         run: python -u diagnosis/.github/probe_posix_output.py --root product --output test-results/output.json
+      - name: Check focused regressions against both implementations
+        shell: bash
+        run: |
+          cp diagnosis/tests/test_terminal_capture.py product/tests/test_terminal_capture.py
+          cp diagnosis/tests/test_core.py product/tests/test_core.py
+          cd product
+          test_exit=0
+          python -m pytest -q tests/test_terminal_capture.py::test_posix_capture_keeps_completed_output_until_read tests/test_core.py::test_run_task_worker_stops_process_when_ownership_changes_during_launch --junitxml=../test-results/regressions.xml > ../test-results/regressions.log 2>&1 || test_exit=$?
+          cat ../test-results/regressions.log
+          if [ '${{ matrix.revision }}' = candidate ]; then
+            test "$test_exit" -eq 0
+          else
+            test "$test_exit" -eq 1
+            python -c "import xml.etree.ElementTree as E; s=E.parse('../test-results/regressions.xml').getroot()[0]; assert s.get('failures') == '2' and s.get('errors') == '0', s.attrib"
+          fi
+      - name: Check capture, executor and CLI behavior
+        if: matrix.revision == 'candidate'
+        working-directory: product
+        run: python -m pytest -q tests/test_terminal_capture.py tests/test_core.py tests/test_cli.py::test_exec_command_string_preserves_expression --junitxml=../test-results/targeted.xml > ../test-results/targeted.log 2>&1
       - name: Preserve output at every layer
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
