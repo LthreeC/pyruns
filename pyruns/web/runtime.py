@@ -1322,17 +1322,17 @@ class PyrunsRuntime:
         }
 
     @_with_stable_workspace
-    def get_task(self, task_name: str, *, refresh: bool = True) -> Dict[str, Any] | None:
+    def get_task(self, task_name: str, *, refresh: bool = True, summary: bool = False) -> Dict[str, Any] | None:
         """Return one task snapshot."""
         manager = self.task_manager
         if refresh:
             manager.refresh_from_disk(task_ids=[task_name])
-        task = manager.get_task(task_name)
+        task = manager.get_task(task_name, summary=summary)
         # A cold single-task read need not initialize the whole workspace.
         # After full discovery, refresh=False remains a cache-only lookup.
         if task is None and (refresh or not self._tasks_loaded):
             manager.load_task_by_name(task_name)
-            task = manager.get_task(task_name)
+            task = manager.get_task(task_name, summary=summary)
         if task is not None and refresh and not os.path.isfile(
             os.path.join(str(task.get("dir", "") or ""), TASK_INFO_FILENAME)
         ):
@@ -1483,7 +1483,9 @@ class PyrunsRuntime:
             task_name = str(name or "").strip()
             if not task_name or task_name in seen:
                 continue
-            task = self.require_task(task_name, refresh=True)
+            task = self.get_task(task_name, refresh=True, summary=True)
+            if task is None:
+                raise KeyError(task_name)
             normalized_names.append(task_name)
             tasks.append(task)
             seen.add(task_name)

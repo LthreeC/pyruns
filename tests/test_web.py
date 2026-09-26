@@ -7819,20 +7819,28 @@ def test_runtime_generator_preview_and_create_error_edges(tmp_path, monkeypatch)
     assert shell_created["task_kind"] == TASK_KIND_SHELL
 
 
-def test_runtime_export_tasks_csv_handles_duplicate_names_and_empty_monitor_data(tmp_path):
+def test_runtime_export_tasks_csv_handles_duplicate_names_and_empty_monitor_data(tmp_path, monkeypatch):
+    import csv
+    import io
+    from pyruns.utils import track_store
+
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "with-records", status="completed")
     update_task_info(
         str(workspace / TASKS_DIR / "with-records"),
-        lambda info: info.update({"records": [{"loss": 0.12}]}),
+        lambda info: info.update({"records": [{"loss": 0.12}], "tracks": [{"loss": list(range(1024))}]}),
     )
     _add_task(workspace, "no-records", status="completed")
     runtime = _build_runtime(workspace)
 
-    csv_text = runtime.export_tasks_csv(["with-records", "", "with-records"])
+    with monkeypatch.context() as patch:
+        patch.setattr(track_store, "read_tracks", lambda *a, **kw: pytest.fail("export loaded unused curves"))
+        csv_text = runtime.export_tasks_csv(["with-records", "", "with-records", "no-records"])
 
-    assert "with-records" in csv_text
-    assert "loss" in csv_text
+    assert list(csv.DictReader(io.StringIO(csv_text))) == [{
+        "name": "with-records", "status": "completed", "run": "1", "start_time": "",
+        "finish_time": "", "duration_seconds": "", "exit_code": "", "pid": "", "loss": "0.12",
+    }]
     with pytest.raises(ValueError, match="No valid tasks"):
         runtime.export_tasks_csv(["", " "])
 
