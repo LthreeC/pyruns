@@ -1,0 +1,48 @@
+name: Diagnose queued log transition
+
+on:
+  push:
+    branches: [codex/stream-race-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        revision:
+          - eb40c10b46ed17638c6e314c53f57e621688713b
+          - 11bd067e7d52fe9f7fe332a0aa8353640b7fc077
+    env:
+      PYRUNS_AUDIT_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Select exact payload implementation
+        run: |
+          git restore --source=${{ matrix.revision }} -- pyruns/core/task_manager.py pyruns/utils/task_files.py
+          git diff --exit-code ${{ matrix.revision }} -- pyruns/core/task_manager.py pyruns/utils/task_files.py
+      - name: Install dependencies
+        run: python -m pip install -e ".[test]" pytest-github-actions-annotate-failures==0.4.2
+      - name: Trace existing regression with bounded receives
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path test-results | Out-Null
+          python -u .github/trace_stream_race.py test-results/trace.json 30 2>&1 | Tee-Object -FilePath test-results/trace.log
+          exit $LASTEXITCODE
+      - name: Preserve traces
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stream-race-${{ matrix.revision }}
+          path: test-results/
+          retention-days: 14
