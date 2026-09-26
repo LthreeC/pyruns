@@ -388,8 +388,14 @@ def prepare_task_log_path(task_dir: str, filename: str) -> str:
     return _task_log_path(task_dir, filename, create_directory=True)
 
 
-def _validate_contained_path(path: str, root: str, *, label: str) -> None:
-    if os.path.lexists(path) and not _path_is_within(path, root):
+def _validate_contained_path(
+    path: str,
+    root: str,
+    *,
+    label: str,
+    _resolved_paths: dict[str, str | None] | None = None,
+) -> None:
+    if os.path.lexists(path) and not _path_is_within(path, root, _resolved_paths=_resolved_paths):
         raise ValueError(f"{label} resolves outside its workspace boundary: {path}")
 
 
@@ -536,14 +542,17 @@ def load_task_metadata(task_dir: str, raise_error: bool = False) -> Dict[str, An
     """Load task control data without materializing externally stored curves."""
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
     try:
-        validate_task_directory(task_dir)
+        resolved_paths: dict[str, str | None] = {os.path.abspath(task_dir): None}
+        validate_task_directory(task_dir, _resolved_paths=resolved_paths)
         if not os.path.exists(info_path):
             if raise_error:
                 raise FileNotFoundError(info_path)
             return {}
         for attempt in range(_READ_RETRY_COUNT):
             try:
-                _validate_contained_path(info_path, task_dir, label=TASK_INFO_FILENAME)
+                _validate_contained_path(
+                    info_path, task_dir, label=TASK_INFO_FILENAME, _resolved_paths=resolved_paths,
+                )
                 info = _load_json_object(
                     info_path,
                     max_bytes=MAX_TASK_INFO_BYTES,
