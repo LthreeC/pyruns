@@ -218,6 +218,7 @@ def _iter_batch_config_values(
     product_params: Dict[ConfigPath, List[tuple[Any, str]]] = {}
     zip_params: Dict[ConfigPath, List[tuple[Any, str]]] = {}
     fixed: Dict[ConfigPath, Any] = {}           # path → value
+    invalid_candidates: Dict[ConfigPath, int] = {}
 
     for k, v in iter_config_fields(normalized_config, include_empty=True):
         parsed = _parse_pipe_value(v)
@@ -226,13 +227,11 @@ def _iter_batch_config_values(
             parsed_values = [parse_value(p) for p in values]
             typed_values = [(value, str(value)) for value in parsed_values]
             if normalize_values:
-                try:
-                    typed_values = [(_normalize_batch_value(k, value), display) for value, display in typed_values]
-                except OmegaConfBaseException:
-                    # Preserve the full generator's error ordering and context.
-                    for config in generate_batch_configs(normalized_config, max_configs=max_configs):
-                        yield config, None
-                    return
+                for index, (value, display) in enumerate(typed_values):
+                    try:
+                        typed_values[index] = (_normalize_batch_value(k, value), display)
+                    except OmegaConfBaseException:
+                        invalid_candidates.setdefault(k, index)
             if mode == "product":
                 product_params[k] = typed_values
             else:
@@ -243,16 +242,6 @@ def _iter_batch_config_values(
     if not product_params and not zip_params:
         yield normalized_config, None
         return
-
-    # Validate: all zip params must have the same length
-    if zip_params:
-        lengths = {k: len(v) for k, v in zip_params.items()}
-        unique_lens = set(lengths.values())
-        if len(unique_lens) > 1:
-            detail = ", ".join(f"{'.'.join(map(str, k))}={n}" for k, n in lengths.items())
-            raise ValueError(
-                f"All (zip) parameters must have equal length. Got: {detail}"
-            )
 
     # Build product combos
     if product_params:
@@ -269,6 +258,21 @@ def _iter_batch_config_values(
     else:
         z_keys = []
         z_combos = [()]
+
+    if invalid_candidates:
+        # Select the first failing combination in the original expansion order.
+        # Materializing it preserves error context without building valid predecessors.
+        stride = len(z_combos)
+        strides: Dict[ConfigPath, int] = {}
+        for key in reversed(p_keys):
+            strides[key] = stride
+            stride *= len(product_params[key])
+        first_invalid = min(index * strides.get(key, 1) for key, index in invalid_candidates.items())
+        p_combos = [tuple(
+            product_params[key][(first_invalid // strides[key]) % len(product_params[key])]
+            for key in p_keys
+        )]
+        z_combos = [z_combos[first_invalid % len(z_combos)]]
 
     # Cross-join: every product combo × every zip combo
     for p_combo in p_combos:

@@ -5605,6 +5605,17 @@ def test_generator_preview_endpoint_returns_expansion_summary(tmp_path, monkeypa
     assert payload["items"][0]["preview"]
     # One input, one template and six samples; cost must not follow all 128 tasks.
     assert len(full_config_builds) <= 8
+    full_config_builds.clear()
+    invalid = client.post(
+        "/api/generator/preview",
+        json={"mode": "form", "yaml_text": (
+            "lr: >-\n  " + " | ".join(map(str, range(128)))
+            + " | ${oc.select:missing,'a|b'}\nmodel: tiny\n"
+        )},
+    )
+    assert invalid.status_code == 400
+    assert "lr" in invalid.json()["detail"]
+    assert len(full_config_builds) <= 2  # Input and the first failing combination.
 
 
 def test_yaml_mode_rejects_batch_syntax_without_expanding(tmp_path, monkeypatch):
@@ -7802,18 +7813,12 @@ def test_runtime_generator_preview_and_create_error_edges(tmp_path, monkeypatch)
         oversized = client.post(
             "/api/generator/preview", json={"mode": "form", "yaml_text": f"lr: 0:{10**30}\n"},
         )
-        malformed_late_candidate = client.post(
-            "/api/generator/preview",
-            json={"mode": "form", "yaml_text": "lr: >-\n  0 | 1 | 2 | 3 | 4 | 5 | 6 | ${oc.select:missing,'a|b'}\n"},
-        )
         malformed_create = client.post(
             "/api/generator/create",
             json={"name_prefix": "invalid-interpolation", "mode": "yaml", "yaml_text": "lr: '${unclosed'\n", "append_timestamp": False},
         )
     assert oversized.status_code == 400
     assert "limit is 10000" in oversized.json()["detail"]
-    assert malformed_late_candidate.status_code == 400
-    assert "lr" in malformed_late_candidate.json()["detail"]
     assert malformed_create.status_code == 400
     assert "lr" in malformed_create.json()["detail"]
     assert not (workspace / TASKS_DIR / "invalid-interpolation").exists()
