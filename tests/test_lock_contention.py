@@ -1,7 +1,6 @@
 """File-lock initialization, ownership, and sharing-error recovery."""
 from contextlib import contextmanager
 import errno
-import json
 import os
 from pathlib import Path
 
@@ -211,7 +210,7 @@ def test_settings_release_keeps_a_replacement_owner_during_retry(tmp_path, monke
     assert lock_path.read_bytes() == replacement
 
 
-@pytest.mark.parametrize("kind", ["task_name", "settings"])
+@pytest.mark.parametrize("kind", ["task_name", "settings_save", "settings_unset"])
 def test_lock_release_has_a_bounded_retry_when_access_stays_denied(tmp_path, monkeypatch, kind):
     if kind == "task_name":
         generator = TaskGenerator(str(tmp_path / "tasks"))
@@ -219,13 +218,17 @@ def test_lock_release_has_a_bounded_retry_when_access_stays_denied(tmp_path, mon
         lock_path = Path(reservation[0])
         release = lambda: generator.release_task_name_reservation(reservation)
         original = os.unlink
+        parse_owner = generator._task_name_lock_owner
     else:
-        fd, lock_name, owner = settings._open_settings_lock(str(tmp_path / "settings.yaml"))
-        os.close(fd)
-        lock_path = Path(lock_name)
-        release = lambda: settings._release_settings_lock(lock_name, owner)
+        settings.save_setting_for_root(str(tmp_path), "header_refresh_interval", 3.0)
+        lock_path = Path(settings._settings_path(str(tmp_path)) + ".lock")
+        release = (
+            lambda: settings.save_setting_for_root(str(tmp_path), "header_refresh_interval", 4.0)
+        ) if kind == "settings_save" else (
+            lambda: settings.unset_setting_for_root(str(tmp_path), "header_refresh_interval")
+        )
         original = open
-    original_owner = lock_path.read_bytes()
+        parse_owner = settings._settings_lock_owner
     attempts = 0
 
     def deny_access(path, *args, **kwargs):
@@ -236,11 +239,19 @@ def test_lock_release_has_a_bounded_retry_when_access_stays_denied(tmp_path, mon
             raise PermissionError("persistent access denial")
         return original(path, *args, **kwargs)
 
-    if kind == "task_name":
-        monkeypatch.setattr(task_generator_module.os, "unlink", deny_access)
-    else:
-        monkeypatch.setattr(settings, "open", deny_access, raising=False)
-    release()
+    with monkeypatch.context() as patch:
+        if kind == "task_name":
+            patch.setattr(task_generator_module.os, "unlink", deny_access)
+        else:
+            patch.setattr(settings, "open", deny_access, raising=False)
+        release()
     assert 1 <= attempts <= 20
-    assert lock_path.read_bytes() == original_owner
-    assert json.loads(original_owner)["pid"] == os.getpid()
+    assert parse_owner(lock_path.read_bytes())["pid"] == os.getpid()
+    if kind == "task_name":
+        next_reservation = generator.reserve_exact_task_name("alpha")
+        assert next_reservation is not None
+        generator.release_task_name_reservation(next_reservation)
+    else:
+        settings.save_setting_for_root(str(tmp_path), "header_refresh_interval", 6.0)
+        assert settings.load_settings(str(tmp_path))["header_refresh_interval"] == 6.0
+    assert not lock_path.exists()

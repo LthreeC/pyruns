@@ -10,19 +10,40 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       PYRUNS_AUDIT_ROOT: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: python -m pip install -e .
-      - name: Observe real Windows delete-sharing denial
+        run: python -m pip install -e ".[test]"
+      - name: Prepare the exact baseline
+        run: |
+          git archive --format=zip --output=baseline.zip 6bcf90c9056eca82a0192c163ef92436da1ac451
+          Expand-Archive -LiteralPath baseline.zip -DestinationPath .tmp-release-baseline
+      - name: Observe baseline Windows delete-sharing denial
         timeout-minutes: 2
+        env:
+          PYRUNS_AUDIT_ROOT: ${{ github.workspace }}/.tmp-release-baseline
+          PYRUNS_SOURCE_SHA: 6bcf90c9056eca82a0192c163ef92436da1ac451
+          PYRUNS_EXPECT_RELEASE_RECOVERY: '0'
+        run: python -X utf8 -u .github/check_other_lock_release.py test-results/other-lock-release-baseline.json
+      - name: Verify recovery after real Windows delete-sharing denial
+        timeout-minutes: 2
+        env:
+          PYRUNS_EXPECT_RELEASE_RECOVERY: '1'
         run: python -X utf8 -u .github/check_other_lock_release.py test-results/other-lock-release.json
+      - name: Compare ordinary operation costs
+        timeout-minutes: 2
+        run: python -X utf8 -u .github/benchmark_other_locks.py --baseline .tmp-release-baseline --candidate . --output test-results/operation-cost.json
+      - name: Existing lock and settings regressions
+        timeout-minutes: 4
+        run: python -X utf8 -m pytest -q tests/test_lock_contention.py tests/test_transactional_creation.py tests/test_utils.py tests/test_workspace_path_safety.py --junitxml=test-results/pytest.xml
       - name: Preserve observations
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

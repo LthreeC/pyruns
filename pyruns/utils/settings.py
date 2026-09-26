@@ -23,6 +23,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.info_io import validate_workspace_file
 from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.lock_owner import RELEASED_LOCK_SUFFIX, mark_json_lock_released, parse_json_lock_owner
 
 from pyruns._config import (
     SETTINGS_FILENAME,
@@ -174,20 +175,7 @@ def _settings_lock_owner_bytes() -> bytes:
 
 
 def _settings_lock_owner(content: bytes) -> Dict[str, Any] | None:
-    try:
-        owner = json.loads(content.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(owner, dict):
-        return None
-    pid = owner.get("pid")
-    host = owner.get("host")
-    token = owner.get("token")
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-        return None
-    if not isinstance(host, str) or not host or not isinstance(token, str) or not token:
-        return None
-    return owner
+    return parse_json_lock_owner(content)
 
 
 def _settings_lock_is_stale(
@@ -200,6 +188,8 @@ def _settings_lock_is_stale(
     owner = _settings_lock_owner(snapshot[1])
     if owner is None:
         return age >= max(0.0, min_age_sec)
+    if snapshot[1].endswith(RELEASED_LOCK_SUFFIX):
+        return True
     if owner["host"].lower() != _SETTINGS_LOCK_OWNER_HOST:
         return False
 
@@ -285,6 +275,17 @@ def _release_settings_lock(lock_path: str, owner: bytes) -> None:
             return
 
 
+def _close_settings_lock(fd: int, lock_path: str, owner: bytes) -> None:
+    try:
+        owner = mark_json_lock_released(fd, owner)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        _release_settings_lock(lock_path, owner)
+
+
 def _open_settings_lock(
     path: str,
     timeout_sec: float = _SETTINGS_LOCK_TIMEOUT_SEC,
@@ -295,7 +296,7 @@ def _open_settings_lock(
     deadline = time.monotonic() + max(0.0, timeout_sec)
     while True:
         try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
         except FileExistsError as exc:
             validate_workspace_file(lock_path, lock_dir, label="Settings lock file")
             if _remove_stale_settings_lock(lock_path):
@@ -576,7 +577,7 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
             # Scalars use surgical replacements to preserve template comments.
             # Mapping/list values use one canonical dump, matching the prior
             # single-setting behavior while still committing the whole batch once.
-            if has_unknown_keys or any(
+            if not loaded or has_unknown_keys or any(
                 isinstance(value, (dict, list)) for value in updates.values()
             ):
                 loaded.update(updates)
@@ -611,11 +612,7 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-            try:
-                os.close(lock_fd)
-            except OSError:
-                pass
-            _release_settings_lock(lock_path, lock_owner)
+            _close_settings_lock(lock_fd, lock_path, lock_owner)
 
         _cached.update(updates)
 
@@ -660,7 +657,7 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
                 for item_key, item_value in loaded.items()
                 if item_key in SETTINGS_DEFAULTS and item_key != key
             }
-            if has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
+            if not known or has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
                 new_text = OmegaConf.to_yaml(
                     OmegaConf.create(known),
                     resolve=False,
@@ -685,10 +682,6 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-            try:
-                os.close(lock_fd)
-            except OSError:
-                pass
-            _release_settings_lock(lock_path, lock_owner)
+            _close_settings_lock(lock_fd, lock_path, lock_owner)
 
         _cached[key] = SETTINGS_DEFAULTS[key]

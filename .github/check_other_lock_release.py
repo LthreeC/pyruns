@@ -17,7 +17,9 @@ def observe(root, kind, mode, settings, generator_module, kernel):
     directory = root / f"{kind}-{mode}"
     directory.mkdir()
     generator = generator_module.TaskGenerator(str(directory)) if kind == "task_name" else None
-    lock_path = (Path(settings._settings_path(str(directory)) + ".lock") if kind == "settings"
+    if kind == "settings_unset":
+        settings.save_settings_for_root(str(directory), {"header_refresh_interval": 3.0, "ui_port": 8099})
+    lock_path = (Path(settings._settings_path(str(directory)) + ".lock") if generator is None
                  else Path(generator._task_name_lock_path("alpha")))
     result = {"kind": kind, "mode": mode, "events": []}
     reader = [None]
@@ -79,9 +81,12 @@ def observe(root, kind, mode, settings, generator_module, kernel):
     try:
         with patch.object(os, "replace", record(os.replace)), patch.object(os, "remove", record(os.remove)), \
              patch.object(os, "unlink", record(os.unlink)):
-            if kind == "settings":
+            if generator is None:
                 with patch.object(settings, "_release_settings_lock", release_settings):
-                    settings.save_setting_for_root(str(directory), "header_refresh_interval", 3.0)
+                    if kind == "settings_unset":
+                        settings.unset_setting_for_root(str(directory), "header_refresh_interval")
+                    else:
+                        settings.save_setting_for_root(str(directory), "header_refresh_interval", 3.0)
             else:
                 reservation = generator.reserve_exact_task_name("alpha")
                 assert reservation is not None
@@ -96,7 +101,7 @@ def observe(root, kind, mode, settings, generator_module, kernel):
         if lock_path.exists():
             result["remaining_owner"] = lock_path.read_text(encoding="utf-8")
         attempt = time.monotonic()
-        if kind == "settings":
+        if generator is None:
             try:
                 settings.save_setting_for_root(str(directory), "header_refresh_interval", 4.0)
             except TimeoutError as error:
@@ -137,8 +142,11 @@ def main(output):
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     modules = {"settings": settings, "task_generator": task_generator}
+    if "pyruns.utils.lock_owner" in sys.modules:
+        modules["lock_owner"] = sys.modules["pyruns.utils.lock_owner"]
     assert all(Path(module.__file__).resolve().is_relative_to(source_root) for module in modules.values())
-    report = {"completed": False, "observations": [], "source_sha": os.environ["GITHUB_SHA"],
+    report = {"completed": False, "observations": [],
+              "source_sha": os.environ.get("PYRUNS_SOURCE_SHA", os.environ["GITHUB_SHA"]),
               "module_sha256": {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
                                 for name, module in modules.items()},
               "settings_timeout_seconds": settings._SETTINGS_LOCK_TIMEOUT_SEC,
@@ -147,10 +155,15 @@ def main(output):
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="pyruns-other-lock-release-") as directory:
-            for kind in ("settings", "task_name"):
+            for kind in ("settings", "settings_unset", "task_name"):
                 for mode in ("unblocked", "short-reader", "reader-through-release"):
                     report["observations"].append(observe(Path(directory), kind, mode, settings, task_generator, kernel))
                     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        for row in report["observations"]:
+            expected = "completed"
+            if os.environ.get("PYRUNS_EXPECT_RELEASE_RECOVERY") == "0" and row["mode"] == "reader-through-release":
+                expected = "refused" if row["kind"] == "task_name" else "timeout"
+            assert row["next_operation"]["status"] == expected, row
         report["completed"] = True
     except Exception:
         report["error"] = traceback.format_exc()
