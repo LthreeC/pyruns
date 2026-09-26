@@ -3446,6 +3446,13 @@ def test_settings_writes_remove_unknown_keys_and_unset_removes_override(tmp_path
     assert "monitor_scrollback" not in saved
     assert settings.reload_settings(str(root))["monitor_scrollback"] == settings.SETTINGS_DEFAULTS["monitor_scrollback"]
 
+    settings.unset_setting_for_root(str(root), "ui_port")
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {}
+    assert settings.reload_settings(str(root))["ui_port"] == settings.SETTINGS_DEFAULTS["ui_port"]
+    settings.save_setting_for_root(str(root), "ui_port", 8124)
+    assert yaml.safe_load(path.read_text(encoding="utf-8")) == {"ui_port": 8124}
+    assert settings.reload_settings(str(root))["ui_port"] == 8124
+
 
 def test_unset_setting_for_root_is_atomic_when_replace_fails(tmp_path, monkeypatch):
     root = tmp_path / "root"

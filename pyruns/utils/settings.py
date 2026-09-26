@@ -576,7 +576,7 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
             # Scalars use surgical replacements to preserve template comments.
             # Mapping/list values use one canonical dump, matching the prior
             # single-setting behavior while still committing the whole batch once.
-            if has_unknown_keys or any(
+            if not loaded or has_unknown_keys or any(
                 isinstance(value, (dict, list)) for value in updates.values()
             ):
                 loaded.update(updates)
@@ -660,7 +660,7 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
                 for item_key, item_value in loaded.items()
                 if item_key in SETTINGS_DEFAULTS and item_key != key
             }
-            if has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
+            if not known or has_unknown_keys or isinstance(SETTINGS_DEFAULTS[key], (dict, list)):
                 new_text = OmegaConf.to_yaml(
                     OmegaConf.create(known),
                     resolve=False,
