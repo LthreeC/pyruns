@@ -215,6 +215,12 @@ def _path_is_link_or_reparse(path: str) -> bool:
         info = os.lstat(path)
     except OSError:
         return False
+    return _stat_is_link_or_reparse(info)
+
+
+def _stat_is_link_or_reparse(info: os.stat_result | None) -> bool:
+    if info is None:
+        return False
     attributes = int(getattr(info, "st_file_attributes", 0) or 0)
     reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
     return stat.S_ISLNK(info.st_mode) or bool(attributes & reparse_flag)
@@ -247,15 +253,19 @@ def validate_workspace_directory(workspace_dir: str) -> None:
     """Reject a managed workspace directory redirected through link metadata."""
 
     absolute = os.path.abspath(workspace_dir)
-    _validate_managed_ancestor_chain(absolute)
-    if os.path.lexists(absolute):
-        if _path_is_link_or_reparse(absolute):
-            raise ValueError(
-                "Workspace directory must not be a symlink, junction, "
-                f"or reparse point: {workspace_dir}"
-            )
-        if not os.path.isdir(absolute):
-            raise ValueError(f"Workspace path must be a directory: {workspace_dir}")
+    info = _validate_managed_ancestor_chain(absolute)
+    if info is None:
+        try:
+            info = os.lstat(absolute)
+        except (OSError, ValueError):
+            return
+    if _stat_is_link_or_reparse(info):
+        raise ValueError(
+            "Workspace directory must not be a symlink, junction, "
+            f"or reparse point: {workspace_dir}"
+        )
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"Workspace path must be a directory: {workspace_dir}")
 
 
 def validate_tasks_root(tasks_dir: str) -> None:
@@ -285,15 +295,21 @@ def _managed_ancestor_paths(absolute: str) -> tuple[str, ...]:
         current = parent
 
 
-def _validate_managed_ancestor_chain(path: str) -> None:
-    """Reject links from ``_pyruns_`` through an existing managed path."""
+def _validate_managed_ancestor_chain(path: str) -> os.stat_result | None:
+    """Recheck managed ancestors and return this call's leaf metadata for reuse."""
 
+    info = None
     for current in _managed_ancestor_paths(os.path.abspath(path)):
-        if _path_is_link_or_reparse(current):
+        try:
+            info = os.lstat(current)
+        except OSError:
+            info = None
+        if _stat_is_link_or_reparse(info):
             raise ValueError(
                 "Managed workspace path must not contain a symlink, junction, "
                 f"or reparse point: {current}"
             )
+    return info
 
 
 def validate_task_directory(task_dir: str, *, _resolved_paths: dict[str, str | None] | None = None) -> None:
