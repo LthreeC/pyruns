@@ -7373,9 +7373,7 @@ def test_logs_websocket_stream_accepts_run_log_emitter_chunk_after_queue_offset(
 def test_logs_websocket_stream_uses_bounded_queue():
     source = WEB_APP.read_text(encoding="utf-8")
 
-    assert "LOG_STREAM_QUEUE_LIMIT" in source
     assert "LOG_STREAM_TAIL_INTERVAL_SEC" in source
-    assert "LOG_STREAM_EMITTER_QUIET_SEC" in source
     assert "tail_log_file" in source
     assert "tail_lines=0" in source
     assert "emitter_quiet = time.monotonic() - last_emitter_chunk_at >= LOG_STREAM_EMITTER_QUIET_SEC" in source

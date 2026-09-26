@@ -523,7 +523,6 @@ def test_react_dashboard_keeps_workspace_chrome_compact():
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
     assert "working_root?: string" in types
-    assert "getWorkspaceWorkingPath" in source
     assert "const workspaceWorkingPath = getWorkspaceWorkingPath(workspace)" in source
     assert "title={workspaceWorkingPath || ''}" in source
     assert "{workspaceWorkingPath || 'Choose a workspace to start'}" in source
@@ -620,14 +619,12 @@ def test_react_app_sidebar_can_be_resized_and_persisted():
     shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
 
-    assert "SIDEBAR_WIDTH_STORAGE_KEY" in shell
     assert "clampSidebarWidth" in shell
     assert "startSidebarResize" in shell
     assert "pointermove" in shell
     assert "window.addEventListener('pointercancel', stopResize)" in shell
     assert "window.removeEventListener('pointercancel', stopResize)" in shell
     assert "pendingSidebarWidthRef" in shell
-    assert "sidebarResizeFrameRef" in shell
     assert "window.requestAnimationFrame(applyPendingSidebarWidth)" in shell
     assert "window.cancelAnimationFrame(sidebarResizeFrameRef.current)" in shell
     assert "localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY" in shell
@@ -698,7 +695,6 @@ def test_react_manager_batch_run_sends_only_worker_count():
     assert "const maxWorkers = normalizeWorkerInput(maxWorkersInput)" in manager
     assert "setMaxWorkersInput(String(maxWorkers))" in manager
     assert "await api.batchRunTasks(names, maxWorkers)" in manager
-    assert "Workers" in manager
     assert "value={maxWorkersInput}" in manager
     assert "body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers })" in api
     assert "execution_mode" not in api
@@ -845,10 +841,8 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
     types = FRONTEND_TYPES.read_text(encoding="utf-8")
 
-    assert "LOG_STREAM_FLUSH_MS" in source
     assert "type PendingLiveLogChunk" in source
     assert "pendingLiveLogChunkRef" in source
-    assert "flushLiveLogChunkBuffer" in source
     assert "window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)" in source
     assert "chunks: [] as PendingLiveLogChunk[]" in source
     assert "const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)" in source
@@ -1005,7 +999,6 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "renderedLogRef" in source
-    assert "appendedMonitorLogDelta" in source
     assert "return previous ? null : ''" in source
     assert "if (previous.endsWith(next))" in source
     assert "next.startsWith(previous.slice(candidate))" in source
@@ -1018,7 +1011,6 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
 def test_react_monitor_supports_configurable_terminal_line_height():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
-    assert "resolveMonitorLineHeight" in source
     assert "const monitorLineHeight = resolveMonitorLineHeight(workspace?.settings)" in source
     assert "lineHeight: DEFAULT_MONITOR_LINE_HEIGHT" in source
     assert "xtermRef.current.options.lineHeight = monitorLineHeight" in source
@@ -1034,8 +1026,6 @@ def test_react_code_editor_focuses_from_blank_editor_area():
     assert "CodeTextEditor" in generator
     assert "CodeTextEditor" in runtime_panel
     assert "function CodeTextEditor" in editor
-    assert "editorViewRef" in editor
-    assert "focusEditorFromBlankArea" in editor
     assert "target.closest('.cm-content')" in editor
     assert "target.closest('.cm-gutters')" in editor
     assert "target.closest('button')" in editor
@@ -1165,7 +1155,6 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "function boundedNumberInputValue(value: string, fallback: number, minimum: number, maximum: number)" in runtime_panel
     assert "return Array.from(new Set(" in runtime_panel
     assert "const selectedGpuIds = useMemo(() => parseDeviceIds(gpuDeviceIds)" in runtime_panel
-    assert "gpuValidationIssues" in runtime_panel
     assert "free is not possible" in runtime_panel
     assert "loadGpuMetrics" in runtime_panel
     assert "passingGpuCount" in runtime_panel
@@ -1301,7 +1290,6 @@ def test_react_launcher_tracks_load_scripts_that_require_yaml_template():
 
     assert "LauncherConfigsResponse" in api
     assert "requires_config_template" in types
-    assert "requiresConfigTemplate" in store
     assert "requiresConfigTemplate: Boolean(res.requires_config_template)" in store
     assert "requiresConfigTemplate: false" in store
 
@@ -1341,10 +1329,8 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
 
     assert "layoutMode?: FormLayoutMode" in generator
     assert "const treeParamRow = layoutMode === 'tree'" in generator
-    assert "treeParamRow" in generator
     assert "grid min-h-10 grid-cols-[24px_minmax(0,1fr)]" in generator
     assert "sm:grid-cols-[24px_minmax(150px,0.95fr)_minmax(150px,1.05fr)]" in generator
-    assert "border-border bg-surface-raised" in generator
     assert "treeParamRow ? 'min-w-0' : 'flex-1'" in generator
     assert "treeParamRow ? 'min-w-0 justify-start' : 'flex-none justify-end'" in generator
     assert "treeParamRow ? 'col-start-2 min-w-0 w-full sm:col-start-auto' : 'ml-auto min-w-0 flex-1'" in generator
@@ -1355,9 +1341,7 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "if (!treeParamRow)" in generator
     assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
-    assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
     assert "h-6 w-full rounded-md border bg-[var(--input-bg)]" in generator
-    assert "focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
     assert "hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
     assert "focus-visible:ring-2 focus-visible:ring-accent/30" in toggle_switch
