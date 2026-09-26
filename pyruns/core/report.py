@@ -71,19 +71,21 @@ def _build_export_rows(
     all_rows: List[Dict[str, Any]] = []
     for t in tasks:
         name = t.get("name", "")
-        status = str(t.get("status", "") or "").lower()
-        starts = t.get("start_times") or []
-        finishes = t.get("finish_times") or []
-        pids = t.get("pids") or []
-        durations = t.get("durations") or []
-        exit_codes = t.get("exit_codes") or []
-        run_statuses = t.get("run_statuses") or []
         try:
-            data = load_task_metadata(t["dir"], raise_error=True).get("records", [])
+            info = load_task_metadata(t["dir"], raise_error=True)
         except (OSError, ValueError) as exc:
             raise ValueError(f"Cannot export task '{name}': could not read task metadata ({exc})") from exc
 
-        n_runs = max(run_slot_count(t), len(data))
+        # A rerun may have started since selection; keep lifecycle and records together.
+        status = str(info.get("status", "") or "").lower()
+        starts = info.get("start_times") or []
+        finishes = info.get("finish_times") or []
+        pids = info.get("pids") or []
+        durations = info.get("durations") or []
+        exit_codes = info.get("exit_codes") or []
+        run_statuses = info.get("run_statuses") or []
+        data = info.get("records", [])
+        n_runs = run_slot_count(info)
 
         for i in range(n_runs):
             exit_code = exit_codes[i] if i < len(exit_codes) else ""

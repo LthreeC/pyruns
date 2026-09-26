@@ -9919,7 +9919,7 @@ class TestTaskGeneratorCreateTasks:
 #  Report — CSV and JSON export
 
 
-def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=None):
+def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=None, **metadata):
     """Create a task dict with a real task_info.json on disk."""
     task_dir = str(tmp_path / name)
     os.makedirs(task_dir, exist_ok=True)
@@ -9932,16 +9932,10 @@ def _make_task(tmp_path, name, records=None, starts=None, finishes=None, pids=No
     }
     if records is not None:
         info[RECORDS_KEY] = records
+    info.update(metadata)
     with open(os.path.join(task_dir, TASK_INFO_FILENAME), "w") as f:
         json.dump(info, f)
-    return {
-        "name": name,
-        "status": "completed",
-        "dir": task_dir,
-        "start_times": info["start_times"],
-        "finish_times": info["finish_times"],
-        "pids": info["pids"],
-    }
+    return {**info, "dir": task_dir}
 
 
 class TestBuildExportCSV:
@@ -9953,8 +9947,7 @@ class TestBuildExportCSV:
             '{"name":"invalid-exit","status":"failed","run_index":1,"exit_codes":[' + exit_literal + ']}'
         )
         task.update(load_task_info(task["dir"], raise_error=True))
-        healthy = _make_task(tmp_path, "healthy")
-        healthy["exit_codes"] = [0]
+        healthy = _make_task(tmp_path, "healthy", exit_codes=[0])
 
         rows = list(csv.DictReader(io.StringIO(build_export_csv([task, healthy]))))
         assert [(row["name"], row["status"]) for row in rows] == [
@@ -9964,9 +9957,7 @@ class TestBuildExportCSV:
             build_export_json([task, healthy])
 
     def test_single_task_single_run(self, tmp_path):
-        task = _make_task(tmp_path, "t1", records=[{"loss": 0.5, "acc": 92}])
-        task["durations"] = [12.345]
-        task["exit_codes"] = [0]
+        task = _make_task(tmp_path, "t1", records=[{"loss": 0.5, "acc": 92}], durations=[12.345], exit_codes=[0])
         csv_str = build_export_csv([task])
         reader = csv.DictReader(io.StringIO(csv_str))
         rows = list(reader)
@@ -10020,8 +10011,8 @@ class TestBuildExportCSV:
             tmp_path,
             "safe-name",
             records=[{"name": "spoofed", "status": "running", "run": 999, "loss": 0.5}],
+            exit_codes=[0],
         )
-        task["exit_codes"] = [0]
 
         row = next(csv.DictReader(io.StringIO(build_export_csv([task]))))
 
@@ -10031,9 +10022,8 @@ class TestBuildExportCSV:
         assert row["loss"] == "0.5"
 
     def test_formula_like_values_are_neutralized_for_spreadsheets(self, tmp_path):
-        task = _make_task(tmp_path, "formula", records=[{"note": "+cmd", "=dangerous-header": "value"}])
+        task = _make_task(tmp_path, "formula", records=[{"note": "+cmd", "=dangerous-header": "value"}], exit_codes=[0])
         task["name"] = "=HYPERLINK(\"https://example.invalid\")"
-        task["exit_codes"] = [0]
 
         row = next(csv.DictReader(io.StringIO(build_export_csv([task]))))
 
@@ -10183,24 +10173,32 @@ class TestBuildExportJSON:
         task = _make_task(
             tmp_path,
             "rerun",
-            records=[{}, {}],
-            starts=["first", "second"],
-            finishes=["first-done", "second-done"],
-            pids=[111, 222],
+            records=[{"loss": 0.5}], starts=["first"], finishes=["first-done"], pids=[111],
+            status="cancelled", exit_codes=[7], run_statuses=["cancelled"], durations=[1.0],
         )
-        task["status"] = "completed"
-        task["exit_codes"] = [7, 0]
-        task["run_statuses"] = ["cancelled", "completed"]
+        # A rerun may update disk after task selection, before report generation.
+        update_task_info(
+            task["dir"],
+            lambda info: info.update(
+                status="completed", run_index=2, records=[{"loss": 0.5}, {"loss": 0.1}],
+                start_times=["first", "second"], finish_times=["first-done", "second-done"],
+                pids=[111, 222], exit_codes=[7, 0], run_statuses=["cancelled", "completed"], durations=[1.0, 2.0],
+            ),
+        )
 
         rows = json.loads(build_export_json([task]))
 
-        assert [row["status"] for row in rows] == ["cancelled", "completed"]
+        assert rows == [
+            {"name": "rerun", "status": "cancelled", "run": 1, "start_time": "first", "finish_time": "first-done",
+             "duration_seconds": 1.0, "exit_code": 7, "pid": 111, "loss": 0.5},
+            {"name": "rerun", "status": "completed", "run": 2, "start_time": "second", "finish_time": "second-done",
+             "duration_seconds": 2.0, "exit_code": 0, "pid": 222, "loss": 0.1},
+        ]
         completed_only = json.loads(build_export_json([task], statuses={"completed"}))
         assert [row["run"] for row in completed_only] == [2]
 
     def test_rejects_non_finite_json_metrics(self, tmp_path):
-        task = _make_task(tmp_path, "nan", records=[{"loss": float("nan")}])
-        task["exit_codes"] = [0]
+        task = _make_task(tmp_path, "nan", records=[{"loss": float("nan")}], exit_codes=[0])
 
         with pytest.raises(ValueError, match="JSON"):
             build_export_json([task])
