@@ -45,11 +45,20 @@ jobs:
           ruff check pyruns scripts --output-format github
           ty check --output-format github --python "$(python -c 'import sys; print(sys.executable)')"
       - name: Test
+        if: runner.os != 'Windows'
         timeout-minutes: 15
         shell: bash
         run: |
           mkdir -p test-results
           python -u -m pytest -v -o faulthandler_timeout=60 --junitxml=test-results/pytest.xml 2>&1 | tee test-results/pytest.log
+      - name: Test Windows
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path test-results | Out-Null
+          python -u -m pytest -v -o faulthandler_timeout=60 --junitxml=test-results/pytest.xml 2>&1 | Tee-Object -FilePath test-results/pytest.log
+          exit $LASTEXITCODE
       - name: Upload Python test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
