@@ -1564,6 +1564,7 @@ def run_task_worker(
     workdir = None
     cleanup_paths: List[str] = []
     proc = None
+    output_closed = False
     status = "failed"
     progress = 0.0
     start_str = ""
@@ -2119,6 +2120,7 @@ def run_task_worker(
         close_output = getattr(proc, "close_output", None)
         if callable(close_output):
             close_output()
+            output_closed = True
         _join_source_state()
         reader_thread.join(timeout=_OUTPUT_READER_DRAIN_TIMEOUT_SEC)
         if reader_thread.is_alive():
@@ -2268,6 +2270,7 @@ def run_task_worker(
         if callable(close_output):
             try:
                 close_output()
+                output_closed = True
             except Exception as close_exc:
                 logger.debug("Failed to close captured output for %s: %s", name, close_exc)
         _capture_process_metrics()
@@ -2336,6 +2339,13 @@ def run_task_worker(
             "error": str(exc),
         }
     finally:
+        if proc is not None and not output_closed:
+            close_output = getattr(proc, "close_output", None)
+            if callable(close_output):
+                try:
+                    close_output()
+                except Exception as close_exc:
+                    logger.debug("Failed to close captured output for %s: %s", name, close_exc)
         _join_source_state()
         heartbeat_stop.set()
         if heartbeat_thread is not None:

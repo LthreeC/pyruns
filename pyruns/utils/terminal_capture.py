@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import errno
 import os
+import select
 import subprocess
+import sys
 import time
 from typing import Any, Mapping, Sequence
 
@@ -170,14 +172,34 @@ class _WindowsPtyStdout:
 
 
 class _PosixPtyStdout:
-    def __init__(self, fd: int) -> None:
+    def __init__(
+        self, process: subprocess.Popen[Any], fd: int, slave_fd: int = -1,
+    ) -> None:
+        self._process = process
         self._fd = int(fd)
+        self._slave_fd = int(slave_fd)
         self._filter = _SgrOutputFilter()
+        self._poller = None
+        if slave_fd >= 0:
+            self._poller = select.poll()
+            self._poller.register(fd, select.POLLIN)
 
     def read1(self, size: int) -> bytes:
         while True:
+            fd = self._fd
+            if fd < 0:
+                return self._filter.finish()
             try:
-                data = os.read(self._fd, max(1, int(size)))
+                if self._poller is not None:
+                    # Keeping a slave open prevents macOS from flushing the
+                    # unread tail. It also suppresses EOF, so check the child
+                    # before polling and drain everything queued at its exit.
+                    exited = self._process.poll() is not None
+                    if not self._poller.poll(0 if exited else 50):
+                        if exited:
+                            return self._filter.finish()
+                        continue
+                data = os.read(fd, max(1, int(size)))
             except OSError as exc:
                 if exc.errno in {errno.EBADF, errno.EIO}:
                     return self._filter.finish()
@@ -189,13 +211,14 @@ class _PosixPtyStdout:
                 return filtered
 
     def close(self) -> None:
-        if self._fd < 0:
-            return
-        try:
-            os.close(self._fd)
-        except OSError:
-            pass
-        self._fd = -1
+        descriptors = (self._fd, self._slave_fd)
+        self._fd = self._slave_fd = -1
+        for fd in descriptors:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 class WindowsConPtyProcessAdapter:
@@ -252,11 +275,13 @@ class WindowsConPtyProcessAdapter:
 class PosixPtyProcessAdapter:
     """Expose a Popen process with its PTY master as captured stdout."""
 
-    def __init__(self, process: subprocess.Popen[Any], master_fd: int) -> None:
+    def __init__(
+        self, process: subprocess.Popen[Any], master_fd: int, slave_fd: int = -1,
+    ) -> None:
         self._process = process
         self.args = process.args
         self.pid = int(process.pid)
-        self.stdout = _PosixPtyStdout(master_fd)
+        self.stdout = _PosixPtyStdout(process, master_fd, slave_fd)
 
     @property
     def returncode(self) -> int | None:
@@ -341,6 +366,7 @@ def _spawn_posix_pty(
 
     rows, columns = _terminal_dimensions(env)
     master_fd, slave_fd = pty.openpty()
+    keep_slave = sys.platform == "darwin"
     try:
         fcntl.ioctl(
             slave_fd,
@@ -358,12 +384,16 @@ def _spawn_posix_pty(
             start_new_session=True,
             close_fds=True,
         )
-    except Exception:
+        return PosixPtyProcessAdapter(
+            process, master_fd, slave_fd if keep_slave else -1,
+        )
+    except BaseException:
+        keep_slave = False
         os.close(master_fd)
         raise
     finally:
-        os.close(slave_fd)
-    return PosixPtyProcessAdapter(process, master_fd)
+        if not keep_slave:
+            os.close(slave_fd)
 
 
 def spawn_terminal_process(

@@ -1,5 +1,7 @@
 """Streaming log regressions; these tests never launch a native console."""
 
+import os
+import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -116,3 +118,26 @@ def test_windows_without_an_attached_console_skips_conpty(monkeypatch):
             cwd=".",
             env={},
         )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX pseudoterminal")
+def test_posix_capture_keeps_completed_output_until_read(monkeypatch):
+    from pyruns.utils import terminal_capture
+
+    # Exercise the retained slave on Linux too; macOS discards unread output
+    # when the last slave closes, even while the master is still open.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    process = terminal_capture.spawn_terminal_process(
+        [sys.executable, "-c",
+         "import os; os.write(1, b'\\x1b[31malpha\\nbeta'); raise SystemExit(7)"],
+        cwd=None,
+        env=os.environ,
+    )
+    try:
+        assert process.wait(timeout=5) == 7
+        output = b"".join(iter(lambda: process.stdout.read1(3), b""))
+        assert output.replace(b"\r\n", b"\n") == b"\x1b[31malpha\nbeta\x1b[0m"
+        assert process.stdout.read1(3) == b""
+    finally:
+        process.close_output()
+        process.close_output()
