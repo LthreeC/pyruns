@@ -6404,7 +6404,7 @@ def test_task_manager_discovers_implicit_shell_payload_after_creation(tmp_path, 
     read_payload = task_manager_module.read_task_payload_snapshot
 
     def read_after_preferred_file_appears(*args, **kwargs):
-        (task_dir / SHELL_CONFIG_FILENAME).write_text("echo preferred\n", encoding="utf-8")
+        (task_dir / SHELL_CONFIG_FILENAME).write_text("echo preferred\n", encoding="utf-8", newline="\n")
         return read_payload(*args, **kwargs)
 
     with monkeypatch.context() as patcher:
