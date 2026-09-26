@@ -1,0 +1,31 @@
+name: Windows anchored path profile
+
+on:
+  push:
+    branches: [codex/windows-anchor-profile]
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      PYRUNS_AUDIT_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Profile the current first request
+        run: python -u .github/profile_first_load.py test-results/first-load 10000 profile
+      - name: Preserve current timings and correctness checks
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-anchored-path-profile
+          path: test-results/first-load/
+          retention-days: 14
