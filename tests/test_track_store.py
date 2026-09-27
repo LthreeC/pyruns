@@ -38,21 +38,88 @@ def externalize(task):
     assert track_store.TRACK_STORE_KEY in load_task_metadata(str(task), raise_error=True)
 
 
-def test_inline_migration_and_append_preserve_exact_history(task):
-    for value in (0, 1, 2):
-        pyruns.track(loss=value)
+def test_inline_migration_and_append_preserve_exact_history(task, monkeypatch):
+    pyruns.track_many({"loss": value} for value in (0, 1))
+    pyruns.track(loss=2)
     raw = json.loads((task / "task_info.json").read_text())
     assert raw["tracks"] == [{"loss": [0, 1, 2]}]
     assert "track_store" not in raw
 
-    pyruns.track(loss=3)
+    pyruns.track_many([{"loss": 3}, {"loss": 4}])
     raw = json.loads((task / "task_info.json").read_text())
     assert raw["tracks"] == [{}]
     before = (task / "task_info.json").read_bytes()
-    for value in (4, 5, 6):
-        pyruns.track(loss=value)
+    pyruns.track_many([{"loss": 5}, {"loss": 6}])
+    pyruns.track(loss=7)
     assert (task / "task_info.json").read_bytes() == before
-    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": list(range(7))}]
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": list(range(8))}]
+    monkeypatch.setenv(ENV_KEY_RUN_INDEX, "2")
+    pyruns.track_many([{"key": 0, "value": 1}, {"key": 1, "loss": 9}])
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [
+        {"loss": list(range(8))}, {"key": [0, 1], "value": [1], "loss": [9]},
+    ]
+
+
+def test_track_many_snapshots_input_before_retrying(task, monkeypatch):
+    original = info_io.append_task_track_payloads
+    point = {"loss": [0]}
+    consumed, attempts = [], []
+
+    def points():
+        for value in (0, 1):
+            point["loss"][0] = value
+            consumed.append(value)
+            yield point
+        point["loss"][0] = 99
+
+    def busy_once(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("busy before acquiring the write lock")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(info_io, "append_task_track_payloads", busy_once)
+    pyruns.track_many(points())
+    assert consumed == [0, 1] and len(attempts) == 2
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [[0], [1]]}]
+
+
+@pytest.mark.parametrize("invalid", ["item", "key", "nan", "bytes", "count", "iterator"])
+def test_track_many_rejects_the_entire_invalid_batch(task, monkeypatch, capsys, invalid):
+    externalize(task)
+    monkeypatch.setattr(pyruns, "_metric_warning_keys", set())
+    monkeypatch.setattr(track_store, "MAX_TRACK_EVENT_BYTES", 40)
+    monkeypatch.setattr(track_store, "MAX_TRACK_BATCH_POINTS", 2)
+    before = load_task_info(str(task), raise_error=True)
+
+    def points():
+        yield {"loss": "x" * 15 if invalid == "bytes" else 4}
+        if invalid == "iterator":
+            raise OSError("failed while reading input")
+        value = float("nan") if invalid == "nan" else ("x" * 15 if invalid == "bytes" else 5)
+        key = 0 if invalid == "key" else "loss"
+        yield None if invalid == "item" else {key: value}
+        if invalid == "count":
+            yield {"loss": 6}
+
+    pyruns.track_many(points())
+    assert load_task_info(str(task), raise_error=True) == before
+    assert capsys.readouterr().err.count("track_many() could not save metrics") == 1
+
+
+def test_track_many_skips_empty_batches_and_untracked_iterators(task, monkeypatch):
+    before = (task / "task_info.json").read_bytes()
+    monkeypatch.setattr(info_io, "task_info_lock", lambda *a, **kw: pytest.fail("empty batch acquired a write lock"))
+    pyruns.track_many(iter(()))
+    pyruns.track_many([{}, {}])
+    assert (task / "task_info.json").read_bytes() == before
+    monkeypatch.delenv(ENV_KEY_CONFIG)
+
+    def unused():
+        pytest.fail("untracked iterator was consumed")
+        yield {}
+
+    pyruns.track_many(unused())
 
 
 def test_record_and_lifecycle_updates_do_not_read_external_history(task, monkeypatch):
@@ -203,7 +270,7 @@ def test_concurrent_track_and_record_updates_preserve_all_values_and_run_isolati
     assert info["tracks"][0]["loss"] == [0, 1, 2, 3]
 
 
-def test_retry_after_committed_append_does_not_duplicate_point(task, monkeypatch):
+def test_retry_after_committed_append_does_not_duplicate_points(task, monkeypatch):
     externalize(task)
     real_connect = track_store._connect
     fail_once = True
@@ -214,6 +281,9 @@ def test_retry_after_committed_append_does_not_duplicate_point(task, monkeypatch
 
         def execute(self, *args):
             return self.connection.execute(*args)
+
+        def executemany(self, *args):
+            return self.connection.executemany(*args)
 
         def __enter__(self):
             self.connection.__enter__()
@@ -234,9 +304,10 @@ def test_retry_after_committed_append_does_not_duplicate_point(task, monkeypatch
 
     with monkeypatch.context() as patch:
         patch.setattr(track_store, "_connect", flaky_connect)
-        append_task_track(str(task), {"loss": 4})
+        pyruns.track_many([{"loss": 4}, {"loss": 5}])
     assert fail_once is False
-    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": [0, 1, 2, 3, 4]}]
+    append_task_track(str(task), {"loss": 6})
+    assert load_task_info(str(task), raise_error=True)["tracks"] == [{"loss": list(range(7))}]
 
 
 def test_failed_generation_cleanup_does_not_turn_committed_update_into_failure(task, monkeypatch):
@@ -358,8 +429,8 @@ def test_multiple_processes_preserve_every_append_and_record(task, commit_delay)
     externalize(task)
     code = """
 import sys, time
-from pyruns.utils import info_io
-from pyruns.utils.info_io import append_task_track, update_task_metadata
+from pyruns.utils import info_io, track_store
+from pyruns.utils.info_io import append_task_track, append_task_track_payloads, update_task_metadata
 directory, worker = sys.argv[1], int(sys.argv[2])
 delay = float(sys.argv[3])
 original_write = info_io._write_task_info_unlocked
@@ -368,9 +439,15 @@ def slow_write(*args, **kwargs):
         time.sleep(delay)
     return original_write(*args, **kwargs)
 info_io._write_task_info_unlocked = slow_write
-for value in range(20):
-    append_task_track(directory, {'worker': worker, 'value': worker * 100 + value})
-    update_task_metadata(directory, lambda info: info['records'][0].update({str(worker): value}))
+for start in range(0, 20, 4):
+    points = [{'worker': worker, 'value': worker * 100 + value} for value in range(start, start + 4)]
+    if worker % 2 == 0:
+        append_task_track_payloads(directory, track_store.encode_batch(points))
+    else:
+        for point in points:
+            append_task_track(directory, point)
+    for value in range(start, start + 4):
+        update_task_metadata(directory, lambda info: info['records'][0].update({str(worker): value}))
 """
     processes = [_child(code, task, worker, commit_delay) for worker in range(4)]
     try:
@@ -393,6 +470,11 @@ for value in range(20):
     assert info["records"] == [{str(worker): 19 for worker in range(4)}]
     assert sorted(info["tracks"][0]["value"]) == [worker * 100 + value for worker in range(4) for value in range(20)]
     assert all(value // 100 == worker for worker, value in zip(info["tracks"][0]["worker"], info["tracks"][0]["value"]))
+    values = info["tracks"][0]["value"]
+    for worker in (0, 2):
+        for first in range(worker * 100, worker * 100 + 20, 4):
+            index = values.index(first)
+            assert values[index:index + 4] == list(range(first, first + 4))
 
 
 @pytest.mark.parametrize("phase", ["prepared", "switched", "uncommitted"])
@@ -403,13 +485,15 @@ import os, sqlite3, sys
 from pyruns.utils import info_io, track_store
 directory, phase = sys.argv[1:]
 if phase == 'uncommitted':
-    with info_io.task_info_lock(directory):
-        descriptor = info_io.load_task_metadata(directory)['track_store']
-        with track_store._connect(directory) as connection:
-            connection.execute('PRAGMA cache_size=1')
-            connection.execute('INSERT INTO points(generation, operation, run_index, payload) VALUES (?, ?, ?, ?)',
-                               (descriptor['generation'], 'crash', 1, '{"loss":"' + 'x' * 100000 + '"}'))
+    connect = sqlite3.connect
+    class InterruptedBatch(sqlite3.Connection):
+        def executemany(self, sql, rows):
+            self.execute('PRAGMA cache_size=1')
+            self.execute(sql, next(iter(rows)))
             os._exit(23)
+    sqlite3.connect = lambda *args, **kwargs: connect(*args, factory=InterruptedBatch, **kwargs)
+    payloads = track_store.encode_batch([{'loss': 'x' * 100000}, {'loss': 4}])
+    info_io.append_task_track_payloads(directory, payloads, run_index=1)
 module, name = (track_store, 'prepare_generation') if phase == 'prepared' else (info_io, '_write_task_info_unlocked')
 original = getattr(module, name)
 def exit_after(*args, **kwargs):

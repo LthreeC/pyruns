@@ -9,7 +9,7 @@ import time
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, overload
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional, overload
 
 from ._config import (
     ARTIFACTS_DIR,
@@ -43,6 +43,7 @@ __all__ = [
     "record",
     "run_slot_count",
     "track",
+    "track_many",
     "update_task_info",
 ]
 
@@ -98,6 +99,15 @@ def _warn_metric_write_failure(
 def _write_metrics(
     operation: str,
     task_dir: str,
+    *,
+    track_payloads: tuple[str, ...],
+) -> None: ...
+
+
+@overload
+def _write_metrics(
+    operation: str,
+    task_dir: str,
     apply_update: Callable[[Dict[str, Any], int], None],
 ) -> None: ...
 
@@ -117,6 +127,7 @@ def _write_metrics(
     apply_update: Callable[[Dict[str, Any], int], None] | None = None,
     *,
     track_data: Dict[str, Any] | None = None,
+    track_payloads: tuple[str, ...] | None = None,
 ) -> None:
     """Persist metrics with bounded I/O retries and best-effort diagnostics."""
     max_attempts = 5
@@ -127,6 +138,12 @@ def _write_metrics(
                 from .utils.info_io import append_task_track
 
                 append_task_track(task_dir, track_data, run_index=run_index)
+                return
+
+            if track_payloads is not None:
+                from .utils.info_io import append_task_track_payloads
+
+                append_task_track_payloads(task_dir, track_payloads, run_index=run_index)
                 return
 
             assert apply_update is not None, "record updates require a callback"
@@ -341,6 +358,22 @@ def track(key: Optional[str] = None, value: Any = None, **kwargs) -> None:
         return
 
     _write_metrics("track", os.path.dirname(pyr_config), track_data=update_data)
+
+
+def track_many(points: Iterable[Dict[str, Any]]) -> None:
+    """Append up to 1,024 points, persisting the complete batch before returning."""
+    pyr_config = os.environ.get(ENV_KEY_CONFIG)
+    if not pyr_config:
+        return
+    try:
+        from .utils.track_store import encode_batch
+
+        payloads = encode_batch(points)
+    except Exception as error:
+        _warn_metric_write_failure("track_many", error)
+        return
+    if payloads:
+        _write_metrics("track_many", os.path.dirname(pyr_config), track_payloads=payloads)
 
 
 def get_task_dir() -> Optional[str]:
