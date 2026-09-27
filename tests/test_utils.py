@@ -1725,11 +1725,11 @@ class TestLoadSaveTaskInfo:
         real_load = info_io._load_json_object
         calls = {"count": 0}
 
-        def flaky_load(path, *, max_bytes, label):
+        def flaky_load(path, **kwargs):
             if calls["count"] == 0:
                 calls["count"] += 1
                 raise PermissionError("temporarily locked")
-            return real_load(path, max_bytes=max_bytes, label=label)
+            return real_load(path, **kwargs)
 
         with patch("pyruns.utils.info_io._load_json_object", side_effect=flaky_load), patch(
             "pyruns.utils.info_io.time.sleep"

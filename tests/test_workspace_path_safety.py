@@ -307,7 +307,7 @@ def test_relative_managed_path_tracks_working_directory_changes(tmp_path, monkey
         _unlink_directory(second / DEFAULT_ROOT_NAME)
 
 
-@pytest.mark.parametrize("operation", ["read", "write", "metadata", "task"])
+@pytest.mark.parametrize("operation", ["read", "write", "metadata", "task", "read_open", "metadata_open", "signature"])
 def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatch, operation):
     relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks" / "sample"
     first, second = tmp_path / "first", tmp_path / "second"
@@ -317,16 +317,20 @@ def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatc
         (project / relative / TASK_INFO_FILENAME).write_text(f'{{"notes": "{value}"}}', encoding="utf-8")
     alias = tmp_path / "project"
     _link_directory(alias, first)
-    module = info_io if operation == "metadata" else task_files
+    module = info_io if operation.startswith("metadata") else task_files
     validator = "_validate_contained_path" if operation == "metadata" else "validate_workspace_file"
+    if operation in {"read_open", "signature"}:
+        validator = "_read_payload_bytes"
+    elif operation == "metadata_open":
+        validator = "_load_json_object"
     if operation == "task":
         module, validator = task_manager, "read_task_payload_snapshot"
     validate = getattr(module, validator)
 
-    def switch_project_after_directory_check(path, workspace_dir, **kwargs):
+    def switch_project_after_directory_check(*args, **kwargs):
         _unlink_directory(alias)
         _link_directory(alias, second)
-        return validate(path, workspace_dir, **kwargs)
+        return validate(*args, **kwargs)
 
     monkeypatch.setattr(module, validator, switch_project_after_directory_check)
     try:
@@ -346,15 +350,19 @@ def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatc
                 assert task["_load_error"] == ""
             finally:
                 manager.shutdown()
-        elif operation == "read":
+        elif operation in {"read", "read_open"}:
             kind, config, text, error = read_task_payload(str(alias / relative), {})
             assert (kind, config, text) == (TASK_KIND_CONFIG, {}, "")
             assert "resolves outside" in error
-        elif operation == "metadata":
+        elif operation.startswith("metadata"):
             with pytest.raises(ValueError, match="resolves outside"):
                 info_io.load_task_metadata(str(alias / relative), raise_error=True)
             monkeypatch.setattr(module, validator, validate)
             assert info_io.load_task_metadata(str(alias / relative), raise_error=True)["notes"] == "second"
+        elif operation == "signature":
+            assert task_files.read_task_payload_signature(str(alias / relative), CONFIG_FILENAME) is None
+            monkeypatch.setattr(module, validator, validate)
+            assert task_files.read_task_payload_signature(str(alias / relative), CONFIG_FILENAME) is not None
         else:
             with pytest.raises(ValueError, match="resolves outside"):
                 write_task_payload(
