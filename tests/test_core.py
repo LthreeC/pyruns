@@ -3346,21 +3346,30 @@ def test_task_manager_rechecks_metadata_replaced_during_initial_load(tmp_path):
     assert manager.get_task("sample")["notes"] == "after!"
 
 
-def test_task_manager_reports_corrupt_metadata_and_recovers(tmp_path):
+@pytest.mark.parametrize("failure", ["corrupt", "initial_unavailable"])
+def test_task_manager_reports_metadata_errors_and_recovers(tmp_path, failure):
     task_dir = tmp_path / "sample"
     task_dir.mkdir()
-    save_task_info(str(task_dir), {"status": "pending"})
+    info = {"status": "pending", "notes": "keep"}
+    save_task_info(str(task_dir), info)
     (task_dir / CONFIG_FILENAME).write_text("epochs: 1\n", encoding="utf-8")
-    manager = _make_task_manager(tmp_path)
+    manager = _make_task_manager(tmp_path, lazy_scan=None)
     info_path = task_dir / TASK_INFO_FILENAME
 
-    info_path.write_text("{broken", encoding="utf-8")
-    assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
+    if failure == "initial_unavailable":
+        with patch("pyruns.core.task_manager.load_task_metadata", side_effect=PermissionError("temporarily unavailable")):
+            manager.scan_disk()
+    else:
+        manager.scan_disk()
+        info_path.write_text("{broken", encoding="utf-8")
+        assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
     assert "Could not load task metadata" in manager.get_task("sample")["_load_error"]
 
-    save_task_info(str(task_dir), {"status": "pending"})
+    if failure == "corrupt":
+        save_task_info(str(task_dir), info)
     assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
     assert manager.get_task("sample")["_load_error"] == ""
+    assert manager.get_task("sample")["notes"] == "keep"
 
 
 def test_task_manager_refreshes_edited_shell_payload(tmp_path):
@@ -3846,7 +3855,7 @@ def test_task_manager_loads_many_task_dirs_in_order(tmp_path, monkeypatch, sampl
     loader_threads = []
     main_thread = threading.get_ident()
 
-    def load(name, *, raise_on_error=False):
+    def load(name, **_kwargs):
         loader_threads.append(threading.get_ident())
         return None if name == "task-4" else {"name": name}
 
