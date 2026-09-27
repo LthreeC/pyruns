@@ -307,7 +307,11 @@ def validate_tasks_root(tasks_dir: str) -> None:
     """Reject a tasks root that can redirect task I/O through a link/reparse point."""
 
     absolute = _workspace_abspath(tasks_dir)
-    if os.path.lexists(absolute) and _path_is_link_or_reparse(absolute):
+    try:
+        info = os.lstat(absolute)
+    except (OSError, ValueError):
+        info = None
+    if _stat_is_link_or_reparse(info):
         raise ValueError(
             f"Tasks directory must not be a symlink, junction, or reparse point: {tasks_dir}"
         )
@@ -330,11 +334,11 @@ def _managed_ancestor_paths(absolute: str) -> tuple[str, ...]:
         current = parent
 
 
-def _validate_managed_ancestor_chain(path: str) -> os.stat_result | None:
-    """Recheck managed ancestors and return this call's leaf metadata for reuse."""
+def _validate_managed_ancestor_chain(absolute: str) -> os.stat_result | None:
+    """Recheck an absolute normalized path and return its fresh leaf metadata."""
 
     info = None
-    for current in _managed_ancestor_paths(_workspace_abspath(path)):
+    for current in _managed_ancestor_paths(absolute):
         try:
             info = os.lstat(current)
         except OSError:
