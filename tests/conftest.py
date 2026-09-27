@@ -13,6 +13,10 @@ from types import SimpleNamespace
 import pytest
 
 
+# Editor/sync backup copies must not run alongside the maintained test modules.
+collect_ignore_glob = ["test_*-TKB[0-9]*.py"]
+
+
 _DEFAULT_TMP_ROOT = Path(tempfile.gettempdir()) / "pyruns-tests"
 _LOCAL_TMP_ROOT = Path(os.environ.get("PYRUNS_TEST_TMP_ROOT", _DEFAULT_TMP_ROOT))
 
