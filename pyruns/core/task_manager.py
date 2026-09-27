@@ -1351,6 +1351,9 @@ class TaskManager:
             lambda entry: self._probe_refresh_task(entry[0], check_payload=check_payload),
         )
         missing_metadata: list[tuple[Dict[str, Any], int]] = []
+        # Reconcile once; subsequent metadata applies only affect this flag
+        # when they change queue membership. Worker callbacks reconcile separately.
+        processing_checked = False
         for (task, revision), (info_stat, info_signature, payload_changed, probe_error) in zip(
             current, probes, strict=True,
         ):
@@ -1397,6 +1400,7 @@ class TaskManager:
                                     self._clear_running_locked(task["name"])
                                     self.gpu_scheduler.release(task["name"])
                                     self._recompute_processing_flag_locked()
+                                    processing_checked = True
                                     after = self._task_snapshot(existing)
                                     has_changed |= before != after
                     continue
@@ -1434,14 +1438,18 @@ class TaskManager:
                     if existing is not task or task.get("_registry_revision", 0) != revision:
                         continue
                     before = self._task_snapshot(existing)
+                    was_queued = existing.get("status") == "queued"
                     self._apply_info_to_task(
                         existing, info, mtime_ns=mtime_ns,
                         info_signature=info_signature,
                     )
-                    self._recompute_processing_flag_locked()
+                    if not processing_checked or was_queued != (existing.get("status") == "queued"):
+                        self._recompute_processing_flag_locked()
+                        processing_checked = True
                     after = self._task_snapshot(existing)
                 has_changed |= before != after
             except Exception as exc:
+                processing_checked = False
                 if raise_on_error:
                     raise
                 logger.debug("refresh_from_disk skipped %s: %s", task.get("name"), exc)
@@ -5074,5 +5082,6 @@ class TaskManager:
 
     def _recompute_processing_flag_locked(self) -> None:
         """Sleep the scheduler when nothing is queued or running."""
-        has_queued = any(task and task.get("status") == "queued" for task in self.tasks)
-        self.is_processing = bool(self._running_ids or has_queued)
+        self.is_processing = bool(
+            self._running_ids or any(task and task.get("status") == "queued" for task in self.tasks)
+        )

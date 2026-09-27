@@ -6260,6 +6260,7 @@ def test_task_manager_refresh_discovers_external_added_and_removed_tasks(tmp_pat
     generator.create_task("beta", {"value": 2})
     shutil.rmtree(alpha["dir"])
     Path(retained["dir"], CONFIG_FILENAME).write_text("value: 4\n", encoding="utf-8")
+    update_task_info(retained["dir"], lambda info: info.update(status="queued"))
 
     with patch.object(manager, "_probe_refresh_task", wraps=manager._probe_refresh_task) as probe:
         assert manager.refresh_from_disk(check_all=True, discover=True) is True
@@ -6269,6 +6270,11 @@ def test_task_manager_refresh_discovers_external_added_and_removed_tasks(tmp_pat
     assert set(tasks) == {"beta", "retained"}
     assert tasks["beta"]["config"]["value"] == 2
     assert tasks["retained"]["config"]["value"] == 4
+    assert manager.is_processing is True
+
+    update_task_info(retained["dir"], lambda info: info.update(status="completed"))
+    assert manager.refresh_from_disk(check_all=True) is True
+    assert manager.is_processing is False
 
 
 def test_task_manager_refreshes_edited_payload_and_clears_parse_error(tmp_path):
@@ -6904,9 +6910,30 @@ def test_task_manager_strict_refresh_fails_closed_on_disk_errors(tmp_path):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
     generator = TaskGenerator(root_dir=str(tasks_dir))
-    generator.create_task("alpha", {"value": 1})
+    for name in ("alpha", "beta", "gamma"):
+        generator.create_task(name, {"value": 1})
 
     manager = _make_task_manager(tasks_dir)
+    manager.is_processing = True
+    with patch.object(manager, "_recompute_processing_flag_locked", wraps=manager._recompute_processing_flag_locked) as check:
+        manager.refresh_from_disk(force_all=True, discover=True, raise_on_error=True)
+    assert check.call_count <= 1
+    assert manager.is_processing is False
+
+    middle = manager.tasks[1]
+    manager._sync_status_to_disk(middle["name"], "queued", run_index=1)
+    update_task_info(middle["dir"], lambda info: info.update(status="completed"))
+    apply_info = manager._apply_info_to_task
+
+    def apply_then_fail(task, info, **kwargs):
+        apply_info(task, info, **kwargs)
+        if task["name"] == middle["name"]:
+            raise OSError("error after applying metadata")
+
+    with patch.object(manager, "_apply_info_to_task", side_effect=apply_then_fail):
+        manager.refresh_from_disk(force_all=True)
+    assert manager.get_task(middle["name"])["status"] == "completed"
+    assert manager.is_processing is False
 
     with patch("pyruns.core.task_manager.os.scandir", side_effect=OSError("stale nfs handle")):
         with pytest.raises(OSError, match="stale nfs handle"):
