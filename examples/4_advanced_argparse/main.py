@@ -59,7 +59,6 @@ def main() -> None:
         time.sleep(step_delay)
         loss = round(loss * (0.72 + random.random() * 0.04), 6)
         throughput = round(width / step, 3)
-        print(f"step={step} loss={loss} throughput={throughput}")
         pyruns.track(loss=loss, throughput=throughput)
 
     pyruns.record(

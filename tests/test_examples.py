@@ -249,7 +249,7 @@ def test_advanced_argparse_example_runs_directly_and_through_runtime(tmp_path):
     for marker in (
         '"compile": false',
         '"env_marker": "example-env-ok"',
-        "step=3",
+        '"steps": 3',
     ):
         assert marker in direct.stdout
         assert marker in log_text

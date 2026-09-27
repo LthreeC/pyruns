@@ -19,5 +19,5 @@ independent integration or performance constraints until they have a replacement
 
 Keep temporary diagnostics and backup copies outside pytest's collection paths,
 for example in `.tmp/`. Windows automation must keep spawned processes hidden.
-Existing editor/sync copies named `test_*-TKB[0-9]*.py` are excluded from automatic
-collection; their contents are left intact.
+Editor/sync copies named `test_*-TKB[0-9]*.py` are also excluded from automatic
+collection as a safeguard; archive any such copies in `.tmp/`.
