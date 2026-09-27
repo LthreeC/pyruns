@@ -39,7 +39,10 @@ for path in sorted(package.rglob("*")):
         digest.update(path.relative_to(package).as_posix().encode() + b"\\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
 for step in range(cfg.steps):
-    pyruns.track(step=step, score=run * 10000 + step)
+    if step % 100 == 0:
+        pyruns.track_many([{"step": step, "score": run * 10000 + step}])
+    else:
+        pyruns.track(step=step, score=run * 10000 + step)
     if step % 100 == 0:
         print(f"wheel-step-{run}:{step}", flush=True)
 pyruns.record(attempt=run, steps=cfg.steps, label=cfg.label,
