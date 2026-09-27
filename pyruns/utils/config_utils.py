@@ -13,7 +13,7 @@ from omegaconf._utils import OmegaConfDumper, get_omega_conf_dumper, get_yaml_lo
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
 from pyruns.utils.info_io import _replace_with_retry, load_task_metadata
-from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.sort_utils import normalize_task_search_text, sort_tasks_for_manager
 
 
@@ -199,7 +199,7 @@ def load_yaml(path: str) -> DictConfig:
 
 
 def _read_yaml_text_limited(path: str) -> str:
-    with open(path, "rb") as handle:
+    with open(path, "rb", opener=regular_file_opener) as handle:
         raw = read_bounded_bytes(handle, MAX_CONFIG_FILE_BYTES + 1)
     if len(raw) > MAX_CONFIG_FILE_BYTES:
         raise ValueError(

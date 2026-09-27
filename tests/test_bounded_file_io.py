@@ -148,7 +148,7 @@ def test_bounded_file_read_propagates_failure_after_partial_data():
 
 
 @pytest.mark.parametrize("reader", ["task", "yaml", "settings", "config", "template", "metadata", "submission"])
-def test_document_readers_accept_exact_limit_and_reject_growth(tmp_path, monkeypatch, reader):
+def test_document_readers_enforce_regular_files_and_size_limits(tmp_path, monkeypatch, reader):
     from pyruns.cli import submission_protocol
     from pyruns.core import config_manager
     from pyruns.utils import config_utils, info_io, settings, task_files
@@ -184,6 +184,12 @@ def test_document_readers_accept_exact_limit_and_reject_growth(tmp_path, monkeyp
     else:
         assert value == (raw if reader == "config" else raw.decode("utf-8"))
 
+    document_path = path
+    path = Path(os.devnull)
+    with pytest.raises(ValueError, match="regular file"):
+        readers[reader]()
+    path = document_path
+
     real_fstat = os.fstat
 
     def grow_after_stat(fd):
@@ -192,9 +198,62 @@ def test_document_readers_accept_exact_limit_and_reject_growth(tmp_path, monkeyp
             writer.write(b" ")
         return info
 
-    monkeypatch.setattr(file_io, "os", SimpleNamespace(fstat=grow_after_stat))
+    monkeypatch.setattr(file_io, "os", SimpleNamespace(**{**vars(os), "fstat": grow_after_stat}))
     with pytest.raises(ValueError, match="too large"):
         readers[reader]()
+
+
+def test_document_opener_checks_actual_descriptor_and_closes_rejected_file(tmp_path, monkeypatch):
+    path = tmp_path / "document"
+    path.write_bytes(b"regular document")
+    descriptors = []
+    real_open = os.open
+
+    def open_device(_path, flags):
+        fd = real_open(os.devnull, flags)
+        descriptors.append(fd)
+        return fd
+
+    monkeypatch.setattr(file_io, "os", SimpleNamespace(**{**vars(os), "open": open_device}))
+    with pytest.raises(ValueError, match="regular file"):
+        with open(path, "rb", opener=file_io.regular_file_opener):
+            pytest.fail("A regular path must not hide a non-regular descriptor")
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO")
+def test_task_scan_rejects_fifo_metadata_and_recovers(tmp_path):
+    task = tmp_path / "sample"
+    task.mkdir()
+    (task / "config.yaml").write_text("value: 7\n", encoding="utf-8")
+    os.mkfifo(task / "task_info.json")
+    code = """
+import json
+from pathlib import Path
+import sys
+from pyruns.core.task_manager import TaskManager
+
+root = Path(sys.argv[1])
+manager = TaskManager(str(root), lazy_scan=None, owns_task_lifecycle=False)
+try:
+    manager.scan_disk()
+    assert 'regular file' in manager.get_task('sample')['_load_error']
+    path = root / 'sample' / 'task_info.json'
+    path.unlink()
+    path.write_text(json.dumps({'status': 'pending', 'notes': 'recovered'}))
+    assert manager.refresh_from_disk(check_all=True, check_payload=False)
+    task = manager.get_task('sample')
+    assert (task['notes'], task['config'], task['_load_error']) == ('recovered', {'value': 7}, '')
+finally:
+    manager.shutdown()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        capture_output=True, text=True, encoding="utf-8", timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_text_readers_preserve_bom_and_newline_rules(tmp_path):
