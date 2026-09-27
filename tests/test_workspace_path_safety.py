@@ -376,6 +376,48 @@ def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatc
     assert (second / relative / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: second\n"
 
 
+def test_task_scan_keeps_project_boundary_and_recovers_on_next_scan(tmp_path, monkeypatch):
+    relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks"
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project, value in ((first, "first"), (second, "second")):
+        for name in ("alpha", "beta"):
+            directory = project / relative / name
+            directory.mkdir(parents=True)
+            (directory / CONFIG_FILENAME).write_text(f"value: {value}\n", encoding="utf-8")
+            (directory / TASK_INFO_FILENAME).write_text(f'{{"notes": "{value}"}}', encoding="utf-8")
+    alias = tmp_path / "project"
+    _link_directory(alias, first)
+    manager = task_manager.TaskManager(str(alias / relative), lazy_scan=None, owns_task_lifecycle=False)
+    load = manager._load_task_dir
+    names = []
+
+    def switch_after_first(name, **kwargs):
+        task = load(name, **kwargs)
+        if not names:
+            _unlink_directory(alias)
+            _link_directory(alias, second)
+        names.append(name)
+        return task
+
+    try:
+        with monkeypatch.context() as switched:
+            switched.setattr(manager, "_load_task_dir", switch_after_first)
+            manager.scan_disk()
+        assert len(names) == 2
+        assert manager.get_task(names[0])["notes"] == "first"
+        rejected = manager.get_task(names[1])
+        assert rejected["notes"] == ""
+        assert rejected["config"] == {}
+        assert "resolves outside" in rejected["_load_error"]
+        manager.scan_disk()
+        for name in names:
+            task = manager.get_task(name)
+            assert (task["notes"], task["config"], task["_load_error"]) == ("second", {"value": "second"}, "")
+    finally:
+        manager.shutdown()
+        _unlink_directory(alias)
+
+
 def test_task_loading_rechecks_tasks_root_before_payload(tmp_path, monkeypatch, simulate_reparse):
     # A custom tasks root need not contain the managed _pyruns_ directory name.
     tasks = tmp_path / "custom" / "tasks"

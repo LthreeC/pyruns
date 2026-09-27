@@ -41,6 +41,7 @@ from pyruns.core.gpu_scheduler import (
 from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
+    _workspace_abspath,
     ensure_run_slot,
     load_task_metadata,
     prepare_task_log_path,
@@ -758,8 +759,21 @@ class TaskManager:
         raise_on_error: bool = False,
     ) -> list[Dict[str, Any]]:
         """Load in disk order, using threads when samples indicate sustained I/O waits."""
+        if not names:
+            return []
+        root = _workspace_abspath(self.tasks_dir)
+        resolved_root: dict[str, str | None] = {root: None}
+        try:
+            validate_task_directory(root, _resolved_paths=resolved_root)
+            boundary = resolved_root[root]
+        except (OSError, ValueError):
+            # Preserve per-task missing-file and strict error behavior.
+            boundary = None
+
         def load(name: str) -> Dict[str, Any] | None:
-            return self._load_task_dir(name, raise_on_error=raise_on_error)
+            return self._load_task_dir(
+                name, raise_on_error=raise_on_error, _tasks_root_boundary=boundary,
+            )
 
         results = self._map_task_disk_io(names, load)
         return [task for task in results if task is not None]
@@ -1196,6 +1210,7 @@ class TaskManager:
         dir_name: str,
         *,
         raise_on_error: bool = False,
+        _tasks_root_boundary: str | None = None,
     ) -> Dict[str, Any] | None:
         """Load one task folder into the normalized task dict shape."""
         if validate_task_name(dir_name) is not None:
@@ -1210,9 +1225,13 @@ class TaskManager:
             info_stat = None
 
         metadata_error = ""
-        # Share a frozen boundary only between the two reads of this task.
-        # Payload validation still checks current ancestors and the actual file.
-        resolved_paths: dict[str, str | None] | None = {}
+        # Keep task anchors local to these two reads; a batch may supply the
+        # parent anchor. Recheck current ancestors and the actual payload file.
+        parent_boundary: dict[str, str | None] = (
+            {_workspace_abspath(self.tasks_dir): _tasks_root_boundary}
+            if _tasks_root_boundary is not None else {}
+        )
+        resolved_paths: dict[str, str | None] | None = dict(parent_boundary)
         try:
             info = load_task_metadata(task_dir, raise_error=True, _resolved_paths=resolved_paths)
             if raise_on_error:
@@ -1225,7 +1244,7 @@ class TaskManager:
             metadata_error = f"Could not load task metadata: {exc}"
             logger.error("Error loading info for %s: %s", dir_name, exc)
             info = {}
-            resolved_paths = None
+            resolved_paths = dict(parent_boundary) if parent_boundary else None
         if info:
             info = self._strip_queued_placeholder_run(info)
 
@@ -1244,7 +1263,9 @@ class TaskManager:
         )
 
         mtime_ns = info_stat.st_mtime_ns if info_stat else 0
-        info_signature = self._stat_signature(info_stat) if info_stat else None
+        # A failed read is not a valid snapshot, even if file attributes stay
+        # unchanged when a temporary permission or sharing error disappears.
+        info_signature = self._stat_signature(info_stat) if info_stat and not metadata_error else None
 
         task = {
             "dir": task_dir.replace("\\", "/"),
