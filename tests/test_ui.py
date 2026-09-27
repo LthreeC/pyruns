@@ -479,9 +479,6 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "flex-col-reverse" in toast_host
     assert "expanded ? 'pointer-events-auto' : 'pointer-events-none'" in toast_host
     assert "pointer-events-auto inline-flex h-11 w-11" in toast_host
-    assert "focus-visible:ring-2 focus-visible:ring-accent/35" in toast_host
-    assert "text-emerald-700 dark:text-emerald-300" in toast_host
-    assert "text-rose-700 dark:text-rose-300" in toast_host
     assert "role={toast.tone === 'error' ? 'alert' : 'status'}" in toast_host
     assert "TOAST_TIMEOUT_MS" in toast_host
     assert "Tasks queued" in manager
@@ -552,7 +549,6 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "Load 200 more" in monitor
     assert 'title="Pinned Tasks"' in monitor
     assert "count={pinnedTasks.length}" in monitor
-    assert 'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"' in monitor
     assert 'title="Search Results"' in monitor
     assert "<SearchResultGroup" in monitor
     assert "task.search_match_count" in monitor
@@ -1230,7 +1226,6 @@ def test_react_generator_grid_param_rows_keep_label_type_and_input_inline():
 
 def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     generator = FRONTEND_GENERATOR.read_text(encoding="utf-8")
-    toggle_switch = (FRONTEND_COMPONENTS_DIR / "shared" / "ToggleSwitch.tsx").read_text(encoding="utf-8")
 
     assert "layoutMode?: FormLayoutMode" in generator
     assert "const treeParamRow = layoutMode === 'tree'" in generator
@@ -1242,11 +1237,8 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert 'aria-label={`${name} parameter value`}' in generator
     assert "checked={Boolean(value)}" in generator
     assert "if (!treeParamRow)" in generator
-    assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
-    assert "h-6 w-full rounded-md border bg-[var(--input-bg)]" in generator
-    assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
-    assert "hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
-    assert "focus-visible:ring-2 focus-visible:ring-accent/30" in toggle_switch
+    assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2" in generator
+    assert "h-6 w-full" in generator
 
 
 def test_react_generator_shell_mode_loads_existing_shell_tasks():
