@@ -1000,6 +1000,26 @@ def test_remote_legacy_coordination_lock_is_not_reclaimed_from_heartbeat(tmp_pat
             pass
 
 
+def test_native_coordination_guard_initialization_waits_for_existing_owner(tmp_path):
+    store = CoordinationStore(tmp_path / "coordination")
+    store.ensure()
+    fd = os.open(store.lock_guard_path, os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = store._try_native_lock(fd)
+    try:
+        assert acquired is True
+        contender = CoordinationStore(store.state_dir)
+        with pytest.raises(UpdateCoordinationError, match="Timed out"):
+            with contender.locked(timeout=0.05):
+                pytest.fail("empty guard allowed another owner")
+        assert os.fstat(fd).st_size == 0
+    finally:
+        store._close_native_lock(fd, acquired)
+
+    with contender.locked(timeout=0.2):
+        assert os.path.exists(store.lock_path)
+    assert not os.path.exists(store.lock_path)
+
+
 def test_native_coordination_lock_blocks_stale_heartbeat_reclaim(tmp_path, monkeypatch):
     state_dir = tmp_path / "coordination"
     holder = CoordinationStore(state_dir)

@@ -479,12 +479,15 @@ class CoordinationStore:
         fd = os.open(self.lock_guard_path, flags, 0o600)
         self._set_non_inheritable(fd)
         try:
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
-                os.fsync(fd)
             while True:
                 acquired = self._try_native_lock(fd)
                 if acquired is True:
+                    # Windows byte locks cover an empty file too. Initialize
+                    # only while owning the guard, so concurrent first users
+                    # cannot write through another holder's byte lock.
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b"\0")
+                        os.fsync(fd)
                     return fd, True
                 if acquired is None:
                     os.close(fd)
