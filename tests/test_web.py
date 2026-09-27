@@ -288,7 +288,10 @@ def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
         assert runtime.active_task_count() == 2
         manager_b = runtime.task_manager
 
-        with patch.object(TaskManager, "_payload_signature", wraps=TaskManager._payload_signature) as probe:
+        with (
+            patch.object(TaskManager, "_payload_signature", wraps=TaskManager._payload_signature) as probe,
+            patch.object(TaskManager, "_snapshot_task_for_api", wraps=TaskManager._snapshot_task_for_api) as snapshot,
+        ):
             assert runtime.active_task_count() == 2
             update_task_info(str(workspace_a / TASKS_DIR / "running"),
                              lambda info: info.update(status="completed"))
@@ -299,6 +302,7 @@ def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
             _add_task(workspace_b, "external", status="queued")
             assert runtime.active_task_count() == 2
             probe.assert_not_called()
+            snapshot.assert_not_called()
         assert manager_a.get_task("running")["status"] == "completed"
         assert manager_a.get_task("pending")["status"] == "queued"
         assert manager_b.get_task("queued")["status"] == "completed"

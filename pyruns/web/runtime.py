@@ -489,14 +489,7 @@ class PyrunsRuntime:
                 raise_on_error=force_all,
                 check_payload=force_all,
             )
-            manager_count = sum(
-                1
-                for task in manager.list_tasks(summary=True)
-                if str(task.get("status", "") or "").lower() in {"queued", "running"}
-            )
-            if manager_count == 0 and bool(getattr(manager, "is_processing", False)):
-                manager_count = 1
-            active_count += manager_count
+            active_count += manager.active_task_count()
         return active_count
 
     @_with_stable_workspace

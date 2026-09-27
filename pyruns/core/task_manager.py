@@ -436,6 +436,16 @@ class TaskManager:
         )
         return TaskManager._finalize_full_task_snapshot(full_snapshot)
 
+    def active_task_count(self) -> int:
+        """Count cached active work without copying task payloads."""
+        with self._lock:
+            count = sum(
+                1 for task in self.tasks
+                if task is not None
+                and str(task.get("status", "") or "").lower() in {"queued", "running"}
+            )
+            return count or int(bool(self.is_processing))
+
     def list_tasks(self, *, summary: bool = False) -> List[Dict[str, Any]]:
         """Return detached copies of the current task list."""
         with self._lock:
