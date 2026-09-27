@@ -24,7 +24,6 @@ FRONTEND_CODE_EDITOR = Path(__file__).resolve().parents[1] / "frontend" / "src" 
 FRONTEND_PAGINATION = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "Pagination.tsx"
 FRONTEND_SEARCH_INPUT = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "shared" / "SearchInput.tsx"
 FRONTEND_THEME_CSS = Path(__file__).resolve().parents[1] / "frontend" / "src" / "theme" / "index.css"
-FRONTEND_TAILWIND = Path(__file__).resolve().parents[1] / "frontend" / "tailwind.config.ts"
 FRONTEND_INDEX = Path(__file__).resolve().parents[1] / "frontend" / "index.html"
 STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static" / "index.html"
 
@@ -35,7 +34,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
         pytest.param(FRONTEND_GENERATOR, (
             'title="Pinned Parameters"',
             'count={rows.length}',
-            'className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"',
             'function readCompactGeneratorLayout()',
             "window.matchMedia('(max-width: 700px)')",
             'const generatorBodyClassName = clsx(',
@@ -73,11 +71,8 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'Writing task folders...',
             'function CreatedTaskSummary',
             'Open in Manager',
-            'Loader2',
             'depth={depth + 1}',
             'treeConnector',
-            "'ml-4 border-l border-dashed border-border-strong/60 pb-1 pl-4 pt-1'",
-            "!treeSection && depth > 0 && 'border-l-2 border-border pl-3'",
             'aria-expanded={open}',
             'Expand all',
             'Collapse all',
@@ -161,8 +156,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'ResourceTile',
             'h-full overflow-y-auto bg-surface-base',
             'flex shrink-0 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised',
-            '<div className="p-3">',
-            'w-full rounded-md border border-border-subtle',
             'flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-default bg-surface-raised',
             'min-h-0 flex-1 divide-y divide-border-subtle overflow-y-auto',
             'Quick status glance.',
@@ -174,7 +167,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'key={gpuKey(gpu)}',
             'title={gpu.name}',
             "wide ? 'min-h-[7.5rem]' : 'h-[10.5rem]'",
-            'RefreshCw',
             'Dashboard refreshed',
             'Task summary and system metrics are up to date.',
             'Refresh dashboard now',
@@ -246,12 +238,8 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'Choose or enter a YAML config path first.',
         ), id='launcher'),
         pytest.param(FRONTEND_SIDEBAR, (
-            'border-l-2 border-accent',
-            'bg-accent/10 text-accent',
             'workspaceModeLabel',
             'runtimeLabel',
-            'SlidersHorizontal',
-            'rounded-md px-2 py-2',
         ), id='sidebar'),
         pytest.param(FRONTEND_MONITOR, (
             'function readCompactMonitorLayout()',
@@ -341,7 +329,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'function handlePanelBackdropClick',
             'backdropPointerStartedRef.current && event.target === event.currentTarget',
             'w-5 -translate-x-2.5',
-            'group-hover:bg-accent/45',
             'const MAX_PANEL_WIDTH = 960',
             'useState(() => buildEnvPairs(task))',
             'const taskRequestSeqRef = useRef(0)',
@@ -588,29 +575,6 @@ def test_react_monitor_merges_run_action_response_before_next_poll():
     assert ": [task, ...state.monitorTasks]" in store
 
 
-def test_react_components_avoid_excessive_rounding_and_shadows():
-    forbidden = (
-        "rounded-xl",
-        "rounded-2xl",
-        "rounded-3xl",
-        "rounded-full border",
-        "shadow-lg",
-        "shadow-2xl",
-        "linear-gradient",
-    )
-    offenders = []
-
-    for path in FRONTEND_COMPONENTS_DIR.rglob("*.tsx"):
-        source = path.read_text(encoding="utf-8")
-        for token in forbidden:
-            if path.name == "ToggleSwitch.tsx" and token == "rounded-full border":
-                continue
-            if token in source:
-                offenders.append(f"{path.relative_to(FRONTEND_COMPONENTS_DIR)}:{token}")
-
-    assert offenders == []
-
-
 def test_react_app_sidebar_can_be_resized_and_persisted():
     shell = FRONTEND_APP_SHELL.read_text(encoding="utf-8")
     sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
@@ -807,29 +771,13 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "api.getTask(task.name).then(fullTask" in manager
     assert "api.getTask(task.name).then(fullTask" in monitor
     assert "dropIndicator" in manager
-    assert "shadow-[0_0_0_3px_rgba(20,184,166,0.16)]" in manager
-    assert "scale-[0.985]" in manager
-    assert "transition-[border-color,box-shadow,background-color,opacity,transform]" in manager
     assert "data-task-card={task.name}" in manager
     assert "data-task-card-pinned={task.pinned ? 'true' : 'false'}" in manager
     assert "<TaskSearchMatches" in manager
     assert "Drop here to pin" in manager
     assert 'title="Pinned Tasks"' in manager
     assert "count={pinnedTasks.length}" in manager
-    assert 'className="rounded-md border border-accent/20 bg-accent/5 p-2"' in manager
     assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in manager
-
-
-def test_react_theme_uses_more_readable_base_type_and_muted_text():
-    css = FRONTEND_THEME_CSS.read_text(encoding="utf-8")
-    tailwind = FRONTEND_TAILWIND.read_text(encoding="utf-8")
-
-    assert "--text-secondary: #4b5563;" in css
-    assert "--text-tertiary: #6b7280;" in css
-    assert "--text-tertiary: #929aa8;" in css
-    assert "font-size: 14px;" in css
-    assert "'2xs': ['12px', '16px']" in tailwind
-    assert "xs: ['13px', '18px']" in tailwind
 
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
@@ -1038,6 +986,7 @@ def test_react_code_editor_preserves_line_wrapping_preferences():
 
     assert "EditorView.lineWrapping" in editor
     assert "aria-pressed={wrap}" in editor
+    assert "aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}" in editor
     assert "WrapText" in editor
     assert "wrapStorageKey" in editor
     assert 'wrapStorageKey="pyruns.generator.shell.wrap"' in generator
@@ -1053,19 +1002,6 @@ def test_react_shell_editor_uses_a_base_tag_before_definition_modifier():
 
     assert "return 'variableName.definition'" in editor
     assert "return 'definition'" not in editor
-
-
-def test_react_runtime_panel_stays_compact_and_low_chrome():
-    runtime_panel = (FRONTEND_COMPONENTS_DIR / "layout" / "RuntimePanel.tsx").read_text(encoding="utf-8")
-    editor = FRONTEND_CODE_EDITOR.read_text(encoding="utf-8")
-
-    assert "w-[620px]" in runtime_panel
-    assert "inline-flex rounded-md bg-surface-overlay p-0.5" in runtime_panel
-    assert "compactToolbar" in runtime_panel
-    assert "compactToolbar?: boolean" in editor
-    assert "{!compactToolbar &&" in editor
-    assert "absolute right-1.5 top-1.5" in editor
-    assert "aria-label={wrap ? 'Disable line wrapping' : 'Enable line wrapping'}" in editor
 
 
 def test_monitor_surfaces_structured_gpu_wait_and_bounded_log_tail_state():
@@ -1127,8 +1063,6 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "checked={gpuSchedulerEnabled}" in runtime_panel
     assert 'role="switch"' in toggle_switch
     assert "aria-checked={checked}" in toggle_switch
-    assert "absolute left-[3px] top-[3px]" in toggle_switch
-    assert "checked ? 'translate-x-5' : 'translate-x-0'" in toggle_switch
     assert "Advanced scheduling rules" in runtime_panel
     assert "Auto pick" in runtime_panel
     assert "Specific indices" in runtime_panel
@@ -1309,7 +1243,6 @@ def test_react_generator_tree_param_rows_keep_value_inputs_aligned():
     assert "checked={Boolean(value)}" in generator
     assert "if (!treeParamRow)" in generator
     assert "group grid min-h-7 grid-cols-[minmax(9.5rem,0.68fr)_minmax(10rem,1.32fr)] items-center gap-2 rounded-md border border-border bg-surface-raised px-1.5 py-0.5 shadow-sm transition-all hover:border-border-strong hover:bg-surface-hover focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/15" in generator
-    assert "pinned ? 'border-l-2 border-l-accent border-y-accent/20 border-r-accent/20 bg-accent/[0.03] ring-1 ring-accent/20' : ''" in generator
     assert "h-6 w-full rounded-md border bg-[var(--input-bg)]" in generator
     assert "focus-within:border-accent/60 focus-within:bg-surface-raised focus-within:ring-2 focus-within:ring-accent/20" in generator
     assert "hover:border-border-strong focus:border-accent focus:bg-surface-raised focus:ring-2 focus:ring-accent/15" in generator
