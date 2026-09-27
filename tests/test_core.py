@@ -3346,7 +3346,7 @@ def test_task_manager_rechecks_metadata_replaced_during_initial_load(tmp_path):
     assert manager.get_task("sample")["notes"] == "after!"
 
 
-@pytest.mark.parametrize("failure", ["corrupt", "initial_unavailable"])
+@pytest.mark.parametrize("failure", ["corrupt", "initial_unavailable", "refresh_unavailable"])
 def test_task_manager_reports_metadata_errors_and_recovers(tmp_path, failure):
     task_dir = tmp_path / "sample"
     task_dir.mkdir()
@@ -3361,8 +3361,12 @@ def test_task_manager_reports_metadata_errors_and_recovers(tmp_path, failure):
             manager.scan_disk()
     else:
         manager.scan_disk()
-        info_path.write_text("{broken", encoding="utf-8")
-        assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
+        if failure == "refresh_unavailable":
+            with patch("pyruns.core.task_manager.load_task_metadata", side_effect=PermissionError("temporarily unavailable")):
+                assert manager.refresh_from_disk(force_all=True, check_payload=False) is True
+        else:
+            info_path.write_text("{broken", encoding="utf-8")
+            assert manager.refresh_from_disk(check_all=True, check_payload=False) is True
     assert "Could not load task metadata" in manager.get_task("sample")["_load_error"]
 
     if failure == "corrupt":

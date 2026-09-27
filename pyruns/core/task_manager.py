@@ -1442,6 +1442,7 @@ class TaskManager:
                         if existing is task and task.get("_registry_revision", 0) == revision:
                             before = self._task_snapshot(existing)
                             existing["_load_error"] = f"Could not load task metadata: {exc}"
+                            existing["_info_signature"] = None
                             has_changed |= before != self._task_snapshot(existing)
                     continue
                 if self._stat_signature(os.stat(info_path)) != info_signature:
