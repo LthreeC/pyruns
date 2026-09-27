@@ -12,7 +12,30 @@ from types import SimpleNamespace
 import pytest
 
 from pyruns.utils import file_io
+from pyruns.utils import file_boundary
 from pyruns.utils.file_io import read_bounded_bytes
+
+
+@pytest.mark.parametrize("path_query", [True, pytest.param(False, marks=pytest.mark.skipif(os.name == "nt", reason="POSIX fallback"))])
+def test_open_file_validation_checks_the_descriptor_without_reading(tmp_path, monkeypatch, path_query):
+    root = tmp_path / "task"
+    inside = root / "nested" / "中文.yaml"
+    inside.parent.mkdir(parents=True)
+    inside.write_bytes(b"inside")
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside")
+    boundary = os.path.realpath(root)
+    if not path_query:
+        monkeypatch.setattr(file_boundary, "_opened_file_path", lambda _fd: None)
+    # The current path is contained, but the handle belongs to another file.
+    with outside.open("rb") as handle:
+        with pytest.raises(ValueError if path_query else OSError, match="resolves outside|changed while validating"):
+            file_boundary.validate_open_file(handle, str(inside), boundary)
+        assert handle.tell() == 0
+    with inside.open("rb") as handle:
+        file_boundary.validate_open_file(handle, str(inside), boundary)
+        assert handle.tell() == 0
+        assert handle.read() == b"inside"
 
 
 def test_small_document_readers_do_not_allocate_their_size_limits():

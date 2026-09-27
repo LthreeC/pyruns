@@ -33,6 +33,7 @@ from pyruns.utils.info_io import (
     validate_workspace_file,
 )
 from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_boundary import validate_open_file
 from pyruns.utils.sort_utils import filter_tasks
 from pyruns.utils.search_query import SearchQuery
 
@@ -141,8 +142,12 @@ def resolve_task_payload_path(
     return candidate
 
 
-def _read_payload_bytes(path: str, max_bytes: int) -> tuple[bytes, TaskPayloadSignature]:
+def _read_payload_bytes(
+    path: str, max_bytes: int, *, _boundary: str | None = None,
+) -> tuple[bytes, TaskPayloadSignature]:
     with open(path, "rb") as handle:
+        if _boundary is not None:
+            validate_open_file(handle, path, _boundary)
         attributes = None
         try:
             stat = os.fstat(handle.fileno())
@@ -169,9 +174,12 @@ def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) ->
 def read_task_payload_signature(task_dir: str, config_file: str) -> TaskPayloadSignature | None:
     """Probe content changes without constructing or parsing a configuration."""
     try:
-        path = resolve_task_payload_path(task_dir, config_file)
+        resolved_paths: dict[str, str | None] = {}
+        path = resolve_task_payload_path(task_dir, config_file, _resolved_paths=resolved_paths)
         # Match the snapshot's fstat: Windows path stat can report a different ctime.
-        _raw, signature = _read_payload_bytes(path, MAX_TASK_PAYLOAD_BYTES)
+        _raw, signature = _read_payload_bytes(
+            path, MAX_TASK_PAYLOAD_BYTES, _boundary=resolved_paths[_workspace_abspath(task_dir)],
+        )
         return signature
     except (OSError, ValueError):
         return None
@@ -194,8 +202,9 @@ def read_task_payload_snapshot(
 
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
     config_file = resolve_task_config_file(info, task_kind, task_dir)
+    resolved_paths: dict[str, str | None] = {} if _resolved_paths is None else _resolved_paths
     try:
-        config_path = resolve_task_payload_path(task_dir, config_file, _resolved_paths=_resolved_paths)
+        config_path = resolve_task_payload_path(task_dir, config_file, _resolved_paths=resolved_paths)
     except ValueError as exc:
         return TaskPayloadSnapshot(task_kind, _empty_config(), "", str(exc), None)
 
@@ -204,7 +213,9 @@ def read_task_payload_snapshot(
 
     signature = None
     try:
-        raw, signature = _read_payload_bytes(config_path, MAX_TASK_PAYLOAD_BYTES)
+        raw, signature = _read_payload_bytes(
+            config_path, MAX_TASK_PAYLOAD_BYTES, _boundary=resolved_paths[_workspace_abspath(task_dir)],
+        )
         text = _decode_payload_text(raw, config_path, MAX_TASK_PAYLOAD_BYTES)
         del raw
         if task_kind == TASK_KIND_SHELL:

@@ -27,6 +27,7 @@ from pyruns._config import (
 )
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_boundary import validate_open_file
 
 # Active holders and waiters keep strong references; idle task paths can retire.
 _TASK_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
@@ -434,8 +435,12 @@ def _validate_contained_path(
         raise ValueError(f"{label} resolves outside its workspace boundary: {path}")
 
 
-def _load_json_object(path: str, *, max_bytes: int, label: str) -> Dict[str, Any]:
+def _load_json_object(
+    path: str, *, max_bytes: int, label: str, _boundary: str | None = None,
+) -> Dict[str, Any]:
     with open(path, "rb") as handle:
+        if _boundary is not None:
+            validate_open_file(handle, path, _boundary)
         raw = read_bounded_bytes(handle, max_bytes + 1)
     if len(raw) > max_bytes:
         raise ValueError(f"{label} is too large (max {max_bytes} bytes): {path}")
@@ -598,6 +603,7 @@ def load_task_metadata(
                     info_path,
                     max_bytes=MAX_TASK_INFO_BYTES,
                     label=TASK_INFO_FILENAME,
+                    _boundary=resolved_paths[_workspace_abspath(task_dir)],
                 )
                 if info.get("env") is not None and not isinstance(info["env"], dict):
                     raise ValueError("Invalid task environment: expected an object")
