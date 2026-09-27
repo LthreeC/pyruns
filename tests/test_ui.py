@@ -313,7 +313,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'repeat(auto-fill, minmax(min(100%, max(15rem',
             'const renderedColumnCount = grid',
             'window.getComputedStyle(grid).gridTemplateColumns',
-            'columns={columns}',
             'const TaskCard = memo(function TaskCard',
             '[content-visibility:auto]',
             'setDetailTask(current => {',
