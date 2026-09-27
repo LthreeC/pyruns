@@ -265,10 +265,35 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
   const launcher = page.getByRole('dialog', { name: 'Launch Workspace' })
   await expect(launcher).toBeVisible()
   await expect(launcher.getByText('Choose a workspace type')).toBeVisible()
+  await expect(launcher).toHaveAccessibleDescription('Choose a workspace type')
+  await expect(launcher).toHaveAttribute('aria-modal', 'true')
+  const pythonChoice = launcher.getByRole('button', { name: 'Python', exact: true })
+  const shellChoice = launcher.getByRole('button', { name: 'Shell', exact: true })
+  const cancelLauncher = launcher.getByRole('button', { name: 'Cancel', exact: true })
+  await expect(pythonChoice).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await expect(cancelLauncher).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(pythonChoice).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(shellChoice).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(shellChoice).toHaveAttribute('aria-pressed', 'true')
+  await expect(shellChoice).toBeFocused()
 
   await page.keyboard.press('Escape')
   await expect(launcher).toBeHidden()
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  await expect(page.getByRole('main')).toBeFocused()
+
+  const launchTrigger = page.locator('[data-launcher-trigger="true"]')
+  await launchTrigger.focus()
+  await page.keyboard.press('Enter')
+  await expect(launcher).toBeVisible()
+  await expect(pythonChoice).toBeFocused()
+  await cancelLauncher.click()
+  await expect(launcher).toBeHidden()
+  await expect(launchTrigger).toBeFocused()
 
   const lightMode = page.getByRole('button', { name: 'Light Mode' })
   const darkMode = page.getByRole('button', { name: 'Dark Mode' })
@@ -762,42 +787,50 @@ test('opening the workspace launcher preserves unsaved runtime edits', async ({ 
   await expect(pythonPath).toHaveValue('D:\\tools\\python.exe')
 })
 
-test('recovering an expired session preserves unsaved runtime edits', async ({ page }) => {
-  await page.goto('/manager?token=pyruns-e2e-access-token')
-  await page.getByRole('button', { name: 'Runtime' }).click()
-  const runtimePanel = page.getByRole('dialog', { name: 'Runtime settings' })
-  await runtimePanel.getByRole('button', { name: 'Path' }).click()
-
-  const pythonPath = runtimePanel.getByRole('textbox', { name: 'Python executable path' })
-  await pythonPath.fill('D:\\drafts\\python.exe')
-  await page.route('**/api/runtime?*', async route => {
-    if (route.request().method() === 'PATCH') {
-      await route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({ detail: 'Unauthorized' }),
-      })
-      return
+for (const editor of ['runtime', 'launcher'] as const) {
+  test(`recovering an expired session preserves ${editor} edits and focus`, async ({ page }) => {
+    await page.goto('/manager?token=pyruns-e2e-access-token')
+    const launcher = editor === 'launcher'
+    const panel = page.getByRole('dialog', { name: launcher ? 'Launch Workspace' : 'Runtime settings' })
+    const pythonPath = panel.getByRole('textbox', { name: launcher ? 'Python script path' : 'Python executable path' })
+    const draft = launcher ? 'unsubmitted.py' : 'D:\\drafts\\python.exe'
+    const unauthorized = { status: 401, json: { detail: 'Unauthorized' } }
+    if (launcher) {
+      await page.locator('[data-launcher-trigger="true"]').click()
+      await panel.getByRole('button', { name: 'Python', exact: true }).click()
+      await page.route('**/api/launcher/validate-path?*', route => route.fulfill(unauthorized), { times: 1 })
+    } else {
+      await page.getByRole('button', { name: 'Runtime' }).click()
+      await panel.getByRole('button', { name: 'Path' }).click()
+      await page.route('**/api/runtime?*', route => route.request().method() === 'PATCH'
+        ? route.fulfill(unauthorized)
+        : route.continue())
     }
-    await route.continue()
+    await pythonPath.fill(draft)
+    if (!launcher) await panel.getByRole('button', { name: 'Save', exact: true }).click()
+
+    const recovery = page.getByRole('alertdialog', { name: 'Session expired' })
+    await expect(recovery).toBeVisible()
+    const retryConnection = recovery.getByRole('button', { name: 'Retry connection' })
+    await expect(retryConnection).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(retryConnection).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect(retryConnection).toBeFocused()
+    await page.keyboard.press('Enter')
+
+    await expect(recovery).toBeHidden()
+    await expect(panel).toBeVisible()
+    await expect(pythonPath).toHaveValue(draft)
+    expect(await panel.evaluate(element => element.contains(document.activeElement))).toBe(true)
+    if (launcher) {
+      await expect(pythonPath).toBeFocused()
+      await page.keyboard.press('Escape')
+      await expect(panel).toBeHidden()
+      await expect(page.locator('[data-launcher-trigger="true"]')).toBeFocused()
+    }
   })
-
-  await runtimePanel.getByRole('button', { name: 'Save', exact: true }).click()
-  const recovery = page.getByRole('alertdialog', { name: 'Session expired' })
-  await expect(recovery).toBeVisible()
-  const retryConnection = recovery.getByRole('button', { name: 'Retry connection' })
-  await expect(retryConnection).toBeFocused()
-  await page.keyboard.press('Tab')
-  await expect(retryConnection).toBeFocused()
-  await page.keyboard.press('Shift+Tab')
-  await expect(retryConnection).toBeFocused()
-  await retryConnection.click()
-
-  await expect(recovery).toBeHidden()
-  await expect(runtimePanel).toBeVisible()
-  await expect(pythonPath).toHaveValue('D:\\drafts\\python.exe')
-  expect(await runtimePanel.evaluate(panel => panel.contains(document.activeElement))).toBe(true)
-})
+}
 
 test('reconnect requires explicit discard when the server workspace changed', async ({ page }) => {
   let returnChangedWorkspace = false

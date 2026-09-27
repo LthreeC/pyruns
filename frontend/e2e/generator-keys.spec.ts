@@ -73,14 +73,19 @@ test('generator reports recursive YAML aliases and keeps the draft editable', as
   await withGeneratorWorkspace(page, shared, async runRoot => {
     await page.getByRole('button', { name: 'YAML', exact: true }).click()
     const editor = page.getByRole('textbox', { name: 'Task YAML editor' })
-    await editor.fill(recursive)
+    const replaceYaml = async (text: string) => {
+      await editor.press('ControlOrMeta+A')
+      await page.keyboard.insertText(text)
+      await expect.poll(async () => (await editor.innerText()).trimEnd()).toBe(text.trimEnd())
+    }
+    await replaceYaml(recursive)
     await page.getByRole('button', { name: 'Grid', exact: true }).click()
     await expect(page.getByRole('alert')).toContainText('Recursive YAML aliases are not supported')
     await expect(page.getByRole('button', { name: 'Generate Tasks', exact: true })).toBeDisabled()
 
     await page.getByRole('button', { name: 'YAML', exact: true }).click()
     await expect(editor).toContainText('root: &root\n  again: *root')
-    await editor.fill(shared)
+    await replaceYaml(shared)
     await page.getByRole('button', { name: 'Grid', exact: true }).click()
     const fields = page.getByRole('textbox', { name: 'value parameter value', exact: true })
     await expect(fields).toHaveCount(2)

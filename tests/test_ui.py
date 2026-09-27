@@ -446,8 +446,6 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     dashboard = FRONTEND_DASHBOARD.read_text(encoding="utf-8")
 
     assert "backdropPointerStartedRef.current = event.target === event.currentTarget" in launcher
-    assert "window.addEventListener('keydown', handleKeyDown)" in launcher
-    assert 'aria-modal="true"' in launcher
     assert "panelRef" in runtime_panel
     assert "closeGestureRef" in runtime_panel
     assert "const pointerListenerTimer = window.setTimeout" in runtime_panel
@@ -1182,23 +1180,6 @@ def test_react_launcher_supports_manual_shell_folder_paths():
     assert "openLauncherShellRoot(shellPath)" in launcher
     assert "openLauncherShellRoot" in api
     assert "/api/launcher/open-shell-root" in api
-
-
-def test_react_launcher_modal_owns_focus_and_restores_the_trigger():
-    launcher = FRONTEND_LAUNCHER.read_text(encoding="utf-8")
-    sidebar = FRONTEND_SIDEBAR.read_text(encoding="utf-8")
-
-    assert "const modalRef = useRef<HTMLDivElement>(null)" in launcher
-    assert "const previousFocusRef = useRef<HTMLElement | null>(null)" in launcher
-    assert "modalRef.current?.querySelectorAll<HTMLElement>" in launcher
-    assert "window.requestAnimationFrame" in launcher
-    assert "previousFocus?.isConnected" in launcher
-    assert "previousFocus !== document.body" in launcher
-    assert "[data-launcher-trigger=\"true\"]" in launcher
-    assert 'data-launcher-trigger="true"' in sidebar
-    assert 'aria-labelledby="launcher-dialog-title"' in launcher
-    assert 'aria-describedby="launcher-dialog-description"' in launcher
-    assert "event.key !== 'Tab'" in launcher
 
 
 def test_react_launcher_disables_browse_when_native_picker_unavailable():

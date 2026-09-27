@@ -478,7 +478,7 @@ export default function App() {
     return () => window.cancelAnimationFrame(frame)
   }, [connectionState.status, location.pathname])
 
-  const closeLauncher = () => {
+  const closeLauncher = useCallback(() => {
     setShowLauncher(false)
     if (location.pathname === '/launcher') {
       navigate('/', { replace: true })
@@ -490,7 +490,7 @@ export default function App() {
     nextParams.delete('script')
     nextParams.delete('config')
     setSearchParams(nextParams, { replace: true })
-  }
+  }, [location.pathname, navigate, searchParams, setSearchParams])
 
   if (!hasConnected && connectionState.status !== 'ready') {
     return (
