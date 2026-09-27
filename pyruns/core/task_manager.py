@@ -1210,8 +1210,11 @@ class TaskManager:
             info_stat = None
 
         metadata_error = ""
+        # Share a frozen boundary only between the two reads of this task.
+        # Payload validation still checks current ancestors and the actual file.
+        resolved_paths: dict[str, str | None] | None = {}
         try:
-            info = load_task_metadata(task_dir, raise_error=True)
+            info = load_task_metadata(task_dir, raise_error=True, _resolved_paths=resolved_paths)
             if raise_on_error:
                 _validate_task_status_for_strict_refresh(info, dir_name)
             if not info:
@@ -1222,12 +1225,14 @@ class TaskManager:
             metadata_error = f"Could not load task metadata: {exc}"
             logger.error("Error loading info for %s: %s", dir_name, exc)
             info = {}
+            resolved_paths = None
         if info:
             info = self._strip_queued_placeholder_run(info)
 
         config_file = resolve_task_config_file(info, None, task_dir)
         task_kind, config_data, config_text, payload_error, payload_signature = read_task_payload_snapshot(
             task_dir, {**info, "config_file": config_file}, config_view=True,
+            _resolved_paths=resolved_paths,
         )
         task_name = dir_name
         if info:
