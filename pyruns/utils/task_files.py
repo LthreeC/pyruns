@@ -32,7 +32,7 @@ from pyruns.utils.info_io import (
     validate_tasks_root,
     validate_workspace_file,
 )
-from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.file_boundary import validate_open_file
 from pyruns.utils.sort_utils import filter_tasks
 from pyruns.utils.search_query import SearchQuery
@@ -145,7 +145,7 @@ def resolve_task_payload_path(
 def _read_payload_bytes(
     path: str, max_bytes: int, *, _boundary: str | None = None,
 ) -> tuple[bytes, TaskPayloadSignature]:
-    with open(path, "rb") as handle:
+    with open(path, "rb", opener=regular_file_opener) as handle:
         if _boundary is not None:
             validate_open_file(handle, path, _boundary)
         attributes = None

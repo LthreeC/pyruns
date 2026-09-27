@@ -73,7 +73,7 @@ from pyruns.utils.info_io import (
     validate_workspace_directory,
 )
 from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
-from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.log_search import LogSearch, LogSearchResult
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
@@ -1032,7 +1032,7 @@ class PyrunsRuntime:
 
     @staticmethod
     def _read_template_text(path: str, template_value: str) -> str:
-        with open(path, "rb") as handle:
+        with open(path, "rb", opener=regular_file_opener) as handle:
             raw = read_bounded_bytes(handle, MAX_TASK_PAYLOAD_BYTES + 1)
         if len(raw) > MAX_TASK_PAYLOAD_BYTES:
             raise ValueError(

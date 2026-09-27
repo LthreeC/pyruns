@@ -11,7 +11,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 from pyruns._config import MAX_CONFIG_FILE_BYTES
 from pyruns.utils import get_logger
 from pyruns.utils.config_utils import load_config_text
-from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 
 logger = get_logger(__name__)
 
@@ -19,7 +19,7 @@ ConfigValue = DictConfig | ListConfig
 
 
 def _read_config_bytes(file_path: str) -> bytes:
-    with open(file_path, "rb") as handle:
+    with open(file_path, "rb", opener=regular_file_opener) as handle:
         raw = read_bounded_bytes(handle, MAX_CONFIG_FILE_BYTES + 1)
     if len(raw) > MAX_CONFIG_FILE_BYTES:
         raise ValueError(

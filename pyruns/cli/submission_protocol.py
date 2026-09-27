@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 
 
 SCHEMA_VERSION = 2
@@ -345,7 +345,7 @@ def read_submission_payload(path: str, *, token: str) -> SubmissionPayload:
     """Read and strictly validate one bounded task submission payload."""
 
     expected_token = validate_submission_token(token)
-    with open(path, "rb") as handle:
+    with open(path, "rb", opener=regular_file_opener) as handle:
         raw = read_bounded_bytes(handle, MAX_SUBMISSION_PAYLOAD_BYTES + 1)
     if len(raw) > MAX_SUBMISSION_PAYLOAD_BYTES:
         raise ValueError(

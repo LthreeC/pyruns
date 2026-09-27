@@ -22,7 +22,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.info_io import validate_workspace_file
-from pyruns.utils.file_io import read_bounded_bytes
+from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.lock_owner import RELEASED_LOCK_SUFFIX, mark_json_lock_released, parse_json_lock_owner
 
 from pyruns._config import (
@@ -389,7 +389,7 @@ def _read_settings_text(path: str) -> str:
     """Read a bounded UTF-8 settings document for every settings operation."""
 
     try:
-        with open(path, "rb") as handle:
+        with open(path, "rb", opener=regular_file_opener) as handle:
             raw = read_bounded_bytes(handle, MAX_CONFIG_FILE_BYTES + 1)
     except OSError as exc:
         raise ValueError(f"Could not read settings file '{path}': {exc}") from exc
