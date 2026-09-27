@@ -798,10 +798,17 @@ def update_task_metadata(
 
 def append_task_track(task_dir: str, data: Dict[str, Any], *, run_index: int | None = None) -> None:
     """Persist one SDK track update without rewriting a large history."""
-    from pyruns.utils.track_store import TRACK_STORE_KEY, append_point, encode_values
+    from pyruns.utils.track_store import encode_values
 
-    encoded = encode_values(data)
-    values = json.loads(encoded)
+    append_task_track_payloads(task_dir, (encode_values(data),), run_index=run_index)
+
+
+def append_task_track_payloads(task_dir: str, payloads: tuple[str, ...], *, run_index: int | None = None) -> None:
+    """Persist already validated JSON points together under the task write lock."""
+    from pyruns.utils.track_store import TRACK_STORE_KEY, append_point, append_points
+
+    if not payloads:
+        return
     with task_info_lock(task_dir, create_dir=False):
         info = load_task_metadata(task_dir, raise_error=True)
         previous_slots = run_slot_count(info)
@@ -814,10 +821,14 @@ def append_task_track(task_dir: str, data: Dict[str, Any], *, run_index: int | N
             if target > previous_slots or target > int(descriptor.get("max_run_index", 0)):
                 descriptor["max_run_index"] = max(target, int(descriptor.get("max_run_index", 0)))
                 _write_task_info_unlocked(info_path, task_dir, info)
-            append_point(task_dir, descriptor, target, encoded)
+            if len(payloads) == 1:
+                append_point(task_dir, descriptor, target, payloads[0])
+            else:
+                append_points(task_dir, descriptor, target, payloads)
             return
-        for key, value in values.items():
-            info["tracks"][slot].setdefault(key, []).append(value)
+        for payload in payloads:
+            for key, value in json.loads(payload).items():
+                info["tracks"][slot].setdefault(key, []).append(value)
         _save_full_task_info_unlocked(info_path, task_dir, info)
 
 

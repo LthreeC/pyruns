@@ -16,7 +16,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Iterable, TypeVar
 
 
 TRACK_STORE_KEY = "track_store"
@@ -24,6 +24,7 @@ TRACK_STORE_FILENAME = "tracks.sqlite3"
 INLINE_TRACK_POINTS = 1024
 INLINE_TRACK_BYTES = 256 * 1024
 MAX_TRACK_EVENT_BYTES = 16 * 1024 * 1024
+MAX_TRACK_BATCH_POINTS = 1024
 _SCHEMA_VERSION = 1
 _GENERATION_RE = re.compile(r"[0-9a-f]{32}\Z")
 _READ_BATCH_POINTS = 1024
@@ -50,6 +51,27 @@ def encode_values(data: Any) -> str:
     if len(text.encode("utf-8")) > MAX_TRACK_EVENT_BYTES:
         raise ValueError(f"Track update exceeds {MAX_TRACK_EVENT_BYTES} bytes")
     return text
+
+
+def encode_batch(points: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """Bound and snapshot every input point before a batch can touch storage."""
+    payloads = []
+    size = 0
+    for count, point in enumerate(points, 1):
+        if count > MAX_TRACK_BATCH_POINTS:
+            raise ValueError(f"Track batch exceeds {MAX_TRACK_BATCH_POINTS} points")
+        if not isinstance(point, dict):
+            raise TypeError("track_many expects an iterable of dictionaries")
+        if any(not isinstance(key, str) for key in point):
+            raise TypeError("track_many metric names must be strings")
+        if not point:
+            continue
+        payload = encode_values(point)
+        size += len(payload.encode("utf-8"))
+        if size > MAX_TRACK_EVENT_BYTES:
+            raise ValueError(f"Track batch exceeds {MAX_TRACK_EVENT_BYTES} bytes")
+        payloads.append(payload)
+    return tuple(payloads)
 
 
 def should_externalize(tracks: list) -> bool:
@@ -238,16 +260,23 @@ def read_tracks(task_dir: str, descriptor: dict[str, Any], *, slots: int) -> lis
 
 def append_point(task_dir: str, descriptor: dict[str, Any], run_index: int, payload: str) -> None:
     """Append once, retrying a transaction without releasing the task lock."""
+    append_points(task_dir, descriptor, run_index, (payload,))
+
+
+def append_points(task_dir: str, descriptor: dict[str, Any], run_index: int, payloads: tuple[str, ...]) -> None:
+    """Commit a complete batch, retaining point identities across retries."""
+    if not payloads:
+        return
     generation = _generation(descriptor)
-    operation = uuid.uuid4().hex
+    rows = [(generation, uuid.uuid4().hex, run_index, payload) for payload in payloads]
     for attempt in range(5):
         try:
             with _connect(task_dir) as connection, connection:
                 if connection.execute("SELECT 1 FROM generations WHERE generation=?", (generation,)).fetchone() is None:
                     raise ValueError("Referenced track generation is missing")
-                connection.execute(
+                connection.executemany(
                     "INSERT OR IGNORE INTO points(generation,operation,run_index,payload) VALUES (?,?,?,?)",
-                    (generation, operation, run_index, payload),
+                    rows,
                 )
             return
         except sqlite3.OperationalError:
