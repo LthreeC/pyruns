@@ -573,11 +573,17 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                 thread_lock.release()
 
 
-def load_task_metadata(task_dir: str, raise_error: bool = False) -> Dict[str, Any]:
+def load_task_metadata(
+    task_dir: str,
+    raise_error: bool = False,
+    *,
+    _resolved_paths: dict[str, str | None] | None = None,
+) -> Dict[str, Any]:
     """Load task control data without materializing externally stored curves."""
     info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
     try:
-        resolved_paths: dict[str, str | None] = {_workspace_abspath(task_dir): None}
+        resolved_paths: dict[str, str | None] = {} if _resolved_paths is None else _resolved_paths
+        resolved_paths.setdefault(_workspace_abspath(task_dir), None)
         validate_task_directory(task_dir, _resolved_paths=resolved_paths)
         if not os.path.exists(info_path):
             if raise_error:

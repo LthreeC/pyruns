@@ -29,6 +29,7 @@ from pyruns.utils.config_utils import (
 from pyruns.utils.info_io import (
     _workspace_abspath,
     validate_task_directory,
+    validate_tasks_root,
     validate_workspace_file,
 )
 from pyruns.utils.file_io import read_bounded_bytes
@@ -107,12 +108,21 @@ def resolve_task_config_file(
     return TASK_KIND_TO_CONFIG_FILENAME.get(normalized_kind, CONFIG_FILENAME)
 
 
-def resolve_task_payload_path(task_dir: str, config_file: str) -> str:
+def resolve_task_payload_path(
+    task_dir: str,
+    config_file: str,
+    *,
+    _resolved_paths: dict[str, str | None] | None = None,
+) -> str:
     base = _workspace_abspath(task_dir)
-    # Retain the validated boundary for this resolution only. The candidate
-    # and all link/reparse checks remain fresh if a parent changes meanwhile.
-    resolved_paths: dict[str, str | None] = {base: None}
-    validate_task_directory(task_dir, _resolved_paths=resolved_paths)
+    # A metadata read may share its boundary with the immediately following
+    # payload read. Ancestors and the candidate still need fresh checks.
+    resolved_paths: dict[str, str | None] = {} if _resolved_paths is None else _resolved_paths
+    if resolved_paths.get(base) is None:
+        resolved_paths[base] = None
+        validate_task_directory(task_dir, _resolved_paths=resolved_paths)
+    else:
+        validate_tasks_root(os.path.dirname(base))
     lexical_parent = _workspace_abspath(os.path.dirname(base))
     try:
         if os.path.normcase(os.path.commonpath([base, lexical_parent])) != os.path.normcase(lexical_parent):
@@ -178,13 +188,14 @@ def read_task_payload(
 
 def read_task_payload_snapshot(
     task_dir: str, info: Dict[str, Any], *, config_view: bool = False,
+    _resolved_paths: dict[str, str | None] | None = None,
 ) -> TaskPayloadSnapshot:
     """Read task content with its initial file attributes and content digest."""
 
     task_kind = normalize_task_kind(info.get("task_kind", info.get("config_mode")))
     config_file = resolve_task_config_file(info, task_kind, task_dir)
     try:
-        config_path = resolve_task_payload_path(task_dir, config_file)
+        config_path = resolve_task_payload_path(task_dir, config_file, _resolved_paths=_resolved_paths)
     except ValueError as exc:
         return TaskPayloadSnapshot(task_kind, _empty_config(), "", str(exc), None)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import pyruns
+import pyruns.core.task_manager as task_manager
 import pyruns.launcher as launcher
 import pyruns.utils.info_io as info_io
 import pyruns.utils.parse_utils as parse_utils
@@ -306,7 +307,7 @@ def test_relative_managed_path_tracks_working_directory_changes(tmp_path, monkey
         _unlink_directory(second / DEFAULT_ROOT_NAME)
 
 
-@pytest.mark.parametrize("operation", ["read", "write", "metadata"])
+@pytest.mark.parametrize("operation", ["read", "write", "metadata", "task"])
 def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatch, operation):
     relative = Path(DEFAULT_ROOT_NAME) / "train" / "tasks" / "sample"
     first, second = tmp_path / "first", tmp_path / "second"
@@ -318,6 +319,8 @@ def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatc
     _link_directory(alias, first)
     module = info_io if operation == "metadata" else task_files
     validator = "_validate_contained_path" if operation == "metadata" else "validate_workspace_file"
+    if operation == "task":
+        module, validator = task_manager, "read_task_payload_snapshot"
     validate = getattr(module, validator)
 
     def switch_project_after_directory_check(path, workspace_dir, **kwargs):
@@ -327,7 +330,23 @@ def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatc
 
     monkeypatch.setattr(module, validator, switch_project_after_directory_check)
     try:
-        if operation == "read":
+        if operation == "task":
+            manager = task_manager.TaskManager(
+                str(alias / relative.parent), lazy_scan=None, owns_task_lifecycle=False,
+            )
+            try:
+                task = manager.load_task_by_name("sample")
+                assert task["notes"] == "first"
+                assert task["config"] == {}
+                assert "resolves outside" in task["_load_error"]
+                monkeypatch.setattr(module, validator, validate)
+                task = manager.load_task_by_name("sample")
+                assert task["notes"] == "second"
+                assert task["config"] == {"value": "second"}
+                assert task["_load_error"] == ""
+            finally:
+                manager.shutdown()
+        elif operation == "read":
             kind, config, text, error = read_task_payload(str(alias / relative), {})
             assert (kind, config, text) == (TASK_KIND_CONFIG, {}, "")
             assert "resolves outside" in error
@@ -347,6 +366,30 @@ def test_task_io_keeps_project_boundary_when_parent_changes(tmp_path, monkeypatc
             _unlink_directory(alias)
     assert (first / relative / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: first\n"
     assert (second / relative / CONFIG_FILENAME).read_text(encoding="utf-8") == "value: second\n"
+
+
+def test_task_loading_rechecks_tasks_root_before_payload(tmp_path, monkeypatch, simulate_reparse):
+    # A custom tasks root need not contain the managed _pyruns_ directory name.
+    tasks = tmp_path / "custom" / "tasks"
+    task = tasks / "sample"
+    task.mkdir(parents=True)
+    (task / TASK_INFO_FILENAME).write_text('{"notes": "keep"}', encoding="utf-8")
+    (task / CONFIG_FILENAME).write_text("value: secret\n", encoding="utf-8")
+    read_payload = task_manager.read_task_payload_snapshot
+
+    def replace_root_before_payload(*args, **kwargs):
+        simulate_reparse(tasks)
+        return read_payload(*args, **kwargs)
+
+    monkeypatch.setattr(task_manager, "read_task_payload_snapshot", replace_root_before_payload)
+    manager = task_manager.TaskManager(str(tasks), lazy_scan=None, owns_task_lifecycle=False)
+    try:
+        loaded = manager.load_task_by_name("sample")
+        assert loaded["notes"] == "keep"
+        assert loaded["config"] == {}
+        assert "Tasks directory must not be a symlink" in loaded["_load_error"]
+    finally:
+        manager.shutdown()
 
 
 @pytest.mark.parametrize("relative_path", [False, True])
