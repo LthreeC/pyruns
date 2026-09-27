@@ -274,14 +274,15 @@ def validate_workspace_file(
     absolute = _workspace_abspath(path)
     root = _workspace_abspath(workspace_dir)
     validate_workspace_directory(root)
-    exists = os.path.lexists(absolute)
-    if exists and _path_is_link_or_reparse(absolute):
+    try:
+        info = os.lstat(absolute)
+    except (OSError, ValueError):
+        info = None
+    if _stat_is_link_or_reparse(info):
         raise ValueError(f"{label} must not be a symlink, junction, or reparse point: {path}")
     if not _path_is_within(absolute, root, _resolved_paths=_resolved_paths):
         raise ValueError(f"{label} resolves outside its workspace boundary: {path}")
-    if not exists:
-        return
-    if not os.path.isfile(absolute):
+    if info is not None and not stat.S_ISREG(info.st_mode):
         raise ValueError(f"{label} must be a regular file: {path}")
 
 
