@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import CancelledError
 from functools import lru_cache
@@ -127,6 +128,7 @@ def _ripgrep_events(paths, cwd, needle, matcher, cancelled):
     command = [
         ripgrep_path(), "--no-config", "--json", "--text", "--encoding", "none",
         "--no-mmap", "--no-ignore", "--hidden", "--no-follow", "--crlf",
+        "--line-buffered",
         "--case-sensitive" if matcher.match_case else "--ignore-case",
     ]
     if matcher.use_regex or matcher.whole_word or matcher.multiline:
@@ -237,7 +239,8 @@ class LogSearch:
     def search(self, task_dir, query, cancelled, matcher=None) -> LogSearchResult:
         return self.search_many([task_dir], query, cancelled, matcher)[task_dir]
 
-    def search_many(self, task_dirs, query, cancelled, matcher=None, *, budget=None) -> dict[str, LogSearchResult]:
+    def search_many(self, task_dirs, query, cancelled, matcher=None, *, budget=None,
+                    on_progress=None) -> dict[str, LogSearchResult]:
         """Search uncached files in batches, stopping at the shared match limit."""
         matcher = matcher or SearchQuery(query)
         budget = budget if budget is not None else SearchBudget()
@@ -248,8 +251,34 @@ class LogSearch:
             return results
         with self._lock:
             matches, misses = self._query_cache(matcher.cache_key)
-            snapshot = {**misses, **matches}
+            cache_snapshot = {**misses, **matches}
         files, contents, pending = {}, {}, []
+
+        def snapshot():
+            # Stable queue/run1/run2/.../error previews, regardless of worker order.
+            current: dict[str, LogSearchResult] = {
+                task_dir: {**_empty_result(), "errors": list(result["errors"])}
+                for task_dir, result in results.items()
+            }
+            for path, (task_dir, _, _) in files.items():
+                cached = contents[path]
+                result = current[task_dir]
+                result["found"].update(cached["found"])
+                result["match_count"] += cached["match_count"]
+                result["matches"].extend(cached["matches"][:max(0, _PREVIEW_LIMIT - len(result["matches"]))])
+            return current
+
+        last_progress = None
+
+        def publish_progress():
+            nonlocal last_progress
+            if on_progress is None:
+                return
+            now = time.monotonic()
+            if last_progress is None or now - last_progress >= 0.1:
+                on_progress(snapshot())
+                last_progress = now
+
         for task_dir in results:
             if cancelled.is_set():
                 raise CancelledError()
@@ -260,7 +289,7 @@ class LogSearch:
                 continue
             for name, (path, info) in entries.items():
                 files[path] = (task_dir, name, info)
-                cached = snapshot.get(path)
+                cached = cache_snapshot.get(path)
                 if cached is not None and cached[0] == _signature(info):
                     contents[path] = cached[1]
                     accepted = budget.take(cached[1]["match_count"])
@@ -273,6 +302,8 @@ class LogSearch:
                     break
             if budget.limit_hit:
                 break
+        if any(result["match_count"] for result in contents.values()):
+            publish_progress()
         failed = set()
         if pending and not budget.limit_hit:
             # Retain the task name in ripgrep errors even for a one-task batch.
@@ -297,6 +328,7 @@ class LogSearch:
                             _, name, info = files[path]
                             contents[path]["found"].add(needle)
                             _append_match(contents[path], data, name, info)
+                            publish_progress()
                             if budget.limit_hit:
                                 break
                     finally:
@@ -326,11 +358,4 @@ class LogSearch:
                     misses.move_to_end(path)
                     while len(misses) > _CACHE_MISSES_PER_QUERY:
                         misses.popitem(last=False)
-        # Stable queue/run1/run2/.../error previews, regardless of worker order.
-        for path, (task_dir, _, _) in files.items():
-            cached = contents[path]
-            result = results[task_dir]
-            result["found"].update(cached["found"])
-            result["match_count"] += cached["match_count"]
-            result["matches"].extend(cached["matches"][:max(0, _PREVIEW_LIMIT - len(result["matches"]))])
-        return results
+        return snapshot()

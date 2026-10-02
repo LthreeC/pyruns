@@ -1237,16 +1237,34 @@ class PyrunsRuntime:
             budget = SearchBudget(max_results if max_results and max_results > 0 else None)
             empty_logs: LogSearchResult = {"matches": [], "match_count": 0, "found": set(), "errors": []}
 
-            def page(complete):
+            def page(complete, batch_items=(), batch_total=0, batch_errors=()):
                 with self._workspace_lock:
                     if epoch != self._workspace_epoch:
                         raise WorkspaceChangedError("Workspace changed during search; search again.")
+                found_items = [*items, *batch_items]
+                found_total = total + batch_total
+                found_errors = [*errors, *batch_errors][:8]
                 return TaskPage(
-                    list(items), total, offset, limit, offset + len(items) < total, counts,
-                    list(errors), budget.limit_hit, complete and not budget.limit_hit and not errors,
+                    found_items, found_total, offset, limit, offset + len(found_items) < found_total, counts,
+                    found_errors, budget.limit_hit, complete and not budget.limit_hit and not found_errors,
                 )
 
-            # Return the first task promptly, then amortize ripgrep launches.
+            last_progress = None
+            last_progress_total = 0
+
+            def publish_progress(batch_items=(), batch_total=0, batch_errors=()):
+                nonlocal last_progress, last_progress_total
+                if on_progress is None:
+                    return
+                if cancelled.is_set():
+                    raise CancelledError()
+                now = time.monotonic()
+                if last_progress is None or (not last_progress_total and total + batch_total) or now - last_progress >= 0.1:
+                    on_progress(page(False, batch_items, batch_total, batch_errors))
+                    last_progress = now
+                    last_progress_total = total + batch_total
+
+            # Stream matches within each batch while amortizing ripgrep launches.
             cursor = 0
             while cursor < len(ordered) and not budget.limit_hit:
                 batch = ordered[cursor:cursor + (32 if cursor else 1)]
@@ -1260,34 +1278,47 @@ class PyrunsRuntime:
                     budget.take(context["match_count"])
                     if budget.limit_hit:
                         break
+
+                def collect_batch(log_results, batch=batch, contexts=contexts, base_total=total):
+                    batch_items, batch_errors = [], []
+                    batch_total = 0
+                    for task in batch:
+                        if cancelled.is_set():
+                            raise CancelledError()
+                        context = contexts.get(task["name"], {"matches": [], "match_count": 0})
+                        logs = log_results.get(task["dir"], empty_logs)
+                        batch_errors.extend(message for message in logs["errors"] if len(batch_errors) < 8)
+                        if needles and not (context["match_count"] or logs["match_count"]):
+                            continue
+                        if offset <= base_total + batch_total < offset + limit:
+                            current = manager.get_task(task["name"], summary=summary)
+                            if current is None or manager._get_task_search_view(task["name"]) is not task:
+                                # Keep contexts attached to the captured task if it
+                                # disappears or a same-name replacement arrives.
+                                current = manager.serialize_task({
+                                    **task, "env": dict(task["env"]),
+                                    "start_times": list(task["start_times"]),
+                                    "finish_times": list(task["finish_times"]),
+                                }, summary=summary)
+                            current["search_matches"] = context["matches"] + logs["matches"]
+                            current["search_match_count"] = context["match_count"] + logs["match_count"]
+                            batch_items.extend(_cap_summary_task_payloads([current]) if summary else [current])
+                        batch_total += 1
+                    return batch_items, batch_total, batch_errors
+
+                if search_logs and on_progress is not None and any(c["match_count"] for c in contexts.values()):
+                    publish_progress(*collect_batch({}))
                 log_results = self._log_search.search_many(
                     [task["dir"] for task in batch], query, cancelled, matcher, budget=budget,
+                    on_progress=(lambda logs: publish_progress(*collect_batch(logs))) if on_progress is not None else None,
                 ) if search_logs and not budget.limit_hit else {}
-                for task in batch:
-                    if cancelled.is_set():
-                        raise CancelledError()
-                    context = contexts.get(task["name"], {"matches": [], "match_count": 0})
-                    logs = log_results.get(task["dir"], empty_logs)
-                    errors.extend(message for message in logs["errors"] if len(errors) < 8)
-                    if needles and not (context["match_count"] or logs["match_count"]):
-                        continue
-                    if offset <= total < offset + limit:
-                        current = manager.get_task(task["name"], summary=summary)
-                        if current is None or manager._get_task_search_view(task["name"]) is not task:
-                            # Keep contexts attached to the captured task if it
-                            # disappears or a same-name replacement arrives.
-                            current = manager.serialize_task({
-                                **task, "env": dict(task["env"]),
-                                "start_times": list(task["start_times"]),
-                                "finish_times": list(task["finish_times"]),
-                            }, summary=summary)
-                        current["search_matches"] = context["matches"] + logs["matches"]
-                        current["search_match_count"] = context["match_count"] + logs["match_count"]
-                        items.extend(_cap_summary_task_payloads([current]) if summary else [current])
-                    total += 1
+                batch_items, batch_total, batch_errors = collect_batch(log_results)
+                items.extend(batch_items)
+                total += batch_total
+                errors.extend(batch_errors[:max(0, 8 - len(errors))])
                 cursor += len(batch)
                 if on_progress is not None and cursor < len(ordered) and not budget.limit_hit:
-                    on_progress(page(False))
+                    publish_progress()
             return page(True)
         finally:
             self._log_search.slots.release()

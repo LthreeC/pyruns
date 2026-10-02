@@ -2871,24 +2871,31 @@ def test_search_limit_is_shared_across_fields_and_stream_reports_truncation(tmp_
         assert error["type"] == "error" and error["status"] == 422
 
 
-def test_search_publishes_first_batch_before_scanning_rest_and_can_cancel(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel", [False, True])
+def test_search_publishes_matches_before_file_finishes_and_can_cancel(tmp_path, monkeypatch, cancel):
     from concurrent.futures import CancelledError, ThreadPoolExecutor
+    from pyruns.utils import log_search
 
     workspace = _make_workspace(tmp_path, "main")
     for name in ("first", "second"):
-        _add_task(workspace, name, log_text="needle\n")
+        _add_task(workspace, name, log_text="needle\nneedle\n")
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     cancelled, entered, release = threading.Event(), threading.Event(), threading.Event()
     pages = []
-    original = runtime._log_search.search_many
+    original = log_search._ripgrep_events
 
-    def scan(dirs, *args, **kwargs):
-        if any(path.endswith("second") for path in dirs):
-            entered.set()
-            assert release.wait(5)
-        return original(dirs, *args, **kwargs)
+    def scan(*args):
+        events = original(*args)
+        try:
+            for event in events:
+                yield event
+                if not entered.is_set():
+                    entered.set()
+                    assert release.wait(5)
+        finally:
+            events.close()
 
-    monkeypatch.setattr(runtime._log_search, "search_many", scan)
+    monkeypatch.setattr(log_search, "_ripgrep_events", scan)
     try:
         with ThreadPoolExecutor(1) as pool:
             pending = pool.submit(runtime.search_tasks, query="needle", search_field="log", sort_mode="name_asc",
@@ -2898,15 +2905,50 @@ def test_search_publishes_first_batch_before_scanning_rest_and_can_cancel(tmp_pa
                 assert not pending.done()
                 assert pages[0].total == 1 and not pages[0].search_complete
                 assert [task["name"] for task in pages[0].items] == ["first"]
+                assert pages[0].items[0]["search_match_count"] == 1
             finally:
-                cancelled.set()
+                if cancel:
+                    cancelled.set()
                 release.set()
-            with pytest.raises(CancelledError):
-                pending.result(timeout=5)
+            if cancel:
+                with pytest.raises(CancelledError):
+                    pending.result(timeout=5)
+            else:
+                final = pending.result(timeout=5)
+                assert final.total == 2 and final.search_complete
+                assert [task["search_match_count"] for task in final.items] == [2, 2]
+                # Later matches must not mutate a page already sent to the client.
+                assert pages[0].items[0]["search_match_count"] == 1
+                assert len(pages[0].items[0]["search_matches"]) == 1
         assert runtime._log_search.slots.acquire(blocking=False)
         runtime._log_search.slots.release()
     finally:
         release.set()
+        runtime.shutdown()
+
+
+def test_search_stream_publishes_metadata_before_logs_and_keeps_pagination(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("a-needle", "b-needle", "c-needle"):
+        _add_task(workspace, name, log_text="needle\n")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    pages = []
+    scan = runtime._log_search.search_many
+
+    def check_progress(dirs, *args, **kwargs):
+        if len(dirs) == 1:
+            assert pages[0].total == 1  # Metadata arrived before any log I/O.
+        return scan(dirs, *args, **kwargs)
+
+    monkeypatch.setattr(runtime._log_search, "search_many", check_progress)
+    try:
+        final = runtime.search_tasks(query="needle", sort_mode="name_asc", offset=1, limit=1,
+                                     cancelled=threading.Event(), on_progress=pages.append)
+        assert final.total == 3 and final.has_more and final.search_complete
+        assert [task["name"] for task in final.items] == ["b-needle"]
+        assert final.items[0]["search_match_count"] == 2
+        assert pages[0].items == [] and pages[0].total == 1
+    finally:
         runtime.shutdown()
 
 
