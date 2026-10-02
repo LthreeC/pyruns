@@ -1215,7 +1215,7 @@ class PyrunsRuntime:
                 task_status = str(task.get("status") or "pending").lower()
                 counts[task_status] = counts.get(task_status, 0) + 1
             needles = matcher.needles
-            search_logs = search_field == "log" or (search_field == "all" and include_logs)
+            search_logs = bool(needles) and (search_field == "log" or (search_field == "all" and include_logs))
             candidates = filter_tasks(tasks, "", status)
             if not search_logs:
                 # Only matching metadata needs sort keys and page selection.
@@ -1231,28 +1231,28 @@ class PyrunsRuntime:
             total = 0
             selected = []
             errors = []
-            miss_snapshot = self._log_search.snapshot_misses(matcher) if search_logs else None
             empty_logs: LogSearchResult = {"matches": [], "match_count": 0, "found": set(), "errors": []}
+            metadata_found = {}
+            log_dirs = []
+            known_matches = 0
+            if search_logs:
+                for task in ordered:
+                    if cancelled.is_set():
+                        raise CancelledError()
+                    found = task_search_found(task, matcher, search_field) if search_field != "log" else set()
+                    metadata_found[task["name"]] = found
+                    metadata_match = all(needle in found for needle in needles)
+                    # Once metadata alone fills the page, later metadata hits
+                    # need no log contexts. Other tasks can still affect total.
+                    if not metadata_match or known_matches < offset + limit:
+                        log_dirs.append(task["dir"])
+                    known_matches += metadata_match
+            log_results = self._log_search.search_many(log_dirs, query, cancelled, matcher) if log_dirs else {}
             for task in ordered:
                 if cancelled.is_set():
                     raise CancelledError()
-                found = (
-                    task_search_found(sources.get(task["name"], task), matcher, search_field)
-                    if search_logs and search_field != "log" else set()
-                )
-                metadata_match = (
-                    search_logs
-                    and search_field != "log"
-                    and all(needle in found for needle in needles)
-                )
-                selected_for_page = offset <= total < offset + limit
-                logs = (
-                    empty_logs
-                    if not search_logs or (metadata_match and not selected_for_page)
-                    else self._log_search.search(
-                        task["dir"], query, cancelled, matcher, miss_snapshot=miss_snapshot,
-                    )
-                )
+                found = metadata_found.get(task["name"], set())
+                logs = log_results.get(task["dir"], empty_logs)
                 errors.extend(f"{task['name']}: {message}" for message in logs["errors"] if len(errors) < 8)
                 if search_logs and not all(needle in found or needle in logs["found"] for needle in needles):
                     continue

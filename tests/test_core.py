@@ -3292,7 +3292,7 @@ def test_task_manager_refreshes_edited_payload_and_clears_parse_error(tmp_path):
     task = manager.get_task("sample")
     assert task["_load_error"] == ""
     assert task["config"]["epochs"] == 2
-    assert manager.get_task_summary_page(query="epochs:2", search_field="config")[1] == 1
+    assert manager.get_task_summary_page(query="epochs: 2", search_field="config")[1] == 1
     assert (task_dir / TASK_INFO_FILENAME).stat().st_mtime_ns == info_mtime
 
 

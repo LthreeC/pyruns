@@ -914,9 +914,9 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
     return target - 1
 
 
-def get_log_options(task_dir: str) -> Dict[str, str]:
-    """Return ``{display_name: file_path}`` for all available log files."""
-    opts: Dict[str, str] = {}
+def get_log_entries(task_dir: str) -> dict[str, tuple[str, os.stat_result]]:
+    """Enumerate safe direct log files, reusing scandir metadata for search."""
+    opts: dict[str, tuple[str, os.stat_result]] = {}
     absolute_task = _workspace_abspath(task_dir)
     # Retain only these three directory anchors, for this enumeration alone.
     # A redirected parent must not change the boundary of later file checks.
@@ -928,38 +928,26 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
     except ValueError:
         return opts
     if os.path.isdir(run_dir):
-        queue_path = os.path.join(run_dir, QUEUE_LOG_FILENAME)
-        if (
-            os.path.isfile(queue_path)
-            and not _path_is_link_or_reparse(queue_path)
-            and _path_is_within(queue_path, run_dir, _resolved_paths=resolved_paths)
-        ):
-            opts[QUEUE_LOG_FILENAME] = queue_path
-
-        files = sorted(
-            [
-                f
-                for f in os.listdir(run_dir)
-                if f.startswith("run") and f.endswith(".log")
-                and os.path.isfile(os.path.join(run_dir, f))
-                and not _path_is_link_or_reparse(os.path.join(run_dir, f))
-                and _path_is_within(os.path.join(run_dir, f), run_dir, _resolved_paths=resolved_paths)
-            ],
-            key=lambda x: int("".join(filter(str.isdigit, x)) or "0"),
-        )
-        for f in files:
-            opts[f] = os.path.join(run_dir, f)
-
-        err_path = os.path.join(run_dir, ERROR_LOG_FILENAME)
-        if (
-            os.path.isfile(err_path)
-            and not _path_is_link_or_reparse(err_path)
-            and _path_is_within(err_path, run_dir, _resolved_paths=resolved_paths)
-        ):
-            opts[ERROR_LOG_FILENAME] = err_path
+        with os.scandir(run_dir) as entries:
+            for entry in entries:
+                name = entry.name
+                if name not in {QUEUE_LOG_FILENAME, ERROR_LOG_FILENAME} and not (
+                    name.startswith("run") and name.endswith(".log")
+                ):
+                    continue
+                try:
+                    # Windows DirEntry.stat omits device/inode values needed
+                    # for cache invalidation and the log-context identity.
+                    info = os.lstat(entry.path) if os.name == "nt" else entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                # Direct directory entries cannot escape this anchor unless
+                # they are links/reparse points. Avoid a realpath per file.
+                if stat.S_ISREG(info.st_mode) and not _stat_is_link_or_reparse(info):
+                    opts[name] = (entry.path, info)
 
         # Discard earlier entries too if their parent was redirected while
-        # later files were being enumerated (queue.log is collected first).
+        # later files were being enumerated.
         try:
             if opts:
                 anchor = resolved_paths[run_dir]
@@ -973,7 +961,19 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
         except (OSError, ValueError):
             return {}
 
-    return opts
+    def order(name):
+        if name == QUEUE_LOG_FILENAME:
+            return (0, 0, name)
+        if name == ERROR_LOG_FILENAME:
+            return (2, 0, name)
+        return (1, int("".join(filter(str.isdecimal, name)) or "0"), name)
+
+    return {name: opts[name] for name in sorted(opts, key=order)}
+
+
+def get_log_options(task_dir: str) -> Dict[str, str]:
+    """Return ``{display_name: file_path}`` for all available log files."""
+    return {name: path for name, (path, _) in get_log_entries(task_dir).items()}
 
 
 def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Optional[str]:

@@ -15,7 +15,6 @@ _INACTIVE_TIE_PRIORITIES = {
 }
 _NON_DIGIT_PATTERN = re.compile(r"\D+")
 _NATURAL_CHUNK_PATTERN = re.compile(r"(\d+)")
-_COLON_SPACES_PATTERN = re.compile(r"[^\S\r\n]*:[^\S\r\n]*")
 TASK_SORT_MODES = frozenset({
     "priority",
     "manual",
@@ -28,9 +27,9 @@ _Task = TypeVar("_Task", bound=Mapping[str, object])
 
 
 def normalize_task_search_text(value: object) -> str:
-    """Normalize task search text without collapsing line boundaries."""
+    """Fold case while preserving literal whitespace and line boundaries."""
 
-    return _COLON_SPACES_PATTERN.sub(":", str(value or "").lower())
+    return str(value or "").lower()
 
 
 def task_search_needles(query: str) -> List[str]:
@@ -40,7 +39,7 @@ def task_search_needles(query: str) -> List[str]:
     for line in str(query or "").split("\n"):
         if not line.strip():
             continue
-        normalized = normalize_task_search_text(line.strip())
+        normalized = normalize_task_search_text(line)
         if normalized not in needles:
             needles.append(normalized)
     return needles

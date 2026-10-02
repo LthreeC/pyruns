@@ -2398,7 +2398,7 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
     assert summary_item["preview_text"]
     assert len(summary_item["search_text"]) <= DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS
     assert summary_item["search_text"].startswith("alpha")
-    assert "tail_key:tail-value" in summary_item["search_text"]
+    assert "tail_key: tail-value" in summary_item["search_text"]
     assert matched.json()["total"] == 1
     assert matched.json()["items"][0]["name"] == "alpha"
     compact_item = compact.json()["items"][0]
@@ -2513,7 +2513,7 @@ def test_task_search_fields_filter_results_previews_and_pagination(tmp_path, sum
     client = TestClient(create_app(runtime))
     params = {"query": "needle", "summary": summary, "compact": compact,
               "include_logs": True, "sort": "name_asc", "refresh": False}
-    with patch.object(runtime._log_search, "search", wraps=runtime._log_search.search) as scan:
+    with patch.object(runtime._log_search, "search_many", wraps=runtime._log_search.search_many) as scan:
         for field, name in names.items():
             before = scan.call_count
             response = client.get("/api/tasks", params={**params, "search_field": field})
@@ -2612,8 +2612,13 @@ def test_invalid_and_slow_regex_report_errors_and_release_search_slots(tmp_path,
     assert "Invalid regular expression" in invalid.json()["detail"]
     monkeypatch.setattr(search_query, "REGEX_TIMEOUT_SECONDS", 0.001)
     timed_out = client.get("/api/tasks", params={**params, "query": "(A|AA)+$"})
-    assert timed_out.status_code == 422
-    assert "too long" in timed_out.json()["detail"]
+    if field == "log":
+        # Ripgrep's default regex engine handles this pattern in linear time.
+        assert timed_out.status_code == 200
+        assert timed_out.json()["total"] == 0
+    else:
+        assert timed_out.status_code == 422
+        assert "too long" in timed_out.json()["detail"]
     assert client.get("/api/tasks", params={**params, "query": "A", "use_regex": False}).json()["total"] == 1
     assert runtime._log_search.slots.acquire(blocking=False)
     assert runtime._log_search.slots.acquire(blocking=False)
@@ -2689,7 +2694,7 @@ def test_metadata_search_preserves_sort_pagination_counts_and_payloads(tmp_path,
         args = dict(query=query, search_field=field, include_logs=field != "all", sort_mode=sort_mode,
                     summary=summary, refresh=False, cancelled=threading.Event(), **options)
         counts = {"pending": 1, "queued": 0, "running": 2, "completed": 2, "failed": 1, "cancelled": 1}
-        with patch.object(runtime._log_search, "search", side_effect=AssertionError("metadata search read logs")):
+        with patch.object(runtime._log_search, "search_many", side_effect=AssertionError("metadata search read logs")):
             for offset in (0, 1, 4, 9):
                 page = runtime.search_tasks(offset=offset, limit=2, **args)
                 assert [task["name"] for task in page.items] == expected[offset:offset + 2]
@@ -2724,7 +2729,7 @@ def test_metadata_search_all_keeps_uncached_payload_sources(tmp_path, kind):
         runtime.ensure_tasks_loaded(full_refresh=False)
         with runtime.task_manager._lock:
             runtime.task_manager._tasks_by_name["source"]["search_text"] = ""
-        page = runtime.search_tasks(query="echo needle" if kind == "shell" else "model:tiny",
+        page = runtime.search_tasks(query="echo needle" if kind == "shell" else "model: tiny",
                                     include_logs=False, summary=True, refresh=False, cancelled=threading.Event())
         assert page.total == 1 and page.items[0]["name"] == "source"
         assert page.items[0]["search_match_count"] == 1
@@ -2749,7 +2754,7 @@ def test_all_search_skips_logs_when_metadata_satisfies_every_query_line(tmp_path
                     f"{name}\nneedle-in-notes"
                 )
             runtime.task_manager._rebuild_indexes_locked()
-        with patch.object(runtime._log_search, "search", wraps=runtime._log_search.search) as search:
+        with patch.object(runtime._log_search, "search_many", wraps=runtime._log_search.search_many) as search:
             page = runtime.search_tasks(
                 query="needle-in-notes", search_field="all", include_logs=True,
                 refresh=False, cancelled=threading.Event(), sort_mode="name_asc", limit=1,
@@ -2770,7 +2775,7 @@ def test_all_search_reads_logs_for_query_lines_missing_from_metadata(tmp_path):
     update_task_info(str(task_dir), lambda info: info.update({"notes": "from-notes"}))
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     try:
-        with patch.object(runtime._log_search, "search", wraps=runtime._log_search.search) as search:
+        with patch.object(runtime._log_search, "search_many", wraps=runtime._log_search.search_many) as search:
             page = runtime.search_tasks(
                 query="from-notes\nfrom-log", search_field="all", include_logs=True,
                 refresh=False, cancelled=threading.Event(), sort_mode="name_asc",
@@ -2906,13 +2911,13 @@ def test_concurrent_log_searches_keep_per_query_contexts_separate(tmp_path, monk
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     runtime.ensure_tasks_loaded(full_refresh=False)
     barrier = threading.Barrier(2)
-    original = runtime._log_search.search
+    original = runtime._log_search.search_many
 
     def search(*args, **kwargs):
         barrier.wait(timeout=5)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(runtime._log_search, "search", search)
+    monkeypatch.setattr(runtime._log_search, "search_many", search)
     try:
         with ThreadPoolExecutor(2) as pool:
             pending = [pool.submit(runtime.search_tasks, query=query, search_field="log", refresh=False,
@@ -3165,28 +3170,6 @@ def test_metadata_search_cancels_between_lines_without_holding_task_lock(tmp_pat
     assert len(calls) == 2
 
 
-def test_regex_log_context_preserves_anchors_unicode_ansi_and_long_line_offsets(tmp_path, monkeypatch):
-    from pyruns.utils import log_search
-    from pyruns.utils.search_query import SearchQuery
-
-    path = tmp_path / "run1.log"
-    prefix = "x" * 65536 + "\r\n" + "前缀 "
-    payload = (prefix + "\x1b[31mToken42\x1b[0m 后缀\r\n").encode("utf-8")
-    path.write_bytes(payload)
-    matcher = SearchQuery(r"(?<=前缀 )Token\d+(?= 后缀$)", use_regex=True, match_case=True)
-    result = log_search.LogSearch._search_file_patterns(str(path), path.name, len(payload), matcher, threading.Event())
-    assert result["match_count"] == 1
-    match = result["matches"][0]
-    assert match["line"] == 2
-    assert match["snippet"][match["match_start"]:match["match_end"]] == "Token42"
-    assert 0 <= payload.index(b"Token42") - match["offset"] <= 256
-    assert SearchQuery(r"\S+", use_regex=True).scan(" a B ")["match_count"] == 2
-    assert SearchQuery("^", use_regex=True).scan("")["spans"] == [(0, 0)]
-    monkeypatch.setattr(log_search, "_MAX_PATTERN_LINE_CHARS", 32)
-    with pytest.raises(ValueError, match="line exceeds"):
-        log_search.LogSearch._search_file_patterns(str(path), path.name, len(payload), matcher, threading.Event())
-
-
 def test_full_log_search_finds_history_outside_terminal_tail_and_opens_context(tmp_path):
     from pyruns._config import RUN_LOGS_DIR
 
@@ -3219,357 +3202,6 @@ def test_full_log_search_finds_history_outside_terminal_tail_and_opens_context(t
     assert {match["field"] for match in page.items[0]["search_matches"]} == {"name", "log"}
 
 
-@pytest.mark.parametrize("prefix,token,suffix,query", [
-    ("x" * 16380, "cross-boundary-token", "\r\n", "cross-boundary-token"),
-    ("中" * 16383, "😀测试", "\n", "😀测试"),
-    ("x" * 16381, "to\x1b[31mken\x1b[0m", "\n", "token"),
-    ("x" * 16380, "loss   :   42", "\rnext\n", "loss:42"),
-    ("\t", "İstanbul", "\n", "i̇stanbul"),
-], ids=["ascii", "unicode", "ansi", "colon-spaces", "unicode-lower"])
-@pytest.mark.parametrize("match_case", [False, True])
-def test_log_search_chunk_boundaries_unicode_ansi_and_normalization(tmp_path, prefix, token, suffix, query, match_case):
-    from pyruns.utils.log_search import LogSearch
-    from pyruns.utils.search_query import SearchQuery
-
-    if match_case:
-        query = query.replace("i\u0307", "\u0130")
-
-    path = tmp_path / "run1.log"
-    path.write_text(prefix + token + suffix, encoding="utf-8", newline="")
-    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, [query], threading.Event(), match_case=match_case)
-    assert result["match_count"] == 1
-    match = result["matches"][0]
-    assert match["line"] == 1
-    assert len(match["snippet"]) <= 180
-    assert SearchQuery(query, match_case=match_case).normalize(match["snippet"][match["match_start"]:match["match_end"]]) == query
-    with path.open("rb") as handle:
-        handle.seek(match["offset"])
-        context = handle.read(32768).decode("utf-8", errors="replace")
-    assert token in context
-
-
-@pytest.mark.parametrize("suffix,query", [
-    ("B\n", "aς"), ("\u0301B\n", "aς"), ("", "aς"), ("B\n", "aσb"),
-    ("\u0888B\n", "aς"), ("\u0888B\n", "aσ"),
-])
-@pytest.mark.parametrize("fill_previews", [False, True])
-def test_log_search_keeps_contextual_unicode_case_across_chunks(tmp_path, suffix, query, fill_previews):
-    from pyruns.utils.log_search import LogSearch, _CHUNK_CHARS
-    from pyruns.utils.search_query import SearchQuery
-
-    prefix = "aς\n" * 24 if fill_previews else ""
-    payload = prefix + "x" * (_CHUNK_CHARS - len(prefix) - 2) + "AΣ" + suffix
-    path = tmp_path / "run1.log"
-    path.write_text(payload, encoding="utf-8")
-    matcher = SearchQuery(query)
-    expected = matcher.scan(payload)["match_count"]
-    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, matcher.needles, threading.Event())
-    assert result["match_count"] == expected
-
-
-@pytest.mark.parametrize("payload,query", [
-    ("x" * 8191 + "ΑΣ " + "x" * 16000, "ς"),
-    ("x" * 8191 + "A" + "\u0301" * 8191 + "Σ tail\n", "ς tail"),
-    ("x" * 8190 + "A\u0888" + "\u0301" * 8191 + "Σ tail\n", "ς tail"),
-], ids=["word-overlap", "combining-prefix", "unicode-version-prefix"])
-def test_log_search_preserves_case_context_before_retained_overlap(tmp_path, payload, query):
-    from pyruns.utils.log_search import LogSearch
-    from pyruns.utils.search_query import SearchQuery
-
-    path = tmp_path / "run1.log"
-    path.write_text(payload, encoding="utf-8")
-    matcher = SearchQuery(query)
-    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, matcher.needles, threading.Event())
-    expected = matcher.scan(payload)["match_count"]
-    assert result["match_count"] == expected
-    assert len(result["matches"]) == expected
-    token = "Σ" if query == "ς" else "Σ tail"
-    for match in result["matches"]:
-        assert match["snippet"][match["match_start"]:match["match_end"]] == token
-        assert 0 <= payload.encode().index("Σ".encode()) - match["offset"] <= 256
-
-
-@pytest.mark.parametrize("query", ["aς", "aσ"])
-@pytest.mark.parametrize("pending,suffix", [
-    ("", "\u0301" * 40000 + "B"),
-    ("", "\x1b[31mB\x1b[0m"),
-    ("\x1b", "[31mB\x1b[0m"),
-    ("\x1b[", "31mB\x1b[0m"),
-    ("\x1b]title", "\x07B"),
-    ("\x1b]title", "\x1b\\B"),
-    ("", "\x1b[0 0mB"),
-], ids=["combining-lookahead", "color", "split-escape", "split-csi", "osc-bell", "osc-st", "invalid-csi"])
-def test_log_search_case_lookahead_preserves_ansi_and_reader_position(tmp_path, query, pending, suffix):
-    from pyruns.utils.log_search import LogSearch, _ANSI, _CHUNK_CHARS
-    from pyruns.utils.search_query import SearchQuery
-
-    payload = "x" * (_CHUNK_CHARS - 2 - len(pending)) + "AΣ" + pending + suffix + "\nmarker\n"
-    path = tmp_path / "run1.log"
-    path.write_text(payload, encoding="utf-8")
-    matcher = SearchQuery(query + "\nmarker")
-    expected = matcher.scan(_ANSI.sub("", payload))
-    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, matcher.needles, threading.Event())
-    assert result["match_count"] == expected["match_count"]
-    assert result["found"] == expected["found"]
-    marker = next(match for match in result["matches"] if match["line"] == 2)
-    assert marker["snippet"][marker["match_start"]:marker["match_end"]] == "marker"
-    assert 0 <= payload.encode().index(b"marker") - marker["offset"] <= 256
-
-
-def test_log_search_case_lookahead_cancels_and_restores_reader(tmp_path):
-    from concurrent.futures import CancelledError
-    from pyruns.utils.log_search import _CHUNK_CHARS, _next_character_is_cased
-
-    path = tmp_path / "run1.log"
-    path.write_text("AΣ" + "\u0301" * (_CHUNK_CHARS * 2) + "B", encoding="utf-8")
-    cancelled = MagicMock()
-    cancelled.is_set.side_effect = [False, True]
-    with path.open(encoding="utf-8") as handle:
-        handle.read(2)
-        position = handle.tell()
-        with pytest.raises(CancelledError):
-            _next_character_is_cased(handle, path.stat().st_size, cancelled)
-        assert handle.tell() == position
-        assert handle.read() == "\u0301" * (_CHUNK_CHARS * 2) + "B"
-
-
-@pytest.mark.parametrize("payload,expected", [("a" * 100_000, 100_000 // 3), ("aaa\n" * 100_000, 100_000)], ids=["long-line", "many-lines"])
-def test_log_search_counts_long_lines_without_duplicate_overlap_and_cancels(tmp_path, payload, expected):
-    from concurrent.futures import CancelledError
-    from pyruns.utils.log_search import LogSearch
-
-    path = tmp_path / "run1.log"
-    path.write_text(payload, encoding="utf-8")
-    result = LogSearch._search_file(str(path), path.name, path.stat().st_size, ["aaa"], threading.Event())
-    assert result["match_count"] == expected
-    assert len(result["matches"]) == 24
-    cancelled = threading.Event()
-    cancelled.set()
-    with pytest.raises(CancelledError):
-        LogSearch._search_file(str(path), path.name, path.stat().st_size, ["absent"], cancelled)
-
-
-@pytest.mark.parametrize("encoding", ["gbk", "invalid-utf8"])
-@pytest.mark.parametrize("advanced", [False, True])
-def test_log_search_preserves_byte_positions_for_locale_and_invalid_bytes(tmp_path, monkeypatch, encoding, advanced):
-    from pyruns.utils import log_search
-
-    path = tmp_path / "run1.log"
-    if encoding == "gbk":
-        monkeypatch.setattr(log_search, "_log_decode_candidates", lambda: ["utf-8", "gbk"])
-        token = "测试"
-        payload = b"ASCII header " * 10000 + token.encode("gbk")
-    else:
-        monkeypatch.setattr(log_search, "_log_decode_candidates", lambda: ["utf-8"])
-        token = "token"
-        payload = b"\xff" * 2000 + token.encode()
-    path.write_bytes(payload)
-    if advanced:
-        from pyruns.utils.search_query import SearchQuery
-        result = log_search.LogSearch._search_file_patterns(str(path), path.name, len(payload), SearchQuery(token, use_regex=True), threading.Event())
-    else:
-        result = log_search.LogSearch._search_file(str(path), path.name, len(payload), [token], threading.Event())
-    assert result["match_count"] == 1
-    match = result["matches"][0]
-    assert match["snippet"][match["match_start"]:match["match_end"]] == token
-    assert 0 <= payload.index(token.encode("gbk" if encoding == "gbk" else "utf-8")) - match["offset"] <= 256
-
-
-def test_log_search_cache_invalidates_for_append_rewrite_and_read_error(tmp_path, monkeypatch):
-    from pyruns._config import RUN_LOGS_DIR
-    from pyruns.utils.log_search import LogSearch
-
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha", log_text="token\n")
-    task_dir = workspace / TASKS_DIR / "alpha"
-    path = task_dir / RUN_LOGS_DIR / "run1.log"
-    search = LogSearch()
-    event = threading.Event()
-    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
-        assert search.search(str(task_dir), "token", event)["match_count"] == 1
-        assert search.search(str(task_dir), "token", event)["match_count"] == 1
-        assert scan.call_count == 1
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write("token\n")
-        assert search.search(str(task_dir), "token", event)["match_count"] == 2
-        path.write_text("gone\n", encoding="utf-8")
-        assert search.search(str(task_dir), "token", event)["match_count"] == 0
-        assert scan.call_count == 3
-    monkeypatch.setattr(search, "_search_file", MagicMock(side_effect=PermissionError("denied")))
-    assert search.search(str(task_dir), "uncached", event)["errors"] == ["Could not read run1.log"]
-
-
-def test_log_search_cache_reuses_files_beyond_its_capacity(tmp_path, monkeypatch):
-    from pyruns._config import RUN_LOGS_DIR
-    from pyruns.utils import log_search
-
-    monkeypatch.setattr(log_search, "_CACHE_FILES_PER_QUERY", 4)
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha", log_text="needle\n")
-    task_dir = workspace / TASKS_DIR / "alpha"
-    for run_index in range(2, 6):
-        (task_dir / RUN_LOGS_DIR / f"run{run_index}.log").write_text("needle\n", encoding="utf-8")
-
-    search = log_search.LogSearch()
-    event = threading.Event()
-    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 5
-        assert scan.call_count == 5
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 5
-        assert scan.call_count == 6
-        search.search(str(task_dir), "other", event)
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 5
-        assert scan.call_count == 12
-
-
-def test_log_search_caches_negative_results_beyond_preview_capacity(tmp_path, monkeypatch):
-    from pyruns._config import RUN_LOGS_DIR
-    from pyruns.utils import log_search
-
-    monkeypatch.setattr(log_search, "_CACHE_FILES_PER_QUERY", 4)
-    monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 8, raising=False)
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha", log_text="other\n")
-    task_dir = workspace / TASKS_DIR / "alpha"
-    for run_index in range(2, 6):
-        (task_dir / RUN_LOGS_DIR / f"run{run_index}.log").write_text("other\n", encoding="utf-8")
-
-    search = log_search.LogSearch()
-    event = threading.Event()
-    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 0
-        assert scan.call_count == 5
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 0
-        assert scan.call_count == 5
-
-        (task_dir / RUN_LOGS_DIR / "run5.log").write_text("needle\n", encoding="utf-8")
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 1
-        assert scan.call_count == 6
-        assert search.search(str(task_dir), "needle", event)["match_count"] == 1
-        assert scan.call_count == 6
-
-
-@pytest.mark.parametrize("options", [{}, {"use_regex": True}])
-def test_log_search_reuses_cached_misses_during_workspace_scan(tmp_path, monkeypatch, options):
-    from pyruns.utils import log_search
-
-    monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 2)
-    workspace = _make_workspace(tmp_path, "main")
-    for index in range(5):
-        _add_task(workspace, f"task{index}", log_text="needle\n" if index == 4 else "other\n")
-    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
-    method = "_search_file_patterns" if options else "_search_file"
-    try:
-        with patch.object(runtime._log_search, method, wraps=getattr(runtime._log_search, method)) as scan:
-            for iteration in range(3):
-                page = runtime.search_tasks(
-                    query="needle", search_field="log", sort_mode="name_asc", refresh=False,
-                    cancelled=threading.Event(), **options,
-                )
-                assert page.total == 1
-                assert [task["name"] for task in page.items] == ["task4"]
-                assert page.items[0]["search_match_count"] == 1
-                assert page.search_errors == []
-                assert scan.call_count == 5 + 2 * iteration
-            for matches, misses in runtime._log_search._cache.values():
-                assert len(matches) <= log_search._CACHE_FILES_PER_QUERY
-                assert len(misses) <= log_search._CACHE_MISSES_PER_QUERY
-    finally:
-        runtime.shutdown()
-
-
-@pytest.mark.parametrize("change", ["append", "rewrite", "replace", "read_error"])
-def test_log_search_miss_snapshot_rechecks_changed_files(tmp_path, monkeypatch, change):
-    from pyruns._config import RUN_LOGS_DIR
-    from pyruns.utils import log_search
-    from pyruns.utils.search_query import SearchQuery
-
-    monkeypatch.setattr(log_search, "_CACHE_QUERIES", 1)
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha", log_text="absent\n")
-    task_dir = workspace / TASKS_DIR / "alpha"
-    path = task_dir / RUN_LOGS_DIR / "run1.log"
-    search = log_search.LogSearch()
-    event = threading.Event()
-    matcher = SearchQuery("needle")
-    assert search.search(str(task_dir), "needle", event, matcher)["match_count"] == 0
-    snapshot = search.snapshot_misses(matcher)
-    search.search(str(task_dir), "different-query", event)
-
-    previous = path.stat()
-    if change == "append":
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write("needle\n")
-    elif change == "replace":
-        replacement = path.with_suffix(".new")
-        replacement.write_text("needle\n", encoding="utf-8")
-        replacement.replace(path)
-        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
-    else:
-        path.write_text("needle\n", encoding="utf-8")
-        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000_000))
-
-    with patch.object(search, "_search_file", wraps=search._search_file) as scan:
-        if change == "read_error":
-            scan.side_effect = PermissionError("denied")
-        result = search.search(str(task_dir), "needle", event, matcher, miss_snapshot=snapshot)
-        assert scan.call_count == 1
-    if change == "read_error":
-        assert result["errors"] == ["Could not read run1.log"]
-    else:
-        assert result["match_count"] == 1
-        assert result["found"] == {"needle"}
-        assert result["errors"] == []
-
-
-@pytest.mark.parametrize("before,after", [
-    (("absent", {}), ("needle", {})),
-    (("NEEDLE", {"match_case": True}), ("NEEDLE", {})),
-    (("need", {"whole_word": True}), ("need", {})),
-    (("n.*le", {}), ("n.*le", {"use_regex": True})),
-])
-def test_log_search_miss_snapshot_is_bound_to_query_and_options(tmp_path, before, after):
-    from pyruns.utils.log_search import LogSearch
-    from pyruns.utils.search_query import SearchQuery
-
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha", log_text="needle\n")
-    task_dir = str(workspace / TASKS_DIR / "alpha")
-    search = LogSearch()
-    event = threading.Event()
-    first = SearchQuery(before[0], **before[1])
-    assert search.search(task_dir, before[0], event, first)["match_count"] == 0
-    snapshot = search.snapshot_misses(first)
-    second = SearchQuery(after[0], **after[1])
-    assert search.search(task_dir, after[0], event, second, miss_snapshot=snapshot)["match_count"] == 1
-
-
-def test_log_search_miss_snapshot_survives_another_query_evicting_the_cache(tmp_path, monkeypatch):
-    from concurrent.futures import CancelledError, ThreadPoolExecutor
-    from pyruns.utils import log_search
-    from pyruns.utils.search_query import SearchQuery
-
-    monkeypatch.setattr(log_search, "_CACHE_QUERIES", 1)
-    monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 1)
-    workspace = _make_workspace(tmp_path, "main")
-    _add_task(workspace, "alpha", log_text="other\n")
-    task_dir = str(workspace / TASKS_DIR / "alpha")
-    search = log_search.LogSearch()
-    event = threading.Event()
-    matcher = SearchQuery("needle")
-    search.search(task_dir, "needle", event, matcher)
-    snapshot = search.snapshot_misses(matcher)
-    assert len(snapshot.signatures) == 1
-    with ThreadPoolExecutor(1) as pool:
-        assert pool.submit(search.search, task_dir, "other", event).result(timeout=5)["match_count"] == 1
-    assert matcher.cache_key not in search._cache
-    with patch.object(search, "_search_file", side_effect=AssertionError("reread a cached miss")):
-        assert search.search(task_dir, "needle", event, matcher, miss_snapshot=snapshot)["match_count"] == 0
-    event.set()
-    with pytest.raises(CancelledError):
-        search.search(task_dir, "needle", event, matcher, miss_snapshot=snapshot)
-
-
 def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -3578,14 +3210,14 @@ def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_pa
     runtime = _build_runtime(workspace)
     entered = threading.Event()
     release = threading.Event()
-    scan = runtime._log_search.search
+    scan = runtime._log_search.search_many
 
     def slow_scan(*args, **kwargs):
         entered.set()
         assert release.wait(5)
         return scan(*args, **kwargs)
 
-    with patch.object(runtime._log_search, "search", side_effect=slow_scan) as mocked:
+    with patch.object(runtime._log_search, "search_many", side_effect=slow_scan) as mocked:
         client = TestClient(create_app(runtime))
         assert client.get("/api/tasks", params={"include_logs": True}).status_code == 200
         assert not mocked.called

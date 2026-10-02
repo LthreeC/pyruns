@@ -43,10 +43,10 @@ def test_view_aliases_and_documents_are_independent(pyruns_yaml_backend):
 
 @pytest.mark.parametrize("as_omegaconf", [False, True])
 @pytest.mark.parametrize("document, preview, search_terms", [
-    ("1: one\n", "1=one", ["1:one"]),
-    ("false: no\n", "False=False", ["false:false"]),
-    ("0.5: ratio\n", "0.5=ratio", ["0.5:ratio"]),
-    ('1: numeric\n"1": text\n', "1=numeric, 1=text", ["1:numeric", "1:text"]),
+    ("1: one\n", "1=one", ["1: one"]),
+    ("false: no\n", "False=False", ["false: false"]),
+    ("0.5: ratio\n", "0.5=ratio", ["0.5: ratio"]),
+    ('1: numeric\n"1": text\n', "1=numeric, 1=text", ["1: numeric", "1: text"]),
 ])
 def test_nonstring_config_keys_preserve_preview_search_and_values(
     as_omegaconf, document, preview, search_terms,
@@ -125,7 +125,7 @@ def test_manager_view_refresh_search_and_snapshot_isolation(tmp_path):
         snapshot = manager.get_task("sample")
         snapshot["config"]["nested"]["items"].append(99)
         assert manager.get_task("sample")["config"]["nested"]["items"] == [1, 2]
-        assert manager.get_task_summary_page(query="value:7", search_field="config")[1] == 1
+        assert manager.get_task_summary_page(query="value: 7", search_field="config")[1] == 1
         (task / CONFIG_FILENAME).write_text("value: [broken", encoding="utf-8")
         assert manager.refresh_from_disk(task_ids=["sample"])
         assert manager.get_task("sample")["_load_error"]
@@ -137,8 +137,8 @@ def test_manager_view_refresh_search_and_snapshot_isolation(tmp_path):
         (task / CONFIG_FILENAME).write_text("value: 9\n", encoding="utf-8")
         assert manager.refresh_from_disk(task_ids=["sample"])
         assert type(manager.tasks[0]["config"]) is dict
-        assert manager.get_task_summary_page(query="value:9", search_field="config")[1] == 1
-        assert manager.get_task_summary_page(query="value:7", search_field="config")[1] == 0
+        assert manager.get_task_summary_page(query="value: 9", search_field="config")[1] == 1
+        assert manager.get_task_summary_page(query="value: 7", search_field="config")[1] == 0
     finally:
         manager.shutdown()
 

@@ -226,6 +226,15 @@ def _verify(project, report, identities):
         logs.append(log)
     report["checks"].append("successful rerun with exact independent history, records, curves, and logs")
 
+    # Exercise the packaged dependency in the isolated installation, including
+    # a historical run that is no longer the default terminal log.
+    from threading import Event
+    from pyruns.utils.log_search import LogSearch
+    search = LogSearch().search(second["directory"], "wheel-run-1", Event())
+    assert not search["errors"] and search["match_count"] == 1
+    assert search["matches"][0]["log_file"] == "run1.log"
+    report["checks"].append("installed ripgrep dependency finds historical log with byte context")
+
     report["phase"] = "exports"
     exported = json.loads(cli("-w", "train", "export", "recovery", "-f", "json"))
     csv_rows = list(csv.DictReader(io.StringIO(cli("-w", "train", "export", "recovery", "-f", "csv"))))

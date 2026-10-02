@@ -42,6 +42,7 @@ dependencies = [
     "pywinpty>=2.0.15; sys_platform == 'win32'",
     "pyyaml>=5.4",
     "regex>=2024.11.6",
+    "ripgrep-bin==15.2.0",
     "uvicorn>=0.29",
     "websockets>=12,<16",
 ]

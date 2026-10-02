@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from array import array
 from concurrent.futures import CancelledError
 from typing import TypedDict
@@ -10,7 +9,6 @@ from typing import TypedDict
 import regex
 
 REGEX_TIMEOUT_SECONDS = 0.2
-_COLON_SPACES = re.compile(r"[^\S\r\n]*:[^\S\r\n]*")
 
 
 class SearchScanResult(TypedDict):
@@ -29,23 +27,13 @@ def normalized_search_with_positions(text, match_case=False, end=None):
     index = 0
     while index < len(text):
         char = text[index]
-        if char == ":":
-            while positions and text[positions[-1]].isspace() and text[positions[-1]] not in "\r\n":
-                positions.pop()
-            positions.append(index)
-            index += 1
-            while index < len(text) and text[index].isspace() and text[index] not in "\r\n":
-                index += 1
-            continue
         for _ in char if match_case else char.lower():
             positions.append(index)
         index += 1
-        # Whitespace can still be removed by a following colon. Once a
-        # non-whitespace character is reached, all earlier positions are stable.
-        if end is not None and len(positions) >= end and not char.isspace():
+        if end is not None and len(positions) >= end:
             break
     # Lowercase the whole string to preserve contextual casing (e.g. Greek sigma).
-    return _COLON_SPACES.sub(":", text if match_case else text.lower()), positions
+    return text if match_case else text.lower(), positions
 
 
 class SearchQuery:
@@ -55,11 +43,14 @@ class SearchQuery:
         self.whole_word = whole_word
         self.use_regex = use_regex
         self.plain = not (match_case or whole_word or use_regex)
-        self.needles = tuple(dict.fromkeys(
-            line if use_regex else self.normalize(line.strip())
+        self.raw_needles = {
+            (line if use_regex else self.normalize(line)): line
             for line in str(query or "").split("\n") if line.strip()
-        ))
-        self.cache_key = (self.needles, match_case, whole_word, use_regex)
+        }
+        self.needles = tuple(self.raw_needles)
+        # Let the external engine apply its own case folding. Lowercasing a
+        # pattern first can change its codepoints (for example capital I-dot).
+        self.cache_key = (tuple(self.raw_needles.values()), match_case, whole_word, use_regex)
         self.patterns = {}
         if whole_word or use_regex:
             try:
@@ -75,7 +66,7 @@ class SearchQuery:
     def normalize(self, text: str) -> str:
         if self.use_regex:
             return text
-        return _COLON_SPACES.sub(":", text if self.match_case else text.lower())
+        return text if self.match_case else text.lower()
 
     def found(self, text: object) -> set[str]:
         if self.cancelled is not None and self.cancelled.is_set():

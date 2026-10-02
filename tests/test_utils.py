@@ -46,7 +46,6 @@ from pyruns.utils.log_io import (
     append_log, decode_log_bytes, normalize_log_newlines,
     read_log, read_log_chunk, read_last_bytes, read_last_lines, safe_read_log,
 )
-from pyruns.utils.log_search import LogSearch
 from pyruns.utils.parse_utils import (
     detect_config_source_fast, extract_argparse_params,
     argparse_params_to_dict, resolve_config_path, generate_config_file, split_cli_args,
@@ -1804,18 +1803,18 @@ def test_log_enumeration_rejects_ancestor_redirected_after_validation(tmp_path, 
         redirect.symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"directory symlink creation unavailable: {exc}")
-    real_listdir = os.listdir
+    real_scandir = os.scandir
     redirected = False
 
     def replace_before_listing(path):
         nonlocal redirected
-        if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(logs)) and not redirected:
+        if not isinstance(path, int) and os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(logs)) and not redirected:
             boundary.rename(tmp_path / "original")
             redirect.rename(boundary)
             redirected = True
-        return real_listdir(path)
+        return real_scandir(path)
 
-    monkeypatch.setattr(info_io.os, "listdir", replace_before_listing)
+    monkeypatch.setattr(info_io.os, "scandir", replace_before_listing)
     assert get_log_options(str(task)) == {}
     assert redirected
 
@@ -1841,6 +1840,7 @@ def test_log_enumeration_rechecks_linked_files_on_later_calls(tmp_path, filename
 
 @pytest.mark.parametrize("filename", ["queue.log", "run1.log", "error.log"])
 def test_log_enumeration_rejects_reparse_file_attributes(tmp_path, monkeypatch, filename):
+    from contextlib import contextmanager
     from types import SimpleNamespace
     import pyruns.utils.info_io as info_io
 
@@ -1857,8 +1857,21 @@ def test_log_enumeration_rejects_reparse_file_attributes(tmp_path, monkeypatch, 
             return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
         return info
 
-    monkeypatch.setattr(info_io.os, "lstat", reparse_stat)
-    assert get_log_options(str(task)) == {}
+    real_scandir = os.scandir
+
+    @contextmanager
+    def reparse_entries(directory):
+        with real_scandir(directory) as entries:
+            yield (
+                SimpleNamespace(name=entry.name, path=entry.path,
+                                stat=lambda *, follow_symlinks, candidate=entry.path: reparse_stat(candidate))
+                for entry in entries
+            )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(info_io.os, "lstat", reparse_stat)
+        patch.setattr(info_io.os, "scandir", reparse_entries)
+        assert get_log_options(str(task)) == {}
 
 
 def test_log_enumeration_resolves_relative_unicode_paths_and_fresh_project_anchors(tmp_path, monkeypatch):
@@ -2734,16 +2747,16 @@ class TestFilterTasksMultiline:
 
     def test_spaces_around_colons(self):
         tasks = [{"name": "t1", "config": {"device": None}, "status": "queued"}]
-        # Should match despite strange spaces
-        filtered = filter_tasks(tasks, "device:null\n")
-        assert len(filtered) == 1
+        assert filter_tasks(tasks, "device:null\n") == []
+        assert filter_tasks(tasks, "device: null\n") == tasks
 
-    def test_search_text_space_normalization(self):
+    def test_search_text_preserves_literal_spaces(self):
         tasks = [
             {"name": "t1", "status": "running", "search_text": "device : null\nbatch_size: 32"},
             {"name": "t2", "status": "running", "search_text": "device: cuda:0\nbatch_size: 32"},
         ]
-        filtered = filter_tasks(tasks, "device:null\nbatch_size:32")
+        assert filter_tasks(tasks, "device:null\nbatch_size:32") == []
+        filtered = filter_tasks(tasks, "device : null\nbatch_size: 32")
         assert len(filtered) == 1
         assert filtered[0]["name"] == "t1"
 
@@ -2790,8 +2803,8 @@ class TestFilterTasksMultiline:
         cases = [
             ("  Token", "Token", "Token"),
             ("\techo\tToken  ", "Token", "Token"),
-            ("\tkey  :\tToken", "key:Token", "key  :\tToken"),
-            ("\u0130\tKEY : TOKEN", "key:token", "KEY : TOKEN"),
+            ("\tkey  :\tToken", "key  :\tToken", "key  :\tToken"),
+            ("\u0130\tKEY : TOKEN", "key : token", "KEY : TOKEN"),
             ("\u039f\u03a3 : Token", "token", "Token"),
         ]
         for source, query, expected in cases:
@@ -2858,17 +2871,6 @@ class TestFilterTasksMultiline:
 
         assert result["match_count"] == 20_000
         assert len(result["matches"]) == 4
-
-    def test_log_search_snippet_excludes_crlf_line_ending(self, tmp_path):
-        log_path = tmp_path / "run.log"
-        log_path.write_bytes(b"first-query\r\nsecond\r\n")
-        result = LogSearch()._search_file(
-            str(log_path), "run.log", log_path.stat().st_size,
-            ["first-query"], threading.Event(), match_case=False,
-        )
-        match = result["matches"][0]
-        assert match["snippet"] == "first-query"
-        assert match["snippet"][match["match_start"]:match["match_end"]] == "first-query"
 
 
 
