@@ -1422,7 +1422,8 @@ export default function MonitorPage() {
     }
   }, [canUseLogStream, monitorChunkSize])
 
-  usePolling(pollLiveLog, 1500, !loading && isLive, false)
+  // The WebSocket resumes immediately on return; keep HTTP on its fallback cadence.
+  usePolling(pollLiveLog, 1500, !loading && isLive, false, false)
 
   const filteredTasks = monitorTasks
   const sidebarSearchActive = Boolean(sidebarQuery)

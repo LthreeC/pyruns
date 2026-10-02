@@ -861,7 +861,6 @@ def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reco
     assert "(canUseLogStream && wsStreamActiveRef.current)" in monitor
     assert "offset: currentOffset" in monitor
     assert "tailLines: monitorScrollback" not in monitor[monitor.index("const pollLiveLog"):monitor.index("const filteredTasks")]
-    assert "usePolling(pollLiveLog, 1500, !loading && isLive, false)" in monitor
     assert "queuedLiveLogTaskRef" in monitor
     assert "manualHistoricalLogRef" in monitor
     assert "const viewingQueueOrLiveLog = !selectedLog || selectedLog === QUEUE_LOG_NAME" in monitor

@@ -169,6 +169,7 @@ test('monitor pauses background streams and resumes logs with one reconciled sna
   await page.clock.runFor(200)
   await expect.poll(reads).toBe(before + 1)
   expect((await refreshes()).at(-1)).toBe('true')
+  expect(await logReads()).toBe(logReadsBefore)
   sendLog(JSON.stringify({ type: 'chunk', task_name: task.name, log_file_name: 'run1.log',
     content: 'while hidden\n', offset: 127, log_identity: 'same-log' }))
   await page.clock.runFor(500)

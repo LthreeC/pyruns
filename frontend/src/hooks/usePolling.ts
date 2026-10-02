@@ -5,6 +5,7 @@ export function usePolling(
   intervalMs: number,
   enabled = true,
   immediate = true,
+  refreshWhenVisible = true,
 ) {
   const savedCallback = useRef(callback)
   const inFlightRef = useRef(false)
@@ -54,8 +55,10 @@ export function usePolling(
     const handleVisibilityChange = () => {
       clearInterval(id)
       if (document.visibilityState === 'hidden') return
-      if (inFlightRef.current) refreshOnReturn = true
-      else tick()
+      if (refreshWhenVisible) {
+        if (inFlightRef.current) refreshOnReturn = true
+        else tick()
+      }
       id = setInterval(tick, intervalMs)
     }
     if (document.visibilityState !== 'hidden') id = setInterval(tick, intervalMs)
@@ -66,5 +69,5 @@ export function usePolling(
       ticketRef.current += 1
       inFlightRef.current = false
     }
-  }, [intervalMs, enabled, immediate])
+  }, [intervalMs, enabled, immediate, refreshWhenVisible])
 }
