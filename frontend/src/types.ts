@@ -123,6 +123,8 @@ export interface Task {
 
 export interface TaskPage {
   search_errors?: string[]
+  search_limit_hit?: boolean
+  search_complete?: boolean
   items: Task[]
   total: number
   offset: number

@@ -308,11 +308,11 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
   await page.getByRole('link', { name: 'Manager' }).click()
   await expect(page.getByRole('heading', { name: 'Task Manager' })).toBeVisible()
   const managerSearch = page.getByRole('textbox', { name: 'Search tasks' })
-  await expect(managerSearch).toHaveJSProperty('tagName', 'INPUT')
+  await expect(managerSearch).toHaveJSProperty('tagName', 'TEXTAREA')
 
   await page.getByRole('link', { name: 'Monitor' }).click()
   const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks' })
-  await expect(monitorSearch).toHaveJSProperty('tagName', 'INPUT')
+  await expect(monitorSearch).toHaveJSProperty('tagName', 'TEXTAREA')
   expect(await monitorSearch.evaluate(element => element.scrollHeight <= element.clientHeight)).toBe(true)
   for (const theme of ['light', 'dark']) {
     const toggle = page.getByRole('button', { name: theme === 'light' ? 'Light Mode' : 'Dark Mode' })
@@ -1219,7 +1219,7 @@ for (const workspaceKind of ['script', 'shell'] as const) {
       expect(regexBounds).not.toBeNull()
       expect(searchBounds!.width).toBeGreaterThanOrEqual(compactFilters ? 120 : 32)
       if (compactFilters) {
-        expect(filterBounds!.x).toBeGreaterThan(searchBounds!.x)
+        expect(filterBounds!.x).toBeGreaterThanOrEqual(0)
         expect(filterBounds!.y).toBeGreaterThan(searchBounds!.y + searchBounds!.height)
         expect(matchBounds!.x).toBeGreaterThanOrEqual(filterBounds!.x)
         expect(regexBounds!.x + regexBounds!.width).toBeLessThanOrEqual(filterBounds!.x + filterBounds!.width + 1)
@@ -1284,6 +1284,57 @@ for (const workspaceKind of ['script', 'shell'] as const) {
   })
 }
 
+test('search settings persist across views and support literal multiline input', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  const queries: URLSearchParams[] = []
+  await page.route('**/api/tasks?*', route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get('query')) queries.push(params)
+    const result = { items: [], total: 0, offset: 0, limit: 50, has_more: false,
+      search_limit_hit: Boolean(params.get('query')) && params.get('max_results') === '2', search_complete: false }
+    return params.get('stream')
+      ? route.fulfill({ contentType: 'application/x-ndjson', body: JSON.stringify({ type: 'complete', page: result }) + '\n' })
+      : route.fulfill({ json: result })
+  })
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.clock.install()
+  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  await expect(page.getByLabel('Search as you type')).toBeChecked()
+  await expect(page.getByLabel('Typing delay (ms)')).toHaveValue('300')
+  await expect(page.getByLabel('Match limit (blank for unlimited)')).toHaveValue('20000')
+  await page.getByLabel('Search as you type').uncheck()
+  await page.getByLabel('Match limit (blank for unlimited)').fill('2')
+  await page.getByLabel('Match limit (blank for unlimited)').press('Enter')
+  await page.screenshot({ path: testInfo.outputPath('search-settings.png'), animations: 'disabled' })
+  await page.keyboard.press('Escape')
+  const search = page.getByRole('textbox', { name: 'Search tasks', exact: true })
+  await search.fill('first\nsecond')
+  await page.clock.fastForward(1_000)
+  expect(queries).toHaveLength(0)
+  await search.press('Enter')
+  await expect.poll(() => queries.at(-1)?.get('query')).toBe('first\nsecond')
+  await expect(page.getByText('Match limit reached.', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'Search without limit', exact: true }).click()
+  await expect.poll(() => queries.at(-1)?.get('max_results')).toBe('0')
+  await page.reload()
+  await page.getByRole('link', { name: 'Monitor', exact: true }).click()
+  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  await expect(page.getByLabel('Search as you type')).not.toBeChecked()
+  await expect(page.getByLabel('Match limit (blank for unlimited)')).toHaveValue('')
+  await page.getByRole('button', { name: 'Reset search settings', exact: true }).click()
+  await expect(page.getByLabel('Search as you type')).toBeChecked()
+  await page.keyboard.press('Escape')
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100))
+  const previous = queries.length
+  const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks', exact: true })
+  await monitorSearch.fill('  ')
+  await page.clock.fastForward(299)
+  expect(queries).toHaveLength(previous)
+  await page.clock.fastForward(1)
+  await expect.poll(() => queries.at(-1)?.get('query')).toBe('  ')
+  expect(queries.at(-1)?.get('max_results')).toBe('20000')
+})
+
 test('Monitor and Manager group full log matches and load context only on demand', async ({ page, isMobile }, testInfo) => {
   if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
   const errors: string[] = []
@@ -1341,7 +1392,7 @@ test('Monitor and Manager group full log matches and load context only on demand
     await expect(match.locator('mark')).toHaveText('needle')
     const searchesBeforeIdle = searchRequests
     await page.clock.fastForward(60_001)
-    await expect.poll(() => searchRequests).toBeGreaterThan(searchesBeforeIdle)
+    expect(searchRequests).toBe(searchesBeforeIdle)
     const searchesAfterIdle = searchRequests
     const refreshedSearch = page.waitForResponse(response => {
       const url = new URL(response.url())

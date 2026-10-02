@@ -6,6 +6,7 @@ import type {
   RuntimeInfo,
   ScriptCandidate,
   Task,
+  TaskPage,
   TaskSearchMatch,
   TaskSearchScope,
   TaskSearchOptions,
@@ -72,6 +73,35 @@ function writeLocalStorage(key: string, value: string) {
   }
 }
 
+export const DEFAULT_SEARCH_SETTINGS = { searchOnType: true, searchOnTypeDebouncePeriod: 300, maxResults: 20_000 as number | null }
+type SearchSettings = typeof DEFAULT_SEARCH_SETTINGS
+const SEARCH_SETTINGS_KEY = 'pyruns_search_settings'
+
+function normalizeSearchSettings(value: Partial<SearchSettings> | null): SearchSettings {
+  const delay = value?.searchOnTypeDebouncePeriod
+  const limit = value?.maxResults
+  return {
+    searchOnType: typeof value?.searchOnType === 'boolean' ? value.searchOnType : true,
+    searchOnTypeDebouncePeriod: typeof delay === 'number' && Number.isSafeInteger(delay) && delay >= 0 ? delay : 300,
+    maxResults: limit === null ? null
+      : typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 ? limit : 20_000,
+  }
+}
+
+function readSearchSettings() {
+  try { return normalizeSearchSettings(JSON.parse(readLocalStorage(SEARCH_SETTINGS_KEY) || 'null')) }
+  catch { return { ...DEFAULT_SEARCH_SETTINGS } }
+}
+
+export const useSearchSettingsStore = create<SearchSettings & { update: (value: Partial<SearchSettings>) => void }>((set, get) => ({
+  ...readSearchSettings(),
+  update(value) {
+    const settings = normalizeSearchSettings({ ...get(), ...value })
+    writeLocalStorage(SEARCH_SETTINGS_KEY, JSON.stringify(settings))
+    set(settings)
+  },
+}))
+
 interface TaskDetailDraftState {
   dirty: boolean
   taskName: string
@@ -126,6 +156,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     selectedIds: new Set(),
     loading: false,
     error: null,
+    searchLimitHit: false,
     monitorWorkspaceKey: nextWorkspaceKey,
     monitorTasks: [],
     monitorTotal: 0,
@@ -136,6 +167,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     monitorSearchOptions: { ...DEFAULT_SEARCH_OPTIONS },
     monitorLoading: false,
     monitorError: '',
+    monitorSearchLimitHit: false,
     monitorStatusCounts: null,
   })
   useMonitorStore.setState({
@@ -561,6 +593,7 @@ interface TaskState {
   monitorSearchOptions: TaskSearchOptions
   monitorLoading: boolean
   monitorError: string
+  monitorSearchLimitHit: boolean
   monitorStatusCounts: TaskStatusCounts | null
   total: number
   statusCounts: TaskStatusCounts | null
@@ -575,6 +608,7 @@ interface TaskState {
   selectedIds: Set<string>
   loading: boolean
   error: string | null
+  searchLimitHit: boolean
   columns: number
   setQuery: (q: string) => void
   setSearchField: (field: TaskSearchScope) => void
@@ -632,6 +666,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   monitorSearchOptions: { ...DEFAULT_SEARCH_OPTIONS },
   monitorLoading: false,
   monitorError: '',
+  monitorSearchLimitHit: false,
   monitorStatusCounts: null,
   total: 0,
   statusCounts: null,
@@ -646,6 +681,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   selectedIds: new Set(),
   loading: false,
   error: null,
+  searchLimitHit: false,
   columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8),
   setQuery(q) {
     if (q !== get().query) {
@@ -703,13 +739,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({ columns: next })
   },
   async fetchTasks(options = {}) {
-    if (options.background && get().loading) return
+    if (options.background && (get().loading || get().query)) return
     taskSearchController?.abort()
-    const controller = get().query.trim() ? new AbortController() : null
+    const controller = get().query ? new AbortController() : null
     taskSearchController = controller
     const requestId = ++taskRequestSeq
     const workspaceKey = currentWorkspaceKey()
     const { query, searchField, searchOptions, statusFilter, sortMode, offset, limit } = get()
+    const maxResults = useSearchSettingsStore.getState().maxResults
     let requestedOffset = offset
     const isCurrentRequest = () => {
       const current = get()
@@ -722,10 +759,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         && current.sortMode === sortMode
         && current.offset === requestedOffset
         && current.limit === limit
+        && useSearchSettingsStore.getState().maxResults === maxResults
     }
-    set(options.background ? { error: null } : { loading: true, error: null })
+    const onProgress = query ? (page: TaskPage) => {
+      if (isCurrentRequest()) set({ tasks: page.items, total: page.total, hasMore: page.has_more,
+        statusCounts: page.status_counts ?? null, searchLimitHit: Boolean(page.search_limit_hit) })
+    } : undefined
+    set(options.background ? { error: null } : { loading: true, error: null, searchLimitHit: false })
     try {
-      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, forceRefresh: options.forceRefresh }, controller?.signal)
+      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, forceRefresh: options.forceRefresh, maxResults, onProgress }, controller?.signal)
       if (!isCurrentRequest()) {
         return
       }
@@ -747,12 +789,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             summary: true,
             includeLogs: true,
             forceRefresh: options.forceRefresh,
+            maxResults,
+            onProgress,
           }, controller?.signal)
           if (!isCurrentRequest()) {
             return
           }
           set({
             tasks: retryPage.items,
+            searchLimitHit: Boolean(retryPage.search_limit_hit),
             error: retryPage.search_errors?.length ? `Search incomplete: ${retryPage.search_errors.join('; ')}` : null,
             total: retryPage.total,
             statusCounts: retryPage.status_counts ?? null,
@@ -767,6 +812,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         requestedOffset = 0
         set({
           tasks: page.items,
+          searchLimitHit: Boolean(page.search_limit_hit),
           error: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : null,
           total: page.total,
           statusCounts: page.status_counts ?? null,
@@ -782,6 +828,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       )
       set({
         tasks: page.items,
+        searchLimitHit: Boolean(page.search_limit_hit),
         total: page.total,
         statusCounts: page.status_counts ?? null,
         hasMore: page.has_more,
@@ -803,9 +850,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
   async fetchMonitorTasks(options = {}) {
     if (String(options.workspaceKey ?? currentWorkspaceKey()) !== currentWorkspaceKey()) return
-    if (options.background && get().monitorLoading) return
+    if (options.background && (get().monitorLoading || (options.query ?? get().monitorQuery))) return
     monitorSearchController?.abort()
-    const controller = String(options.query ?? get().monitorQuery).trim() ? new AbortController() : null
+    const controller = String(options.query ?? get().monitorQuery) ? new AbortController() : null
     monitorSearchController = controller
     const requestId = ++monitorTaskRequestSeq
     const current = get()
@@ -816,6 +863,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const query = String(options.query ?? current.monitorQuery)
     const searchField = options.searchField ?? current.monitorSearchField
     const searchOptions = options.searchOptions ?? current.monitorSearchOptions
+    const maxResults = useSearchSettingsStore.getState().maxResults
+    const isCurrentRequest = () => requestId === monitorTaskRequestSeq
+      && workspaceKey === currentWorkspaceKey() && get().monitorWorkspaceKey === workspaceKey
+      && useSearchSettingsStore.getState().maxResults === maxResults
     const queryChanged = query !== current.monitorQuery || searchField !== current.monitorSearchField || searchOptions !== current.monitorSearchOptions
     const background = Boolean(options.background)
     const baseLimit = queryChanged ? MONITOR_TASK_PAGE_SIZE : current.monitorLoadedLimit
@@ -824,7 +875,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       : baseLimit
     set(background
       ? { monitorLoading: false, monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions }
-      : { monitorLoading: true, monitorError: '', monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions })
+      : { monitorLoading: true, monitorError: '', monitorSearchLimitHit: false, monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions })
     try {
       const page = await api.getTasks({
         query,
@@ -836,16 +887,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         summary: true,
         compact: true,
         includeLogs: true,
+        maxResults,
+        onProgress: query ? page => {
+          if (isCurrentRequest()) set({ monitorTasks: page.items, monitorTotal: page.total,
+            monitorHasMore: page.has_more, monitorSearchLimitHit: Boolean(page.search_limit_hit),
+            monitorStatusCounts: page.status_counts ?? null })
+        } : undefined,
       }, controller?.signal)
-      if (
-        requestId !== monitorTaskRequestSeq
-        || workspaceKey !== currentWorkspaceKey()
-        || get().monitorWorkspaceKey !== workspaceKey
-      ) {
+      if (!isCurrentRequest()) {
         return
       }
       set({
         monitorTasks: page.items,
+        monitorSearchLimitHit: Boolean(page.search_limit_hit),
         monitorTotal: page.total,
         monitorHasMore: page.has_more,
         monitorLoadedLimit: nextLimit,
@@ -853,11 +907,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         monitorError: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : '',
       })
     } catch (error) {
-      if (
-        requestId !== monitorTaskRequestSeq
-        || workspaceKey !== currentWorkspaceKey()
-        || get().monitorWorkspaceKey !== workspaceKey
-      ) {
+      if (!isCurrentRequest()) {
         return
       }
       set({ monitorError: error instanceof Error ? error.message : String(error),
@@ -866,11 +916,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       })
       throw error
     } finally {
-      if (!background && (
-        requestId === monitorTaskRequestSeq
-        && workspaceKey === currentWorkspaceKey()
-        && get().monitorWorkspaceKey === workspaceKey
-      )) {
+      if (!background && isCurrentRequest()) {
         set({ monitorLoading: false })
       }
     }

@@ -14,7 +14,7 @@ import {
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
+import { useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
@@ -189,9 +189,10 @@ export default function ManagerPage() {
   const {
     tasks, total, statusCounts, offset, limit, query, statusFilter, sortMode, selectedIds, loading, error, columns,
     setQuery, searchField, setSearchField, setStatusFilter, setSortMode, setOffset, setColumns, fetchTasks,
-    searchOptions, setSearchOptions,
+    searchOptions, setSearchOptions, searchLimitHit,
     toggleSelect, selectAll, clearSelection,
   } = useTaskStore()
+  const maxResults = useSearchSettingsStore(state => state.maxResults)
 
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
@@ -235,12 +236,12 @@ export default function ManagerPage() {
   const hasActive = statusCounts
     ? statusCounts.running + statusCounts.queued > 0
     : tasks.some(task => task.status === 'running' || task.status === 'queued')
-  usePolling(() => fetchTasks({ background: true }), query.trim() ? 30000 : hasActive ? 3000 : 10000, true, false)
+  usePolling(() => fetchTasks({ background: true }), hasActive ? 3000 : 10000, !query, false)
 
   useEffect(() => {
     void fetchTasks()
     return () => useTaskStore.getState().cancelTaskSearch()
-  }, [query, searchField, searchOptions, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch])
+  }, [query, searchField, searchOptions, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch, maxResults])
 
   useEffect(() => {
     detailRequestSeqRef.current += 1
@@ -831,24 +832,24 @@ export default function ManagerPage() {
               <h1 className="text-lg font-semibold tracking-tight text-txt-primary">Task Manager</h1>
               <button
                 type="button"
-                aria-label={loading && query.trim()
+                aria-label={loading && query
                   ? 'Cancel search'
-                  : query.trim()
+                  : query
                     ? 'Refresh search results'
                     : 'Refresh tasks'}
-                title={loading && query.trim()
+                title={loading && query
                   ? 'Cancel search'
-                  : query.trim()
+                  : query
                     ? 'Refresh search results'
                     : 'Refresh tasks'}
-                disabled={loading && !query.trim()}
-                onClick={() => loading && query.trim()
+                disabled={loading && !query}
+                onClick={() => loading && query
                   ? useTaskStore.getState().cancelTaskSearch()
                   : void fetchTasks({ forceRefresh: true })}
                 className="touch-target inline-flex h-11 w-11 flex-none items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-wait disabled:opacity-50 sm:h-8 sm:w-8"
               >
                 {loading
-                  ? query.trim()
+                  ? query
                     ? <Square aria-hidden="true" className="h-3.5 w-3.5" />
                     : <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
                   : <RefreshCw aria-hidden="true" className="h-4 w-4" />}
@@ -883,6 +884,7 @@ export default function ManagerPage() {
               searchOptions={searchOptions}
               onSearchOptionsChange={setSearchOptions}
               searching={loading}
+              limitHit={searchLimitHit}
               onRefresh={() => void fetchTasks({ forceRefresh: true })}
               onCancel={() => useTaskStore.getState().cancelTaskSearch()}
               ariaLabel="Search tasks"
@@ -1470,7 +1472,7 @@ const TaskCard = memo(function TaskCard({
         )}
       </div>
 
-      {query.trim() && <div className="mx-3 mb-2 border-t border-border-subtle pt-1">
+      {query && <div className="mx-3 mb-2 border-t border-border-subtle pt-1">
         <TaskSearchMatches task={task} onSelect={() => onCardClick(task)} exportMode={selectMode} action={selectMode ? 'Select' : 'View'} />
       </div>}
       {!selectMode && (

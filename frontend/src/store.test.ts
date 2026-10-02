@@ -185,11 +185,17 @@ describe('workspace-scoped stores', () => {
     expect(oldSignal.aborted).toBe(false)
     const pendingLatest = fetch('latest')
     expect(oldSignal.aborted).toBe(true)
-    latest.resolve({ items: [{ name: 'latest' }], total: 1, has_more: false })
+    const progress = vi.mocked(api.getTasks).mock.calls[1][0]?.onProgress!
+    progress({ items: [{ name: 'partial' }], total: 1, has_more: false } as any)
+    expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'partial' }])
+    vi.mocked(api.getTasks).mock.calls[0][0]?.onProgress?.({ items: [{ name: 'stale' }], total: 1 } as any)
+    expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'partial' }])
+    latest.resolve({ items: [{ name: 'latest' }], total: 1, has_more: false, search_limit_hit: true })
     await pendingLatest
     old.resolve({ items: [{ name: 'old' }], total: 1, has_more: false })
     await pendingOld
     expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'latest' }])
+    expect(view === 'monitor' ? useTaskStore.getState().monitorSearchLimitHit : useTaskStore.getState().searchLimitHit).toBe(true)
   })
 
   it.each(['manager', 'monitor'] as const)('does not let %s polling cancel a foreground search', async view => {
@@ -214,6 +220,9 @@ describe('workspace-scoped stores', () => {
     await pendingForeground
     expect(view === 'monitor' ? useTaskStore.getState().monitorTasks : useTaskStore.getState().tasks).toEqual([{ name: 'fresh' }])
     expect(view === 'monitor' ? useTaskStore.getState().monitorLoading : useTaskStore.getState().loading).toBe(false)
+    if (view === 'monitor') await useTaskStore.getState().fetchMonitorTasks({ background: true })
+    else await useTaskStore.getState().fetchTasks({ background: true })
+    expect(api.getTasks).toHaveBeenCalledTimes(1)
   })
 
   it('keeps Manager controls available while a background refresh is pending', async () => {

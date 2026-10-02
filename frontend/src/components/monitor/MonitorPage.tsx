@@ -31,7 +31,7 @@ import {
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { appendMonitorLogContent, useMonitorStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
+import { appendMonitorLogContent, useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import {
   useLogStream,
   useTaskEvents,
@@ -206,6 +206,7 @@ export default function MonitorPage() {
     monitorHasMore,
     monitorLoading,
     monitorError,
+    monitorSearchLimitHit,
     monitorSearchField,
     setMonitorSearchField,
     monitorSearchOptions,
@@ -213,6 +214,7 @@ export default function MonitorPage() {
     fetchMonitorTasks,
     upsertMonitorTask,
   } = useTaskStore()
+  const maxResults = useSearchSettingsStore(state => state.maxResults)
   const workspace = useWorkspaceStore(state => state.workspace)
   const {
     selectedTaskName, logContent, logOffset, logIdentity, availableLogs, selectedLog,
@@ -254,7 +256,7 @@ export default function MonitorPage() {
     taskName: null,
     logName: '',
   })
-  const sidebarSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const sidebarSearchInputRef = useRef<HTMLTextAreaElement | null>(null)
   const terminalSearchInputRef = useRef<HTMLInputElement | null>(null)
   const terminalSearchShortcutScopeRef = useRef(false)
   const terminalSearchQueryRef = useRef('')
@@ -320,7 +322,7 @@ export default function MonitorPage() {
       query: sidebarQuery,
       searchField: monitorSearchField,
       searchOptions: monitorSearchOptions,
-      refresh: forceRefresh || !sidebarQuery.trim(),
+      refresh: forceRefresh || !sidebarQuery,
       forceRefresh,
       workspaceKey,
     }),
@@ -365,7 +367,7 @@ export default function MonitorPage() {
     }
   }, [selectedTaskFromList, selectedTaskName, workspaceKey])
   const refreshMonitorSnapshot = useCallback(async () => {
-    if (sidebarQuery.trim()) {
+    if (sidebarQuery) {
       await refreshDetachedSelectedTask(true)
       return
     }
@@ -426,26 +428,15 @@ export default function MonitorPage() {
     generationKey: workspaceKey,
   })
   const pollMonitorSnapshot = useCallback(async () => {
-    if (sidebarQuery.trim()) {
-      await Promise.all([
-        fetchMonitorTasks({
-          query: sidebarQuery,
-          searchField: monitorSearchField,
-          searchOptions: monitorSearchOptions,
-          refresh: true,
-          background: true,
-          workspaceKey,
-        }),
-        refreshDetachedSelectedTask(true),
-      ])
+    if (sidebarQuery) {
+      await refreshDetachedSelectedTask(true)
       return
     }
     await runTaskSnapshotRefresh()
-  }, [fetchMonitorTasks, monitorSearchField, monitorSearchOptions, refreshDetachedSelectedTask,
-    runTaskSnapshotRefresh, sidebarQuery, workspaceKey])
+  }, [refreshDetachedSelectedTask, runTaskSnapshotRefresh, sidebarQuery])
   usePolling(
     pollMonitorSnapshot,
-    sidebarQuery.trim() ? 30000
+    sidebarQuery ? 30000
       : taskEventStatus === 'live' ? TASK_EVENT_FALLBACK_POLL_MS : TASK_EVENT_DEGRADED_POLL_MS,
     Boolean(workspaceKey),
     false,
@@ -640,7 +631,7 @@ export default function MonitorPage() {
       })
     })
     return () => useTaskStore.getState().cancelMonitorSearch()
-  }, [notify, refreshMonitorTasks])
+  }, [notify, refreshMonitorTasks, maxResults])
 
   useEffect(() => {
     if (selectedTaskName || monitorLoading || monitorTasks.length === 0) {
@@ -1439,7 +1430,7 @@ export default function MonitorPage() {
   usePolling(pollLiveLog, 1500, !loading && isLive, false)
 
   const filteredTasks = monitorTasks
-  const sidebarSearchActive = Boolean(sidebarQuery.trim())
+  const sidebarSearchActive = Boolean(sidebarQuery)
   const loadedSearchMatchCount = useMemo(
     () => monitorTasks.reduce(
       (count, task) => count + Math.max(task.search_matches?.length ?? 0, task.search_match_count ?? 0),
@@ -1447,7 +1438,9 @@ export default function MonitorPage() {
     ),
     [monitorTasks],
   )
-  const searchResultSummary = monitorHasMore
+  const searchResultSummary = monitorLoading
+    ? `Searching… ${monitorTotal.toLocaleString()} tasks found so far`
+    : monitorHasMore
     ? `${loadedSearchMatchCount.toLocaleString()}+ matches in ${monitorTasks.length.toLocaleString()} of ${monitorTotal.toLocaleString()} tasks`
     : `${loadedSearchMatchCount.toLocaleString()} match${loadedSearchMatchCount === 1 ? '' : 'es'} in ${monitorTotal.toLocaleString()} task${monitorTotal === 1 ? '' : 's'}`
   const pinnedTasks = useMemo(
@@ -1474,7 +1467,7 @@ export default function MonitorPage() {
       return
     }
     closeTerminalSearch(false)
-    if (compactMonitorLayout && sidebarQuery.trim()) setCompactSearchFocused(true)
+    if (compactMonitorLayout && sidebarQuery) setCompactSearchFocused(true)
     pendingLiveLogChunkRef.current = { key: '', chunks: [] }
     void selectTask(task.name, match)
       .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
@@ -1687,11 +1680,11 @@ export default function MonitorPage() {
             searchOptions={monitorSearchOptions}
             onSearchOptionsChange={setMonitorSearchOptions}
             searching={monitorLoading}
+            limitHit={monitorSearchLimitHit}
             onRefresh={() => void refreshMonitorTasks(true).catch(() => {})}
             onCancel={() => useTaskStore.getState().cancelMonitorSearch()}
             ariaLabel="Search monitor tasks"
             ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
-            debounceMs={250}
             inputRef={sidebarSearchInputRef}
           />
           {monitorError && (

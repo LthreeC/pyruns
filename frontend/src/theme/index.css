@@ -113,10 +113,6 @@ summary::-webkit-details-marker {
   display: none;
 }
 
-.task-search-filter-trigger {
-  display: none;
-}
-
 @container (max-width: 19.999rem) {
   .task-search-control-row .search-input-icon {
     display: none;
@@ -126,9 +122,6 @@ summary::-webkit-details-marker {
     display: none;
   }
 
-  .task-search-filter-trigger {
-    display: inline-flex;
-  }
 }
 
 @container (min-width: 20rem) {

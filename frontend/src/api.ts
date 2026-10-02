@@ -172,6 +172,8 @@ export const getTasks = (params: {
   includeLogs?: boolean
   searchField?: TaskSearchScope
   searchOptions?: TaskSearchOptions
+  maxResults?: number | null
+  onProgress?: (page: TaskPage) => void
 } = {}, signal?: AbortSignal) => {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
@@ -188,7 +190,41 @@ export const getTasks = (params: {
   if (params.searchOptions?.matchCase) sp.set('match_case', 'true')
   if (params.searchOptions?.wholeWord) sp.set('whole_word', 'true')
   if (params.searchOptions?.useRegex) sp.set('use_regex', 'true')
+  if (params.maxResults !== undefined) sp.set('max_results', String(params.maxResults ?? 0))
+  if (params.query && params.onProgress) {
+    sp.set('stream', 'true')
+    return streamTaskSearch(`/api/tasks?${sp}`, params.onProgress, signal)
+  }
   return request<TaskPage>(`/api/tasks?${sp}`, { signal })
+}
+
+async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => void, signal?: AbortSignal): Promise<TaskPage> {
+  const requestAuthorizationEpoch = authorizationEpoch
+  const response = await fetch(`${BASE}${url}`, { signal })
+  if (!response.ok) throw await responseError(response, requestAuthorizationEpoch)
+  if (!response.headers.get('content-type')?.includes('application/x-ndjson')) return response.json()
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Search response is empty. Refresh to search again.')
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      let newline: number
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const event = JSON.parse(buffer.slice(0, newline))
+        buffer = buffer.slice(newline + 1)
+        if (event.type === 'error') throw new ApiError(event.status, event.detail, event)
+        if (event.type === 'complete') return event.page as TaskPage
+        if (event.type === 'progress') onProgress(event.page as TaskPage)
+      }
+      if (done) throw new Error('Search connection closed before completion. Refresh to search again.')
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
 }
 
 export const getTask = (name: string, refresh = true) =>

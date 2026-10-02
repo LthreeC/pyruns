@@ -21,6 +21,31 @@ afterEach(() => {
 })
 
 describe('API errors', () => {
+  it('delivers search progress across byte chunks before completion', async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>
+    const body = new ReadableStream<Uint8Array>({ start(controller) { stream = controller } })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'application/x-ndjson' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const onProgress = vi.fn()
+    const pending = getTasks({ query: '文本', maxResults: null, onProgress })
+    const page = { items: [{ name: '文本' }], total: 1, search_complete: false }
+    const bytes = new TextEncoder().encode(JSON.stringify({ type: 'progress', page }) + '\n')
+    for (const byte of bytes) stream.enqueue(new Uint8Array([byte]))
+    await vi.waitFor(() => expect(onProgress).toHaveBeenCalledWith(page))
+    const complete = { ...page, search_complete: true }
+    stream.enqueue(new TextEncoder().encode(JSON.stringify({ type: 'complete', page: complete }) + '\n'))
+    await expect(pending).resolves.toEqual(complete)
+    expect(fetchMock.mock.calls[0][0]).toContain('max_results=0&stream=true')
+  })
+
+  it.each([
+    ['error event', JSON.stringify({ type: 'error', status: 422, detail: 'Invalid regex' }) + '\n', 'Invalid regex'],
+    ['closed connection', '', 'before completion'],
+  ])('reports an unfinished search: %s', async (_name, body, message) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'Content-Type': 'application/x-ndjson' } })))
+    await expect(getTasks({ query: '(', onProgress: vi.fn() })).rejects.toThrow(message)
+  })
+
   it('recovers a stale local UI session through the same-origin handoff', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ ok: true }),

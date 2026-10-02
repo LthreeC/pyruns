@@ -1,7 +1,6 @@
-import { useEffect, useState, type ReactNode, type Ref } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import { Search, X } from 'lucide-react'
 import clsx from 'clsx'
-import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 
 interface Props {
   value: string
@@ -10,9 +9,12 @@ interface Props {
   ariaLabel?: string
   debounceMs?: number
   className?: string
-  inputRef?: Ref<HTMLInputElement>
+  inputRef?: Ref<HTMLTextAreaElement>
   ariaKeyShortcuts?: string
   trailingControls?: ReactNode
+  searchOnType?: boolean
+  onSubmit?: () => void
+  onCancel?: () => void
 }
 
 export default function SearchInput({
@@ -25,28 +27,52 @@ export default function SearchInput({
   inputRef,
   ariaKeyShortcuts,
   trailingControls,
+  searchOnType = true,
+  onSubmit,
+  onCancel,
 }: Props) {
   const [local, setLocal] = useState(value)
-  const debounced = useDebouncedValue(local, debounceMs)
+  const [composing, setComposing] = useState(false)
+  const changeRef = useRef(onChange)
+  changeRef.current = onChange
+  const rows = Math.min(4, local.split('\n').length)
 
-  useEffect(() => { onChange(debounced) }, [debounced])
+  useEffect(() => {
+    if (!searchOnType || composing || local === value) return
+    const timer = setTimeout(() => changeRef.current(local), debounceMs)
+    return () => clearTimeout(timer)
+  }, [local, value, debounceMs, searchOnType, composing])
   useEffect(() => { setLocal(value) }, [value])
 
   return (
-    <div className={clsx('touch-input box-content flex h-11 min-w-0 items-center rounded-md border border-border bg-surface-overlay transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 sm:h-[34px]', className)}>
+    <div style={{ height: rows > 1 ? rows * 20 + 24 : undefined }} className={clsx('touch-input box-content flex h-11 min-w-0 items-center rounded-md border border-border bg-surface-overlay transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 sm:h-[34px]', className)}>
       <Search aria-hidden="true" className="search-input-icon pointer-events-none ml-2.5 h-3.5 w-3.5 flex-none text-txt-tertiary" />
-      <input
+      <textarea
         ref={inputRef}
-        type="text"
+        rows={rows}
         inputMode="search"
         enterKeyHint="search"
         autoComplete="off"
         value={local}
         onChange={e => setLocal(e.target.value)}
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={() => setComposing(false)}
+        onKeyDown={event => {
+          if (event.nativeEvent.isComposing) return
+          if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault()
+            if (local === value) onSubmit?.()
+            else onChange(local)
+          } else if (event.key === 'Escape') {
+            setLocal(value)
+            onCancel?.()
+          }
+        }}
         placeholder={placeholder}
         aria-label={ariaLabel}
         aria-keyshortcuts={ariaKeyShortcuts}
-        className="h-full min-w-0 flex-1 bg-transparent px-2 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none focus-visible:outline-none sm:text-xs"
+        title="Enter to search; Shift+Enter for a new line"
+        className="h-full min-w-0 flex-1 resize-none bg-transparent px-2 py-3 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none focus-visible:outline-none sm:py-[7px] sm:text-xs sm:leading-5"
       />
       {local && (
         <button

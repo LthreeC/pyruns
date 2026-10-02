@@ -541,7 +541,7 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "summary: true" in monitor_fetch
     assert "compact: true" in monitor_fetch
     assert "limit: 0" not in monitor_fetch
-    assert "refresh: forceRefresh || !sidebarQuery.trim()" in monitor
+    assert "refresh: forceRefresh || !sidebarQuery" in monitor
     assert "fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
     assert "useTaskEvents({" in monitor
@@ -891,7 +891,7 @@ def test_react_monitor_isolates_workspace_and_resets_replaced_log_streams():
     assert "logIdentity: ''" in store
     assert "exportIds: new Set()" in store
     assert "workspaceKey !== currentWorkspaceKey()" in store
-    assert "get().monitorWorkspaceKey !== workspaceKey" in store
+    assert "get().monitorWorkspaceKey === workspaceKey" in store
     assert "currentWorkspaceKey() !== workspaceKey" in store
 
     assert "generationKey?: string" in log_stream

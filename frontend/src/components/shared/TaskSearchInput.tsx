@@ -4,6 +4,7 @@ import { ChevronDown, LoaderCircle, RefreshCw, SlidersHorizontal, Square } from 
 import clsx from 'clsx'
 import type { TaskSearchOptions, TaskSearchScope, WorkspaceKind } from '@/types'
 import SearchInput from './SearchInput'
+import { DEFAULT_SEARCH_SETTINGS, useSearchSettingsStore } from '@/store'
 
 const SEARCH_FIELDS: { value: TaskSearchScope; label: string; compactLabel: string; description: string }[] = [
   { value: 'all', label: 'All fields', compactLabel: 'All', description: 'Names, notes, config, task env and full log files' },
@@ -38,6 +39,7 @@ interface Props extends Omit<ComponentProps<typeof SearchInput>, 'className' | '
   onSearchFieldChange: (field: TaskSearchScope) => void
   searchOptions: TaskSearchOptions
   onSearchOptionsChange: (options: TaskSearchOptions) => void
+  limitHit?: boolean
 }
 
 export default function TaskSearchInput({
@@ -50,13 +52,19 @@ export default function TaskSearchInput({
   onSearchFieldChange,
   searchOptions,
   onSearchOptionsChange,
+  limitHit = false,
   ...props
 }: Props) {
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const settings = useSearchSettingsStore()
+  const [delayDraft, setDelayDraft] = useState(String(settings.searchOnTypeDebouncePeriod))
+  const [limitDraft, setLimitDraft] = useState(String(settings.maxResults ?? ''))
+  useEffect(() => setDelayDraft(String(settings.searchOnTypeDebouncePeriod)), [settings.searchOnTypeDebouncePeriod])
+  useEffect(() => setLimitDraft(String(settings.maxResults ?? '')), [settings.maxResults])
   const filterMenuRef = useRef<HTMLDivElement>(null)
   const searchFields = SEARCH_FIELDS.filter(option => option.value !== (workspaceKind === 'shell' ? 'config' : 'script'))
   const selectedField = SEARCH_FIELDS.find(option => option.value === searchField) ?? SEARCH_FIELDS[0]
-  const searchActive = Boolean(props.value.trim())
+  const searchActive = Boolean(props.value)
   const refreshLabel = searching && searchActive ? 'Cancel search' : searchActive ? 'Refresh search results' : 'Refresh tasks'
   const matchOptions = (
     <div
@@ -70,7 +78,7 @@ export default function TaskSearchInput({
         aria-label={option.label}
         aria-pressed={searchOptions[option.key]}
         aria-keyshortcuts={option.shortcut}
-        title={`${option.label} (${option.shortcut})${option.key === 'useRegex' ? ' — searches each line separately' : ''}`}
+        title={`${option.label} (${option.shortcut})`}
         onClick={() => onSearchOptionsChange({ ...searchOptions, [option.key]: !searchOptions[option.key] })}
         className={clsx(
           'touch-target inline-flex h-11 w-11 items-center justify-center border-l border-border-subtle font-mono text-sm transition-colors first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:ring-inset sm:h-full sm:w-7',
@@ -128,6 +136,7 @@ export default function TaskSearchInput({
   }, [filtersOpen])
 
   return (
+    <>
     <div className="task-search-combined flex min-w-0 items-center gap-1.5" onKeyDown={event => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.repeat) return
       const option = MATCH_OPTIONS.find(item => item.code === event.code)
@@ -138,13 +147,17 @@ export default function TaskSearchInput({
       <div className="task-search-control-row relative flex min-w-0 flex-1 items-center gap-1.5">
         <SearchInput
           {...props}
+          debounceMs={settings.searchOnTypeDebouncePeriod}
+          searchOnType={settings.searchOnType}
+          onSubmit={onRefresh}
+          onCancel={onCancel}
           className="w-full flex-1"
           placeholder={searchOptions.useRegex
             ? 'Search with regex'
             : searchField === 'all'
               ? compact ? 'Search tasks' : 'Search tasks and full logs'
               : `Search ${selectedField.label.toLowerCase()}`}
-          trailingControls={<div className="task-search-inline-filters flex h-full flex-none items-stretch">{filterControls}</div>}
+          trailingControls={<div style={{ display: filtersOpen ? 'none' : undefined }} className="task-search-inline-filters flex h-full flex-none items-stretch">{filterControls}</div>}
         />
         <div ref={filterMenuRef} className="task-search-filter-menu flex-none">
           <button
@@ -152,7 +165,7 @@ export default function TaskSearchInput({
             aria-label="Search filters"
             aria-expanded={filtersOpen}
             aria-haspopup="true"
-            title="Search filters"
+            title="Search filters and settings"
             onClick={() => setFiltersOpen(open => !open)}
             className="task-search-filter-trigger touch-target inline-flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface-overlay text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:h-9 sm:w-9"
           >
@@ -165,6 +178,41 @@ export default function TaskSearchInput({
               aria-label="Search filters"
             >
               {filterControls}
+              <fieldset className="mt-2 space-y-2 border-t border-border-subtle p-2 text-xs text-txt-secondary">
+                <legend className="px-1 text-txt-primary">Search settings</legend>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={settings.searchOnType} onChange={event => settings.update({ searchOnType: event.target.checked })} />
+                  Search as you type
+                </label>
+                <label className="block">
+                  Typing delay (ms)
+                  <input type="number" min={0} step={50} value={delayDraft}
+                    onChange={event => setDelayDraft(event.target.value)}
+                    onBlur={() => {
+                      settings.update({ searchOnTypeDebouncePeriod: delayDraft === '' ? 300 : Number(delayDraft) })
+                      setDelayDraft(String(useSearchSettingsStore.getState().searchOnTypeDebouncePeriod))
+                    }}
+                    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                    className="mt-1 block w-full rounded border border-border bg-surface-overlay px-2 py-1.5 text-txt-primary" />
+                </label>
+                <label className="block">
+                  Match limit (blank for unlimited)
+                  <input type="number" min={1} step={1} value={limitDraft}
+                    onChange={event => setLimitDraft(event.target.value)}
+                    onBlur={() => {
+                      settings.update({ maxResults: limitDraft === '' ? null : Number(limitDraft) })
+                      setLimitDraft(String(useSearchSettingsStore.getState().maxResults ?? ''))
+                    }}
+                    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                    className="mt-1 block w-full rounded border border-border bg-surface-overlay px-2 py-1.5 text-txt-primary" />
+                </label>
+                <p>Enter to search. Shift+Enter for a new line. Settings apply to Manager and Monitor.</p>
+                <button type="button" onClick={() => {
+                  settings.update(DEFAULT_SEARCH_SETTINGS)
+                  setDelayDraft(String(DEFAULT_SEARCH_SETTINGS.searchOnTypeDebouncePeriod))
+                  setLimitDraft(String(DEFAULT_SEARCH_SETTINGS.maxResults))
+                }} className="text-accent hover:underline">Reset search settings</button>
+              </fieldset>
             </div>
           )}
         </div>
@@ -185,5 +233,10 @@ export default function TaskSearchInput({
       )}
       {searchActive && <span className="sr-only" role="status">{searching ? 'Searching…' : taskSearchDescription(searchField, workspaceKind)}</span>}
     </div>
+    {limitHit && <p role="status" className="mt-2 text-xs text-txt-secondary">
+      Match limit reached. More results may exist.{' '}
+      <button type="button" className="text-accent hover:underline" onClick={() => settings.update({ maxResults: null })}>Search without limit</button>
+    </p>}
+    </>
   )
 }
