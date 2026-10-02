@@ -14,6 +14,7 @@ export function usePolling(
   useEffect(() => {
     if (!enabled) return
 
+    let refreshOnReturn = false
     const tick = () => {
       if (inFlightRef.current) {
         return
@@ -37,6 +38,10 @@ export function usePolling(
         .finally(() => {
           if (ticketRef.current === ticket) {
             inFlightRef.current = false
+            if (refreshOnReturn) {
+              refreshOnReturn = false
+              tick()
+            }
           }
         })
     }
@@ -45,9 +50,19 @@ export function usePolling(
       tick()
     }
 
-    const id = setInterval(tick, intervalMs)
+    let id: ReturnType<typeof setInterval> | undefined
+    const handleVisibilityChange = () => {
+      clearInterval(id)
+      if (document.visibilityState === 'hidden') return
+      if (inFlightRef.current) refreshOnReturn = true
+      else tick()
+      id = setInterval(tick, intervalMs)
+    }
+    if (document.visibilityState !== 'hidden') id = setInterval(tick, intervalMs)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
       clearInterval(id)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       ticketRef.current += 1
       inFlightRef.current = false
     }

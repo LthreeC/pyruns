@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { createLogStream, createTaskEventStream } from '@/api'
 import type { LogStreamMessage, TaskEventMessage } from '@/types'
+import { usePageVisible } from './usePageVisible'
 
 export type LogStreamStatus = 'idle' | 'connecting' | 'live' | 'reconnecting'
 export type TaskEventStreamStatus = LogStreamStatus
@@ -35,6 +36,7 @@ export function useTaskEvents({
   enabled = true,
   generationKey = '',
 }: UseTaskEventsOptions) {
+  const pageVisible = usePageVisible()
   const wsRef = useRef<WebSocket | null>(null)
   const onInvalidateRef = useRef(onInvalidate)
   const onStatusChangeRef = useRef(onStatusChange)
@@ -44,7 +46,7 @@ export function useTaskEvents({
   generationKeyRef.current = generationKey
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !pageVisible) {
       onStatusChangeRef.current?.('idle')
       return
     }
@@ -120,7 +122,7 @@ export function useTaskEvents({
         ws.close()
       }
     }
-  }, [enabled, generationKey])
+  }, [enabled, generationKey, pageVisible])
 }
 
 export function useLogStream({
@@ -134,6 +136,7 @@ export function useLogStream({
   logIdentity,
   generationKey = '',
 }: UseLogStreamOptions) {
+  const pageVisible = usePageVisible()
   const wsRef = useRef<WebSocket | null>(null)
   const onChunkRef = useRef(onChunk)
   const onDisconnectRef = useRef(onDisconnect)
@@ -161,8 +164,10 @@ export function useLogStream({
   }, [])
 
   useEffect(() => {
-    if (!taskName || !enabled) {
+    if (!taskName || !enabled || !pageVisible) {
       disconnect()
+      // Commit any buffered chunks before a later connection resumes at its offset.
+      if (!pageVisible) onDisconnectRef.current?.()
       onStatusChangeRef.current?.('idle')
       return
     }
@@ -251,7 +256,7 @@ export function useLogStream({
         ws.close()
       }
     }
-  }, [taskName, enabled, disconnect, generationKey, logFileName])
+  }, [taskName, enabled, disconnect, generationKey, logFileName, pageVisible])
 
   return { disconnect }
 }

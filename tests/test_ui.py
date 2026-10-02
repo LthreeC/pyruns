@@ -280,7 +280,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'taskRefreshInFlightRef',
             'taskRefreshQueuedRef',
             'TASK_EVENT_REFRESH_DEBOUNCE_MS',
-            'refreshMonitorSnapshotRef.current()',
             'const filteredTasks = monitorTasks',
             'const pinnedTasks = useMemo(',
             'const otherTasks = useMemo(',
@@ -845,7 +844,6 @@ def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reco
     assert "logFileName," in log_stream
     assert "offset: offsetRef.current," in log_stream
     assert "logIdentity: logIdentityRef.current" in log_stream
-    assert "[taskName, enabled, disconnect, generationKey, logFileName]" in log_stream
     assert "const onDisconnectRef = useRef(onDisconnect)" in log_stream
     assert "ws.onclose = () => {" in log_stream
     assert "onDisconnectRef.current?.()" in log_stream

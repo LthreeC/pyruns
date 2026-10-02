@@ -39,6 +39,7 @@ import {
   type TaskEventStreamStatus,
 } from '@/hooks/useWebSocket'
 import { usePolling } from '@/hooks/usePolling'
+import { usePageVisible } from '@/hooks/usePageVisible'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
@@ -216,6 +217,7 @@ export default function MonitorPage() {
   } = useTaskStore()
   const maxResults = useSearchSettingsStore(state => state.maxResults)
   const workspace = useWorkspaceStore(state => state.workspace)
+  const pageVisible = usePageVisible()
   const {
     selectedTaskName, logContent, logOffset, logIdentity, availableLogs, selectedLog,
     logTailTruncated, logTailLimitBytes, loading, exportIds, logMatch, logError, logGeneration,
@@ -266,11 +268,13 @@ export default function MonitorPage() {
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
   const wsStreamActiveRef = useRef(false)
+  const followedLiveTaskRef = useRef('')
   const pendingLiveLogChunkRef = useRef({ key: '', chunks: [] as PendingLiveLogChunk[] })
   const liveLogFlushTimerRef = useRef<number | null>(null)
   const taskRefreshTimerRef = useRef<number | null>(null)
   const taskRefreshInFlightRef = useRef(false)
   const taskRefreshQueuedRef = useRef(false)
+  const taskRefreshNeedsDiskRef = useRef(false)
   const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
   const [terminalSearchStatus, setTerminalSearchStatus] = useState('')
   const selectedTaskFromList = useMemo(
@@ -366,7 +370,7 @@ export default function MonitorPage() {
       // Keep the selected log visible for transient transport failures.
     }
   }, [selectedTaskFromList, selectedTaskName, workspaceKey])
-  const refreshMonitorSnapshot = useCallback(async () => {
+  const refreshMonitorSnapshot = useCallback(async (refresh: boolean) => {
     if (sidebarQuery) {
       await refreshDetachedSelectedTask(true)
       return
@@ -374,7 +378,7 @@ export default function MonitorPage() {
     await Promise.all([
       fetchMonitorTasks({
         query: sidebarQuery,
-        refresh: true,
+        refresh,
         background: true,
         workspaceKey,
       }),
@@ -397,8 +401,10 @@ export default function MonitorPage() {
     try {
       do {
         taskRefreshQueuedRef.current = false
+        const refresh = taskRefreshNeedsDiskRef.current
+        taskRefreshNeedsDiskRef.current = false
         try {
-          await refreshMonitorSnapshotRef.current()
+          await refreshMonitorSnapshotRef.current(refresh)
         } catch {
           // The store exposes the degraded state; the fallback poll will retry.
         }
@@ -407,7 +413,10 @@ export default function MonitorPage() {
       taskRefreshInFlightRef.current = false
     }
   }, [])
-  const scheduleTaskSnapshotRefresh = useCallback(() => {
+  const scheduleTaskSnapshotRefresh = useCallback((refresh = false) => {
+    // Events already follow a server snapshot update; only fallback/return polls
+    // need disk reconciliation. Preserve that need when triggers are coalesced.
+    taskRefreshNeedsDiskRef.current ||= refresh
     if (isMonitorPageHidden()) {
       taskRefreshQueuedRef.current = true
       return
@@ -427,30 +436,13 @@ export default function MonitorPage() {
     enabled: Boolean(workspaceKey),
     generationKey: workspaceKey,
   })
-  const pollMonitorSnapshot = useCallback(async () => {
-    if (sidebarQuery) {
-      await refreshDetachedSelectedTask(true)
-      return
-    }
-    await runTaskSnapshotRefresh()
-  }, [refreshDetachedSelectedTask, runTaskSnapshotRefresh, sidebarQuery])
   usePolling(
-    pollMonitorSnapshot,
+    () => scheduleTaskSnapshotRefresh(true),
     sidebarQuery ? 30000
       : taskEventStatus === 'live' ? TASK_EVENT_FALLBACK_POLL_MS : TASK_EVENT_DEGRADED_POLL_MS,
     Boolean(workspaceKey),
     false,
   )
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        scheduleTaskSnapshotRefresh()
-      }
-    }
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [scheduleTaskSnapshotRefresh])
 
   useEffect(() => () => {
     if (taskRefreshTimerRef.current !== null) {
@@ -458,6 +450,7 @@ export default function MonitorPage() {
       taskRefreshTimerRef.current = null
     }
     taskRefreshQueuedRef.current = false
+    taskRefreshNeedsDiskRef.current = false
   }, [workspaceKey])
   useEffect(() => {
     setStopConfirmTask('')
@@ -1339,6 +1332,26 @@ export default function MonitorPage() {
     logIdentity: logIdentityRef.current,
     generationKey: `${workspaceKey}:${logGeneration}`,
   })
+
+  useEffect(() => {
+    if (!pageVisible) return
+    const taskKey = `${workspaceKey}::${selectedTaskName ?? ''}`
+    const wasFollowing = followedLiveTaskRef.current === taskKey
+    followedLiveTaskRef.current = isLive ? taskKey : ''
+    if (
+      wasFollowing && !isLive && !loading && !logMatch && selectedTask
+      && ['completed', 'failed', 'cancelled'].includes(selectedTask.status)
+      && (!selectedLog || selectedLog === runLogName || selectedLog === QUEUE_LOG_NAME)
+    ) {
+      // A finished status can arrive before the stream drains, especially after
+      // a background pause. Load one bounded final tail before stopping updates.
+      flushLiveLogChunkBuffer()
+      void selectTask(selectedTask.name).catch(err => {
+        notify({ tone: 'error', title: 'Could not load final task log', detail: errorMessage(err) })
+      })
+    }
+  }, [pageVisible, workspaceKey, selectedTaskName, selectedTask, isLive, loading, logMatch,
+    selectedLog, runLogName, flushLiveLogChunkBuffer, selectTask, notify])
 
   const pollLiveLog = useCallback(async () => {
     const activeTaskName = selectedTaskNameRef.current
