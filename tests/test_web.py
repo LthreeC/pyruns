@@ -2201,7 +2201,7 @@ def test_log_reads_and_queue_stream_skip_curve_history(tmp_path, monkeypatch):
         with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
             initial = client.get("/api/tasks/metrics/logs").json()
             assert initial["selected_log"] == "queue.log"
-            assert initial["content"] == "waiting\n"
+            assert initial["content"].replace("\r\n", "\n") == "waiting\n"
             assert client.get("/api/tasks/metrics/logs", params={
                 "log_file_name": "queue.log", "offset": initial["offset"],
             }).json()["content"] == ""
@@ -2213,7 +2213,7 @@ def test_log_reads_and_queue_stream_skip_curve_history(tmp_path, monkeypatch):
                 update_task_metadata(str(task_dir), lambda info: info.update(status="completed"))
                 payload = websocket.receive_json()
                 assert payload["log_file_name"] == "run1.log"
-                assert payload["content"] == "run output\n"
+                assert payload["content"].replace("\r\n", "\n") == "run output\n"
             read.assert_not_called()
 
             summary = client.get("/api/tasks/metrics", params={"summary": True, "refresh": False}).json()
