@@ -21,7 +21,7 @@ from pyruns._config import (
 )
 from pyruns.utils.config_utils import (
     build_config_preview_and_search_text,
-    iter_config_fields,
+    iter_config_search_lines,
     load_config_text,
     load_config_view_text,
     save_yaml,
@@ -34,7 +34,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.file_boundary import validate_open_file
-from pyruns.utils.sort_utils import filter_tasks
+from pyruns.utils.sort_utils import filter_tasks, normalize_task_search_text
 from pyruns.utils.search_query import SearchQuery
 
 MAX_TASK_PAYLOAD_BYTES = 4 * 1024 * 1024
@@ -276,7 +276,7 @@ def build_task_preview_and_search(
         preview = " | ".join(preview_source[:3]) if preview_source else "(empty shell script)"
         if len(preview) > 120:
             preview = preview[:117] + "..."
-        search_blob = "\n".join([str(task_name or ""), str(notes or ""), str(config_text or "")]).lower()
+        search_blob = normalize_task_search_text("\n".join([str(task_name or ""), str(notes or ""), str(config_text or "")]))
         return preview, search_blob
 
     return build_config_preview_and_search_text(
@@ -358,15 +358,8 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, 
     config = task.get("config", {}) or {}
     if not isinstance(config, (Mapping, DictConfig)):
         return
-    for path, value in iter_config_fields(config):
-        root_key = str(path[0])
-        if root_key.startswith("_meta"):
-            continue
-        key_text = root_key if len(path) == 1 else ".".join(map(str, path))
-        detail_lines = f"{key_text}: {value}".splitlines()
-        for line in detail_lines:
-            if line.strip():
-                yield "config", key_text, line
+    for location, line in iter_config_search_lines(config):
+        yield "config", location, line
 
 
 def filter_tasks_by_search_field(

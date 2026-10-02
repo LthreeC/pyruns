@@ -447,6 +447,28 @@ def preview_config_line(cfg: Mapping[Any, Any] | DictConfig, max_items: int = 6,
     return result
 
 
+def iter_config_search_lines(cfg: Mapping[Any, Any] | DictConfig) -> Iterator[tuple[str, str]]:
+    """Share the config field text used by filtering and match previews."""
+    for path, value in iter_config_fields(cfg, include_empty=True):
+        if str(path[0]).startswith("_meta"):
+            continue
+        key_text = ".".join(map(str, path))
+        if value is None:
+            value_text = "null"
+        elif isinstance(value, bool):
+            value_text = str(value).lower()
+        elif isinstance(value, (list, ListConfig)):
+            value_text = yaml.dump(
+                to_container(value), Dumper=getattr(yaml, "CSafeDumper", yaml.SafeDumper),
+                default_flow_style=True, allow_unicode=True, sort_keys=False, width=2**31 - 1,
+            ).rstrip("\n")
+        else:
+            value_text = str(value)
+        for line in f"{key_text}: {value_text}".splitlines():
+            if line.strip():
+                yield key_text, line
+
+
 def build_config_preview_and_search_text(
     cfg: Mapping[Any, Any] | DictConfig,
     *,
@@ -461,15 +483,7 @@ def build_config_preview_and_search_text(
         cfg = {}
 
     search_lines = [str(task_name or ""), str(notes or "")]
-    for path, value in iter_config_fields(cfg):
-        root_key = str(path[0])
-        if root_key.startswith("_meta"):
-            continue
-        key_text = root_key if len(path) == 1 else ".".join(map(str, path))
-        search_lines.append(f"{key_text}: {value}")
-        short_key = str(path[-1])
-        if short_key != key_text:
-            search_lines.append(f"{short_key}: {value}")
+    search_lines.extend(line for _, line in iter_config_search_lines(cfg))
 
     blob = "\n".join(search_lines)
     normalized_blob = normalize_task_search_text(blob)

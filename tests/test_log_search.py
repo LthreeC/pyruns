@@ -34,7 +34,44 @@ def test_literal_spaces_and_search_options(tmp_path, query, options, count):
     task, _ = write_log(tmp_path, b"lr: 0.001\r\nprefix Token suffix\r\ntokenize\r\n\r\n")
     result = log_search.LogSearch().search(task, query, threading.Event(), SearchQuery(query, **options))
     assert result["match_count"] == count
+    assert bool(result["found"]) == bool(count)
     assert not result["errors"]
+
+
+def test_newline_only_regex_does_not_create_cached_hits(tmp_path):
+    for payload in (b"token\n", b"token\r\n"):
+        task, _ = write_log(tmp_path, payload)
+        search = log_search.LogSearch()
+        for _ in range(2):
+            result = search.search(task, r"\R", threading.Event(), SearchQuery(r"\R", use_regex=True))
+            assert result == {"matches": [], "match_count": 0, "found": set(), "errors": []}
+
+
+@pytest.mark.parametrize("text,query,count", [
+    ("İ", "i", 0), ("İ", "İ", 1), ("ς", "σ", 1), ("ος", "ΟΣ", 1),
+    ("ẞ", "ß", 1), ("ß", "ss", 0), ("ſ", "s", 1), ("ᾈ", "ᾀ", 1),
+])
+def test_literal_unicode_case_matches_metadata_and_logs(tmp_path, text, query, count):
+    from pyruns.utils.task_files import build_task_preview_and_search, build_task_search_result, task_search_found
+
+    directory, _ = write_log(tmp_path, (text + "\n").encode())
+    task = {"name": text, "notes": text, "config": {"payload": text}, "env": {"DATA": text}}
+    for options in ({}, {"whole_word": True}, {"match_case": True}):
+        expected = int(query in text) if options.get("match_case") else count
+        matcher = SearchQuery(query, **options)
+        log = log_search.LogSearch().search(directory, query, threading.Event(), matcher)
+        assert log["match_count"] == expected
+        for kind in ("config", "shell"):
+            task.update(task_kind=kind, config_text=text)
+            _, task["search_text"] = build_task_preview_and_search(
+                task_kind=kind, task_name=text, notes=text, config=task["config"], config_text=text,
+            )
+            for field in ("all", "name", "notes", "env", "config" if kind == "config" else "script"):
+                assert task_search_found(task, matcher, field) == log["found"]
+                result = build_task_search_result(task, query, search_field=field, matcher=matcher)
+                assert result["match_count"] == expected * (4 if field == "all" else 1)
+                for match in result["matches"]:
+                    assert match["snippet"][match["match_start"]:match["match_end"]] == text
 
 
 @pytest.mark.parametrize("prefix,token", [

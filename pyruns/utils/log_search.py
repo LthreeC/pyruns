@@ -218,7 +218,7 @@ class LogSearch:
             try:
                 entries = get_log_entries(task_dir)
             except OSError:
-                results[task_dir]["errors"].append("Could not list task logs")
+                results[task_dir]["errors"].append(f"{os.path.basename(task_dir)}: Could not list task logs")
                 continue
             for name, (path, info) in entries.items():
                 files[path] = (task_dir, name, info)
@@ -243,6 +243,10 @@ class LogSearch:
                             results[task_dir]["errors"].append(event["data"])
                             continue
                         data = event["data"]
+                        # PCRE2 may emit a matching line with no in-line spans
+                        # for newline-only patterns such as \R. It is not a hit.
+                        if not data["submatches"]:
+                            continue
                         path = os.path.normpath(os.path.join(cwd, os.fsdecode(_json_bytes(data["path"]))))
                         _, name, info = files[path]
                         contents[path]["found"].add(needle)

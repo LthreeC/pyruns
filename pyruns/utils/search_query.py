@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from array import array
 from concurrent.futures import CancelledError
 from typing import TypedDict
 
@@ -21,19 +20,19 @@ class SearchQueryError(ValueError):
     """A search expression is invalid or cannot be evaluated within its limits."""
 
 
-def normalized_search_with_positions(text, match_case=False, end=None):
-    """Keep source offsets, optionally only for a prefix of normalized text."""
-    positions = array("I")
-    index = 0
-    while index < len(text):
-        char = text[index]
-        for _ in char if match_case else char.lower():
-            positions.append(index)
-        index += 1
-        if end is not None and len(positions) >= end:
-            break
-    # Lowercase the whole string to preserve contextual casing (e.g. Greek sigma).
-    return text if match_case else text.lower(), positions
+def fold_search_case(text: str) -> str:
+    """Use one-codepoint Unicode case folding, as ripgrep does for literals."""
+    if text.isascii():
+        return text.lower()
+    replacements = {}
+    for char in set(text):
+        folded = char.casefold()
+        if len(folded) != 1:
+            # Full folding expands e.g. sharp S to "ss". Simple folding only
+            # uses its lowercase mapping when that still has one codepoint.
+            folded = char.lower()
+        replacements[ord(char)] = folded if len(folded) == 1 else char
+    return text.translate(replacements)
 
 
 class SearchQuery:
@@ -66,7 +65,7 @@ class SearchQuery:
     def normalize(self, text: str) -> str:
         if self.use_regex:
             return text
-        return text if self.match_case else text.lower()
+        return text if self.match_case else fold_search_case(text)
 
     def found(self, text: object) -> set[str]:
         if self.cancelled is not None and self.cancelled.is_set():
@@ -115,10 +114,4 @@ class SearchQuery:
         except TimeoutError as exc:
             raise SearchQueryError("Search pattern took too long. Simplify the regular expression.") from exc
         spans = sorted(spans)[:limit]
-        if spans and not self.use_regex and not (
-            len(normalized) == len(text)
-            and (self.match_case or text.isascii() or len(text.lower()) == len(text))
-        ):
-            _, positions = normalized_search_with_positions(text, self.match_case, end=max(end for _, end in spans))
-            spans = [(positions[start], positions[end - 1] + 1) for start, end in spans]
         return {"match_count": count, "found": found, "spans": spans}

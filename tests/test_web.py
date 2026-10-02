@@ -2597,6 +2597,65 @@ def test_search_match_options_combine_with_each_field(tmp_path, field):
         assert response.json()["total"] == 1
 
 
+def test_config_search_keeps_empty_fields_and_yaml_scalar_values(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "source")
+    save_yaml(str(workspace / TASKS_DIR / "source" / CONFIG_FILENAME), {
+        "empty": {}, "nested": {"empty": {}}, "device": None, "enabled": True,
+        "values": [None, False], "_meta_internal": {"hidden": "excluded"},
+    })
+    client = TestClient(create_app(_build_runtime(workspace)))
+    for query, count in [("empty: {}", 2), ("nested.empty: {}", 1), ("device: null", 1),
+                         ("enabled: true", 1), ("values: [null, false]", 1), ("excluded", 0)]:
+        for field, include_logs, match_case in [("all", False, False), ("all", True, True), ("config", False, True)]:
+            response = client.get("/api/tasks", params={
+                "query": query, "search_field": field, "include_logs": include_logs,
+                "match_case": match_case, "summary": True, "refresh": False,
+            })
+            assert response.status_code == 200, response.text
+            result = response.json()
+            assert result["total"] == bool(count), (query, field, result)
+            if count:
+                assert result["items"][0]["search_match_count"] == count
+                assert {match["field"] for match in result["items"][0]["search_matches"]} == {"config"}
+
+
+@pytest.mark.parametrize("query", ["İ\ni\u0307", "i\u0307\nİ"])
+def test_unicode_query_lines_stay_distinct_across_metadata_and_logs(tmp_path, query):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "partial", log_text="i\u0307\n")
+    _add_task(workspace, "complete", log_text="i\u0307\n")
+    update_task_info(str(workspace / TASKS_DIR / "complete"), lambda info: info.update({"notes": "İ"}))
+    client = TestClient(create_app(_build_runtime(workspace)))
+    for _ in range(2):
+        result = client.get("/api/tasks", params={"query": query, "include_logs": True}).json()
+        assert [item["name"] for item in result["items"]] == ["complete"]
+        assert result["items"][0]["search_match_count"] == 2
+
+
+def test_log_search_error_identifies_failed_file_without_labeling_first_task(tmp_path, monkeypatch):
+    from pyruns.utils import log_search
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "a-healthy", log_text="needle\n")
+    _add_task(workspace, "z-missing", log_text="needle\n")
+    original = log_search._ripgrep_events
+
+    def remove_before_read(*args):
+        (workspace / TASKS_DIR / "z-missing" / "run_logs" / "run1.log").unlink()
+        yield from original(*args)
+
+    monkeypatch.setattr(log_search, "_ripgrep_events", remove_before_read)
+    client = TestClient(create_app(_build_runtime(workspace)))
+    response = client.get("/api/tasks", params={"query": "needle", "search_field": "log", "sort": "name_asc"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert [item["name"] for item in result["items"]] == ["a-healthy"]
+    assert len(result["search_errors"]) == 1
+    assert "z-missing" in result["search_errors"][0]
+    assert "a-healthy" not in result["search_errors"][0]
+
+
 @pytest.mark.parametrize("field", ["notes", "log"])
 def test_invalid_and_slow_regex_report_errors_and_release_search_slots(tmp_path, monkeypatch, field):
     from pyruns.utils import search_query

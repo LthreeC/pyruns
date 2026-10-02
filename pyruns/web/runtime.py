@@ -1253,7 +1253,7 @@ class PyrunsRuntime:
                     raise CancelledError()
                 found = metadata_found.get(task["name"], set())
                 logs = log_results.get(task["dir"], empty_logs)
-                errors.extend(f"{task['name']}: {message}" for message in logs["errors"] if len(errors) < 8)
+                errors.extend(message for message in logs["errors"] if len(errors) < 8)
                 if search_logs and not all(needle in found or needle in logs["found"] for needle in needles):
                     continue
                 if offset <= total < offset + limit:

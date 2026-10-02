@@ -7,6 +7,8 @@ from typing import Any, List, TypeVar
 
 from omegaconf import OmegaConf
 
+from pyruns.utils.search_query import fold_search_case
+
 _ACTIVE_STATUSES = {"running", "queued"}
 _INACTIVE_TIE_PRIORITIES = {
     "failed": 3,
@@ -29,7 +31,7 @@ _Task = TypeVar("_Task", bound=Mapping[str, object])
 def normalize_task_search_text(value: object) -> str:
     """Fold case while preserving literal whitespace and line boundaries."""
 
-    return str(value or "").lower()
+    return fold_search_case(str(value or ""))
 
 
 def task_search_needles(query: str) -> List[str]:
@@ -174,9 +176,9 @@ def sort_tasks_for_manager(
 def _config_search_text(config: Any) -> str:
     """Render unvalidated saved configs, retaining the fallback for unsupported values."""
     try:
-        return OmegaConf.to_yaml(OmegaConf.create(config or {}), resolve=False).lower()
+        return OmegaConf.to_yaml(OmegaConf.create(config or {}), resolve=False)
     except Exception:
-        return str(config).lower()
+        return str(config)
 
 
 def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All") -> list[_Task]:
@@ -196,7 +198,7 @@ def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All
         normalized_blob = normalize_task_search_text(task.get("search_text", ""))
         if not normalized_blob:
             yaml_str = _config_search_text(task.get("config", {}))
-            text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}".lower()
+            text_blob = f"{task.get('name', '')}\n{yaml_str}\n{task.get('notes', '')}"
             normalized_blob = normalize_task_search_text(text_blob)
 
         for line in query_lines:
