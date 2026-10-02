@@ -133,17 +133,19 @@ def read_log_chunk(log_path: str, offset: int) -> Tuple[str, int]:
 def read_last_bytes(log_path: str, n_bytes: int = 10000) -> Tuple[str, int]:
     """Read the last ``n_bytes`` from a log file."""
 
-    if not os.path.exists(log_path):
-        return "", 0
-
     try:
-        size = os.path.getsize(log_path)
-        start = max(0, size - n_bytes)
-
         with open(log_path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            start = max(0, size - max(0, n_bytes))
             handle.seek(start)
-            content = normalize_log_newlines(decode_log_bytes(handle.read()))
-            return content, size
+            # An active writer may append after the size snapshot. Leave those
+            # bytes for the next chunk, with an offset matching this read.
+            data = handle.read(size - start)
+            content = normalize_log_newlines(decode_log_bytes(data))
+            new_offset = start + len(data)
+            if len(data) < size - start:
+                new_offset = min(new_offset, os.fstat(handle.fileno()).st_size) if data else 0
+            return content, new_offset
     except Exception:
         return "", 0
 
@@ -170,26 +172,19 @@ def _split_lf_lines_keepends(data: bytes) -> list[bytes]:
 def read_last_lines(log_path: str, max_lines: int = 10000, max_bytes: int | None = None) -> Tuple[str, int]:
     """Read up to the last ``max_lines`` LF-delimited log lines."""
 
-    if not os.path.exists(log_path):
-        return "", 0
-
     try:
-        size = os.path.getsize(log_path)
-        if size <= 0:
-            return "", 0
-
         max_lines = max(0, int(max_lines))
-        if max_lines == 0:
-            return "", size
         byte_limit = None if max_bytes is None else max(1, int(max_bytes))
-
         block_size = 64 * 1024
-        position = size
         chunks: list[bytes] = []
         line_break_count = 0
         bytes_read = 0
 
         with open(log_path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size <= 0 or max_lines == 0:
+                return "", size
+            position = size
             while position > 0 and line_break_count <= max_lines and (
                 byte_limit is None or bytes_read < byte_limit
             ):
@@ -199,6 +194,12 @@ def read_last_lines(log_path: str, max_lines: int = 10000, max_bytes: int | None
                 position -= read_size
                 handle.seek(position)
                 chunk = handle.read(read_size)
+                if len(chunk) < read_size:
+                    # A concurrent truncation invalidates the later blocks
+                    # already read. Keep a bounded cursor for the next chunk.
+                    size = min(position + len(chunk), os.fstat(handle.fileno()).st_size) if chunk else 0
+                    chunks = [chunk]
+                    break
                 chunks.append(chunk)
                 bytes_read += len(chunk)
                 line_break_count += chunk.count(b"\n")

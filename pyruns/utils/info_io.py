@@ -12,6 +12,7 @@ import stat
 import tempfile
 import threading
 import time
+from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import Any, Callable, Dict, Optional
@@ -914,8 +915,10 @@ def ensure_run_slot(meta: Dict[str, Any], run_index: int) -> int:
     return target - 1
 
 
-def get_log_entries(task_dir: str) -> dict[str, tuple[str, os.stat_result]]:
+def get_log_entries(task_dir: str, *, cancelled: threading.Event | None = None) -> dict[str, tuple[str, os.stat_result]]:
     """Enumerate safe direct log files, reusing scandir metadata for search."""
+    if cancelled is not None and cancelled.is_set():
+        raise CancelledError()
     opts: dict[str, tuple[str, os.stat_result]] = {}
     absolute_task = _workspace_abspath(task_dir)
     # Retain only these three directory anchors, for this enumeration alone.
@@ -930,6 +933,8 @@ def get_log_entries(task_dir: str) -> dict[str, tuple[str, os.stat_result]]:
     if os.path.isdir(run_dir):
         with os.scandir(run_dir) as entries:
             for entry in entries:
+                if cancelled is not None and cancelled.is_set():
+                    raise CancelledError()
                 name = entry.name
                 if name not in {QUEUE_LOG_FILENAME, ERROR_LOG_FILENAME} and not (
                     name.startswith("run") and name.endswith(".log")

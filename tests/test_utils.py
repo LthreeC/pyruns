@@ -683,6 +683,47 @@ def test_read_last_lines_respects_max_bytes(tmp_path):
     assert offset == len(content)
 
 
+@pytest.mark.parametrize("reader", ["bytes", "lines"])
+@pytest.mark.parametrize("change", ["append", "replace", "truncate"])
+def test_log_tail_binds_size_and_cursor_to_the_open_file(tmp_path, monkeypatch, reader, change):
+    log_file = tmp_path / "tail.log"
+    log_file.write_bytes(b"12345678")
+    real_open, real_fstat = builtins.open, os.fstat
+    changed = False
+
+    def opening(path, *args, **kwargs):
+        if change == "replace" and os.fspath(path) == str(log_file):
+            replacement = tmp_path / "replacement.log"
+            replacement.write_bytes(b"WXYZ")
+            replacement.replace(log_file)
+        return real_open(path, *args, **kwargs)
+
+    def snapshot_then_change(fd):
+        nonlocal changed
+        info = real_fstat(fd)
+        if not changed and change != "replace":
+            changed = True
+            with real_open(log_file, "ab" if change == "append" else "wb") as writer:
+                writer.write(b"ABCDEFGH" if change == "append" else b"XY")
+        return info
+
+    monkeypatch.setattr(log_io, "open", opening, raising=False)
+    monkeypatch.setattr(log_io.os, "fstat", snapshot_then_change)
+    text, offset = (
+        read_last_bytes(str(log_file), n_bytes=4)
+        if reader == "bytes" else read_last_lines(str(log_file), max_lines=10, max_bytes=4)
+    )
+    assert len(text.encode("utf-8")) <= 4
+    if change == "append":
+        assert (text, offset) == ("5678", 8)
+        assert safe_read_log(str(log_file), offset, max_bytes=16) == ("ABCDEFGH", 16)
+    elif change == "replace":
+        assert (text, offset) == ("WXYZ", 4)
+    else:
+        assert (text, offset) == ("", 0)
+        assert safe_read_log(str(log_file), offset, max_bytes=16) == ("XY", 2)
+
+
 def test_decode_log_bytes_falls_back_to_gbk_for_windows_logs(monkeypatch):
     text = "测试 PowerShell 输出"
     encoded = text.encode("gbk")

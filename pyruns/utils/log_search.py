@@ -283,7 +283,7 @@ class LogSearch:
             if cancelled.is_set():
                 raise CancelledError()
             try:
-                entries = get_log_entries(task_dir)
+                entries = get_log_entries(task_dir, cancelled=cancelled)
             except OSError:
                 results[task_dir]["errors"].append(f"{os.path.basename(task_dir)}: Could not list task logs")
                 continue

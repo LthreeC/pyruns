@@ -283,6 +283,45 @@ def test_cancel_kills_and_reaps_a_process_with_no_output(tmp_path, monkeypatch):
     assert processes[0].stdout.closed
 
 
+def test_cancel_stops_log_enumeration_before_remaining_metadata_reads(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from pyruns.utils import info_io
+
+    task, first = write_log(tmp_path, b"needle\n")
+    _, second = write_log(tmp_path, b"needle\n", filename="run2.log")
+    cancelled = threading.Event()
+    checked = []
+    closed = []
+    real_lstat = os.lstat
+
+    def entry_stat(path, *args, **kwargs):
+        if os.fspath(path) in {str(first), str(second)}:
+            checked.append(str(path))
+            cancelled.set()
+        return real_lstat(path, *args, **kwargs)
+
+    @contextmanager
+    def entries(_directory):
+        try:
+            yield (
+                SimpleNamespace(name=path.name, path=str(path),
+                                stat=lambda *, follow_symlinks, path=path: entry_stat(path))
+                for path in (first, second)
+            )
+        finally:
+            closed.append(True)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(info_io.os, "scandir", entries)
+        patch.setattr(info_io.os, "lstat", entry_stat)
+        with pytest.raises(CancelledError):
+            log_search.LogSearch().search(task, "needle", cancelled)
+    assert checked == [str(first)]
+    assert closed == [True]
+
+
 def test_no_path_or_user_config_dependency_and_engine_errors(tmp_path, monkeypatch):
     task, _ = write_log(tmp_path, b"needle\n")
     config = tmp_path / "rg-config"
