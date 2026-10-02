@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -1455,7 +1456,7 @@ export default function MonitorPage() {
     && !filteredTasks.some(task => task.name === selectedTask.name),
   )
 
-  const handleSidebarClick = (task: Task, match?: TaskSearchMatch) => {
+  const handleSidebarClick = useCallback((task: Task, match?: TaskSearchMatch) => {
     if (exportMode) {
       toggleExport(task.name)
       return
@@ -1467,7 +1468,7 @@ export default function MonitorPage() {
       .catch(err => notify({ tone: 'error', title: 'Could not load task logs', detail: errorMessage(err) }))
     termContainerRef.current?.scrollIntoView({ block: 'nearest' })
     xtermRef.current?.focus()
-  }
+  }, [exportMode, toggleExport, closeTerminalSearch, compactMonitorLayout, sidebarQuery, selectTask, notify])
 
   const handleTaskAction = useCallback(async (action: 'run' | 'cancel') => {
     if (!selectedTaskName || !selectedTask || taskActionPending) return
@@ -1708,8 +1709,7 @@ export default function MonitorPage() {
                   active={!exportMode && task.name === selectedTaskName}
                   exportMode={exportMode}
                   exportSelected={exportIds.has(task.name)}
-                  onClick={() => handleSidebarClick(task)}
-                  onSelectMatch={match => handleSidebarClick(task, match)}
+                  onSelect={handleSidebarClick}
                 />
               ))}
             </CompactSection>
@@ -1727,7 +1727,7 @@ export default function MonitorPage() {
                     active={!exportMode}
                     exportMode={exportMode}
                     exportSelected={exportIds.has(selectedTask.name)}
-                    onClick={() => handleSidebarClick(selectedTask)}
+                    onSelect={handleSidebarClick}
                   />
                 </CompactSection>
               )}
@@ -1747,7 +1747,7 @@ export default function MonitorPage() {
                       active={!exportMode && task.name === selectedTaskName}
                       exportMode={exportMode}
                       exportSelected={exportIds.has(task.name)}
-                      onClick={() => handleSidebarClick(task)}
+                      onSelect={handleSidebarClick}
                     />
                   ))}
                 </CompactSection>
@@ -1770,7 +1770,7 @@ export default function MonitorPage() {
                     active={!exportMode && task.name === selectedTaskName}
                     exportMode={exportMode}
                     exportSelected={exportIds.has(task.name)}
-                    onClick={() => handleSidebarClick(task)}
+                    onSelect={handleSidebarClick}
                   />
                 ))}
               </CompactSection>
@@ -2311,23 +2311,23 @@ function formatBytes(bytes: number) {
   return `${Math.max(1, Math.round(value / 1024))} KB`
 }
 
-function SidebarItem({
+const SidebarItem = memo(function SidebarItem({
   task,
   active,
   exportMode,
   exportSelected,
-  onClick,
+  onSelect,
 }: {
   task: Task
   active: boolean
   exportMode: boolean
   exportSelected: boolean
-  onClick: () => void
+  onSelect: (task: Task) => void
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onSelect(task)}
       aria-current={!exportMode && active ? 'true' : undefined}
       aria-pressed={exportMode ? exportSelected : undefined}
       aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}`}
@@ -2354,22 +2354,20 @@ function SidebarItem({
       </span>
     </button>
   )
-}
+})
 
-function SearchResultGroup({
+const SearchResultGroup = memo(function SearchResultGroup({
   task,
   active,
   exportMode,
   exportSelected,
-  onClick,
-  onSelectMatch,
+  onSelect,
 }: {
   task: Task
   active: boolean
   exportMode: boolean
   exportSelected: boolean
-  onClick: () => void
-  onSelectMatch: (match: TaskSearchMatch) => void
+  onSelect: (task: Task, match?: TaskSearchMatch) => void
 }) {
   const matches = task.search_matches ?? []
   const matchCount = Math.max(matches.length, task.search_match_count ?? 0)
@@ -2403,10 +2401,10 @@ function SearchResultGroup({
           {matchCount.toLocaleString()}
         </span>
       </summary>
-      <TaskSearchMatches task={task} onSelect={onClick} onSelectMatch={onSelectMatch} action={action} exportMode={exportMode} />
+      <TaskSearchMatches task={task} onSelect={() => onSelect(task)} onSelectMatch={match => onSelect(task, match)} action={action} exportMode={exportMode} />
     </details>
   )
-}
+})
 
 
 function StatusDot({ status }: { status: TaskStatus }) {
