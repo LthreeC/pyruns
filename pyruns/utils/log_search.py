@@ -17,7 +17,7 @@ from typing import TypedDict
 
 from pyruns.utils.info_io import get_log_entries
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
-from pyruns.utils.search_query import SearchQuery, SearchQueryError
+from pyruns.utils.search_query import SearchBudget, SearchQuery, SearchQueryError, search_pattern
 from pyruns.utils.task_files import TaskSearchMatch, _build_task_search_snippet
 
 _PREVIEW_LIMIT = 24
@@ -90,18 +90,55 @@ def _batches(paths, cwd, pattern):
         yield batch
 
 
+def _regex_newlines(pattern):
+    """Allow standalone regex newlines to match LF and CRLF log files.
+
+    Preserve character classes and lookbehinds instead of rewriting their
+    structure. Quantifiers apply to the entire newline, including optional CR.
+    """
+    result, groups = [], []
+    in_class = False
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            token = pattern[index:index + 2]
+            result.append(r"(?:\r?\n)" if token == r"\n" and not in_class and not any(groups) else token)
+            index += 2
+            continue
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        elif not in_class:
+            if char == "(":
+                groups.append(pattern[index:index + 4] in {"(?<=", "(?<!"})
+            elif char == ")" and groups:
+                groups.pop()
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
 def _ripgrep_events(paths, cwd, needle, matcher, cancelled):
     """Stream JSON while a watcher can interrupt even a blocked pipe/NFS read."""
     if cancelled.is_set():
         raise CancelledError()
     command = [
         ripgrep_path(), "--no-config", "--json", "--text", "--encoding", "none",
-        "--no-mmap", "--no-ignore", "--hidden", "--no-follow", "--crlf", "--threads", "4",
+        "--no-mmap", "--no-ignore", "--hidden", "--no-follow", "--crlf",
         "--case-sensitive" if matcher.match_case else "--ignore-case",
-        "--engine=auto" if matcher.use_regex else "--fixed-strings",
     ]
-    if matcher.whole_word:
-        command.append("--word-regexp")
+    if matcher.use_regex or matcher.whole_word or matcher.multiline:
+        command.append("--engine=auto")
+        needle = search_pattern(needle, use_regex=matcher.use_regex, whole_word=matcher.whole_word)
+        if matcher.multiline:
+            command.append("--multiline")
+            if matcher.use_regex:
+                needle = _regex_newlines(needle)
+            needle = needle.replace("\n", r"\r?\n")
+    else:
+        command.append("--fixed-strings")
     command.extend(["--regexp", needle, "--", *paths])
     finished = threading.Event()
     with tempfile.TemporaryFile() as errors:
@@ -163,13 +200,13 @@ def _append_match(result, data, name, info):
     if remaining <= 0:
         return
     raw = _json_bytes(data["lines"])
-    display = _ANSI.sub("", raw.decode("utf-8", errors="replace")).rstrip("\r\n")
+    display = _ANSI.sub("", raw.decode("utf-8", errors="replace")).replace("\r\n", "\n").rstrip("\r\n")
     for match in submatches[:remaining]:
-        start = len(_ANSI.sub("", raw[:match["start"]].decode("utf-8", errors="replace")))
-        end = len(_ANSI.sub("", raw[:match["end"]].decode("utf-8", errors="replace")))
+        start = len(_ANSI.sub("", raw[:match["start"]].decode("utf-8", errors="replace")).replace("\r\n", "\n"))
+        end = len(_ANSI.sub("", raw[:match["end"]].decode("utf-8", errors="replace")).replace("\r\n", "\n"))
         start, end = min(start, len(display)), min(end, len(display))
         snippet, match_start, match_end = _build_task_search_snippet(display, None, start, end - start, 180)
-        line = data["line_number"]
+        line = data["line_number"] + raw[:match["start"]].count(b"\n")
         result["matches"].append({
             "field": "log", "location": f"{name}:{line}", "log_file": name,
             "line": line, "offset": max(0, data["absolute_offset"] + match["start"] - 256),
@@ -200,9 +237,10 @@ class LogSearch:
     def search(self, task_dir, query, cancelled, matcher=None) -> LogSearchResult:
         return self.search_many([task_dir], query, cancelled, matcher)[task_dir]
 
-    def search_many(self, task_dirs, query, cancelled, matcher=None) -> dict[str, LogSearchResult]:
-        """Search uncached files in batches, preserving task-level keyword AND."""
+    def search_many(self, task_dirs, query, cancelled, matcher=None, *, budget=None) -> dict[str, LogSearchResult]:
+        """Search uncached files in batches, stopping at the shared match limit."""
         matcher = matcher or SearchQuery(query)
+        budget = budget if budget is not None else SearchBudget()
         results = {task_dir: _empty_result() for task_dir in task_dirs}
         if cancelled.is_set():
             raise CancelledError()
@@ -225,38 +263,54 @@ class LogSearch:
                 cached = snapshot.get(path)
                 if cached is not None and cached[0] == _signature(info):
                     contents[path] = cached[1]
+                    accepted = budget.take(cached[1]["match_count"])
+                    if accepted < cached[1]["match_count"]:
+                        contents[path] = {**cached[1], "match_count": accepted, "matches": cached[1]["matches"][:accepted]}
                 else:
                     pending.append(path)
                     contents[path] = _empty_result()
+                if budget.limit_hit:
+                    break
+            if budget.limit_hit:
+                break
         failed = set()
-        if pending:
-            cwd = os.path.dirname(os.path.commonpath(pending))
+        if pending and not budget.limit_hit:
+            # Retain the task name in ripgrep errors even for a one-task batch.
+            cwd = os.path.commonpath([os.path.dirname(os.path.abspath(task_dir)) for task_dir in results])
             for needle in matcher.needles:
-                # Separate passes preserve overlapping keywords and AND across
-                # different log files or metadata fields in the same task.
                 pattern = matcher.raw_needles[needle]
                 for batch in _batches(pending, cwd, pattern):
-                    for event in _ripgrep_events(batch, cwd, pattern, matcher, cancelled):
-                        if event["type"] == "error":
-                            failed.update(os.path.normpath(os.path.join(cwd, path)) for path in batch)
-                            task_dir = files[os.path.normpath(os.path.join(cwd, batch[0]))][0]
-                            results[task_dir]["errors"].append(event["data"])
-                            continue
-                        data = event["data"]
-                        # PCRE2 may emit a matching line with no in-line spans
-                        # for newline-only patterns such as \R. It is not a hit.
-                        if not data["submatches"]:
-                            continue
-                        path = os.path.normpath(os.path.join(cwd, os.fsdecode(_json_bytes(data["path"]))))
-                        _, name, info = files[path]
-                        contents[path]["found"].add(needle)
-                        _append_match(contents[path], data, name, info)
+                    events = _ripgrep_events(batch, cwd, pattern, matcher, cancelled)
+                    try:
+                        for event in events:
+                            if event["type"] == "error":
+                                failed.update(os.path.normpath(os.path.join(cwd, path)) for path in batch)
+                                task_dir = files[os.path.normpath(os.path.join(cwd, batch[0]))][0]
+                                results[task_dir]["errors"].append(event["data"])
+                                continue
+                            data = event["data"]
+                            if not data["submatches"]:
+                                continue
+                            accepted = budget.take(len(data["submatches"]))
+                            data = {**data, "submatches": data["submatches"][:accepted]}
+                            path = os.path.normpath(os.path.join(cwd, os.fsdecode(_json_bytes(data["path"]))))
+                            _, name, info = files[path]
+                            contents[path]["found"].add(needle)
+                            _append_match(contents[path], data, name, info)
+                            if budget.limit_hit:
+                                break
+                    finally:
+                        events.close()
+                    if budget.limit_hit:
+                        break
+                if budget.limit_hit:
+                    break
         if cancelled.is_set():
             raise CancelledError()
         with self._lock:
             matches, misses = self._query_cache(matcher.cache_key)
             for path in pending:
-                if path in failed:
+                if path in failed or budget.limit_hit:
                     matches.pop(path, None)
                     misses.pop(path, None)
                     continue

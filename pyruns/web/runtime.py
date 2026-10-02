@@ -79,7 +79,7 @@ from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
-from pyruns.utils.search_query import SearchQuery
+from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchBudget, SearchQuery
 from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
     build_task_preview_and_search,
@@ -369,6 +369,8 @@ class TaskPage:
     has_more: bool
     status_counts: Dict[str, int]
     search_errors: List[str] = field(default_factory=list)
+    search_limit_hit: bool = False
+    search_complete: bool = True
 
 
 class PyrunsRuntime:
@@ -1162,7 +1164,7 @@ class PyrunsRuntime:
             sort_mode=sort_mode, search_field=search_field, summary=summary,
         )
         if summary:
-            if query.strip() and items:
+            if query and items:
                 results_by_name = self.task_manager.get_task_search_results(
                     [str(task.get("name", "") or "") for task in items],
                     query,
@@ -1195,7 +1197,8 @@ class PyrunsRuntime:
 
     def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", search_field="all",
                      match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True,
-                     refresh=True, force_refresh=False, cancelled):
+                     refresh=True, force_refresh=False, cancelled, max_results=DEFAULT_MAX_SEARCH_RESULTS,
+                     on_progress=None):
         """Search metadata and all log files without holding task/workspace locks during I/O."""
         matcher = SearchQuery(query, match_case=match_case, whole_word=whole_word, use_regex=use_regex, cancelled=cancelled)
         while not self._log_search.slots.acquire(timeout=0.1):
@@ -1229,61 +1232,63 @@ class PyrunsRuntime:
                 candidates = matched
             ordered = sort_tasks_for_manager(candidates, sort_mode)
             total = 0
-            selected = []
+            items = []
             errors = []
+            budget = SearchBudget(max_results if max_results and max_results > 0 else None)
             empty_logs: LogSearchResult = {"matches": [], "match_count": 0, "found": set(), "errors": []}
-            metadata_found = {}
-            log_dirs = []
-            known_matches = 0
-            if search_logs:
-                for task in ordered:
+
+            def page(complete):
+                with self._workspace_lock:
+                    if epoch != self._workspace_epoch:
+                        raise WorkspaceChangedError("Workspace changed during search; search again.")
+                return TaskPage(
+                    list(items), total, offset, limit, offset + len(items) < total, counts,
+                    list(errors), budget.limit_hit, complete and not budget.limit_hit and not errors,
+                )
+
+            # Return the first task promptly, then amortize ripgrep launches.
+            cursor = 0
+            while cursor < len(ordered) and not budget.limit_hit:
+                batch = ordered[cursor:cursor + (32 if cursor else 1)]
+                contexts = {}
+                for task in batch:
                     if cancelled.is_set():
                         raise CancelledError()
-                    found = task_search_found(task, matcher, search_field) if search_field != "log" else set()
-                    metadata_found[task["name"]] = found
-                    metadata_match = all(needle in found for needle in needles)
-                    # Once metadata alone fills the page, later metadata hits
-                    # need no log contexts. Other tasks can still affect total.
-                    if not metadata_match or known_matches < offset + limit:
-                        log_dirs.append(task["dir"])
-                    known_matches += metadata_match
-            log_results = self._log_search.search_many(log_dirs, query, cancelled, matcher) if log_dirs else {}
-            for task in ordered:
-                if cancelled.is_set():
-                    raise CancelledError()
-                found = metadata_found.get(task["name"], set())
-                logs = log_results.get(task["dir"], empty_logs)
-                errors.extend(message for message in logs["errors"] if len(errors) < 8)
-                if search_logs and not all(needle in found or needle in logs["found"] for needle in needles):
-                    continue
-                if offset <= total < offset + limit:
-                    selected.append((task, logs))
-                total += 1
-            items = []
-            for task, logs in selected:
-                context = build_task_search_result(sources.get(task["name"], {}), query, search_field=search_field, matcher=matcher)
-                current = manager.get_task(task["name"], summary=summary)
-                current_view = manager._get_task_search_view(task["name"])
-                same_task = current_view is task
-                if current is None or not same_task:
-                    # A task may disappear after capture; materialize its view
-                    # before the full serializer deep-copies nested values. A
-                    # same-name replacement must use the captured task too,
-                    # otherwise its log context could be attached to a new task.
-                    current = manager.serialize_task({
-                        **task, "env": dict(task["env"]),
-                        "start_times": list(task["start_times"]),
-                        "finish_times": list(task["finish_times"]),
-                    }, summary=summary)
-                task = current
-                task["search_matches"] = context["matches"] + logs["matches"]
-                task["search_match_count"] = context["match_count"] + logs["match_count"]
-                items.append(task)
-            with self._workspace_lock:
-                if epoch != self._workspace_epoch:
-                    raise WorkspaceChangedError("Workspace changed during search; search again.")
-            return TaskPage(_cap_summary_task_payloads(items) if summary else items, total, offset, limit,
-                            offset + len(items) < total, counts, errors)
+                    context = build_task_search_result(task, query, search_field=search_field, matcher=matcher,
+                                                       max_count=budget.remaining)
+                    contexts[task["name"]] = context
+                    budget.take(context["match_count"])
+                    if budget.limit_hit:
+                        break
+                log_results = self._log_search.search_many(
+                    [task["dir"] for task in batch], query, cancelled, matcher, budget=budget,
+                ) if search_logs and not budget.limit_hit else {}
+                for task in batch:
+                    if cancelled.is_set():
+                        raise CancelledError()
+                    context = contexts.get(task["name"], {"matches": [], "match_count": 0})
+                    logs = log_results.get(task["dir"], empty_logs)
+                    errors.extend(message for message in logs["errors"] if len(errors) < 8)
+                    if needles and not (context["match_count"] or logs["match_count"]):
+                        continue
+                    if offset <= total < offset + limit:
+                        current = manager.get_task(task["name"], summary=summary)
+                        if current is None or manager._get_task_search_view(task["name"]) is not task:
+                            # Keep contexts attached to the captured task if it
+                            # disappears or a same-name replacement arrives.
+                            current = manager.serialize_task({
+                                **task, "env": dict(task["env"]),
+                                "start_times": list(task["start_times"]),
+                                "finish_times": list(task["finish_times"]),
+                            }, summary=summary)
+                        current["search_matches"] = context["matches"] + logs["matches"]
+                        current["search_match_count"] = context["match_count"] + logs["match_count"]
+                        items.extend(_cap_summary_task_payloads([current]) if summary else [current])
+                    total += 1
+                cursor += len(batch)
+                if on_progress is not None and cursor < len(ordered) and not budget.limit_hit:
+                    on_progress(page(False))
+            return page(True)
         finally:
             self._log_search.slots.release()
 

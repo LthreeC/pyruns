@@ -10,7 +10,7 @@ import pytest
 
 from pyruns.utils import log_search
 from pyruns.utils.log_io import log_file_identity
-from pyruns.utils.search_query import SearchQuery, SearchQueryError
+from pyruns.utils.search_query import SearchBudget, SearchQuery, SearchQueryError
 
 
 def write_log(root, payload, task="task", filename="run1.log"):
@@ -116,7 +116,7 @@ def test_counts_all_occurrences_with_bounded_previews(tmp_path, payload, count):
         search.search(task, "aaa", cancelled)
 
 
-def test_batching_overlapping_keywords_and_cache_capacity(tmp_path, monkeypatch):
+def test_batching_literal_multiline_and_cache_capacity(tmp_path, monkeypatch):
     monkeypatch.setattr(log_search, "_CACHE_FILES_PER_QUERY", 1)
     monkeypatch.setattr(log_search, "_CACHE_MISSES_PER_QUERY", 2)
     tasks = [write_log(tmp_path, b"needle\n" if i == 4 else b"other\n", task=f"task{i}")[0] for i in range(5)]
@@ -135,13 +135,68 @@ def test_batching_overlapping_keywords_and_cache_capacity(tmp_path, monkeypatch)
         assert len(batches) == iteration + 1
         assert len(batches[-1]) == (5 if iteration == 0 else 2)
     results = search.search_many(tasks, "need\nneedle", threading.Event())
-    assert results[tasks[-1]]["found"] == {"need", "needle"}
-    assert results[tasks[-1]]["match_count"] == 2
+    assert results[tasks[-1]]["found"] == set()
+    assert results[tasks[-1]]["match_count"] == 0
     # Force command-line splitting; every file must still be searched once.
     monkeypatch.setattr(log_search, "_ARG_BYTES", 4150)
     results = search.search_many(tasks, "other", threading.Event())
     assert sum(result["match_count"] for result in results.values()) == 4
     assert all(len(batch) == 1 for batch in batches[-5:])
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+def test_multiline_search_keeps_contiguous_text_locations_and_regex_escapes(tmp_path, newline):
+    task, _ = write_log(tmp_path, newline.join([b"header", b"first", b"second", b"footer", b"first", b"second"]))
+    search = log_search.LogSearch()
+    for query, options in [("first\nsecond", {}), (r"first\nsecond", {"use_regex": True}),
+                           (r"first\n+second", {"use_regex": True})]:
+        result = search.search(task, query, threading.Event(), SearchQuery(query, **options))
+        assert result["match_count"] == 2
+        assert [match["line"] for match in result["matches"]] == [2, 5]
+        assert all(match["snippet"][match["match_start"]:match["match_end"]] == "first\nsecond" for match in result["matches"])
+    task, _ = write_log(tmp_path, b"first\n")
+    write_log(tmp_path, b"second\nfirst\\nsecond\n", filename="run2.log")
+    assert search.search(task, "first\nsecond", threading.Event())["match_count"] == 0
+    escaped = SearchQuery(r"first\\nsecond", use_regex=True)
+    assert not escaped.multiline
+    assert search.search(task, r"first\\nsecond", threading.Event(), escaped)["match_count"] == 1
+
+
+@pytest.mark.parametrize("query,use_regex,count", [
+    (".foo", False, 1), ("foo.", False, 1), ("中文", False, 2),
+    ("foo", False, 2), ("fo[o]", True, 2), ("ſ", False, 1),
+])
+def test_vscode_whole_word_pattern_edges(tmp_path, query, use_regex, count):
+    from pyruns.utils.task_files import build_task_search_result
+
+    text = "x.foo xfoox foo.x x中文x 中文 xsx"
+    task, _ = write_log(tmp_path, text.encode())
+    matcher = SearchQuery(query, whole_word=True, use_regex=use_regex)
+    result = log_search.LogSearch().search(task, query, threading.Event(), matcher)
+    assert result["match_count"] == count
+    assert build_task_search_result({"notes": text}, query, search_field="notes", matcher=matcher)["match_count"] == count
+
+
+def test_match_limit_reaps_process_and_never_caches_partial_results(tmp_path, monkeypatch):
+    task, _ = write_log(tmp_path, b"needle\n" * 100)
+    original = subprocess.Popen
+    processes = []
+
+    def record(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(log_search.subprocess, "Popen", record)
+    search = log_search.LogSearch()
+    for limit in (3, None, 2, None):
+        budget = SearchBudget(limit)
+        result = search.search_many([task], "needle", threading.Event(), budget=budget)[task]
+        assert result["match_count"] == (limit or 100)
+        assert len(result["matches"]) == min(limit or 100, 24)
+        assert budget.limit_hit is (limit is not None)
+    assert len(processes) == 2
+    assert all(process.poll() is not None and process.stdout.closed for process in processes)
 
 
 @pytest.mark.parametrize("change", ["append", "rewrite", "replace", "remove"])

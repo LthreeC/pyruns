@@ -3138,7 +3138,7 @@ def test_task_page_preserves_tuple_activity_order(tmp_path, summary):
     ("train", "name", "All", ["train1"]),
     ("note_token", "notes", "All", ["train1"]),
     ("TOKEN=env_value", "env", "All", ["cached3", "train1"]),
-    ("note_token\nTOKEN=env_value", "all", "All", ["train1"]),
+    ("note_token\nTOKEN=env_value", "all", "All", []),
     ("", "all", "pending", ["train1"]),
     ("train", "all", "PENDING", ["train1"]),
 ])

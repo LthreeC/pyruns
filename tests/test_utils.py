@@ -2729,11 +2729,12 @@ class TestFilterTasksMultiline:
             [task], "payload_token", matcher=matcher, include_payload=False,
         ) == ([task] if cached and not options else [])
 
-        for query in ("experiment", "note_token", "TOKEN=env_value", "experiment\nTOKEN=env_value"):
+        for query in ("experiment", "note_token", "TOKEN=env_value"):
             assert filter_tasks_by_search_field(
                 [task], query, matcher=SearchQuery(query, **options), include_payload=False,
             ) == [task]
-        assert filter_tasks_by_search_field([task], " \n", include_payload=False) == [task]
+        for query in ("experiment\nTOKEN=env_value", " \n"):
+            assert filter_tasks_by_search_field([task], query, include_payload=False) == []
 
     def test_multiline_yaml_subset(self):
         tasks = [
@@ -2768,7 +2769,8 @@ class TestFilterTasksMultiline:
             "config": {"model": {"name": "ResNet50"}, "batch_size": 32},
         }
 
-        matches = build_task_search_matches(task, "review\nname: resnet50")
+        matches = build_task_search_matches(task, "review") + build_task_search_matches(task, "name: resnet50")
+        assert build_task_search_matches(task, "review\nname: resnet50") == []
 
         assert [(match["field"], match["location"]) for match in matches] == [
             ("notes", "Line 2"),
@@ -2790,10 +2792,10 @@ class TestFilterTasksMultiline:
 
         matches = build_task_search_matches(
             task,
-            "token_a\ntoken_b\ntoken_c\ntoken_d\ntoken_e",
+            "echo token_a\nprintf token_b",
         )
 
-        assert len(matches) == 5
+        assert len(matches) == 1
         assert all(match["field"] == "script" for match in matches)
         assert matches[0]["location"] == "Line 2"
 

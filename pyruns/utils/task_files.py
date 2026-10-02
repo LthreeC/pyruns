@@ -322,13 +322,14 @@ def _build_task_search_snippet(
     return snippet, min(match_start, len(snippet)), min(match_end, len(snippet))
 
 
-def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, include_payload: bool = True):
+def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, include_payload: bool = True,
+                         multiline: bool = False):
     name = str(task.get("name", "") or "")
     if name and search_field in {"all", "name"}:
         yield "name", "", name
 
-    notes = str(task.get("notes", "") or "")
-    note_lines = notes.splitlines() if search_field in {"all", "notes"} else []
+    notes = str(task.get("notes", "") or "").replace("\r\n", "\n")
+    note_lines = ([notes] if multiline else notes.splitlines()) if search_field in {"all", "notes"} else []
     for line_number, line in enumerate(note_lines, start=1):
         location = f"Line {line_number}" if len(note_lines) > 1 else ""
         yield "notes", location, line
@@ -340,7 +341,8 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, 
         else:
             env_items = ()
         for key, value in env_items:
-            for line in f"{key}={value}".splitlines():
+            text = f"{key}={value}".replace("\r\n", "\n")
+            for line in [text] if multiline else text.splitlines():
                 yield "env", str(key), line
 
     if not include_payload:
@@ -349,7 +351,8 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, 
     if normalize_task_kind(task.get("task_kind")) == TASK_KIND_SHELL:
         if search_field not in {"all", "script"}:
             return
-        for line_number, line in enumerate(str(task.get("config_text", "") or "").splitlines(), start=1):
+        text = str(task.get("config_text", "") or "").replace("\r\n", "\n")
+        for line_number, line in enumerate([text] if multiline else text.splitlines(), start=1):
             yield "script", f"Line {line_number}", line
         return
 
@@ -358,7 +361,11 @@ def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, 
     config = task.get("config", {}) or {}
     if not isinstance(config, (Mapping, DictConfig)):
         return
-    for location, line in iter_config_search_lines(config):
+    lines = iter_config_search_lines(config)
+    if multiline:
+        yield "config", "", "\n".join(line for _, line in lines)
+        return
+    for location, line in lines:
         yield "config", location, line
 
 
@@ -386,7 +393,7 @@ def task_search_found(
         text = task["search_text"] + "\n" + "\n".join(source for _, _, source in _task_search_sources(task, "env"))
         return matcher.found(text)
     found = set()
-    for _, _, source in _task_search_sources(task, search_field, include_payload=include_payload):
+    for _, _, source in _task_search_sources(task, search_field, include_payload=include_payload, multiline=matcher.multiline):
         found.update(matcher.found(source))
         if len(found) == len(matcher.needles):
             break
@@ -418,6 +425,7 @@ def build_task_search_result(
     matcher: SearchQuery | None = None,
     limit: int = _TASK_SEARCH_MATCH_LIMIT,
     max_snippet_chars: int = _TASK_SEARCH_SNIPPET_CHARS,
+    max_count: int | None = None,
 ) -> TaskSearchResult:
     """Return bounded contexts and the exact in-memory match count for one task."""
 
@@ -429,15 +437,18 @@ def build_task_search_result(
     snippet_chars = max(32, int(max_snippet_chars))
     matches: list[TaskSearchMatch] = []
     match_count = 0
-    for field, location, source in _task_search_sources(task, search_field):
-        result = matcher.scan(source, max(0, safe_limit - len(matches)))
+    for field, location, source in _task_search_sources(task, search_field, multiline=matcher.multiline):
+        remaining = None if max_count is None else max(0, max_count - match_count)
+        if remaining == 0:
+            break
+        result = matcher.scan(source, max(0, safe_limit - len(matches)), max_count=remaining)
         match_count += result["match_count"]
         for start, end in result["spans"]:
             snippet, match_start, match_end = _build_task_search_snippet(source, None, start, end - start, snippet_chars)
             matches.append(
                 {
                     "field": field,
-                    "location": location,
+                    "location": f"Line {source[:start].count(chr(10)) + 1}" if matcher.multiline else location,
                     "snippet": snippet,
                     "match_start": match_start,
                     "match_end": match_end,

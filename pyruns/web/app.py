@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import queue
 import secrets
 import signal
 import socket
@@ -20,7 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import uvicorn
 from anyio import CancelScope
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from omegaconf.errors import OmegaConfBaseException
 from pydantic import BaseModel, Field
@@ -37,7 +39,7 @@ from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import validate_task_log_path
 from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
-from pyruns.utils.search_query import SearchQueryError
+from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchQueryError
 from pyruns.web.runtime import (
     PyrunsRuntime,
     TaskEnvConflictError,
@@ -932,6 +934,8 @@ def create_app(
         match_case: bool = False,
         whole_word: bool = False,
         use_regex: bool = False,
+        max_results: int = Query(default=DEFAULT_MAX_SEARCH_RESULTS, ge=0),
+        stream: bool = False,
         sort: Literal[
             "priority",
             "manual",
@@ -942,14 +946,56 @@ def create_app(
         ] = "priority",
     ) -> dict[str, Any] | Response:
         runtime = get_runtime()
-        if (include_logs or search_field == "log" or match_case or whole_word or use_regex) and query.strip():
+
+        def serialize_page(page):
+            return {
+                "items": [_compact_monitor_task(item) for item in page.items] if compact else page.items,
+                "total": page.total, "offset": page.offset, "limit": page.limit,
+                "has_more": page.has_more, "status_counts": page.status_counts,
+                "search_errors": page.search_errors, "search_limit_hit": page.search_limit_hit,
+                "search_complete": page.search_complete,
+            }
+
+        if query:
             cancelled = threading.Event()
+            updates: queue.Queue = queue.Queue(maxsize=1)
+
+            def progress(page):
+                # Keep only the latest snapshot when the client reads slowly.
+                try:
+                    updates.get_nowait()
+                except queue.Empty:
+                    pass
+                updates.put_nowait(page)
+
             pending = asyncio.create_task(asyncio.to_thread(
                 runtime.search_tasks, query=query, status=status, offset=offset,
                 limit=limit, sort_mode=sort, search_field=search_field, cancelled=cancelled,
                 match_case=match_case, whole_word=whole_word, use_regex=use_regex, include_logs=include_logs,
                 summary=summary, refresh=refresh, force_refresh=force_refresh,
+                max_results=max_results, on_progress=progress if stream else None,
             ))
+            if stream:
+                async def search_events():
+                    try:
+                        while not pending.done():
+                            await asyncio.wait({pending}, timeout=0.05)
+                            try:
+                                update = updates.get_nowait()
+                            except queue.Empty:
+                                continue
+                            yield json.dumps({"type": "progress", "page": serialize_page(update)}) + "\n"
+                        yield json.dumps({"type": "complete", "page": serialize_page(await pending)}) + "\n"
+                    except (WorkspaceChangedError, SearchQueryError) as exc:
+                        yield json.dumps({"type": "error", "status": 409 if isinstance(exc, WorkspaceChangedError) else 422,
+                                          "detail": str(exc)}) + "\n"
+                    finally:
+                        cancelled.set()
+                        if not pending.done():
+                            pending.cancel()
+
+                return StreamingResponse(search_events(), media_type="application/x-ndjson",
+                                         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
             try:
                 while not pending.done():
                     await asyncio.wait({pending}, timeout=0.1)
@@ -972,16 +1018,7 @@ def create_app(
                 limit=limit, refresh=refresh, force_refresh=force_refresh,
                 summary=summary, sort_mode=sort, search_field=search_field,
             )
-        items = [_compact_monitor_task(item) for item in page.items] if compact else page.items
-        return {
-            "items": items,
-            "total": page.total,
-            "offset": page.offset,
-            "limit": page.limit,
-            "has_more": page.has_more,
-            "status_counts": page.status_counts,
-            "search_errors": page.search_errors,
-        }
+        return serialize_page(page)
 
     @app.post("/api/tasks/reorder")
     def reorder_tasks(payload: TaskReorderRequest) -> dict[str, Any]:

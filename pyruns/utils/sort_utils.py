@@ -35,16 +35,9 @@ def normalize_task_search_text(value: object) -> str:
 
 
 def task_search_needles(query: str) -> List[str]:
-    """Return the non-empty normalized lines used by task search."""
-
-    needles: List[str] = []
-    for line in str(query or "").split("\n"):
-        if not line.strip():
-            continue
-        normalized = normalize_task_search_text(line)
-        if normalized not in needles:
-            needles.append(normalized)
-    return needles
+    """Return the literal query, preserving spaces and consecutive newlines."""
+    query = str(query or "").replace("\r\n", "\n")
+    return [normalize_task_search_text(query)] if query else []
 
 
 def _timestamp_weight(task: Mapping[str, object]) -> int:

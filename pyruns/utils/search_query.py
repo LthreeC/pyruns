@@ -3,11 +3,42 @@
 from __future__ import annotations
 
 from concurrent.futures import CancelledError
+from dataclasses import dataclass
+import re
 from typing import TypedDict
 
 import regex
 
 REGEX_TIMEOUT_SECONDS = 0.2
+DEFAULT_MAX_SEARCH_RESULTS = 20_000
+
+
+@dataclass
+class SearchBudget:
+    """Count accepted matches and stop work once the requested limit is reached."""
+
+    remaining: int | None = None
+    limit_hit: bool = False
+
+    def take(self, count: int) -> int:
+        if self.remaining is None:
+            return count
+        accepted = min(count, self.remaining)
+        self.remaining -= accepted
+        if count and self.remaining == 0:
+            self.limit_hit = True
+        return accepted
+
+
+def search_pattern(text: str, *, use_regex=False, whole_word=False) -> str:
+    """Build the expression used by VS Code's createRegExp whole-word option."""
+    pattern = text if use_regex else re.sub(r"([\\{}*+?|^$.\[\]()])", r"\\\1", text)
+    if whole_word and pattern:
+        if pattern[0].isascii() and (pattern[0].isalnum() or pattern[0] == "_"):
+            pattern = r"\b" + pattern
+        if pattern[-1].isascii() and (pattern[-1].isalnum() or pattern[-1] == "_"):
+            pattern += r"\b"
+    return pattern
 
 
 class SearchScanResult(TypedDict):
@@ -41,11 +72,11 @@ class SearchQuery:
         self.match_case = match_case
         self.whole_word = whole_word
         self.use_regex = use_regex
-        self.plain = not (match_case or whole_word or use_regex)
-        self.raw_needles = {
-            (line if use_regex else self.normalize(line)): line
-            for line in str(query or "").split("\n") if line.strip()
-        }
+        query = str(query or "").replace("\r\n", "\n")
+        # VS Code's isMultilineRegexSource recognizes LF and unescaped n/r/W.
+        self.multiline = "\n" in query or (use_regex and bool(re.search(r"(?<!\\)(?:\\\\)*\\[nrW]", query)))
+        self.plain = not (match_case or whole_word or use_regex or self.multiline)
+        self.raw_needles = {(query if use_regex else self.normalize(query)): query} if query else {}
         self.needles = tuple(self.raw_needles)
         # Let the external engine apply its own case folding. Lowercasing a
         # pattern first can change its codepoints (for example capital I-dot).
@@ -54,10 +85,10 @@ class SearchQuery:
         if whole_word or use_regex:
             try:
                 for needle in self.needles:
-                    pattern = needle if use_regex else regex.escape(needle)
-                    if whole_word:
-                        pattern = rf"(?<!\w)(?:{pattern})(?!\w)"
-                    flags = regex.VERSION0 | (regex.IGNORECASE if use_regex and not match_case else 0)
+                    pattern = search_pattern(self.raw_needles[needle], use_regex=use_regex, whole_word=whole_word)
+                    if not use_regex:
+                        pattern = self.normalize(pattern)
+                    flags = regex.VERSION0 | regex.MULTILINE | (regex.IGNORECASE if use_regex and not match_case else 0)
                     self.patterns[needle] = regex.compile(pattern, flags)
             except (regex.error, RecursionError, OverflowError) as exc:
                 raise SearchQueryError(f"Invalid regular expression: {exc}") from exc
@@ -80,7 +111,7 @@ class SearchQuery:
         except TimeoutError as exc:
             raise SearchQueryError("Search pattern took too long. Simplify the regular expression.") from exc
 
-    def scan(self, text: object, limit: int = 24) -> SearchScanResult:
+    def scan(self, text: object, limit: int = 24, *, max_count: int | None = None) -> SearchScanResult:
         """Count all matches, retaining only bounded original-character spans."""
         if self.cancelled is not None and self.cancelled.is_set():
             raise CancelledError()
@@ -94,6 +125,8 @@ class SearchQuery:
                 if self.patterns:
                     kept = 0
                     for match in self.patterns[needle].finditer(normalized, timeout=REGEX_TIMEOUT_SECONDS, concurrent=True):
+                        if max_count is not None and count >= max_count:
+                            break
                         found.add(needle)
                         count += 1
                         if kept < limit:
@@ -101,6 +134,8 @@ class SearchQuery:
                             kept += 1
                 else:
                     occurrences = normalized.count(needle)
+                    if max_count is not None:
+                        occurrences = min(occurrences, max_count)
                     if not occurrences:
                         continue
                     found.add(needle)

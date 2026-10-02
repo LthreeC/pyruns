@@ -2543,7 +2543,7 @@ def test_task_search_fields_filter_results_previews_and_pagination(tmp_path, sum
             assert [task["name"] for task in page["items"]] == [name]
             assert page["has_more"] == (offset < 5)
 
-        # Each query line must match the selected field, never another field.
+        # Multiline text stays inside one selected field.
         mixed = client.get("/api/tasks", params={**params, "query": "by-log\nneedle", "search_field": "log"}).json()
         assert mixed["total"] == 0
         notes = client.get("/api/tasks", params={**params, "query": "needle\nsecond-line", "search_field": "notes"}).json()
@@ -2576,7 +2576,7 @@ def test_search_match_options_combine_with_each_field(tmp_path, field):
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
     for match_case, whole_word, use_regex in itertools.product([False, True], repeat=3):
-        params = {"query": "Toke[n]" if use_regex else "Token", "include_logs": True,
+        params = {"query": "Tok[e]n" if use_regex else "Token", "include_logs": True,
                   "search_field": field, "match_case": match_case, "whole_word": whole_word, "use_regex": use_regex}
         response = client.get("/api/tasks", params=params)
         assert response.status_code == 200, response.text
@@ -2621,16 +2621,16 @@ def test_config_search_keeps_empty_fields_and_yaml_scalar_values(tmp_path):
 
 
 @pytest.mark.parametrize("query", ["İ\ni\u0307", "i\u0307\nİ"])
-def test_unicode_query_lines_stay_distinct_across_metadata_and_logs(tmp_path, query):
+def test_unicode_multiline_query_does_not_combine_metadata_and_logs(tmp_path, query):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "partial", log_text="i\u0307\n")
-    _add_task(workspace, "complete", log_text="i\u0307\n")
-    update_task_info(str(workspace / TASKS_DIR / "complete"), lambda info: info.update({"notes": "İ"}))
+    _add_task(workspace, "complete", log_text=query + "\n")
+    update_task_info(str(workspace / TASKS_DIR / "partial"), lambda info: info.update({"notes": "İ"}))
     client = TestClient(create_app(_build_runtime(workspace)))
     for _ in range(2):
         result = client.get("/api/tasks", params={"query": query, "include_logs": True}).json()
         assert [item["name"] for item in result["items"]] == ["complete"]
-        assert result["items"][0]["search_match_count"] == 2
+        assert result["items"][0]["search_match_count"] == 1
 
 
 def test_log_search_error_identifies_failed_file_without_labeling_first_task(tmp_path, monkeypatch):
@@ -2642,7 +2642,8 @@ def test_log_search_error_identifies_failed_file_without_labeling_first_task(tmp
     original = log_search._ripgrep_events
 
     def remove_before_read(*args):
-        (workspace / TASKS_DIR / "z-missing" / "run_logs" / "run1.log").unlink()
+        if "z-missing" in args[1] or any("z-missing" in path for path in args[0]):
+            (workspace / TASKS_DIR / "z-missing" / "run_logs" / "run1.log").unlink()
         yield from original(*args)
 
     monkeypatch.setattr(log_search, "_ripgrep_events", remove_before_read)
@@ -2749,7 +2750,7 @@ def test_metadata_search_preserves_sort_pagination_counts_and_payloads(tmp_path,
             manager.tasks = [manager._tasks_by_name[name] for name, *_ in rows]
             manager._rebuild_indexes_locked()
         options = {"match_case": True, "use_regex": True} if field == "all" else {}
-        query = "Needle[0-9]\nsecond" if field == "all" else "needle\nsecond"
+        query = "Needle[0-9]\nsecond" if field == "all" else "needle7\nsecond"
         args = dict(query=query, search_field=field, include_logs=field != "all", sort_mode=sort_mode,
                     summary=summary, refresh=False, cancelled=threading.Event(), **options)
         counts = {"pending": 1, "queued": 0, "running": 2, "completed": 2, "failed": 1, "cancelled": 1}
@@ -2760,7 +2761,7 @@ def test_metadata_search_preserves_sort_pagination_counts_and_payloads(tmp_path,
                 assert page.total == 5 and page.has_more == (offset + len(page.items) < 5)
                 assert page.status_counts == counts and page.search_errors == []
                 for item in page.items:
-                    assert item["search_match_count"] == 2
+                    assert item["search_match_count"] == 1
                     assert {match["field"] for match in item["search_matches"]} == {"notes"}
                     assert item["notes"] == "Needle7\nsecond"
                     assert item["records"] == ([] if summary else [{"loss": 0.1}])
@@ -2799,7 +2800,7 @@ def test_metadata_search_all_keeps_uncached_payload_sources(tmp_path, kind):
         runtime.shutdown()
 
 
-def test_all_search_skips_logs_when_metadata_satisfies_every_query_line(tmp_path):
+def test_all_search_counts_both_metadata_and_log_matches(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "metadata-match", log_text="needle-in-notes\n")
     _add_task(workspace, "metadata-only", log_text="unrelated\n")
@@ -2820,14 +2821,14 @@ def test_all_search_skips_logs_when_metadata_satisfies_every_query_line(tmp_path
             )
             assert [task["name"] for task in page.items] == ["metadata-match"]
             assert page.total == 2
-            assert search.call_count == 1
+            assert search.call_count == 2
             assert page.items[0]["search_match_count"] == 2
             assert {match["field"] for match in page.items[0]["search_matches"]} == {"notes", "log"}
     finally:
         runtime.shutdown()
 
 
-def test_all_search_reads_logs_for_query_lines_missing_from_metadata(tmp_path):
+def test_all_search_does_not_join_query_lines_across_fields(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "mixed-match", log_text="from-log\n")
     task_dir = workspace / TASKS_DIR / "mixed-match"
@@ -2839,11 +2840,73 @@ def test_all_search_reads_logs_for_query_lines_missing_from_metadata(tmp_path):
                 query="from-notes\nfrom-log", search_field="all", include_logs=True,
                 refresh=False, cancelled=threading.Event(), sort_mode="name_asc",
             )
-            assert page.total == 1
+            assert page.total == 0
             assert search.call_count == 1
-            assert page.items[0]["search_match_count"] == 2
-            assert {match["field"] for match in page.items[0]["search_matches"]} == {"notes", "log"}
+            assert page.items == []
     finally:
+        runtime.shutdown()
+
+
+def test_search_limit_is_shared_across_fields_and_stream_reports_truncation(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("needle-a", "needle-b"):
+        _add_task(workspace, name, log_text="needle\n" * 4)
+        update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update({"notes": "needle"}))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    with TestClient(create_app(runtime)) as client:
+        params = {"query": "needle", "include_logs": True, "sort": "name_asc", "refresh": False}
+        for maximum, expected in [(3, 3), (0, 12), (3, 3)]:
+            response = client.get("/api/tasks", params={**params, "max_results": maximum, "stream": True})
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("application/x-ndjson")
+            events = [json.loads(line) for line in response.text.splitlines()]
+            assert events[-1]["type"] == "complete"
+            page = events[-1]["page"]
+            assert sum(item["search_match_count"] for item in page["items"]) == expected
+            assert page["search_limit_hit"] is bool(maximum)
+            assert page["search_complete"] is not bool(maximum)
+            assert page["total"] == (1 if maximum else 2)
+        invalid = client.get("/api/tasks", params={**params, "query": "(", "use_regex": True, "stream": True})
+        error = json.loads(invalid.text)
+        assert error["type"] == "error" and error["status"] == 422
+
+
+def test_search_publishes_first_batch_before_scanning_rest_and_can_cancel(tmp_path, monkeypatch):
+    from concurrent.futures import CancelledError, ThreadPoolExecutor
+
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("first", "second"):
+        _add_task(workspace, name, log_text="needle\n")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    cancelled, entered, release = threading.Event(), threading.Event(), threading.Event()
+    pages = []
+    original = runtime._log_search.search_many
+
+    def scan(dirs, *args, **kwargs):
+        if any(path.endswith("second") for path in dirs):
+            entered.set()
+            assert release.wait(5)
+        return original(dirs, *args, **kwargs)
+
+    monkeypatch.setattr(runtime._log_search, "search_many", scan)
+    try:
+        with ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(runtime.search_tasks, query="needle", search_field="log", sort_mode="name_asc",
+                                  cancelled=cancelled, on_progress=pages.append)
+            try:
+                assert entered.wait(5)
+                assert not pending.done()
+                assert pages[0].total == 1 and not pages[0].search_complete
+                assert [task["name"] for task in pages[0].items] == ["first"]
+            finally:
+                cancelled.set()
+                release.set()
+            with pytest.raises(CancelledError):
+                pending.result(timeout=5)
+        assert runtime._log_search.slots.acquire(blocking=False)
+        runtime._log_search.slots.release()
+    finally:
+        release.set()
         runtime.shutdown()
 
 
@@ -3257,8 +3320,7 @@ def test_full_log_search_finds_history_outside_terminal_tail_and_opens_context(t
         }).json()
         assert query in context["content"]
     page = runtime.search_tasks(query="alpha\nhistorical-token", cancelled=threading.Event())
-    assert page.total == 1
-    assert {match["field"] for match in page.items[0]["search_matches"]} == {"name", "log"}
+    assert page.total == 0
 
 
 def test_log_search_releases_runtime_lock_and_blank_query_skips_disk_scan(tmp_path):
