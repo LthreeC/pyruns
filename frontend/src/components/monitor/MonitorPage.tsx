@@ -1046,25 +1046,6 @@ export default function MonitorPage() {
   }, [isTerminalSearchShortcutTarget, runPendingTerminalSearchNow, terminalSearchOpen])
 
   useEffect(() => {
-    const handleGlobalTaskSearchShortcut = (event: KeyboardEvent) => {
-      if (
-        !(event.ctrlKey || event.metaKey)
-        || !event.shiftKey
-        || event.altKey
-        || event.key.toLowerCase() !== 'f'
-      ) {
-        return
-      }
-      event.preventDefault()
-      sidebarSearchInputRef.current?.focus()
-      sidebarSearchInputRef.current?.select()
-    }
-
-    window.addEventListener('keydown', handleGlobalTaskSearchShortcut, true)
-    return () => window.removeEventListener('keydown', handleGlobalTaskSearchShortcut, true)
-  }, [])
-
-  useEffect(() => {
     setDetailTask(current => {
       if (!current) {
         return current
@@ -1683,8 +1664,8 @@ export default function MonitorPage() {
             limitHit={monitorSearchLimitHit}
             onRefresh={() => void refreshMonitorTasks(true).catch(() => {})}
             onCancel={() => useTaskStore.getState().cancelMonitorSearch()}
+            onFocusSearch={() => setCompactSearchFocused(false)}
             ariaLabel="Search monitor tasks"
-            ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
             inputRef={sidebarSearchInputRef}
           />
           {monitorError && (

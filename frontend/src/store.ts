@@ -102,6 +102,33 @@ export const useSearchSettingsStore = create<SearchSettings & { update: (value: 
   },
 }))
 
+const SEARCH_HISTORY_KEY = 'pyruns_search_history'
+
+function readSearchHistory(): string[] {
+  try {
+    const value = JSON.parse(readLocalStorage(SEARCH_HISTORY_KEY) || '[]')
+    return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))].slice(0, 100) : []
+  } catch { return [] }
+}
+
+export const useSearchHistoryStore = create<{
+  items: string[]
+  remember: (query: string) => void
+  clear: () => void
+}>((set, get) => ({
+  items: readSearchHistory(),
+  remember(query) {
+    if (!query || get().items[0] === query) return
+    const items = [query, ...get().items.filter(item => item !== query)].slice(0, 100)
+    writeLocalStorage(SEARCH_HISTORY_KEY, JSON.stringify(items))
+    set({ items })
+  },
+  clear() {
+    writeLocalStorage(SEARCH_HISTORY_KEY, '[]')
+    set({ items: [] })
+  },
+}))
+
 interface TaskDetailDraftState {
   dirty: boolean
   taskName: string

@@ -15,6 +15,8 @@ interface Props {
   searchOnType?: boolean
   onSubmit?: () => void
   onCancel?: () => void
+  history?: string[]
+  onRemember?: (value: string) => void
 }
 
 export default function SearchInput({
@@ -30,10 +32,13 @@ export default function SearchInput({
   searchOnType = true,
   onSubmit,
   onCancel,
+  history = [],
+  onRemember,
 }: Props) {
   const [local, setLocal] = useState(value)
   const [composing, setComposing] = useState(false)
   const changeRef = useRef(onChange)
+  const historyNavigation = useRef<{ items: string[]; index: number; draft: string } | null>(null)
   changeRef.current = onChange
   const rows = Math.min(4, local.split('\n').length)
 
@@ -55,30 +60,50 @@ export default function SearchInput({
         enterKeyHint="search"
         autoComplete="off"
         value={local}
-        onChange={e => setLocal(e.target.value)}
+        onChange={e => { historyNavigation.current = null; setLocal(e.target.value) }}
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={() => setComposing(false)}
         onKeyDown={event => {
-          if (event.nativeEvent.isComposing) return
+          if (composing || event.nativeEvent.isComposing) return
           if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault()
+            historyNavigation.current = null
+            onRemember?.(local)
             if (local === value) onSubmit?.()
             else onChange(local)
           } else if (event.key === 'Escape') {
+            historyNavigation.current = null
             setLocal(value)
             onCancel?.()
+          } else if ((event.key === 'ArrowUp' || event.key === 'ArrowDown')
+            && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+            const input = event.currentTarget
+            const previous = event.key === 'ArrowUp'
+            if (input.selectionStart !== input.selectionEnd
+              || (previous ? local.slice(0, input.selectionStart) : local.slice(input.selectionEnd)).includes('\n')) return
+            const navigation = historyNavigation.current ?? { items: history.filter(item => item !== local), index: -1, draft: local }
+            if (!navigation.items.length || (!previous && navigation.index === -1)) return
+            event.preventDefault()
+            navigation.index = Math.max(-1, Math.min(navigation.items.length - 1, navigation.index + (previous ? 1 : -1)))
+            historyNavigation.current = navigation
+            const next = navigation.index === -1 ? navigation.draft : navigation.items[navigation.index]
+            setLocal(next)
+            requestAnimationFrame(() => {
+              const caret = previous ? 0 : next.length
+              input.setSelectionRange(caret, caret)
+            })
           }
         }}
         placeholder={placeholder}
         aria-label={ariaLabel}
         aria-keyshortcuts={ariaKeyShortcuts}
-        title="Enter to search; Shift+Enter for a new line"
+        title="Ctrl/Cmd+Shift+F to focus; Enter to search; Shift+Enter for a new line; Up/Down for search history"
         className="h-full min-w-0 flex-1 resize-none overflow-x-hidden bg-transparent px-2 py-3 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none focus-visible:outline-none sm:py-[7px] sm:text-xs sm:leading-5"
       />
       {local && (
         <button
           type="button"
-          onClick={() => { setLocal(''); onChange('') }}
+          onClick={() => { historyNavigation.current = null; setLocal(''); onChange('') }}
           aria-label="Clear search"
           title="Clear search"
           className="touch-target mr-0.5 inline-flex h-10 w-10 flex-none items-center justify-center rounded text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25 sm:h-7 sm:w-7"

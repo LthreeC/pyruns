@@ -10,6 +10,7 @@ import {
   useLauncherStore,
   useMonitorStore,
   useRuntimeStore,
+  useSearchHistoryStore,
   useTaskDetailDraftStore,
   useTaskStore,
   useThemeStore,
@@ -39,6 +40,26 @@ function deferred<T>() {
   const promise = new Promise<T>(next => { resolve = next })
   return { promise, resolve }
 }
+
+it('bounds and deduplicates search history while preserving literal whitespace', () => {
+  const setItem = vi.fn()
+  vi.stubGlobal('window', { localStorage: { getItem: vi.fn(), setItem } })
+  try {
+    useSearchHistoryStore.setState({ items: [] })
+    for (let index = 0; index < 102; index++) useSearchHistoryStore.getState().remember(String(index))
+    useSearchHistoryStore.getState().remember('100')
+    useSearchHistoryStore.getState().remember('  \n ')
+    useSearchHistoryStore.getState().remember('')
+    const items = useSearchHistoryStore.getState().items
+    expect(items).toHaveLength(100)
+    expect(items.slice(0, 3)).toEqual(['  \n ', '100', '101'])
+    expect(new Set(items).size).toBe(100)
+    expect(JSON.parse(setItem.mock.calls.at(-1)![1])).toEqual(items)
+    useSearchHistoryStore.getState().clear()
+    expect(useSearchHistoryStore.getState().items).toEqual([])
+    expect(setItem).toHaveBeenLastCalledWith('pyruns_search_history', '[]')
+  } finally { vi.unstubAllGlobals() }
+})
 
 describe('workspace-scoped stores', () => {
   beforeEach(() => {

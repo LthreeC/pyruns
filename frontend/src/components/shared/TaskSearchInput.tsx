@@ -4,7 +4,7 @@ import { ChevronDown, LoaderCircle, RefreshCw, SlidersHorizontal, Square } from 
 import clsx from 'clsx'
 import type { TaskSearchOptions, TaskSearchScope, WorkspaceKind } from '@/types'
 import SearchInput from './SearchInput'
-import { DEFAULT_SEARCH_SETTINGS, useSearchSettingsStore } from '@/store'
+import { DEFAULT_SEARCH_SETTINGS, useSearchHistoryStore, useSearchSettingsStore } from '@/store'
 
 const SEARCH_FIELDS: { value: TaskSearchScope; label: string; compactLabel: string; description: string }[] = [
   { value: 'all', label: 'All fields', compactLabel: 'All', description: 'Names, notes, config, task env and full log files' },
@@ -40,6 +40,7 @@ interface Props extends Omit<ComponentProps<typeof SearchInput>, 'className' | '
   searchOptions: TaskSearchOptions
   onSearchOptionsChange: (options: TaskSearchOptions) => void
   limitHit?: boolean
+  onFocusSearch?: () => void
 }
 
 export default function TaskSearchInput({
@@ -53,10 +54,35 @@ export default function TaskSearchInput({
   searchOptions,
   onSearchOptionsChange,
   limitHit = false,
+  onFocusSearch,
   ...props
 }: Props) {
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [filterPlacement, setFilterPlacement] = useState({ above: false, maxHeight: 480 })
   const settings = useSearchSettingsStore()
+  const history = useSearchHistoryStore()
+  const historyTimer = useRef<ReturnType<typeof setTimeout>>()
+  const searchContainer = useRef<HTMLDivElement>(null)
+  const focusSearchRef = useRef(onFocusSearch)
+  focusSearchRef.current = onFocusSearch
+  useEffect(() => {
+    if (props.value) historyTimer.current = setTimeout(() => history.remember(props.value), 2000)
+    return () => clearTimeout(historyTimer.current)
+  }, [props.value, history.remember])
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || !(event.ctrlKey || event.metaKey)
+        || !event.shiftKey || event.altKey || event.key.toLowerCase() !== 'f') return
+      if (document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) return
+      const input = searchContainer.current?.querySelector('textarea')
+      if (!input) return
+      event.preventDefault()
+      focusSearchRef.current?.()
+      requestAnimationFrame(() => { input.focus(); input.select() })
+    }
+    window.addEventListener('keydown', focusSearch)
+    return () => window.removeEventListener('keydown', focusSearch)
+  }, [])
   const [delayDraft, setDelayDraft] = useState(String(settings.searchOnTypeDebouncePeriod))
   const [limitDraft, setLimitDraft] = useState(String(settings.maxResults ?? ''))
   useEffect(() => setDelayDraft(String(settings.searchOnTypeDebouncePeriod)), [settings.searchOnTypeDebouncePeriod])
@@ -121,6 +147,15 @@ export default function TaskSearchInput({
 
   useEffect(() => {
     if (!filtersOpen) return
+    const updatePlacement = () => {
+      const bounds = searchContainer.current?.getBoundingClientRect()
+      if (!bounds) return
+      const below = window.innerHeight - bounds.bottom - 16
+      const above = bounds.top - 16
+      const openAbove = below < 320 && above > below
+      setFilterPlacement({ above: openAbove, maxHeight: Math.max(0, openAbove ? above : below) })
+    }
+    updatePlacement()
     const handlePointerDown = (event: PointerEvent) => {
       if (!filterMenuRef.current?.contains(event.target as Node)) setFiltersOpen(false)
     }
@@ -129,15 +164,20 @@ export default function TaskSearchInput({
     }
     document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', updatePlacement)
+    document.addEventListener('scroll', updatePlacement, true)
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', updatePlacement)
+      document.removeEventListener('scroll', updatePlacement, true)
     }
   }, [filtersOpen])
 
   return (
     <>
-    <div className="task-search-combined flex min-w-0 items-center gap-1.5" onKeyDown={event => {
+    <div ref={searchContainer} className="task-search-combined flex min-w-0 items-center gap-1.5" onKeyDown={event => {
+      if (event.nativeEvent.isComposing) return
       if (!event.altKey || event.ctrlKey || event.metaKey || event.repeat) return
       const option = MATCH_OPTIONS.find(item => item.code === event.code)
       if (!option) return
@@ -147,6 +187,9 @@ export default function TaskSearchInput({
       <div className="task-search-control-row relative flex min-w-0 flex-1 items-center gap-1.5">
         <SearchInput
           {...props}
+          ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
+          history={history.items}
+          onRemember={history.remember}
           debounceMs={settings.searchOnTypeDebouncePeriod}
           searchOnType={settings.searchOnType}
           onSubmit={onRefresh}
@@ -173,7 +216,8 @@ export default function TaskSearchInput({
           </button>
           {filtersOpen && (
             <div
-              className="task-search-filter-popover absolute right-0 top-[calc(100%+0.5rem)] z-30 min-w-52 rounded-md border border-border bg-surface-raised p-1.5 shadow-md"
+              style={{ maxHeight: filterPlacement.maxHeight, ...(filterPlacement.above ? { top: 'auto', bottom: 'calc(100% + 0.5rem)' } : {}) }}
+              className="task-search-filter-popover absolute right-0 top-[calc(100%+0.5rem)] z-30 min-w-52 overflow-y-auto overscroll-contain rounded-md border border-border bg-surface-raised p-1.5 shadow-md"
               role="dialog"
               aria-label="Search filters"
             >
@@ -206,12 +250,17 @@ export default function TaskSearchInput({
                     onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
                     className="mt-1 block w-full rounded border border-border bg-surface-overlay px-2 py-1.5 text-txt-primary" />
                 </label>
-                <p>Enter to search. Shift+Enter for a new line. Settings apply to Manager and Monitor.</p>
+                <p>Enter to search. Shift+Enter for a new line. Up/Down at the first/last line recalls history.</p>
+                <p>Settings and history apply to Manager and Monitor.</p>
+                <button type="button" disabled={!history.items.length} onClick={() => {
+                  clearTimeout(historyTimer.current)
+                  history.clear()
+                }} className="text-accent hover:underline disabled:text-txt-tertiary disabled:no-underline">Clear search history</button>
                 <button type="button" onClick={() => {
                   settings.update(DEFAULT_SEARCH_SETTINGS)
                   setDelayDraft(String(DEFAULT_SEARCH_SETTINGS.searchOnTypeDebouncePeriod))
                   setLimitDraft(String(DEFAULT_SEARCH_SETTINGS.maxResults))
-                }} className="text-accent hover:underline">Reset search settings</button>
+                }} className="block text-accent hover:underline">Reset search settings</button>
               </fieldset>
             </div>
           )}
