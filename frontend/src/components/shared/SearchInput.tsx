@@ -50,6 +50,7 @@ export default function SearchInput({
       <textarea
         ref={inputRef}
         rows={rows}
+        wrap="off"
         inputMode="search"
         enterKeyHint="search"
         autoComplete="off"
@@ -72,7 +73,7 @@ export default function SearchInput({
         aria-label={ariaLabel}
         aria-keyshortcuts={ariaKeyShortcuts}
         title="Enter to search; Shift+Enter for a new line"
-        className="h-full min-w-0 flex-1 resize-none bg-transparent px-2 py-3 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none focus-visible:outline-none sm:py-[7px] sm:text-xs sm:leading-5"
+        className="h-full min-w-0 flex-1 resize-none overflow-x-hidden bg-transparent px-2 py-3 text-base leading-5 text-txt-primary placeholder:text-txt-tertiary outline-none focus-visible:outline-none sm:py-[7px] sm:text-xs sm:leading-5"
       />
       {local && (
         <button
