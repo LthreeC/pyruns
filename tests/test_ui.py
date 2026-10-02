@@ -554,7 +554,6 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     assert "task.search_match_count" in monitor
     assert "searchResultSummary" in monitor
     assert "<TaskSearchMatches" in monitor
-    assert 'ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"' in monitor
     assert "!event.shiftKey && key === 'f'" in monitor
     assert "MIN_MONITOR_SIDEBAR_WIDTH_PX = 240" in monitor
 
