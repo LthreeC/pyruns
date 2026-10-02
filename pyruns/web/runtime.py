@@ -408,7 +408,6 @@ class PyrunsRuntime:
         self._task_generator: TaskGenerator | None = None
         self._metrics_sampler: SystemMonitor | None = None
         self._tasks_loaded = False
-        self._last_full_refresh_time = 0.0
         self._log_search = LogSearch()
         self._conda_envs_cache: Dict[str, Any] | None = None
         self.reload(root_dir)
@@ -452,7 +451,6 @@ class PyrunsRuntime:
             self._task_generator = None
             self._metrics_sampler = None
             self._tasks_loaded = False
-            self._last_full_refresh_time = 0.0
             self._conda_envs_cache = None
 
             cached_managers = list(self._task_managers.items())
@@ -1078,28 +1076,19 @@ class PyrunsRuntime:
             return self._metrics_sampler
 
     def invalidate_cache(self) -> None:
-        """Reset the full refresh rate-limiting timer to force a sync on next read."""
+        """Invalidate the snapshot shared by UI requests and the scheduler."""
         with self._lock:
-            self._last_full_refresh_time = 0.0
+            manager = self._task_manager
+        if manager is not None:
+            manager.invalidate_ui_snapshot()
 
     @_with_stable_workspace
     def ensure_tasks_loaded(self, *, full_refresh: bool = False, force_refresh: bool = False) -> None:
         """Load task metadata on demand for faster startup."""
         manager = self.task_manager
-        if not self._tasks_loaded:
-            manager.refresh_from_disk(check_all=True, discover=True)
+        if not self._tasks_loaded or full_refresh or force_refresh:
+            manager.refresh_ui_snapshot(force=force_refresh or not self._tasks_loaded)
             self._tasks_loaded = True
-            with self._lock:
-                self._last_full_refresh_time = time.monotonic()
-            return
-        if full_refresh or force_refresh:
-            now = time.monotonic()
-            with self._lock:
-                elapsed = now - self._last_full_refresh_time
-            if force_refresh or elapsed >= 4.0:
-                manager.refresh_from_disk(check_all=True, discover=True)
-                with self._lock:
-                    self._last_full_refresh_time = time.monotonic()
 
     @_with_stable_workspace
     def get_task_event_stream_context(self) -> tuple[str, TaskManager]:

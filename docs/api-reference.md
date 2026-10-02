@@ -234,7 +234,7 @@ shell 工作区：
 
 分页获取任务列表。
 
-首次加载后，`refresh=true` 最多每 4 秒同步一次磁盘；`refresh=false` 使用当前任务快照。手动刷新可传 `force_refresh=true` 立即同步磁盘。
+首次加载后，`refresh=true` 复用工作区共享的刷新结果，完整校验最短间隔为 4 秒；`refresh=false` 使用当前任务快照。实时订阅会约每秒发现目录和任务状态变化，配置、脚本内容约每 4 秒校验一次。并发刷新合并，间隔从扫描完成后计算；手动刷新可传 `force_refresh=true` 立即完整校验。
 
 #### `GET /api/tasks/{task_name}`
 

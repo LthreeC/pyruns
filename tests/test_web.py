@@ -3233,8 +3233,9 @@ def test_search_api_honors_refresh_for_externally_created_tasks(tmp_path, includ
     assert runtime.list_tasks(summary=True).total == 1
 
     _add_task(workspace, "second")
-    with runtime._lock:
-        runtime._last_full_refresh_time = time.monotonic() + 60
+    with runtime.task_manager._lock:
+        runtime.task_manager._last_ui_refresh_time = time.monotonic() + 60
+        runtime.task_manager._last_payload_refresh_time = time.monotonic() + 60
     params = {"query": "second", "search_field": "name", "include_logs": include_logs, "summary": True}
     assert client.get("/api/tasks", params={**params, "refresh": False}).json()["total"] == 0
     assert client.get("/api/tasks", params={**params, "refresh": True}).json()["total"] == 0
@@ -3257,11 +3258,13 @@ def test_initial_task_load_does_not_parse_metadata_twice(tmp_path):
 
 def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path, monkeypatch):
     import pyruns.web.runtime as runtime_module
+    import pyruns.core.task_manager as task_manager_module
 
     clock = MagicMock()
     clock.time.return_value = 1_000_000_000.0
     clock.monotonic.return_value = 100.0
     monkeypatch.setattr(runtime_module, "time", clock)
+    monkeypatch.setattr(task_manager_module, "time", clock)
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "first")
@@ -3296,6 +3299,91 @@ def test_task_refresh_interval_ignores_wall_clock_changes(tmp_path, monkeypatch)
         runtime.invalidate_cache()
         assert runtime.list_tasks(summary=True).total == 5
         assert refresh.call_count == 4
+
+
+def test_ui_snapshot_refreshes_state_before_payloads_and_notifies_subscribers(tmp_path, monkeypatch):
+    import pyruns.core.task_manager as task_manager_module
+
+    clock = MagicMock(wraps=time)
+    clock.monotonic.return_value = 100.0
+    monkeypatch.setattr(task_manager_module, "time", clock)
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "first")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    runtime.ensure_tasks_loaded()
+    manager = runtime.task_manager
+    notices = []
+    manager.on_change(lambda: notices.append(clock.monotonic()))
+    config = workspace / TASKS_DIR / "first" / CONFIG_FILENAME
+    original_config = manager.get_task("first")["config_text"]
+    config.write_text("epochs: 42\n", encoding="utf-8")
+    _add_task(workspace, "second")
+
+    clock.monotonic.return_value = 101.0
+    assert manager.refresh_ui_snapshot(min_interval=1.0) is True
+    assert runtime.list_tasks(summary=True).total == 2
+    assert manager.get_task("first")["config_text"] == original_config
+    assert notices == [101.0]
+
+    clock.monotonic.return_value = 104.0
+    assert manager.refresh_ui_snapshot(min_interval=1.0) is True
+    assert manager.get_task("first")["config"]["epochs"] == 42
+    # A request reuses the scan that the reactive subscriber just completed.
+    with patch.object(manager, "refresh_from_disk", wraps=manager.refresh_from_disk) as refresh:
+        assert runtime.list_tasks(summary=True).total == 2
+        refresh.assert_not_called()
+        config.write_text("epochs: 43\n", encoding="utf-8")
+        runtime.list_tasks(summary=True, force_refresh=True)
+        assert manager.get_task("first")["config"]["epochs"] == 43
+    assert notices == [101.0, 104.0, 104.0]
+
+
+@pytest.mark.parametrize("followup", ["cached", "invalidated", "forced"])
+def test_ui_requests_share_inflight_scan_without_losing_invalidation(tmp_path, followup):
+    from concurrent.futures import ThreadPoolExecutor
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "first")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    runtime.ensure_tasks_loaded()
+    manager = runtime.task_manager
+    _add_task(workspace, "second")
+    runtime.invalidate_cache()
+    scanned = threading.Event()
+    release = threading.Event()
+    requested = threading.Event()
+    original_refresh = manager.refresh_from_disk
+    calls = []
+
+    def slow_refresh(**kwargs):
+        calls.append(kwargs)
+        result = original_refresh(**kwargs)
+        if len(calls) == 1:
+            scanned.set()
+            assert release.wait(5)
+        return result
+
+    def read_page():
+        requested.set()
+        return runtime.list_tasks(summary=True, force_refresh=followup == "forced")
+
+    with patch.object(manager, "refresh_from_disk", side_effect=slow_refresh), ThreadPoolExecutor(2) as pool:
+        reactive = pool.submit(manager.refresh_ui_snapshot, min_interval=1.0)
+        try:
+            assert scanned.wait(5)
+            if followup == "invalidated":
+                _add_task(workspace, "third")
+                # This must not wait on the scan or be overwritten by its completion.
+                runtime.invalidate_cache()
+            request = pool.submit(read_page)
+            assert requested.wait(5)
+            assert not request.done()
+        finally:
+            release.set()
+        assert reactive.result(timeout=5) is True
+        page = request.result(timeout=5)
+    assert len(calls) == (1 if followup == "cached" else 2)
+    assert page.total == (3 if followup == "invalidated" else 2)
 
 
 def test_metadata_search_cancels_between_lines_without_holding_task_lock(tmp_path, monkeypatch):

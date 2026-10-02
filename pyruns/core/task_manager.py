@@ -155,6 +155,10 @@ class TaskManager:
         self._search_view_cache: dict[str, tuple[tuple, Mapping[str, Any]]] = {}
         self._lock = threading.Lock()
         self._observer_lock = threading.Lock()
+        self._ui_refresh_lock = threading.Lock()
+        self._ui_refresh_revision = 0
+        self._last_ui_refresh_time: float | None = None
+        self._last_payload_refresh_time: float | None = None
         self._executor_lock = threading.Lock()
         self._shutdown_lock = threading.RLock()
         self._shutdown_event = threading.Event()
@@ -1324,6 +1328,53 @@ class TaskManager:
         self._copy_gpu_wait_info(task, info)
         self._refresh_derived_fields(task)
         return task
+
+    def invalidate_ui_snapshot(self) -> None:
+        """Request a new UI snapshot without waiting for an ongoing disk scan."""
+        with self._lock:
+            self._ui_refresh_revision += 1
+            self._last_ui_refresh_time = None
+            self._last_payload_refresh_time = None
+
+    def refresh_ui_snapshot(
+        self,
+        *,
+        min_interval: float = 4.0,
+        payload_interval: float = 4.0,
+        force: bool = False,
+    ) -> bool | None:
+        """Share one disk reconciliation between UI requests and the scheduler.
+
+        Return None when a recent snapshot suffices. State discovery can run
+        more often than payload hashing; changed metadata always loads payloads.
+        Explicit lifecycle validation continues to use refresh_from_disk.
+        """
+        with self._ui_refresh_lock:
+            now = time.monotonic()
+            with self._lock:
+                revision = self._ui_refresh_revision
+                state_due = force or self._last_ui_refresh_time is None or (
+                    now - self._last_ui_refresh_time >= min_interval
+                )
+                payload_due = force or self._last_payload_refresh_time is None or (
+                    now - self._last_payload_refresh_time >= payload_interval
+                )
+            if not state_due and not payload_due:
+                return None
+            changed = self.refresh_from_disk(
+                check_all=True, discover=True, check_payload=payload_due,
+            )
+            # Time the cooldown from completion, including slow NFS reads. An
+            # invalidation during I/O must survive until a subsequent scan.
+            completed = time.monotonic()
+            with self._lock:
+                if revision == self._ui_refresh_revision:
+                    self._last_ui_refresh_time = completed
+                    if payload_due:
+                        self._last_payload_refresh_time = completed
+        if changed:
+            self.trigger_update()
+        return changed
 
     def refresh_from_disk(
         self,
@@ -3003,32 +3054,24 @@ class TaskManager:
         """Submit queued tasks up to max_workers and keep UI state fresh."""
         last_trigger = 0.0
         last_refresh = 0.0
-        last_reactive_refresh = 0.0
         while not self._shutdown_event.is_set():
             try:
                 now = time.monotonic()
-                reactive_refresh_due = (
-                    self.has_reactive_watchers()
-                    and now - last_reactive_refresh >= _REACTIVE_DISK_REFRESH_INTERVAL_SEC
+                snapshot_refreshed = self.has_reactive_watchers() and (
+                    self.refresh_ui_snapshot(min_interval=_REACTIVE_DISK_REFRESH_INTERVAL_SEC) is not None
                 )
                 should_refresh = (
                     self._running_ids or
                     self.is_processing or
-                    reactive_refresh_due or
                     (now - last_refresh >= 1.0)
                 )
 
-                if should_refresh:
-                    last_refresh = now
-                    if reactive_refresh_due:
-                        last_reactive_refresh = now
-                    if self.refresh_from_disk(
-                        check_all=reactive_refresh_due,
-                        discover=reactive_refresh_due,
-                    ):
+                if snapshot_refreshed or should_refresh:
+                    if not snapshot_refreshed and self.refresh_from_disk():
                         if now - last_trigger >= 1.0:
                             last_trigger = now
                             self.trigger_update()
+                    last_refresh = time.monotonic()
                     self._refresh_queued_runner_leases()
                     self._process_cancel_requests()
 
