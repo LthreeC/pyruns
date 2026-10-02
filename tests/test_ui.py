@@ -253,7 +253,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'className="flex-none border-t border-border-subtle px-2.5 py-2"',
             '{!compactMonitorLayout && (',
             'selectedTaskSnapshot',
-            'api.getTask(selectedTaskName, false)',
             'title="Current Task"',
             '!sidebarSearchActive',
             'if (!selectedTaskName || (selectedTaskFromList && !duringSearch))',

@@ -227,8 +227,8 @@ async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => voi
   }
 }
 
-export const getTask = (name: string, refresh = true) =>
-  request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}`)
+export const getTask = (name: string, refresh = true, summary = false) =>
+  request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}${summary ? '&summary=true' : ''}`)
 
 export function createTaskEventStream(): WebSocket {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'

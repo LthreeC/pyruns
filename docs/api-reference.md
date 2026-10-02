@@ -238,7 +238,7 @@ shell 工作区：
 
 #### `GET /api/tasks/{task_name}`
 
-获取单个任务详情。
+获取单个任务详情。`summary=true` 仅获取任务摘要，不加载历史曲线；适用于只需状态的轮询。默认返回完整详情，`refresh=false` 可复用当前任务快照。
 
 #### `POST /api/tasks/{task_name}/run`
 

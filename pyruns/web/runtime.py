@@ -1125,7 +1125,7 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def get_task_log_stream_context(self, task_name: str) -> tuple[str, Dict[str, Any]]:
         """Capture one atomic workspace/task pair for a log stream."""
-        task = self.get_task(task_name, refresh=False)
+        task = self.get_task(task_name, refresh=False, summary=True)
         if task is None:
             raise KeyError(task_name)
         return os.path.normcase(os.path.abspath(self.root_dir)), task
@@ -1641,7 +1641,7 @@ class PyrunsRuntime:
             expected_root = os.path.normcase(os.path.abspath(expected_workspace_root))
             if current_root != expected_root:
                 raise WorkspaceChangedError("Workspace changed")
-        task = self.get_task(task_name, refresh=False)
+        task = self.get_task(task_name, refresh=False, summary=True)
         if task is None:
             raise KeyError(task_name)
 

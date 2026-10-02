@@ -1035,8 +1035,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/tasks/{task_name}")
-    def get_task(task_name: str, refresh: bool = True) -> dict[str, Any]:
-        task = get_runtime().get_task(task_name, refresh=refresh)
+    def get_task(task_name: str, refresh: bool = True, summary: bool = False) -> dict[str, Any]:
+        task = get_runtime().get_task(task_name, refresh=refresh, summary=summary)
         if task is None:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found")
         return task
@@ -1294,7 +1294,7 @@ def create_app(
             return root, os.path.normcase(os.path.abspath(str(task["dir"])))
 
         try:
-            # The first lookup can read task metadata and a large metric history.
+            # A cold lookup can read task metadata from a remote filesystem.
             stream_root, stream_task_dir = await asyncio.to_thread(load_stream_context)
         except KeyError:
             await websocket.close(code=4404, reason="Task not found")
@@ -1592,7 +1592,7 @@ def create_app(
                         if emitter_quiet or replaying_backlog:
                             switched_log = False
                             if stream_log_name == QUEUE_LOG_FILENAME and current_size <= stream_offset:
-                                latest_task = await asyncio.to_thread(runtime.get_task, task_name)
+                                latest_task = await asyncio.to_thread(runtime.get_task, task_name, summary=True)
                                 if latest_task is None:
                                     disconnected.set()
                                     break

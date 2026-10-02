@@ -1539,6 +1539,8 @@ test('Monitor search holds a running log at the match and resumes live output', 
   let logReads = 0
   let connections = 0
   let sendLog!: (value: string) => void
+  let sendTaskEvent!: (value: string) => void
+  const taskReads: string[] = []
   const task = {
     name: 'running-search', status: 'running', run_index: 1, task_kind: 'shell',
     search_matches: [{ field: 'log', log_file: 'run1.log', location: 'run1.log:42', line: 42,
@@ -1550,7 +1552,14 @@ test('Monitor search holds a running log at the match and resumes live output', 
     await route.fulfill({ json: { ...workspace, settings: { ...workspace.settings, monitor_scrollback: 1 } } })
   })
   await page.route('**/api/tasks?*', route => route.fulfill({ json: { items: [task], total: 1, has_more: false } }))
-  await page.route('**/api/tasks/running-search?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/running-search?*', route => {
+    taskReads.push(new URL(route.request().url()).searchParams.get('summary') || '')
+    return route.fulfill({ json: task })
+  })
+  await page.routeWebSocket('**/api/tasks/events', socket => {
+    sendTaskEvent = value => socket.send(value)
+    socket.send(JSON.stringify({ type: 'ready' }))
+  })
   await page.route('**/api/tasks/running-search/logs?*', route => {
     logReads++
     const context = new URL(route.request().url()).searchParams.get('chunk_size') === '32768'
@@ -1570,6 +1579,10 @@ test('Monitor search holds a running log at the match and resumes live output', 
   await page.getByRole('textbox', { name: 'Search monitor tasks', exact: true }).fill('needle')
   await page.getByRole('button', { name: /View Log match in running-search at run1.log:42/ }).click()
   await expect(terminal).toContainText('needle history')
+  const previousTaskReads = taskReads.length
+  sendTaskEvent(JSON.stringify({ type: 'changed' }))
+  await expect.poll(() => taskReads.length).toBeGreaterThan(previousTaskReads)
+  expect(taskReads.at(-1)).toBe('true')
   const readsAtMatch = logReads
   const connectionsAtMatch = connections
   await page.clock.install()

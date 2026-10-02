@@ -2170,6 +2170,64 @@ def test_runtime_get_task_logs_does_not_invent_missing_non_active_run_log(tmp_pa
     assert payload["content"] == ""
 
 
+def test_log_reads_and_queue_stream_skip_curve_history(tmp_path, monkeypatch):
+    from pyruns.utils import track_store
+    from pyruns.utils.info_io import append_task_track, update_task_metadata
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "metrics", status="queued", log_text="run output\n")
+    task_dir = workspace / TASKS_DIR / "metrics"
+    values = list(range(track_store.INLINE_TRACK_POINTS))
+    update_task_info(str(task_dir), lambda info: info.update(
+        tracks=[{"loss": values}], run_index=1,
+    ))
+    append_task_track(str(task_dir), {"loss": len(values)}, run_index=1)
+    (task_dir / "run_logs" / "queue.log").write_text("waiting\n", encoding="utf-8")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+    queue_checked = threading.Event()
+    original_get_task = runtime.get_task
+
+    def get_task(*args, **kwargs):
+        task = original_get_task(*args, **kwargs)
+        if kwargs.get("refresh", True) and task and task["status"] == "queued":
+            queue_checked.set()
+        return task
+
+    monkeypatch.setattr(runtime, "get_task", get_task)
+    monkeypatch.setattr("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01)
+    monkeypatch.setattr("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0)
+    try:
+        with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
+            initial = client.get("/api/tasks/metrics/logs").json()
+            assert initial["selected_log"] == "queue.log"
+            assert initial["content"] == "waiting\n"
+            assert client.get("/api/tasks/metrics/logs", params={
+                "log_file_name": "queue.log", "offset": initial["offset"],
+            }).json()["content"] == ""
+
+            with client.websocket_connect(
+                f"/api/tasks/metrics/logs/stream?log_file_name=queue.log&offset={initial['offset']}"
+            ) as websocket:
+                assert queue_checked.wait(2)
+                update_task_metadata(str(task_dir), lambda info: info.update(status="completed"))
+                payload = websocket.receive_json()
+                assert payload["log_file_name"] == "run1.log"
+                assert payload["content"] == "run output\n"
+            read.assert_not_called()
+
+            summary = client.get("/api/tasks/metrics", params={"summary": True, "refresh": False}).json()
+            assert summary["status"] == "completed"
+            assert summary["tracks"] == []
+            read.assert_not_called()
+
+            detail = client.get("/api/tasks/metrics").json()
+            assert detail["tracks"] == [{"loss": [*values, len(values)]}]
+            assert read.call_count == 1
+    finally:
+        runtime.shutdown()
+
+
 def test_runtime_update_parses_shell_like_global_env_text(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
@@ -4947,7 +5005,7 @@ def test_default_runtime_partial_load_and_log_context_follow_workspace_switch(tm
     try:
         root, task = runtime.get_task_log_stream_context("alpha")
         assert Path(root) == workspace_a
-        assert task["config"]["lr"] == 0.01
+        assert Path(task["dir"]) == workspace_a / TASKS_DIR / "alpha"
         first = runtime.task_manager
         assert {item["name"] for item in first.tasks} == {"alpha"}
         runtime.reload(str(workspace_b))
@@ -7809,7 +7867,7 @@ def test_runtime_log_selection_and_launcher_picker_edges(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runtime,
         "get_task",
-        lambda task_name, refresh=False: {
+        lambda task_name, refresh=False, summary=False: {
             "name": task_name,
             "dir": str(running),
             "status": "running",

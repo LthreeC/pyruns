@@ -86,6 +86,9 @@ const LOG_STREAM_FLUSH_MS = 50
 const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
 const TASK_EVENT_FALLBACK_POLL_MS = 60_000
 const TASK_EVENT_DEGRADED_POLL_MS = 5_000
+// Cancel any incomplete escape sequence, then reset in xterm's write queue.
+// A synchronous reset can be overtaken by pending writes from the previous log.
+const TERMINAL_RESET_SEQUENCE = '\x18\x1bc'
 // Keep this aligned with the fields blanked by the server's compact Monitor payload.
 const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'config',
@@ -339,7 +342,7 @@ export default function MonitorPage() {
     }
     const requestedWorkspaceKey = workspaceKey
     try {
-      const task = await api.getTask(selectedTaskName, false)
+      const task = await api.getTask(selectedTaskName, false, true)
       if (
         task.name === selectedTaskNameRef.current
         && workspaceKeyRef.current === requestedWorkspaceKey
@@ -908,8 +911,7 @@ export default function MonitorPage() {
     if (!term) return
 
     if (!selectedTaskName) {
-      term.clear()
-      term.reset()
+      term.write(TERMINAL_RESET_SEQUENCE)
       renderedLogRef.current = null
       return
     }
@@ -918,13 +920,9 @@ export default function MonitorPage() {
     const needsFreshRender = !previous || previous.key !== renderKey
 
     if (needsFreshRender) {
-      term.clear()
-      term.reset()
-      if (logContent) {
-        term.write(logContent)
-      } else if (shouldShowNoLogPlaceholder) {
-        term.write('\x1b[2m  < NO LOG >\x1b[0m\r\n')
-      }
+      term.write(TERMINAL_RESET_SEQUENCE + (logContent || (
+        shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
+      )))
       renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
       return
     }
@@ -942,13 +940,9 @@ export default function MonitorPage() {
         term.write(nextChunk)
       }
     } else {
-      term.clear()
-      term.reset()
-      if (logContent) {
-        term.write(logContent)
-      } else if (shouldShowNoLogPlaceholder) {
-        term.write('\x1b[2m  < NO LOG >\x1b[0m\r\n')
-      }
+      term.write(TERMINAL_RESET_SEQUENCE + (logContent || (
+        shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
+      )))
     }
 
     renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
