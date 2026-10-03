@@ -112,17 +112,25 @@ def _run_cli(
     env = _source_env()
     env.update(env_overrides or {})
     try:
-        return subprocess.run(
+        result = subprocess.run(
             _source_cli(*args),
             cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL if input_text is None else None,
-            input=input_text,
+            # Text-mode stdin on Windows would expand an existing CRLF to CRCRLF.
+            input=None if input_text is None else input_text.encode("utf-8"),
             capture_output=True,
-            text=True,
-            encoding="utf-8" if input_text is not None else None,
+            text=input_text is None,
             timeout=timeout,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if input_text is None:
+            return result
+        return subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            result.stdout.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
+            result.stderr.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
