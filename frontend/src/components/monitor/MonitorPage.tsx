@@ -2022,7 +2022,10 @@ export default function MonitorPage() {
         {logError && (
           <div role="alert" className="border-b border-border bg-surface-raised px-3 py-2 text-xs text-rose-600 dark:text-rose-300">
             {logError}
-            <button type="button" className="touch-target ml-2 text-accent underline" onClick={() => selectedTask && handleSidebarClick(selectedTask, logMatch ?? undefined)}>Retry</button>
+            <button type="button" className="touch-target ml-2 text-accent underline" onClick={() => {
+              if (!logMatch && selectedLog) handleSelectLogFile(selectedLog)
+              else if (selectedTask) handleSidebarClick(selectedTask, logMatch ?? undefined)
+            }}>Retry</button>
           </div>
         )}
 

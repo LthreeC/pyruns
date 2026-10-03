@@ -18,6 +18,7 @@ import type {
 import * as api from './api'
 import { resolveMonitorScrollback } from './utils/monitorSettings'
 import { configPathId } from './utils/configPaths'
+import { retainTaskSnapshots } from './utils/taskSnapshots'
 
 let taskRequestSeq = 0
 let monitorTaskRequestSeq = 0
@@ -789,7 +790,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         && useSearchSettingsStore.getState().maxResults === maxResults
     }
     const onProgress = query ? (page: TaskPage) => {
-      if (isCurrentRequest()) set({ tasks: page.items, total: page.total, hasMore: page.has_more,
+      if (isCurrentRequest()) set({ tasks: retainTaskSnapshots(get().tasks, page.items), total: page.total, hasMore: page.has_more,
         statusCounts: page.status_counts ?? null, searchLimitHit: Boolean(page.search_limit_hit) })
     } : undefined
     set(options.background ? { error: null } : { loading: true, error: null, searchLimitHit: false })
@@ -823,7 +824,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             return
           }
           set({
-            tasks: retryPage.items,
+            tasks: retainTaskSnapshots(get().tasks, retryPage.items),
             searchLimitHit: Boolean(retryPage.search_limit_hit),
             error: retryPage.search_errors?.length ? `Search incomplete: ${retryPage.search_errors.join('; ')}` : null,
             total: retryPage.total,
@@ -838,7 +839,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (page.total === 0 && offset !== 0) {
         requestedOffset = 0
         set({
-          tasks: page.items,
+          tasks: retainTaskSnapshots(get().tasks, page.items),
           searchLimitHit: Boolean(page.search_limit_hit),
           error: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : null,
           total: page.total,
@@ -854,7 +855,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         [...get().selectedIds].filter(name => visibleNames.has(name)),
       )
       set({
-        tasks: page.items,
+        tasks: retainTaskSnapshots(get().tasks, page.items),
         searchLimitHit: Boolean(page.search_limit_hit),
         total: page.total,
         statusCounts: page.status_counts ?? null,
@@ -916,7 +917,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         includeLogs: true,
         maxResults,
         onProgress: query ? page => {
-          if (isCurrentRequest()) set({ monitorTasks: page.items, monitorTotal: page.total,
+          if (isCurrentRequest()) set({ monitorTasks: retainTaskSnapshots(get().monitorTasks, page.items), monitorTotal: page.total,
             monitorHasMore: page.has_more, monitorSearchLimitHit: Boolean(page.search_limit_hit),
             monitorStatusCounts: page.status_counts ?? null })
         } : undefined,
@@ -925,7 +926,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         return
       }
       set({
-        monitorTasks: page.items,
+        monitorTasks: retainTaskSnapshots(get().monitorTasks, page.items),
         monitorSearchLimitHit: Boolean(page.search_limit_hit),
         monitorTotal: page.total,
         monitorHasMore: page.has_more,
@@ -1270,6 +1271,9 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       return
     }
     monitorLogController?.abort()
+    const controller = new AbortController()
+    monitorLogController = controller
+    const timeout = setTimeout(() => controller.abort(new Error('Log loading timed out. Please retry.')), 10_000)
     set({
       selectedLog: logName,
       logMatch: null,
@@ -1286,7 +1290,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       const logs = await api.getTaskLogs(selectedTaskName, {
         logFileName: logName,
         tailLines: currentMonitorScrollback(),
-      })
+      }, controller.signal)
       if (
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== selectedTaskName
@@ -1305,7 +1309,12 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         logTailTruncated: Boolean(logs.tail_truncated),
         logTailLimitBytes: Number(logs.tail_limit_bytes || 0),
       })
+    } catch (err) {
+      if (requestId !== monitorRequestSeq || get().workspaceKey !== workspaceKey) return
+      set({ logError: err instanceof Error ? err.message : String(err) })
+      throw err
     } finally {
+      clearTimeout(timeout)
       if (
         requestId === monitorRequestSeq
         && get().workspaceKey === workspaceKey

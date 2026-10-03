@@ -2,6 +2,69 @@ import { expect, test } from '@playwright/test'
 
 const emptyCounts = { pending: 0, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 }
 
+test('historical log timeout can retry the same file', async ({ page }) => {
+  const now = new Date()
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(new Date(now.getTime() + 100))
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    const state = { stall: true, aborts: 0, requestedLogs: [] as string[] }
+    Object.assign(window, { historicalLogTest: state })
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), location.origin)
+      if (url.pathname === '/api/tasks/history-task/logs') {
+        const logName = url.searchParams.get('log_file_name') || ''
+        state.requestedLogs.push(logName)
+        if (logName === 'run1.log' && state.stall) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              state.aborts++
+              reject(init.signal?.reason)
+            }, { once: true })
+          })
+        }
+      }
+      return original(input, init)
+    }) as typeof window.fetch
+  })
+  const task = { name: 'history-task', status: 'completed', run_index: 2, task_kind: 'shell' }
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [task], total: 1, offset: 0, limit: 200, has_more: false,
+    status_counts: { ...emptyCounts, completed: 1 },
+  } }))
+  await page.route('**/api/tasks/history-task?*', route => route.fulfill({ json: task }))
+  await page.routeWebSocket('**/api/tasks/events', socket => socket.send(JSON.stringify({ type: 'ready' })))
+  await page.route('**/api/tasks/history-task/logs?*', route => {
+    const logName = new URL(route.request().url()).searchParams.get('log_file_name') || 'run2.log'
+    return route.fulfill({ json: {
+      selected_log: logName, available_logs: ['run2.log', 'run1.log'], log_identity: logName,
+      content: logName === 'run1.log' ? 'Recovered historical output\n' : 'Latest output\n', offset: 100,
+    } })
+  })
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  const logs = page.getByRole('combobox', { name: 'Select task log file' })
+  await expect(logs).toHaveValue('run2.log')
+  await logs.selectOption('run1.log')
+  await page.clock.runFor(10_001)
+  const retry = page.getByRole('button', { name: 'Retry', exact: true })
+  await expect(retry).toBeVisible()
+  await expect(page.getByText('Loading log…', { exact: true })).toBeHidden()
+  expect(await page.evaluate(() => (window as typeof window & {
+    historicalLogTest: { aborts: number }
+  }).historicalLogTest.aborts)).toBe(1)
+  await page.evaluate(() => {
+    (window as typeof window & { historicalLogTest: { stall: boolean } }).historicalLogTest.stall = false
+  })
+  await retry.click()
+  await expect(logs).toHaveValue('run1.log')
+  await expect(retry).toBeHidden()
+  await page.clock.runFor(200)
+  await expect(page.getByRole('region', { name: 'Read-only logs for history-task' })).toContainText('Recovered historical output')
+  expect(await page.evaluate(() => (window as typeof window & {
+    historicalLogTest: { requestedLogs: string[] }
+  }).historicalLogTest.requestedLogs.slice(-2))).toEqual(['run1.log', 'run1.log'])
+})
+
 for (const stalledEndpoint of ['dashboard', 'metrics']) {
   test(`dashboard loads once and recovers when ${stalledEndpoint} times out`, async ({ page }) => {
     const now = new Date()

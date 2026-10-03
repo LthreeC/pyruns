@@ -122,6 +122,52 @@ describe('workspace-scoped stores', () => {
     expect(useMonitorStore.getState()).toMatchObject({ logContent: '', loading: false, logError: expect.stringContaining('This log changed') })
   })
 
+  it('cancels obsolete historical log reads when the log or workspace changes', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    useMonitorStore.setState({ selectedTaskName: 'alpha' })
+    vi.mocked(api.getTaskLogs).mockImplementation((_name, _options, signal) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }))
+
+    const first = useMonitorStore.getState().selectLogFile('run1.log')
+    const firstSignal = vi.mocked(api.getTaskLogs).mock.calls[0][2]!
+    const second = useMonitorStore.getState().selectLogFile('run2.log')
+    const secondSignal = vi.mocked(api.getTaskLogs).mock.calls[1][2]!
+    expect(firstSignal.aborted).toBe(true)
+    await first
+    expect(useMonitorStore.getState()).toMatchObject({ selectedLog: 'run2.log', loading: true, logError: '' })
+
+    useWorkspaceStore.getState().setWorkspace(workspace('B'))
+    expect(secondSignal.aborted).toBe(true)
+    await second
+    expect(useMonitorStore.getState()).toMatchObject({ selectedTaskName: null, logContent: '', loading: false, logError: '' })
+  })
+
+  it.each(['timeout', 'failure'])('shows historical log %s and recovers on retry', async failure => {
+    vi.useFakeTimers()
+    try {
+      useWorkspaceStore.getState().setWorkspace(workspace('A'))
+      useMonitorStore.setState({ selectedTaskName: 'alpha' })
+      vi.mocked(api.getTaskLogs).mockImplementationOnce((_name, _options, signal) => new Promise((_resolve, reject) => {
+        if (failure === 'failure') reject(new Error('Log is unavailable'))
+        else signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      }))
+      const pending = useMonitorStore.getState().selectLogFile('run1.log')
+      const message = failure === 'timeout' ? 'Log loading timed out. Please retry.' : 'Log is unavailable'
+      const rejection = expect(pending).rejects.toThrow(message)
+      if (failure === 'timeout') await vi.advanceTimersByTimeAsync(10_000)
+      await rejection
+      expect(useMonitorStore.getState()).toMatchObject({ logContent: '', loading: false, logError: message })
+
+      vi.mocked(api.getTaskLogs).mockResolvedValueOnce({ content: 'recovered', offset: 9, selected_log: 'run1.log', available_logs: ['run1.log'] } as any)
+      await useMonitorStore.getState().selectLogFile('run1.log')
+      expect(useMonitorStore.getState()).toMatchObject({ logContent: 'recovered', loading: false, logError: '' })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores a task response from the workspace that was replaced', async () => {
     useWorkspaceStore.getState().setWorkspace(workspace('A'))
     const request = deferred<any>()
@@ -189,6 +235,67 @@ describe('workspace-scoped stores', () => {
     expect(setItem).toHaveBeenCalledWith('pyruns_manager_sort', 'activity_asc')
     expect(api.getTasks).toHaveBeenCalledWith(expect.objectContaining({ sort: 'activity_asc' }), undefined)
     expect(useTaskStore.getState().sortMode).toBe('activity_asc')
+  })
+
+  it.each(['manager', 'monitor'] as const)('retains unchanged %s rows across refreshes, reordering, and deletion', async view => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const items = [
+      { name: 'alpha', status: 'completed', config: { model: 'small', layers: [1, 2] }, notes: 'old' },
+      { name: 'beta', status: 'running', config: {}, notes: '' },
+    ]
+    const fetch = () => view === 'manager'
+      ? useTaskStore.getState().fetchTasks({ background: true })
+      : useTaskStore.getState().fetchMonitorTasks({ background: true })
+    const rows = () => view === 'manager' ? useTaskStore.getState().tasks : useTaskStore.getState().monitorTasks
+    const respond = (next: unknown[]) => vi.mocked(api.getTasks).mockResolvedValueOnce({ items: next, total: next.length, has_more: false } as any)
+    respond(items)
+    await fetch()
+    const original = rows()
+    respond(JSON.parse(JSON.stringify(items)))
+    await fetch()
+    expect(rows()).toBe(original)
+
+    // Reordering JSON keys does not change the data. Nested edits and removed
+    // fields must reach consumers even when the displayed name/status match.
+    const changed = { name: 'alpha', status: 'completed', config: { layers: [1, 3], model: 'small' } }
+    respond([{ config: {}, notes: '', status: 'running', name: 'beta' }, changed, { name: 'gamma' }])
+    await fetch()
+    expect(rows().map(task => task.name)).toEqual(['beta', 'alpha', 'gamma'])
+    expect(rows()[0]).toBe(original[1])
+    expect(rows()[1]).toEqual(changed)
+    expect(rows()[1]).not.toBe(original[0])
+    expect(rows()[1]).not.toHaveProperty('notes')
+    const reordered = rows()
+    respond([{ ...changed }])
+    await fetch()
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]).toBe(reordered[1])
+  })
+
+  it.each(['manager', 'monitor'] as const)('retains unchanged %s search rows while updating nested match locations', async view => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const response = deferred<any>()
+    vi.mocked(api.getTasks).mockReturnValueOnce(response.promise)
+    if (view === 'manager') useTaskStore.getState().setQuery('needle')
+    const pending = view === 'manager'
+      ? useTaskStore.getState().fetchTasks()
+      : useTaskStore.getState().fetchMonitorTasks({ query: 'needle' })
+    const rows = () => view === 'manager' ? useTaskStore.getState().tasks : useTaskStore.getState().monitorTasks
+    const progress = vi.mocked(api.getTasks).mock.calls[0][0]?.onProgress!
+    const page = { items: [{ name: 'alpha', search_matches: [{ field: 'log', offset: 10, snippet: 'needle' }] }], total: 1, has_more: false } as any
+    progress(page)
+    const initial = rows()
+    progress(JSON.parse(JSON.stringify(page)))
+    expect(rows()).toBe(initial)
+    const updated = JSON.parse(JSON.stringify(page))
+    updated.items[0].search_matches[0].offset = 20
+    progress(updated)
+    expect(rows()[0]).not.toBe(initial[0])
+    expect(rows()[0].search_matches![0].offset).toBe(20)
+    const latest = rows()
+    response.resolve(JSON.parse(JSON.stringify(updated)))
+    await pending
+    expect(rows()).toBe(latest)
   })
 
   it.each(['manager', 'monitor'] as const)('cancels superseded %s log searches and ignores their results', async view => {

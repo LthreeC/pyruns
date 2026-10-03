@@ -1220,6 +1220,9 @@ export default function ManagerPage() {
           task={detailTask}
           onClose={closeDetailPanel}
           onTaskUpdated={updatedTask => {
+            useTaskStore.setState(state => ({
+              tasks: state.tasks.map(task => task.name === updatedTask.name ? { ...task, ...updatedTask } : task),
+            }))
             setDetailTask(current => current?.name === updatedTask.name ? updatedTask : current)
           }}
           onRefresh={fetchTasks}
