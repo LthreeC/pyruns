@@ -152,7 +152,7 @@ def _example_block(
 
 
 def _exec_help_epilog(program: str) -> str:
-    """Return the decision-oriented help shown by ``pyr help exec``."""
+    """Return the command examples shown by ``pyr exec --help``."""
 
     return (
         "Examples:\n"
@@ -179,20 +179,20 @@ def _exec_help_epilog(program: str) -> str:
         f"    {program} exec -n pipeline -c \"python prep.py && python train.py\"\n"
         "    -c consumes the remaining command text and runs it through the stored workspace shell.\n"
         "    Quote expressions containing shell syntax according to the calling shell.\n\n"
-        "  Multiline script for agents and automation (Bash examples):\n"
+        "  Multiline script (Bash):\n"
         f"    {program} exec -n pipeline --stdin < pipeline.sh\n"
         f"    {program} exec -n pipeline -d --stdin <<'BASH'\n"
         "    set -euo pipefail\n"
         "    python prep.py\n"
         "    python train.py\n"
         "    BASH\n"
-        "    Agents: use --stdin with redirected input; do not wait for a terminal paste prompt.\n"
+        "    --stdin requires a file redirect, pipe, or heredoc.\n"
         "    Quote the heredoc marker to preserve $variables, quotes, and backslashes.\n"
         "    The closing marker must be alone at the start of its line.\n"
         "    --stdin uses the stored workspace shell and preserves the script for reruns.\n"
         "    It saves the complete script before starting, including with -d/--detach.\n"
         "    Direct './pipeline.sh' tracks the source path; '--stdin < pipeline.sh' saves its text.\n"
-        "    Fence language labels and shebangs do not override the workspace shell.\n"
+        "    Shebangs do not override the workspace shell.\n"
         "    Use Bash for Bash scripts. UTF-8 input (up to 4 MiB); CRLF is normalized to LF.\n"
         "    --stdin cannot be combined with -c or argv. Task processes do not inherit stdin.\n"
         f"    {program} exec -n pipeline --dry-run --json --stdin < pipeline.sh\n"
@@ -208,18 +208,6 @@ def _exec_help_epilog(program: str) -> str:
         "    Use a PowerShell workspace shell for PowerShell scripts.\n"
         "    Windows PowerShell 5.1: set UTF-8 pipe encoding before submitting:\n"
         "      $OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n\n"
-        "  Manual paste (interactive terminal, one script per invocation):\n"
-        "    First run this line and press Enter:\n"
-        f"      {program} exec -n pipeline -d\n"
-        "    After the Pyruns prompt appears, paste this separate block:\n"
-        '      """\n'
-        "      echo first\n"
-        "      echo second\n"
-        '      """\n'
-        "    Matching markers must be on separate lines; ``` and triple single quotes also work.\n"
-        "    Do not append the block to the calling shell command line.\n"
-        "    The closing marker submits the saved script; Ctrl+C cancels without creating a task.\n"
-        "    Without a terminal, omitting the command is an error; use --stdin instead.\n\n"
         "Environment:\n"
         f"  {program} exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py\n"
         f"  {program} exec -n gpu0 --env-file .env.train -e SEED=42 -- python train.py\n"
@@ -415,8 +403,6 @@ def build_parser(
             "  Task names are exact. With several workspaces, select one with -w.\n"
             "  exec uses the current directory's shell workspace and creates it automatically.\n\n"
             "More help:\n"
-            f"  {program} help COMMAND\n"
-            f"  {program} help -a        list all commands\n"
             f"  {program} COMMAND --help    show command options (for example, ui --port)\n\n"
             "Exit status: 0 success, 1 operation failed, 2 invalid usage, 130 interrupted."
         ),
@@ -525,9 +511,8 @@ def build_parser(
             "Use -c/--command only when the command intentionally needs pipes, redirects, variable\n"
             "expansion, globs, &&, or other shell syntax. A leading .sh, .ps1, .cmd, or .bat file\n"
             "is launched with its matching interpreter while Pyruns records its log and duration.\n"
-            "Omit the command in an interactive terminal to paste a delimited multiline script.\n"
-            "Use --stdin to save and run a complete script from a heredoc, pipe, or file.\n"
-            "Help: 'exec help', 'exec --help', and 'help exec' show this same guide."
+            "A command is required. For a multiline shell script, use --stdin with a file redirect,\n"
+            "pipe, or heredoc; --stdin never opens an interactive input prompt."
         ),
         epilog=_exec_help_epilog(program),
         common=True,

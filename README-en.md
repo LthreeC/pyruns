@@ -65,7 +65,7 @@ pyr ui train.py
 pyr ui shell
 ```
 
-`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Use `pyr --help` for common commands, `pyr help -a` for the complete index, and `pyr help COMMAND` for command details; neither starts a stateful interactive REPL.
+`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Use `pyr --help` for common commands and `pyr COMMAND --help` for command details; run `pyr help -a` only when you need the complete index. Neither starts a stateful interactive REPL.
 
 ## Why it is useful
 
@@ -129,7 +129,7 @@ Commands:
 | `ui` / `dev` | start the Web UI explicitly |
 | `help` | show top-level or command help |
 
-Every command has its own scenario-oriented help. For example, `pyr help exec`
+Every command has its own scenario-oriented help. For example, `pyr exec --help`
 explains exact argv, shell expressions, script execution, and persisted environment
 values. See the [complete CLI guide](docs/cli-guide.md) for every option and contract.
 
@@ -166,6 +166,22 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 ```
 
 `-c` consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, `|`, redirects, or variables must be quoted according to the calling shell so that they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. The contract is the same everywhere: use exact argv after `--` for ordinary programs and a quoted `-c` expression for shell syntax.
+
+For multiline scripts, use standard stdin redirection, a pipe, or a heredoc. Pyruns does not open
+an interactive paste prompt:
+
+```bash
+pyr exec -n pipeline --stdin < pipeline.sh
+cat pipeline.sh | pyr exec -n pipeline --stdin
+pyr exec -n pipeline -d --stdin <<'BASH'
+set -euo pipefail
+python preprocess.py
+python train.py --epochs 10
+BASH
+```
+
+The complete UTF-8 script is saved with the task, so reruns use the captured text. `--stdin` must
+receive redirected input and cannot be combined with `-c` or `-- PROGRAM ARG ...`.
 
 Shell tasks preserve terminal colors through a cross-platform pseudoterminal: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, and window-title controls are filtered. Pyruns falls back to ordinary stdout/stderr pipes only when terminal capture is unavailable.
 

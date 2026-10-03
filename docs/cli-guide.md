@@ -20,7 +20,7 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 
 ### 默认行为必须安全且可预测
 
-- 裸 `pyr` 或 `pyruns` 都只打印包含常用命令和快速示例的精简帮助；`pyr help -a` 才展开完整命令索引。
+- 裸 `pyr` 或 `pyruns` 都只打印包含常用命令和快速示例的精简帮助；命令选项统一用 `pyr COMMAND --help` 查看。需要完整命令索引时再使用 `pyr help -a`。
 - `run` 默认等待全部任务结束。
 - 批量任务中任意一个失败，命令退出码就是 `1`。
 - `--detach` 只改变等待方式，不改变任务语义；它不能和 `--dry-run` 同时使用。
@@ -55,18 +55,14 @@ pyr -C D:/work/project -w shell status
 每个子命令都有独立帮助：
 
 ```bash
-pyr help -a
-pyr help exec
-pyr exec help
 pyr exec --help
-pyr help run
 pyr run --help
 ```
 
-`pyr help COMMAND` 与 `pyr COMMAND --help` 等价；`exec` 还支持 `pyr exec help`。
-每份命令帮助都包含用途、参数、
-典型示例和关键注意事项；其中 `pyr help exec` 是选择精确 argv、Shell 表达式、
-现有脚本、环境变量和后续任务操作的完整决策指南。帮助命令只读，不会创建工作区。
+命令帮助统一从 `pyr COMMAND --help` 进入；`pyr help -a` 只用于查看完整命令索引。
+每份命令帮助都包含用途、参数、典型示例和关键注意事项；其中 `pyr exec --help` 是选择
+精确 argv、Shell 表达式、现有脚本、环境变量和后续任务操作的完整决策指南。帮助命令
+只读，不会创建工作区。
 
 默认帮助只列 `init exec add run ls status show log wait stop ui` 十一个日常命令，高级命令仍可直接执行；需要浏览全部命令时使用 `help -a`。
 
@@ -210,48 +206,14 @@ pyr exec --name pipeline -c "python preprocess.py && python train.py | tee train
 
 `-c` 会消费并合并后续 command text，因此 `-c echo hello` 会作为 `echo hello` 执行。表达式含 `;`、`|`、重定向或变量时，通常仍要按调用端 shell 的规则引用整段，否则调用端会在 Pyruns 启动前先拆分它。表达式由工作区解析到的 shell 执行，引用规则和可用命令可能因 Bash、PowerShell 与 cmd.exe 而不同。普通程序或脚本文件不需要这些能力时，使用 `--` 后的精确 argv。
 
-### 粘贴多行脚本
+### 通过标准输入提交多行脚本
 
-临时录入一整段命令时，先在终端输入并按回车：
-
-```bash
-pyr exec -n pipeline -d
-```
-
-看到录入提示后，粘贴用三引号包裹的完整脚本。起止三引号各占一行：
-
-```text
-"""
-#!/usr/bin/env bash
-set -euo pipefail
-DATA_ROOT=${DATA_ROOT:-./data}
-export TOKENIZERS_PARALLELISM=false
-python preprocess.py --data "$DATA_ROOT"
-python train.py --data "$DATA_ROOT" \
-  --epochs 10 --lr 0.001
-"""
-```
-
-也支持首尾独占行的三反引号（开头可写 ` ```bash `）、或三个单引号。结束标记必须与
-开头匹配，收到后才会保存正文并提交整个任务。录入期间回车只换行，不会逐行执行；
-`Ctrl+C` 取消，缺少结束标记或正文为空时不创建任务。若正文包含独占行的相同标记，
-换用另一种包裹方式。
-
-这是一次性脚本录入。应先执行 `pyr exec` 并回车，再粘贴整个块，不能在调用端将
-`pyr exec` 与三引号或三反引号直接写成一条命令。省略 `-d` 会在提交后跟随日志。
-正文保存到任务内，之后可用 `pyr -w shell show pipeline` 查看、`pyr -w shell run pipeline`
-重跑；Bash 脚本应从 Bash 终端提交或将工作区 Shell 配置为 Bash。
-
-### 从标准输入记录脚本：`--stdin`
-
-**Agent、CI 和其他自动化程序应使用 `--stdin` 加重定向输入**，不要等待人工录入提示。
-非终端环境省略命令会直接报错。可先用 `--dry-run --json --stdin < pipeline.sh` 检查执行
-计划，再去掉 `--dry-run` 提交；预览不创建工作区、任务或进程。
-
-大段命令可以通过 heredoc 直接粘贴。Pyruns 会读取整段 UTF-8 文本，保存为任务的 Shell
-脚本，再交给 runner 执行；后台运行和重跑都使用保存的正文：
+多行脚本遵循标准 stdin 约定，使用文件重定向、管道或 heredoc；`exec` 没有交互式
+脚本录入模式。Agent、CI 和其他自动化程序都应显式使用 `--stdin`：
 
 ```bash
+pyr exec -n pipeline --stdin < pipeline.sh
+cat pipeline.sh | pyr exec -n pipeline --stdin
 pyr exec -n pipeline -d --stdin <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -265,28 +227,19 @@ python validate.py --config "$CONFIG"
 python train.py --config "$CONFIG" \
   --epochs 10 --lr 0.001
 BASH
-
-pyr -w shell show pipeline
-pyr -w shell log pipeline -f
-pyr -w shell run pipeline
 ```
 
-`<<'BASH'` 中的引号让调用端保留 `$变量`、引号、反斜杠和正文换行，到任务执行时才展开。
-结束标记 `BASH` 必须独占一行。上例展示录入形式；实际使用时，将标记之间的内容替换为
-你的完整脚本及参数即可。行末续行符 `\` 后不能再有空格。
+Pyruns 先读取完整的 UTF-8 文本，再保存为任务 Shell 脚本并交给 runner；后台运行和重跑
+都使用保存的正文。`<<'BASH'` 的引号让调用端保留 `$变量`、引号、反斜杠和正文换行，
+到任务执行时才展开；结束标记 `BASH` 必须独占一行。也可先用
+`pyr exec -n pipeline --dry-run --json --stdin < pipeline.sh` 检查执行计划，预览不会创建
+工作区、任务或进程。
 
-已有文件也可以用重定向或管道保存正文快照：
-
-```bash
-pyr exec -n pipeline --stdin < pipeline.sh
-cat pipeline.sh | pyr exec -n pipeline --stdin
-```
-
-这会把正文保存到任务内；之后源文件的修改或删除不会影响重跑。`--stdin` 使用与 `-c`
-相同的工作区 Shell，并保存解析到的解释器；脚本首行的 shebang 不会覆盖这个设置。
-Bash 脚本应从 Bash 终端提交，或将工作区 Shell 配置为 Bash。输入支持 UTF-8 BOM，
-CRLF 会统一为 LF，其他正文空格与空行保留；大小上限与任务脚本一致，为 4 MiB。
-调用目录仍是任务的初始工作目录及默认 Shell workspace 所在位置。
+`--stdin` 使用与 `-c` 相同的工作区 Shell，并保存解析到的解释器；脚本首行的 shebang
+不会覆盖这个设置。Bash 脚本应从 Bash 终端提交，或将工作区 Shell 配置为 Bash。输入
+支持 UTF-8 BOM，CRLF 会统一为 LF，其他正文空格与空行保留；大小上限与任务脚本一致，
+为 4 MiB。`--stdin` 不能与 `-c` 或 `-- PROGRAM ARG ...` 同用，且在终端直接运行时会
+报错，必须提供重定向、管道或 heredoc。任务进程不继承调用端的标准输入。
 
 PowerShell 可使用单引号 here-string：
 
@@ -299,16 +252,14 @@ Write-Output 'second step'
 ```
 
 管道输入必须使用 UTF-8；Windows PowerShell 5.1 需要先设置
-`$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`。`--stdin` 也接受首尾用三引号或
-三反引号包裹的完整文本，只去掉外层标记。它不能与 `-c` 或 `-- PROGRAM ARG ...` 同用。
-可配合 `--dry-run` 预览正文，或配合 `-d`
-后台执行；输入会在创建任务前读完。不要使用 `pyr exec -- bash -s` 来传递正文，任务
-进程不继承调用端的标准输入。
+`$OutputEncoding = [System.Text.UTF8Encoding]::new($false)`。可配合 `--dry-run` 预览正文，
+或配合 `-d` 后台执行；输入会在创建任务前读完。不要使用 `pyr exec -- bash -s` 来传递
+正文，任务进程不继承调用端的标准输入。
 
 标准输入是常见的 CLI 约定：[Git `commit --file -`](https://git-scm.com/docs/git-commit)
 从 stdin 读取提交正文；[Docker build](https://docs.docker.com/build/building/context/#empty-context)
 支持从重定向或 heredoc 读取 Dockerfile。Pyruns 的 `--stdin` 使用同一输入方式，额外将
-脚本文本保存到任务内。三引号/三反引号录入是 Pyruns 的人工粘贴入口，不是 Bash 的新引用语法。
+脚本文本保存到任务内。
 
 ### 调用端引用规则
 

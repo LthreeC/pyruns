@@ -1443,94 +1443,18 @@ def cmd_init(context: Any, args: Any) -> int:
     return 0
 
 
-def _exec_script_delimiter(line: str) -> str | None:
-    marker = line.strip()
-    if marker in {'"""', "'''"}:
-        return marker
-    if re.fullmatch(r"```(?:[ \t]*[\w+-]+)?", marker):
-        return "```"
-    return None
-
-
-@contextmanager
-def _script_terminal_input() -> Iterator[bool]:
-    """Bypass POSIX canonical line truncation and restore the terminal on exit."""
-
-    if os.name == "nt":
-        yield False
-        return
-    import termios
-
-    try:
-        fd = sys.stdin.fileno()
-    except (AttributeError, OSError):
-        # In-memory input streams have no terminal line discipline.
-        yield False
-        return
-    original = termios.tcgetattr(fd)
-    mode = termios.tcgetattr(fd)
-    mode[3] &= ~termios.ICANON
-    mode[6][termios.VMIN] = 1
-    mode[6][termios.VTIME] = 0
-    termios.tcsetattr(fd, termios.TCSANOW, mode)
-    try:
-        yield True
-    finally:
-        # Discard any remaining pasted input before returning control to the shell.
-        termios.tcsetattr(fd, termios.TCSAFLUSH, original)
-
-
-def _read_script_input_line(character_mode: bool) -> str:
-    if not character_mode:
-        return sys.stdin.readline(MAX_TASK_PAYLOAD_BYTES + 1)
-    characters: list[str] = []
-    while len(characters) <= MAX_TASK_PAYLOAD_BYTES:
-        character = sys.stdin.read(1)
-        if not character or character == "\x04":
-            return ""
-        characters.append(character)
-        if character == "\n":
-            break
-    return "".join(characters)
-
-
-def _read_pasted_exec_script() -> str:
-    """Read one delimited block, without executing individual input lines."""
-
-    delimiter: str | None = None
-    lines: list[str] = []
-    byte_count = 0
-    with _script_terminal_input() as character_mode:
-        _eprint('Paste a script between """ or ``` markers on their own lines.')
-        _eprint('Close with the same marker to finish input; Ctrl+C cancels.')
-        while True:
-            line = _read_script_input_line(character_mode)
-            if not line:
-                raise CliUsageError("incomplete script input: the closing marker was not received")
-            byte_count += len(line.encode("utf-8"))
-            if byte_count > MAX_TASK_PAYLOAD_BYTES:
-                raise CliUsageError(f"script input is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes)")
-            if delimiter is None:
-                if not line.strip():
-                    continue
-                delimiter = _exec_script_delimiter(line)
-                if delimiter is None:
-                    raise CliUsageError('start script input with """ or ``` on its own line')
-            elif line.strip() == delimiter:
-                return "".join(lines)
-            else:
-                lines.append(line)
-
-
 def _read_exec_stdin() -> str:
     """Capture a script before creating a task or handing it to a detached runner."""
 
     if sys.stdin is None:
-        raise CliUsageError("script input is unavailable; use --stdin with a heredoc, pipe, or file")
-    interactive = sys.stdin.isatty()
+        raise CliUsageError("--stdin is unavailable; use a file redirect, pipe, or heredoc")
+    if sys.stdin.isatty():
+        raise CliUsageError(
+            "--stdin requires redirected input; use a file, pipe, or heredoc"
+        )
     try:
         stream = getattr(sys.stdin, "buffer", sys.stdin)
-        raw = _read_pasted_exec_script() if interactive else stream.read(MAX_TASK_PAYLOAD_BYTES + 1)
+        raw = stream.read(MAX_TASK_PAYLOAD_BYTES + 1)
         byte_count = len(raw) if isinstance(raw, bytes) else len(raw.encode("utf-8"))
         if byte_count > MAX_TASK_PAYLOAD_BYTES:
             raise CliUsageError(f"--stdin script is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes)")
@@ -1542,16 +1466,6 @@ def _read_exec_stdin() -> str:
     if "\0" in text:
         raise CliUsageError("--stdin script cannot contain NUL bytes")
     text = text.replace("\r\n", "\n")
-    if not interactive:
-        lines = text.split("\n")
-        nonempty = [index for index, line in enumerate(lines) if line.strip()]
-        if nonempty:
-            first, last = nonempty[0], nonempty[-1]
-            delimiter = _exec_script_delimiter(lines[first])
-            if delimiter:
-                if last == first or lines[last].strip() != delimiter:
-                    raise CliUsageError("incomplete script input: the closing marker was not received")
-                text = "".join(line + "\n" for line in lines[first + 1:last])
     if not text.strip():
         raise CliUsageError("--stdin script cannot be empty")
     return text
@@ -1563,10 +1477,7 @@ def cmd_exec(context: Any, args: Any) -> int:
     if has_separator:
         parts = parts[1:]
     shell_command = args.shell_command
-    from_stdin = bool(getattr(args, "stdin", False)) or bool(
-        shell_command is None and not parts and not has_separator
-        and sys.stdin is not None and sys.stdin.isatty()
-    )
+    from_stdin = bool(getattr(args, "stdin", False))
     if from_stdin:
         if shell_command is not None or parts or has_separator:
             raise CliUsageError("--stdin cannot be combined with -c/--command or argv arguments")
@@ -1586,7 +1497,10 @@ def cmd_exec(context: Any, args: Any) -> int:
     if shell_command is None and parts and not has_separator:
         raise CliUsageError("exec argv form requires '--' before COMMAND")
     if shell_command is None and not parts:
-        raise CliUsageError("exec requires COMMAND after '--', -c/--command COMMAND_STRING, or --stdin")
+        raise CliUsageError(
+            "exec requires a command after '--' or -c/--command; "
+            "use --stdin with a file, pipe, or heredoc for multiline scripts"
+        )
 
     env = _load_env_files(
         list(args.env_file or []),

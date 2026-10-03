@@ -64,7 +64,7 @@ pyr ui train.py
 pyr ui shell
 ```
 
-`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。使用 `pyr --help` 查看常用命令，`pyr help -a` 查看完整索引，`pyr help COMMAND` 查看命令细节；两者都没有需要持续操控的交互式 REPL。
+`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。使用 `pyr --help` 查看常用命令，使用 `pyr COMMAND --help` 查看命令细节；需要完整索引时再运行 `pyr help -a`。两者都没有需要持续操控的交互式 REPL。
 
 ## 为什么它有用
 
@@ -128,7 +128,7 @@ pyr exec -n check -- python -V        # -- 后面是原样传给目标程序的 
 | `ui` / `dev` | 显式启动 Web UI |
 | `help` | 查看总帮助或子命令帮助 |
 
-每个命令都提供独立的场景化帮助；例如 `pyr help exec` 会直接说明精确 argv、Shell
+每个命令都提供独立的场景化帮助；例如 `pyr exec --help` 会直接说明精确 argv、Shell
 表达式、脚本执行和环境变量持久化之间的区别。完整说明见
 [CLI 详细指南](docs/cli-guide.md)。
 
@@ -180,11 +180,7 @@ pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log
 
 `-c echo hello` 会把剩余文本合并成 `echo hello`。命令含 `;`、`|`、重定向或变量时，必须按调用端 shell 的规则引用整段表达式，避免调用端在 Pyruns 启动前将它拆开。
 
-临时粘贴大段脚本时，先执行 `pyr exec -n pipeline -d` 并按回车。看到录入提示后，
-粘贴首尾用独占行的三引号 `"""` 或三反引号包裹的整段脚本。结束标记提交，`Ctrl+C`
-取消；正文中的换行、变量和引号会完整保存，供查看和重跑。
-
-自动化中可以通过 `--stdin` 与 heredoc 提交：
+多行脚本统一通过标准输入提交；使用文件重定向、管道或 heredoc：
 
 ```bash
 pyr exec -n pipeline -d --stdin <<'BASH'
@@ -201,10 +197,11 @@ pyr -w shell log pipeline -f
 pyr -w shell run pipeline
 ```
 
-`<<'BASH'` 防止调用端提前展开变量，换行、引号和注释会保留。也可用
-`pyr exec -n pipeline --stdin < pipeline.sh` 保存文件正文的快照，后续源文件变化不影响重跑。
-`--stdin` 接收 UTF-8 文本（最多 4 MiB），使用工作区 Shell；Bash 脚本应从 Bash 终端提交或
-将工作区 Shell 配置为 Bash。详见[多行脚本录入](docs/cli-guide.md#粘贴多行脚本)。
+`<<'BASH'` 防止调用端提前展开变量，换行、引号和注释会保留。也可使用
+`pyr exec -n pipeline --stdin < pipeline.sh` 或 `cat pipeline.sh | pyr exec -n pipeline --stdin`；
+Pyruns 保存收到的脚本文本，后续源文件变化不影响重跑。`--stdin` 只接受重定向、管道或 heredoc，
+不会等待交互式终端输入；它接收 UTF-8 文本（最多 4 MiB），并使用工作区 Shell 执行。
+详见[标准输入提交多行脚本](docs/cli-guide.md#通过标准输入提交多行脚本)。
 
 Pyruns 不安装 shell 专用的行编辑钩子；普通程序使用 `--` 后的精确 argv，Shell 表达式使用
 带引号的 `-c`，完整脚本使用 `--stdin`。

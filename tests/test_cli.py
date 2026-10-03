@@ -182,8 +182,9 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     assert "Quick start -- track one terminal command:" in output
     assert "pyr run check" in output
     assert "pyr ui shell" in output
-    assert "pyr help -a" in output
+    assert "pyr help -a" not in output
     assert "show command options (for example, ui --port)" in output
+    assert "pyr COMMAND --help" in output
     assert "\n  --json" not in output
     assert "--no-color" not in output
     assert "    exec " in output
@@ -242,7 +243,7 @@ def test_official_entrypoints_render_their_own_complete_help(
     assert f"usage: {program} " in result.stdout
     assert f"{program} and {alternate} are identical" in result.stdout
     assert f"{program} exec -n check -- python -V" in result.stdout
-    assert f"{program} help COMMAND" in result.stdout
+    assert f"{program} COMMAND --help" in result.stdout
     assert not (tmp_path / "_pyruns_").exists()
 
     command_help = _run_named_cli(tmp_path, program, "help", "exec")
@@ -1087,20 +1088,21 @@ def test_exec_command_string_dry_run_does_not_evaluate_the_expression(tmp_path):
     assert not (tmp_path / "_pyruns_").exists()
 
 
-@pytest.mark.parametrize("fence", [None, ('"""', '"""'), ("'''", "'''"), ("```bash", "```")])
-def test_exec_stdin_dry_run_preserves_multiline_text_without_side_effects(tmp_path, fence):
-    script = (
+@pytest.mark.parametrize("script", [
+    (
         "# 多行命令\n\n  echo '${UNCHANGED:-value}'\necho untouched > marker.txt\n"
         "cat <<'BODY'\n\"\"\"\n'''\n```\nBODY\n# trailing  \n\n"
-    )
-    supplied = script if fence is None else "\n" + fence[0] + "\n" + script + fence[1] + "\n\n"
+    ),
+    '\n"""\necho marker-text\n"""\n\n',
+])
+def test_exec_stdin_dry_run_preserves_multiline_text_without_side_effects(tmp_path, script):
     result = _run_cli(
         tmp_path,
         "exec",
         "--dry-run",
         "--json",
         "--stdin",
-        input_text="\ufeff" + supplied.replace("\n", "\r\n"),
+        input_text="\ufeff" + script.replace("\n", "\r\n"),
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1982,107 +1984,18 @@ def test_exec_stdin_stops_after_failed_check_and_records_exit_code(tmp_path):
     assert not (tmp_path / "unexpected").exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal input contract")
-@pytest.mark.parametrize("finish", ["closed", "eof"])
-def test_exec_fenced_terminal_input_preserves_text_and_restores_terminal(tmp_path, finish):
-    import select
-    import termios
-    import threading
-
-    shell = shutil.which("bash")
-    if not shell:
-        pytest.skip("Bash is unavailable")
-    body = "'''\n```\ninline \"\"\" and literal $HOME\n\t中文\tvalue\n"
-    script = (
-        "#!/usr/bin/env bash\nset -euo pipefail\n# " + "x" * 9000 + "\n"
-        "cat <<'BODY' > captured.txt\n" + body + "BODY\n\n"
-    )
-    env = _source_env()
-    env[ENV_KEY_CLI_SHELL_EXECUTABLE] = shell
-    master, slave = os.openpty()
-    original_mode = termios.tcgetattr(slave)
-    stop_drain = threading.Event()
-
-    def drain_echo():
-        while not stop_drain.is_set():
-            if select.select([master], [], [], 0.1)[0]:
-                try:
-                    os.read(master, 65536)
-                except OSError:
-                    return
-
-    echo_reader = threading.Thread(target=drain_echo, daemon=True)
-    echo_reader.start()
-    try:
-        with subprocess.Popen(
-            _source_cli("exec", "-n", "terminal-paste"),
-            cwd=tmp_path,
-            env=env,
-            stdin=slave,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-        ) as process:
-            try:
-                # Wait until Pyruns has switched out of canonical input mode.
-                assert select.select([process.stderr], [], [], 20)[0], "No script input prompt"
-                prompt = os.read(process.stderr.fileno(), 4096).decode("utf-8")
-                assert "Paste a script" in prompt
-                ending = '  """  \n' if finish == "closed" else "\x04"
-                pending = memoryview(('"""\n' + script + ending).encode("utf-8"))
-                while pending:
-                    pending = pending[os.write(master, pending):]
-                stdout, stderr = process.communicate(timeout=60)
-            except BaseException:
-                process.kill()
-                process.communicate()
-                raise
-            assert process.returncode == (0 if finish == "closed" else 2), stdout + stderr
-            assert termios.tcgetattr(slave) == original_mode
-    finally:
-        stop_drain.set()
-        echo_reader.join(timeout=1)
-        os.close(master)
-        os.close(slave)
-
-    if finish == "eof":
-        assert "closing marker" in stderr
-        assert not (tmp_path / "_pyruns_").exists()
-        assert not (tmp_path / "captured.txt").exists()
-        return
-
-    output = tmp_path / "captured.txt"
-    assert output.read_text(encoding="utf-8") == body
-    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "terminal-paste"
-    info = load_task_info(str(task_dir))
-    assert (task_dir / info["config_file"]).read_text(encoding="utf-8") == script
-    output.unlink()
-    rerun = _run_cli(tmp_path, "-w", "shell", "run", "terminal-paste", timeout=60)
-    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
-    assert output.read_text(encoding="utf-8") == body
-    assert load_task_info(str(task_dir))["exit_codes"] == [0, 0]
-
-
-@pytest.mark.parametrize("case", ["missing-open", "missing-close", "empty", "interrupt"])
-def test_exec_terminal_input_failure_does_not_create_workspace(tmp_path, monkeypatch, capsys, case):
-    stream = io.StringIO({
-        "missing-open": "echo wrong > marker.txt\n",
-        "missing-close": '"""\necho wrong > marker.txt\n',
-        "empty": '"""\n  \n"""\n',
-        "interrupt": "",
-    }[case])
-    monkeypatch.setattr(stream, "isatty", lambda: True)
-    if case == "interrupt":
-        def interrupt(*args):
-            raise KeyboardInterrupt
-        monkeypatch.setattr(stream, "readline", interrupt)
+@pytest.mark.parametrize(("extra", "terminal", "message"), [
+    ([], False, "requires a command"),
+    ([], True, "requires a command"),
+    (["--stdin"], True, "requires redirected input"),
+])
+def test_exec_requires_explicit_noninteractive_input(tmp_path, monkeypatch, capsys, extra, terminal, message):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "stdin", stream)
-    assert main(["exec", "-n", "bad-paste"]) == (130 if case == "interrupt" else 2)
-    if case != "interrupt":
-        assert "error:" in capsys.readouterr().err
-    assert not (tmp_path / "marker.txt").exists()
+    # Reading from this stream would fail; usage validation must happen first.
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: terminal))
+
+    assert main(["exec", "-nt", "missing-command", "-d", *extra]) == 2
+    assert message in capsys.readouterr().err
     assert not (tmp_path / "_pyruns_").exists()
 
 
@@ -2090,7 +2003,6 @@ def test_exec_terminal_input_failure_does_not_create_workspace(tmp_path, monkeyp
     ("case", "message"),
     [
         ("empty", "empty"), ("nul", "NUL"), ("oversized", "too large"), ("encoding", "UTF-8"),
-        ("missing-close", "closing"), ("empty-fence", "empty"),
     ],
 )
 def test_exec_stdin_rejects_invalid_input_before_creating_workspace(tmp_path, monkeypatch, capsys, case, message):
@@ -2100,8 +2012,6 @@ def test_exec_stdin_rejects_invalid_input_before_creating_workspace(tmp_path, mo
         "empty": b"\xef\xbb\xbf \r\n\t",
         "nul": b"echo ok\0\n",
         "encoding": b"echo \xff\n",
-        "missing-close": b'"""\necho wrong\n',
-        "empty-fence": b"```bash\n  \n```\n",
     }[case]
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(raw), isatty=lambda: False))
@@ -2392,14 +2302,8 @@ def test_exec_missing_program_preserves_workspace_shell_error(tmp_path):
     assert result.returncode == 1
     assert missing in result.stdout
     if os.name == "nt":
-        assert any(
-            marker in result.stdout
-            for marker in (
-                "CommandNotFoundException",
-                "is not recognized as a name",
-                "无法将",
-            )
-        )
+        # The surrounding PowerShell diagnostic varies by version and locale.
+        assert "cmdlet" in result.stdout
     else:
         assert "not found" in result.stdout.lower()
     assert "Command:" not in result.stdout
