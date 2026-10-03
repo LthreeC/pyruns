@@ -208,7 +208,10 @@ def _exec_help_epilog(program: str) -> str:
         "    A single-quoted here-string preserves $variables until the saved script runs.\n"
         "    Use a PowerShell workspace shell for PowerShell scripts.\n"
         "    Windows PowerShell 5.1: set UTF-8 pipe encoding before submitting:\n"
-        "      $OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n\n"
+        "      $OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+        "    To record a PowerShell script file:\n"
+        "      Get-Content -Raw -Encoding UTF8 .\\pipeline.ps1 |\n"
+        f"        {program} exec -nt pipeline -d --stdin\n\n"
         "Shell selection:\n"
         "  By default, shell_mode=follow detects the invoking terminal's shell.\n"
         "  To select Bash explicitly for new shell tasks on Linux/WSL:\n"
@@ -690,6 +693,8 @@ def build_parser(
             "ls --trash",
             notes=(
                 "Without -w, Pyruns uses the only workspace discovered from the current directory.",
+                "QUERY searches task names, notes, and saved configuration or command text.",
+                "Use Web UI search to include log contents; --trash searches names only.",
                 "--status is repeatable; --limit applies after filtering and ordering.",
                 "--reverse reverses each pinned/unpinned group; pinned tasks still remain first.",
                 "Use --json for strict, versioned machine-readable task summaries.",
@@ -792,7 +797,7 @@ def build_parser(
 
     wait = command(
         "wait",
-        help_text="wait for active tasks and return their result",
+        help_text="wait for submitted tasks and return their result",
         description=(
             "Wait until every exact queued or running task reaches a final state, then return success\n"
             "only when all of them completed successfully. Pending tasks have not been submitted and\n"
@@ -803,6 +808,7 @@ def build_parser(
             "wait train",
             "-w train wait seed1 seed2 --timeout 600",
             notes=(
+                "Already-finished tasks return their recorded result immediately.",
                 "--timeout 0 means wait indefinitely; a positive timeout is measured in seconds.",
                 "Timeout or Ctrl+C stops waiting only; the tasks continue running.",
                 "Exit status is 1 for task failure, cancellation, or timeout, and 130 if interrupted.",
@@ -1113,7 +1119,7 @@ def build_parser(
         help_text="start the Web UI with hot reload",
         description=(
             "Initialize and open SCRIPT.py with Web UI hot reload.\n"
-            "This is a development server, not the normal production UI entry. Global\n"
+            "This is a development server, not the normal production UI entry.\n"
             "UI commands do not accept -w/--workspace or --json."
         ),
         json_help=None,

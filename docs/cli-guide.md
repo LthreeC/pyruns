@@ -257,6 +257,13 @@ Write-Output 'second step'
 或配合 `-d` 后台执行；输入会在创建任务前读完。不要使用 `pyr exec -- bash -s` 来传递
 正文，任务进程不继承调用端的标准输入。
 
+记录已有 PowerShell 脚本时，用管道读取整个 UTF-8 文件：
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\pipeline.ps1 |
+  pyr exec -nt pipeline -d --stdin
+```
+
 标准输入是常见的 CLI 约定：[Git `commit --file -`](https://git-scm.com/docs/git-commit)
 从 stdin 读取提交正文；[Docker build](https://docs.docker.com/build/building/context/#empty-context)
 支持从重定向或 heredoc 读取 Dockerfile。Pyruns 的 `--stdin` 使用同一输入方式，额外将
@@ -396,6 +403,8 @@ pyr -w train ls --trash
 
 正常任务列表会显示 `PIN` 标记，并在 JSON 摘要中提供 `pinned` 布尔值。置顶任务在所有排序方式下始终位于普通任务之前；`--reverse` 只反转置顶组和普通组各自内部的顺序。
 
+`QUERY` 不区分大小写，匹配任务名、备注以及保存的配置或命令正文；`--trash` 仅匹配名称。需要搜索日志内容时使用 Web UI 检索。
+
 查看工作区汇总：
 
 ```bash
@@ -444,14 +453,14 @@ pyr -w train log baseline --path --json
 
 ## 10. 等待和停止：`wait`、`stop`
 
-等待已有活动任务：
+等待已提交任务，或读取已结束任务的结果：
 
 ```bash
 pyr -w train wait baseline
 pyr -w train wait seed1 seed2 --timeout 600
 ```
 
-`timeout=0` 表示无限等待。pending 任务尚未交给 runner，因此 `wait` 会拒绝它。正数超时或 Ctrl+C 都只停止等待，不会停止任务；需要取消任务时使用 `stop`。
+`timeout=0` 表示无限等待。已结束任务立即返回记录的结果。pending 任务尚未交给 runner，因此 `wait` 会拒绝它。正数超时或 Ctrl+C 都只停止等待，不会停止任务；需要取消任务时使用 `stop`。
 
 向真正拥有任务的 runner 请求取消：
 

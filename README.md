@@ -118,7 +118,7 @@ pyr exec -n check -- python -V        # -- 后面是原样传给目标程序的 
 | `status` | 查看 workspace 状态汇总 |
 | `show` | 查看任务元数据和路径 |
 | `log` | 打印、跟随或定位日志 |
-| `wait` | 等待已在运行的任务 |
+| `wait` | 等待已提交任务，返回其最终结果 |
 | `stop` | 向拥有任务的 runner 请求停止；正常停止记为 `cancelled`，失联任务可记为 `failed` |
 | `rm` / `restore` | 软删除与恢复任务 |
 | `mv` / `pin` | 管理任务名称与置顶状态 |
