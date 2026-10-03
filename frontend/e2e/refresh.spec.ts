@@ -2,6 +2,132 @@ import { expect, test } from '@playwright/test'
 
 const emptyCounts = { pending: 0, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 }
 
+test('Manager cancels obsolete lists and preserves results through timeout and retry', async ({ page }) => {
+  const now = new Date()
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(new Date(now.getTime() + 100))
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    const state = { stall: false, reads: 0, aborts: 0 }
+    Object.assign(window, { managerReadTest: state })
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input), location.origin).pathname === '/api/tasks') {
+        state.reads++
+        if (state.stall) return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            state.aborts++
+            reject(init.signal?.reason)
+          }, { once: true })
+        })
+      }
+      return original(input, init)
+    }) as typeof window.fetch
+  })
+  const task = { name: 'retained-task', dir: '/tmp/retained-task', status: 'completed', run_index: 1, task_kind: 'shell' }
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [task], total: 1, offset: 0, limit: 50, has_more: false,
+    status_counts: { ...emptyCounts, completed: 1 },
+  } }))
+  await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
+  const snapshot = () => page.evaluate(() => (window as typeof window & {
+    managerReadTest: { stall: boolean; reads: number; aborts: number }
+  }).managerReadTest)
+  const stall = (value: boolean) => page.evaluate(next => {
+    (window as typeof window & { managerReadTest: { stall: boolean } }).managerReadTest.stall = next
+  }, value)
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const refresh = page.getByRole('button', { name: 'Refresh tasks', exact: true })
+  const card = page.locator('[data-task-card]')
+  await expect(refresh).toBeEnabled()
+  await expect(card).toContainText('retained-task')
+  await stall(true)
+  await refresh.click()
+  await expect.poll(snapshot).toMatchObject({ reads: 2, aborts: 0 })
+  await page.getByRole('combobox', { name: 'Filter tasks by status' }).selectOption('completed')
+  await expect.poll(snapshot).toMatchObject({ reads: 3, aborts: 1 })
+  await page.clock.runFor(10_001)
+  await expect.poll(snapshot).toMatchObject({ aborts: 2 })
+  await expect(refresh).toBeEnabled()
+  const error = page.getByText('Task list loading timed out. Refresh to retry.', { exact: true })
+  await expect(error).toBeVisible()
+  await expect(card).toContainText('retained-task')
+  await stall(false)
+  await refresh.click()
+  await expect(refresh).toBeEnabled()
+  await expect(error).toBeHidden()
+  await expect.poll(snapshot).toMatchObject({ reads: 4 })
+  await stall(true)
+  await refresh.click()
+  await expect.poll(snapshot).toMatchObject({ reads: 5 })
+  await page.getByRole('link', { name: 'Home', exact: true }).click()
+  await expect.poll(snapshot).toMatchObject({ aborts: 3 })
+})
+
+test('Launcher cancels replaced and hidden path checks and recovers after timeout', async ({ page }) => {
+  const now = new Date()
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(new Date(now.getTime() + 100))
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    const state = { stall: true, reads: [] as string[], aborts: 0 }
+    Object.assign(window, { launcherReadTest: state })
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), location.origin)
+      if (url.pathname === '/api/launcher/validate-path') {
+        state.reads.push(url.searchParams.get('path') || '')
+        if (state.stall) return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            state.aborts++
+            reject(init.signal?.reason)
+          }, { once: true })
+        })
+      }
+      return original(input, init)
+    }) as typeof window.fetch
+  })
+  await page.route('**/api/launcher/validate-path?*', route => route.fulfill({ json: {
+    ok: true, message: 'Ready', normalized_path: '/valid.py',
+  } }))
+  const snapshot = () => page.evaluate(() => (window as typeof window & {
+    launcherReadTest: { stall: boolean; reads: string[]; aborts: number }
+  }).launcherReadTest)
+  await page.goto('/launcher?token=pyruns-e2e-access-token&script=/first.py&config=/hidden.yaml')
+  const dialog = page.getByRole('dialog', { name: 'Launch Workspace' })
+  const input = dialog.getByRole('textbox', { name: 'Python script path' })
+  await expect(input).toHaveValue('/first.py')
+  await page.clock.runFor(301)
+  await expect.poll(snapshot).toMatchObject({ reads: ['/first.py'], aborts: 0 })
+  await input.fill('/second.py')
+  await expect.poll(snapshot).toMatchObject({ aborts: 1 })
+  await page.clock.runFor(301)
+  await expect.poll(snapshot).toMatchObject({ reads: ['/first.py', '/second.py'] })
+  await dialog.getByRole('button', { name: 'Shell', exact: true }).click()
+  await expect.poll(snapshot).toMatchObject({ aborts: 2 })
+  await page.clock.runFor(301)
+  expect((await snapshot()).reads).toHaveLength(2)
+  await dialog.getByRole('button', { name: 'Python', exact: true }).click()
+  await expect.poll(snapshot).toMatchObject({ reads: ['/first.py', '/second.py', '/second.py'] })
+  await page.clock.runFor(10_001)
+  await expect(dialog.getByText('Path check timed out. Edit the path to retry.', { exact: true })).toBeVisible()
+  await expect.poll(snapshot).toMatchObject({ aborts: 3 })
+  await page.evaluate(() => {
+    (window as typeof window & { launcherReadTest: { stall: boolean } }).launcherReadTest.stall = false
+  })
+  await input.fill('/valid.py')
+  await page.clock.runFor(301)
+  await expect(dialog.getByRole('button', { name: 'Select Script Path' })).toBeEnabled()
+  await expect(dialog.getByRole('status')).toHaveText('/valid.py')
+  await page.evaluate(() => {
+    (window as typeof window & { launcherReadTest: { stall: boolean } }).launcherReadTest.stall = true
+  })
+  await input.fill('/closing.py')
+  await page.clock.runFor(301)
+  await expect.poll(async () => (await snapshot()).reads.at(-1)).toBe('/closing.py')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect.poll(snapshot).toMatchObject({ aborts: 4 })
+})
+
 test('historical log timeout can retry the same file', async ({ page }) => {
   const now = new Date()
   await page.clock.install({ time: now })

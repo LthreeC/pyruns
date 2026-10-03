@@ -92,6 +92,37 @@ function validationFromResult(result: PathValidationResult, validatedPath: strin
   }
 }
 
+function usePathValidation(kind: 'python' | 'shell' | 'config', path: string, enabled: boolean, script?: string) {
+  const [validation, setValidation] = useState<PathValidationState>(emptyValidation)
+  const debouncedPath = useDebouncedValue(path, 300)
+  useEffect(() => {
+    if (!enabled || !debouncedPath || debouncedPath !== path) {
+      setValidation(emptyValidation)
+      return
+    }
+    let disposed = false
+    const controller = new AbortController()
+    const timeout = setTimeout(() => {
+      controller.abort(new Error('Path check timed out. Edit the path to retry.'))
+    }, 10_000)
+    setValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: path })
+    api.validateLauncherPath(kind, path, script, controller.signal)
+      .then(result => {
+        if (!disposed && !controller.signal.aborted) setValidation(validationFromResult(result, path))
+      })
+      .catch((err: unknown) => {
+        if (!disposed) setValidation({ status: 'invalid', message: err instanceof Error ? err.message : 'Could not check path.', normalizedPath: '', validatedPath: path })
+      })
+      .finally(() => clearTimeout(timeout))
+    return () => {
+      disposed = true
+      clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [kind, path, debouncedPath, enabled, script])
+  return validation
+}
+
 export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const backdropPointerStartedRef = useRef(false)
   const launcherActionInFlightRef = useRef(false)
@@ -111,17 +142,14 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
   const [manualShellRootPath, setManualShellRootPath] = useState('')
   const [launchMode, setLaunchMode] = useState<'python' | 'shell'>('python')
   const [error, setError] = useState('')
-  const [scriptValidation, setScriptValidation] = useState<PathValidationState>(emptyValidation)
-  const [configValidation, setConfigValidation] = useState<PathValidationState>(emptyValidation)
-  const [shellValidation, setShellValidation] = useState<PathValidationState>(emptyValidation)
   const [launchHistory, setLaunchHistory] = useState<Record<LaunchHistoryKind, string[]>>(() => ({
     python: readLaunchHistory('python'),
     shell: readLaunchHistory('shell'),
     yaml: readLaunchHistory('yaml'),
   }))
-  const debouncedScriptPath = useDebouncedValue(manualScriptPath.trim(), 300)
-  const debouncedConfigPath = useDebouncedValue(manualConfigPath.trim(), 300)
-  const debouncedShellRootPath = useDebouncedValue(manualShellRootPath.trim(), 300)
+  const scriptValidation = usePathValidation('python', manualScriptPath.trim(), step === 0 && launchMode === 'python')
+  const configValidation = usePathValidation('config', manualConfigPath.trim(), step === 1 && launchMode === 'python', selectedScript)
+  const shellValidation = usePathValidation('shell', manualShellRootPath.trim(), step === 0 && launchMode === 'shell')
   const scriptPathReady = manualScriptPath.trim().length > 0
     && scriptValidation.status === 'valid'
     && scriptValidation.validatedPath === manualScriptPath.trim()
@@ -270,72 +298,6 @@ export default function LauncherPage({ onClose }: { onClose: () => void }) {
       setError('Review the prefilled path, then choose Open to switch workspaces.')
     }
   }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!debouncedScriptPath) {
-      setScriptValidation(emptyValidation)
-      return () => { cancelled = true }
-    }
-
-    setScriptValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: debouncedScriptPath })
-    api.validateLauncherPath('python', debouncedScriptPath)
-      .then(result => {
-        if (!cancelled) {
-          setScriptValidation(validationFromResult(result, debouncedScriptPath))
-        }
-      })
-      .catch((err: any) => {
-        if (!cancelled) {
-          setScriptValidation({ status: 'invalid', message: err.message, normalizedPath: '', validatedPath: debouncedScriptPath })
-        }
-      })
-    return () => { cancelled = true }
-  }, [debouncedScriptPath])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!debouncedConfigPath) {
-      setConfigValidation(emptyValidation)
-      return () => { cancelled = true }
-    }
-
-    setConfigValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: debouncedConfigPath })
-    api.validateLauncherPath('config', debouncedConfigPath, selectedScript)
-      .then(result => {
-        if (!cancelled) {
-          setConfigValidation(validationFromResult(result, debouncedConfigPath))
-        }
-      })
-      .catch((err: any) => {
-        if (!cancelled) {
-          setConfigValidation({ status: 'invalid', message: err.message, normalizedPath: '', validatedPath: debouncedConfigPath })
-        }
-      })
-    return () => { cancelled = true }
-  }, [debouncedConfigPath, selectedScript])
-
-  useEffect(() => {
-    let cancelled = false
-    if (!debouncedShellRootPath) {
-      setShellValidation(emptyValidation)
-      return () => { cancelled = true }
-    }
-
-    setShellValidation({ status: 'checking', message: 'Checking path...', normalizedPath: '', validatedPath: debouncedShellRootPath })
-    api.validateLauncherPath('shell', debouncedShellRootPath)
-      .then(result => {
-        if (!cancelled) {
-          setShellValidation(validationFromResult(result, debouncedShellRootPath))
-        }
-      })
-      .catch((err: any) => {
-        if (!cancelled) {
-          setShellValidation({ status: 'invalid', message: err.message, normalizedPath: '', validatedPath: debouncedShellRootPath })
-        }
-      })
-    return () => { cancelled = true }
-  }, [debouncedShellRootPath])
 
   const handleLaunchModeChange = useCallback((mode: 'python' | 'shell') => {
     setLaunchMode(mode)

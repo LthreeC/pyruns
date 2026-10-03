@@ -728,7 +728,7 @@ let monitorSearchController: AbortController | null = null
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   cancelTaskSearch() {
-    const wasSearching = Boolean(taskSearchController && get().loading)
+    const wasSearching = Boolean(taskSearchController && get().loading && get().query)
     taskSearchController?.abort()
     taskSearchController = null
     taskRequestSeq += 1
@@ -826,11 +826,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   async fetchTasks(options = {}) {
     if (options.background && (get().loading || get().query)) return
     taskSearchController?.abort()
-    const controller = get().query ? new AbortController() : null
+    const controller = new AbortController()
     taskSearchController = controller
     const requestId = ++taskRequestSeq
     const workspaceKey = currentWorkspaceKey()
     const { query, searchField, searchOptions, statusFilter, sortMode, offset, limit } = get()
+    // Searching may scan remote logs; only ordinary list reads use this budget.
+    const timeout = query ? undefined : setTimeout(() => {
+      controller.abort(new Error('Task list loading timed out. Refresh to retry.'))
+    }, 10_000)
     const maxResults = useSearchSettingsStore.getState().maxResults
     let requestedOffset = offset
     const isCurrentRequest = () => {
@@ -852,7 +856,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     } : undefined
     set(options.background ? { error: null } : { loading: true, error: null, searchLimitHit: false })
     try {
-      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, forceRefresh: options.forceRefresh, maxResults, onProgress }, controller?.signal)
+      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, forceRefresh: options.forceRefresh, maxResults, onProgress }, controller.signal)
       if (!isCurrentRequest()) {
         return
       }
@@ -876,7 +880,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             forceRefresh: options.forceRefresh,
             maxResults,
             onProgress,
-          }, controller?.signal)
+          }, controller.signal)
           if (!isCurrentRequest()) {
             return
           }
@@ -928,6 +932,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         })
       }
     } finally {
+      clearTimeout(timeout)
+      if (taskSearchController === controller) taskSearchController = null
       if (isCurrentRequest()) {
         set({ loading: false })
       }

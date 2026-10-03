@@ -278,7 +278,7 @@ describe('workspace-scoped stores', () => {
     await useTaskStore.getState().fetchTasks()
 
     expect(setItem).toHaveBeenCalledWith('pyruns_manager_sort', 'activity_asc')
-    expect(api.getTasks).toHaveBeenCalledWith(expect.objectContaining({ sort: 'activity_asc' }), undefined)
+    expect(api.getTasks).toHaveBeenCalledWith(expect.objectContaining({ sort: 'activity_asc' }), expect.any(AbortSignal))
     expect(useTaskStore.getState().sortMode).toBe('activity_asc')
   })
 
@@ -396,6 +396,24 @@ describe('workspace-scoped stores', () => {
     if (view === 'monitor') await useTaskStore.getState().fetchMonitorTasks({ background: true })
     else await useTaskStore.getState().fetchTasks({ background: true })
     expect(api.getTasks).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not impose the ordinary list timeout on a slow Manager search', async () => {
+    vi.useFakeTimers()
+    try {
+      useWorkspaceStore.getState().setWorkspace(workspace('A'))
+      useTaskStore.getState().setQuery('needle')
+      const response = deferred<any>()
+      vi.mocked(api.getTasks).mockReturnValueOnce(response.promise)
+      const pending = useTaskStore.getState().fetchTasks()
+      const signal = vi.mocked(api.getTasks).mock.calls[0][1]!
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(signal.aborted).toBe(false)
+      expect(useTaskStore.getState().loading).toBe(true)
+      response.resolve({ items: [{ name: 'slow-match' }], total: 1, has_more: false })
+      await pending
+      expect(useTaskStore.getState()).toMatchObject({ loading: false, error: null, tasks: [{ name: 'slow-match' }] })
+    } finally { vi.useRealTimers() }
   })
 
   it('keeps Manager controls available while a background refresh is pending', async () => {

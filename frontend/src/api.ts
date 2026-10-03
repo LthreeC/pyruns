@@ -424,10 +424,10 @@ export const getLauncherWorkspaces = (script: string, config?: string) => {
   return request<{ items: WorkspaceCandidate[] }>(`/api/launcher/workspaces?${sp}`)
 }
 
-export const validateLauncherPath = (kind: 'python' | 'shell' | 'config', path: string, script?: string) => {
+export const validateLauncherPath = (kind: 'python' | 'shell' | 'config', path: string, script?: string, signal?: AbortSignal) => {
   const sp = new URLSearchParams({ kind, path })
   if (script) sp.set('script', script)
-  return request<PathValidationResult>(`/api/launcher/validate-path?${sp}`)
+  return request<PathValidationResult>(`/api/launcher/validate-path?${sp}`, { signal })
 }
 
 export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =>

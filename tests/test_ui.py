@@ -215,7 +215,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'onClick={() => void handleSelectConfig(config.path)}',
             'function ConfigActionPanel',
             'configPathReady',
-            "api.validateLauncherPath('config', debouncedConfigPath, selectedScript)",
+            "usePathValidation('config', manualConfigPath.trim(), step === 1 && launchMode === 'python', selectedScript)",
             'validation={configValidation}',
             'PathValidationHint id={validationId} validation={validation} pathValue={pathValue}',
             'validatedPath: string',
