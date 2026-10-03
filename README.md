@@ -178,7 +178,36 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log"
 ```
 
-`-c echo hello` 会把剩余文本合并成 `echo hello`。命令含 `;`、`|`、重定向或变量时，必须按调用端 shell 的规则引用整段表达式，避免调用端在 Pyruns 启动前将它拆开。Pyruns 不安装 shell 专用的行编辑钩子；所有平台都遵循同一契约：普通程序使用 `--` 后的精确 argv，需要 shell 语法时使用带引号的 `-c`。
+`-c echo hello` 会把剩余文本合并成 `echo hello`。命令含 `;`、`|`、重定向或变量时，必须按调用端 shell 的规则引用整段表达式，避免调用端在 Pyruns 启动前将它拆开。
+
+临时粘贴大段脚本时，先执行 `pyr exec -n pipeline -d` 并按回车。看到录入提示后，
+粘贴首尾用独占行的三引号 `"""` 或三反引号包裹的整段脚本。结束标记提交，`Ctrl+C`
+取消；正文中的换行、变量和引号会完整保存，供查看和重跑。
+
+自动化中可以通过 `--stdin` 与 heredoc 提交：
+
+```bash
+pyr exec -n pipeline -d --stdin <<'BASH'
+set -euo pipefail
+DATA_ROOT=${DATA_ROOT:-./data}
+export TOKENIZERS_PARALLELISM=false
+python preprocess.py --data "$DATA_ROOT"
+python train.py --data "$DATA_ROOT" \
+  --epochs 10 --lr 0.001
+BASH
+
+pyr -w shell show pipeline
+pyr -w shell log pipeline -f
+pyr -w shell run pipeline
+```
+
+`<<'BASH'` 防止调用端提前展开变量，换行、引号和注释会保留。也可用
+`pyr exec -n pipeline --stdin < pipeline.sh` 保存文件正文的快照，后续源文件变化不影响重跑。
+`--stdin` 接收 UTF-8 文本（最多 4 MiB），使用工作区 Shell；Bash 脚本应从 Bash 终端提交或
+将工作区 Shell 配置为 Bash。详见[多行脚本录入](docs/cli-guide.md#粘贴多行脚本)。
+
+Pyruns 不安装 shell 专用的行编辑钩子；普通程序使用 `--` 后的精确 argv，Shell 表达式使用
+带引号的 `-c`，完整脚本使用 `--stdin`。
 
 ```powershell
 pyr exec -c '$colors=@("Red","Green"); 1..2 | ForEach-Object { Write-Host $_ -ForegroundColor $colors[$_-1] }'

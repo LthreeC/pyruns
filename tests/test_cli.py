@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import re
@@ -106,6 +107,7 @@ def _run_cli(
     *args: str,
     timeout: float = 20.0,
     env_overrides: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = _source_env()
     env.update(env_overrides or {})
@@ -114,9 +116,11 @@ def _run_cli(
             _source_cli(*args),
             cwd=cwd,
             env=env,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL if input_text is None else None,
+            input=input_text,
             capture_output=True,
             text=True,
+            encoding="utf-8" if input_text is not None else None,
             timeout=timeout,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
@@ -235,6 +239,10 @@ def test_official_entrypoints_render_their_own_complete_help(
 
     command_help = _run_named_cli(tmp_path, program, "help", "exec")
     assert command_help.returncode == 0, command_help.stderr
+    exec_help = _run_named_cli(tmp_path, program, "exec", "help")
+    assert exec_help.returncode == 0, exec_help.stderr
+    assert exec_help.stdout == command_help.stdout
+    assert not (tmp_path / "_pyruns_").exists()
     assert f"usage: {program} exec" in command_help.stdout
     assert f"{program} exec -n smoke -- python -V" in command_help.stdout
     assert ".sh, .ps1, .cmd" in command_help.stdout
@@ -1071,6 +1079,31 @@ def test_exec_command_string_dry_run_does_not_evaluate_the_expression(tmp_path):
     assert not (tmp_path / "_pyruns_").exists()
 
 
+@pytest.mark.parametrize("fence", [None, ('"""', '"""'), ("'''", "'''"), ("```bash", "```")])
+def test_exec_stdin_dry_run_preserves_multiline_text_without_side_effects(tmp_path, fence):
+    script = (
+        "# 多行命令\n\n  echo '${UNCHANGED:-value}'\necho untouched > marker.txt\n"
+        "cat <<'BODY'\n\"\"\"\n'''\n```\nBODY\n# trailing  \n\n"
+    )
+    supplied = script if fence is None else "\n" + fence[0] + "\n" + script + fence[1] + "\n\n"
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "--dry-run",
+        "--json",
+        "--stdin",
+        input_text="\ufeff" + supplied.replace("\n", "\r\n"),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["shell_expression"] == script
+    assert payload["command_mode"] == "shell"
+    assert payload["command_argv"] is None
+    assert not (tmp_path / "marker.txt").exists()
+    assert not (tmp_path / "_pyruns_").exists()
+
+
 def test_follow_task_retries_final_log_until_size_is_stable(monkeypatch):
     from pyruns.cli import commands
 
@@ -1810,6 +1843,271 @@ def test_exec_command_string_preserves_expression(tmp_path, monkeypatch, capsys)
     assert payload.read_text(encoding="utf-8").strip() == expression
     run_log = (task_dir / RUN_LOGS_DIR / "run1.log").read_text(encoding="utf-8")
     assert "alpha" in run_log and "beta" in run_log
+
+
+def test_exec_stdin_records_long_script_and_reruns_without_input(tmp_path):
+    if os.name == "nt":
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        header = "$ErrorActionPreference = 'Stop'\n"
+        body = (
+            "$label = 'literal $HOME and spaces'\n"
+            "$env:SCRIPT_VALUE = 'value with spaces'\n"
+            "Set-Location -LiteralPath 'script work'\n"
+            "& $env:TEST_PYTHON ../steps.py check `\n"
+            "  $label $env:SCRIPT_VALUE\n"
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+            "& $env:TEST_PYTHON ../steps.py run `\n"
+            "  $label $env:SCRIPT_VALUE\n"
+            "exit $LASTEXITCODE\n"
+        )
+    else:
+        shell = shutil.which("bash")
+        header = "#!/usr/bin/env bash\nset -euo pipefail\n"
+        body = (
+            "LABEL='literal $HOME and spaces'\n"
+            'export SCRIPT_VALUE="${PYRUNS_STDIN_VALUE:-value with spaces}"\n'
+            'cd "script work"\n'
+            '"$TEST_PYTHON" ../steps.py check \\\n'
+            '  "$LABEL" "$SCRIPT_VALUE"\n'
+            '"$TEST_PYTHON" ../steps.py run \\\n'
+            '  "$LABEL" "$SCRIPT_VALUE"\n'
+        )
+    if not shell:
+        pytest.skip("The native multiline script shell is unavailable")
+
+    workdir = tmp_path / "script work"
+    workdir.mkdir()
+    (tmp_path / "steps.py").write_text(
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "if sys.argv[1] == 'check':\n"
+        "    deadline = time.monotonic() + 45\n"
+        "    while not Path('../release').exists():\n"
+        "        if time.monotonic() >= deadline: raise SystemExit(9)\n"
+        "        time.sleep(0.05)\n"
+        "    print('CHECK_OK', flush=True)\n"
+        "else:\n"
+        "    data = dict(argv=sys.argv[2:], env=os.environ['SCRIPT_VALUE'], cwd=str(Path.cwd()))\n"
+        "    Path('result.json').write_text(json.dumps(data), encoding='utf-8')\n"
+        "    print('RUN_OK', flush=True)\n",
+        encoding="utf-8",
+    )
+    # Exceed Linux's per-argument limit so a regression to shell -c cannot pass.
+    script = header + ("# " + "recorded comment " * 10 + "\n") * 1024 + body + "# keep spaces  \n\n"
+    assert len(script.encode("utf-8")) > 128 * 1024
+    release_file = tmp_path / "release"
+    try:
+        result = _run_cli(
+            tmp_path,
+            "exec",
+            "--name",
+            "long-script",
+            "--detach",
+            "-e",
+            f"TEST_PYTHON={sys.executable}",
+            "PYRUNS_STDIN_VALUE=",
+            "--stdin",
+            input_text=script,
+            env_overrides={ENV_KEY_CLI_SHELL_EXECUTABLE: shell},
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "long-script"
+        assert load_task_info(str(task_dir))["status"] in {"queued", "running"}
+    finally:
+        release_file.touch()
+
+    info = _wait_status(task_dir, {"completed", "failed"}, timeout=60)
+    assert info["status"] == "completed"
+    assert (task_dir / info["config_file"]).read_text(encoding="utf-8") == script
+    expected = {
+        "argv": ["literal $HOME and spaces", "value with spaces"],
+        "env": "value with spaces",
+        "cwd": str(workdir),
+    }
+    artifact = workdir / "result.json"
+    assert json.loads(artifact.read_text(encoding="utf-8")) == expected
+    artifact.unlink()
+
+    shown = _run_cli(tmp_path, "-w", "shell", "show", "long-script", "--json")
+    assert shown.returncode == 0, shown.stdout + shown.stderr
+    detail = json.loads(shown.stdout)
+    assert detail["command"] == script
+    assert detail["command_mode"] == "shell"
+    rerun_cwd = tmp_path / "rerun elsewhere"
+    rerun_cwd.mkdir()
+    rerun = _run_cli(
+        rerun_cwd,
+        "-w",
+        str(task_dir.parent.parent),
+        "run",
+        "long-script",
+        timeout=60,
+    )
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert json.loads(artifact.read_text(encoding="utf-8")) == expected
+    assert load_task_info(str(task_dir))["exit_codes"] == [0, 0]
+    for index in (1, 2):
+        log = _run_cli(tmp_path, "-w", "shell", "log", f"long-script@{index}")
+        assert log.returncode == 0, log.stdout + log.stderr
+        assert log.stdout.index("CHECK_OK") < log.stdout.index("RUN_OK")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Bash strict-mode semantics")
+def test_exec_stdin_stops_after_failed_check_and_records_exit_code(tmp_path):
+    shell = shutil.which("bash")
+    if not shell:
+        pytest.skip("Bash is unavailable")
+    result = _run_cli(
+        tmp_path,
+        "exec",
+        "-n",
+        "failed-check",
+        "--stdin",
+        input_text="#!/usr/bin/env bash\nset -euo pipefail\ncheck() { return 7; }\ncheck\necho wrong > unexpected\n",
+        env_overrides={ENV_KEY_CLI_SHELL_EXECUTABLE: shell},
+        timeout=60,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "failed-check"
+    assert load_task_info(str(task_dir))["exit_codes"] == [7]
+    assert not (tmp_path / "unexpected").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal input contract")
+@pytest.mark.parametrize("finish", ["closed", "eof"])
+def test_exec_fenced_terminal_input_preserves_text_and_restores_terminal(tmp_path, finish):
+    import select
+    import termios
+    import threading
+
+    shell = shutil.which("bash")
+    if not shell:
+        pytest.skip("Bash is unavailable")
+    body = "'''\n```\ninline \"\"\" and literal $HOME\n\t中文\tvalue\n"
+    script = (
+        "#!/usr/bin/env bash\nset -euo pipefail\n# " + "x" * 9000 + "\n"
+        "cat <<'BODY' > captured.txt\n" + body + "BODY\n\n"
+    )
+    env = _source_env()
+    env[ENV_KEY_CLI_SHELL_EXECUTABLE] = shell
+    master, slave = os.openpty()
+    original_mode = termios.tcgetattr(slave)
+    stop_drain = threading.Event()
+
+    def drain_echo():
+        while not stop_drain.is_set():
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    os.read(master, 65536)
+                except OSError:
+                    return
+
+    echo_reader = threading.Thread(target=drain_echo, daemon=True)
+    echo_reader.start()
+    try:
+        with subprocess.Popen(
+            _source_cli("exec", "-n", "terminal-paste"),
+            cwd=tmp_path,
+            env=env,
+            stdin=slave,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        ) as process:
+            try:
+                # Wait until Pyruns has switched out of canonical input mode.
+                assert select.select([process.stderr], [], [], 20)[0], "No script input prompt"
+                prompt = os.read(process.stderr.fileno(), 4096).decode("utf-8")
+                assert "Paste a script" in prompt
+                ending = '  """  \n' if finish == "closed" else "\x04"
+                pending = memoryview(('"""\n' + script + ending).encode("utf-8"))
+                while pending:
+                    pending = pending[os.write(master, pending):]
+                stdout, stderr = process.communicate(timeout=60)
+            except BaseException:
+                process.kill()
+                process.communicate()
+                raise
+            assert process.returncode == (0 if finish == "closed" else 2), stdout + stderr
+            assert termios.tcgetattr(slave) == original_mode
+    finally:
+        stop_drain.set()
+        echo_reader.join(timeout=1)
+        os.close(master)
+        os.close(slave)
+
+    if finish == "eof":
+        assert "closing marker" in stderr
+        assert not (tmp_path / "_pyruns_").exists()
+        assert not (tmp_path / "captured.txt").exists()
+        return
+
+    output = tmp_path / "captured.txt"
+    assert output.read_text(encoding="utf-8") == body
+    task_dir = tmp_path / "_pyruns_" / "_shell_" / TASKS_DIR / "terminal-paste"
+    info = load_task_info(str(task_dir))
+    assert (task_dir / info["config_file"]).read_text(encoding="utf-8") == script
+    output.unlink()
+    rerun = _run_cli(tmp_path, "-w", "shell", "run", "terminal-paste", timeout=60)
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert output.read_text(encoding="utf-8") == body
+    assert load_task_info(str(task_dir))["exit_codes"] == [0, 0]
+
+
+@pytest.mark.parametrize("case", ["missing-open", "missing-close", "empty", "interrupt"])
+def test_exec_terminal_input_failure_does_not_create_workspace(tmp_path, monkeypatch, capsys, case):
+    stream = io.StringIO({
+        "missing-open": "echo wrong > marker.txt\n",
+        "missing-close": '"""\necho wrong > marker.txt\n',
+        "empty": '"""\n  \n"""\n',
+        "interrupt": "",
+    }[case])
+    monkeypatch.setattr(stream, "isatty", lambda: True)
+    if case == "interrupt":
+        def interrupt(*args):
+            raise KeyboardInterrupt
+        monkeypatch.setattr(stream, "readline", interrupt)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", stream)
+    assert main(["exec", "-n", "bad-paste"]) == (130 if case == "interrupt" else 2)
+    if case != "interrupt":
+        assert "error:" in capsys.readouterr().err
+    assert not (tmp_path / "marker.txt").exists()
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("empty", "empty"), ("nul", "NUL"), ("oversized", "too large"), ("encoding", "UTF-8"),
+        ("missing-close", "closing"), ("empty-fence", "empty"),
+    ],
+)
+def test_exec_stdin_rejects_invalid_input_before_creating_workspace(tmp_path, monkeypatch, capsys, case, message):
+    from pyruns.utils.task_files import MAX_TASK_PAYLOAD_BYTES
+
+    raw = b"#" * (MAX_TASK_PAYLOAD_BYTES + 1) if case == "oversized" else {
+        "empty": b"\xef\xbb\xbf \r\n\t",
+        "nul": b"echo ok\0\n",
+        "encoding": b"echo \xff\n",
+        "missing-close": b'"""\necho wrong\n',
+        "empty-fence": b"```bash\n  \n```\n",
+    }[case]
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(raw), isatty=lambda: False))
+    assert main(["exec", "--stdin"]) == 2
+    assert message in capsys.readouterr().err
+    assert not (tmp_path / "_pyruns_").exists()
+
+
+@pytest.mark.parametrize("extra", [["-c", "echo ok"], ["--", "echo", "ok"], ["echo", "ok"]])
+def test_exec_stdin_rejects_conflicting_command_sources(tmp_path, extra):
+    result = _run_cli(tmp_path, "exec", "--stdin", *extra, input_text="echo stdin\n")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--stdin" in result.stderr
+    assert not (tmp_path / "_pyruns_").exists()
 
 
 def test_exec_failure_propagates_nonzero(tmp_path):

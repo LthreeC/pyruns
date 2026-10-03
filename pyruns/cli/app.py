@@ -179,6 +179,36 @@ def _exec_help_epilog(program: str) -> str:
         f"    {program} exec -n pipeline -c \"python prep.py && python train.py\"\n"
         "    -c consumes the remaining command text and runs it through the stored workspace shell.\n"
         "    Quote expressions containing shell syntax according to the calling shell.\n\n"
+        "  Multiline script for agents and automation (non-interactive):\n"
+        f"    {program} exec -n pipeline --stdin < pipeline.sh\n"
+        f"    {program} exec -n pipeline -d --stdin <<'BASH'\n"
+        "    set -euo pipefail\n"
+        "    python prep.py\n"
+        "    python train.py\n"
+        "    BASH\n"
+        "    Agents: use --stdin with redirected input; do not wait for a terminal paste prompt.\n"
+        "    Quote the heredoc marker to preserve $variables, quotes, and backslashes.\n"
+        "    The closing marker must be alone at the start of its line.\n"
+        "    --stdin uses the stored workspace shell and preserves the script for reruns.\n"
+        "    It saves the complete script before starting, including with -d/--detach.\n"
+        "    Direct './pipeline.sh' tracks the source path; '--stdin < pipeline.sh' saves its text.\n"
+        "    Fence language labels and shebangs do not override the workspace shell.\n"
+        "    Use Bash for Bash scripts. UTF-8 input (up to 4 MiB); CRLF is normalized to LF.\n"
+        "    --stdin cannot be combined with -c or argv. Task processes do not inherit stdin.\n"
+        f"    {program} exec -n pipeline --dry-run --json --stdin < pipeline.sh\n"
+        "    The preview reads and validates input without creating or running a task.\n\n"
+        "  Manual paste (interactive terminal, one script per invocation):\n"
+        "    First run this line and press Enter:\n"
+        f"      {program} exec -n pipeline -d\n"
+        "    After the Pyruns prompt appears, paste this separate block:\n"
+        '      """\n'
+        "      echo first\n"
+        "      echo second\n"
+        '      """\n'
+        "    Matching markers must be on separate lines; ``` and triple single quotes also work.\n"
+        "    Do not append the block to the calling shell command line.\n"
+        "    The closing marker submits the saved script; Ctrl+C cancels without creating a task.\n"
+        "    Without a terminal, omitting the command is an error; use --stdin instead.\n\n"
         "Environment:\n"
         f"  {program} exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py\n"
         f"  {program} exec -n gpu0 --env-file .env.train -e SEED=42 -- python train.py\n"
@@ -474,14 +504,19 @@ def build_parser(
         "exec",
         help_text="create and run a tracked command or shell script",
         description=(
-            "Create a shell task in the current directory's shell workspace and run it.\n"
+            "Create a new task in the current directory's shell workspace and run it.\n"
+            "Any program, including Python, can be tracked this way. Use 'run' to run an existing\n"
+            "task again; 'run' supports both shell tasks and Python configuration tasks.\n"
             "Omit a name to generate task_<timestamp>, use -nt PREFIX to append the timestamp,\n"
             "or use -n NAME when the task name must be exact.\n"
             "The default form is '-- PROGRAM ARG ...': -- ends Pyruns option parsing and stores\n"
             "every following item as an exact argv element. It does not enable shell parsing.\n"
             "Use -c/--command only when the command intentionally needs pipes, redirects, variable\n"
             "expansion, globs, &&, or other shell syntax. A leading .sh, .ps1, .cmd, or .bat file\n"
-            "is launched with its matching interpreter while Pyruns records its log and duration."
+            "is launched with its matching interpreter while Pyruns records its log and duration.\n"
+            "Omit the command in an interactive terminal to paste a delimited multiline script.\n"
+            "Use --stdin to save and run a complete script from a heredoc, pipe, or file.\n"
+            "Help: 'exec help', 'exec --help', and 'help exec' show this same guide."
         ),
         epilog=_exec_help_epilog(program),
         common=True,
@@ -506,13 +541,19 @@ def build_parser(
         action="store_true",
         help="preview the task and command without creating or running anything",
     )
-    execute.add_argument(
+    execute_source = execute.add_mutually_exclusive_group()
+    execute_source.add_argument(
         "-c",
         "--command",
         dest="shell_command",
         type=_non_empty,
         metavar="COMMAND_STRING",
         help="run the remaining command text through the workspace shell",
+    )
+    execute_source.add_argument(
+        "--stdin",
+        action="store_true",
+        help="read and save a complete UTF-8 shell script from stdin",
     )
     execute.add_argument(
         "-e",
@@ -570,12 +611,14 @@ def build_parser(
         "run",
         help_text="run exact tasks, or create and run tasks from YAML",
         description=(
-            "Run or rerun exact task names in the selected shell or script workspace. Alternatively,\n"
+            "Run or rerun saved tasks in either a shell workspace or a Python script workspace.\n"
+            "Use 'exec' to create and run a new command task. Alternatively,\n"
             "--config CONFIG creates script tasks from YAML and immediately runs them. By default Pyruns\n"
             "waits for every requested task and returns non-zero if any task fails."
         ),
         epilog=_example_block(
             program,
+            "-w shell run pipeline",
             "-w train run baseline",
             "-w train run a b c -j 3",
             "-w train run --config configs/quick.yaml -n quick",
@@ -1138,6 +1181,15 @@ def _main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
             if args.workspace:
                 parser.error("-w/--workspace requires a command")
             parser.print_help()
+            return 0
+
+        if (
+            args.command == "exec"
+            and args.command_argv == ["help"]
+            and args.shell_command is None
+            and not args.stdin
+        ):
+            command_parsers["exec"].print_help()
             return 0
 
         if args.command == "help":

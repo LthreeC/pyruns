@@ -13,6 +13,7 @@ Use either official executable: short `pyr` or explicit `pyruns`. They expose th
 pyr --help
 pyruns --help
 pyr help -a
+pyr exec help
 pyr COMMAND [OPTIONS]
 pyruns COMMAND [OPTIONS]
 pyr -w WORKSPACE COMMAND [OPTIONS]
@@ -37,6 +38,8 @@ Project context options must precede the command:
 Machine-readable commands expose their own `--json` option. Put it after the command; there is no global leading form.
 
 Use exact task names. Do not pass task indices or fuzzy names. For `show` and `log`, use `--run RUN` or append the shorter `@RUN` to select one positive historical run number; `@` is reserved and cannot appear in a new task name.
+
+`pyr exec help`, `pyr exec --help`, and `pyr help exec` show the same guide. `exec` creates a new shell-workspace task for any program, including Python. `run` runs saved tasks of either workspace kind, or creates Python configuration tasks with `--config`; it is not a Python-only execution mode.
 
 ## Choose A Workspace
 
@@ -98,6 +101,25 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 ```
 
 `-c` follows the familiar `sh -c` convention and consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, pipes, redirects, variables, globs, or command chains must be quoted according to the calling shell so they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. It stores the resolved shell executable and creation working directory, then uses both for reruns. Use exact argv after `--` whenever shell syntax is not required.
+
+For multiline scripts, agents and automation should use `--stdin` with redirected input:
+
+```bash
+pyr exec -n pipeline -d --stdin <<'BASH'
+set -euo pipefail
+DATA_ROOT=${DATA_ROOT:-./data}
+python preprocess.py --data "$DATA_ROOT"
+python train.py --data "$DATA_ROOT" \
+  --epochs 10
+BASH
+
+pyr exec -n from-file --stdin < pipeline.sh
+pyr exec -n preview --dry-run --json --stdin < pipeline.sh
+```
+
+Quote the heredoc marker and place its closing marker alone at the start of its line. `--stdin` reads the complete UTF-8 script (up to 4 MiB), preserves its text with CRLF normalized to LF, and saves it before starting the task. Detached runs and reruns use the saved text; later edits to the input file do not change it. It uses the workspace shell and stores that interpreter. A shebang or fence language label does not override the workspace shell; submit Bash scripts from Bash or configure the workspace shell accordingly. Do not combine `--stdin` with `-c` or argv, or pass the script to `pyr exec -- bash -s`: task processes do not inherit the invoking stdin.
+
+For people using an interactive terminal, `pyr exec -n pipeline -d` without a command offers one-shot script entry. First run that command and press Enter; only after the Pyruns prompt appears, paste a block enclosed by matching triple double quotes, triple single quotes, or triple backticks on separate lines. The closing marker submits the task; Ctrl+C cancels without creating it. This is not a terminal REPL. Agents should use explicit `--stdin` instead of waiting for this prompt; without a terminal, omitting the command is an immediate usage error. Never put the fence directly after `pyr exec` in a Bash command line, where the outer shell would interpret it.
 
 Shell tasks preserve terminal colors through one cross-platform pseudoterminal contract: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, mode, and window-title controls are filtered. If terminal capture is unavailable, Pyruns falls back to ordinary stdout and stderr pipes.
 
