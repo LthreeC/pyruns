@@ -156,7 +156,10 @@ def _exec_help_epilog(program: str) -> str:
 
     return (
         "Examples:\n"
-        "  Choose a command form:\n\n"
+        "  Record a complete script (Bash):\n"
+        f"    {program} exec -nt pipeline -d --stdin < pipeline.sh\n"
+        "    --stdin saves the entire file as one task; reruns use this saved text.\n"
+        "    -d returns after submission. Omit -d to follow logs and wait for the result.\n\n"
         "  Task naming:\n"
         f"    {program} exec -- python -V                         auto-name as task_<timestamp>\n"
         f"    {program} exec -nt smoke -- python -V               name as smoke_<timestamp>\n"
@@ -168,19 +171,18 @@ def _exec_help_epilog(program: str) -> str:
         f"    {program} exec -n tests -- python -m pytest -q\n"
         "    -- ends Pyruns option parsing. Each following token is one program argument.\n"
         "    Quote only an individual argument containing spaces; shell syntax is not expanded.\n\n"
-        "  Existing shell script (tracked replacement for running the script directly):\n"
+        "  Run an existing script by path:\n"
         f"    {program} exec -n setup -- ./scripts/setup.sh arg1\n"
         f"    {program} exec -n setup-ps -- .\\scripts\\setup.ps1 arg1\n"
         f"    {program} exec -n setup-cmd -- .\\scripts\\setup.cmd arg1\n"
         "    .sh, .ps1, .cmd, and .bat select their matching interpreter automatically.\n"
-        "    Pyruns records stdout/stderr, duration, exit code, working directory, and source state.\n\n"
+        "    Reruns read the original script path again. To save its contents, use --stdin.\n\n"
         "  Shell expression (only for pipes, redirects, expansion, globs, or chaining):\n"
         f"    {program} exec -n report -c \"python eval.py > metrics.txt\"\n"
         f"    {program} exec -n pipeline -c \"python prep.py && python train.py\"\n"
         "    -c consumes the remaining command text and runs it through the stored workspace shell.\n"
         "    Quote expressions containing shell syntax according to the calling shell.\n\n"
         "  Multiline script (Bash):\n"
-        f"    {program} exec -n pipeline --stdin < pipeline.sh\n"
         f"    {program} exec -n pipeline -d --stdin <<'BASH'\n"
         "    set -euo pipefail\n"
         "    python prep.py\n"
@@ -191,7 +193,6 @@ def _exec_help_epilog(program: str) -> str:
         "    The closing marker must be alone at the start of its line.\n"
         "    --stdin uses the stored workspace shell and preserves the script for reruns.\n"
         "    It saves the complete script before starting, including with -d/--detach.\n"
-        "    Direct './pipeline.sh' tracks the source path; '--stdin < pipeline.sh' saves its text.\n"
         "    Shebangs do not override the workspace shell.\n"
         "    Use Bash for Bash scripts. UTF-8 input (up to 4 MiB); CRLF is normalized to LF.\n"
         "    --stdin cannot be combined with -c or argv. Task processes do not inherit stdin.\n"
@@ -216,14 +217,15 @@ def _exec_help_epilog(program: str) -> str:
         "  Variables inherited from the invoking terminal affect this run but are not saved.\n"
         "  PYTHONUNBUFFERED=1, PYTHONIOENCODING=utf-8, and PYTHONUTF8=1 are automatic.\n"
         "  Persisted environment values are visible in task_info.json and 'show'; do not store secrets.\n\n"
-        "Execution and follow-up:\n"
-        f"  {program} exec --dry-run -n smoke -- python -V       preview without creating anything\n"
-        f"  {program} exec -n train -d -- python train.py       submit and return after acceptance\n"
-        f"  {program} -w shell show train                       inspect command, env, and paths\n"
-        f"  {program} -w shell log train -f                     follow the active log\n"
-        f"  {program} -w shell wait train                        wait for the final result\n"
-        f"  {program} -w shell run train                         rerun the saved task\n"
-        "  Foreground exec follows the log and returns the task result; -d changes waiting only.\n"
+        "Check the saved task and result (from the same project directory):\n"
+        "  Replace TASK with the exact task name printed by exec, including its timestamp.\n"
+        f"  {program} -w shell show TASK --json    status, saved script (payload), and log path\n"
+        f"  {program} -w shell log TASK -f         follow the active log\n"
+        f"  {program} -w shell wait TASK           wait for the final result\n"
+        f"  {program} -w shell run TASK            rerun the saved task\n"
+        "  For --stdin, read the payload file to verify the complete recorded script.\n"
+        "  Automation: report the task name, actual status, payload path, and log path.\n"
+        "  With -d, exit 0 means accepted; use wait or show to check the task's final status.\n"
         "  Ctrl+C during foreground exec requests cancellation of the task submitted by this call.\n"
         "  --dry-run and -d/--detach are mutually exclusive."
     )
@@ -531,7 +533,10 @@ def build_parser(
         metavar="PREFIX",
         help="task-name prefix followed by the current timestamp",
     )
-    execute.add_argument("-d", "--detach", action="store_true", help="return after the runner accepts the task")
+    execute.add_argument(
+        "-d", "--detach", action="store_true",
+        help="run in the background; return after the runner accepts the task",
+    )
     execute.add_argument(
         "--dry-run",
         action="store_true",
@@ -549,7 +554,7 @@ def build_parser(
     execute_source.add_argument(
         "--stdin",
         action="store_true",
-        help="read and save a complete UTF-8 shell script from stdin",
+        help="read a complete UTF-8 shell script from stdin and save it for reruns",
     )
     execute.add_argument(
         "-e",

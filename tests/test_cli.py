@@ -258,9 +258,9 @@ def test_official_entrypoints_render_their_own_complete_help(
     assert f"{program} exec -n setup -- ./scripts/setup.sh" in command_help.stdout
     assert "--env-file" in command_help.stdout
     assert "-e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py" in command_help.stdout
-    assert "Choose a command form:" in command_help.stdout
+    assert f"{program} exec -nt pipeline -d --stdin < pipeline.sh" in command_help.stdout
     assert "Exact argv (recommended for Python and ordinary programs):" in command_help.stdout
-    assert "Existing shell script (tracked replacement" in command_help.stdout
+    assert "Reruns read the original script path again" in command_help.stdout
     assert "Shell expression (only for pipes" in command_help.stdout
     assert "Each following token is one program argument" in command_help.stdout
     assert "-c COMMAND_STRING" in command_help.stdout
@@ -271,8 +271,8 @@ def test_official_entrypoints_render_their_own_complete_help(
     assert "Variables inherited from the invoking terminal" in command_help.stdout
     assert "are not saved" in command_help.stdout
     assert "PYTHONUNBUFFERED=1" in command_help.stdout
-    assert f"{program} -w shell show train" in command_help.stdout
-    assert f"{program} -w shell run train" in command_help.stdout
+    assert f"{program} -w shell show TASK --json" in command_help.stdout
+    assert f"{program} -w shell run TASK" in command_help.stdout
 
 
 def test_help_explains_config_ui_metrics_and_help_workflows(tmp_path):

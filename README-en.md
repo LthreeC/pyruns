@@ -167,12 +167,17 @@ pyr exec -n report -c "python eval.py > metrics.txt"
 
 `-c` consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, `|`, redirects, or variables must be quoted according to the calling shell so that they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. The contract is the same everywhere: use exact argv after `--` for ordinary programs and a quoted `-c` expression for shell syntax.
 
-For multiline scripts, use standard stdin redirection, a pipe, or a heredoc. Pyruns does not open
-an interactive paste prompt:
+To record a complete existing script, run this in Bash:
 
 ```bash
-pyr exec -n pipeline --stdin < pipeline.sh
-cat pipeline.sh | pyr exec -n pipeline --stdin
+pyr exec -nt pipeline -d --stdin < pipeline.sh
+```
+
+This saves the entire script as one timestamped task and runs it in the background. Reruns use
+the saved text. Run `pyr exec --help` for complete usage and record verification steps.
+A quoted heredoc can submit multiline text directly:
+
+```bash
 pyr exec -n pipeline -d --stdin <<'BASH'
 set -euo pipefail
 python preprocess.py

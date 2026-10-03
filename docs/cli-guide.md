@@ -208,12 +208,13 @@ pyr exec --name pipeline -c "python preprocess.py && python train.py | tee train
 
 ### 通过标准输入提交多行脚本
 
-多行脚本遵循标准 stdin 约定，使用文件重定向、管道或 heredoc；`exec` 没有交互式
-脚本录入模式。Agent、CI 和其他自动化程序都应显式使用 `--stdin`：
+需要把长脚本的全部正文记录成一个任务时，推荐先保存为 `pipeline.sh`，然后在 Bash
+终端执行下面第一条命令。`--stdin` 保存完整正文，`-nt pipeline` 生成带时间戳的任务名，
+`-d` 提交后返回；去掉 `-d` 就会跟随日志并等待结果。重跑使用提交时保存的正文。
+也可以通过管道或 heredoc 提交；`exec` 没有交互式脚本录入模式：
 
 ```bash
-pyr exec -n pipeline --stdin < pipeline.sh
-cat pipeline.sh | pyr exec -n pipeline --stdin
+pyr exec -nt pipeline -d --stdin < pipeline.sh
 pyr exec -n pipeline -d --stdin <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail

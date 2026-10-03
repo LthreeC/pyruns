@@ -180,7 +180,14 @@ pyr exec -n pipeline -c "python preprocess.py && python train.py | tee train.log
 
 `-c echo hello` 会把剩余文本合并成 `echo hello`。命令含 `;`、`|`、重定向或变量时，必须按调用端 shell 的规则引用整段表达式，避免调用端在 Pyruns 启动前将它拆开。
 
-多行脚本统一通过标准输入提交；使用文件重定向、管道或 heredoc：
+需要完整记录已有长脚本时，在 Bash 中运行：
+
+```bash
+pyr exec -nt pipeline -d --stdin < pipeline.sh
+```
+
+这会将全部正文保存为一个带时间戳的任务并后台执行，重跑使用保存的正文。
+完整用法和记录核对步骤直接运行 `pyr exec --help` 查看。也可以通过 heredoc 提交：
 
 ```bash
 pyr exec -n pipeline -d --stdin <<'BASH'
