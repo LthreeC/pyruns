@@ -239,6 +239,7 @@ def _exec_help_epilog(program: str) -> str:
         "  For --stdin, read the payload file to verify the complete recorded script.\n"
         "  Automation: report the task name, actual status, payload path, and log path.\n"
         "  With -d, exit 0 means accepted; use wait or show to check the task's final status.\n"
+        "  Task results follow the launched command; scripts must wait/join their background jobs.\n"
         "  Ctrl+C during foreground exec requests cancellation of the task submitted by this call.\n"
         "  --dry-run and -d/--detach are mutually exclusive."
     )
@@ -649,6 +650,7 @@ def build_parser(
                 "Ctrl+C while waiting requests cancellation of tasks submitted by this run command.",
                 "--detach changes waiting only; accepted tasks continue under the hidden runner.",
                 "With --detach, exit 0 means accepted; use 'wait' or 'show' to check final status.",
+                "Task results follow the launched command; scripts must wait/join their background jobs.",
                 "A partial runner acceptance is reported with claimed and unclaimed names and exits 1.",
             ),
         ),

@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
@@ -132,6 +133,82 @@ def test_record_and_lifecycle_updates_do_not_read_external_history(task, monkeyp
     assert info["records"] == [{"accuracy": 0.9}]
     assert info["tracks"] == [{"loss": [0, 1, 2, 3]}]
     assert info["status"] == "completed"
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_sdk_move_marker_blocks_all_metric_writes_before_slots_or_storage(task, monkeypatch, capsys, external):
+    from pyruns.utils.native_lock import LOCK_PROTOCOL
+    from pyruns.utils.process_utils import get_process_create_time
+
+    if external:
+        externalize(task)
+    marker = {
+        "kind": "rename", "host": info_io._LOCK_OWNER_HOST, "lock_protocol": LOCK_PROTOCOL,
+        "pid": os.getpid(), "pid_create_time": get_process_create_time(os.getpid()),
+        "expires_at": time.time() - 1,
+    }
+    update_task_metadata(str(task), lambda info: info.update(status="completed", _namespace_operation=marker))
+    before = (task / "task_info.json").read_bytes()
+    expected = load_task_info(str(task), raise_error=True)
+    monkeypatch.setenv(ENV_KEY_RUN_INDEX, "2")
+    monkeypatch.setattr(pyruns, "_metric_warning_keys", set())
+    with monkeypatch.context() as patch:
+        patch.setattr(track_store, "append_point", lambda *a: pytest.fail("move opened SQLite"))
+        patch.setattr(track_store, "append_points", lambda *a: pytest.fail("move opened SQLite"))
+        pyruns.record(score=0.5)
+        pyruns.track(loss=4)
+        pyruns.track_many([{"loss": 5}, {"loss": 6}])
+    assert (task / "task_info.json").read_bytes() == before
+    assert load_task_info(str(task), raise_error=True) == expected
+    warnings = capsys.readouterr().err
+    for operation in ("record", "track", "track_many"):
+        assert f"{operation}() could not save metrics" in warnings
+    assert warnings.count("task directory is being prepared for rename") == 3
+
+    # SDK calls still work for an inactive task once the marker is stale.
+    marker["pid"] = 0
+    update_task_metadata(str(task), lambda info: info.update(_namespace_operation=marker))
+    pyruns.record(score=0.5)
+    pyruns.track(loss=4)
+    pyruns.track_many([{"loss": 5}, {"loss": 6}])
+    actual = load_task_info(str(task), raise_error=True)
+    assert actual["tracks"][0] == expected["tracks"][0]
+    assert actual["tracks"][1] == {"loss": [4, 5, 6]}
+    assert actual["records"][1] == {"score": 0.5}
+    assert not capsys.readouterr().err
+
+
+def test_move_marker_respects_pid_domains_and_unknown_process_identity(monkeypatch):
+    from pyruns.utils import process_utils
+    from pyruns.utils.native_lock import LOCK_PROTOCOL
+
+    operation = {
+        "host": info_io._LOCK_OWNER_HOST, "lock_protocol": "guard-v2:another-pid-domain",
+        "pid": 123, "pid_create_time": 100.0, "expires_at": time.time() + 60,
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(process_utils, "is_pid_running", lambda *a: pytest.fail("probed another PID domain"))
+        patch.setattr(process_utils, "get_process_create_time", lambda *a: pytest.fail("probed another PID domain"))
+        assert info_io.namespace_operation_is_live(operation)
+        operation.pop("lock_protocol")
+        assert info_io.namespace_operation_is_live(operation)
+        operation["expires_at"] = time.time() - 1
+        assert not info_io.namespace_operation_is_live(operation)
+
+    operation["lock_protocol"] = LOCK_PROTOCOL
+    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: True)
+    monkeypatch.setattr(process_utils, "get_process_create_time", lambda pid: None)
+    assert info_io.namespace_operation_is_live(operation)
+    monkeypatch.setattr(process_utils, "get_process_create_time", lambda pid: 100.0)
+    assert info_io.namespace_operation_is_live(operation)
+    operation["expires_at"] = time.time() + 60
+    monkeypatch.setattr(process_utils, "get_process_create_time", lambda pid: 200.0)
+    assert not info_io.namespace_operation_is_live(operation)
+    monkeypatch.setattr(process_utils, "get_process_create_time", lambda pid: None)
+    monkeypatch.setattr(process_utils, "is_pid_running", lambda pid: False)
+    assert info_io.namespace_operation_is_live(operation)
+    operation["expires_at"] = time.time() - 1
+    assert not info_io.namespace_operation_is_live(operation)
 
 
 def test_public_update_and_save_replace_full_history_and_return_detached_values(task):

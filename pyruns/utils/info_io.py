@@ -43,6 +43,7 @@ _REPLACE_RETRY_DELAY_SEC = 0.02
 _READ_RETRY_COUNT = 5
 _READ_RETRY_DELAY_SEC = 0.02
 _LOCK_OWNER_HOST = socket.gethostname().lower()
+NAMESPACE_OPERATION_KEY = "_namespace_operation"
 _GET_FINAL_PATH = getattr(os.path, "_getfinalpathname", None)
 MAX_TASK_INFO_BYTES = 16 * 1024 * 1024
 MAX_SCRIPT_INFO_BYTES = 1024 * 1024
@@ -60,6 +61,53 @@ _RUN_HISTORY_KEYS = (
     "records",
     "tracks",
 )
+
+
+def namespace_operation_is_live(operation: Any, *, local_host: str = _LOCK_OWNER_HOST) -> bool:
+    """Check a move owner only in its PID domain; otherwise honor its lease."""
+    if not isinstance(operation, dict):
+        return False
+    try:
+        lease_live = float(operation.get("expires_at", 0.0) or 0.0) > time.time()
+    except (TypeError, ValueError, OverflowError):
+        lease_live = False
+    host = str(operation.get("host", "") or "").lower()
+    if host != local_host or operation.get("lock_protocol") != _LOCK_PROTOCOL:
+        # Legacy markers and Windows/WSL peers cannot safely use local PID
+        # probes, even if they report the same hostname.
+        return lease_live
+
+    from pyruns.utils.process_utils import (
+        _PROCESS_CREATE_TIME_TOLERANCE_SEC, get_process_create_time, is_pid_running,
+    )
+
+    try:
+        pid = int(operation.get("pid", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if pid <= 0:
+        return False
+    expected_create_time = operation.get("pid_create_time")
+    actual_create_time = get_process_create_time(pid)
+    if expected_create_time is not None and actual_create_time is not None:
+        try:
+            matches = abs(actual_create_time - float(expected_create_time)) <= _PROCESS_CREATE_TIME_TOLERANCE_SEC
+        except (TypeError, ValueError, OverflowError):
+            matches = False
+        if not matches:
+            return False
+    # A slow move must remain protected while its known local owner is alive.
+    # An unavailable create_time does not prove PID reuse. Failed liveness
+    # probes can also mean denied access, so retain the lease in that case.
+    return is_pid_running(pid) or lease_live
+
+
+def guard_task_metric_write(info: Dict[str, Any]) -> None:
+    """Reject SDK writes under the task lock before opening a metric store."""
+    operation = info.get(NAMESPACE_OPERATION_KEY)
+    if isinstance(operation, dict) and namespace_operation_is_live(operation):
+        kind = str(operation.get("kind", "move") or "move")
+        raise RuntimeError(f"task directory is being prepared for {kind}")
 
 
 def _thread_lock_for(task_dir: str) -> threading.RLock:
@@ -809,6 +857,7 @@ def append_task_track_payloads(task_dir: str, payloads: tuple[str, ...], *, run_
         return
     with task_info_lock(task_dir, create_dir=False):
         info = load_task_metadata(task_dir, raise_error=True)
+        guard_task_metric_write(info)
         previous_slots = run_slot_count(info)
         target = run_index if run_index is not None else max(1, previous_slots)
         slot = ensure_run_slot(info, target)

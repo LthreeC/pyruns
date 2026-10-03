@@ -322,6 +322,9 @@ pyr exec --name gpu0 --env-file .env.train -e SEED=42 -- python train.py
 
 默认情况下，`exec` 会跟随日志并等待结果。任务成功返回 `0`，任务失败返回 `1`。
 
+任务结果以启动的命令为准。脚本内部若启动后台作业，应在退出前使用 Shell 的 `wait`
+或 Python 的 `join()` 等待它们，并传播失败结果；命令退出后仍存活的后台进程不会延长任务。
+
 ```bash
 pyr exec --name smoke -- python smoke.py
 ```

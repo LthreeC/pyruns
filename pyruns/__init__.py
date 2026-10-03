@@ -149,6 +149,9 @@ def _write_metrics(
             assert apply_update is not None, "record updates require a callback"
 
             def _apply(info: Dict[str, Any], run_index: int | None = run_index) -> None:
+                from .utils.info_io import guard_task_metric_write
+
+                guard_task_metric_write(info)
                 target = run_index if run_index is not None else max(1, _lazy_export("run_slot_count")(info))
                 slot = _lazy_export("ensure_run_slot")(info, target)
                 apply_update(info, slot)

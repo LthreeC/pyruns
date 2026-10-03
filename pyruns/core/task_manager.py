@@ -41,10 +41,12 @@ from pyruns.core.gpu_scheduler import (
 from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
+    NAMESPACE_OPERATION_KEY as _NAMESPACE_OPERATION_KEY,
     _workspace_abspath,
     ensure_run_slot,
     load_task_info,
     load_task_metadata,
+    namespace_operation_is_live,
     prepare_task_log_path,
     run_slot_count,
     task_info_lock,
@@ -54,6 +56,7 @@ from pyruns.utils.info_io import (
     validate_tasks_root,
     validate_workspace_directory,
 )
+from pyruns.utils.native_lock import LOCK_PROTOCOL
 from pyruns.utils.process_utils import (
     get_process_create_time,
     is_pid_running,
@@ -82,7 +85,6 @@ _STOP_TASK_INFO_LOCK_TIMEOUT_SEC = 1.0
 _ACTIVE_DELETE_SETTLE_TIMEOUT_SEC = 15.0
 _GPU_SCHEDULE_LOCK_TIMEOUT_SEC = 2.0
 _REACTIVE_DISK_REFRESH_INTERVAL_SEC = 1.0
-_NAMESPACE_OPERATION_KEY = "_namespace_operation"
 _NAMESPACE_OPERATION_LEASE_SEC = 60.0
 _VALID_TASK_STATUSES = {"pending", "queued", "running", "completed", "failed", "cancelled"}
 _GPU_QUEUE_RUN_RE = re.compile(r"\bRun #(\d+)\b")
@@ -1075,29 +1077,7 @@ class TaskManager:
 
     def _namespace_operation_is_live(self, operation: Any) -> bool:
         """Return whether a task-directory move marker still has a live owner."""
-
-        if not isinstance(operation, dict):
-            return False
-        try:
-            expires_at = float(operation.get("expires_at", 0.0) or 0.0)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if expires_at <= time.time():
-            return False
-
-        host = str(operation.get("host", "") or "").lower()
-        if host and host != self.runner_host:
-            return True
-        try:
-            pid = int(operation.get("pid", 0) or 0)
-        except (TypeError, ValueError, OverflowError):
-            return False
-        if pid <= 0 or not is_pid_running(pid):
-            return False
-        expected_create_time = operation.get("pid_create_time")
-        if expected_create_time is None:
-            return True
-        return process_identity_matches(pid, expected_create_time)
+        return namespace_operation_is_live(operation, local_host=self.runner_host)
 
     def _guard_namespace_operation(self, info: Dict[str, Any]) -> None:
         """Reject a live directory move and discard a stale marker atomically."""
@@ -1126,6 +1106,7 @@ class TaskManager:
             "kind": str(kind),
             "token": token,
             "host": self.runner_host,
+            "lock_protocol": LOCK_PROTOCOL,
             "pid": os.getpid(),
             "pid_create_time": get_process_create_time(os.getpid()),
             "expires_at": time.time() + _NAMESPACE_OPERATION_LEASE_SEC,
