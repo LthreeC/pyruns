@@ -2,10 +2,10 @@ import { NavLink, useSearchParams } from 'react-router-dom'
 import { Suspense, lazy, useRef, useState } from 'react'
 import {
   LayoutDashboard, Wand2, ListTodo, Terminal, Rocket,
-  Sun, Moon, ChevronsUpDown, FileCode, SlidersHorizontal,
+  Sun, Moon, ChevronsUpDown, FileCode, SlidersHorizontal, Settings2,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useWorkspaceStore, useThemeStore } from '@/store'
+import { useWorkspaceStore, useThemeStore, usePreferencesStore } from '@/store'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import UpdateControl from './UpdateControl'
 
@@ -26,6 +26,7 @@ interface SidebarProps {
 export default function Sidebar({ width = 220, compact = false }: SidebarProps) {
   const workspace = useWorkspaceStore(s => s.workspace)
   const { theme, toggle } = useThemeStore()
+  const openPreferences = usePreferencesStore(s => s.open)
   const [searchParams, setSearchParams] = useSearchParams()
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const runtimeButtonRef = useRef<HTMLButtonElement>(null)
@@ -67,25 +68,24 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
 
   return (
     <aside
-      className="flex h-full flex-none flex-col border-r border-border-subtle bg-surface-raised"
+      className="app-navigation flex h-full flex-none flex-col border-r border-border-subtle"
       style={{ width }}
     >
-      <div className="border-b border-border-subtle">
-        <div className={clsx('flex h-12 items-center', compact ? 'justify-center gap-1 px-0' : 'gap-2 px-3')}>
-          <Rocket className="h-4 w-4 text-accent" />
+      <div>
+        <div className={clsx('flex h-16 items-center', compact ? 'justify-center gap-1 px-0' : 'gap-2.5 px-4')}>
+          <span className={clsx('inline-flex flex-none items-center justify-center rounded-lg text-accent-ink', compact ? 'h-6 w-5' : 'h-8 w-8 bg-accent/10')}>
+            <Rocket aria-hidden="true" className="h-[18px] w-[18px]" />
+          </span>
           {!compact && (
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold text-txt-primary">Pyruns</div>
-              <div className="truncate text-[10px] uppercase tracking-[0.18em] text-txt-tertiary">
-                {!workspaceReady ? 'workspace needed' : shellWorkspaceActive ? 'shell workspace' : 'script workspace'}
-              </div>
+              <div className="text-[15px] font-semibold tracking-tight text-txt-primary">Pyruns</div>
             </div>
           )}
-          <UpdateControl compact={compact} />
+          <UpdateControl compact={compact || width < 220} />
         </div>
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 py-3">
+      <nav className={clsx('flex flex-1 flex-col gap-1 overflow-y-auto pb-4 pt-1', compact ? 'px-2' : 'px-2.5')}>
         {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
           <NavLink
             key={to}
@@ -94,11 +94,11 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
             aria-label={label}
             title={label}
             className={({ isActive }) => clsx(
-              'flex min-h-11 items-center gap-2.5 rounded-md py-2 text-sm transition-colors sm:min-h-10',
+              'flex min-h-11 items-center gap-2.5 rounded-lg py-2 text-sm font-medium transition-colors sm:min-h-10',
               compact ? 'justify-center px-0' : 'pl-2.5 pr-3',
               isActive
-                ? 'border-l-2 border-accent bg-accent/10 text-accent'
-                : 'border-l-2 border-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
+                ? 'bg-accent/10 text-accent-ink'
+                : 'text-txt-secondary hover:bg-surface-hover hover:text-txt-primary'
             )}
           >
             <Icon className="h-4 w-4 flex-none" />
@@ -109,7 +109,7 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
 
       <div className={clsx('border-t border-border-subtle', compact ? 'p-2' : 'p-2.5')}>
         {!compact && (
-          <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-txt-tertiary">
+          <div className="mb-2 px-2 text-[11px] font-medium text-txt-tertiary">
             Workspace
           </div>
         )}
@@ -119,19 +119,19 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           onClick={() => openWorkspaceLauncher(shellWorkspaceActive ? 'shell' : 'python')}
           aria-label={workspaceLabel}
           title={workspacePathHint}
-          className="touch-target min-h-11 w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-10"
+          className="touch-target min-h-11 w-full rounded-lg border border-border-subtle bg-surface-raised px-2.5 py-2.5 text-left transition-colors hover:border-border-strong focus:outline-none focus:ring-2 focus:ring-accent/25"
         >
           <div className={clsx('flex items-center gap-2', compact && 'justify-center')}>
             <FileCode className="h-4 w-4 flex-none text-txt-tertiary" />
             {!compact && (
               <>
                 <span
-                  className="min-w-0 flex-1 truncate font-mono text-sm font-medium text-txt-primary"
+                  className="min-w-0 flex-1 truncate text-sm font-medium text-txt-primary"
                   title={workspaceLabel}
                 >
                   {workspaceLabel}
                 </span>
-                <span className="flex-none rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                <span className="flex-none rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-ink">
                   {workspaceModeLabel}
                 </span>
                 <ChevronsUpDown className="h-3.5 w-3.5 flex-none text-txt-tertiary" />
@@ -171,19 +171,28 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           </div>
         </button>
 
-        <button
-          type="button"
-          onClick={toggle}
-          aria-label={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-          title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-          className={clsx(
-            'mt-2 flex min-h-11 w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:min-h-10',
-            compact && 'justify-center px-0',
-          )}
-        >
-          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          {!compact && <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>}
-        </button>
+        <div className={clsx('mt-2 flex gap-1 border-t border-border-subtle pt-2', compact && 'flex-col')}>
+          <button
+            type="button"
+            onClick={event => openPreferences(event.currentTarget)}
+            aria-label="Preferences"
+            aria-keyshortcuts="Control+, Meta+,"
+            title="Preferences (Ctrl/Cmd+,)"
+            className={clsx('touch-target flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2.5 text-sm text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary sm:min-h-9', compact && 'justify-center px-0')}
+          >
+            <Settings2 aria-hidden="true" className="h-4 w-4 flex-none" />
+            {!compact && <span className="min-w-0 truncate">Preferences</span>}
+          </button>
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+            title={theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+            className="touch-target flex h-11 w-11 flex-none items-center justify-center rounded-lg text-txt-tertiary transition-colors hover:bg-surface-hover hover:text-txt-primary sm:h-9 sm:w-9"
+          >
+            {theme === 'dark' ? <Sun aria-hidden="true" className="h-4 w-4" /> : <Moon aria-hidden="true" className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
       {runtimeOpen && (
         <Suspense fallback={null}>

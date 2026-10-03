@@ -248,7 +248,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             "compactMonitorLayout ? 'flex-col' : 'flex-row'",
             "? { height: sidebarSearchActive ? '100%' : COMPACT_MONITOR_SIDEBAR_HEIGHT }",
             ': { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}',
-            'className="flex-none border-b border-border-subtle px-2.5 py-2"',
             'className="min-h-0 flex-1 overflow-y-auto px-2 py-2"',
             'className="flex-none border-t border-border-subtle px-2.5 py-2"',
             '{!compactMonitorLayout && (',
@@ -595,7 +594,7 @@ def test_react_mobile_pages_constrain_empty_states_and_header_actions():
 
     assert "'flex h-full w-full max-w-full min-w-0 overflow-hidden'" in monitor
     assert "compactMonitorLayout ? 'w-full max-w-full border-b border-border-subtle' : 'border-r border-border-subtle'" in monitor
-    assert 'className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col"' in monitor
+    assert 'min-h-0 min-w-0 max-w-full flex-1 flex-col' in monitor
     assert 'className="flex h-full min-w-0 items-center justify-center px-4"' in monitor
     assert (
         "grid w-full min-w-0 grid-cols-[44px_minmax(0,1fr)] gap-2 "

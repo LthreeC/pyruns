@@ -1284,7 +1284,7 @@ for (const workspaceKind of ['script', 'shell'] as const) {
   })
 }
 
-test('search settings persist across views and support literal multiline input', async ({ page, isMobile }, testInfo) => {
+test('Preferences keeps advanced settings out of search and persists across views', async ({ page, isMobile }, testInfo) => {
   if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
   const queries: URLSearchParams[] = []
   await page.route('**/api/tasks?*', route => {
@@ -1298,19 +1298,37 @@ test('search settings persist across views and support literal multiline input',
   })
   await page.goto('/manager?token=pyruns-e2e-access-token')
   await page.clock.install()
-  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  const filterTrigger = page.getByRole('button', { name: 'Search filters', exact: true })
+  await filterTrigger.click()
+  await expect(page.getByLabel('Search as you type')).toHaveCount(0)
+  await expect(page.getByLabel('Typing delay (ms)')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Search preferences…', exact: true }).click()
+  const preferences = page.getByRole('dialog', { name: 'Preferences', exact: true })
+  await expect(preferences).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Search filters', exact: true })).toHaveCount(0)
   await expect(page.getByLabel('Search as you type')).toBeChecked()
+  await expect(page.getByLabel('Typing delay (ms)')).toBeHidden()
+  await page.screenshot({ path: testInfo.outputPath('preferences-light.png'), animations: 'disabled' })
+  await preferences.getByRole('button', { name: 'Dark', exact: true }).click()
+  await expect(page.locator('html')).toHaveClass(/dark/)
+  await page.screenshot({ path: testInfo.outputPath('preferences-dark.png'), animations: 'disabled' })
+  await preferences.getByText('Advanced search', { exact: true }).click()
   await expect(page.getByLabel('Typing delay (ms)')).toHaveValue('300')
   await expect(page.getByLabel('Match limit (blank for unlimited)')).toHaveValue('20000')
   await page.getByLabel('Search as you type').uncheck()
   await page.getByLabel('Match limit (blank for unlimited)').fill('2')
   await page.getByLabel('Match limit (blank for unlimited)').press('Enter')
-  expect(await page.getByRole('dialog', { name: 'Search filters', exact: true }).evaluate(element => {
+  expect(await preferences.evaluate(element => {
     const bounds = element.getBoundingClientRect()
-    return bounds.top >= 0 && bounds.bottom <= innerHeight
+    return bounds.top >= 0 && bounds.bottom <= innerHeight && bounds.left >= 0 && bounds.right <= innerWidth
   })).toBe(true)
-  await page.screenshot({ path: testInfo.outputPath('search-settings.png'), animations: 'disabled' })
+  await page.screenshot({ path: testInfo.outputPath('preferences-advanced.png'), animations: 'disabled' })
+  // Escape must save a number that has not lost focus yet.
+  await page.getByLabel('Typing delay (ms)').fill('450')
   await page.keyboard.press('Escape')
+  await expect(preferences).toBeHidden()
+  await expect(filterTrigger).toBeFocused()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pyruns_search_settings') || '{}').searchOnTypeDebouncePeriod)).toBe(450)
   const search = page.getByRole('textbox', { name: 'Search tasks', exact: true })
   await search.fill('first\nsecond')
   await page.clock.fastForward(1_000)
@@ -1322,12 +1340,23 @@ test('search settings persist across views and support literal multiline input',
   await expect.poll(() => queries.at(-1)?.get('max_results')).toBe('0')
   await page.reload()
   await page.getByRole('link', { name: 'Monitor', exact: true }).click()
-  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  await page.getByRole('button', { name: 'Preferences', exact: true }).click()
   await expect(page.getByLabel('Search as you type')).not.toBeChecked()
+  await preferences.getByText('Advanced search', { exact: true }).click()
   await expect(page.getByLabel('Match limit (blank for unlimited)')).toHaveValue('')
+  await expect(page.getByLabel('Typing delay (ms)')).toHaveValue('450')
+  await expect(preferences.getByRole('button', { name: 'Dark', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  // On a short screen the body scrolls while the close and Done buttons remain reachable.
+  const viewport = page.viewportSize()!
+  await page.setViewportSize({ width: isMobile ? 667 : viewport.width, height: 375 })
+  await expect(preferences.getByRole('button', { name: 'Close preferences', exact: true })).toBeInViewport({ ratio: 1 })
+  await expect(preferences.getByRole('button', { name: 'Done', exact: true })).toBeInViewport({ ratio: 1 })
   await page.getByRole('button', { name: 'Reset search settings', exact: true }).click()
   await expect(page.getByLabel('Search as you type')).toBeChecked()
-  await page.keyboard.press('Escape')
+  await page.screenshot({ path: testInfo.outputPath('preferences-short-screen.png'), animations: 'disabled' })
+  await preferences.getByRole('button', { name: 'Done', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Preferences', exact: true })).toBeFocused()
+  await page.setViewportSize(viewport)
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100))
   const previous = queries.length
   const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks', exact: true })
@@ -1350,9 +1379,16 @@ test('task search shares keyboard history without taking over multiline editing 
     return route.fulfill({ json: { items: [], total: 0, offset: 0, limit: 50, has_more: false } })
   })
   await page.goto('/manager?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('textbox', { name: 'Search tasks', exact: true })).toBeVisible()
   await page.clock.install()
-  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  await page.keyboard.press('ControlOrMeta+,')
+  const preferences = page.getByRole('dialog', { name: 'Preferences', exact: true })
+  await expect(preferences).toBeVisible()
   await page.getByLabel('Search as you type').uncheck()
+  await page.keyboard.press('ControlOrMeta+Shift+f')
+  await expect(page.getByRole('textbox', { name: 'Search tasks', exact: true })).not.toBeFocused()
+  await page.keyboard.press('ControlOrMeta+,')
+  await expect(preferences).toHaveCount(1)
   await page.keyboard.press('Escape')
   const search = page.getByRole('textbox', { name: 'Search tasks', exact: true })
   await page.keyboard.press('ControlOrMeta+Shift+f')
@@ -1392,6 +1428,8 @@ test('task search shares keyboard history without taking over multiline editing 
   await expect(launcher).toBeVisible()
   await page.keyboard.press('ControlOrMeta+Shift+f')
   await expect(search).not.toBeFocused()
+  await page.keyboard.press('ControlOrMeta+,')
+  await expect(preferences).toHaveCount(0)
   await page.keyboard.press('Escape')
   await page.getByRole('link', { name: 'Monitor', exact: true }).click()
   const monitorSearch = page.getByRole('textbox', { name: 'Search monitor tasks', exact: true })
@@ -1401,12 +1439,24 @@ test('task search shares keyboard history without taking over multiline editing 
   await monitorSearch.press('ArrowUp')
   await expect(monitorSearch).toHaveValue('needle')
   await monitorSearch.press('Enter')
-  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  await monitorSearch.press('ArrowUp')
+  await expect(monitorSearch).toHaveValue('first\nsecond')
+  await page.keyboard.press('ControlOrMeta+,')
   await page.getByRole('button', { name: 'Clear search history', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(monitorSearch).toBeFocused()
+  await monitorSearch.evaluate((input: HTMLTextAreaElement) => input.setSelectionRange(input.value.length, input.value.length))
+  await monitorSearch.press('ArrowDown')
+  await expect(monitorSearch).toHaveValue('first\nsecond')
+  await page.clock.fastForward(3_000)
+  expect(await page.evaluate(() => localStorage.getItem('pyruns_search_history'))).toBe('[]')
+  // Manager retains its query across routes; returning must not re-record it.
+  await page.getByRole('link', { name: 'Manager', exact: true }).click()
+  await expect(search).toHaveValue('needle')
   await page.clock.fastForward(3_000)
   expect(await page.evaluate(() => localStorage.getItem('pyruns_search_history'))).toBe('[]')
   await page.reload()
-  await page.getByRole('button', { name: 'Search filters', exact: true }).click()
+  await page.getByRole('button', { name: 'Preferences', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Clear search history', exact: true })).toBeDisabled()
 })
 
@@ -1868,6 +1918,7 @@ test('mobile navigation and runtime controls stay touch friendly without overflo
     page.getByRole('link', { name: 'Monitor' }),
     page.locator('[data-launcher-trigger="true"]'),
     page.getByRole('button', { name: 'Runtime' }),
+    page.getByRole('button', { name: 'Preferences', exact: true }),
     page.getByRole('button', { name: /Mode$/ }),
   ]
   for (const target of sidebarTargets) {

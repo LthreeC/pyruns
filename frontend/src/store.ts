@@ -103,6 +103,30 @@ export const useSearchSettingsStore = create<SearchSettings & { update: (value: 
   },
 }))
 
+export const usePreferencesStore = create<{
+  isOpen: boolean
+  returnFocus: HTMLElement | null
+  open: (returnFocus?: HTMLElement | null) => void
+  close: () => void
+}>((set, get) => ({
+  isOpen: false,
+  returnFocus: null,
+  open(returnFocus) {
+    if (get().isOpen) return
+    set({
+      isOpen: true,
+      returnFocus: returnFocus ?? (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null),
+    })
+  },
+  close() {
+    const target = get().returnFocus
+    set({ isOpen: false, returnFocus: null })
+    if (typeof window !== 'undefined') window.requestAnimationFrame(() => {
+      if (!get().isOpen && target?.isConnected) target.focus({ preventScroll: true })
+    })
+  },
+}))
+
 const SEARCH_HISTORY_KEY = 'pyruns_search_history'
 
 function readSearchHistory(): string[] {
@@ -114,10 +138,12 @@ function readSearchHistory(): string[] {
 
 export const useSearchHistoryStore = create<{
   items: string[]
+  revision: number
   remember: (query: string) => void
   clear: () => void
 }>((set, get) => ({
   items: readSearchHistory(),
+  revision: 0,
   remember(query) {
     if (!query || get().items[0] === query) return
     const items = [query, ...get().items.filter(item => item !== query)].slice(0, 100)
@@ -126,7 +152,7 @@ export const useSearchHistoryStore = create<{
   },
   clear() {
     writeLocalStorage(SEARCH_HISTORY_KEY, '[]')
-    set({ items: [] })
+    set({ items: [], revision: get().revision + 1 })
   },
 }))
 

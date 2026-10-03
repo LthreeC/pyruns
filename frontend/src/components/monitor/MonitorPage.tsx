@@ -758,7 +758,7 @@ export default function MonitorPage() {
       lineHeight: DEFAULT_MONITOR_LINE_HEIGHT,
       allowProposedApi: true,
       theme: {
-        background: '#0A0A0B',
+        background: getComputedStyle(document.documentElement).getPropertyValue('--xterm-bg').trim() || '#101218',
         foreground: '#E4E4E7',
         cursor: '#E4E4E7',
         selectionBackground: '#5E6AD240',
@@ -1600,13 +1600,13 @@ export default function MonitorPage() {
           ? { height: sidebarSearchActive ? '100%' : COMPACT_MONITOR_SIDEBAR_HEIGHT }
           : { width: `max(${monitorSidebarWidthPct}%, ${MIN_MONITOR_SIDEBAR_WIDTH_PX}px)` }}
       >
-        <div className="flex-none border-b border-border-subtle px-2.5 py-2">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="text-2xs uppercase tracking-[0.18em] text-txt-tertiary">Monitor</div>
-              <div className="text-sm font-medium text-txt-primary">
-                {monitorTotal.toLocaleString()} task{monitorTotal === 1 ? '' : 's'}
-              </div>
+        <div className="flex-none border-b border-border-subtle px-3 pb-3 pt-3.5">
+          <div className="mb-3 flex min-h-8 items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="text-sm font-semibold tracking-tight text-txt-primary">Monitor</h1>
+              <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-txt-secondary" title={`${monitorTotal.toLocaleString()} tasks`}>
+                {monitorTotal.toLocaleString()}
+              </span>
             </div>
             <div className="flex flex-none items-center gap-1">
               <span
@@ -1730,10 +1730,9 @@ export default function MonitorPage() {
                 <CompactSection
                   title="Pinned Tasks"
                   count={pinnedTasks.length}
-                  icon={<Pin className="h-3.5 w-3.5 text-accent" />}
-                  accent
-                  className="mb-3 rounded-md border border-accent/20 bg-accent/5 p-2"
-                  bodyClassName="space-y-1 pt-0"
+                  icon={<Pin className="h-3.5 w-3.5 text-accent-ink" />}
+                  className="mb-3"
+                  bodyClassName="space-y-1 pt-1"
                 >
                   {pinnedTasks.map(task => (
                     <SidebarItem
@@ -1750,9 +1749,9 @@ export default function MonitorPage() {
 
               <CompactSection
                 title="Tasks"
-                subtitle={`${otherTasks.length} task${otherTasks.length > 1 ? 's' : ''}`}
+                count={pinnedTasks.length ? otherTasks.length : undefined}
                 icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
-                bodyClassName="space-y-1 p-1"
+                bodyClassName="space-y-1 pt-1"
               >
                 {otherTasks.length === 0 && pinnedTasks.length === 0 ? (
                   <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">
@@ -1772,7 +1771,7 @@ export default function MonitorPage() {
             </>
           )}
 
-          {(monitorHasMore || monitorTasks.length > 0) && (
+          {monitorHasMore && (
             <div className="mt-2 space-y-1 px-1 text-center">
               <div className="text-2xs text-txt-tertiary">
                 Loaded {monitorTasks.length.toLocaleString()} of {monitorTotal.toLocaleString()}
@@ -1798,8 +1797,8 @@ export default function MonitorPage() {
           {!exportMode ? (
             <ActionButton
               icon={<FileDown className="h-3.5 w-3.5" />}
-              variant="primary"
-              className="w-full"
+              variant="secondary"
+              className="w-full border-border-subtle"
               onClick={() => setExportMode(true)}
               disabled={filteredTasks.length === 0}
             >
@@ -1860,8 +1859,8 @@ export default function MonitorPage() {
         />
       )}
 
-      <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col" style={{ background: '#0A0A0B' }}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface-raised px-3 py-2.5 sm:px-4">
+      <div className="monitor-terminal-shell flex min-h-0 min-w-0 max-w-full flex-1 flex-col">
+        <div className="flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-5">
           {selectedTask ? (
             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <div className="flex min-w-0 flex-1 basis-[24rem] items-center gap-2.5">
@@ -1882,10 +1881,10 @@ export default function MonitorPage() {
                 )}
                 <StatusBadge status={selectedTask.status as TaskStatus} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-txt-primary" title={selectedTask.name}>
+                  <div className="truncate text-sm font-semibold text-txt-primary" title={selectedTask.name}>
                     {selectedTask.name}
                   </div>
-                  <div className="truncate text-xs text-txt-secondary" title={selectedLog || liveLogName || 'latest log'}>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-txt-tertiary" title={selectedLog || liveLogName || 'latest log'}>
                     {selectedLog || liveLogName || 'latest log'}
                   </div>
                 </div>
@@ -1942,7 +1941,7 @@ export default function MonitorPage() {
 
                 <ActionButton
                   icon={<PanelRightOpen className="h-3.5 w-3.5" />}
-                  variant="secondary"
+                  variant="ghost"
                   aria-label="View Details"
                   title="View task details"
                   className="max-[900px]:px-2 max-[900px]:[&>span]:sr-only"
@@ -1955,7 +1954,7 @@ export default function MonitorPage() {
                   value={logContent}
                   label="Copy current log"
                   size="md"
-                  className="border border-border bg-surface-raised"
+                  className="bg-transparent"
                 />
 
                 {(selectedTask.status === 'pending'
@@ -2056,7 +2055,7 @@ export default function MonitorPage() {
                 aria-label={`Read-only logs for ${selectedTaskName}`}
               />
               {loading && (
-                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#0A0A0B]/70 text-xs text-[#cbd5e1]" role="status">
+                <div className="monitor-loading-overlay pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-xs text-[#cbd5e1]" role="status">
                   <span className="inline-flex items-center gap-2 rounded-md border border-[#303136] bg-[#18181b] px-3 py-2">
                     <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" />
                     Loading log…
@@ -2330,7 +2329,7 @@ const SidebarItem = memo(function SidebarItem({
       aria-pressed={exportMode ? exportSelected : undefined}
       aria-label={`${exportMode ? (exportSelected ? 'Deselect' : 'Select') : 'View'} ${task.name}, ${task.status}`}
       className={clsx(
-        'flex min-h-9 w-full flex-col items-stretch rounded-md border px-2 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
+        'flex min-h-11 w-full flex-col justify-center items-stretch rounded-lg border px-2.5 py-2 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'
@@ -2343,7 +2342,7 @@ const SidebarItem = memo(function SidebarItem({
         {exportMode && <SelectionIndicator selected={exportSelected} />}
         <StatusDot status={task.status as TaskStatus} />
         <span className={clsx(
-          'min-w-0 flex-1 break-all text-xs leading-4 truncate-2',
+          'min-w-0 flex-1 break-words text-xs leading-4 truncate-2',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
         )}>
           {task.name}

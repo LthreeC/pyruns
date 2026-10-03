@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useRef,
@@ -9,6 +11,9 @@ import {
 import { Outlet } from 'react-router-dom'
 import clsx from 'clsx'
 import Sidebar from './Sidebar'
+import { usePreferencesStore } from '@/store'
+
+const PreferencesDialog = lazy(() => import('./PreferencesDialog'))
 
 const SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.sidebarWidth'
 const DEFAULT_SIDEBAR_WIDTH = 220
@@ -44,6 +49,7 @@ function readCompactSidebar() {
 }
 
 export default function AppShell() {
+  const preferencesOpen = usePreferencesStore(state => state.isOpen)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [compactSidebar, setCompactSidebar] = useState(readCompactSidebar)
   const [resizing, setResizing] = useState(false)
@@ -51,6 +57,18 @@ export default function AppShell() {
   const sidebarResizeFrameRef = useRef<number | null>(null)
   const sidebarResizePointerIdRef = useRef<number | null>(null)
   const effectiveSidebarWidth = compactSidebar ? COMPACT_SIDEBAR_WIDTH : sidebarWidth
+
+  useEffect(() => {
+    const openPreferences = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.altKey || event.shiftKey
+        || !(event.ctrlKey || event.metaKey) || event.key !== ',') return
+      if (document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]')) return
+      event.preventDefault()
+      usePreferencesStore.getState().open()
+    }
+    window.addEventListener('keydown', openPreferences)
+    return () => window.removeEventListener('keydown', openPreferences)
+  }, [])
 
   const startSidebarResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -199,6 +217,7 @@ export default function AppShell() {
       <main id="route-heading" tabIndex={-1} className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none">
         <Outlet />
       </main>
+      {preferencesOpen && <Suspense fallback={null}><PreferencesDialog /></Suspense>}
     </div>
   )
 }

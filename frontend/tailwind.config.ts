@@ -6,8 +6,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
       },
       fontSize: {
         '2xs': ['12px', '16px'],
@@ -32,6 +32,7 @@ export default {
         accent: {
           DEFAULT: '#5360C9',
           hover: '#4F5BC4',
+          ink: 'var(--accent-ink)',
         },
         status: {
           pending: '#6B7280',

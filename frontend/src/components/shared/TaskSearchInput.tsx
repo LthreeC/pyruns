@@ -1,10 +1,10 @@
 import type { ComponentProps } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, LoaderCircle, RefreshCw, SlidersHorizontal, Square } from 'lucide-react'
+import { ChevronDown, ChevronRight, LoaderCircle, RefreshCw, Settings2, SlidersHorizontal, Square } from 'lucide-react'
 import clsx from 'clsx'
 import type { TaskSearchOptions, TaskSearchScope, WorkspaceKind } from '@/types'
 import SearchInput from './SearchInput'
-import { DEFAULT_SEARCH_SETTINGS, useSearchHistoryStore, useSearchSettingsStore } from '@/store'
+import { usePreferencesStore, useSearchHistoryStore, useSearchSettingsStore } from '@/store'
 
 const SEARCH_FIELDS: { value: TaskSearchScope; label: string; compactLabel: string; description: string }[] = [
   { value: 'all', label: 'All fields', compactLabel: 'All', description: 'Names, notes, config, task env and full log files' },
@@ -62,13 +62,21 @@ export default function TaskSearchInput({
   const settings = useSearchSettingsStore()
   const history = useSearchHistoryStore()
   const historyTimer = useRef<ReturnType<typeof setTimeout>>()
+  const searchValueRef = useRef(props.value)
+  searchValueRef.current = props.value
   const searchContainer = useRef<HTMLDivElement>(null)
   const focusSearchRef = useRef(onFocusSearch)
   focusSearchRef.current = onFocusSearch
-  useEffect(() => {
-    if (props.value) historyTimer.current = setTimeout(() => history.remember(props.value), 2000)
-    return () => clearTimeout(historyTimer.current)
-  }, [props.value, history.remember])
+  useEffect(() => () => clearTimeout(historyTimer.current), [])
+  const handleSearchChange = (query: string) => {
+    props.onChange(query)
+    clearTimeout(historyTimer.current)
+    // Only a search interaction adds history; restoring a view must not undo a clear.
+    const revision = useSearchHistoryStore.getState().revision
+    if (query) historyTimer.current = setTimeout(() => {
+      if (searchValueRef.current === query && useSearchHistoryStore.getState().revision === revision) history.remember(query)
+    }, 2000)
+  }
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || !(event.ctrlKey || event.metaKey)
@@ -83,11 +91,8 @@ export default function TaskSearchInput({
     window.addEventListener('keydown', focusSearch)
     return () => window.removeEventListener('keydown', focusSearch)
   }, [])
-  const [delayDraft, setDelayDraft] = useState(String(settings.searchOnTypeDebouncePeriod))
-  const [limitDraft, setLimitDraft] = useState(String(settings.maxResults ?? ''))
-  useEffect(() => setDelayDraft(String(settings.searchOnTypeDebouncePeriod)), [settings.searchOnTypeDebouncePeriod])
-  useEffect(() => setLimitDraft(String(settings.maxResults ?? '')), [settings.maxResults])
   const filterMenuRef = useRef<HTMLDivElement>(null)
+  const filterTriggerRef = useRef<HTMLButtonElement>(null)
   const searchFields = SEARCH_FIELDS.filter(option => option.value !== (workspaceKind === 'shell' ? 'config' : 'script'))
   const selectedField = SEARCH_FIELDS.find(option => option.value === searchField) ?? SEARCH_FIELDS[0]
   const searchActive = Boolean(props.value)
@@ -187,8 +192,10 @@ export default function TaskSearchInput({
       <div className="task-search-control-row relative flex min-w-0 flex-1 items-center gap-1.5">
         <SearchInput
           {...props}
+          onChange={handleSearchChange}
           ariaKeyShortcuts="Control+Shift+F Meta+Shift+F"
           history={history.items}
+          historyRevision={history.revision}
           onRemember={history.remember}
           debounceMs={settings.searchOnTypeDebouncePeriod}
           searchOnType={settings.searchOnType}
@@ -204,11 +211,12 @@ export default function TaskSearchInput({
         />
         <div ref={filterMenuRef} className="task-search-filter-menu flex-none">
           <button
+            ref={filterTriggerRef}
             type="button"
             aria-label="Search filters"
             aria-expanded={filtersOpen}
             aria-haspopup="true"
-            title="Search filters and settings"
+            title="Search filters"
             onClick={() => setFiltersOpen(open => !open)}
             className="task-search-filter-trigger touch-target inline-flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface-overlay text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:h-9 sm:w-9"
           >
@@ -222,46 +230,16 @@ export default function TaskSearchInput({
               aria-label="Search filters"
             >
               {filterControls}
-              <fieldset className="mt-2 space-y-2 border-t border-border-subtle p-2 text-xs text-txt-secondary">
-                <legend className="px-1 text-txt-primary">Search settings</legend>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={settings.searchOnType} onChange={event => settings.update({ searchOnType: event.target.checked })} />
-                  Search as you type
-                </label>
-                <label className="block">
-                  Typing delay (ms)
-                  <input type="number" min={0} step={50} value={delayDraft}
-                    onChange={event => setDelayDraft(event.target.value)}
-                    onBlur={() => {
-                      settings.update({ searchOnTypeDebouncePeriod: delayDraft === '' ? 300 : Number(delayDraft) })
-                      setDelayDraft(String(useSearchSettingsStore.getState().searchOnTypeDebouncePeriod))
-                    }}
-                    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
-                    className="mt-1 block w-full rounded border border-border bg-surface-overlay px-2 py-1.5 text-txt-primary" />
-                </label>
-                <label className="block">
-                  Match limit (blank for unlimited)
-                  <input type="number" min={1} step={1} value={limitDraft}
-                    onChange={event => setLimitDraft(event.target.value)}
-                    onBlur={() => {
-                      settings.update({ maxResults: limitDraft === '' ? null : Number(limitDraft) })
-                      setLimitDraft(String(useSearchSettingsStore.getState().maxResults ?? ''))
-                    }}
-                    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
-                    className="mt-1 block w-full rounded border border-border bg-surface-overlay px-2 py-1.5 text-txt-primary" />
-                </label>
-                <p>Enter to search. Shift+Enter for a new line. Up/Down at the first/last line recalls history.</p>
-                <p>Settings and history apply to Manager and Monitor.</p>
-                <button type="button" disabled={!history.items.length} onClick={() => {
-                  clearTimeout(historyTimer.current)
-                  history.clear()
-                }} className="text-accent hover:underline disabled:text-txt-tertiary disabled:no-underline">Clear search history</button>
+              <div className="mt-1.5 border-t border-border-subtle pt-1.5">
                 <button type="button" onClick={() => {
-                  settings.update(DEFAULT_SEARCH_SETTINGS)
-                  setDelayDraft(String(DEFAULT_SEARCH_SETTINGS.searchOnTypeDebouncePeriod))
-                  setLimitDraft(String(DEFAULT_SEARCH_SETTINGS.maxResults))
-                }} className="block text-accent hover:underline">Reset search settings</button>
-              </fieldset>
+                  setFiltersOpen(false)
+                  usePreferencesStore.getState().open(filterTriggerRef.current)
+                }} className="touch-target flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:min-h-9">
+                  <Settings2 aria-hidden="true" className="h-3.5 w-3.5" />
+                  <span className="flex-1">Search preferences…</span>
+                  <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 text-txt-tertiary" />
+                </button>
+              </div>
             </div>
           )}
         </div>

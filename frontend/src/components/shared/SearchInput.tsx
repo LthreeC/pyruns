@@ -16,6 +16,7 @@ interface Props {
   onSubmit?: () => void
   onCancel?: () => void
   history?: string[]
+  historyRevision?: number
   onRemember?: (value: string) => void
 }
 
@@ -33,6 +34,7 @@ export default function SearchInput({
   onSubmit,
   onCancel,
   history = [],
+  historyRevision = 0,
   onRemember,
 }: Props) {
   const [local, setLocal] = useState(value)
@@ -49,6 +51,10 @@ export default function SearchInput({
     return () => clearTimeout(timer)
   }, [local, value, debounceMs, searchOnType, composing])
   useEffect(() => { setLocal(value) }, [value])
+  useEffect(() => {
+    historyNavigation.current = null
+    historyCaret.current = null
+  }, [historyRevision])
   useLayoutEffect(() => {
     const caret = historyCaret.current
     historyCaret.current = null
