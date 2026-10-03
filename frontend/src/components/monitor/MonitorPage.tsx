@@ -32,7 +32,7 @@ import {
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { appendMonitorLogContent, useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
+import { appendMonitorLogContent, MONITOR_TASK_PAGE_SIZE, useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import {
   useLogStream,
   useTaskEvents,
@@ -50,6 +50,7 @@ import ActionButton from '@/components/shared/ActionButton'
 import CopyButton from '@/components/shared/CopyButton'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
+import Pagination from '@/components/shared/Pagination'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
@@ -108,6 +109,8 @@ const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'exit_codes',
   'source_states',
   'run_environments',
+  'run_statuses',
+  'pid_create_times',
   'records',
   'tracks',
   'notes',
@@ -209,7 +212,7 @@ export default function MonitorPage() {
   const {
     monitorTasks,
     monitorTotal,
-    monitorHasMore,
+    monitorOffset,
     monitorLoading,
     monitorError,
     monitorSearchLimitHit,
@@ -218,7 +221,7 @@ export default function MonitorPage() {
     monitorSearchOptions,
     setMonitorSearchOptions,
     fetchMonitorTasks,
-    upsertMonitorTask,
+    updateMonitorTask,
   } = useTaskStore()
   const maxResults = useSearchSettingsStore(state => state.maxResults)
   const workspace = useWorkspaceStore(state => state.workspace)
@@ -226,7 +229,7 @@ export default function MonitorPage() {
   const {
     selectedTaskName, logContent, logOffset, logIdentity, availableLogs, selectedLog,
     logTailTruncated, logTailLimitBytes, loading, exportIds, logMatch, logError, logGeneration,
-    selectTask, selectLogFile, toggleExport, selectAllExport, clearExport,
+    selectTask, selectLogFile, toggleExport, setExportSelected, clearExport,
   } = useMonitorStore()
 
   const [sidebarQuery, setSidebarQuery] = useState('')
@@ -240,6 +243,7 @@ export default function MonitorPage() {
   const [taskActionPending, setTaskActionPending] = useState<'run' | 'cancel' | null>(null)
   const [stopConfirmTask, setStopConfirmTask] = useState('')
   const monitorShellRef = useRef<HTMLDivElement>(null)
+  const sidebarListRef = useRef<HTMLDivElement>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
@@ -353,7 +357,7 @@ export default function MonitorPage() {
       ) {
         selectedTaskSnapshotWorkspaceKeyRef.current = requestedWorkspaceKey
         setSelectedTaskSnapshot(task)
-        if (duringSearch) useTaskStore.getState().upsertMonitorTask(task)
+        if (duringSearch) useTaskStore.getState().updateMonitorTask(task)
       }
     } catch (error) {
       if (
@@ -657,6 +661,12 @@ export default function MonitorPage() {
       setSelectedTaskSnapshot(selectedTaskFromList)
     }
   }, [selectedTaskFromList, workspaceKey])
+
+  useEffect(() => {
+    sidebarListRef.current?.scrollTo({ top: 0 })
+    sidebarListRef.current?.querySelector<HTMLElement>('[data-monitor-page-task]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [monitorOffset, sidebarQuery, monitorSearchField, monitorSearchOptions, workspaceKey, compactMonitorLayout])
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -1464,8 +1474,8 @@ export default function MonitorPage() {
   )
   const searchResultSummary = monitorLoading
     ? `Searching… ${monitorTotal.toLocaleString()} tasks found so far`
-    : monitorHasMore
-    ? `${loadedSearchMatchCount.toLocaleString()}+ matches in ${monitorTasks.length.toLocaleString()} of ${monitorTotal.toLocaleString()} tasks`
+    : monitorTotal > monitorTasks.length
+    ? `${loadedSearchMatchCount.toLocaleString()} matches on this page · ${monitorTotal.toLocaleString()} tasks`
     : `${loadedSearchMatchCount.toLocaleString()} match${loadedSearchMatchCount === 1 ? '' : 'es'} in ${monitorTotal.toLocaleString()} task${monitorTotal === 1 ? '' : 's'}`
   const pinnedTasks = useMemo(
     () => filteredTasks.filter(task => task.pinned),
@@ -1518,7 +1528,7 @@ export default function MonitorPage() {
       const stillSelected = workspaceKeyRef.current === requestedWorkspaceKey
         && selectedTaskNameRef.current === currentTaskName
       if (task && stillSelected) {
-        upsertMonitorTask(task)
+        updateMonitorTask(task)
         selectedTaskSnapshotWorkspaceKeyRef.current = requestedWorkspaceKey
         setSelectedTaskSnapshot(task)
       }
@@ -1547,7 +1557,7 @@ export default function MonitorPage() {
         setTaskActionPending(null)
       }
     }
-  }, [selectedTaskName, selectedTask, taskActionPending, fetchMonitorTasks, selectTask, upsertMonitorTask, notify])
+  }, [selectedTaskName, selectedTask, taskActionPending, fetchMonitorTasks, selectTask, updateMonitorTask, notify])
 
   const openDetailTask = useCallback((task: Task) => {
     const requestedWorkspaceKey = workspaceKeyRef.current
@@ -1612,11 +1622,11 @@ export default function MonitorPage() {
       .catch(err => notify({ tone: 'error', title: 'Could not load log file', detail: errorMessage(err) }))
   }, [notify, selectLogFile, selectedTaskSnapshot?.status])
 
-  const handleLoadMoreTasks = useCallback(() => {
-    void fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })
+  const handleTaskPageChange = useCallback((offset: number) => {
+    void fetchMonitorTasks({ query: sidebarQuery, offset, refresh: false, workspaceKey })
       .catch(err => notify({
         tone: 'error',
-        title: 'Could not load more tasks',
+        title: 'Could not load task page',
         detail: errorMessage(err),
       }))
   }, [fetchMonitorTasks, notify, sidebarQuery, workspaceKey])
@@ -1719,7 +1729,7 @@ export default function MonitorPage() {
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        <div ref={sidebarListRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
           {sidebarSearchActive ? (
             <CompactSection
               title="Search Results"
@@ -1771,6 +1781,7 @@ export default function MonitorPage() {
                   {pinnedTasks.map(task => (
                     <SidebarItem
                       key={task.name}
+                      pageItem
                       task={task}
                       active={!exportMode && task.name === selectedTaskName}
                       exportMode={exportMode}
@@ -1794,6 +1805,7 @@ export default function MonitorPage() {
                 ) : otherTasks.map(task => (
                   <SidebarItem
                     key={task.name}
+                    pageItem
                     task={task}
                     active={!exportMode && task.name === selectedTaskName}
                     exportMode={exportMode}
@@ -1805,29 +1817,18 @@ export default function MonitorPage() {
             </>
           )}
 
-          {monitorHasMore && (
-            <div className="mt-2 space-y-1 px-1 text-center">
-              <div className="text-2xs text-txt-tertiary">
-                Loaded {monitorTasks.length.toLocaleString()} of {monitorTotal.toLocaleString()}
-              </div>
-              {monitorHasMore && (
-                <ActionButton
-                  variant="ghost"
-                  className="w-full border border-border-subtle"
-                  icon={monitorLoading
-                    ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
-                    : <RefreshCw className="h-3.5 w-3.5" />}
-                  disabled={monitorLoading}
-                  onClick={handleLoadMoreTasks}
-                >
-                  Load 200 more
-                </ActionButton>
-              )}
-            </div>
-          )}
         </div>
 
         <div className="flex-none border-t border-border-subtle px-2.5 py-2">
+          {monitorTotal > MONITOR_TASK_PAGE_SIZE && (
+            <div className="mb-2 space-y-1" aria-label="Monitor task pagination">
+              <div className="text-2xs tabular-nums text-txt-tertiary">
+                Tasks {monitorOffset + 1}–{monitorOffset + monitorTasks.length}
+              </div>
+              <Pagination total={monitorTotal} offset={monitorOffset} limit={MONITOR_TASK_PAGE_SIZE}
+                onOffsetChange={handleTaskPageChange} disabled={monitorLoading} />
+            </div>
+          )}
           {!exportMode ? (
             <ActionButton
               icon={<FileDown className="h-3.5 w-3.5" />}
@@ -1843,10 +1844,11 @@ export default function MonitorPage() {
               <div className="flex items-center justify-between px-0.5 text-2xs">
                 <button
                   type="button"
-                  onClick={() => (allExportSelected ? clearExport() : selectAllExport(filteredTasks.map(task => task.name)))}
+                  onClick={() => setExportSelected(filteredTasks.map(task => task.name), !allExportSelected)}
+                  disabled={monitorLoading}
                   className="touch-target text-accent transition-colors hover:text-accent-hover"
                 >
-                  {allExportSelected ? 'Deselect loaded' : 'Select loaded'}
+                  {allExportSelected ? 'Deselect page' : 'Select page'}
                 </button>
                 <span className="text-txt-tertiary">{exportIds.size} selected</span>
               </div>
@@ -2181,7 +2183,11 @@ export default function MonitorPage() {
             setDetailTask(null)
           }}
           onTaskUpdated={updatedTask => {
-            upsertMonitorTask(updatedTask)
+            updateMonitorTask(updatedTask)
+            if (updatedTask.name === selectedTaskNameRef.current) {
+              selectedTaskSnapshotWorkspaceKeyRef.current = workspaceKey
+              setSelectedTaskSnapshot(updatedTask)
+            }
             setDetailTask(current => current?.name === updatedTask.name ? updatedTask : current)
           }}
           onRefresh={() => {
@@ -2344,12 +2350,14 @@ function formatBytes(bytes: number) {
 
 const SidebarItem = memo(function SidebarItem({
   task,
+  pageItem = false,
   active,
   exportMode,
   exportSelected,
   onSelect,
 }: {
   task: Task
+  pageItem?: boolean
   active: boolean
   exportMode: boolean
   exportSelected: boolean
@@ -2358,6 +2366,7 @@ const SidebarItem = memo(function SidebarItem({
   return (
     <button
       type="button"
+      data-monitor-page-task={pageItem ? task.name : undefined}
       onClick={() => onSelect(task)}
       aria-current={!exportMode && active ? 'true' : undefined}
       aria-pressed={exportMode ? exportSelected : undefined}

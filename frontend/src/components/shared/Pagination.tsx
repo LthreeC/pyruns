@@ -6,9 +6,10 @@ interface Props {
   offset: number
   limit: number
   onOffsetChange: (offset: number) => void
+  disabled?: boolean
 }
 
-export default function Pagination({ total, offset, limit, onOffsetChange }: Props) {
+export default function Pagination({ total, offset, limit, onOffsetChange, disabled = false }: Props) {
   if (total <= limit) return null
 
   const currentPage = Math.floor(offset / limit) + 1
@@ -18,12 +19,12 @@ export default function Pagination({ total, offset, limit, onOffsetChange }: Pro
     <div className="flex flex-wrap items-center gap-2 text-xs text-txt-tertiary">
       <button
         type="button"
-        disabled={offset === 0}
+        disabled={disabled || offset === 0}
         onClick={() => onOffsetChange(Math.max(0, offset - limit))}
         aria-label="Previous page"
         className={clsx(
           'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
-          offset === 0 && 'opacity-30 cursor-not-allowed'
+          (disabled || offset === 0) && 'opacity-30 cursor-not-allowed'
         )}
       >
         <ChevronLeft className="w-3.5 h-3.5" />
@@ -33,12 +34,12 @@ export default function Pagination({ total, offset, limit, onOffsetChange }: Pro
       </span>
       <button
         type="button"
-        disabled={offset + limit >= total}
+        disabled={disabled || offset + limit >= total}
         onClick={() => onOffsetChange(offset + limit)}
         aria-label="Next page"
         className={clsx(
           'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors hover:bg-surface-overlay sm:h-8 sm:w-8',
-          offset + limit >= total && 'opacity-30 cursor-not-allowed'
+          (disabled || offset + limit >= total) && 'opacity-30 cursor-not-allowed'
         )}
       >
         <ChevronRight className="w-3.5 h-3.5" />

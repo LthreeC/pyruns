@@ -153,9 +153,12 @@ def _compact_monitor_task(task: dict[str, Any]) -> dict[str, Any]:
             "start_times": [],
             "finish_times": [],
             "pids": [],
+            "pid_create_times": [],
+            "run_statuses": [],
             "durations": [],
             "exit_codes": [],
             "source_states": [],
+            "run_environments": [],
             "records": [],
             "tracks": [],
             "notes": "",
@@ -995,7 +998,7 @@ def create_app(
                 runtime.search_tasks, query=query, status=status, offset=offset,
                 limit=limit, sort_mode=sort, search_field=search_field, cancelled=cancelled,
                 match_case=match_case, whole_word=whole_word, use_regex=use_regex, include_logs=include_logs,
-                summary=summary, refresh=refresh, force_refresh=force_refresh,
+                summary=summary, compact=compact, refresh=refresh, force_refresh=force_refresh,
                 max_results=max_results, on_progress=progress if stream else None,
             ))
             if stream:
@@ -1038,7 +1041,7 @@ def create_app(
             page = await run_in_threadpool(
                 runtime.list_tasks, query=query, status=status, offset=offset,
                 limit=limit, refresh=refresh, force_refresh=force_refresh,
-                summary=summary, sort_mode=sort, search_field=search_field,
+                summary=summary, compact=compact, sort_mode=sort, search_field=search_field,
             )
         return serialize_page(page)
 

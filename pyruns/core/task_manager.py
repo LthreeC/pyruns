@@ -326,14 +326,21 @@ class TaskManager:
         "search_text",
         "_load_error",
     )
+    # Compact Monitor responses blank these fields after filtering. Skip them
+    # before detaching summaries so polling never copies discarded run history.
+    _COMPACT_SUMMARY_OMIT_FIELDS = frozenset({
+        "env", "cmd", "start_times", "finish_times", "pids", "pid_create_times",
+        "run_statuses", "durations", "exit_codes", "source_states", "run_environments",
+        "notes", "preview_text", "search_text",
+    })
 
     @classmethod
     @overload
-    def _snapshot_task_for_api(cls, task: None, *, summary: bool) -> None: ...
+    def _snapshot_task_for_api(cls, task: None, *, summary: bool, compact: bool = False) -> None: ...
 
     @classmethod
     @overload
-    def _snapshot_task_for_api(cls, task: Dict[str, Any], *, summary: bool) -> Dict[str, Any]: ...
+    def _snapshot_task_for_api(cls, task: Dict[str, Any], *, summary: bool, compact: bool = False) -> Dict[str, Any]: ...
 
     @classmethod
     def _snapshot_task_for_api(
@@ -341,6 +348,7 @@ class TaskManager:
         task: Dict[str, Any] | None,
         *,
         summary: bool,
+        compact: bool = False,
     ) -> Dict[str, Any] | None:
         """Capture a stable detached task value while the manager lock is held."""
         if task is None:
@@ -350,7 +358,7 @@ class TaskManager:
         return {
             key: copy.deepcopy(task[key])
             for key in cls._SUMMARY_API_FIELDS
-            if key in task
+            if key in task and not (compact and key in cls._COMPACT_SUMMARY_OMIT_FIELDS)
         }
 
     @classmethod
@@ -392,18 +400,22 @@ class TaskManager:
 
     @staticmethod
     @overload
-    def serialize_task(task: None, *, summary: bool = False) -> None: ...
+    def serialize_task(task: None, *, summary: bool = False, compact: bool = False) -> None: ...
 
     @staticmethod
     @overload
-    def serialize_task(task: Dict[str, Any], *, summary: bool = False) -> Dict[str, Any]: ...
+    def serialize_task(task: Dict[str, Any], *, summary: bool = False, compact: bool = False) -> Dict[str, Any]: ...
 
     @staticmethod
-    def serialize_task(task: Dict[str, Any] | None, *, summary: bool = False) -> Dict[str, Any] | None:
+    def serialize_task(
+        task: Dict[str, Any] | None, *, summary: bool = False, compact: bool = False,
+    ) -> Dict[str, Any] | None:
         """Return a detached task copy suitable for APIs and read-only consumers."""
         if task is None:
             return None
         if summary:
+            if compact:
+                task = {key: value for key, value in task.items() if key not in TaskManager._COMPACT_SUMMARY_OMIT_FIELDS}
             return {
                 "dir": str(task.get("dir", "")).replace("\\", "/"),
                 "name": task.get("name", ""),
@@ -479,15 +491,15 @@ class TaskManager:
             if serialized is not None
         ]
 
-    def get_task(self, identifier: str, *, summary: bool = False) -> Dict[str, Any] | None:
+    def get_task(self, identifier: str, *, summary: bool = False, compact: bool = False) -> Dict[str, Any] | None:
         """Return a detached task copy by name."""
         with self._lock:
             snapshot = self._snapshot_task_for_api(
                 self._tasks_by_name.get(identifier),
-                summary=summary,
+                summary=summary, compact=compact,
             )
         if summary:
-            return self.serialize_task(snapshot, summary=True)
+            return self.serialize_task(snapshot, summary=True, compact=compact)
         return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
 
     def get_task_summary_page(
@@ -516,6 +528,7 @@ class TaskManager:
         sort_mode: str = "priority",
         search_field: str = "all",
         summary: bool = False,
+        compact: bool = False,
     ) -> tuple[List[Dict[str, Any]], int, Dict[str, int]]:
         """Select a page under the lock, copying payloads only for its tasks."""
         safe_offset = max(0, int(offset))
@@ -549,12 +562,12 @@ class TaskManager:
                 if safe_limit else ordered[safe_offset:]
             )
             snapshots = [
-                self._snapshot_task_for_api(task, summary=summary)
+                self._snapshot_task_for_api(task, summary=summary, compact=compact)
                 for task in selected
             ]
         return (
             [
-                self.serialize_task(snapshot, summary=True)
+                self.serialize_task(snapshot, summary=True, compact=compact)
                 if summary else self._finalize_full_task_snapshot(snapshot)
                 for snapshot in snapshots
             ],

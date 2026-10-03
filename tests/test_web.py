@@ -2611,6 +2611,69 @@ def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
     }
 
 
+def test_compact_pages_skip_run_history_copies_and_preserve_full_details(tmp_path):
+    class UncopiedHistory(list):
+        def __deepcopy__(self, memo):
+            raise AssertionError("Compact polling must not copy discarded run history")
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed")
+    histories = {
+        "start_times": ["2026-03-17_12-00-00"] * 1000,
+        "finish_times": ["2026-03-17_12-00-01"] * 1000,
+        "pids": [4242] * 1000,
+        "pid_create_times": [1.0] * 1000,
+        "run_statuses": ["completed"] * 1000,
+        "durations": [1.0] * 1000,
+        "exit_codes": [0] * 1000,
+        "source_states": ["local"] * 1000,
+        "run_environments": [{"host": "localhost", "env": {"RUN_VALUE": "saved"}}] * 1000,
+    }
+    update_task_info(str(workspace / TASKS_DIR / "alpha"), lambda info: info.update(
+        **histories, run_index=1000, env={"SEARCH_VALUE": "needle"}, notes="saved note",
+    ))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+    try:
+        for summary in (False, True):
+            response = client.get("/api/tasks", params={"summary": summary, "refresh": False})
+            assert response.status_code == 200
+            item = response.json()["items"][0]
+            assert all(item[field] == values for field, values in histories.items())
+        detail = client.get("/api/tasks/alpha", params={"refresh": False})
+        assert detail.status_code == 200
+        assert all(detail.json()[field] == values for field, values in histories.items())
+        compact_full = client.get("/api/tasks", params={"compact": True, "refresh": False})
+        assert compact_full.status_code == 200
+        assert all(compact_full.json()["items"][0][field] == [] for field in histories)
+
+        search_params = {"query": "needle", "search_field": "env", "refresh": False, "summary": True}
+        searched = client.get("/api/tasks", params=search_params).json()
+        assert searched["total"] == 1
+        with runtime.task_manager._lock:
+            cached = runtime.task_manager._tasks_by_name["alpha"]
+            for field in histories:
+                cached[field] = UncopiedHistory(cached[field])
+
+        for params in ({"refresh": False, "summary": True}, search_params, {**search_params, "stream": True}):
+            response = client.get("/api/tasks", params={**params, "compact": True})
+            assert response.status_code == 200
+            page = (json.loads(response.text.splitlines()[-1])["page"] if params.get("stream") else response.json())
+            assert page["total"] == 1
+            item = page["items"][0]
+            assert all(item[field] == [] for field in histories)
+            assert (item["name"], item["status"], item["run_index"]) == ("alpha", "completed", 1000)
+            if params.get("query"):
+                assert page["status_counts"] == searched["status_counts"]
+                assert item["search_matches"] == searched["items"][0]["search_matches"]
+                assert item["search_match_count"] == searched["items"][0]["search_match_count"]
+            assert len(response.content) < 4000
+        assert all(cached[field] == values for field, values in histories.items())
+    finally:
+        client.close()
+        runtime.shutdown()
+
+
 def test_tasks_endpoint_status_counts_are_global_before_filters_and_pagination(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="completed")
@@ -3177,8 +3240,8 @@ def test_metadata_search_rejects_results_after_workspace_switch(tmp_path, monkey
         runtime.shutdown()
 
 
-@pytest.mark.parametrize("summary", [False, True])
-def test_search_serializes_captured_task_if_deleted_during_matching(tmp_path, monkeypatch, summary):
+@pytest.mark.parametrize("summary,compact", [(False, False), (True, False), (True, True)])
+def test_search_serializes_captured_task_if_deleted_during_matching(tmp_path, monkeypatch, summary, compact):
     from pyruns.web import runtime as runtime_module
 
     workspace = _make_workspace(tmp_path, "main")
@@ -3199,21 +3262,21 @@ def test_search_serializes_captured_task_if_deleted_during_matching(tmp_path, mo
 
     monkeypatch.setattr(runtime_module, "task_search_found", delete_while_matching)
     try:
-        page = runtime.search_tasks(query="needle", search_field="notes", summary=summary,
+        page = runtime.search_tasks(query="needle", search_field="notes", summary=summary, compact=compact,
                                     refresh=False, cancelled=threading.Event())
         assert page.total == 1
         item = page.items[0]
         assert item["name"] == "source" and item["search_match_count"] == 1
-        assert item["env"] == {"SAVED": "original"}
-        assert item["start_times"] == ["2026-01-01_00-00-01"]
+        assert item["env"] == ({} if compact else {"SAVED": "original"})
+        assert item["start_times"] == ([] if compact else ["2026-01-01_00-00-01"])
         json.dumps(item)  # No private mapping wrappers escape the API.
         assert not manager._search_view_cache
     finally:
         runtime.shutdown()
 
 
-@pytest.mark.parametrize("summary", [False, True])
-def test_search_does_not_merge_matches_into_same_name_replacement(tmp_path, monkeypatch, summary):
+@pytest.mark.parametrize("summary,compact", [(False, False), (True, False), (True, True)])
+def test_search_does_not_merge_matches_into_same_name_replacement(tmp_path, monkeypatch, summary, compact):
     from pyruns.web import runtime as runtime_module
 
     workspace = _make_workspace(tmp_path, "main")
@@ -3245,11 +3308,11 @@ def test_search_does_not_merge_matches_into_same_name_replacement(tmp_path, monk
     try:
         page = runtime.search_tasks(
             query="needle", search_field="notes", include_logs=False,
-            refresh=False, cancelled=threading.Event(), summary=summary,
+            refresh=False, cancelled=threading.Event(), summary=summary, compact=compact,
         )
         assert page.total == 1
         item = page.items[0]
-        assert item["notes"] == "old needle"
+        assert item["notes"] == ("" if compact else "old needle")
         assert item["search_matches"][0]["snippet"] == "old needle"
     finally:
         runtime.shutdown()

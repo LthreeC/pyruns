@@ -374,7 +374,7 @@ describe('workspace-scoped stores', () => {
     useWorkspaceStore.getState().setWorkspace(workspace('A'))
     const old = deferred<any>()
     vi.mocked(api.getTasks).mockReturnValueOnce(old.promise)
-    useTaskStore.setState({ query: 'needle', monitorQuery: 'needle', offset: 50, monitorLoadedLimit: 600 })
+    useTaskStore.setState({ query: 'needle', monitorQuery: 'needle', offset: 50, monitorOffset: 600 })
     const fetch = () => view === 'manager' ? useTaskStore.getState().fetchTasks() : useTaskStore.getState().fetchMonitorTasks()
     const pending = fetch()
     const signal = vi.mocked(api.getTasks).mock.calls[0][1]!
@@ -391,18 +391,58 @@ describe('workspace-scoped stores', () => {
     vi.mocked(api.getTasks).mockResolvedValue({ items: [{ name: 'notes-result' }], total: 1, has_more: false } as any)
     await fetch()
     const expected = change === 'field' ? { searchField: 'notes' } : { searchOptions: options }
-    expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ ...expected, ...(view === 'manager' ? { offset: 0 } : { limit: 200 }) }), expect.any(AbortSignal))
+    expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ ...expected, offset: 0, ...(view === 'monitor' ? { limit: 200 } : {}) }), expect.any(AbortSignal))
     old.resolve({ items: [{ name: 'stale-log-result' }], total: 1, has_more: false })
     await pending
     expect(view === 'manager' ? useTaskStore.getState().tasks : useTaskStore.getState().monitorTasks).toEqual([{ name: 'notes-result' }])
     if (view === 'monitor') {
-      await useTaskStore.getState().fetchMonitorTasks({ loadMore: true })
-      expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ ...expected, limit: 400 }), expect.any(AbortSignal))
+      await useTaskStore.getState().fetchMonitorTasks({ offset: 200 })
+      expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ ...expected, limit: 200, offset: 200 }), expect.any(AbortSignal))
     }
     useWorkspaceStore.getState().setWorkspace(workspace('B'))
     expect(useTaskStore.getState()).toMatchObject({ searchField: 'all', monitorSearchField: 'all' })
     expect(useTaskStore.getState().searchOptions).toEqual({ matchCase: false, wholeWord: false, useRegex: false })
     expect(useTaskStore.getState().monitorSearchOptions).toEqual({ matchCase: false, wholeWord: false, useRegex: false })
+  })
+
+  it('browses monitor tasks beyond 10000 with bounded pages and resets a changed query', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    vi.mocked(api.getTasks).mockImplementation(async params => {
+      if ((params?.limit ?? 0) > 10_000) throw Object.assign(new Error('Page too large'), { status: 422 })
+      return { items: [{ name: params?.query ? 'match' : 'task-10000' }], total: params?.query ? 1 : 10_001 } as any
+    })
+    await useTaskStore.getState().fetchMonitorTasks({ offset: 10_000 })
+    expect(useTaskStore.getState()).toMatchObject({ monitorOffset: 10_000, monitorTasks: [{ name: 'task-10000' }] })
+    expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 10_000, limit: 200 }), expect.any(AbortSignal))
+    await useTaskStore.getState().fetchMonitorTasks({ query: 'needle' })
+    expect(useTaskStore.getState()).toMatchObject({ monitorOffset: 0, monitorTasks: [{ name: 'match' }] })
+    expect(api.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, limit: 200 }), expect.any(AbortSignal))
+  })
+
+  it.each([0, 401])('returns an emptied last monitor page to the remaining %i tasks', async total => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    useTaskStore.setState({ monitorOffset: 600 })
+    vi.mocked(api.getTasks).mockResolvedValueOnce({ items: [], total } as any)
+      .mockResolvedValueOnce({ items: [{ name: 'last-remaining' }], total } as any)
+    await useTaskStore.getState().fetchMonitorTasks()
+    expect(useTaskStore.getState()).toMatchObject({ monitorOffset: total ? 400 : 0,
+      monitorTasks: total ? [{ name: 'last-remaining' }] : [] })
+    expect(api.getTasks).toHaveBeenCalledTimes(total ? 2 : 1)
+  })
+
+  it('keeps the latest monitor page when an obsolete request or off-page task update arrives', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const old = deferred<any>()
+    vi.mocked(api.getTasks).mockReturnValueOnce(old.promise)
+    const pending = useTaskStore.getState().fetchMonitorTasks({ offset: 10_000 })
+    const signal = vi.mocked(api.getTasks).mock.calls[0][1]!
+    vi.mocked(api.getTasks).mockResolvedValueOnce({ items: [{ name: 'second-page' }], total: 10_001 } as any)
+    await useTaskStore.getState().fetchMonitorTasks({ offset: 200 })
+    expect(signal.aborted).toBe(true)
+    old.resolve({ items: [{ name: 'obsolete-page' }], total: 10_001 })
+    await pending
+    useTaskStore.getState().updateMonitorTask({ name: 'off-page', status: 'running' } as any)
+    expect(useTaskStore.getState()).toMatchObject({ monitorOffset: 200, monitorTasks: [{ name: 'second-page' }] })
   })
 
   it('preserves the current generator draft after a template load failure', async () => {

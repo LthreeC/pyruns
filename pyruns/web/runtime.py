@@ -1169,6 +1169,7 @@ class PyrunsRuntime:
         refresh: bool = True,
         force_refresh: bool = False,
         summary: bool = False,
+        compact: bool = False,
         sort_mode: str = "priority",
         search_field: str = "all",
     ) -> TaskPage:
@@ -1178,7 +1179,7 @@ class PyrunsRuntime:
         safe_limit = max(0, int(limit))
         items, total, status_counts = self.task_manager.get_task_page(
             query=query, status=status, offset=safe_offset, limit=safe_limit,
-            sort_mode=sort_mode, search_field=search_field, summary=summary,
+            sort_mode=sort_mode, search_field=search_field, summary=summary, compact=compact,
         )
         if summary:
             if query and items:
@@ -1215,7 +1216,7 @@ class PyrunsRuntime:
     def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", search_field="all",
                      match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True,
                      refresh=True, force_refresh=False, cancelled, max_results=DEFAULT_MAX_SEARCH_RESULTS,
-                     on_progress=None):
+                     on_progress=None, compact=False):
         """Search metadata and all log files without holding task/workspace locks during I/O."""
         matcher = SearchQuery(query, match_case=match_case, whole_word=whole_word, use_regex=use_regex, cancelled=cancelled)
         while not self._log_search.slots.acquire(timeout=0.1):
@@ -1309,15 +1310,18 @@ class PyrunsRuntime:
                         if needles and not (context["match_count"] or logs["match_count"]):
                             continue
                         if offset <= base_total + batch_total < offset + limit:
-                            current = manager.get_task(task["name"], summary=summary)
+                            current = manager.get_task(task["name"], summary=summary, compact=compact)
                             if current is None or manager._get_task_search_view(task["name"]) is not task:
                                 # Keep contexts attached to the captured task if it
                                 # disappears or a same-name replacement arrives.
-                                current = manager.serialize_task({
-                                    **task, "env": dict(task["env"]),
-                                    "start_times": list(task["start_times"]),
-                                    "finish_times": list(task["finish_times"]),
-                                }, summary=summary)
+                                if summary and compact:
+                                    current = manager.serialize_task(dict(task), summary=True, compact=True)
+                                else:
+                                    current = manager.serialize_task({
+                                        **task, "env": dict(task["env"]),
+                                        "start_times": list(task["start_times"]),
+                                        "finish_times": list(task["finish_times"]),
+                                    }, summary=summary)
                             current["search_matches"] = context["matches"] + logs["matches"]
                             current["search_match_count"] = context["match_count"] + logs["match_count"]
                             batch_items.extend(_cap_summary_task_payloads([current]) if summary else [current])

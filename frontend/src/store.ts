@@ -40,7 +40,7 @@ const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
-const MONITOR_TASK_PAGE_SIZE = 200
+export const MONITOR_TASK_PAGE_SIZE = 200
 const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
 const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
 const TASK_SORT_MODES = new Set<TaskSortMode>([
@@ -214,8 +214,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     monitorWorkspaceKey: nextWorkspaceKey,
     monitorTasks: [],
     monitorTotal: 0,
-    monitorHasMore: false,
-    monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE,
+    monitorOffset: 0,
     monitorQuery: '',
     monitorSearchField: 'all',
     monitorSearchOptions: { ...DEFAULT_SEARCH_OPTIONS },
@@ -647,8 +646,7 @@ interface TaskState {
   monitorWorkspaceKey: string
   monitorTasks: Task[]
   monitorTotal: number
-  monitorHasMore: boolean
-  monitorLoadedLimit: number
+  monitorOffset: number
   monitorQuery: string
   monitorSearchField: TaskSearchScope
   monitorSearchOptions: TaskSearchOptions
@@ -685,13 +683,13 @@ interface TaskState {
     query?: string
     searchField?: TaskSearchScope
     searchOptions?: TaskSearchOptions
-    loadMore?: boolean
+    offset?: number
     refresh?: boolean
     forceRefresh?: boolean
     background?: boolean
     workspaceKey?: string
   }) => Promise<void>
-  upsertMonitorTask: (task: Task) => void
+  updateMonitorTask: (task: Task) => void
   toggleSelect: (name: string) => void
   selectAll: () => void
   clearSelection: () => void
@@ -710,7 +708,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({ loading: false, ...(wasSearching ? { error: 'Search cancelled. Refresh to search again.' } : {}) })
   },
   cancelMonitorSearch() {
-    const wasSearching = Boolean(monitorSearchController && get().monitorLoading)
+    const wasSearching = Boolean(monitorSearchController && get().monitorLoading && get().monitorQuery)
     monitorSearchController?.abort()
     monitorSearchController = null
     monitorTaskRequestSeq += 1
@@ -720,8 +718,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   monitorWorkspaceKey: '',
   monitorTasks: [],
   monitorTotal: 0,
-  monitorHasMore: false,
-  monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE,
+  monitorOffset: 0,
   monitorQuery: '',
   monitorSearchField: 'all',
   monitorSearchOptions: { ...DEFAULT_SEARCH_OPTIONS },
@@ -768,7 +765,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (monitorSearchField !== get().monitorSearchField) {
       monitorSearchController?.abort()
       monitorTaskRequestSeq += 1
-      set({ monitorSearchField, monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE })
+      set({ monitorSearchField, monitorOffset: 0 })
     }
   },
   setSearchOptions(searchOptions) {
@@ -779,7 +776,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   setMonitorSearchOptions(monitorSearchOptions) {
     monitorSearchController?.abort()
     monitorTaskRequestSeq += 1
-    set({ monitorSearchOptions, monitorLoadedLimit: MONITOR_TASK_PAGE_SIZE })
+    set({ monitorSearchOptions, monitorOffset: 0 })
   },
   setSortMode(sortMode) {
     if (sortMode !== get().sortMode) {
@@ -913,7 +910,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (String(options.workspaceKey ?? currentWorkspaceKey()) !== currentWorkspaceKey()) return
     if (options.background && (get().monitorLoading || (options.query ?? get().monitorQuery))) return
     monitorSearchController?.abort()
-    const controller = String(options.query ?? get().monitorQuery) ? new AbortController() : null
+    const controller = new AbortController()
     monitorSearchController = controller
     const requestId = ++monitorTaskRequestSeq
     const current = get()
@@ -930,19 +927,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       && useSearchSettingsStore.getState().maxResults === maxResults
     const queryChanged = query !== current.monitorQuery || searchField !== current.monitorSearchField || searchOptions !== current.monitorSearchOptions
     const background = Boolean(options.background)
-    const baseLimit = queryChanged ? MONITOR_TASK_PAGE_SIZE : current.monitorLoadedLimit
-    const nextLimit = options.loadMore && !queryChanged
-      ? baseLimit + MONITOR_TASK_PAGE_SIZE
-      : baseLimit
+    let requestedOffset = queryChanged ? 0 : Math.max(0, options.offset ?? current.monitorOffset)
     set(background
       ? { monitorLoading: false, monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions }
       : { monitorLoading: true, monitorError: '', monitorSearchLimitHit: false, monitorQuery: query, monitorSearchField: searchField, monitorSearchOptions: searchOptions })
     try {
-      const page = await api.getTasks({
+      const requestPage = () => api.getTasks({
         query,
         searchField,
         searchOptions,
-        limit: nextLimit,
+        offset: requestedOffset,
+        limit: MONITOR_TASK_PAGE_SIZE,
         refresh: options.refresh ?? true,
         forceRefresh: options.forceRefresh,
         summary: true,
@@ -951,19 +946,29 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         maxResults,
         onProgress: query ? page => {
           if (isCurrentRequest()) set({ monitorTasks: retainTaskSnapshots(get().monitorTasks, page.items), monitorTotal: page.total,
-            monitorHasMore: page.has_more, monitorSearchLimitHit: Boolean(page.search_limit_hit),
+            monitorOffset: requestedOffset,
+            monitorSearchLimitHit: Boolean(page.search_limit_hit),
             monitorStatusCounts: page.status_counts ?? null })
         } : undefined,
-      }, controller?.signal)
+      }, controller.signal)
+      let page = await requestPage()
       if (!isCurrentRequest()) {
         return
+      }
+      if (requestedOffset > 0 && page.items.length === 0 && requestedOffset >= page.total) {
+        requestedOffset = page.total > 0
+          ? Math.floor((page.total - 1) / MONITOR_TASK_PAGE_SIZE) * MONITOR_TASK_PAGE_SIZE
+          : 0
+        if (page.total > 0) {
+          page = await requestPage()
+          if (!isCurrentRequest()) return
+        }
       }
       set({
         monitorTasks: retainTaskSnapshots(get().monitorTasks, page.items),
         monitorSearchLimitHit: Boolean(page.search_limit_hit),
         monitorTotal: page.total,
-        monitorHasMore: page.has_more,
-        monitorLoadedLimit: nextLimit,
+        monitorOffset: requestedOffset,
         monitorStatusCounts: page.status_counts ?? null,
         monitorError: page.search_errors?.length ? `Search incomplete: ${page.search_errors.join('; ')}` : '',
       })
@@ -973,7 +978,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       set({ monitorError: error instanceof Error ? error.message : String(error),
         ...(error instanceof Error && 'status' in error && error.status === 422
-          ? { monitorTasks: [], monitorTotal: 0, monitorHasMore: false } : {}),
+          ? { monitorTasks: [], monitorTotal: 0, monitorOffset: 0 } : {}),
       })
       throw error
     } finally {
@@ -982,19 +987,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
     }
   },
-  upsertMonitorTask(task) {
+  updateMonitorTask(task) {
     if (!task?.name) {
       return
     }
     set(state => {
       const exists = state.monitorTasks.some(item => item.name === task.name)
-      return {
-        monitorTasks: exists
-          ? state.monitorTasks.map(item => item.name === task.name ? { ...item, ...task } : item)
-          : state.monitorQuery
-            ? state.monitorTasks
-            : [task, ...state.monitorTasks],
-      }
+      return exists ? {
+        monitorTasks: state.monitorTasks.map(item => item.name === task.name ? { ...item, ...task } : item),
+      } : state
     })
   },
   toggleSelect(name) {
@@ -1208,7 +1209,7 @@ interface MonitorState {
   appendLog: (text: string) => void
   clearLog: () => void
   toggleExport: (name: string) => void
-  selectAllExport: (names: string[]) => void
+  setExportSelected: (names: string[], selected: boolean) => void
   clearExport: () => void
 }
 
@@ -1368,8 +1369,13 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     if (ids.has(name)) ids.delete(name); else ids.add(name)
     set({ exportIds: ids })
   },
-  selectAllExport(names) {
-    set({ exportIds: new Set(names) })
+  setExportSelected(names, selected) {
+    const ids = new Set(get().exportIds)
+    for (const name of names) {
+      if (selected) ids.add(name)
+      else ids.delete(name)
+    }
+    set({ exportIds: ids })
   },
   clearExport() { set({ exportIds: new Set() }) },
 }))

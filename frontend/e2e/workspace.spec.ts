@@ -1015,6 +1015,10 @@ test('monitor task details stay stable after the full task loads', async ({ page
     pinned: false,
     notes: 'keep monitor notes',
     env: { MODE: 'review' },
+    run_statuses: ['cancelled'],
+    pid_create_times: [123.5],
+    run_environments: [{ host: 'recorded-host', system: 'Linux', launcher: 'shell',
+      cuda_visible_devices: null, assigned_gpu_ids: [], gpu_scope: 'detected', gpu_status: 'ok', gpus: [] }],
     start_times: ['2026-08-09T00:01:00Z'],
     finish_times: [],
     pids: [1234],
@@ -1029,6 +1033,9 @@ test('monitor task details stay stable after the full task loads', async ({ page
     config: {},
     config_text: '',
     env: {},
+    run_statuses: [],
+    pid_create_times: [],
+    run_environments: [],
     start_times: [],
     finish_times: [],
     pids: [],
@@ -1148,6 +1155,8 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(page.getByRole('textbox', { name: 'Environment variable key' })).toHaveValue('MODE')
   await expect(page.getByRole('textbox', { name: 'Environment variable value' })).toHaveValue('review')
   await page.getByRole('tab', { name: 'Info' }).click()
+  await expect(page.getByRole('region', { name: 'Run History', exact: true })).toContainText('cancelled')
+  await expect(page.getByText('recorded-host', { exact: true })).toBeVisible()
   await page.getByRole('region', { name: 'Run History', exact: true }).locator('summary').filter({ hasText: 'Run #1' }).click()
   await expect(page.getByText('2026-08-09T00:01:00Z')).toBeVisible()
   await expect(page.getByText('1234')).toBeVisible()

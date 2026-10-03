@@ -527,23 +527,23 @@ def test_react_gpu_process_memory_percentage_guards_missing_readings():
 def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
-    monitor_fetch = store[store.index("async fetchMonitorTasks"):store.index("upsertMonitorTask(task)")]
+    monitor_fetch = store[store.index("async fetchMonitorTasks"):store.index("updateMonitorTask(task)")]
 
     assert "monitorTasks: Task[]" in store
     assert "const MONITOR_TASK_PAGE_SIZE = 200" in store
-    assert "loadMore?: boolean" in store
-    assert "monitorHasMore: boolean" in store
-    assert "upsertMonitorTask: (task: Task) => void" in store
-    assert "limit: nextLimit" in monitor_fetch
+    assert "monitorOffset: number" in store
+    assert "updateMonitorTask: (task: Task) => void" in store
+    assert "limit: MONITOR_TASK_PAGE_SIZE" in monitor_fetch
+    assert "offset: requestedOffset" in monitor_fetch
     assert "summary: true" in monitor_fetch
     assert "compact: true" in monitor_fetch
     assert "limit: 0" not in monitor_fetch
     assert "refresh: forceRefresh || !sidebarQuery" in monitor
-    assert "fetchMonitorTasks({ query: sidebarQuery, loadMore: true, refresh: false, workspaceKey })" in monitor
+    assert "fetchMonitorTasks({ query: sidebarQuery, offset, refresh: false, workspaceKey })" in monitor
     assert "monitorTasks.find(task => task.name === selectedTaskName)" in monitor
     assert "useTaskEvents({" in monitor
     assert "TASK_EVENT_FALLBACK_POLL_MS = 60_000" in monitor
-    assert "Load 200 more" in monitor
+    assert "<Pagination total={monitorTotal} offset={monitorOffset}" in monitor
     assert 'title="Pinned Tasks"' in monitor
     assert "count={pinnedTasks.length}" in monitor
     assert 'title="Search Results"' in monitor
@@ -556,15 +556,12 @@ def test_react_monitor_pages_and_searches_task_list_without_limit_zero():
 
 
 def test_react_monitor_merges_run_action_response_before_next_poll():
-    store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
-    assert "upsertMonitorTask(task)" in monitor
+    assert "updateMonitorTask(task)" in monitor
     assert "task = (await api.runTask(currentTaskName)).task" in monitor
     assert "task = (await api.cancelTask(currentTaskName)).task" in monitor
-    assert "monitorTasks: exists" in store
-    assert "? state.monitorTasks.map(item => item.name === task.name ? { ...item, ...task } : item)" in store
-    assert ": [task, ...state.monitorTasks]" in store
+    assert "setSelectedTaskSnapshot(task)" in monitor
 
 
 def test_react_app_sidebar_can_be_resized_and_persisted():
