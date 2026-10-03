@@ -12,7 +12,7 @@ for (const emptyLog of [false, true]) {
       items: tasks, total: 2, offset: 0, limit: 200, has_more: false,
       status_counts: { pending: 0, queued: 0, running: 0, completed: 2, failed: 0, cancelled: 0 },
     } }))
-    await page.routeWebSocket('**/api/tasks/events', socket => {
+    await page.routeWebSocket('**/api/tasks/events?*', socket => {
       socket.send(JSON.stringify({ type: 'ready' }))
     })
     for (const task of tasks) {

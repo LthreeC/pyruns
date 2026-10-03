@@ -83,6 +83,7 @@ const QUEUE_LOG_NAME = 'queue.log'
 const RUN_LOG_PATTERN = /^run\d+\.log$/
 // Coalesce tiny stdout chunks so carriage-return progress bars paint as one frame.
 const LOG_STREAM_FLUSH_MS = 50
+const LIVE_LOG_REQUEST_TIMEOUT_MS = 10_000
 const TASK_EVENT_REFRESH_DEBOUNCE_MS = 120
 const TASK_EVENT_FALLBACK_POLL_MS = 60_000
 const TASK_EVENT_DEGRADED_POLL_MS = 5_000
@@ -234,6 +235,7 @@ export default function MonitorPage() {
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectedTaskSnapshot, setSelectedTaskSnapshot] = useState<Task | null>(null)
   const [streamStatus, setStreamStatus] = useState<LogStreamStatus>('idle')
+  const [logStreamRevision, setLogStreamRevision] = useState(0)
   const [taskEventStatus, setTaskEventStatus] = useState<TaskEventStreamStatus>('idle')
   const [taskActionPending, setTaskActionPending] = useState<'run' | 'cancel' | null>(null)
   const [stopConfirmTask, setStopConfirmTask] = useState('')
@@ -271,6 +273,8 @@ export default function MonitorPage() {
   const terminalSearchTimerRef = useRef<number | null>(null)
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
+  const livePollControllerRef = useRef<AbortController | null>(null)
+  const liveStreamVersionRef = useRef(0)
   const wsStreamActiveRef = useRef(false)
   const followedLiveTaskRef = useRef('')
   const pendingLiveLogChunkRef = useRef({ key: '', chunks: [] as PendingLiveLogChunk[] })
@@ -1312,11 +1316,17 @@ export default function MonitorPage() {
   }, [flushLiveLogChunkBuffer])
 
   const handleLogStreamStatus = useCallback((status: LogStreamStatus) => {
+    if (status === 'live') {
+      // A resumed stream owns the cursor; an older HTTP response must not
+      // append the same bytes or restore the identity of a replaced log.
+      liveStreamVersionRef.current += 1
+      livePollControllerRef.current?.abort()
+    }
     wsStreamActiveRef.current = status === 'live'
     setStreamStatus(status)
   }, [])
 
-  useLogStream({
+  const { disconnect: disconnectLogStream } = useLogStream({
     taskName: selectedTaskName,
     onChunk: handleChunk,
     onDisconnect: handleLogStreamDisconnect,
@@ -1325,8 +1335,14 @@ export default function MonitorPage() {
     logFileName: selectedLog || liveLogName || undefined,
     offset: logOffsetRef.current,
     logIdentity: logIdentityRef.current,
-    generationKey: `${workspaceKey}:${logGeneration}`,
+    generationKey: `${workspaceKey}:${logGeneration}:${logStreamRevision}`,
   })
+
+  useEffect(() => () => {
+    livePollControllerRef.current?.abort()
+    livePollControllerRef.current = null
+    livePollInFlightRef.current = false
+  }, [workspaceKey, selectedTaskName, selectedLog, logGeneration, isLive, pageVisible])
 
   useEffect(() => {
     if (!pageVisible) return
@@ -1365,17 +1381,25 @@ export default function MonitorPage() {
     }
     const currentOffset = monitorState.logOffset
     const currentIdentity = monitorState.logIdentity
+    const streamVersion = liveStreamVersionRef.current
+    const controller = new AbortController()
+    livePollControllerRef.current = controller
+    const timeout = window.setTimeout(() => controller.abort(), LIVE_LOG_REQUEST_TIMEOUT_MS)
     try {
       const logs = await api.getTaskLogs(activeTaskName, {
         logFileName: requestedLog,
         offset: currentOffset,
         logIdentity: currentIdentity,
         chunkSize: monitorChunkSize,
-      })
+      }, controller.signal)
       if (
-        selectedTaskNameRef.current !== activeTaskName
+        controller.signal.aborted
+        || liveStreamVersionRef.current !== streamVersion
+        || selectedTaskNameRef.current !== activeTaskName
         || workspaceKeyRef.current !== requestedWorkspaceKey
         || useMonitorStore.getState().logGeneration !== monitorState.logGeneration
+        || useMonitorStore.getState().logOffset !== currentOffset
+        || useMonitorStore.getState().logIdentity !== currentIdentity
       ) {
         return
       }
@@ -1388,6 +1412,13 @@ export default function MonitorPage() {
       const shouldReplaceContent = Boolean(logs.reset)
         || logs.offset < currentOffset
         || Boolean(currentIdentity && nextIdentity && currentIdentity !== nextIdentity)
+      const cursorChanged = shouldReplaceContent
+        || logs.offset !== currentOffset || nextIdentity !== currentIdentity
+      if (cursorChanged) {
+        // HTTP won while the socket was connecting. Retire that socket before
+        // committing its new cursor, then reconnect from the committed bytes.
+        disconnectLogStream()
+      }
       logOffsetRef.current = logs.offset
       logIdentityRef.current = nextIdentity
       useMonitorStore.setState(state => (
@@ -1407,14 +1438,17 @@ export default function MonitorPage() {
             }
           : state
       ))
+      if (cursorChanged) setLogStreamRevision(revision => revision + 1)
     } catch {
       // Keep the monitor quiet; task polling still refreshes status.
     } finally {
-      if (workspaceKeyRef.current === requestedWorkspaceKey && useMonitorStore.getState().logGeneration === monitorState.logGeneration) {
+      window.clearTimeout(timeout)
+      if (livePollControllerRef.current === controller) {
+        livePollControllerRef.current = null
         livePollInFlightRef.current = false
       }
     }
-  }, [canUseLogStream, monitorChunkSize])
+  }, [canUseLogStream, disconnectLogStream, monitorChunkSize])
 
   // The WebSocket resumes immediately on return; keep HTTP on its fallback cadence.
   usePolling(pollLiveLog, 1500, !loading && isLive, false, false)

@@ -497,6 +497,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 }))
 
+// Request context follows accepted workspace snapshots, including reconnects.
+useWorkspaceStore.subscribe((state, previous) => {
+  if (state.workspace !== previous.workspace) {
+    api.setWorkspaceContext(String(state.workspace?.run_root || ''))
+  }
+})
+
 interface RuntimeState {
   runtime: RuntimeInfo | null
   loading: boolean

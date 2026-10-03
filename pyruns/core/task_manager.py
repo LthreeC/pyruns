@@ -43,6 +43,7 @@ from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
     _workspace_abspath,
     ensure_run_slot,
+    load_task_info,
     load_task_metadata,
     prepare_task_log_path,
     run_slot_count,
@@ -352,15 +353,23 @@ class TaskManager:
             if key in task
         }
 
-    @staticmethod
-    def _finalize_full_task_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
+    @classmethod
+    def _finalize_full_task_snapshot(cls, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply derived API fields to an already detached full-task snapshot."""
         if data.get("track_store"):
-            from pyruns.utils.track_store import read_tracks
+            from pyruns.utils.track_store import MissingTrackGeneration, read_tracks
 
             try:
                 # Keep the captured generation and run slots while including new points.
-                data["tracks"] = read_tracks(str(data["dir"]), data["track_store"], slots=run_slot_count(data))
+                try:
+                    data["tracks"] = read_tracks(str(data["dir"]), data["track_store"], slots=run_slot_count(data))
+                except MissingTrackGeneration:
+                    # A concurrent replacement can prune the captured generation.
+                    # Reload its metadata too: new curves must not inherit old run slots.
+                    info = load_task_info(str(data["dir"]), raise_error=True)
+                    info = cls._strip_queued_placeholder_run(info)
+                    cls._apply_info_to_task(data, info)
+                    data["created_at"] = info.get("created_at")
             except Exception as exc:
                 data["_load_error"] = "; ".join(
                     message for message in (data.get("_load_error"), f"Could not load tracks: {exc}") if message
@@ -5046,8 +5055,9 @@ class TaskManager:
             repr(task.get("gpu_wait")),
         )
 
+    @classmethod
     def _apply_info_to_task(
-        self,
+        cls,
         task: Dict[str, Any],
         info: Dict[str, Any],
         *,
@@ -5107,8 +5117,8 @@ class TaskManager:
                 "lease_heartbeat": info.get("lease_heartbeat"),
             }
         )
-        self._copy_gpu_schedule_info(task, info)
-        self._copy_gpu_wait_info(task, info)
+        cls._copy_gpu_schedule_info(task, info)
+        cls._copy_gpu_wait_info(task, info)
         # Only the caller that brackets its read can validate this signature.
         # A stat here could tag old info with a newer writer's file identity,
         # causing every subsequent refresh to skip that writer's changes.
@@ -5130,10 +5140,11 @@ class TaskManager:
         if mtime_ns is not None:
             task["_mtime_ns"] = mtime_ns
             task["_mtime"] = mtime_ns / 1_000_000_000
-        self._refresh_derived_fields(task)
+        cls._refresh_derived_fields(task)
         task["_registry_revision"] = task.get("_registry_revision", 0) + 1
 
-    def _refresh_derived_fields(self, task: Dict[str, Any]) -> None:
+    @staticmethod
+    def _refresh_derived_fields(task: Dict[str, Any]) -> None:
         preview_text, search_text = build_task_preview_and_search(
             task_kind=str(task.get("task_kind", TASK_KIND_CONFIG) or TASK_KIND_CONFIG),
             config=task.get("config", {}) or {},

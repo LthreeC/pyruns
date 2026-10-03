@@ -86,7 +86,7 @@ export function useTaskEvents({
       }
 
       ws.onerror = () => ws.close()
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (
           disposed
           || wsRef.current !== ws
@@ -95,6 +95,10 @@ export function useTaskEvents({
           return
         }
         wsRef.current = null
+        if (event?.code === 4409) {
+          onStatusChangeRef.current?.('idle')
+          return
+        }
         reconnectAttempt += 1
         onStatusChangeRef.current?.('reconnecting')
         const retryDelay = Math.min(
@@ -219,7 +223,7 @@ export function useLogStream({
       }
 
       ws.onerror = () => ws.close()
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (
           disposed
           || wsRef.current !== ws
@@ -229,6 +233,10 @@ export function useLogStream({
         }
         wsRef.current = null
         onDisconnectRef.current?.()
+        if (event?.code === 4409) {
+          onStatusChangeRef.current?.('idle')
+          return
+        }
         reconnectAttempt += 1
         onStatusChangeRef.current?.('reconnecting')
         const retryDelay = Math.min(

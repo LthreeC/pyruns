@@ -1610,7 +1610,7 @@ test('Monitor search holds a running log at the match and resumes live output', 
     taskReads.push(new URL(route.request().url()).searchParams.get('summary') || '')
     return route.fulfill({ json: task })
   })
-  await page.routeWebSocket('**/api/tasks/events', socket => {
+  await page.routeWebSocket('**/api/tasks/events?*', socket => {
     sendTaskEvent = value => socket.send(value)
     socket.send(JSON.stringify({ type: 'ready' }))
   })

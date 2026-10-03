@@ -4,20 +4,113 @@ import {
   ApiError,
   beginAuthorizationAttempt,
   checkPyrunsUpdate,
+  createLogStream,
+  createTaskEventStream,
   exportTasksCsv,
   getTasks,
   getSystemInfo,
   getWorkspace,
   recoverSession,
   restartPyruns,
+  setWorkspaceContext,
   subscribeUnauthorized,
+  subscribeWorkspaceChanged,
   updatePyruns,
   updateEnv,
   updateNotes,
 } from './api'
 
 afterEach(() => {
+  setWorkspaceContext('')
   vi.unstubAllGlobals()
+})
+
+describe('workspace request context', () => {
+  const root = 'D:\\实验 100%\\runs'
+  const changed = { code: 'workspace_changed', detail: 'Workspace changed. Reconnect.' }
+  const conflict = () => new Response(JSON.stringify(changed), { status: 409 })
+
+  it('binds JSON, search, and export requests while leaving workspace discovery unconstrained', async () => {
+    setWorkspaceContext(root)
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')))
+    vi.stubGlobal('fetch', fetchMock)
+    await getWorkspace()
+    await updateNotes('shared', 'draft', '')
+    await getTasks({ query: 'needle', onProgress: vi.fn() })
+    await exportTasksCsv(['shared'])
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty('X-Pyruns-Workspace')
+    for (const [, init] of fetchMock.mock.calls.slice(1)) {
+      expect(init.headers['X-Pyruns-Workspace']).toBe(encodeURIComponent(root))
+    }
+  })
+
+  it('notifies once for the current workspace without replaying a rejected write', async () => {
+    setWorkspaceContext(root)
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(conflict()))
+    vi.stubGlobal('fetch', fetchMock)
+    const listener = vi.fn()
+    const unsubscribe = subscribeWorkspaceChanged(listener)
+    try {
+      await expect(updateNotes('shared', 'draft', '')).rejects.toMatchObject({ status: 409, body: changed })
+      await expect(exportTasksCsv(['shared'])).rejects.toMatchObject({ status: 409 })
+      expect(listener).toHaveBeenCalledOnce()
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally { unsubscribe() }
+  })
+
+  it('ignores late conflicts after accepting a new workspace snapshot', async () => {
+    setWorkspaceContext(root)
+    let resolve!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise<Response>(done => { resolve = done })))
+    const listener = vi.fn()
+    const unsubscribe = subscribeWorkspaceChanged(listener)
+    try {
+      const pending = getTasks().catch(error => error)
+      setWorkspaceContext('/new-workspace')
+      resolve(conflict())
+      expect(await pending).toMatchObject({ status: 409 })
+      expect(listener).not.toHaveBeenCalled()
+    } finally { unsubscribe() }
+  })
+
+  it('distinguishes workspace changes in streamed errors from ordinary editing conflicts', async () => {
+    setWorkspaceContext(root)
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'Notes changed' }), { status: 409 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ type: 'error', status: 409, ...changed }) + '\n', {
+        headers: { 'Content-Type': 'application/x-ndjson' },
+      })))
+    const listener = vi.fn()
+    const unsubscribe = subscribeWorkspaceChanged(listener)
+    try {
+      await expect(updateNotes('shared', 'draft', '')).rejects.toMatchObject({ status: 409 })
+      expect(listener).not.toHaveBeenCalled()
+      await expect(getTasks({ query: 'needle', onProgress: vi.fn() })).rejects.toMatchObject({ status: 409 })
+      expect(listener).toHaveBeenCalledOnce()
+    } finally { unsubscribe() }
+  })
+
+  it('binds websocket handshakes and recognizes workspace rejection only for the current context', () => {
+    class Socket extends EventTarget { constructor(readonly url: string) { super() } }
+    vi.stubGlobal('WebSocket', Socket)
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:8099' })
+    setWorkspaceContext(root)
+    const eventSocket = createTaskEventStream()
+    const logSocket = createLogStream('shared', { offset: 123, logIdentity: 'file-id' })
+    expect(new URL(eventSocket.url).searchParams.get('expected_workspace')).toBe(root)
+    expect(new URL(logSocket.url).searchParams.get('expected_workspace')).toBe(root)
+    expect(new URL(logSocket.url).searchParams.get('offset')).toBe('123')
+    const listener = vi.fn()
+    const unsubscribe = subscribeWorkspaceChanged(listener)
+    try {
+      setWorkspaceContext(root)
+      eventSocket.dispatchEvent(Object.assign(new Event('close'), { code: 4409 }))
+      expect(listener).toHaveBeenCalledOnce()
+      setWorkspaceContext('/new-workspace')
+      logSocket.dispatchEvent(Object.assign(new Event('close'), { code: 4409 }))
+      expect(listener).toHaveBeenCalledOnce()
+    } finally { unsubscribe() }
+  })
 })
 
 describe('API errors', () => {

@@ -843,7 +843,7 @@ def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reco
     assert "offset: offsetRef.current," in log_stream
     assert "logIdentity: logIdentityRef.current" in log_stream
     assert "const onDisconnectRef = useRef(onDisconnect)" in log_stream
-    assert "ws.onclose = () => {" in log_stream
+    assert "ws.onclose = (event) => {" in log_stream
     assert "onDisconnectRef.current?.()" in log_stream
     assert "ws.onclose = null" in log_stream
     assert "LOG_STREAM_RECONNECT_BASE_MS" in log_stream

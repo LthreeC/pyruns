@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import CancelledError
+from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Callable, Dict, List
 
@@ -115,7 +116,10 @@ _GPU_SCHEDULER_PAYLOAD_KEYS = {
 
 
 class WorkspaceChangedError(RuntimeError):
-    """Raised when a workspace-bound stream outlives its source workspace."""
+    """Raised when a request or stream outlives its source workspace."""
+
+
+expected_workspace: ContextVar[str | None] = ContextVar("expected_workspace", default=None)
 
 
 class TaskNotesConflictError(RuntimeError):
@@ -132,7 +136,14 @@ def _with_stable_workspace(method: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(method)
     def wrapped(self: "PyrunsRuntime", *args: Any, **kwargs: Any) -> Any:
         with self._workspace_lock:
-            return method(self, *args, **kwargs)
+            self._check_expected_workspace()
+            # Nested calls are part of this same atomic operation, including a
+            # successful workspace switch which returns the new workspace.
+            token = expected_workspace.set(None)
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                expected_workspace.reset(token)
 
     return wrapped
 
@@ -412,6 +423,12 @@ class PyrunsRuntime:
         self._conda_envs_cache: Dict[str, Any] | None = None
         self.reload(root_dir)
 
+    def _check_expected_workspace(self, workspace_root: str | None = None) -> None:
+        """Check the client binding while the caller holds ``_workspace_lock``."""
+        requested = expected_workspace.get() if workspace_root is None else workspace_root
+        if requested is not None and os.path.normcase(os.path.abspath(requested)) != os.path.normcase(os.path.abspath(self.root_dir)):
+            raise WorkspaceChangedError("Workspace changed; reload the workspace before retrying.")
+
     @staticmethod
     def _normalize_path(path: str) -> str:
         return normalize_path(path)
@@ -642,6 +659,7 @@ class PyrunsRuntime:
         """Return conda environments discoverable from the current server process."""
 
         with self._workspace_lock:
+            self._check_expected_workspace()
             workspace_epoch = self._workspace_epoch
             settings = dict(self.settings)
             cached = dict(self._conda_envs_cache) if self._conda_envs_cache is not None else None
@@ -769,6 +787,7 @@ class PyrunsRuntime:
         """Return runtime settings and environment providers for the current workspace."""
 
         with self._workspace_lock:
+            self._check_expected_workspace()
             workspace_epoch = self._workspace_epoch
             settings = dict(self.settings)
             cached_conda = (
@@ -1091,8 +1110,9 @@ class PyrunsRuntime:
             self._tasks_loaded = True
 
     @_with_stable_workspace
-    def get_task_event_stream_context(self) -> tuple[str, TaskManager]:
+    def get_task_event_stream_context(self, *, workspace_root: str | None = None) -> tuple[str, TaskManager]:
         """Capture one atomic workspace/manager pair for a task event stream."""
+        self._check_expected_workspace(workspace_root)
         self.ensure_tasks_loaded(full_refresh=False)
         manager = self.task_manager
         manager.acquire_reactive_watch()
@@ -1123,8 +1143,9 @@ class PyrunsRuntime:
         return expected_manager is None or self._task_manager is expected_manager
 
     @_with_stable_workspace
-    def get_task_log_stream_context(self, task_name: str) -> tuple[str, Dict[str, Any]]:
+    def get_task_log_stream_context(self, task_name: str, *, workspace_root: str | None = None) -> tuple[str, Dict[str, Any]]:
         """Capture one atomic workspace/task pair for a log stream."""
+        self._check_expected_workspace(workspace_root)
         task = self.get_task(task_name, refresh=False, summary=True)
         if task is None:
             raise KeyError(task_name)
@@ -1197,6 +1218,7 @@ class PyrunsRuntime:
             if cancelled.is_set():
                 raise CancelledError()
             with self._workspace_lock:
+                self._check_expected_workspace()
                 epoch = self._workspace_epoch
                 self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
                 manager = self.task_manager
@@ -1358,9 +1380,9 @@ class PyrunsRuntime:
             return None
         return task
 
-    def require_task(self, task_name: str, *, refresh: bool = True) -> Dict[str, Any]:
+    def require_task(self, task_name: str, *, refresh: bool = True, summary: bool = False) -> Dict[str, Any]:
         """Return one task or raise ``KeyError``."""
-        task = self.get_task(task_name, refresh=refresh)
+        task = self.get_task(task_name, refresh=refresh, summary=summary)
         if task is None:
             raise KeyError(task_name)
         return task
@@ -1369,7 +1391,7 @@ class PyrunsRuntime:
     def start_task(self, task_name: str) -> Dict[str, Any]:
         """Start one task and return the updated snapshot."""
         self.ensure_tasks_loaded(full_refresh=False)
-        task = self.require_task(task_name)
+        task = self.require_task(task_name, summary=True)
         if task.get("_load_error"):
             raise ValueError(str(task["_load_error"]))
         self.invalidate_cache()
@@ -1382,7 +1404,7 @@ class PyrunsRuntime:
     def cancel_task(self, task_name: str) -> Dict[str, Any]:
         """Request cancellation from the runner that owns the task."""
         manager = self.task_manager
-        task = manager.get_task(task_name)
+        task = manager.get_task(task_name, summary=True)
         if task is None:
             task = manager.load_task_by_name(task_name)
         if task is None:
@@ -1438,7 +1460,7 @@ class PyrunsRuntime:
             task_name = str(name or "").strip()
             if not task_name or task_name in seen:
                 continue
-            task = self.require_task(task_name, refresh=False)
+            task = self.require_task(task_name, refresh=False, summary=True)
             if task.get("_load_error"):
                 raise ValueError(str(task["_load_error"]))
             normalized_names.append(task_name)
@@ -1475,7 +1497,7 @@ class PyrunsRuntime:
             task_name = str(name or "").strip()
             if not task_name or task_name in seen:
                 continue
-            self.require_task(task_name, refresh=False)
+            self.require_task(task_name, refresh=False, summary=True)
             normalized_names.append(task_name)
             seen.add(task_name)
 
@@ -1520,7 +1542,7 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def set_task_pin(self, task_name: str, pinned: bool | None = None) -> Dict[str, Any]:
         """Toggle or set one task's pinned state."""
-        self.require_task(task_name, refresh=False)
+        self.require_task(task_name, refresh=False, summary=True)
         self.invalidate_cache()
         ok, result = self.task_manager.set_task_pinned(task_name, pinned)
         if not ok:
@@ -1574,7 +1596,7 @@ class PyrunsRuntime:
         expected_notes: str,
     ) -> Dict[str, Any]:
         """Persist notes for one task."""
-        self.require_task(task_name, refresh=False)
+        self.require_task(task_name, refresh=False, summary=True)
         self.invalidate_cache()
         try:
             ok, result = self.task_manager.update_task_notes(task_name, notes, expected_notes)
@@ -1594,7 +1616,7 @@ class PyrunsRuntime:
         expected_env: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Persist env vars for one task."""
-        self.require_task(task_name, refresh=False)
+        self.require_task(task_name, refresh=False, summary=True)
         self.invalidate_cache()
         try:
             ok, result = self.task_manager.update_task_env(task_name, env, expected_env)
@@ -1609,7 +1631,7 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def rename_task(self, task_name: str, new_name: str) -> Dict[str, Any]:
         """Rename one task."""
-        self.require_task(task_name, refresh=False)
+        self.require_task(task_name, refresh=False, summary=True)
         self.invalidate_cache()
         ok, result = self.task_manager.rename_task(task_name, new_name)
         if not ok:
@@ -1799,7 +1821,9 @@ class PyrunsRuntime:
     def open_shell_workspace(self) -> Dict[str, Any]:
         """Prepare and activate the project-level shell workspace."""
 
-        current_root = self.root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
+        with self._workspace_lock:
+            self._check_expected_workspace()
+            current_root = self.root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
         shell_root = bootstrap_shell_workspace(current_root)
         self.reload(shell_root)
         return self.get_workspace_info()
@@ -1984,7 +2008,9 @@ class PyrunsRuntime:
 
     def list_launcher_scripts(self) -> List[Dict[str, Any]]:
         """Return launchable scripts from the current project directory."""
-        run_root = os.path.abspath(self.root_dir)
+        with self._workspace_lock:
+            self._check_expected_workspace()
+            run_root = os.path.abspath(self.root_dir)
         parent = os.path.dirname(run_root)
         if os.path.basename(run_root) == _cfg.DEFAULT_ROOT_NAME:
             project_dir = parent

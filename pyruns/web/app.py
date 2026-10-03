@@ -16,8 +16,8 @@ import time
 import webbrowser
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Awaitable, Literal, TYPE_CHECKING, TypeVar
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from typing import Annotated, Any, Awaitable, Literal, TYPE_CHECKING, TypeVar
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import uvicorn
 from anyio import CancelScope
@@ -45,6 +45,7 @@ from pyruns.web.runtime import (
     TaskEnvConflictError,
     TaskNotesConflictError,
     WorkspaceChangedError,
+    expected_workspace,
 )
 from pyruns.web.self_update import (
     ActiveTasksError,
@@ -124,9 +125,9 @@ async def _finish_stream_work(work: Awaitable[_StreamWorkResult]) -> tuple[_Stre
     return task.result(), cancelled
 
 
-async def _acquire_task_event_context(runtime: PyrunsRuntime) -> tuple[str, TaskManager]:
+async def _acquire_task_event_context(runtime: PyrunsRuntime, workspace_root: str | None = None) -> tuple[str, TaskManager]:
     context, cancelled = await _finish_stream_work(
-        asyncio.to_thread(runtime.get_task_event_stream_context)
+        asyncio.to_thread(runtime.get_task_event_stream_context, **({"workspace_root": workspace_root} if workspace_root is not None else {}))
     )
     if cancelled:
         await _finish_stream_work(asyncio.to_thread(runtime.release_task_event_stream_context, *context))
@@ -594,6 +595,10 @@ def create_app(
     app.state.update_coordinator = update_coordinator
     app.state.update_result = read_update_result()
 
+    @app.exception_handler(WorkspaceChangedError)
+    async def workspace_changed_error(_request: Request, exc: WorkspaceChangedError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc), "code": "workspace_changed"}, status_code=409)
+
     @app.middleware("http")
     async def protect_local_server(request: Request, call_next):
         def protect_response(response: Response) -> Response:
@@ -682,7 +687,25 @@ def create_app(
                 if len(body) > MAX_API_REQUEST_BYTES:
                     return json_error(413, f"Request body exceeds {MAX_API_REQUEST_BYTES} bytes")
             request._body = bytes(body)
-        response = await call_next(request)
+        workspace_root = request.headers.get("X-Pyruns-Workspace")
+        if workspace_root is not None:
+            if len(workspace_root) > MAX_PATH_CHARS * 12:
+                return json_error(400, "Workspace header is too long")
+            try:
+                workspace_root = unquote(workspace_root, errors="strict")
+            except UnicodeError:
+                return json_error(400, "Invalid workspace header")
+            if not workspace_root or "\0" in workspace_root or len(workspace_root) > MAX_PATH_CHARS:
+                return json_error(400, "Invalid workspace header")
+        # A copied context follows FastAPI/AnyIO and asyncio worker calls. The
+        # comparison itself happens under the runtime lock, next to the action.
+        binding = expected_workspace.set(
+            None if request.method == "GET" and request.url.path == "/api/workspace" else workspace_root
+        )
+        try:
+            response = await call_next(request)
+        finally:
+            expected_workspace.reset(binding)
         if (
             is_api
             and not test_client_bypass
@@ -988,6 +1011,7 @@ def create_app(
                         yield json.dumps({"type": "complete", "page": serialize_page(await pending)}) + "\n"
                     except (WorkspaceChangedError, SearchQueryError) as exc:
                         yield json.dumps({"type": "error", "status": 409 if isinstance(exc, WorkspaceChangedError) else 422,
+                                          **({"code": "workspace_changed"} if isinstance(exc, WorkspaceChangedError) else {}),
                                           "detail": str(exc)}) + "\n"
                     finally:
                         cancelled.set()
@@ -1004,8 +1028,6 @@ def create_app(
                         pending.cancel()
                         return Response(status_code=499)
                 page = await pending
-            except WorkspaceChangedError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
             except SearchQueryError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             finally:
@@ -1179,7 +1201,10 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
 
     @app.websocket("/api/tasks/events")
-    async def stream_task_events(websocket: WebSocket) -> None:
+    async def stream_task_events(
+        websocket: WebSocket,
+        expected_workspace: Annotated[str | None, Query(max_length=MAX_PATH_CHARS)] = None,
+    ) -> None:
         """Push task-list invalidations and keep low-frequency polling as a fallback."""
         rejection = websocket_rejection(websocket)
         if rejection is not None:
@@ -1188,7 +1213,11 @@ def create_app(
 
         runtime = get_runtime()
         await websocket.accept()
-        stream_root, stream_manager = await _acquire_task_event_context(runtime)
+        try:
+            stream_root, stream_manager = await _acquire_task_event_context(runtime, expected_workspace)
+        except WorkspaceChangedError:
+            await websocket.close(code=4409, reason="Workspace changed")
+            return
 
         loop = asyncio.get_running_loop()
         changes: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
@@ -1281,6 +1310,7 @@ def create_app(
         log_file_name: str | None = Query(default=None, max_length=255),
         offset: int | None = Query(default=None, ge=0),
         log_identity: str | None = Query(default=None, max_length=512),
+        expected_workspace: Annotated[str | None, Query(max_length=MAX_PATH_CHARS)] = None,
     ) -> None:
         rejection = websocket_rejection(websocket)
         if rejection is not None:
@@ -1290,7 +1320,9 @@ def create_app(
         runtime = get_runtime()
 
         def load_stream_context() -> tuple[str, str]:
-            root, task = runtime.get_task_log_stream_context(task_name)
+            root, task = runtime.get_task_log_stream_context(
+                task_name, **({"workspace_root": expected_workspace} if expected_workspace is not None else {})
+            )
             return root, os.path.normcase(os.path.abspath(str(task["dir"])))
 
         try:
@@ -1298,6 +1330,10 @@ def create_app(
             stream_root, stream_task_dir = await asyncio.to_thread(load_stream_context)
         except KeyError:
             await websocket.close(code=4404, reason="Task not found")
+            return
+        except WorkspaceChangedError:
+            await websocket.accept()
+            await websocket.close(code=4409, reason="Workspace changed")
             return
 
         requested_log_name = str(log_file_name or "").strip()
@@ -1308,6 +1344,7 @@ def create_app(
         log_emitter.bind_loop(loop)
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=LOG_STREAM_QUEUE_LIMIT)
         disconnected = asyncio.Event()
+        close_code = 1000
         tail_wakeup = asyncio.Event()
         dropped_notice_sent = False
         stream_log_name = ""
@@ -1450,6 +1487,7 @@ def create_app(
         async def tail_log_file() -> None:
             nonlocal stream_initialized, stream_log_name, stream_offset, stream_identity, replaying_backlog
             nonlocal pending_run_log, pending_run_chars, pending_run_overflow
+            nonlocal close_code
             while not disconnected.is_set():
                 tail_wakeup.clear()
                 try:
@@ -1676,6 +1714,7 @@ def create_app(
                                     continue
                             replaying_backlog = False
                 except WorkspaceChangedError:
+                    close_code = 4409
                     disconnected.set()
                     break
                 except Exception as exc:
@@ -1728,7 +1767,7 @@ def create_app(
                 except asyncio.CancelledError:
                     pass
             try:
-                await websocket.close(code=1000)
+                await websocket.close(code=close_code, reason="Workspace changed" if close_code == 4409 else "")
             except (RuntimeError, WebSocketDisconnect):
                 pass
 

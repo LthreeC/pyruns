@@ -33,7 +33,7 @@ test('historical log timeout can retry the same file', async ({ page }) => {
     status_counts: { ...emptyCounts, completed: 1 },
   } }))
   await page.route('**/api/tasks/history-task?*', route => route.fulfill({ json: task }))
-  await page.routeWebSocket('**/api/tasks/events', socket => socket.send(JSON.stringify({ type: 'ready' })))
+  await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
   await page.route('**/api/tasks/history-task/logs?*', route => {
     const logName = new URL(route.request().url()).searchParams.get('log_file_name') || 'run2.log'
     return route.fulfill({ json: {
@@ -171,7 +171,7 @@ test('monitor pauses background streams and resumes logs with one reconciled sna
   let sendEvent!: (value: string) => void
   let eventConnections = 0
   let eventCloses = 0
-  await page.routeWebSocket('**/api/tasks/events', socket => {
+  await page.routeWebSocket('**/api/tasks/events?*', socket => {
     eventConnections++
     socket.onClose(() => { eventCloses++ })
     sendEvent = value => socket.send(value)

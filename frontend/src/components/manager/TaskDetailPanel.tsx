@@ -365,7 +365,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
       onRefresh()
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
-      if (err instanceof api.ApiError && err.status === 409) {
+      if (err instanceof api.ApiError && err.status === 409 && !api.isWorkspaceChangedError(err)) {
         try {
           const latestTask = await api.getTask(taskName, true)
           if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
@@ -424,7 +424,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
       onRefresh()
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
-      if (err instanceof api.ApiError && err.status === 409) {
+      if (err instanceof api.ApiError && err.status === 409 && !api.isWorkspaceChangedError(err)) {
         try {
           const latestTask = await api.getTask(taskName, true)
           if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return

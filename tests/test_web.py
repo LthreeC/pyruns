@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote, urlencode
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -439,6 +440,107 @@ def _unavailable_conda_envs(refresh=True):
         "envs": [],
         "error": "",
     }
+
+
+def test_workspace_binding_rejects_stale_tab_reads_writes_and_streams(tmp_path):
+    first = _make_workspace(tmp_path, "实验 100%")
+    second = _make_workspace(tmp_path, "second")
+    for workspace in (first, second):
+        _add_task(workspace, "same-name")
+    runtime = _build_runtime(first, owns_task_lifecycle=False)
+    app = create_app(runtime)
+    try:
+        with TestClient(app) as old_tab, TestClient(app) as other_tab:
+            root = old_tab.get("/api/workspace").json()["run_root"]
+            old_tab.headers["X-Pyruns-Workspace"] = quote(root, safe="")
+            assert old_tab.get("/api/tasks/same-name").status_code == 200
+            switched = other_tab.post("/api/workspace/run-root", json={"path": str(second)})
+            assert switched.status_code == 200
+            operations = [
+                ("PATCH", "/api/tasks/same-name/notes", {"notes": "wrong workspace", "expected_notes": ""}),
+                ("POST", "/api/tasks/same-name/run", None),
+                ("POST", "/api/tasks/export/csv", {"task_names": ["same-name"]}),
+                ("POST", "/api/workspace/run-root", {"path": str(first)}),
+                ("GET", "/api/tasks/same-name", None),
+                ("GET", "/api/tasks?query=same", None),
+                ("GET", "/api/runtime", None),
+                ("GET", "/api/launcher/scripts", None),
+            ]
+            for method, path, payload in operations:
+                response = old_tab.request(method, path, json=payload)
+                assert response.status_code == 409, (path, response.text)
+                assert response.json()["code"] == "workspace_changed"
+
+            stream = old_tab.get("/api/tasks?query=same&stream=true")
+            events = [json.loads(line) for line in stream.text.splitlines()]
+            assert events[-1]["type"] == "error"
+            assert events[-1]["status"] == 409
+            assert events[-1]["code"] == "workspace_changed"
+            for path in ("/api/tasks/events", "/api/tasks/same-name/logs/stream"):
+                with old_tab.websocket_connect(path + "?" + urlencode({"expected_workspace": root})) as socket:
+                    with pytest.raises(WebSocketDisconnect) as exc:
+                        socket.receive_json()
+                    assert exc.value.code == 4409
+
+            # Bootstrap can discover the new root without replaying the edit.
+            refreshed = old_tab.get("/api/workspace").json()
+            assert refreshed["run_root"] == switched.json()["run_root"]
+            old_tab.headers["X-Pyruns-Workspace"] = quote(refreshed["run_root"], safe="")
+            assert old_tab.get("/api/tasks/same-name").status_code == 200
+            # A valid switch may return the new workspace inside the same lock.
+            assert old_tab.post("/api/workspace/run-root", json={"path": str(first)}).status_code == 200
+            for workspace in (first, second):
+                info = load_task_info(str(workspace / TASKS_DIR / "same-name"))
+                assert not info.get("notes")
+                assert info["status"] == "pending"
+    finally:
+        runtime.shutdown()
+
+
+def test_workspace_binding_is_checked_after_waiting_for_operation_lock(tmp_path, monkeypatch):
+    first = _make_workspace(tmp_path, "first")
+    second = _make_workspace(tmp_path, "second")
+    for workspace in (first, second):
+        _add_task(workspace, "same-name")
+    runtime = _build_runtime(first, owns_task_lifecycle=False)
+    entered = threading.Event()
+    original_update = runtime.update_task_notes
+
+    def update(*args, **kwargs):
+        entered.set()
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "update_task_notes", update)
+    responses = []
+    errors = []
+    try:
+        with TestClient(create_app(runtime)) as client:
+            def edit():
+                try:
+                    responses.append(client.patch(
+                        "/api/tasks/same-name/notes",
+                        headers={"X-Pyruns-Workspace": quote(str(first), safe="")},
+                        json={"notes": "stale edit", "expected_notes": ""},
+                    ))
+                except BaseException as exc:
+                    errors.append(exc)
+
+            writer = threading.Thread(target=edit)
+            try:
+                with runtime._workspace_lock:
+                    writer.start()
+                    assert entered.wait(5)
+                    runtime.change_run_root(str(second))
+            finally:
+                if writer.ident is not None:
+                    writer.join(5)
+            assert not writer.is_alive()
+            assert not errors
+            assert responses[0].status_code == 409
+            assert responses[0].json()["code"] == "workspace_changed"
+            assert not load_task_info(str(second / TASKS_DIR / "same-name")).get("notes")
+    finally:
+        runtime.shutdown()
 
 
 class _RouteRuntime:
@@ -3269,17 +3371,59 @@ def test_full_task_page_loads_curves_only_for_selected_tasks_without_registry_lo
     assert cached["tracks"] == [{"loss": [0, 1, 2, 3, 4]}]
     assert manager.get_task_page(offset=1, limit=1, sort_mode="name_asc")[0][0] == cached
 
-    # A new generation cannot silently supply curves for old control metadata.
+    # A pruned generation reloads the complete metadata snapshot with its curves.
     update_task_info(task_dir, lambda info: info.update(tracks=[{"loss": [7]}, {"loss": [8]}]))
     replaced = client.get("/api/tasks/second", params={"refresh": False}).json()
-    assert "Could not load tracks" in replaced["_load_error"]
-    assert replaced["tracks"] == [{}]
+    assert replaced["status"] == "running" and replaced["run_index"] == 2
+    assert replaced["start_times"] == ["first-start", "second-start"]
+    assert replaced["records"] == [{"loss": 0.1}, {"loss": 0.9}]
+    assert replaced["tracks"] == [{"loss": [7]}, {"loss": [8]}]
+    assert not replaced["_load_error"]
+    assert manager.get_task("second", summary=True)["status"] == "completed"
+    assert TaskManager.serialize_task(manager._tasks_by_name["second"]) == replaced
+    assert manager.get_task_page(offset=1, limit=1, sort_mode="name_asc")[0][0] == replaced
     refreshed = client.get("/api/tasks/second", params={"refresh": True}).json()
     assert refreshed["status"] == "running" and refreshed["run_index"] == 2
     assert refreshed["start_times"] == ["first-start", "second-start"]
     assert refreshed["records"] == [{"loss": 0.1}, {"loss": 0.9}]
     assert refreshed["tracks"] == [{"loss": [7]}, {"loss": [8]}]
     assert not refreshed["_load_error"]
+
+
+@pytest.mark.parametrize("operation", ["pin", "notes", "env", "rename", "delete"])
+def test_control_updates_skip_curves_until_the_full_response(tmp_path, operation):
+    from pyruns.utils import track_store
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "metrics", status="completed")
+    task_dir = workspace / TASKS_DIR / "metrics"
+    values = list(range(track_store.INLINE_TRACK_POINTS))
+    update_task_info(str(task_dir), lambda info: info.update(tracks=[{"loss": values}]))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    calls = {
+        "pin": lambda: runtime.set_task_pin("metrics", True),
+        "notes": lambda: runtime.update_task_notes("metrics", "saved", ""),
+        "env": lambda: runtime.update_task_env("metrics", {"DATA": "saved"}, {}),
+        "rename": lambda: runtime.rename_task("metrics", "renamed"),
+        "delete": lambda: runtime.delete_tasks_batch(["metrics"]),
+    }
+    try:
+        with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
+            result = calls[operation]()
+        assert read.call_count == (0 if operation == "delete" else 1)
+        if operation == "delete":
+            assert result["deleted"] == ["metrics"]
+        else:
+            assert result["tracks"] == [{"loss": values}]
+            assert not result["_load_error"]
+            assert result["config"] == {"lr": 0.01, "model": "tiny"}
+            field, expected = {
+                "pin": ("pinned", True), "notes": ("notes", "saved"),
+                "env": ("env", {"DATA": "saved"}), "rename": ("name", "renamed"),
+            }[operation]
+            assert result[field] == expected
+    finally:
+        runtime.shutdown()
 
 
 @pytest.mark.parametrize("include_logs", [False, True], ids=["metadata", "log-search"])
@@ -3977,8 +4121,8 @@ def test_workspace_switch_waits_for_in_flight_task_start(tmp_path, monkeypatch):
     started_in: list[str] = []
     original_require_task = runtime.require_task
 
-    def blocked_require_task(task_name, *, refresh=True):
-        task = original_require_task(task_name, refresh=refresh)
+    def blocked_require_task(task_name, *, refresh=True, summary=False):
+        task = original_require_task(task_name, refresh=refresh, summary=summary)
         entered.set()
         if not release.wait(5):
             raise TimeoutError("task start test did not release")
@@ -4604,12 +4748,18 @@ def test_tasks_and_task_detail_endpoints_return_data(tmp_path):
 
 
 def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
+    from pyruns.utils import track_store
+    from pyruns.utils.info_io import update_task_metadata
+
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
+    values = list(range(track_store.INLINE_TRACK_POINTS))
+    update_task_info(str(workspace / TASKS_DIR / "alpha"), lambda info: info.update(tracks=[{"loss": values}]))
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
     def fake_start(task_name: str) -> bool:
+        read.assert_not_called()
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
@@ -4624,31 +4774,41 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
                 }
             )
 
-        update_task_info(str(task_dir), apply)
+        update_task_metadata(str(task_dir), apply)
         return True
 
     def fake_cancel(task_name: str, **_identity: object) -> bool:
+        read.assert_not_called()
         task_dir = workspace / TASKS_DIR / task_name
 
         def apply(info):
             info["status"] = "cancelled"
 
-        update_task_info(str(task_dir), apply)
+        update_task_metadata(str(task_dir), apply)
         return True
 
-    with patch.object(runtime.task_manager, "start_task_now", side_effect=fake_start):
-        run_response = client.post("/api/tasks/alpha/run", json={})
-    with patch.object(runtime.task_manager, "request_task_cancel", side_effect=fake_cancel):
-        cancel_response = client.post("/api/tasks/alpha/cancel")
+    with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
+        with patch.object(runtime.task_manager, "start_task_now", side_effect=fake_start):
+            run_response = client.post("/api/tasks/alpha/run", json={})
+        assert read.call_count == 1
+        read.reset_mock()
+        with patch.object(runtime.task_manager, "request_task_cancel", side_effect=fake_cancel):
+            cancel_response = client.post("/api/tasks/alpha/cancel")
+        assert read.call_count == 1
 
     assert run_response.status_code == 200
     assert run_response.json()["task"]["status"] == "running"
     assert cancel_response.status_code == 200
     assert cancel_response.json()["task"]["status"] == "cancelled"
+    assert run_response.json()["task"]["tracks"] == cancel_response.json()["task"]["tracks"] == [{"loss": values}]
 
 
 @pytest.mark.parametrize("lease_offset", [-60, 60])
-def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path, lease_offset):
+@pytest.mark.parametrize("curve_failure", [False, True], ids=["readable-curves", "unreadable-curves"])
+def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path, monkeypatch, lease_offset, curve_failure):
+    from pyruns.utils import track_store
+    from pyruns.utils.info_io import load_task_metadata
+
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
     runtime = _build_runtime(workspace)
@@ -4663,16 +4823,29 @@ def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path, lea
                 "lease_heartbeat": time.time(),
                 "lease_until": time.time() + lease_offset,
                 "pids": [987654],
+                "tracks": [{"loss": list(range(track_store.INLINE_TRACK_POINTS))}],
             }
         ),
     )
     runtime.task_manager.refresh_from_disk(task_ids=["alpha"], force_all=True)
     client = TestClient(create_app(runtime))
+    requested_before_read = []
+    original_read = track_store.read_tracks
 
-    response = client.post("/api/tasks/alpha/cancel")
+    def read(*args, **kwargs):
+        requested_before_read.append(bool(load_task_metadata(str(task_dir))["cancel_requested_at"]))
+        if curve_failure:
+            raise OSError("curve storage unavailable")
+        return original_read(*args, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(track_store, "read_tracks", read)
+        response = client.post("/api/tasks/alpha/cancel")
 
     assert response.status_code == 200, response.text
+    assert requested_before_read == [True]
     assert response.json()["task"]["status"] == "running"
+    assert bool(response.json()["task"]["_load_error"]) is curve_failure
     info = load_task_info(str(task_dir))
     assert info["cancel_requested_at"]
     assert info["runner_id"] == "other-host:123:abcdef"
@@ -7469,13 +7642,13 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
     runtime = _build_runtime(workspace)
     runtime.ensure_tasks_loaded()
 
-    monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha"), "_load_error": "load failed"})
+    monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True, summary=False: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha"), "_load_error": "load failed"})
     with pytest.raises(ValueError, match="load failed"):
         runtime.start_task("alpha")
     with pytest.raises(ValueError, match="load failed"):
         runtime.start_tasks_batch(["alpha"])
 
-    monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha")})
+    monkeypatch.setattr(runtime, "require_task", lambda name, refresh=True, summary=False: {"name": name, "dir": str(workspace / TASKS_DIR / "alpha")})
     monkeypatch.setattr(
         runtime.task_manager,
         "request_task_cancel",

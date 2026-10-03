@@ -18,6 +18,7 @@ import {
 } from './store'
 
 vi.mock('./api', () => ({
+  setWorkspaceContext: vi.fn(),
   getTasks: vi.fn(),
   getTaskLogs: vi.fn(),
   getDashboard: vi.fn(),

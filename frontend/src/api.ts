@@ -42,6 +42,9 @@ export class ApiError extends Error {
 type UnauthorizedListener = (error: ApiError) => void
 
 const unauthorizedListeners = new Set<UnauthorizedListener>()
+const workspaceChangedListeners = new Set<() => void>()
+let workspaceContext = { root: '' }
+let notifiedWorkspaceContext: typeof workspaceContext | null = null
 let authorizationEpoch = 0
 let sessionRecoveryPromise: Promise<boolean> | null = null
 
@@ -54,6 +57,37 @@ export function subscribeUnauthorized(listener: UnauthorizedListener) {
   return () => {
     unauthorizedListeners.delete(listener)
   }
+}
+
+export function setWorkspaceContext(root: string) {
+  workspaceContext = { root }
+  notifiedWorkspaceContext = null
+}
+
+export function subscribeWorkspaceChanged(listener: () => void) {
+  workspaceChangedListeners.add(listener)
+  return () => { workspaceChangedListeners.delete(listener) }
+}
+
+function notifyWorkspaceChanged(context: typeof workspaceContext | null) {
+  if (!context?.root || context !== workspaceContext || context === notifiedWorkspaceContext) return
+  notifiedWorkspaceContext = context
+  for (const listener of workspaceChangedListeners) {
+    try { listener() } catch { /* Preserve the original request error. */ }
+  }
+}
+
+function workspaceHeaders(context: typeof workspaceContext | null): Record<string, string> {
+  return context?.root ? { 'X-Pyruns-Workspace': encodeURIComponent(context.root) } : {}
+}
+
+function isWorkspaceChanged(status: number, body: unknown) {
+  return status === 409 && Boolean(body && typeof body === 'object'
+    && 'code' in body && body.code === 'workspace_changed')
+}
+
+export function isWorkspaceChangedError(error: unknown) {
+  return error instanceof ApiError && isWorkspaceChanged(error.status, error.body)
 }
 
 export function recoverSession(): Promise<boolean> {
@@ -90,9 +124,10 @@ function errorMessage(body: unknown, status: number) {
   return `HTTP ${status}`
 }
 
-async function responseError(res: Response, requestAuthorizationEpoch: number) {
+async function responseError(res: Response, requestAuthorizationEpoch: number, context: typeof workspaceContext | null) {
   const body: unknown = await res.json().catch(() => undefined)
   const error = new ApiError(res.status, errorMessage(body, res.status), body)
+  if (isWorkspaceChanged(res.status, body)) notifyWorkspaceChanged(context)
   if (res.status === 401 && requestAuthorizationEpoch === authorizationEpoch) {
     authorizationEpoch += 1
     for (const listener of unauthorizedListeners) {
@@ -108,12 +143,13 @@ async function responseError(res: Response, requestAuthorizationEpoch: number) {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const requestAuthorizationEpoch = authorizationEpoch
+  const context = url === '/api/workspace' ? null : workspaceContext
   const res = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...workspaceHeaders(context), ...init?.headers },
   })
   if (!res.ok) {
-    throw await responseError(res, requestAuthorizationEpoch)
+    throw await responseError(res, requestAuthorizationEpoch, context)
   }
   return res.json()
 }
@@ -200,8 +236,9 @@ export const getTasks = (params: {
 
 async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => void, signal?: AbortSignal): Promise<TaskPage> {
   const requestAuthorizationEpoch = authorizationEpoch
-  const response = await fetch(`${BASE}${url}`, { signal })
-  if (!response.ok) throw await responseError(response, requestAuthorizationEpoch)
+  const context = workspaceContext
+  const response = await fetch(`${BASE}${url}`, { signal, headers: workspaceHeaders(context) })
+  if (!response.ok) throw await responseError(response, requestAuthorizationEpoch, context)
   if (!response.headers.get('content-type')?.includes('application/x-ndjson')) return response.json()
   const reader = response.body?.getReader()
   if (!reader) throw new Error('Search response is empty. Refresh to search again.')
@@ -215,7 +252,10 @@ async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => voi
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const event = JSON.parse(buffer.slice(0, newline))
         buffer = buffer.slice(newline + 1)
-        if (event.type === 'error') throw new ApiError(event.status, event.detail, event)
+        if (event.type === 'error') {
+          if (isWorkspaceChanged(event.status, event)) notifyWorkspaceChanged(context)
+          throw new ApiError(event.status, event.detail, event)
+        }
         if (event.type === 'complete') return event.page as TaskPage
         if (event.type === 'progress') onProgress(event.page as TaskPage)
       }
@@ -230,9 +270,24 @@ async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => voi
 export const getTask = (name: string, refresh = true, summary = false) =>
   request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}${summary ? '&summary=true' : ''}`)
 
-export function createTaskEventStream(): WebSocket {
+function createWorkspaceStream(path: string, params = new URLSearchParams()): WebSocket {
+  const context = workspaceContext
+  if (context.root) params.set('expected_workspace', context.root)
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${proto}//${location.host}/api/tasks/events`)
+  const query = params.toString()
+  const socket = new WebSocket(`${proto}//${location.host}${path}${query ? `?${query}` : ''}`)
+  socket.addEventListener('close', event => {
+    // A successful session refresh may accept a fresh snapshot of the same
+    // workspace while this long-lived socket remains connected.
+    if (event.code === 4409 && context.root === workspaceContext.root) {
+      notifyWorkspaceChanged(workspaceContext)
+    }
+  })
+  return socket
+}
+
+export function createTaskEventStream(): WebSocket {
+  return createWorkspaceStream('/api/tasks/events')
 }
 
 export const batchRunTasks = (taskNames: string[], maxWorkers?: number) =>
@@ -249,13 +304,14 @@ export const batchDeleteTasks = (taskNames: string[]) =>
 
 export async function exportTasksCsv(taskNames: string[]): Promise<Blob> {
   const requestAuthorizationEpoch = authorizationEpoch
+  const context = workspaceContext
   const res = await fetch(`${BASE}/api/tasks/export/csv`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...workspaceHeaders(context) },
     body: JSON.stringify({ task_names: taskNames }),
   })
   if (!res.ok) {
-    throw await responseError(res, requestAuthorizationEpoch)
+    throw await responseError(res, requestAuthorizationEpoch, context)
   }
   return res.blob()
 }
@@ -321,13 +377,11 @@ export function createLogStream(taskName: string, options: {
   offset?: number
   logIdentity?: string
 } = {}): WebSocket {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const sp = new URLSearchParams()
   if (options.logFileName) sp.set('log_file_name', options.logFileName)
   if (options.offset != null) sp.set('offset', String(options.offset))
   if (options.logIdentity) sp.set('log_identity', options.logIdentity)
-  const query = sp.toString()
-  return new WebSocket(`${proto}//${location.host}/api/tasks/${encodeURIComponent(taskName)}/logs/stream${query ? `?${query}` : ''}`)
+  return createWorkspaceStream(`/api/tasks/${encodeURIComponent(taskName)}/logs/stream`, sp)
 }
 
 export const getMetrics = (

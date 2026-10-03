@@ -23,7 +23,7 @@ import AppShell from '@/components/layout/AppShell'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ConfirmationHost from '@/components/shared/ConfirmationHost'
 import ToastHost from '@/components/shared/ToastHost'
-import { ApiError, beginAuthorizationAttempt, recoverSession, subscribeUnauthorized } from '@/api'
+import { ApiError, beginAuthorizationAttempt, recoverSession, subscribeUnauthorized, subscribeWorkspaceChanged } from '@/api'
 import {
   applyThemeClass,
   WorkspaceChangeRequiresDiscardError,
@@ -410,6 +410,11 @@ export default function App() {
     rememberAppFocus()
     setConnectionState({ status: 'unauthorized' })
   }), [rememberAppFocus])
+
+  useEffect(() => subscribeWorkspaceChanged(() => {
+    rememberAppFocus()
+    void connect()
+  }), [connect, rememberAppFocus])
 
   useEffect(() => {
     if (appRoot.current) {
