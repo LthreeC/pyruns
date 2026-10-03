@@ -1234,8 +1234,7 @@ def test_task_event_websocket_closes_when_workspace_changes(tmp_path, monkeypatc
     monkeypatch.setattr(app_mod, "TASK_EVENT_HEARTBEAT_SEC", 60)
 
     try:
-        for _ in range(3):
-            target = workspace_b if runtime.root_dir == str(workspace_a) else workspace_a
+        for target in (workspace_b, workspace_a, workspace_b):
             old_manager = runtime.task_manager
             if before_subscription:
                 register = old_manager.on_change
