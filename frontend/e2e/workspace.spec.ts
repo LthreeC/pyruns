@@ -1368,9 +1368,13 @@ test('task search shares keyboard history without taking over multiline editing 
   await search.evaluate((input: HTMLTextAreaElement) => input.setSelectionRange(0, 0))
   await search.press('ArrowUp')
   await expect(search).toHaveValue('needle')
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
   await search.press('ArrowUp')
   await expect(search).toHaveValue('first\nsecond')
   await search.evaluate((input: HTMLTextAreaElement) => input.setSelectionRange(input.value.length, input.value.length))
+  // Recalling history must not defer a caret reset that overwrites this move.
+  await page.clock.runFor(20)
+  await page.clock.resume()
   await search.press('ArrowDown')
   await expect(search).toHaveValue('needle')
   await search.press('ArrowDown')

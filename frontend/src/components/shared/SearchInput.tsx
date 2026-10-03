@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import { Search, X } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -39,6 +39,7 @@ export default function SearchInput({
   const [composing, setComposing] = useState(false)
   const changeRef = useRef(onChange)
   const historyNavigation = useRef<{ items: string[]; index: number; draft: string } | null>(null)
+  const historyCaret = useRef<{ input: HTMLTextAreaElement; value: string; position: number } | null>(null)
   changeRef.current = onChange
   const rows = Math.min(4, local.split('\n').length)
 
@@ -48,6 +49,11 @@ export default function SearchInput({
     return () => clearTimeout(timer)
   }, [local, value, debounceMs, searchOnType, composing])
   useEffect(() => { setLocal(value) }, [value])
+  useLayoutEffect(() => {
+    const caret = historyCaret.current
+    historyCaret.current = null
+    if (caret?.value === local) caret.input.setSelectionRange(caret.position, caret.position)
+  }, [local])
 
   return (
     <div style={{ height: rows > 1 ? rows * 20 + 24 : undefined }} className={clsx('touch-input box-content flex h-11 min-w-0 items-center rounded-md border border-border bg-surface-overlay transition-colors focus-within:border-accent focus-within:ring-1 focus-within:ring-accent/20 sm:h-[34px]', className)}>
@@ -87,11 +93,14 @@ export default function SearchInput({
             navigation.index = Math.max(-1, Math.min(navigation.items.length - 1, navigation.index + (previous ? 1 : -1)))
             historyNavigation.current = navigation
             const next = navigation.index === -1 ? navigation.draft : navigation.items[navigation.index]
-            setLocal(next)
-            requestAnimationFrame(() => {
-              const caret = previous ? 0 : next.length
-              input.setSelectionRange(caret, caret)
-            })
+            const position = previous ? 0 : next.length
+            if (next === local) input.setSelectionRange(position, position)
+            else {
+              // Restore the caret with the new value, before another input can
+              // move it. A later animation frame can overwrite user selection.
+              historyCaret.current = { input, value: next, position }
+              setLocal(next)
+            }
           }
         }}
         placeholder={placeholder}
