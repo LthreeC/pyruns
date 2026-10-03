@@ -209,6 +209,15 @@ def _exec_help_epilog(program: str) -> str:
         "    Use a PowerShell workspace shell for PowerShell scripts.\n"
         "    Windows PowerShell 5.1: set UTF-8 pipe encoding before submitting:\n"
         "      $OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n\n"
+        "Shell selection:\n"
+        "  By default, shell_mode=follow detects the invoking terminal's shell.\n"
+        "  To select Bash explicitly for new shell tasks on Linux/WSL:\n"
+        f"    {program} init\n"
+        f"    {program} config set shell_executable /bin/bash\n"
+        f"    {program} config set shell_mode custom\n"
+        "  On Windows, use the path to the installed shell (for example, pwsh.exe).\n"
+        f"  Restore terminal detection with '{program} config set shell_mode follow'.\n"
+        "  These project settings affect new tasks; reruns keep their saved interpreter.\n\n"
         "Environment:\n"
         f"  {program} exec -n gpu0 -e CUDA_VISIBLE_DEVICES=0 SEED=42 -- python train.py\n"
         f"  {program} exec -n gpu0 --env-file .env.train -e SEED=42 -- python train.py\n"
@@ -442,13 +451,11 @@ def build_parser(
         help_text: str,
         description: str | None = None,
         epilog: str | None = None,
-        common: bool = False,
         json_help: str | None = "emit strict versioned JSON for this command",
     ) -> argparse.ArgumentParser:
-        visible = show_all_commands or common
         subparser = subparsers.add_parser(
             name,
-            help=help_text if visible else argparse.SUPPRESS,
+            help=help_text,
             description=description or help_text,
             epilog=epilog,
             formatter_class=_HelpFormatter,
@@ -457,12 +464,6 @@ def build_parser(
         if json_help is not None:
             _add_json_option(subparser, help_text=json_help)
         command_parsers[name] = subparser
-        if not visible:
-            subparsers._choices_actions = [
-                action
-                for action in subparsers._choices_actions
-                if getattr(action, "dest", None) != name
-            ]
         return subparser
 
     init = command(
@@ -484,7 +485,6 @@ def build_parser(
                 "Use 'ui ...' explicitly when a browser interface is wanted.",
             ),
         ),
-        common=True,
     )
     init.add_argument(
         "script",
@@ -517,7 +517,6 @@ def build_parser(
             "pipe, or heredoc; --stdin never opens an interactive input prompt."
         ),
         epilog=_exec_help_epilog(program),
-        common=True,
     )
     execute_name = execute.add_mutually_exclusive_group()
     execute_name.add_argument(
@@ -586,7 +585,14 @@ def build_parser(
         description=(
             "Read and validate YAML in a selected Python script workspace, expand any supported\n"
             "batch values, and create immutable task snapshots without running them. This command\n"
-            "does not apply to the shell workspace."
+            "does not apply to the shell workspace.\n\n"
+            "Example sweep.yaml (four tasks: two learning rates times two paired seed/tag values):\n"
+            "  lr: '0.001 | 0.01'\n"
+            "  seed: '(1 | 2)'\n"
+            "  tag: '(a | b)'\n"
+            "Bare pipes expand as a Cartesian product; parenthesized pipes pair values by position.\n"
+            "All paired fields must have the same length. Integer ranges such as '(1, 4)' expand\n"
+            "to 1, 2, 3 (end excluded). Ordinary values stay fixed."
         ),
         epilog=_example_block(
             program,
@@ -594,11 +600,12 @@ def build_parser(
             "-w train add sweep.yaml -n ablation --json",
             notes=(
                 "Select a script workspace with -w when discovery is ambiguous.",
-                "-n is a task-name prefix; expanded batches receive deterministic suffixes.",
+                "Relative CONFIG paths are checked beside the workspace's Python script, then in the current directory.",
+                "Use an absolute CONFIG path to select a specific file.",
+                "Batches use PREFIX_1-of-N names; existing names receive an extra unique suffix.",
                 "Success prints the exact created names; use 'run TASK ...' to execute them later.",
             ),
         ),
-        common=True,
     )
     add.add_argument("config", type=_non_empty, metavar="CONFIG", help="YAML configuration path")
     add.add_argument(
@@ -627,6 +634,9 @@ def build_parser(
             "-w train run baseline --detach",
             notes=(
                 "Use either TASK names or --config CONFIG, never both.",
+                "Relative CONFIG paths are checked beside the workspace's Python script, then in the current directory.",
+                "Use an absolute CONFIG path to select a specific file.",
+                f"See '{program} add --help' for YAML batch syntax and generated task names.",
                 "--name and --dry-run are valid only with --config.",
                 "--dry-run validates and expands YAML but creates and runs nothing.",
                 "--dry-run and -d/--detach are mutually exclusive.",
@@ -634,10 +644,10 @@ def build_parser(
                 "By default Pyruns waits for every task and reports aggregate failure.",
                 "Ctrl+C while waiting requests cancellation of tasks submitted by this run command.",
                 "--detach changes waiting only; accepted tasks continue under the hidden runner.",
+                "With --detach, exit 0 means accepted; use 'wait' or 'show' to check final status.",
                 "A partial runner acceptance is reported with claimed and unclaimed names and exits 1.",
             ),
         ),
-        common=True,
     )
     run.add_argument("tasks", nargs="*", type=_non_empty, metavar="TASK", help="exact task name")
     run.add_argument(
@@ -685,7 +695,6 @@ def build_parser(
                 "Use --json for strict, versioned machine-readable task summaries.",
             ),
         ),
-        common=True,
     )
     listing.add_argument("query", nargs="?", metavar="QUERY", help="case-insensitive text filter")
     listing.add_argument(
@@ -722,7 +731,6 @@ def build_parser(
                 "-w remains a context option before 'status'; --json may follow it.",
             ),
         ),
-        common=True,
     )
 
     show = command(
@@ -742,10 +750,11 @@ def build_parser(
                 "TASK is an exact name. New task names reserve @ for the TASK@RUN shorthand.",
                 "TASK@RUN and --run RUN select the same historical run.",
                 "TASK@RUN cannot be combined with --run.",
+                "With --json and a run selector, selected_run contains that run's status, index, exit_code, and log.",
+                "Top-level JSON fields still describe the current task.",
                 "Use 'log TASK[@RUN]' to print the corresponding log content.",
             ),
         ),
-        common=True,
     )
     show.add_argument("task", metavar="TASK[@RUN]", help="exact task name, optionally at one run number")
     show.add_argument("--run", type=_run_index, help="select a historical run number")
@@ -770,10 +779,10 @@ def build_parser(
                 "--follow cannot be combined with --run or --path and rejects a pending task.",
                 "Raw log output is intentionally not JSON; combine --json with --path instead.",
                 "--follow streams bytes until the task finishes; it is not an interactive terminal.",
+                "Plain log returns 0 when read successfully; --follow returns 0 for completed tasks, 1 for failed or cancelled tasks.",
                 "Ctrl+C stops following and returns 130; it does not stop the task.",
             ),
         ),
-        common=True,
         json_help="with --path, emit a JSON object containing the selected log path",
     )
     logs.add_argument("task", metavar="TASK[@RUN]", help="exact task name, optionally at one run number")
@@ -799,7 +808,6 @@ def build_parser(
                 "Exit status is 1 for task failure, cancellation, or timeout, and 130 if interrupted.",
             ),
         ),
-        common=True,
     )
     wait.add_argument("tasks", nargs="+", metavar="TASK", help="exact task name")
     wait.add_argument("--timeout", type=_non_negative_float, default=0.0, help="seconds to wait; zero means forever")
@@ -809,8 +817,10 @@ def build_parser(
         help_text="stop active tasks through their owning runner",
         description=(
             "Persist a cancellation request for each exact queued or running task and wait for its\n"
-            "owning runner to finish cancellation. If that runner's lease has expired, queued work\n"
-            "becomes 'cancelled' and stale running work becomes 'failed' without killing its PID."
+            "owning runner to finish cancellation. If the runner has expired, Pyruns can stop a\n"
+            "local process after verifying its identity. Remote or unverifiable live work keeps\n"
+            "the cancellation request pending. Work with no live owner is reconciled: queued tasks\n"
+            "become 'cancelled', and running tasks become 'failed'."
         ),
         epilog=_example_block(
             program,
@@ -819,10 +829,10 @@ def build_parser(
             notes=(
                 "Only active queued or running tasks can be stopped.",
                 "The default cancellation wait is 15 seconds; this command does not delete the task.",
-                "Exit status is 0 only when every target ends as cancelled; stale running work returns 1.",
+                "Timeout or Ctrl+C stops waiting; cancellation requests already sent remain active.",
+                "Exit status is 0 only when every target ends as cancelled, 1 on failure or timeout, 130 if interrupted.",
             ),
         ),
-        common=True,
     )
     cancel.add_argument("tasks", nargs="+", metavar="TASK", help="exact active task name")
     cancel.add_argument(
@@ -862,16 +872,16 @@ def build_parser(
         ),
         epilog=_example_block(
             program,
-            "ls --trash",
+            "ls --trash --json",
             "restore obsolete-run",
             "-w train restore obsolete-run",
             notes=(
-                "Use the exact task name or exact trash entry name shown by 'ls --trash'.",
+                "Use the task name; if ambiguous, copy trash_name from 'ls --trash --json'.",
                 "Restore fails rather than overwriting an active task with the same name.",
             ),
         ),
     )
-    restore.add_argument("tasks", nargs="+", metavar="TASK", help="exact trashed task name")
+    restore.add_argument("tasks", nargs="+", metavar="TASK", help="exact trashed task name or trash_name")
 
     rename = command(
         "mv",
@@ -929,6 +939,8 @@ def build_parser(
             notes=(
                 "The default format is CSV and the default output '-' means stdout.",
                 "--status is repeatable. Runs without monitor metrics still include lifecycle fields.",
+                "--status filters individual run records by their recorded status, not the task's current status.",
+                "Tasks with no recorded runs produce no rows.",
                 "Choose CSV or JSON records with --format; output filenames do not select a format.",
             ),
         ),
@@ -951,7 +963,7 @@ def build_parser(
         help_text="read or change project settings",
         description=(
             "Read or update settings shared by every workspace in the current project. Config does\n"
-            "not require -w. Values passed to 'set' use YAML syntax and are validated against the\n"
+            "not accept -w/--workspace. Values passed to 'set' use YAML syntax and are validated against the\n"
             "known setting's type and allowed range before anything is persisted."
         ),
         epilog=_example_block(
@@ -963,7 +975,8 @@ def build_parser(
             "config unset monitor_scrollback",
             "config path",
             notes=(
-                "Settings are project-wide; -w is unnecessary and does not change their scope.",
+                "Settings are project-wide; use -C PATH before config to select the project.",
+                "In a new directory, run 'init' first to create the project settings location.",
                 "VALUE is one YAML scalar, list, or mapping; quote mappings as one shell argument.",
                 "global_env is persisted for Web UI runs; CLI tasks inherit the invoking terminal.",
                 "Use 'exec -e' or '--env-file' for environment values saved with a task.",
@@ -1079,7 +1092,6 @@ def build_parser(
                 "--no-browser keeps the server headless; stop it with Ctrl+C or the service manager.",
             ),
         ),
-        common=True,
         json_help=None,
     )
     ui.add_argument(
@@ -1092,7 +1104,7 @@ def build_parser(
     ui.add_argument(
         "--config",
         type=_non_empty,
-        help="YAML template imported for the script workspace",
+        help="initial YAML template; requires a SCRIPT.py target",
     )
     _add_browser_options(ui)
 
@@ -1133,8 +1145,8 @@ def build_parser(
         "help",
         help_text="show top-level or command-specific help",
         description=(
-            "Show the concise top-level guide, the complete command index, or detailed help for one\n"
-            "command. Help is read-only and never creates a workspace or starts the Web UI."
+            "Show every command and its purpose, or detailed help for one command.\n"
+            "Help is read-only and never creates a workspace or starts the Web UI."
         ),
         json_help=None,
         epilog=_example_block(
@@ -1145,7 +1157,7 @@ def build_parser(
             "exec --help",
             notes=(
                 "'help COMMAND' and 'COMMAND --help' print the same command-specific guide.",
-                "Use 'help -a' when the concise top-level command list hides an advanced command.",
+                "Top-level help lists every command; 'help -a' also adds a command-group summary.",
             ),
         ),
     )
@@ -1156,7 +1168,10 @@ def build_parser(
         choices=tuple(command_parsers),
         help="command name",
     )
-    help_parser.add_argument("-a", "--all", action="store_true", dest="all_commands", help="list every command")
+    help_parser.add_argument(
+        "-a", "--all", action="store_true", dest="all_commands",
+        help="list every command with a command-group summary",
+    )
 
     return parser, command_parsers
 

@@ -20,7 +20,7 @@ pyr -w WORKSPACE COMMAND [OPTIONS]
 
 ### 默认行为必须安全且可预测
 
-- 裸 `pyr` 或 `pyruns` 都只打印包含常用命令和快速示例的精简帮助；命令选项统一用 `pyr COMMAND --help` 查看。需要完整命令索引时再使用 `pyr help -a`。
+- 裸 `pyr`、`pyruns` 或 `pyr help` 列出全部命令及用途和快速示例；命令选项统一用 `pyr COMMAND --help` 查看。
 - `run` 默认等待全部任务结束。
 - 批量任务中任意一个失败，命令退出码就是 `1`。
 - `--detach` 只改变等待方式，不改变任务语义；它不能和 `--dry-run` 同时使用。
@@ -59,12 +59,12 @@ pyr exec --help
 pyr run --help
 ```
 
-命令帮助统一从 `pyr COMMAND --help` 进入；`pyr help -a` 只用于查看完整命令索引。
+命令帮助统一从 `pyr COMMAND --help` 进入。
 每份命令帮助都包含用途、参数、典型示例和关键注意事项；其中 `pyr exec --help` 是选择
 精确 argv、Shell 表达式、现有脚本、环境变量和后续任务操作的完整决策指南。帮助命令
 只读，不会创建工作区。
 
-默认帮助只列 `init exec add run ls status show log wait stop ui` 十一个日常命令，高级命令仍可直接执行；需要浏览全部命令时使用 `help -a`。
+默认帮助列出全部命令及一句用途说明，包括恢复、导出和项目配置；`help -a` 仍兼容，并额外显示命令分组摘要。
 
 ## 3. 工作区发现
 

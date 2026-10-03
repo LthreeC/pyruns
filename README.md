@@ -64,7 +64,7 @@ pyr ui train.py
 pyr ui shell
 ```
 
-`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。使用 `pyr --help` 查看常用命令，使用 `pyr COMMAND --help` 查看命令细节；需要完整索引时再运行 `pyr help -a`。两者都没有需要持续操控的交互式 REPL。
+`pyr` 与 `pyruns` 是完全等价的正式入口；前者适合高频输入，后者更容易识别项目名。使用 `pyr --help` 查看全部命令及用途，使用 `pyr COMMAND --help` 查看参数、示例和注意事项。两者都没有需要持续操控的交互式 REPL。
 
 ## 为什么它有用
 

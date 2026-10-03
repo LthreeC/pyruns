@@ -65,7 +65,7 @@ pyr ui train.py
 pyr ui shell
 ```
 
-`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Use `pyr --help` for common commands and `pyr COMMAND --help` for command details; run `pyr help -a` only when you need the complete index. Neither starts a stateful interactive REPL.
+`pyr` and `pyruns` are identical official entrypoints: the former is faster to type, while the latter makes the project name explicit. Use `pyr --help` for all commands and their purposes, and `pyr COMMAND --help` for options, examples, and notes. Neither starts a stateful interactive REPL.
 
 ## Why it is useful
 

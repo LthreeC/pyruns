@@ -187,12 +187,8 @@ def test_no_args_prints_layered_help_without_workspace(tmp_path, capsys, monkeyp
     assert "pyr COMMAND --help" in output
     assert "\n  --json" not in output
     assert "--no-color" not in output
-    assert "    exec " in output
-    assert "    show " in output
-    assert "    status " in output
-    assert "    wait " in output
-    assert "    ui " in output
-    assert "    export " not in output
+    for name in build_parser("pyr")[1]:
+        assert f"    {name} " in output
     assert "Command forms for exec:" not in output
     assert "Environment values:" not in output
     assert not (tmp_path / "_pyruns_").exists()
