@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import CancelledError
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Callable, Dict, List
@@ -1213,6 +1214,21 @@ class PyrunsRuntime:
             status_counts=status_counts,
         )
 
+    @contextmanager
+    def _search_workspace_lock(self, cancelled: threading.Event):
+        """Let abandoned searches leave the queue before unrelated work ends."""
+        if cancelled.is_set():
+            raise CancelledError()
+        while not self._workspace_lock.acquire(timeout=0.1):
+            if cancelled.is_set():
+                raise CancelledError()
+        try:
+            if cancelled.is_set():
+                raise CancelledError()
+            yield
+        finally:
+            self._workspace_lock.release()
+
     def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", search_field="all",
                      match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True,
                      refresh=True, force_refresh=False, cancelled, max_results=DEFAULT_MAX_SEARCH_RESULTS,
@@ -1225,7 +1241,7 @@ class PyrunsRuntime:
         try:
             if cancelled.is_set():
                 raise CancelledError()
-            with self._workspace_lock:
+            with self._search_workspace_lock(cancelled):
                 self._check_expected_workspace()
                 epoch = self._workspace_epoch
                 self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
@@ -1257,7 +1273,7 @@ class PyrunsRuntime:
             empty_logs: LogSearchResult = {"matches": [], "match_count": 0, "found": set(), "errors": []}
 
             def page(complete, batch_items=(), batch_total=0, batch_errors=()):
-                with self._workspace_lock:
+                with self._search_workspace_lock(cancelled):
                     if epoch != self._workspace_epoch:
                         raise WorkspaceChangedError("Workspace changed during search; search again.")
                 found_items = [*items, *batch_items]
@@ -1374,32 +1390,36 @@ class PyrunsRuntime:
         }
 
     @_with_stable_workspace
-    def get_task(self, task_name: str, *, refresh: bool = True, summary: bool = False) -> Dict[str, Any] | None:
+    def get_task(
+        self, task_name: str, *, refresh: bool = True, summary: bool = False, include_tracks: bool = True,
+    ) -> Dict[str, Any] | None:
         """Return one task snapshot."""
         manager = self.task_manager
         if refresh:
             manager.refresh_from_disk(task_ids=[task_name])
-        task = manager.get_task(task_name, summary=summary)
+        task = manager.get_task(task_name, summary=summary, include_tracks=include_tracks)
         # A cold single-task read need not initialize the whole workspace.
         # After full discovery, refresh=False remains a cache-only lookup.
         if task is None and (refresh or not self._tasks_loaded):
             manager.load_task_by_name(task_name)
-            task = manager.get_task(task_name, summary=summary)
+            task = manager.get_task(task_name, summary=summary, include_tracks=include_tracks)
         if task is not None and refresh and not os.path.isfile(
             os.path.join(str(task.get("dir", "") or ""), TASK_INFO_FILENAME)
         ):
             return None
         return task
 
-    def require_task(self, task_name: str, *, refresh: bool = True, summary: bool = False) -> Dict[str, Any]:
+    def require_task(
+        self, task_name: str, *, refresh: bool = True, summary: bool = False, include_tracks: bool = True,
+    ) -> Dict[str, Any]:
         """Return one task or raise ``KeyError``."""
-        task = self.get_task(task_name, refresh=refresh, summary=summary)
+        task = self.get_task(task_name, refresh=refresh, summary=summary, include_tracks=include_tracks)
         if task is None:
             raise KeyError(task_name)
         return task
 
     @_with_stable_workspace
-    def start_task(self, task_name: str) -> Dict[str, Any]:
+    def start_task(self, task_name: str, *, include_tracks: bool = True) -> Dict[str, Any]:
         """Start one task and return the updated snapshot."""
         self.ensure_tasks_loaded(full_refresh=False)
         task = self.require_task(task_name, summary=True)
@@ -1409,10 +1429,10 @@ class PyrunsRuntime:
         started = self.task_manager.start_task_now(task_name)
         if not started:
             raise ValueError(f"Task '{task_name}' could not be started")
-        return self.get_task(task_name) or task
+        return self.get_task(task_name, include_tracks=include_tracks) or task
 
     @_with_stable_workspace
-    def cancel_task(self, task_name: str) -> Dict[str, Any]:
+    def cancel_task(self, task_name: str, *, include_tracks: bool = True) -> Dict[str, Any]:
         """Request cancellation from the runner that owns the task."""
         manager = self.task_manager
         task = manager.get_task(task_name, summary=True)
@@ -1425,7 +1445,7 @@ class PyrunsRuntime:
         status = str(info.get("status", "") or "").lower()
         if status not in {"queued", "running"}:
             if status in {"completed", "failed", "cancelled"}:
-                return self.get_task(task_name) or task
+                return self.get_task(task_name, include_tracks=include_tracks) or task
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
         requested_run_index = active_task_run_index(info)
         self.invalidate_cache()
@@ -1435,7 +1455,7 @@ class PyrunsRuntime:
             expected_run_index=requested_run_index,
         )
         if not ok:
-            latest = self.get_task(task_name)
+            latest = self.get_task(task_name, include_tracks=include_tracks)
             # Cancellation markers are intentionally internal task metadata
             # and are omitted from API snapshots. Read the same locked state
             # file to distinguish a durable request from an identity race.
@@ -1454,7 +1474,7 @@ class PyrunsRuntime:
             ):
                 return latest
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
-        return self.get_task(task_name) or task
+        return self.get_task(task_name, include_tracks=include_tracks) or task
 
     @_with_stable_workspace
     def start_tasks_batch(
@@ -1462,6 +1482,7 @@ class PyrunsRuntime:
         task_names: List[str],
         *,
         max_workers: int | None = None,
+        include_tracks: bool = True,
     ) -> Dict[str, Any]:
         """Queue multiple tasks and return their updated snapshots."""
         self.ensure_tasks_loaded(full_refresh=False)
@@ -1489,7 +1510,8 @@ class PyrunsRuntime:
             raise ValueError("None of the selected tasks could be started.")
         claimed = set(claimed_names)
         items = [
-            self.get_task(task_name, refresh=True) or self.require_task(task_name, refresh=False)
+            self.get_task(task_name, refresh=True, include_tracks=include_tracks)
+            or self.require_task(task_name, refresh=False, include_tracks=include_tracks)
             for task_name in claimed_names
         ]
         return {
@@ -1551,7 +1573,9 @@ class PyrunsRuntime:
         return csv_text
 
     @_with_stable_workspace
-    def set_task_pin(self, task_name: str, pinned: bool | None = None) -> Dict[str, Any]:
+    def set_task_pin(
+        self, task_name: str, pinned: bool | None = None, *, include_tracks: bool = True,
+    ) -> Dict[str, Any]:
         """Toggle or set one task's pinned state."""
         self.require_task(task_name, refresh=False, summary=True)
         self.invalidate_cache()
@@ -1560,14 +1584,14 @@ class PyrunsRuntime:
             if str(result) == "Task not found":
                 raise KeyError(task_name)
             raise ValueError(str(result))
-        return self.require_task(task_name, refresh=True)
+        return self.require_task(task_name, refresh=True, include_tracks=include_tracks)
 
     @_with_stable_workspace
-    def reorder_tasks(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def reorder_tasks(self, items: List[Dict[str, Any]], *, include_tracks: bool = True) -> Dict[str, Any]:
         """Persist manual card order for the Manager page."""
         self.ensure_tasks_loaded(full_refresh=False)
         self.invalidate_cache()
-        ok, result = self.task_manager.reorder_tasks(items)
+        ok, result = self.task_manager.reorder_tasks(items, include_tracks=include_tracks)
         if not ok:
             message = str(result)
             if message.startswith("Task not found: "):
@@ -1605,6 +1629,8 @@ class PyrunsRuntime:
         task_name: str,
         notes: str,
         expected_notes: str,
+        *,
+        include_tracks: bool = True,
     ) -> Dict[str, Any]:
         """Persist notes for one task."""
         self.require_task(task_name, refresh=False, summary=True)
@@ -1617,7 +1643,7 @@ class PyrunsRuntime:
             if str(result) == "Task not found":
                 raise KeyError(task_name)
             raise ValueError(str(result))
-        return self.require_task(task_name, refresh=True)
+        return self.require_task(task_name, refresh=True, include_tracks=include_tracks)
 
     @_with_stable_workspace
     def update_task_env(
@@ -1625,6 +1651,8 @@ class PyrunsRuntime:
         task_name: str,
         env: Dict[str, Any],
         expected_env: Dict[str, Any],
+        *,
+        include_tracks: bool = True,
     ) -> Dict[str, Any]:
         """Persist env vars for one task."""
         self.require_task(task_name, refresh=False, summary=True)
@@ -1637,10 +1665,10 @@ class PyrunsRuntime:
             if str(result) == "Task not found":
                 raise KeyError(task_name)
             raise ValueError(str(result))
-        return self.require_task(task_name, refresh=True)
+        return self.require_task(task_name, refresh=True, include_tracks=include_tracks)
 
     @_with_stable_workspace
-    def rename_task(self, task_name: str, new_name: str) -> Dict[str, Any]:
+    def rename_task(self, task_name: str, new_name: str, *, include_tracks: bool = True) -> Dict[str, Any]:
         """Rename one task."""
         self.require_task(task_name, refresh=False, summary=True)
         self.invalidate_cache()
@@ -1651,7 +1679,7 @@ class PyrunsRuntime:
                 raise KeyError(task_name)
             raise ValueError(message)
         renamed = str(result)
-        return self.require_task(renamed, refresh=True)
+        return self.require_task(renamed, refresh=True, include_tracks=include_tracks)
 
     @_with_stable_workspace
     def get_task_logs(

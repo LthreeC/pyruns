@@ -336,11 +336,15 @@ class TaskManager:
 
     @classmethod
     @overload
-    def _snapshot_task_for_api(cls, task: None, *, summary: bool, compact: bool = False) -> None: ...
+    def _snapshot_task_for_api(
+        cls, task: None, *, summary: bool, compact: bool = False, include_tracks: bool = True,
+    ) -> None: ...
 
     @classmethod
     @overload
-    def _snapshot_task_for_api(cls, task: Dict[str, Any], *, summary: bool, compact: bool = False) -> Dict[str, Any]: ...
+    def _snapshot_task_for_api(
+        cls, task: Dict[str, Any], *, summary: bool, compact: bool = False, include_tracks: bool = True,
+    ) -> Dict[str, Any]: ...
 
     @classmethod
     def _snapshot_task_for_api(
@@ -349,11 +353,14 @@ class TaskManager:
         *,
         summary: bool,
         compact: bool = False,
+        include_tracks: bool = True,
     ) -> Dict[str, Any] | None:
         """Capture a stable detached task value while the manager lock is held."""
         if task is None:
             return None
         if not summary:
+            if not include_tracks:
+                task = {key: value for key, value in task.items() if key != "tracks"}
             return copy.deepcopy(task)
         return {
             key: copy.deepcopy(task[key])
@@ -362,9 +369,13 @@ class TaskManager:
         }
 
     @classmethod
-    def _finalize_full_task_snapshot(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _finalize_full_task_snapshot(
+        cls, data: Dict[str, Any], *, include_tracks: bool = True,
+    ) -> Dict[str, Any]:
         """Apply derived API fields to an already detached full-task snapshot."""
-        if data.get("track_store"):
+        if not include_tracks:
+            data["tracks"] = []
+        elif data.get("track_store"):
             from pyruns.utils.track_store import MissingTrackGeneration, read_tracks
 
             try:
@@ -400,15 +411,20 @@ class TaskManager:
 
     @staticmethod
     @overload
-    def serialize_task(task: None, *, summary: bool = False, compact: bool = False) -> None: ...
+    def serialize_task(
+        task: None, *, summary: bool = False, compact: bool = False, include_tracks: bool = True,
+    ) -> None: ...
 
     @staticmethod
     @overload
-    def serialize_task(task: Dict[str, Any], *, summary: bool = False, compact: bool = False) -> Dict[str, Any]: ...
+    def serialize_task(
+        task: Dict[str, Any], *, summary: bool = False, compact: bool = False, include_tracks: bool = True,
+    ) -> Dict[str, Any]: ...
 
     @staticmethod
     def serialize_task(
         task: Dict[str, Any] | None, *, summary: bool = False, compact: bool = False,
+        include_tracks: bool = True,
     ) -> Dict[str, Any] | None:
         """Return a detached task copy suitable for APIs and read-only consumers."""
         if task is None:
@@ -455,12 +471,12 @@ class TaskManager:
                 "search_text": task.get("search_text", ""),
                 "_load_error": task.get("_load_error"),
             }
-        full_snapshot = copy.deepcopy(task)
+        full_snapshot = TaskManager._snapshot_task_for_api(task, summary=False, include_tracks=include_tracks)
         full_snapshot["config"] = to_container(
             full_snapshot.get("config", {}) or {},
             resolve=False,
         )
-        return TaskManager._finalize_full_task_snapshot(full_snapshot)
+        return TaskManager._finalize_full_task_snapshot(full_snapshot, include_tracks=include_tracks)
 
     def active_task_count(self) -> int:
         """Count cached active work without copying task payloads."""
@@ -491,16 +507,18 @@ class TaskManager:
             if serialized is not None
         ]
 
-    def get_task(self, identifier: str, *, summary: bool = False, compact: bool = False) -> Dict[str, Any] | None:
+    def get_task(
+        self, identifier: str, *, summary: bool = False, compact: bool = False, include_tracks: bool = True,
+    ) -> Dict[str, Any] | None:
         """Return a detached task copy by name."""
         with self._lock:
             snapshot = self._snapshot_task_for_api(
                 self._tasks_by_name.get(identifier),
-                summary=summary, compact=compact,
+                summary=summary, compact=compact, include_tracks=include_tracks,
             )
         if summary:
             return self.serialize_task(snapshot, summary=True, compact=compact)
-        return self._finalize_full_task_snapshot(snapshot) if snapshot is not None else None
+        return self._finalize_full_task_snapshot(snapshot, include_tracks=include_tracks) if snapshot is not None else None
 
     def get_task_summary_page(
         self,
@@ -2158,7 +2176,9 @@ class TaskManager:
         self.trigger_update()
         return True, new_value
 
-    def reorder_tasks(self, items: List[Dict[str, Any]]) -> tuple[bool, List[Dict[str, Any]] | str]:
+    def reorder_tasks(
+        self, items: List[Dict[str, Any]], *, include_tracks: bool = True,
+    ) -> tuple[bool, List[Dict[str, Any]] | str]:
         """Persist manual task order and optional pinned states."""
         normalized: list[tuple[str, Optional[bool], int]] = []
         seen: set[str] = set()
@@ -2274,12 +2294,17 @@ class TaskManager:
                 )
             with self._lock:
                 reordered = [
-                    self._snapshot_task_for_api(self._resolve_identifier_locked(task_name), summary=False)
+                    self._snapshot_task_for_api(
+                        self._resolve_identifier_locked(task_name), summary=False, include_tracks=include_tracks,
+                    )
                     for task_name, _, _ in normalized
                 ]
 
         self.trigger_update()
-        return True, [self._finalize_full_task_snapshot(task) for task in reordered if task is not None]
+        return True, [
+            self._finalize_full_task_snapshot(task, include_tracks=include_tracks)
+            for task in reordered if task is not None
+        ]
 
     def update_task_notes(
         self,

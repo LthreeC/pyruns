@@ -3481,8 +3481,9 @@ def test_full_task_page_loads_curves_only_for_selected_tasks_without_registry_lo
     assert not refreshed["_load_error"]
 
 
-@pytest.mark.parametrize("operation", ["pin", "notes", "env", "rename", "delete"])
-def test_control_updates_skip_curves_until_the_full_response(tmp_path, operation):
+@pytest.mark.parametrize("include_tracks", [True, False])
+@pytest.mark.parametrize("operation", ["pin", "notes", "env", "rename", "reorder", "delete"])
+def test_control_updates_skip_curves_until_the_requested_response(tmp_path, operation, include_tracks):
     from pyruns.utils import track_store
 
     workspace = _make_workspace(tmp_path, "main")
@@ -3491,28 +3492,73 @@ def test_control_updates_skip_curves_until_the_full_response(tmp_path, operation
     values = list(range(track_store.INLINE_TRACK_POINTS))
     update_task_info(str(task_dir), lambda info: info.update(tracks=[{"loss": values}]))
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+    params = {} if include_tracks else {"include_tracks": False}
     calls = {
-        "pin": lambda: runtime.set_task_pin("metrics", True),
-        "notes": lambda: runtime.update_task_notes("metrics", "saved", ""),
-        "env": lambda: runtime.update_task_env("metrics", {"DATA": "saved"}, {}),
-        "rename": lambda: runtime.rename_task("metrics", "renamed"),
-        "delete": lambda: runtime.delete_tasks_batch(["metrics"]),
+        "pin": lambda: client.post("/api/tasks/metrics/pin", params=params, json={"pinned": True}),
+        "notes": lambda: client.patch("/api/tasks/metrics/notes", params=params,
+                                     json={"notes": "saved", "expected_notes": ""}),
+        "env": lambda: client.patch("/api/tasks/metrics/env", params=params,
+                                   json={"env": {"DATA": "saved"}, "expected_env": {}}),
+        "rename": lambda: client.post("/api/tasks/metrics/rename", params=params, json={"new_name": "renamed"}),
+        "reorder": lambda: client.post("/api/tasks/reorder", params=params, json={"items": [{"name": "metrics"}]}),
+        "delete": lambda: client.post("/api/tasks/batch/delete", json={"task_names": ["metrics"]}),
     }
     try:
         with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
-            result = calls[operation]()
-        assert read.call_count == (0 if operation == "delete" else 1)
+            response = calls[operation]()
+        assert response.status_code == 200, response.text
+        assert read.call_count == (0 if operation == "delete" or not include_tracks else 1)
+        payload = response.json()
         if operation == "delete":
-            assert result["deleted"] == ["metrics"]
+            assert payload["deleted"] == ["metrics"]
         else:
-            assert result["tracks"] == [{"loss": values}]
+            result = payload["items"][0] if operation == "reorder" else payload["task"]
+            assert result["tracks"] == ([{"loss": values}] if include_tracks else [])
             assert not result["_load_error"]
             assert result["config"] == {"lr": 0.01, "model": "tiny"}
             field, expected = {
                 "pin": ("pinned", True), "notes": ("notes", "saved"),
                 "env": ("env", {"DATA": "saved"}), "rename": ("name", "renamed"),
+                "reorder": ("task_order", 0),
             }[operation]
             assert result[field] == expected
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("external", [False, True], ids=["inline", "sqlite"])
+def test_task_detail_can_skip_curves_without_copying_them_or_losing_other_fields(tmp_path, external):
+    from pyruns.utils import track_store
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "metrics", status="completed")
+    values = list(range(track_store.INLINE_TRACK_POINTS if external else 3))
+    update_task_info(str(workspace / TASKS_DIR / "metrics"), lambda info: info.update(
+        tracks=[{"loss": values}], records=[{"score": 0.9}], env={"DATA": "saved"},
+    ))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+
+    class UnusedCurves(list):
+        def __deepcopy__(self, _memo):
+            pytest.fail("excluded inline curves were copied")
+
+    try:
+        full = client.get("/api/tasks/metrics").json()
+        assert full["tracks"] == [{"loss": values}]
+        assert full["records"] == [{"score": 0.9}]
+        cached = runtime.task_manager._tasks_by_name["metrics"]
+        cached["tracks"] = UnusedCurves(cached["tracks"])
+        with patch.object(track_store, "read_tracks", side_effect=AssertionError("excluded curves were read")) as read:
+            response = client.get("/api/tasks/metrics", params={"refresh": False, "include_tracks": False})
+            assert response.status_code == 200
+            assert response.json() == {**full, "tracks": []}
+            assert TaskManager.serialize_task(cached, include_tracks=False) == {**full, "tracks": []}
+            summary = runtime.task_manager.get_task("metrics", summary=True, include_tracks=False)
+            assert summary["tracks"] == [] and summary["records"] == []
+            read.assert_not_called()
+        assert list(cached["tracks"]) == ([{}] if external else [{"loss": values}])
     finally:
         runtime.shutdown()
 
@@ -3797,6 +3843,73 @@ def test_disconnect_cancels_full_log_scan(tmp_path):
         response = asyncio.run(endpoint(request=Disconnected(), query="needle", include_logs=True))
         assert response.status_code == 499
         assert stopped.wait(1)
+
+
+@pytest.mark.parametrize("phase", ["snapshot", "page"])
+def test_cancelled_search_releases_capacity_while_workspace_is_locked(tmp_path, monkeypatch, phase):
+    from concurrent.futures import CancelledError, ThreadPoolExecutor
+    from pyruns.web import runtime as runtime_module
+
+    runtime = _build_runtime(_make_workspace(tmp_path, "main"), owns_task_lifecycle=False)
+    runtime.ensure_tasks_loaded(full_refresh=False)
+    cancelled, waiting, armed = threading.Event(), threading.Event(), threading.Event()
+    sorted_tasks, proceed = threading.Event(), threading.Event()
+    original_lock = runtime._workspace_lock
+
+    class ObservedLock:
+        def acquire(self, *args, **kwargs):
+            if armed.is_set():
+                waiting.set()
+            return original_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            original_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+
+        def __exit__(self, *_exc):
+            self.release()
+
+    monkeypatch.setattr(runtime, "_workspace_lock", ObservedLock())
+    original_sort = runtime_module.sort_tasks_for_manager
+
+    def sort_before_page(*args):
+        result = original_sort(*args)
+        sorted_tasks.set()
+        assert proceed.wait(5)
+        return result
+
+    if phase == "page":
+        monkeypatch.setattr(runtime_module, "sort_tasks_for_manager", sort_before_page)
+    pool = ThreadPoolExecutor(1)
+    try:
+        with patch.object(runtime, "ensure_tasks_loaded", wraps=runtime.ensure_tasks_loaded) as refresh:
+            if phase == "page":
+                future = pool.submit(runtime.search_tasks, query="absent", cancelled=cancelled, refresh=False)
+                assert sorted_tasks.wait(5)
+            with original_lock:
+                armed.set()
+                if phase == "snapshot":
+                    future = pool.submit(runtime.search_tasks, query="absent", cancelled=cancelled)
+                else:
+                    proceed.set()
+                assert waiting.wait(5)
+                cancelled.set()
+                with pytest.raises(CancelledError):
+                    future.result(timeout=1)
+                assert refresh.call_count == (0 if phase == "snapshot" else 1)
+                # Both admission slots must be available before the unrelated
+                # workspace operation releases its lock.
+                assert runtime._log_search.slots.acquire(blocking=False)
+                assert runtime._log_search.slots.acquire(blocking=False)
+                runtime._log_search.slots.release()
+                runtime._log_search.slots.release()
+    finally:
+        cancelled.set()
+        proceed.set()
+        pool.shutdown(wait=True)
+        runtime.shutdown()
 
 
 def test_tasks_endpoint_exposes_persisted_structured_gpu_wait_state(tmp_path):
@@ -4838,7 +4951,8 @@ def test_tasks_and_task_detail_endpoints_return_data(tmp_path):
     assert detail_response.json()["config"]["model"] == "tiny"
 
 
-def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
+@pytest.mark.parametrize("include_tracks", [True, False])
+def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path, include_tracks):
     from pyruns.utils import track_store
     from pyruns.utils.info_io import update_task_metadata
 
@@ -4848,6 +4962,7 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
     update_task_info(str(workspace / TASKS_DIR / "alpha"), lambda info: info.update(tracks=[{"loss": values}]))
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
+    params = {} if include_tracks else {"include_tracks": False}
 
     def fake_start(task_name: str) -> bool:
         read.assert_not_called()
@@ -4880,18 +4995,19 @@ def test_run_and_cancel_task_endpoints_delegate_to_runtime(tmp_path):
 
     with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
         with patch.object(runtime.task_manager, "start_task_now", side_effect=fake_start):
-            run_response = client.post("/api/tasks/alpha/run", json={})
-        assert read.call_count == 1
+            run_response = client.post("/api/tasks/alpha/run", params=params, json={})
+        assert read.call_count == int(include_tracks)
         read.reset_mock()
         with patch.object(runtime.task_manager, "request_task_cancel", side_effect=fake_cancel):
-            cancel_response = client.post("/api/tasks/alpha/cancel")
-        assert read.call_count == 1
+            cancel_response = client.post("/api/tasks/alpha/cancel", params=params)
+        assert read.call_count == int(include_tracks)
 
     assert run_response.status_code == 200
     assert run_response.json()["task"]["status"] == "running"
     assert cancel_response.status_code == 200
     assert cancel_response.json()["task"]["status"] == "cancelled"
-    assert run_response.json()["task"]["tracks"] == cancel_response.json()["task"]["tracks"] == [{"loss": values}]
+    expected_tracks = [{"loss": values}] if include_tracks else []
+    assert run_response.json()["task"]["tracks"] == cancel_response.json()["task"]["tracks"] == expected_tracks
 
 
 @pytest.mark.parametrize("lease_offset", [-60, 60])
@@ -6137,15 +6253,23 @@ def test_tasks_endpoint_supports_offset_pagination(tmp_path):
     assert payload["total"] == 3
 
 
-def test_batch_run_and_delete_endpoints(tmp_path):
+@pytest.mark.parametrize("include_tracks", [True, False])
+def test_batch_run_and_delete_endpoints(tmp_path, include_tracks):
+    from pyruns.utils import track_store
+    from pyruns.utils.info_io import update_task_metadata
+
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
     _add_task(workspace, "beta")
+    values = list(range(track_store.INLINE_TRACK_POINTS))
+    for name in ("alpha", "beta"):
+        update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update(tracks=[{"loss": values}]))
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
     calls = []
 
     def fake_start_batch(task_names, max_workers=None):
+        read.assert_not_called()
         calls.append((list(task_names), max_workers))
         for task_name in task_names:
             task_dir = workspace / TASKS_DIR / task_name
@@ -6153,17 +6277,20 @@ def test_batch_run_and_delete_endpoints(tmp_path):
             def apply(info):
                 info["status"] = "queued"
 
-            update_task_info(str(task_dir), apply)
+            update_task_metadata(str(task_dir), apply)
         return list(task_names)
 
-    with patch.object(runtime.task_manager, "start_batch_tasks", side_effect=fake_start_batch):
-        run_response = client.post(
-            "/api/tasks/batch/run",
-            json={
-                "task_names": ["alpha", "beta"],
-                "max_workers": 5,
-            },
-        )
+    with patch.object(track_store, "read_tracks", wraps=track_store.read_tracks) as read:
+        with patch.object(runtime.task_manager, "start_batch_tasks", side_effect=fake_start_batch):
+            run_response = client.post(
+                "/api/tasks/batch/run",
+                params={} if include_tracks else {"include_tracks": False},
+                json={
+                    "task_names": ["alpha", "beta"],
+                    "max_workers": 5,
+                },
+            )
+        assert read.call_count == (2 if include_tracks else 0)
 
     delete_response = client.post("/api/tasks/batch/delete", json={"task_names": ["alpha"]})
 
@@ -6171,6 +6298,8 @@ def test_batch_run_and_delete_endpoints(tmp_path):
     assert calls == [(["alpha", "beta"], 5)]
     assert run_response.json()["count"] == 2
     assert {item["status"] for item in run_response.json()["items"]} == {"queued"}
+    for item in run_response.json()["items"]:
+        assert item["tracks"] == ([{"loss": values}] if include_tracks else [])
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted"] == ["alpha"]
 
@@ -7787,10 +7916,10 @@ def test_runtime_task_operation_error_branches(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="bad rename"):
         runtime.rename_task("alpha", "beta")
 
-    monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items: (False, "Task not found: ghost"))
+    monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items, **kwargs: (False, "Task not found: ghost"))
     with pytest.raises(KeyError):
         runtime.reorder_tasks([{"name": "ghost"}])
-    monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items: (False, "bad order"))
+    monkeypatch.setattr(runtime.task_manager, "reorder_tasks", lambda items, **kwargs: (False, "bad order"))
     with pytest.raises(ValueError, match="bad order"):
         runtime.reorder_tasks([])
 

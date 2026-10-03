@@ -1046,34 +1046,37 @@ def create_app(
         return serialize_page(page)
 
     @app.post("/api/tasks/reorder")
-    def reorder_tasks(payload: TaskReorderRequest) -> dict[str, Any]:
+    def reorder_tasks(payload: TaskReorderRequest, include_tracks: bool = True) -> dict[str, Any]:
         try:
             require_item_limit(payload.items, label="Task reorder")
             items = [
                 item.model_dump() if hasattr(item, "model_dump") else item.dict()
                 for item in payload.items
             ]
-            return get_runtime().reorder_tasks(items)
+            return get_runtime().reorder_tasks(items, include_tracks=include_tracks)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/tasks/{task_name}")
-    def get_task(task_name: str, refresh: bool = True, summary: bool = False) -> dict[str, Any]:
-        task = get_runtime().get_task(task_name, refresh=refresh, summary=summary)
+    def get_task(
+        task_name: str, refresh: bool = True, summary: bool = False, include_tracks: bool = True,
+    ) -> dict[str, Any]:
+        task = get_runtime().get_task(task_name, refresh=refresh, summary=summary, include_tracks=include_tracks)
         if task is None:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found")
         return task
 
     @app.post("/api/tasks/batch/run")
-    def run_tasks_batch(payload: TaskBatchActionRequest) -> dict[str, Any]:
+    def run_tasks_batch(payload: TaskBatchActionRequest, include_tracks: bool = True) -> dict[str, Any]:
         try:
             require_item_limit(payload.task_names, label="Batch run")
             with task_start_guard():
                 return get_runtime().start_tasks_batch(
                     payload.task_names,
                     max_workers=payload.max_workers,
+                    include_tracks=include_tracks,
                 )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
@@ -1104,10 +1107,12 @@ def create_app(
         return Response(content=csv_text, media_type="text/csv; charset=utf-8")
 
     @app.post("/api/tasks/{task_name}/run")
-    def run_task(task_name: str, _payload: TaskRunRequest | None = None) -> dict[str, Any]:
+    def run_task(
+        task_name: str, _payload: TaskRunRequest | None = None, include_tracks: bool = True,
+    ) -> dict[str, Any]:
         try:
             with task_start_guard():
-                task = get_runtime().start_task(task_name)
+                task = get_runtime().start_task(task_name, include_tracks=include_tracks)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
         except UpdateInProgressError as exc:
@@ -1117,9 +1122,9 @@ def create_app(
         return {"ok": True, "task": task}
 
     @app.post("/api/tasks/{task_name}/cancel")
-    def cancel_task(task_name: str) -> dict[str, Any]:
+    def cancel_task(task_name: str, include_tracks: bool = True) -> dict[str, Any]:
         try:
-            task = get_runtime().cancel_task(task_name)
+            task = get_runtime().cancel_task(task_name, include_tracks=include_tracks)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
         except ValueError as exc:
@@ -1127,9 +1132,9 @@ def create_app(
         return {"ok": True, "task": task}
 
     @app.post("/api/tasks/{task_name}/pin")
-    def pin_task(task_name: str, payload: TaskPinRequest) -> dict[str, Any]:
+    def pin_task(task_name: str, payload: TaskPinRequest, include_tracks: bool = True) -> dict[str, Any]:
         try:
-            task = get_runtime().set_task_pin(task_name, payload.pinned)
+            task = get_runtime().set_task_pin(task_name, payload.pinned, include_tracks=include_tracks)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
         except ValueError as exc:
@@ -1137,12 +1142,13 @@ def create_app(
         return {"ok": True, "task": task}
 
     @app.patch("/api/tasks/{task_name}/notes")
-    def update_task_notes(task_name: str, payload: TaskNotesRequest) -> dict[str, Any]:
+    def update_task_notes(task_name: str, payload: TaskNotesRequest, include_tracks: bool = True) -> dict[str, Any]:
         try:
             task = get_runtime().update_task_notes(
                 task_name,
                 payload.notes,
                 payload.expected_notes,
+                include_tracks=include_tracks,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
@@ -1153,7 +1159,7 @@ def create_app(
         return {"ok": True, "task": task}
 
     @app.patch("/api/tasks/{task_name}/env")
-    def update_task_env(task_name: str, payload: TaskEnvRequest) -> dict[str, Any]:
+    def update_task_env(task_name: str, payload: TaskEnvRequest, include_tracks: bool = True) -> dict[str, Any]:
         try:
             require_environment_limit(payload.env)
             require_environment_limit(payload.expected_env)
@@ -1161,6 +1167,7 @@ def create_app(
                 task_name,
                 payload.env,
                 payload.expected_env,
+                include_tracks=include_tracks,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
@@ -1171,9 +1178,9 @@ def create_app(
         return {"ok": True, "task": task}
 
     @app.post("/api/tasks/{task_name}/rename")
-    def rename_task(task_name: str, payload: TaskRenameRequest) -> dict[str, Any]:
+    def rename_task(task_name: str, payload: TaskRenameRequest, include_tracks: bool = True) -> dict[str, Any]:
         try:
-            task = get_runtime().rename_task(task_name, payload.new_name)
+            task = get_runtime().rename_task(task_name, payload.new_name, include_tracks=include_tracks)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
         except ValueError as exc:
