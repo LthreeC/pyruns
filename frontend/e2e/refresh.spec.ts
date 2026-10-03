@@ -63,6 +63,95 @@ test('Manager cancels obsolete lists and preserves results through timeout and r
   await expect.poll(snapshot).toMatchObject({ aborts: 3 })
 })
 
+test('Monitor times out stalled list reads without losing its page or open log', async ({ page }) => {
+  const now = new Date()
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(new Date(now.getTime() + 100))
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window)
+    const state = { stall: false, offsets: [] as number[], aborts: 0 }
+    Object.assign(window, { monitorReadTest: state })
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), location.origin)
+      if (url.pathname === '/api/tasks') {
+        state.offsets.push(Number(url.searchParams.get('offset') || 0))
+        if (state.stall) return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            state.aborts++
+            reject(init.signal?.reason)
+          }, { once: true })
+        })
+      }
+      return original(input, init)
+    }) as typeof window.fetch
+  })
+  const tasks = Array.from({ length: 401 }, (_, index) => ({
+    name: `retained-${index}`, status: 'completed', run_index: 2, task_kind: 'shell',
+  }))
+  await page.route('**/api/tasks?*', route => {
+    const offset = Number(new URL(route.request().url()).searchParams.get('offset') || 0)
+    return route.fulfill({ json: { items: tasks.slice(offset, offset + 200), total: 401,
+      offset, limit: 200, has_more: offset + 200 < 401, status_counts: { ...emptyCounts, completed: 401 } } })
+  })
+  let logReads = 0
+  await page.route('**/api/tasks/retained-**', route => {
+    const url = new URL(route.request().url())
+    const match = url.pathname.match(/\/tasks\/retained-(\d+)(\/logs)?$/)!
+    if (!match[2]) return route.fulfill({ json: tasks[Number(match[1])] })
+    logReads++
+    const log = url.searchParams.get('log_file_name') || 'run2.log'
+    const content = `${log}: retained terminal output\n`
+    return route.fulfill({ json: { content, offset: content.length, selected_log: log,
+      available_logs: ['run2.log', 'run1.log'], log_identity: log } })
+  })
+  await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
+  const snapshot = () => page.evaluate(() => (window as typeof window & {
+    monitorReadTest: { stall: boolean; offsets: number[]; aborts: number }
+  }).monitorReadTest)
+  const stall = (value: boolean) => page.evaluate(next => {
+    (window as typeof window & { monitorReadTest: { stall: boolean } }).monitorReadTest.stall = next
+  }, value)
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  const sidebar = page.getByRole('complementary', { name: 'Task monitor sidebar' })
+  const refresh = sidebar.getByRole('button', { name: 'Refresh tasks', exact: true })
+  const next = sidebar.getByRole('button', { name: 'Next page', exact: true })
+  const terminal = page.getByRole('region', { name: 'Read-only logs for retained-0' })
+  const logs = page.getByRole('combobox', { name: 'Select task log file' })
+  await expect(logs).toHaveValue('run2.log')
+  await page.clock.runFor(200)
+  await expect(terminal).toContainText('run2.log: retained terminal output')
+  await logs.selectOption('run1.log')
+  await expect(logs).toHaveValue('run1.log')
+  await page.clock.runFor(200)
+  await expect(terminal).toContainText('run1.log: retained terminal output')
+  await page.clock.runFor(200)
+  await next.click()
+  await expect(sidebar.getByText('2 / 3', { exact: true })).toBeVisible()
+  const historicalReads = logReads
+  await stall(true)
+  await refresh.click()
+  await expect(refresh).toBeDisabled()
+  await expect(next).toBeDisabled()
+  await page.clock.runFor(10_001)
+  await expect.poll(snapshot).toMatchObject({ aborts: 1 })
+  await expect(refresh).toBeEnabled()
+  await expect(next).toBeEnabled()
+  await expect(sidebar.getByRole('alert')).toBeVisible()
+  await expect(sidebar.getByText('2 / 3', { exact: true })).toBeVisible()
+  await expect(sidebar.getByRole('button', { name: 'View retained-200, completed', exact: true })).toBeVisible()
+  await expect(logs).toHaveValue('run1.log')
+  await expect(terminal).toContainText('run1.log: retained terminal output')
+  expect(logReads).toBe(historicalReads)
+  await stall(false)
+  await refresh.click()
+  await expect(refresh).toBeEnabled()
+  await expect(sidebar.getByRole('alert')).toBeHidden()
+  expect((await snapshot()).offsets.slice(-2)).toEqual([200, 200])
+  await expect(sidebar.getByText('2 / 3', { exact: true })).toBeVisible()
+  await expect(logs).toHaveValue('run1.log')
+  expect(logReads).toBe(historicalReads)
+})
+
 test('Launcher cancels replaced and hidden path checks and recovers after timeout', async ({ page }) => {
   const now = new Date()
   await page.clock.install({ time: now })

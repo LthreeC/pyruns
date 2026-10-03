@@ -398,21 +398,25 @@ describe('workspace-scoped stores', () => {
     expect(api.getTasks).toHaveBeenCalledTimes(1)
   })
 
-  it('does not impose the ordinary list timeout on a slow Manager search', async () => {
+  it.each(['manager', 'monitor'] as const)('does not impose the ordinary list timeout on a slow %s search', async view => {
     vi.useFakeTimers()
     try {
       useWorkspaceStore.getState().setWorkspace(workspace('A'))
-      useTaskStore.getState().setQuery('needle')
       const response = deferred<any>()
       vi.mocked(api.getTasks).mockReturnValueOnce(response.promise)
-      const pending = useTaskStore.getState().fetchTasks()
+      if (view === 'manager') useTaskStore.getState().setQuery('needle')
+      const pending = view === 'manager'
+        ? useTaskStore.getState().fetchTasks()
+        : useTaskStore.getState().fetchMonitorTasks({ query: 'needle' })
       const signal = vi.mocked(api.getTasks).mock.calls[0][1]!
       await vi.advanceTimersByTimeAsync(30_000)
       expect(signal.aborted).toBe(false)
-      expect(useTaskStore.getState().loading).toBe(true)
+      expect(view === 'manager' ? useTaskStore.getState().loading : useTaskStore.getState().monitorLoading).toBe(true)
       response.resolve({ items: [{ name: 'slow-match' }], total: 1, has_more: false })
       await pending
-      expect(useTaskStore.getState()).toMatchObject({ loading: false, error: null, tasks: [{ name: 'slow-match' }] })
+      expect(useTaskStore.getState()).toMatchObject(view === 'manager'
+        ? { loading: false, error: null, tasks: [{ name: 'slow-match' }] }
+        : { monitorLoading: false, monitorError: '', monitorTasks: [{ name: 'slow-match' }] })
     } finally { vi.useRealTimers() }
   })
 

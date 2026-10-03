@@ -952,6 +952,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       return
     }
     const query = String(options.query ?? current.monitorQuery)
+    const timeout = query ? undefined : setTimeout(() => {
+      controller.abort(new Error('Task list loading timed out. Refresh to retry.'))
+    }, 10_000)
     const searchField = options.searchField ?? current.monitorSearchField
     const searchOptions = options.searchOptions ?? current.monitorSearchOptions
     const maxResults = useSearchSettingsStore.getState().maxResults
@@ -1015,6 +1018,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       })
       throw error
     } finally {
+      clearTimeout(timeout)
+      if (monitorSearchController === controller) monitorSearchController = null
       if (!background && isCurrentRequest()) {
         set({ monitorLoading: false })
       }
