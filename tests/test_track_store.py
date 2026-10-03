@@ -454,7 +454,7 @@ for start in range(0, 20, 4):
         for process in processes:
             output, error = process.communicate(timeout=30)
             if process.returncode != 0:
-                owner = info_io._read_lock_owner(str(task / info_io._LOCK_FILENAME))
+                owner = info_io._lock_file_snapshot(str(task / info_io._LOCK_FILENAME))
                 waiters = sorted(path.name for path in (task / lock_queue._QUEUE_DIR).glob("*.wait"))
                 workers = {worker.pid: worker.poll() for worker in processes}
                 pytest.fail(

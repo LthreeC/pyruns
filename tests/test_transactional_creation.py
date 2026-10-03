@@ -237,7 +237,7 @@ def test_create_task_failure_removes_private_staging_directory(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match="payload failed"):
         generator.create_task("broken", {"value": 1})
 
-    assert list(tasks_root.iterdir()) == []
+    assert [path.name for path in tasks_root.iterdir()] == [task_generator_module._TASK_NAME_GUARD_FILENAME]
 
 
 def test_task_scan_ignores_transactional_staging_directories(tmp_path):
@@ -479,7 +479,7 @@ def test_explicit_shell_task_name_fails_while_exact_name_is_reserved(tmp_path):
         holder.release_task_name_reservation(reservation)
 
 
-def test_task_name_reservation_recovers_only_an_aged_invalid_lock(tmp_path):
+def test_task_name_reservation_preserves_invalid_lock_regardless_of_age(tmp_path):
     tasks_root = tmp_path / "tasks"
     generator = TaskGenerator(root_dir=str(tasks_root))
     lock_path = Path(generator._task_name_lock_path("stale-name"))
@@ -487,16 +487,15 @@ def test_task_name_reservation_recovers_only_an_aged_invalid_lock(tmp_path):
 
     snapshot = generator._task_name_lock_snapshot(str(lock_path))
     assert snapshot is not None
-    assert generator._task_name_lock_is_stale(snapshot, min_age_sec=30) is False
+    assert generator._task_name_lock_is_stale(snapshot) is False
     with pytest.raises(ValueError, match="already exists or is being created"):
         generator.create_task("stale-name", {"value": 1}, exact_name=True)
     assert lock_path.exists()
 
     os.utime(lock_path, (1, 1))
-    created = generator.create_task("stale-name", {"value": 2}, exact_name=True)
-
-    assert created["name"] == "stale-name"
-    assert not lock_path.exists()
+    with pytest.raises(ValueError, match="already exists or is being created"):
+        generator.create_task("stale-name", {"value": 2}, exact_name=True)
+    assert lock_path.read_bytes() == b""
 
 
 def test_task_name_reservation_keeps_valid_foreign_owner_even_when_old(tmp_path, monkeypatch):
@@ -517,7 +516,7 @@ def test_task_name_reservation_keeps_valid_foreign_owner_even_when_old(tmp_path,
 
     snapshot = generator._task_name_lock_snapshot(str(lock_path))
     assert snapshot is not None
-    assert generator._task_name_lock_is_stale(snapshot, min_age_sec=0) is False
+    assert generator._task_name_lock_is_stale(snapshot) is False
     assert generator._remove_stale_task_name_lock(str(lock_path)) is False
     assert lock_path.exists()
 
@@ -534,7 +533,7 @@ def test_create_task_publish_failure_removes_private_staging_directory(tmp_path,
     with pytest.raises(PermissionError, match="publish blocked"):
         generator.create_task("blocked", {"value": 1})
 
-    assert list(tasks_root.iterdir()) == []
+    assert [path.name for path in tasks_root.iterdir()] == [task_generator_module._TASK_NAME_GUARD_FILENAME]
 
 
 def test_batch_failure_rolls_back_only_tasks_created_by_batch(tmp_path, monkeypatch):
@@ -560,7 +559,7 @@ def test_batch_failure_rolls_back_only_tasks_created_by_batch(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match="second task failed"):
         generator.create_tasks([{"value": 1}, {"value": 2}, {"value": 3}], "batch")
 
-    assert [path.name for path in tasks_root.iterdir()] == [existing.name]
+    assert {path.name for path in tasks_root.iterdir()} == {existing.name, task_generator_module._TASK_NAME_GUARD_FILENAME}
     assert sentinel.read_text(encoding="utf-8") == "existing task"
 
 
@@ -666,7 +665,9 @@ def test_batch_failure_does_not_mutate_replacement_task(tmp_path, monkeypatch, r
     assert {path.name: path.read_bytes() for path in first_task_dir.iterdir() if path.is_file()} == replacement_bytes
     assert info_io.load_task_info(str(first_task_dir), raise_error=True)["status"] == "pending"
     assert info_io.load_task_info(str(moved_task_dir), raise_error=True)["status"] == "pending"
-    assert {path.name for path in tasks_root.iterdir()} == {first_task_dir.name, moved_task_dir.name}
+    assert {path.name for path in tasks_root.iterdir()} == {
+        first_task_dir.name, moved_task_dir.name, task_generator_module._TASK_NAME_GUARD_FILENAME,
+    }
 
 
 @pytest.mark.parametrize("operation, phase, copy_marker", [

@@ -3131,14 +3131,12 @@ def test_info_io_lock_helpers_handle_invalid_stale_and_failed_cleanup(tmp_path, 
     task_dir.mkdir()
     lock_path = task_dir / info_io._LOCK_FILENAME
 
-    assert info_io._read_lock_owner(str(lock_path)) == (None, "", None)
+    assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is False
     lock_path.write_text("not-a-pid extra", encoding="utf-8")
-    assert info_io._read_lock_owner(str(lock_path)) == (None, "", None)
+    assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is False
 
     owner = f"999999 1 {info_io._LOCK_OWNER_HOST} 1 {info_io._LOCK_PROTOCOL}"
     lock_path.write_text(owner, encoding="utf-8")
-    monkeypatch.setattr(info_io, "is_pid_running", lambda pid: False)
-    assert info_io._lock_file_is_stale(str(lock_path), min_age_sec=999999) is True
     assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is True
 
     lock_path.write_text(owner, encoding="utf-8")
@@ -3156,7 +3154,6 @@ def test_stale_lock_cleanup_does_not_remove_replaced_live_lock(tmp_path, monkeyp
     stale_owner = f"999999 1 some-host 1 {info_io._LOCK_PROTOCOL}"
     live_owner = str(os.getpid())
     lock_path.write_text(stale_owner, encoding="utf-8")
-    monkeypatch.setattr(info_io, "is_pid_running", lambda pid: pid == os.getpid())
     real_replace = os.replace
     replaced = False
 
@@ -3171,32 +3168,6 @@ def test_stale_lock_cleanup_does_not_remove_replaced_live_lock(tmp_path, monkeyp
 
     assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is False
     assert lock_path.read_text(encoding="utf-8") == live_owner
-
-
-def test_task_info_lock_detects_reused_live_pid(tmp_path, monkeypatch):
-    import pyruns.utils.info_io as info_io
-
-    lock_path = tmp_path / info_io._LOCK_FILENAME
-    acquired_at = 1000.0
-    lock_path.write_text(
-        f"4242 1 {info_io._LOCK_OWNER_HOST} {acquired_at}",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(info_io, "is_pid_running", lambda _pid: True)
-    monkeypatch.setattr(info_io, "get_process_create_time", lambda _pid: acquired_at + 10)
-
-    assert info_io._lock_file_is_stale(str(lock_path)) is True
-
-
-def test_task_info_lock_keeps_valid_foreign_owner_even_when_old(tmp_path, monkeypatch):
-    import pyruns.utils.info_io as info_io
-
-    lock_path = tmp_path / info_io._LOCK_FILENAME
-    foreign_host = f"{info_io._LOCK_OWNER_HOST}-foreign"
-    lock_path.write_text(f"4242 1 {foreign_host} 1", encoding="utf-8")
-    monkeypatch.setattr(info_io.time, "time", lambda: 1_000_000.0)
-
-    assert info_io._lock_file_is_stale(str(lock_path), min_age_sec=0) is False
 
 
 @pytest.mark.parametrize("module_name", ["info_io", "settings"])
@@ -3562,7 +3533,7 @@ def test_save_setting_for_root_is_atomic_when_replace_fails(tmp_path, monkeypatc
     assert not Path(f"{path}.lock").exists()
 
 
-def test_settings_lock_recovers_dead_owner_without_touching_live_owner(tmp_path, monkeypatch):
+def test_settings_lock_recovers_abandoned_marker_without_touching_live_owner(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     path = root / SETTINGS_FILENAME
@@ -3573,18 +3544,19 @@ def test_settings_lock_recovers_dead_owner_without_touching_live_owner(tmp_path,
     dead_owner["pid"] = 999_999_999
     dead_owner["process_create_time"] = 1.0
     lock_path.write_text(json.dumps(dead_owner), encoding="utf-8")
-    monkeypatch.setattr(settings, "is_pid_running", lambda pid: pid != dead_owner["pid"])
 
     settings.save_setting_for_root(str(root), "ui_port", 8123)
 
     assert yaml.safe_load(path.read_text(encoding="utf-8"))["ui_port"] == 8123
     assert not lock_path.exists()
 
-    live_owner = settings._settings_lock_owner_bytes()
-    lock_path.write_bytes(live_owner)
-    with pytest.raises(TimeoutError, match="locked by another process"):
-        settings._open_settings_lock(str(path), timeout_sec=0)
-    assert lock_path.read_bytes() == live_owner
+    live_lock = settings._open_settings_lock(str(path), timeout_sec=0)
+    try:
+        with pytest.raises(TimeoutError, match="settings lock guard"):
+            settings._open_settings_lock(str(path), timeout_sec=0)
+        assert lock_path.read_bytes() == live_lock[2]
+    finally:
+        settings._close_settings_lock(*live_lock)
 
 
 def test_settings_stale_lock_cleanup_restores_racing_live_lock(tmp_path, monkeypatch):
@@ -3607,30 +3579,23 @@ def test_settings_stale_lock_cleanup_restores_racing_live_lock(tmp_path, monkeyp
             lock_path.write_bytes(live_owner)
         return real_replace(src, dst)
 
-    monkeypatch.setattr(settings, "is_pid_running", lambda pid: pid != stale_owner["pid"])
     monkeypatch.setattr(settings.os, "replace", replace_after_live_owner_arrives)
 
-    assert settings._remove_stale_settings_lock(str(lock_path)) is False
+    assert settings._remove_stale_settings_lock(str(lock_path), native_guard=True) is False
     assert lock_path.read_bytes() == live_owner
 
 
-def test_settings_lock_only_recovers_invalid_owner_after_safe_age(tmp_path, monkeypatch):
+def test_settings_lock_preserves_invalid_owner_regardless_of_age(tmp_path):
     path = tmp_path / SETTINGS_FILENAME
     lock_path = Path(f"{path}.lock")
     lock_path.write_bytes(b"")
     snapshot = settings._settings_lock_snapshot(str(lock_path))
     assert snapshot is not None
-    modified_at = snapshot[0][2] / 1_000_000_000
-
-    monkeypatch.setattr(settings.time, "time", lambda: modified_at + 1)
-    assert settings._settings_lock_is_stale(snapshot, min_age_sec=30) is False
-    assert settings._remove_stale_settings_lock(str(lock_path)) is False
-    assert lock_path.exists()
-
-    monkeypatch.setattr(settings.time, "time", lambda: modified_at + 31)
-    assert settings._settings_lock_is_stale(snapshot, min_age_sec=30) is True
-    assert settings._remove_stale_settings_lock(str(lock_path)) is True
-    assert not lock_path.exists()
+    os.utime(lock_path, (1, 1))
+    assert settings._settings_lock_is_stale(snapshot, native_guard=True) is False
+    with pytest.raises(TimeoutError, match="original runtime"):
+        settings._open_settings_lock(str(path), timeout_sec=0)
+    assert lock_path.read_bytes() == b""
 
 
 def test_shell_runtime_resolves_classifies_and_probes_edges(tmp_path, monkeypatch):

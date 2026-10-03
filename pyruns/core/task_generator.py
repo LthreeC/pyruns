@@ -31,6 +31,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.lock_owner import RELEASED_LOCK_SUFFIX, mark_json_lock_released, parse_json_lock_owner
+from pyruns.utils.native_lock import LOCK_PROTOCOL, NativeFileGuard
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
@@ -43,7 +44,7 @@ logger = get_logger(__name__)
 
 _TASK_NAME_LOCK_PREFIX = ".pyruns-create-"
 _TASK_NAME_LOCK_SUFFIX = ".lock"
-_TASK_NAME_LOCK_STALE_MIN_AGE_SEC = 30.0
+_TASK_NAME_GUARD_FILENAME = ".pyruns-create.lock.guard"
 _TASK_NAME_LOCK_OWNER_HOST = socket.gethostname().lower()
 _TASK_NAME_LOCK_RELEASE_ATTEMPTS = 15
 _TASK_NAME_LOCK_RELEASE_RETRY_DELAY_SEC = 0.02
@@ -296,14 +297,10 @@ class TaskGenerator:
     def _task_name_lock_is_stale(
         cls,
         snapshot: tuple[tuple[int, int, int, int], bytes],
-        *,
-        min_age_sec: float = _TASK_NAME_LOCK_STALE_MIN_AGE_SEC,
     ) -> bool:
-        modified_at = snapshot[0][2] / 1_000_000_000
-        age = max(0.0, time.time() - modified_at)
         owner = cls._task_name_lock_owner(snapshot[1])
-        if owner is None:
-            return age >= max(0.0, min_age_sec)
+        if owner is None or owner.get("lock_protocol") != LOCK_PROTOCOL:
+            return False
         if snapshot[1].endswith(RELEASED_LOCK_SUFFIX):
             return True
         if owner["host"].lower() != _TASK_NAME_LOCK_OWNER_HOST:
@@ -375,6 +372,18 @@ class TaskGenerator:
         """Atomically reserve one candidate name across Pyruns processes."""
 
         validate_tasks_root(self.root_dir)
+        with self._task_name_guard():
+            return self._reserve_task_name_locked(task_name)
+
+    def _task_name_guard(self) -> NativeFileGuard:
+        # Only namespace edits are serialized; building different tasks may
+        # proceed concurrently while their individual reservations stay live.
+        return NativeFileGuard(
+            os.path.join(self.root_dir, _TASK_NAME_GUARD_FILENAME),
+            self.root_dir, label="Task name reservation guard",
+        )
+
+    def _reserve_task_name_locked(self, task_name: str) -> tuple[str, int, tuple[int, int]] | None:
         lock_path = self._task_name_lock_path(task_name)
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
         flags |= int(getattr(os, "O_BINARY", 0))
@@ -386,6 +395,15 @@ class TaskGenerator:
             except FileExistsError:
                 if self._remove_stale_task_name_lock(lock_path):
                     continue
+                snapshot = self._task_name_lock_snapshot(lock_path)
+                owner = self._task_name_lock_owner(snapshot[1]) if snapshot else None
+                if owner is None or owner.get("lock_protocol") != LOCK_PROTOCOL:
+                    logger.warning(
+                        "Task name reservation belongs to an older or different runtime: %s. "
+                        "Let it finish; for an abandoned reservation, recover from its original "
+                        "runtime or remove only this .lock file after confirming all writers "
+                        "have stopped. Keep the .guard file.", lock_path,
+                    )
                 return None
 
         identity: tuple[int, int] | None = None
@@ -398,6 +416,7 @@ class TaskGenerator:
                     "pid": os.getpid(),
                     "process_create_time": get_process_create_time(os.getpid()),
                     "token": secrets.token_hex(16),
+                    "lock_protocol": LOCK_PROTOCOL,
                 },
                 ensure_ascii=True,
                 separators=(",", ":"),
@@ -440,18 +459,39 @@ class TaskGenerator:
         """Release only the reservation file opened by this generator."""
 
         lock_path, fd, identity = reservation
+        guard = self._task_name_guard()
+        fd_closed = False
         try:
-            info = os.fstat(fd)
-            if (info.st_dev, info.st_ino) == identity:
-                mark_json_lock_released(fd)
-        except OSError:
-            pass
+            try:
+                guard.acquire()
+            except (OSError, ValueError) as exc:
+                # A task may already be published. Finish through the original
+                # descriptor and leave cleanup to a later guarded contender;
+                # never replace a successful creation with a cleanup failure.
+                logger.warning("Deferring task name reservation cleanup %s: %s", lock_path, exc)
+            try:
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino) == identity:
+                    mark_json_lock_released(fd)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    logger.warning("Could not close task name reservation %s: %s", lock_path, exc)
+                fd_closed = True
+                if guard.acquired:
+                    self._remove_task_name_reservation(lock_path, identity)
         finally:
             try:
-                os.close(fd)
-            except OSError as exc:
-                logger.warning("Could not close task name reservation %s: %s", lock_path, exc)
-            self._remove_task_name_reservation(lock_path, identity)
+                if not fd_closed:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            finally:
+                guard.close()
 
     def _remove_task_name_reservation(self, lock_path: str, identity: tuple[int, int]) -> None:
         for attempt in range(_TASK_NAME_LOCK_RELEASE_ATTEMPTS):

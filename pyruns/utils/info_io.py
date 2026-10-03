@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import logging
 import os
 import re
 import socket
 import stat
-import sys
 import tempfile
 import threading
 import time
@@ -28,20 +26,15 @@ from pyruns._config import (
     SCRIPT_INFO_FILENAME,
     TASK_INFO_FILENAME,
 )
-from pyruns.utils.process_utils import get_process_create_time, is_pid_running
 from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.file_boundary import validate_open_file
+from pyruns.utils.native_lock import LOCK_PROTOCOL as _LOCK_PROTOCOL, NativeFileGuard
 
 # Active holders and waiters keep strong references; idle task paths can retire.
 _TASK_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
 _LOCK_FILENAME = f".{TASK_INFO_FILENAME}.lock"
 _LOCK_GUARD_FILENAME = f"{_LOCK_FILENAME}.guard"
-_LOCK_DOMAIN = hashlib.blake2b(
-    "\0".join((os.name, sys.platform, socket.gethostname().lower(), os.getenv("WSL_DISTRO_NAME", ""))).encode("utf-8"),
-    digest_size=16,
-).hexdigest()
-_LOCK_PROTOCOL = f"guard-v2:{_LOCK_DOMAIN}"
 _LOCK_POLL_SEC = 0.05
 _LOCK_QUEUE_POLL_SEC = 0.005
 _LOCK_TIMEOUT_SEC = 5.0
@@ -49,7 +42,6 @@ _REPLACE_RETRY_COUNT = 15
 _REPLACE_RETRY_DELAY_SEC = 0.02
 _READ_RETRY_COUNT = 5
 _READ_RETRY_DELAY_SEC = 0.02
-_STALE_LOCK_MIN_AGE_SEC = 30.0
 _LOCK_OWNER_HOST = socket.gethostname().lower()
 _GET_FINAL_PATH = getattr(os.path, "_getfinalpathname", None)
 MAX_TASK_INFO_BYTES = 16 * 1024 * 1024
@@ -89,55 +81,6 @@ def _replace_with_retry(src: str, dst: str) -> None:
             if attempt >= _REPLACE_RETRY_COUNT - 1:
                 raise
             time.sleep(_REPLACE_RETRY_DELAY_SEC * (attempt + 1))
-
-
-def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str, Optional[float]]:
-    try:
-        with open(lock_path, "r", encoding="utf-8") as handle:
-            parts = handle.read().strip().split()
-    except OSError:
-        return None, "", None
-    pid = None
-    if parts:
-        try:
-            pid = int(parts[0])
-        except (TypeError, ValueError):
-            pid = None
-    host = parts[2].lower() if len(parts) >= 3 else ""
-    acquired_at = None
-    if len(parts) >= 4:
-        try:
-            acquired_at = float(parts[3])
-        except (TypeError, ValueError, OverflowError):
-            acquired_at = None
-    if pid is not None and len(parts) >= 5 and parts[-1] == "released":
-        pid = 0
-    return pid, host, acquired_at
-
-
-def _lock_file_is_stale(lock_path: str, *, min_age_sec: float = _STALE_LOCK_MIN_AGE_SEC) -> bool:
-    try:
-        age = time.time() - os.path.getmtime(lock_path)
-    except OSError:
-        return False
-
-    pid, host, acquired_at = _read_lock_owner(lock_path)
-    if pid == 0:
-        return True
-    if pid is not None and host and host != _LOCK_OWNER_HOST:
-        return False
-    if pid is not None:
-        if not is_pid_running(pid):
-            return True
-        if acquired_at is not None:
-            process_created_at = get_process_create_time(pid)
-            if (
-                process_created_at is not None
-                and process_created_at > acquired_at + 0.01
-            ):
-                return True
-        return False
-    return age >= max(0.0, min_age_sec)
 
 
 def _lock_file_snapshot(lock_path: str) -> tuple[tuple[int, int, int, int], bytes] | None:
@@ -521,7 +464,6 @@ def _release_task_lock(lock_path: str, owner: str, *, identity: tuple[int, int] 
 @contextmanager
 def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, create_dir: bool = True):
     """Acquire a task-local thread/process lock for task_info.json updates."""
-    from pyruns.update_coordination import CoordinationStore
     from pyruns.utils.lock_queue import TaskLockQueue
 
     validate_task_directory(task_dir)
@@ -536,8 +478,7 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
         raise TimeoutError(f"Timed out acquiring task lock for {task_dir}")
 
     fd: Optional[int] = None
-    guard_fd: Optional[int] = None
-    guard_acquired = False
+    guard = NativeFileGuard(os.path.join(task_dir, _LOCK_GUARD_FILENAME), task_dir, label="Task lock guard")
     owner = f"{os.getpid()} {threading.get_ident()} {_LOCK_OWNER_HOST} {time.time():.6f} {_LOCK_PROTOCOL}"
     owner_bytes = owner.encode("utf-8", errors="ignore")
     owner_written = False
@@ -545,42 +486,25 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
     permission_failures = 0
     queue = TaskLockQueue(task_dir)
     try:
-        guard_path = os.path.join(task_dir, _LOCK_GUARD_FILENAME)
-        validate_workspace_file(guard_path, task_dir, label="Task lock guard")
-        guard_boundary = os.path.realpath(task_dir)
-        guard_fd = regular_file_opener(
-            guard_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-        )
-        with os.fdopen(guard_fd, "rb", closefd=False) as guard_handle:
-            validate_open_file(guard_handle, guard_path, guard_boundary)
-        # This inode is permanent: unlinking a native lock would let another
-        # process lock a replacement while the old descriptor is still held.
         while True:
             remaining = timeout_sec - (time.monotonic() - start)
-            if not guard_acquired and queue.entry is None and queue.has_waiters():
+            if not guard.acquired and queue.entry is None and queue.has_waiters():
                 if remaining <= 0:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                 queue.register(remaining)
-            if not guard_acquired and not queue.is_first():
+            if not guard.acquired and not queue.is_first():
                 if remaining <= 0:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                 time.sleep(min(_LOCK_QUEUE_POLL_SEC, remaining))
                 continue
-            if not guard_acquired:
-                acquired_guard = CoordinationStore._try_native_lock(guard_fd)
-                if acquired_guard is None:
-                    raise OSError(
-                        f"Task storage requires native file locking: {task_dir}. "
-                        "Enable file locking on the shared filesystem or use a local workspace."
-                    )
-                if not acquired_guard:
+            if not guard.acquired:
+                if not guard.try_acquire():
                     if remaining <= 0:
                         raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                     if queue.entry is None:
                         queue.register(remaining)
                     time.sleep(min(_LOCK_QUEUE_POLL_SEC, remaining))
                     continue
-                guard_acquired = True
             try:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
             except FileExistsError as exc:
@@ -632,8 +556,7 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                         _release_task_lock(lock_path, owner, identity=failed_identity)
         finally:
             try:
-                if guard_fd is not None:
-                    CoordinationStore._close_native_lock(guard_fd, guard_acquired)
+                guard.close()
             finally:
                 try:
                     queue.close()

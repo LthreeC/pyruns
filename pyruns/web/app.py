@@ -1250,6 +1250,12 @@ def create_app(
 
         async def send_events() -> None:
             revision = 0
+            # The workspace may switch after context acquisition but before
+            # on_change is registered. Validate after subscribing as well.
+            if not await asyncio.to_thread(runtime.workspace_stream_is_current, stream_root, stream_manager):
+                await websocket.close(code=4409, reason="Workspace changed")
+                disconnected.set()
+                return
             await websocket.send_json({"type": "ready", "revision": revision})
             while not disconnected.is_set():
                 try:

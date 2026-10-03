@@ -123,7 +123,10 @@ for (const dirty of [false, true]) {
         await page.getByRole('tab', { name: 'Notes' }).click()
         await page.getByRole('textbox', { name: 'Task notes' }).fill('draft stays in the first workspace')
       }
-      const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workspace')
+      const refreshed = page.waitForResponse(
+        response => new URL(response.url()).pathname === '/api/workspace',
+        { timeout: 2000 },
+      )
       await switchFromOtherTab(other, first, second)
       expect((await (await refreshed).json()).run_root).toBe(second)
       await expect.poll(() => page.evaluate(() => (window as any).workspaceCloseCodes)).toContain(4409)

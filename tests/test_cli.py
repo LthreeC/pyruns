@@ -3417,11 +3417,13 @@ def test_rm_ls_trash_and_restore(tmp_path):
         / "recoverable"
     )
     assert trash.is_dir()
+    (trash.parent / ".pyruns-lock-waiters").mkdir()
+    (trash.parent / ".staging-interrupted").mkdir()
 
     listing = _run_cli(
         tmp_path, "-w", "shell", "ls", "--trash", "--json"
     )
-    assert json.loads(listing.stdout)["tasks"][0]["name"] == "recoverable"
+    assert [task["name"] for task in json.loads(listing.stdout)["tasks"]] == ["recoverable"]
     filtered = _run_cli(
         tmp_path,
         "-w",

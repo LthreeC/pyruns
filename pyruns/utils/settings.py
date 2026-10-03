@@ -20,10 +20,11 @@ from weakref import WeakValueDictionary
 import yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from pyruns.utils.process_utils import get_process_create_time, is_pid_running
+from pyruns.utils.process_utils import get_process_create_time
 from pyruns.utils.info_io import validate_workspace_file
 from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
-from pyruns.utils.lock_owner import RELEASED_LOCK_SUFFIX, mark_json_lock_released, parse_json_lock_owner
+from pyruns.utils.lock_owner import mark_json_lock_released, parse_json_lock_owner
+from pyruns.utils.native_lock import LOCK_PROTOCOL, NativeFileGuard
 
 from pyruns._config import (
     SETTINGS_FILENAME,
@@ -134,7 +135,6 @@ _SETTINGS_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDicti
 _SETTINGS_FILE_LOCKS_GUARD = threading.Lock()
 _SETTINGS_LOCK_TIMEOUT_SEC = 5.0
 _SETTINGS_LOCK_POLL_SEC = 0.05
-_SETTINGS_STALE_LOCK_MIN_AGE_SEC = 30.0
 _SETTINGS_LOCK_OWNER_HOST = socket.gethostname().lower()
 _SETTINGS_LOCK_RELEASE_ATTEMPTS = 15
 _SETTINGS_LOCK_RELEASE_RETRY_DELAY_SEC = 0.02
@@ -170,6 +170,7 @@ def _settings_lock_owner_bytes() -> bytes:
         "process_create_time": get_process_create_time(os.getpid()),
         "host": _SETTINGS_LOCK_OWNER_HOST,
         "token": secrets.token_hex(16),
+        "lock_protocol": LOCK_PROTOCOL,
     }
     return json.dumps(owner, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
@@ -181,33 +182,12 @@ def _settings_lock_owner(content: bytes) -> Dict[str, Any] | None:
 def _settings_lock_is_stale(
     snapshot: tuple[tuple[int, int, int, int], bytes],
     *,
-    min_age_sec: float = _SETTINGS_STALE_LOCK_MIN_AGE_SEC,
+    native_guard: bool = False,
 ) -> bool:
-    modified_at = snapshot[0][2] / 1_000_000_000
-    age = max(0.0, time.time() - modified_at)
+    # Only a guard from the same locking domain proves the previous writer
+    # has stopped. Windows and WSL can lock the same inode independently.
     owner = _settings_lock_owner(snapshot[1])
-    if owner is None:
-        return age >= max(0.0, min_age_sec)
-    if snapshot[1].endswith(RELEASED_LOCK_SUFFIX):
-        return True
-    if owner["host"].lower() != _SETTINGS_LOCK_OWNER_HOST:
-        return False
-
-    pid = owner["pid"]
-    if not is_pid_running(pid):
-        return True
-
-    expected = owner.get("process_create_time")
-    if expected is None:
-        return False
-    try:
-        expected_value = float(expected)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    actual = get_process_create_time(pid)
-    if actual is None:
-        return False
-    return abs(actual - expected_value) > 0.01
+    return bool(native_guard and owner and owner.get("lock_protocol") == LOCK_PROTOCOL)
 
 
 def _quarantine_settings_lock(
@@ -247,11 +227,11 @@ def _quarantine_settings_lock(
     return True
 
 
-def _remove_stale_settings_lock(lock_path: str) -> bool:
+def _remove_stale_settings_lock(lock_path: str, *, native_guard: bool = False) -> bool:
     snapshot = _settings_lock_snapshot(lock_path)
     return bool(
         snapshot is not None
-        and _settings_lock_is_stale(snapshot)
+        and _settings_lock_is_stale(snapshot, native_guard=native_guard)
         and _quarantine_settings_lock(lock_path, snapshot)
     )
 
@@ -275,37 +255,55 @@ def _release_settings_lock(lock_path: str, owner: bytes) -> None:
             return
 
 
-def _close_settings_lock(fd: int, lock_path: str, owner: bytes) -> None:
+def _close_settings_lock(fd: int, lock_path: str, owner: bytes, guard: NativeFileGuard) -> None:
     try:
-        owner = mark_json_lock_released(fd, owner)
-    finally:
         try:
-            os.close(fd)
-        except OSError:
-            pass
-        _release_settings_lock(lock_path, owner)
+            owner = mark_json_lock_released(fd, owner)
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            _release_settings_lock(lock_path, owner)
+    finally:
+        guard.close()
 
 
 def _open_settings_lock(
     path: str,
     timeout_sec: float = _SETTINGS_LOCK_TIMEOUT_SEC,
-) -> tuple[int, str, bytes]:
+) -> tuple[int, str, bytes, NativeFileGuard]:
     lock_path = f"{path}.lock"
     lock_dir = os.path.dirname(path) or "."
     validate_workspace_file(lock_path, lock_dir, label="Settings lock file")
     deadline = time.monotonic() + max(0.0, timeout_sec)
+    guard = NativeFileGuard(f"{lock_path}.guard", lock_dir, label="Settings lock guard", timeout_sec=timeout_sec)
+    guard.acquire()
+    try:
+        return _create_settings_lock(lock_path, lock_dir, deadline, guard)
+    except BaseException:
+        guard.close()
+        raise
+
+
+def _create_settings_lock(
+    lock_path: str, lock_dir: str, deadline: float, guard: NativeFileGuard,
+) -> tuple[int, str, bytes, NativeFileGuard]:
     while True:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
         except FileExistsError as exc:
             validate_workspace_file(lock_path, lock_dir, label="Settings lock file")
-            if _remove_stale_settings_lock(lock_path):
+            if _remove_stale_settings_lock(lock_path, native_guard=True):
                 continue
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"Settings are locked by another process: {lock_path}"
+                    f"Settings are locked by another process: {lock_path}. "
+                    "An older or different runtime may own this lock. Let it finish; "
+                    "for an abandoned lock, recover from its original runtime or remove "
+                    "only this .lock file after confirming all writers have stopped. Keep the .guard file."
                 ) from exc
-            time.sleep(_SETTINGS_LOCK_POLL_SEC)
+            time.sleep(min(_SETTINGS_LOCK_POLL_SEC, max(0.0, deadline - time.monotonic())))
             continue
 
         try:
@@ -314,7 +312,7 @@ def _open_settings_lock(
             if written != len(owner):
                 raise OSError("Could not write the complete settings lock owner")
             os.fsync(fd)
-            return fd, lock_path, owner
+            return fd, lock_path, owner, guard
         except BaseException:
             identity = None
             try:
@@ -569,7 +567,7 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
         label="Settings file",
     )
     with _thread_lock_for(path):
-        lock_fd, lock_path, lock_owner = _open_settings_lock(path)
+        lock_fd, lock_path, lock_owner, lock_guard = _open_settings_lock(path)
         tmp_path = ""
         try:
             text = ""
@@ -620,7 +618,7 @@ def save_settings_for_root(root_dir: str, values: Dict[str, Any]) -> None:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-            _close_settings_lock(lock_fd, lock_path, lock_owner)
+            _close_settings_lock(lock_fd, lock_path, lock_owner, lock_guard)
 
         _cached.update(updates)
 
@@ -650,7 +648,7 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
         label="Settings file",
     )
     with _thread_lock_for(path):
-        lock_fd, lock_path, lock_owner = _open_settings_lock(path)
+        lock_fd, lock_path, lock_owner, lock_guard = _open_settings_lock(path)
         tmp_path = ""
         try:
             text = ""
@@ -687,6 +685,6 @@ def unset_setting_for_root(root_dir: str, key: str) -> None:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-            _close_settings_lock(lock_fd, lock_path, lock_owner)
+            _close_settings_lock(lock_fd, lock_path, lock_owner, lock_guard)
 
         _cached[key] = SETTINGS_DEFAULTS[key]

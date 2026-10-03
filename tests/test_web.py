@@ -1221,25 +1221,54 @@ def test_task_event_websocket_cancellation_releases_watch_once(tmp_path, monkeyp
         runtime.shutdown()
 
 
-def test_task_event_websocket_closes_when_workspace_changes(tmp_path):
+@pytest.mark.parametrize("before_subscription", [False, True])
+def test_task_event_websocket_closes_when_workspace_changes(tmp_path, monkeypatch, before_subscription):
+    from concurrent.futures import ThreadPoolExecutor
+    from pyruns.web import app as app_mod
+
     workspace_a = _make_workspace(tmp_path, "event-a")
     workspace_b = _make_workspace(tmp_path, "event-b")
     _add_task(workspace_a, "alpha")
     runtime = _build_runtime(workspace_a)
     client = TestClient(create_app(runtime))
+    monkeypatch.setattr(app_mod, "TASK_EVENT_HEARTBEAT_SEC", 60)
 
     try:
-        with client.websocket_connect("/api/tasks/events") as websocket:
-            assert websocket.receive_json()["type"] == "ready"
+        for _ in range(3):
+            target = workspace_b if runtime.root_dir == str(workspace_a) else workspace_a
             old_manager = runtime.task_manager
-            runtime.change_run_root(str(workspace_b))
-            old_manager.trigger_update()
+            if before_subscription:
+                register = old_manager.on_change
 
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                websocket.receive_json()
-            assert exc_info.value.code == 4409
-        assert old_manager.has_reactive_watchers() is False
-        assert old_manager not in runtime._task_managers.values()
+                def change_before_subscribing(callback):
+                    runtime.change_run_root(str(target))
+                    register(callback)
+
+                monkeypatch.setattr(old_manager, "on_change", change_before_subscribing)
+
+            with ThreadPoolExecutor(max_workers=1) as worker:
+                with client.websocket_connect("/api/tasks/events") as websocket:
+                    if not before_subscription:
+                        assert websocket.receive_json()["type"] == "ready"
+                        runtime.change_run_root(str(target))
+                    closed = worker.submit(websocket.receive_json)
+                    try:
+                        with pytest.raises(WebSocketDisconnect) as exc_info:
+                            closed.result(timeout=2)
+                        assert exc_info.value.code == 4409
+                    finally:
+                        # Keep a failing regression bounded even with a long heartbeat.
+                        if not closed.done():
+                            old_manager.trigger_update()
+                            try:
+                                closed.result(timeout=5)
+                            except WebSocketDisconnect:
+                                pass
+            assert old_manager._shutdown_event.wait(2)
+            assert old_manager.has_reactive_watchers() is False
+            assert old_manager not in runtime._task_managers.values()
+            assert not old_manager._observers
+            assert len(runtime._task_managers) <= 1
     finally:
         runtime.shutdown()
 

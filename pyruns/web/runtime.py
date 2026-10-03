@@ -460,6 +460,7 @@ class PyrunsRuntime:
 
         manager_key = os.path.normcase(os.path.abspath(tasks_dir))
         with self._lock:
+            previous_manager = self._task_manager
             self._workspace_epoch += 1
             self.root_dir = resolved_root
             self.tasks_dir = tasks_dir
@@ -475,6 +476,12 @@ class PyrunsRuntime:
         for cached_key, cached_manager in cached_managers:
             if cached_key != manager_key:
                 self._retire_task_manager_if_idle(cached_key, cached_manager)
+
+        if (previous_manager is not None and previous_manager is not self._task_manager
+                and hasattr(previous_manager, "trigger_update")):
+            # Reuse the manager's observers so old event streams wake immediately.
+            # Dispatch after releasing _lock; this does not scan task files.
+            previous_manager.trigger_update()
 
     @staticmethod
     def _task_manager_is_active(task_manager: TaskManager) -> bool:

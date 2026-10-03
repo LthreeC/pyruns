@@ -1,6 +1,7 @@
 """File-lock initialization, ownership, and sharing-error recovery."""
 from contextlib import contextmanager
 import errno
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,201 @@ import pytest
 import pyruns.core.task_generator as task_generator_module
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.utils import info_io, settings
+from pyruns.utils.native_lock import NativeFileGuard
+
+
+_AUXILIARY_LOCK_WORKER = """
+import sys, time
+from pathlib import Path
+from pyruns.core.task_generator import TaskGenerator, _TASK_NAME_GUARD_FILENAME
+from pyruns.utils import settings
+from pyruns.utils.native_lock import NativeFileGuard
+kind, root, ready = sys.argv[1:]
+root = Path(root)
+try:
+    if kind == 'settings':
+        lock = settings._open_settings_lock(str(root / 'settings.yaml'), timeout_sec=0.05)
+        release = lambda: settings._close_settings_lock(*lock)
+    else:
+        generator = TaskGenerator(str(root / 'tasks'))
+        generator._task_name_guard = lambda: NativeFileGuard(
+            str(root / 'tasks' / _TASK_NAME_GUARD_FILENAME), str(root / 'tasks'),
+            label='Task name reservation guard', timeout_sec=0.05)
+        lock = generator.reserve_exact_task_name('alpha')
+        if lock is None:
+            raise TimeoutError('reserved')
+        release = lambda: generator.release_task_name_reservation(lock)
+except TimeoutError:
+    print('blocked')
+else:
+    try:
+        print('acquired', flush=True)
+        if ready:
+            Path(ready).touch()
+            time.sleep(60)
+    finally:
+        release()
+"""
+
+
+def _auxiliary_lock(kind, root):
+    if kind == "settings":
+        path = root / "settings.yaml"
+        return Path(f"{path}.lock"), lambda: settings._open_settings_lock(str(path)), settings._close_settings_lock
+    generator = TaskGenerator(str(root / "tasks"))
+    return (
+        Path(generator._task_name_lock_path("alpha")),
+        lambda: generator.reserve_exact_task_name("alpha"),
+        lambda *lock: generator.release_task_name_reservation(lock),
+    )
+
+
+def _probe_auxiliary_lock(kind, root):
+    result = subprocess.run(
+        [sys.executable, "-c", _AUXILIARY_LOCK_WORKER, kind, str(root), ""],
+        capture_output=True, text=True, timeout=15,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+@pytest.mark.parametrize("kind", ["settings", "name"])
+@pytest.mark.parametrize("phase", ["release", "reap"])
+def test_auxiliary_lock_keeps_contenders_out_during_release_and_recovery(tmp_path, monkeypatch, kind, phase):
+    lock_path, acquire, release = _auxiliary_lock(kind, tmp_path)
+    if phase == "reap":
+        lock_path.write_bytes(settings._settings_lock_owner_bytes() + b" released")
+    operation = "unlink" if kind == "name" and phase == "release" else "replace"
+    original = getattr(os, operation)
+    observations = []
+
+    def contend_before_removal(path, *args, **kwargs):
+        if Path(path) == lock_path and not observations:
+            observations.append(_probe_auxiliary_lock(kind, tmp_path))
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, operation, contend_before_removal)
+        lock = acquire()
+        assert lock is not None
+        release(*lock)
+    assert observations == ["blocked"]
+    assert _probe_auxiliary_lock(kind, tmp_path) == "acquired"
+
+
+@pytest.mark.parametrize("kind", ["settings", "name"])
+def test_auxiliary_lock_recovers_after_holder_is_killed(tmp_path, kind):
+    lock_path, _, _ = _auxiliary_lock(kind, tmp_path)
+    ready = tmp_path / "ready"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _AUXILIARY_LOCK_WORKER, kind, str(tmp_path), str(ready)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "child did not acquire the lock"
+        assert _probe_auxiliary_lock(kind, tmp_path) == "blocked"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate(timeout=15)
+    assert _probe_auxiliary_lock(kind, tmp_path) == "acquired"
+    assert not lock_path.exists()
+
+
+@pytest.mark.parametrize("kind", ["settings", "name"])
+@pytest.mark.parametrize("protocol,released", [(None, False), ("guard-v2:other-runtime", False), ("guard-v2:other-runtime", True)])
+def test_auxiliary_lock_preserves_legacy_and_foreign_domains(tmp_path, kind, protocol, released):
+    lock_path, _, _ = _auxiliary_lock(kind, tmp_path)
+    owner = json.loads(settings._settings_lock_owner_bytes())
+    owner["pid"] = 999999999
+    owner.pop("lock_protocol")
+    if protocol:
+        owner["lock_protocol"] = protocol
+    content = json.dumps(owner).encode() + (b" released" if released else b"")
+    lock_path.write_bytes(content)
+    os.utime(lock_path, (1, 1))
+    assert _probe_auxiliary_lock(kind, tmp_path) == "blocked"
+    assert lock_path.read_bytes() == content
+
+
+@pytest.mark.parametrize("phase,error", [
+    ("acquire", KeyboardInterrupt), ("mark", KeyboardInterrupt), ("unlink", KeyboardInterrupt),
+])
+def test_task_name_release_failure_closes_descriptors_and_guard(tmp_path, monkeypatch, phase, error):
+    generator = TaskGenerator(str(tmp_path / "tasks"))
+    reservation = generator.reserve_exact_task_name("alpha")
+    assert reservation is not None
+    lock_path = Path(reservation[0])
+    original_owner = lock_path.read_bytes()
+
+    def interrupt(*_args, **_kwargs):
+        raise error("release interrupted")
+
+    with monkeypatch.context() as patch:
+        if phase == "acquire":
+            patch.setattr(NativeFileGuard, "acquire", interrupt)
+        elif phase == "mark":
+            patch.setattr(task_generator_module, "mark_json_lock_released", interrupt)
+        else:
+            patch.setattr(generator, "_remove_task_name_reservation", interrupt)
+        with pytest.raises(error, match="release interrupted"):
+            generator.release_task_name_reservation(reservation)
+    with pytest.raises(OSError):
+        os.fstat(reservation[1])
+    with generator._task_name_guard():
+        pass
+    if phase == "acquire":
+        assert lock_path.read_bytes() == original_owner
+    elif phase == "mark":
+        assert not lock_path.exists()
+    else:
+        replacement = generator.reserve_exact_task_name("alpha")
+        assert replacement is not None
+        generator.release_task_name_reservation(replacement)
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_published_tasks_survive_reservation_cleanup_timeout(tmp_path, monkeypatch, batch):
+    generator = TaskGenerator(str(tmp_path / "tasks"))
+    original_guard = generator._task_name_guard
+
+    def short_guard():
+        guard = original_guard()
+        guard.timeout_sec = 0.01
+        return guard
+
+    monkeypatch.setattr(generator, "_task_name_guard", short_guard)
+    holder = original_guard()
+    original_rename = os.rename
+    target = "alpha_2-of-2" if batch else "alpha"
+
+    def contend_after_publish(src, dst):
+        original_rename(src, dst)
+        if Path(dst).name == target:
+            holder.acquire()
+
+    monkeypatch.setattr(os, "rename", contend_after_publish)
+    try:
+        if batch:
+            tasks = generator.create_tasks([{"value": 1}, {"value": 2}], "alpha")
+        else:
+            tasks = [generator.create_task("alpha", {"value": 1})]
+        assert [task["name"] for task in tasks] == (["alpha_1-of-2", "alpha_2-of-2"] if batch else ["alpha"])
+        assert all(Path(task["dir"]).is_dir() for task in tasks)
+        lock_path = Path(generator._task_name_lock_path(target))
+        assert lock_path.read_bytes().endswith(b" released")
+    finally:
+        holder.close()
+    # The next normal creator reclaims the completed marker before choosing
+    # a suffix for the already published task.
+    next_task = generator.create_task(target, {"value": 3})
+    assert next_task["name"] != target
+    assert not lock_path.exists()
 
 
 def _probe_task_lock(task):
@@ -70,7 +266,7 @@ def test_task_lock_release_never_unlinks_after_publishing_reclaimable_marker(tmp
 
     def reclaim_after_marker(fd, owner):
         result = original_mark(fd, owner)
-        assert info_io._lock_file_is_stale(str(lock_path))
+        assert lock_path.read_bytes().endswith(b" released")
         # A competing process can now replace the completed owner's file.
         # Replace content here because Windows may still hold this descriptor.
         lock_path.write_text(replacement, encoding="utf-8")
@@ -144,14 +340,21 @@ with task_info_lock(str(task)):
     assert not (task / info_io._LOCK_FILENAME).exists()
 
 
-def test_task_lock_refuses_unsafe_fallback_when_native_locking_is_unsupported(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind", ["task", "settings", "name"])
+def test_lock_refuses_unsafe_fallback_when_native_locking_is_unsupported(tmp_path, monkeypatch, kind):
     from pyruns.update_coordination import CoordinationStore
 
     monkeypatch.setattr(CoordinationStore, "_try_native_lock", staticmethod(lambda fd: None))
-    with pytest.raises(OSError, match="Enable file locking"):
-        with info_io.task_info_lock(str(tmp_path)):
-            pytest.fail("unsupported native locking must not permit an update")
-    assert not (tmp_path / info_io._LOCK_FILENAME).exists()
+    if kind == "task":
+        lock_path = tmp_path / info_io._LOCK_FILENAME
+        with pytest.raises(OSError, match="Enable file locking"):
+            with info_io.task_info_lock(str(tmp_path)):
+                pytest.fail("unsupported native locking must not permit an update")
+    else:
+        lock_path, acquire, _ = _auxiliary_lock(kind, tmp_path)
+        with pytest.raises(OSError, match="Enable file locking"):
+            acquire()
+    assert not lock_path.exists()
 
 
 @pytest.mark.parametrize("owner", [
@@ -188,12 +391,11 @@ def initializing_lock(request, tmp_path):
 
     @contextmanager
     def acquire():
-        fd, lock_path, owner = settings._open_settings_lock(str(settings_path), timeout_sec=0)
+        lock = settings._open_settings_lock(str(settings_path), timeout_sec=0)
         try:
             yield
         finally:
-            os.close(fd)
-            settings._release_settings_lock(lock_path, owner)
+            settings._close_settings_lock(*lock)
 
     return acquire, Path(f"{settings_path}.lock")
 
@@ -291,8 +493,7 @@ def test_task_name_release_recovers_temporary_sharing_error(tmp_path, monkeypatc
 @pytest.mark.parametrize("failure_at", ["read", "delete"])
 def test_settings_release_recovers_temporary_sharing_error(tmp_path, monkeypatch, failure_at):
     settings_path = tmp_path / "settings.yaml"
-    fd, lock_name, owner = settings._open_settings_lock(str(settings_path))
-    os.close(fd)
+    fd, lock_name, owner, guard = settings._open_settings_lock(str(settings_path))
     lock_path = Path(lock_name)
     original_open = open
     original_replace = os.replace
@@ -319,12 +520,11 @@ def test_settings_release_recovers_temporary_sharing_error(tmp_path, monkeypatch
     else:
         monkeypatch.setattr(settings.os, "replace", lambda *args, **kwargs: deny_deletion_once(original_replace, *args, **kwargs))
         monkeypatch.setattr(settings.os, "remove", lambda *args, **kwargs: deny_deletion_once(original_remove, *args, **kwargs))
-    settings._release_settings_lock(lock_name, owner)
+    settings._close_settings_lock(fd, lock_name, owner, guard)
     assert failures == (1 if failure_at == "read" else 2)
     assert not lock_path.exists()
-    next_fd, next_path, next_owner = settings._open_settings_lock(str(settings_path), timeout_sec=0)
-    os.close(next_fd)
-    settings._release_settings_lock(next_path, next_owner)
+    next_lock = settings._open_settings_lock(str(settings_path), timeout_sec=0)
+    settings._close_settings_lock(*next_lock)
 
 
 def test_task_name_release_keeps_a_replacement_owner_during_retry(tmp_path, monkeypatch):
@@ -353,8 +553,7 @@ def test_task_name_release_keeps_a_replacement_owner_during_retry(tmp_path, monk
 
 def test_settings_release_keeps_a_replacement_owner_during_retry(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.yaml"
-    fd, lock_name, owner = settings._open_settings_lock(str(settings_path))
-    os.close(fd)
+    fd, lock_name, owner, guard = settings._open_settings_lock(str(settings_path))
     lock_path = Path(lock_name)
     replacement = settings._settings_lock_owner_bytes()
     assert replacement != owner
@@ -371,7 +570,7 @@ def test_settings_release_keeps_a_replacement_owner_during_retry(tmp_path, monke
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(settings, "open", replace_then_deny, raising=False)
-    settings._release_settings_lock(lock_name, owner)
+    settings._close_settings_lock(fd, lock_name, owner, guard)
     assert replaced
     assert lock_path.read_bytes() == replacement
 

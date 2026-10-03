@@ -1714,6 +1714,8 @@ def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
         return []
     records: list[dict[str, Any]] = []
     for path in sorted(trash_dir.iterdir(), key=lambda item: item.name.lower()):
+        if path.name.startswith("."):
+            continue
         try:
             validate_task_directory(str(path))
         except ValueError:
