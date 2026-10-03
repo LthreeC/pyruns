@@ -547,7 +547,7 @@ def test_manager_and_cli_keep_control_lightweight_and_details_complete(task, mon
         assert manager.delete_tasks(["renamed"]) == ["renamed"]
         from pyruns._config import TRASH_DIR
 
-        trashed = next((task.parent / TRASH_DIR).iterdir())
+        trashed, = (path for path in (task.parent / TRASH_DIR).iterdir() if path.is_dir())
         assert load_task_info(str(trashed), raise_error=True)["tracks"] == detail["tracks"]
         trashed.rename(renamed)
         manager.scan_disk()
