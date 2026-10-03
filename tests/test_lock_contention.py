@@ -3,12 +3,178 @@ from contextlib import contextmanager
 import errno
 import os
 from pathlib import Path
+import subprocess
+import sys
+import time
 
 import pytest
 
 import pyruns.core.task_generator as task_generator_module
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.utils import info_io, settings
+
+
+def _probe_task_lock(task):
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+from pyruns.utils.info_io import task_info_lock
+try:
+    with task_info_lock(sys.argv[1], timeout_sec=0.05):
+        print("acquired")
+except TimeoutError:
+    print("blocked")
+""", str(task)],
+        capture_output=True, text=True, timeout=15,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def test_task_lock_release_keeps_waiters_out_until_unlink(tmp_path, monkeypatch):
+    task = tmp_path / "tasks" / "sample"
+    task.mkdir(parents=True)
+    lock_path = task / info_io._LOCK_FILENAME
+    real_remove = os.remove
+    observations = []
+
+    def contend_before_unlink(path, *args, **kwargs):
+        if Path(path) == lock_path:
+            observations.append(_probe_task_lock(task))
+        return real_remove(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(info_io.os, "remove", contend_before_unlink)
+        with info_io.task_info_lock(str(task)):
+            pass
+    assert observations == ["blocked"]
+    with info_io.task_info_lock(str(task), timeout_sec=0):
+        pass
+
+
+def test_task_lock_release_never_unlinks_after_publishing_reclaimable_marker(tmp_path, monkeypatch):
+    task = tmp_path / "tasks" / "sample"
+    task.mkdir(parents=True)
+    lock_path = task / info_io._LOCK_FILENAME
+    original_remove = os.remove
+    original_mark = info_io._mark_task_lock_released
+    attempts = []
+    replacement = "4242 1 another-host 1"
+
+    def deny_delete(path, *args, **kwargs):
+        if Path(path) == lock_path:
+            attempts.append(lock_path.read_text(encoding="utf-8"))
+            raise PermissionError("Windows sharing violation")
+        return original_remove(path, *args, **kwargs)
+
+    def reclaim_after_marker(fd, owner):
+        result = original_mark(fd, owner)
+        assert info_io._lock_file_is_stale(str(lock_path))
+        # A competing process can now replace the completed owner's file.
+        # Replace content here because Windows may still hold this descriptor.
+        lock_path.write_text(replacement, encoding="utf-8")
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(info_io, "_REPLACE_RETRY_COUNT", 2)
+        patch.setattr(info_io, "_REPLACE_RETRY_DELAY_SEC", 0)
+        patch.setattr(info_io.os, "remove", deny_delete)
+        patch.setattr(info_io, "_mark_task_lock_released", reclaim_after_marker)
+        with info_io.task_info_lock(str(task)):
+            pass
+    assert len(attempts) == 2
+    assert all(not owner.endswith(" released") for owner in attempts)
+    assert lock_path.read_text(encoding="utf-8") == replacement
+
+
+def test_task_lock_stale_reapers_cannot_overlap_acquisition(tmp_path, monkeypatch):
+    task = tmp_path / "tasks" / "sample"
+    task.mkdir(parents=True)
+    lock_path = task / info_io._LOCK_FILENAME
+    lock_path.write_text(f"0 1 some-host 1 {info_io._LOCK_PROTOCOL} released", encoding="utf-8")
+    original_replace = os.replace
+    observations = []
+
+    def contend_before_quarantine(src, dst):
+        if Path(src) == lock_path:
+            observations.append(_probe_task_lock(task))
+        return original_replace(src, dst)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(info_io.os, "replace", contend_before_quarantine)
+        with info_io.task_info_lock(str(task)):
+            pass
+    assert observations == ["blocked"]
+    assert _probe_task_lock(task) == "acquired"
+
+
+def test_task_lock_guard_recovers_after_holder_is_killed(tmp_path):
+    task = tmp_path / "tasks" / "sample"
+    task.mkdir(parents=True)
+    ready = tmp_path / "ready"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", """
+import sys, time
+from pathlib import Path
+from pyruns.utils.info_io import task_info_lock
+task, ready = map(Path, sys.argv[1:])
+with task_info_lock(str(task)):
+    ready.touch()
+    time.sleep(60)
+""", str(task), str(ready)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "child did not acquire the task lock"
+        guard_path = task / info_io._LOCK_GUARD_FILENAME
+        guard_identity = guard_path.stat().st_ino
+        assert _probe_task_lock(task) == "blocked"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate(timeout=15)
+    # The same runtime's native guard proves this tagged marker is abandoned.
+    assert _probe_task_lock(task) == "acquired"
+    assert guard_path.stat().st_ino == guard_identity
+    assert not (task / info_io._LOCK_FILENAME).exists()
+
+
+def test_task_lock_refuses_unsafe_fallback_when_native_locking_is_unsupported(tmp_path, monkeypatch):
+    from pyruns.update_coordination import CoordinationStore
+
+    monkeypatch.setattr(CoordinationStore, "_try_native_lock", staticmethod(lambda fd: None))
+    with pytest.raises(OSError, match="Enable file locking"):
+        with info_io.task_info_lock(str(tmp_path)):
+            pytest.fail("unsupported native locking must not permit an update")
+    assert not (tmp_path / info_io._LOCK_FILENAME).exists()
+
+
+@pytest.mark.parametrize("owner", [
+    "", "0 0", "999999999 1 same-host 1", "999999999 1 same-host 1 released",
+    "0 0 same-host 1 guard-v2:another-domain", "0 0 same-host 1 guard-v2:another-domain released",
+])
+def test_task_lock_keeps_unknown_or_foreign_lock_domains(tmp_path, owner):
+    lock_path = tmp_path / info_io._LOCK_FILENAME
+    lock_path.write_text(owner, encoding="utf-8")
+    with pytest.raises(TimeoutError, match="original runtime"):
+        with info_io.task_info_lock(str(tmp_path), timeout_sec=0.02):
+            pytest.fail("another runtime's PID cannot prove its owner exited")
+    assert lock_path.read_text(encoding="utf-8") == owner
+
+
+def test_task_lock_rejects_redirected_guard(tmp_path, simulate_reparse):
+    guard = tmp_path / info_io._LOCK_GUARD_FILENAME
+    guard.write_text("keep", encoding="utf-8")
+    simulate_reparse(guard)
+    with pytest.raises(ValueError, match="Task lock guard must not be"):
+        with info_io.task_info_lock(str(tmp_path)):
+            pytest.fail("redirected guard must not grant access")
+    assert guard.read_text(encoding="utf-8") == "keep"
 
 
 @pytest.fixture(params=["task", "settings"])

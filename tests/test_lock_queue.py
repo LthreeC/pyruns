@@ -20,8 +20,10 @@ def task_dir(tmp_path):
 
 def test_uncontended_task_lock_does_not_create_queue_files(task_dir):
     with info_io.task_info_lock(str(task_dir)):
-        assert sorted(path.name for path in task_dir.iterdir()) == [info_io._LOCK_FILENAME]
-    assert list(task_dir.iterdir()) == []
+        assert sorted(path.name for path in task_dir.iterdir()) == [
+            info_io._LOCK_FILENAME, info_io._LOCK_GUARD_FILENAME,
+        ]
+    assert [path.name for path in task_dir.iterdir()] == [info_io._LOCK_GUARD_FILENAME]
 
 
 def test_waiting_writer_precedes_later_arrivals(task_dir):

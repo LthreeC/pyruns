@@ -1781,9 +1781,11 @@ class TestLoadSaveTaskInfo:
         assert loaded["status"] == "pending"
 
     def test_task_info_lock_recovers_stale_process_lock_file(self, tmp_path):
+        from pyruns.utils.info_io import _LOCK_PROTOCOL
+
         task_dir = str(tmp_path)
         lock_path = tmp_path / f".{TASK_INFO_FILENAME}.lock"
-        lock_path.write_text("0 0", encoding="utf-8")
+        lock_path.write_text(f"0 0 some-host 1 {_LOCK_PROTOCOL}", encoding="utf-8")
 
         with task_info_lock(task_dir, timeout_sec=0.01):
             assert lock_path.exists()
@@ -3133,24 +3135,25 @@ def test_info_io_lock_helpers_handle_invalid_stale_and_failed_cleanup(tmp_path, 
     lock_path.write_text("not-a-pid extra", encoding="utf-8")
     assert info_io._read_lock_owner(str(lock_path)) == (None, "", None)
 
-    lock_path.write_text("999999 extra", encoding="utf-8")
+    owner = f"999999 1 {info_io._LOCK_OWNER_HOST} 1 {info_io._LOCK_PROTOCOL}"
+    lock_path.write_text(owner, encoding="utf-8")
     monkeypatch.setattr(info_io, "is_pid_running", lambda pid: False)
     assert info_io._lock_file_is_stale(str(lock_path), min_age_sec=999999) is True
-    assert info_io._remove_stale_lock_file(str(lock_path)) is True
+    assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is True
 
-    lock_path.write_text("999999", encoding="utf-8")
+    lock_path.write_text(owner, encoding="utf-8")
     monkeypatch.setattr(info_io.os, "remove", lambda path: (_ for _ in ()).throw(OSError("locked")))
-    assert info_io._remove_stale_lock_file(str(lock_path)) is False
+    assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is False
 
     monkeypatch.setattr(info_io.os, "remove", lambda path: (_ for _ in ()).throw(FileNotFoundError(path)))
-    assert info_io._remove_stale_lock_file(str(lock_path)) is True
+    assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is True
 
 
 def test_stale_lock_cleanup_does_not_remove_replaced_live_lock(tmp_path, monkeypatch):
     import pyruns.utils.info_io as info_io
 
     lock_path = tmp_path / info_io._LOCK_FILENAME
-    stale_owner = "999999"
+    stale_owner = f"999999 1 some-host 1 {info_io._LOCK_PROTOCOL}"
     live_owner = str(os.getpid())
     lock_path.write_text(stale_owner, encoding="utf-8")
     monkeypatch.setattr(info_io, "is_pid_running", lambda pid: pid == os.getpid())
@@ -3166,7 +3169,7 @@ def test_stale_lock_cleanup_does_not_remove_replaced_live_lock(tmp_path, monkeyp
 
     monkeypatch.setattr(info_io.os, "replace", replace_after_race)
 
-    assert info_io._remove_stale_lock_file(str(lock_path)) is False
+    assert info_io._remove_stale_lock_file(str(lock_path), native_guard=True) is False
     assert lock_path.read_text(encoding="utf-8") == live_owner
 
 
@@ -3247,7 +3250,6 @@ def test_task_info_lock_times_out_when_live_lock_persists(tmp_path, monkeypatch)
     task_dir.mkdir()
     lock_path = task_dir / info_io._LOCK_FILENAME
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
-    monkeypatch.setattr(info_io, "_remove_stale_lock_file", lambda path: False)
     monkeypatch.setattr(info_io.time, "sleep", lambda delay: None)
 
     with pytest.raises(TimeoutError, match="file lock"):

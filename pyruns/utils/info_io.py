@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
 import re
 import socket
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -34,6 +36,12 @@ from pyruns.utils.file_boundary import validate_open_file
 _TASK_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
 _TASK_FILE_LOCKS_GUARD = threading.Lock()
 _LOCK_FILENAME = f".{TASK_INFO_FILENAME}.lock"
+_LOCK_GUARD_FILENAME = f"{_LOCK_FILENAME}.guard"
+_LOCK_DOMAIN = hashlib.blake2b(
+    "\0".join((os.name, sys.platform, socket.gethostname().lower(), os.getenv("WSL_DISTRO_NAME", ""))).encode("utf-8"),
+    digest_size=16,
+).hexdigest()
+_LOCK_PROTOCOL = f"guard-v2:{_LOCK_DOMAIN}"
 _LOCK_POLL_SEC = 0.05
 _LOCK_QUEUE_POLL_SEC = 0.005
 _LOCK_TIMEOUT_SEC = 5.0
@@ -102,7 +110,7 @@ def _read_lock_owner(lock_path: str) -> tuple[Optional[int], str, Optional[float
             acquired_at = float(parts[3])
         except (TypeError, ValueError, OverflowError):
             acquired_at = None
-    if pid is not None and len(parts) == 5 and parts[4] == "released":
+    if pid is not None and len(parts) >= 5 and parts[-1] == "released":
         pid = 0
     return pid, host, acquired_at
 
@@ -143,9 +151,17 @@ def _lock_file_snapshot(lock_path: str) -> tuple[tuple[int, int, int, int], byte
     return identity, content
 
 
-def _remove_stale_lock_file(lock_path: str) -> bool:
+def _remove_stale_lock_file(lock_path: str, *, native_guard: bool = False) -> bool:
     snapshot = _lock_file_snapshot(lock_path)
-    if snapshot is None or not _lock_file_is_stale(lock_path):
+    if snapshot is None or not native_guard:
+        return False
+    owner_parts = snapshot[1].split()
+    if owner_parts[-1:] == [b"released"]:
+        owner_parts.pop()
+    if len(owner_parts) != 5 or owner_parts[-1] != _LOCK_PROTOCOL.encode("ascii"):
+        # Windows and WSL native locks do not interoperate on DrvFS. An old
+        # marker or another lock domain cannot be proven orphaned by this
+        # guard, even if its numeric PID happens not to exist on this host.
         return False
     if _lock_file_snapshot(lock_path) != snapshot:
         return False
@@ -487,12 +503,25 @@ def _release_task_lock(lock_path: str, owner: str, *, identity: tuple[int, int] 
             if attempt < _REPLACE_RETRY_COUNT - 1:
                 time.sleep(_REPLACE_RETRY_DELAY_SEC * (attempt + 1))
         except OSError:
-            return
+            break
+
+    # A live owner must remain non-reclaimable until its last unlink attempt.
+    # Publishing "released" before deletion lets a waiter replace this file
+    # while the old owner is between its ownership check and os.remove().
+    # If Windows keeps denying deletion, publish the marker as the last action
+    # and leave all subsequent removal to the next writer.
+    if identity is None:
+        try:
+            with open(lock_path, "r+b", buffering=0) as handle:
+                _mark_task_lock_released(handle.fileno(), owner)
+        except OSError:
+            pass
 
 
 @contextmanager
 def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, create_dir: bool = True):
     """Acquire a task-local thread/process lock for task_info.json updates."""
+    from pyruns.update_coordination import CoordinationStore
     from pyruns.utils.lock_queue import TaskLockQueue
 
     validate_task_directory(task_dir)
@@ -507,33 +536,63 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
         raise TimeoutError(f"Timed out acquiring task lock for {task_dir}")
 
     fd: Optional[int] = None
-    owner = f"{os.getpid()} {threading.get_ident()} {_LOCK_OWNER_HOST} {time.time():.6f}"
+    guard_fd: Optional[int] = None
+    guard_acquired = False
+    owner = f"{os.getpid()} {threading.get_ident()} {_LOCK_OWNER_HOST} {time.time():.6f} {_LOCK_PROTOCOL}"
     owner_bytes = owner.encode("utf-8", errors="ignore")
     owner_written = False
     start = time.monotonic()
     permission_failures = 0
     queue = TaskLockQueue(task_dir)
     try:
+        guard_path = os.path.join(task_dir, _LOCK_GUARD_FILENAME)
+        validate_workspace_file(guard_path, task_dir, label="Task lock guard")
+        guard_boundary = os.path.realpath(task_dir)
+        guard_fd = regular_file_opener(
+            guard_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        )
+        with os.fdopen(guard_fd, "rb", closefd=False) as guard_handle:
+            validate_open_file(guard_handle, guard_path, guard_boundary)
+        # This inode is permanent: unlinking a native lock would let another
+        # process lock a replacement while the old descriptor is still held.
         while True:
             remaining = timeout_sec - (time.monotonic() - start)
-            if queue.entry is None and queue.has_waiters():
+            if not guard_acquired and queue.entry is None and queue.has_waiters():
                 if remaining <= 0:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                 queue.register(remaining)
-            if not queue.is_first():
+            if not guard_acquired and not queue.is_first():
                 if remaining <= 0:
                     raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
                 time.sleep(min(_LOCK_QUEUE_POLL_SEC, remaining))
                 continue
+            if not guard_acquired:
+                acquired_guard = CoordinationStore._try_native_lock(guard_fd)
+                if acquired_guard is None:
+                    raise OSError(
+                        f"Task storage requires native file locking: {task_dir}. "
+                        "Enable file locking on the shared filesystem or use a local workspace."
+                    )
+                if not acquired_guard:
+                    if remaining <= 0:
+                        raise TimeoutError(f"Timed out acquiring file lock for {task_dir}")
+                    if queue.entry is None:
+                        queue.register(remaining)
+                    time.sleep(min(_LOCK_QUEUE_POLL_SEC, remaining))
+                    continue
+                guard_acquired = True
             try:
                 fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
             except FileExistsError as exc:
-                if _remove_stale_lock_file(lock_path):
+                if _remove_stale_lock_file(lock_path, native_guard=True):
                     continue
                 if time.monotonic() - start >= timeout_sec:
-                    raise TimeoutError(f"Timed out acquiring file lock for {task_dir}") from exc
-                if queue.entry is None:
-                    queue.register(timeout_sec - (time.monotonic() - start))
+                    raise TimeoutError(
+                        f"Timed out acquiring file lock for {task_dir}. "
+                        "An older or different runtime may own this lock. Let it finish; "
+                        "for an abandoned lock, recover from its original runtime or remove "
+                        "only the .task_info.json.lock file after confirming all writers have stopped."
+                    ) from exc
                 time.sleep(min(_LOCK_QUEUE_POLL_SEC, max(0.0, timeout_sec - (time.monotonic() - start))))
             except PermissionError:
                 # Windows can deny exclusive creation while a competing lock
@@ -554,9 +613,7 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
             if fd is not None:
                 failed_identity = None
                 try:
-                    if owner_written:
-                        owner = _mark_task_lock_released(fd, owner)
-                    else:
+                    if not owner_written:
                         # A partial owner cannot identify the lock. Capture its
                         # file identity before close allows a replacement owner.
                         try:
@@ -575,9 +632,13 @@ def task_info_lock(task_dir: str, timeout_sec: float = _LOCK_TIMEOUT_SEC, *, cre
                         _release_task_lock(lock_path, owner, identity=failed_identity)
         finally:
             try:
-                queue.close()
+                if guard_fd is not None:
+                    CoordinationStore._close_native_lock(guard_fd, guard_acquired)
             finally:
-                thread_lock.release()
+                try:
+                    queue.close()
+                finally:
+                    thread_lock.release()
 
 
 def load_task_metadata(
