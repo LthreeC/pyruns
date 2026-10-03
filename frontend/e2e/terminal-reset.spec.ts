@@ -1,5 +1,36 @@
 import { expect, test } from '@playwright/test'
 
+test('monitor releases terminal window listeners when leaving the page', async ({ page }) => {
+  const task = { name: 'terminal-lifecycle', status: 'completed', run_index: 1, task_kind: 'shell' }
+  await page.route('**/api/tasks?*', route => {
+    const monitoring = new URL(route.request().url()).searchParams.get('limit') === '200'
+    return route.fulfill({ json: {
+      items: monitoring ? [task] : [], total: monitoring ? 1 : 0,
+      offset: 0, limit: monitoring ? 200 : 50, has_more: false,
+    } })
+  })
+  await page.route('**/api/tasks/terminal-lifecycle?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/terminal-lifecycle/logs?*', route => route.fulfill({ json: {
+    selected_log: 'run1.log', available_logs: ['run1.log'],
+    content: 'Lifecycle output\n', offset: 17, log_identity: 'lifecycle',
+  } }))
+  const cdp = await page.context().newCDPSession(page)
+  const resizeListeners = async () => (await cdp.send('Runtime.evaluate', {
+    expression: '(getEventListeners(window).resize || []).length',
+    includeCommandLineAPI: true, returnByValue: true,
+  })).result.value as number
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('link', { name: 'Monitor', exact: true })).toBeVisible()
+  const baseline = await resizeListeners()
+  for (let visit = 0; visit < 3; visit++) {
+    await page.getByRole('link', { name: 'Monitor', exact: true }).click()
+    await expect(page.locator('.xterm-rows')).toContainText('Lifecycle output')
+    await page.getByRole('link', { name: 'Manager', exact: true }).click()
+    await expect(page.locator('.xterm')).toHaveCount(0)
+    await expect.poll(resizeListeners).toBe(baseline)
+  }
+})
+
 for (const emptyLog of [false, true]) {
   test(`monitor discards queued output when switching to ${emptyLog ? 'an empty' : 'another'} log`, async ({ page }) => {
     const now = new Date()
