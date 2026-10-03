@@ -268,7 +268,7 @@ async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => voi
 }
 
 export const getTask = (name: string, refresh = true, summary = false) =>
-  request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}${summary ? '&summary=true' : ''}`)
+  request<Task>(`/api/tasks/${encodeURIComponent(name)}?refresh=${refresh}&include_tracks=false${summary ? '&summary=true' : ''}`)
 
 function createWorkspaceStream(path: string, params = new URLSearchParams()): WebSocket {
   const context = workspaceContext
@@ -291,7 +291,7 @@ export function createTaskEventStream(): WebSocket {
 }
 
 export const batchRunTasks = (taskNames: string[], maxWorkers?: number) =>
-  request<{ count: number; items: Task[]; skipped: string[] }>('/api/tasks/batch/run', {
+  request<{ count: number; items: Task[]; skipped: string[] }>('/api/tasks/batch/run?include_tracks=false', {
     method: 'POST',
     body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers }),
   })
@@ -317,39 +317,39 @@ export async function exportTasksCsv(taskNames: string[]): Promise<Blob> {
 }
 
 export const runTask = (name: string) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/run`, {
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/run?include_tracks=false`, {
     method: 'POST',
   })
 
 export const cancelTask = (name: string) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/cancel`, { method: 'POST' })
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/cancel?include_tracks=false`, { method: 'POST' })
 
 export const pinTask = (name: string, pinned?: boolean) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/pin`, {
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/pin?include_tracks=false`, {
     method: 'POST',
     body: JSON.stringify({ pinned }),
   })
 
 export const reorderTasks = (items: { name: string; pinned: boolean }[]) =>
-  request<{ count: number; items: Task[] }>('/api/tasks/reorder', {
+  request<{ count: number; items: Task[] }>('/api/tasks/reorder?include_tracks=false', {
     method: 'POST',
     body: JSON.stringify({ items }),
   })
 
 export const updateNotes = (name: string, notes: string, expectedNotes: string) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/notes`, {
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/notes?include_tracks=false`, {
     method: 'PATCH',
     body: JSON.stringify({ notes, expected_notes: expectedNotes }),
   })
 
 export const updateEnv = (name: string, env: Record<string, any>, expectedEnv: Record<string, any>) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/env`, {
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/env?include_tracks=false`, {
     method: 'PATCH',
     body: JSON.stringify({ env, expected_env: expectedEnv }),
   })
 
 export const renameTask = (name: string, newName: string) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/rename`, {
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/rename?include_tracks=false`, {
     method: 'POST',
     body: JSON.stringify({ new_name: newName }),
   })

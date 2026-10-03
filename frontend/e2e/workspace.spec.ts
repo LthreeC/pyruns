@@ -1098,7 +1098,10 @@ test('monitor task details stay stable after the full task loads', async ({ page
       tail_limit_bytes: 0,
     },
   }))
-  await page.route('**/api/tasks/alpha?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/alpha?*', route => {
+    expect(new URL(route.request().url()).searchParams.get('include_tracks')).toBe('false')
+    return route.fulfill({ json: task })
+  })
 
   await page.goto('/monitor?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'View alpha, pending' }).click()
@@ -1700,7 +1703,7 @@ test('task detail conflicts and session recovery preserve local drafts', async (
   }))
   await page.route('**/api/tasks/alpha?*', route => route.fulfill({ json: taskPayload() }))
   const writes: { notes: string; expected_notes: string }[] = []
-  await page.route('**/api/tasks/alpha/notes', async route => {
+  await page.route('**/api/tasks/alpha/notes?*', async route => {
     const payload = route.request().postDataJSON() as { notes: string; expected_notes: string }
     writes.push(payload)
     if (writes.length === 1) {
@@ -1717,7 +1720,7 @@ test('task detail conflicts and session recovery preserve local drafts', async (
     return route.fulfill({ json: { ok: true, task: savedTask } })
   })
   const envWrites: { env: Record<string, string>; expected_env: Record<string, string> }[] = []
-  await page.route('**/api/tasks/alpha/env', async route => {
+  await page.route('**/api/tasks/alpha/env?*', async route => {
     if (rejectEnvWith401) {
       return route.fulfill({
         status: 401,
@@ -1853,7 +1856,7 @@ test('task detail only offers replacement after loading the newer value', async 
     }
     return route.fulfill({ json: taskPayload() })
   })
-  await page.route('**/api/tasks/alpha/notes', route => {
+  await page.route('**/api/tasks/alpha/notes?*', route => {
     notesWrites += 1
     latestNotes = 'newer remote notes'
     failNextDetailRead = notesWrites === 1
@@ -1863,7 +1866,7 @@ test('task detail only offers replacement after loading the newer value', async 
       body: JSON.stringify({ detail: 'Task notes changed since they were loaded.' }),
     })
   })
-  await page.route('**/api/tasks/alpha/env', route => {
+  await page.route('**/api/tasks/alpha/env?*', route => {
     envWrites += 1
     latestEnv = { REMOTE: 'newer' }
     failNextDetailRead = envWrites === 1

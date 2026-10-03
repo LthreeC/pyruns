@@ -143,3 +143,48 @@ test('a stalled fallback aborts and allows another read', async ({ page }) => {
   await page.getByRole('link', { name: 'Manager', exact: true }).click()
   expect((await snapshot(page)).reads[1].aborted).toBe(true)
 })
+
+test('a full repeated log window writes only new ANSI and Unicode fragments', async ({ page }) => {
+  const rows = await prepareMonitor(page)
+  const line = '\x1b[32mrepeated 中文🚀\x1b[0m\n'
+  const content = line.repeat(250_000).slice(-4 * 1024 * 1024)
+  let offset = byteLength(content)
+  await stream(page, content, offset, 'full-window', true)
+  await page.clock.runFor(300)
+  await expect(rows).toContainText('repeated 中文🚀')
+  // Observe the public write method on the live terminal held by Monitor's ref.
+  // This leaves its real parser, scrollback and renderer in place.
+  expect(await page.evaluate(() => {
+    for (let el = document.querySelector('.xterm'); el; el = el.parentElement) {
+      const key = Object.keys(el).find(key => key.startsWith('__reactFiber$'))
+      for (let fiber = key && (el as any)[key]; fiber; fiber = fiber.return) {
+        for (let hook = fiber.memoizedState; hook && typeof hook === 'object'; hook = hook.next) {
+          const term = hook.memoizedState?.current
+          if (!term || typeof term.write !== 'function' || !term.buffer?.active) continue
+          const writes: string[] = []
+          const original = term.write.bind(term)
+          term.write = (text: string, callback?: () => void) => { writes.push(text); original(text, callback) }
+          Object.assign(window, { monitorWrites: writes })
+          return true
+        }
+      }
+    }
+    return false
+  })).toBe(true)
+  const chunks = [line.repeat(20), '\x1b[', '31mNEW 中文', '🚀\x1b[0m\n']
+  for (const chunk of chunks) {
+    offset += byteLength(chunk)
+    await stream(page, chunk, offset, 'full-window')
+  }
+  await page.clock.runFor(200)
+  await expect(rows).toContainText('NEW 中文🚀')
+  expect(await page.evaluate(() => (window as any).monitorWrites.reduce((sum: number, text: string) => sum + text.length, 0))).toBe(chunks.join('').length)
+  expect(await page.evaluate(() => (window as any).monitorWrites.join(''))).toBe(chunks.join(''))
+  await stream(page, chunks.at(-1)!, offset, 'full-window')
+  await page.clock.runFor(200)
+  expect(await page.evaluate(() => (window as any).monitorWrites.join(''))).toBe(chunks.join(''))
+  await stream(page, 'ROTATED\n', offset, 'replacement', true)
+  await page.clock.runFor(200)
+  await expect(rows).toContainText('ROTATED')
+  await expect(rows).not.toContainText('repeated')
+})

@@ -2,8 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from './api'
 import {
+  appendMonitorLogContent,
   confirmDiscardWorkspaceChanges,
   getUnsavedWorkspaceChangeLabels,
+  monitorLogAppendDelta,
+  replaceMonitorLogContent,
+  trimMonitorLogContent,
   useConfirmationStore,
   useDashboardStore,
   useGeneratorStore,
@@ -41,6 +45,46 @@ function deferred<T>() {
   const promise = new Promise<T>(next => { resolve = next })
   return { promise, resolve }
 }
+
+describe('monitor log text coordinates', () => {
+  const empty = { logContent: '', logTextVersion: 0, logTextEnd: 0 }
+
+  it('appends repeated text even when trimming leaves an identical full window', () => {
+    const row = 'same line '.padEnd(127, 'x') + '\n'
+    const previous = replaceMonitorLogContent(empty, trimMonitorLogContent(row.repeat(40_000)))
+    expect(previous.logContent).toHaveLength(4 * 1024 * 1024)
+    const next = appendMonitorLogContent(previous, row)
+    expect(next.logContent).toBe(previous.logContent)
+    expect(monitorLogAppendDelta(previous, next)).toBe(row)
+  })
+
+  it('keeps exact ANSI and UTF-16 fragments across a full character window', () => {
+    const previous = replaceMonitorLogContent(empty, 'x'.repeat(4 * 1024 * 1024))
+    const chunks = ['\x1b[', '32m中文\ud83d', '\ude80\x1b[0m\n', 'x'.repeat(4096)]
+    const next = appendMonitorLogContent(previous, chunks)
+    expect(next.logContent).toHaveLength(4 * 1024 * 1024)
+    expect(monitorLogAppendDelta(previous, next)).toBe(chunks.join(''))
+    expect(next.logTextEnd - previous.logTextEnd).toBe(chunks.join('').length)
+  })
+
+  it('deduplicates lifecycle frames within a batch while retaining ordinary repeated lines', () => {
+    const start = '[PYRUNS] START task\r\n'
+    const next = appendMonitorLogContent(empty, [start, start.replace(/\r\n/g, '\n'), 'repeat\n', 'repeat\n'])
+    expect(next.logContent).toBe(`${start}repeat\nrepeat\n`)
+    expect(monitorLogAppendDelta(empty, next)).toBe(next.logContent)
+    const unchanged = appendMonitorLogContent(next, [])
+    expect(monitorLogAppendDelta(next, unchanged)).toBe('')
+  })
+
+  it('replaces the terminal after a reset or after an unseen append exceeds the retained window', () => {
+    const previous = replaceMonitorLogContent(empty, 'old log\n')
+    const reset = appendMonitorLogContent(replaceMonitorLogContent(previous, 'new log\n'), 'more\n')
+    expect(monitorLogAppendDelta(previous, reset)).toBeNull()
+    const overflow = appendMonitorLogContent(previous, 'z'.repeat(4 * 1024 * 1024 + 1))
+    expect(overflow.logContent).toHaveLength(4 * 1024 * 1024)
+    expect(monitorLogAppendDelta(previous, overflow)).toBeNull()
+  })
+})
 
 it('bounds and deduplicates search history while preserving literal whitespace', () => {
   const setItem = vi.fn()

@@ -778,8 +778,8 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
     assert "chunks: [] as PendingLiveLogChunk[]" in source
     assert "const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)" in source
     assert "chunkOffset <= nextOffset" in source
-    assert "nextContent = appendMonitorLogContent(nextContent, chunk.content)" in source
-    assert "return { logContent: nextContent, logOffset: nextOffset, logIdentity: nextIdentity }" in source
+    assert "chunks.push(chunk.content)" in source
+    assert "...appendMonitorLogContent(state, chunks)" in source
     assert "buffer.chunks.push(chunk)" in source
     assert "offset?: number" in types
     assert "log_file_name?: string" in types
@@ -816,8 +816,8 @@ def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
     assert "function comparableLogText" in store
     assert "export function appendMonitorLogContent" in store
     assert "comparableLogText(contentTail).endsWith(comparableLogText(text))" in store
-    assert "appendMonitorLogContent(s.logContent, text)" in store
-    assert "appendMonitorLogContent(state.logContent, logs.content)" in monitor
+    assert "appendMonitorLogContent(s, text)" in store
+    assert "appendMonitorLogContent(state, logs.content)" in monitor
 
 
 def test_react_monitor_streams_queued_gpu_log_with_incremental_fallback_and_reconnect():
@@ -893,7 +893,7 @@ def test_react_monitor_isolates_workspace_and_resets_replaced_log_streams():
     assert "sp.set('log_identity', options.logIdentity)" in api
     assert "message.type === 'reset'" in monitor
     assert "pendingLiveLogChunkRef.current = { key: '', chunks: [] }" in monitor
-    assert "logContent: message.content || ''" in monitor
+    assert "replaceMonitorLogContent(state, message.content || '')" in monitor
     assert "Boolean(logs.reset)" in monitor
     assert "generationKey: workspaceKey" in monitor
     assert "detailWorkspaceKeyRef.current === workspaceKey" in monitor
@@ -927,11 +927,7 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
     assert "renderedLogRef" in source
-    assert "return previous ? null : ''" in source
-    assert "if (previous.endsWith(next))" in source
-    assert "next.startsWith(previous.slice(candidate))" in source
-    assert "const nextChunk = logOffset < previous.offset" in source
-    assert ": appendedMonitorLogDelta(previous.content, logContent)" in source
+    assert "monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })" in source
     assert "term.write(nextChunk)" in source
     assert "normalize_log_newlines" not in source
 

@@ -230,6 +230,8 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     logError: '',
     logGeneration: monitorRequestSeq,
     logContent: '',
+    logTextVersion: 0,
+    logTextEnd: 0,
     logOffset: 0,
     logIdentity: '',
     availableLogs: [],
@@ -334,17 +336,42 @@ function isPyrunsLifecycleChunk(text: string) {
     && (text.includes(' START ') || text.includes(' FINISH ') || text.includes('[PYRUNS] Source '))
 }
 
-export function appendMonitorLogContent(content: string, text: string) {
-  if (!text) {
-    return content
-  }
-  if (isPyrunsLifecycleChunk(text)) {
-    const contentTail = content.slice(Math.max(0, content.length - text.length - 32))
-    if (comparableLogText(contentTail).endsWith(comparableLogText(text))) {
-      return content
+interface MonitorLogText {
+  logContent: string
+  logTextVersion: number
+  // UTF-16 coordinates in this version, independent of disk byte offsets and trimming.
+  logTextEnd: number
+}
+
+export function replaceMonitorLogContent(state: MonitorLogText, logContent: string): MonitorLogText {
+  return { logContent, logTextVersion: state.logTextVersion + 1, logTextEnd: logContent.length }
+}
+
+export function appendMonitorLogContent(state: MonitorLogText, chunks: string | readonly string[]): MonitorLogText {
+  let content = state.logContent
+  let appendedChars = 0
+  for (const text of typeof chunks === 'string' ? [chunks] : chunks) {
+    if (!text) continue
+    if (isPyrunsLifecycleChunk(text)) {
+      const contentTail = content.slice(Math.max(0, content.length - text.length - 32))
+      if (comparableLogText(contentTail).endsWith(comparableLogText(text))) continue
     }
+    content += text
+    appendedChars += text.length
   }
-  return trimMonitorLogContent(content + text)
+  return {
+    logContent: appendedChars ? trimMonitorLogContent(content) : state.logContent,
+    logTextVersion: state.logTextVersion,
+    logTextEnd: state.logTextEnd + appendedChars,
+  }
+}
+
+export function monitorLogAppendDelta(previous: Pick<MonitorLogText, 'logTextVersion' | 'logTextEnd'>, next: MonitorLogText) {
+  const appendedChars = next.logTextEnd - previous.logTextEnd
+  if (next.logTextVersion !== previous.logTextVersion || appendedChars < 0 || appendedChars > next.logContent.length) {
+    return null
+  }
+  return appendedChars ? next.logContent.slice(-appendedChars) : ''
 }
 
 export function applyThemeClass(theme: 'dark' | 'light') {
@@ -1189,13 +1216,12 @@ export async function confirmDiscardWorkspaceChanges() {
   })
 }
 
-interface MonitorState {
+interface MonitorState extends MonitorLogText {
   workspaceKey: string
   selectedTaskName: string | null
   logMatch: TaskSearchMatch | null
   logError: string
   logGeneration: number
-  logContent: string
   logOffset: number
   logIdentity: string
   availableLogs: string[]
@@ -1220,6 +1246,8 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   logError: '',
   logGeneration: 0,
   logContent: '',
+  logTextVersion: 0,
+  logTextEnd: 0,
   logOffset: 0,
   logIdentity: '',
   availableLogs: [],
@@ -1244,7 +1272,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       logMatch,
       logError: '',
       logGeneration: requestId,
-      logContent: '',
+      ...replaceMonitorLogContent(get(), ''),
       logOffset: 0,
       logIdentity: '',
       availableLogs: [],
@@ -1273,7 +1301,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         throw new Error('This log changed. Refresh the search to locate the match again.')
       }
       set({
-        logContent: logs.content,
+        ...replaceMonitorLogContent(get(), logs.content),
         logOffset: logs.offset,
         logIdentity: String(logs.log_identity || ''),
         availableLogs: logs.available_logs,
@@ -1313,7 +1341,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       logMatch: null,
       logError: '',
       logGeneration: requestId,
-      logContent: '',
+      ...replaceMonitorLogContent(get(), ''),
       logOffset: 0,
       logIdentity: '',
       logTailTruncated: false,
@@ -1335,7 +1363,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         return
       }
       set({
-        logContent: logs.content,
+        ...replaceMonitorLogContent(get(), logs.content),
         logOffset: logs.offset,
         logIdentity: String(logs.log_identity || ''),
         availableLogs: logs.available_logs,
@@ -1359,10 +1387,10 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     }
   },
   appendLog(text: string) {
-    set(s => ({ logContent: appendMonitorLogContent(s.logContent, text) }))
+    set(s => appendMonitorLogContent(s, text))
   },
   clearLog() {
-    set({ logContent: '', logOffset: 0, logIdentity: '', logTailTruncated: false, logTailLimitBytes: 0 })
+    set({ ...replaceMonitorLogContent(get(), ''), logOffset: 0, logIdentity: '', logTailTruncated: false, logTailLimitBytes: 0 })
   },
   toggleExport(name) {
     const ids = new Set(get().exportIds)

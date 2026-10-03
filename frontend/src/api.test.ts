@@ -196,7 +196,7 @@ describe('API errors', () => {
     await updateNotes('alpha', 'next', 'previous')
 
     expect(fetchMock).toHaveBeenCalledOnce()
-    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/notes', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/notes?include_tracks=false', expect.objectContaining({
       method: 'PATCH',
       body: JSON.stringify({ notes: 'next', expected_notes: 'previous' }),
     }))
@@ -212,7 +212,7 @@ describe('API errors', () => {
     await updateEnv('alpha', { NEXT: '2' }, { PREVIOUS: '1' })
 
     expect(fetchMock).toHaveBeenCalledOnce()
-    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/env', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/alpha/env?include_tracks=false', expect.objectContaining({
       method: 'PATCH',
       body: JSON.stringify({ env: { NEXT: '2' }, expected_env: { PREVIOUS: '1' } }),
     }))

@@ -32,7 +32,7 @@ import {
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { appendMonitorLogContent, MONITOR_TASK_PAGE_SIZE, useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
+import { appendMonitorLogContent, monitorLogAppendDelta, replaceMonitorLogContent, MONITOR_TASK_PAGE_SIZE, useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import {
   useLogStream,
   useTaskEvents,
@@ -170,37 +170,6 @@ function isMonitorPageHidden() {
   return document.visibilityState === 'hidden'
 }
 
-export function appendedMonitorLogDelta(previous: string, next: string): string | null {
-  if (!next) {
-    return previous ? null : ''
-  }
-  if (next.startsWith(previous)) {
-    return next.slice(previous.length)
-  }
-  if (previous.endsWith(next)) {
-    return ''
-  }
-  if (!previous) {
-    return null
-  }
-
-  const firstLineEnd = next.indexOf('\n')
-  const markerLength = Math.min(firstLineEnd >= 0 ? firstLineEnd + 1 : next.length, 256)
-  const marker = next.slice(0, markerLength)
-  const searchStart = Math.max(0, previous.length - next.length)
-  let candidate = previous.indexOf(marker, searchStart)
-  let attempts = 0
-  while (candidate >= 0 && attempts < 8) {
-    const overlapLength = previous.length - candidate
-    if (overlapLength <= next.length && next.startsWith(previous.slice(candidate))) {
-      return next.slice(overlapLength)
-    }
-    candidate = previous.indexOf(marker, candidate + 1)
-    attempts += 1
-  }
-  return null
-}
-
 function mergeMonitorTaskSummary(current: Task, refreshed: Task): Task {
   const summary = Object.fromEntries(
     Object.entries(refreshed).filter(([key]) => !COMPACT_MONITOR_DETAIL_FIELDS.has(key)),
@@ -227,7 +196,7 @@ export default function MonitorPage() {
   const workspace = useWorkspaceStore(state => state.workspace)
   const pageVisible = usePageVisible()
   const {
-    selectedTaskName, logContent, logOffset, logIdentity, availableLogs, selectedLog,
+    selectedTaskName, logContent, logTextVersion, logTextEnd, logOffset, logIdentity, availableLogs, selectedLog,
     logTailTruncated, logTailLimitBytes, loading, exportIds, logMatch, logError, logGeneration,
     selectTask, selectLogFile, toggleExport, setExportSelected, clearExport,
   } = useMonitorStore()
@@ -249,7 +218,7 @@ export default function MonitorPage() {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
-  const renderedLogRef = useRef<{ key: string; content: string; offset: number } | null>(null)
+  const renderedLogRef = useRef<{ key: string; logTextVersion: number; logTextEnd: number } | null>(null)
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const logOffsetRef = useRef(logOffset)
@@ -370,7 +339,7 @@ export default function MonitorPage() {
           selectedTaskName: null,
           logMatch: null,
           logError: '',
-          logContent: '',
+          ...replaceMonitorLogContent(useMonitorStore.getState(), ''),
           logOffset: 0,
           logIdentity: '',
           availableLogs: [],
@@ -937,18 +906,11 @@ export default function MonitorPage() {
       term.write(TERMINAL_RESET_SEQUENCE + (logContent || (
         shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
       )))
-      renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
+      renderedLogRef.current = { key: renderKey, logTextVersion, logTextEnd }
       return
     }
 
-    if (logContent === previous.content) {
-      previous.offset = logOffset
-      return
-    }
-
-    const nextChunk = logOffset < previous.offset
-      ? null
-      : appendedMonitorLogDelta(previous.content, logContent)
+    const nextChunk = monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })
     if (nextChunk !== null) {
       if (nextChunk) {
         term.write(nextChunk)
@@ -959,8 +921,8 @@ export default function MonitorPage() {
       )))
     }
 
-    renderedLogRef.current = { key: renderKey, content: logContent, offset: logOffset }
-  }, [renderKey, selectedTaskName, logContent, logOffset, shouldShowNoLogPlaceholder])
+    renderedLogRef.current = { key: renderKey, logTextVersion, logTextEnd }
+  }, [renderKey, selectedTaskName, logContent, logTextVersion, logTextEnd, shouldShowNoLogPlaceholder])
 
   useEffect(() => {
     const term = xtermRef.current
@@ -1166,7 +1128,7 @@ export default function MonitorPage() {
     if (buffer.key === activeKey) {
       useMonitorStore.setState(state => {
         if (state.loading || state.logMatch) return state
-        let nextContent = state.logContent
+        const chunks: string[] = []
         let nextOffset = state.logOffset
         let nextIdentity = state.logIdentity
 
@@ -1178,7 +1140,7 @@ export default function MonitorPage() {
             nextOffset = Math.max(nextOffset, chunkOffset)
             continue
           }
-          nextContent = appendMonitorLogContent(nextContent, chunk.content)
+          chunks.push(chunk.content)
           if (chunk.logIdentity) {
             nextIdentity = chunk.logIdentity
           }
@@ -1187,7 +1149,7 @@ export default function MonitorPage() {
           }
         }
 
-        return { logContent: nextContent, logOffset: nextOffset, logIdentity: nextIdentity }
+        return { ...appendMonitorLogContent(state, chunks), logOffset: nextOffset, logIdentity: nextIdentity }
       })
     }
   }, [])
@@ -1260,7 +1222,7 @@ export default function MonitorPage() {
       ))
       useMonitorStore.setState(state => ({
         selectedLog: messageLog,
-        logContent: '',
+        ...replaceMonitorLogContent(state, ''),
         logOffset: 0,
         logIdentity: '',
         logTailTruncated: false,
@@ -1294,7 +1256,7 @@ export default function MonitorPage() {
       useMonitorStore.setState(state => (
         state.workspaceKey === activeWorkspaceKey && state.selectedTaskName === activeTaskName
           ? {
-              logContent: message.content || '',
+              ...replaceMonitorLogContent(state, message.content || ''),
               logOffset: nextOffset,
               logIdentity: nextIdentity,
               logTailTruncated: false,
@@ -1434,11 +1396,9 @@ export default function MonitorPage() {
       useMonitorStore.setState(state => (
         state.workspaceKey === requestedWorkspaceKey && state.selectedTaskName === activeTaskName
           ? {
-              logContent: shouldReplaceContent
-                ? logs.content
-                : logs.content
-                  ? appendMonitorLogContent(state.logContent, logs.content)
-                  : state.logContent,
+              ...(shouldReplaceContent
+                ? replaceMonitorLogContent(state, logs.content)
+                : appendMonitorLogContent(state, logs.content)),
               logOffset: logs.offset,
               logIdentity: nextIdentity,
               availableLogs: logs.available_logs,
