@@ -66,11 +66,11 @@ test('another tab cannot redirect a notes save to a same-name task', async ({ pa
     await switchFromOtherTab(other, first, second)
     const writes: string[] = []
     page.on('request', request => {
-      if (request.url().endsWith(`/api/tasks/${taskName}/notes`)) {
+      if (new URL(request.url()).pathname === `/api/tasks/${taskName}/notes`) {
         writes.push(request.headers()['x-pyruns-workspace'])
       }
     })
-    const rejected = page.waitForResponse(response => response.url().endsWith(`/api/tasks/${taskName}/notes`))
+    const rejected = page.waitForResponse(response => new URL(response.url()).pathname === `/api/tasks/${taskName}/notes`)
     await page.getByRole('button', { name: 'Save Notes' }).click()
     expect((await rejected).status()).toBe(409)
     const overlay = page.getByRole('alertdialog', { name: 'Workspace changed' })
