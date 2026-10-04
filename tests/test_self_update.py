@@ -1,4 +1,5 @@
 import errno
+import http.client
 import json
 import os
 import subprocess
@@ -1250,14 +1251,24 @@ def test_check_latest_version_uses_pypi_and_pep440(
     assert observed["timeout"] == self_update.PYPI_CHECK_TIMEOUT_SECONDS
 
 
-def test_check_latest_version_handles_offline_and_invalid_responses(monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        self_update.urllib.error.URLError("offline"),
+        http.client.IncompleteRead(b'{"info":'),
+        http.client.BadStatusLine("truncated status"),
+    ],
+)
+def test_check_latest_version_handles_network_failures(monkeypatch, error):
     def offline(*_args, **_kwargs):
-        raise self_update.urllib.error.URLError("offline")
+        raise error
 
     monkeypatch.setattr(self_update.urllib.request, "urlopen", offline)
     with pytest.raises(self_update.LatestVersionCheckError, match="check PyPI"):
         self_update.check_latest_version("0.3.0")
 
+
+def test_check_latest_version_handles_invalid_responses(monkeypatch):
     monkeypatch.setattr(
         self_update.urllib.request,
         "urlopen",

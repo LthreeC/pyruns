@@ -1,4 +1,5 @@
 import json
+import http.client
 import http.cookiejar
 import os
 import re
@@ -149,7 +150,7 @@ def test_system_info_exposes_instance_and_disables_updates_without_coordinator(m
 
 
 def test_system_update_check_reports_latest_pypi_version(monkeypatch):
-    from pyruns.web.self_update import UiUpdateCoordinator
+    from pyruns.web.self_update import UiUpdateCoordinator, check_latest_version
 
     monkeypatch.setattr(
         "pyruns.web.app.check_latest_version",
@@ -171,15 +172,14 @@ def test_system_update_check_reports_latest_pypi_version(monkeypatch):
         "update_available": True,
     }
 
-    def fail_check(_current):
-        from pyruns.web.self_update import LatestVersionCheckError
+    def fail_check(*_args, **_kwargs):
+        raise http.client.IncompleteRead(b'{"info":')
 
-        raise LatestVersionCheckError("PyPI unavailable")
-
-    monkeypatch.setattr("pyruns.web.app.check_latest_version", fail_check)
+    monkeypatch.setattr("pyruns.web.app.check_latest_version", check_latest_version)
+    monkeypatch.setattr("pyruns.web.self_update.urllib.request.urlopen", fail_check)
     failed = client.get("/api/system/update/check")
     assert failed.status_code == 503
-    assert failed.json()["detail"] == "PyPI unavailable"
+    assert "Check the network and try again" in failed.json()["detail"]
 
 
 def test_system_update_requires_idle_runtime_then_gates_task_starts():

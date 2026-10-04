@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import secrets
@@ -574,7 +575,7 @@ def check_latest_version(current_version: str) -> dict[str, Any]:
             raw = response.read(PYPI_MAX_RESPONSE_BYTES + 1)
     except LatestVersionCheckError:
         raise
-    except (OSError, TimeoutError, ValueError, urllib.error.URLError) as exc:
+    except (OSError, TimeoutError, ValueError, urllib.error.URLError, http.client.HTTPException) as exc:
         raise LatestVersionCheckError(
             "Could not check PyPI for a newer Pyruns release. Check the network and try again."
         ) from exc

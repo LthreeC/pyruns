@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from pyruns.web import session_recovery
 from pyruns.web.session_recovery import SessionRecovery
 
@@ -124,3 +126,31 @@ def test_session_recovery_ignores_an_invalid_state_path(tmp_path):
 
     assert recovery.available is False
     assert recovery.accepts("token") is False
+
+
+@pytest.mark.parametrize("schema", [[], {}, True, 1.0, 2.0, "2", None, 99])
+def test_session_recovery_replaces_an_invalid_schema_without_accepting_old_tokens(tmp_path, schema):
+    path = tmp_path / "session.json"
+    old_cookie = "old-browser-cookie-that-must-not-be-reused"
+    old_token = "old-bootstrap-token"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": schema,
+                "scope": session_recovery._scope_digest("workspace"),
+                "active": session_recovery._token_digest(old_token),
+                "session_token": old_cookie,
+                "legacy_digests": [session_recovery._token_digest(old_token)],
+            }
+        ),
+        encoding="ascii",
+    )
+
+    recovery = SessionRecovery(str(path), scope="workspace", token="current")
+
+    assert recovery.available is True
+    assert recovery.accepts("current") is True
+    assert recovery.cookie_token != old_cookie
+    assert recovery.accepts(old_cookie) is False
+    assert recovery.accepts(old_token) is False
+    assert json.loads(path.read_text(encoding="ascii"))["schema"] == session_recovery.SESSION_STATE_SCHEMA

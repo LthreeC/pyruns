@@ -85,6 +85,7 @@ def _read_state(path: str) -> dict[str, Any] | None:
         return None
     if (
         not isinstance(payload, dict)
+        or type(payload.get("schema")) is not int
         or payload.get("schema") not in {_LEGACY_SESSION_STATE_SCHEMA, SESSION_STATE_SCHEMA}
     ):
         return None
