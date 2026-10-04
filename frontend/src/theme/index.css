@@ -104,6 +104,41 @@ summary::-webkit-details-marker {
   background: var(--surface-navigation);
 }
 
+.task-detail-body {
+  container-type: inline-size;
+}
+
+.task-detail-info > section + section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 1.25rem;
+}
+
+.task-detail-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-detail-overview > :first-child {
+  grid-column: 1 / -1;
+}
+
+@container (max-width: 26.999rem) {
+  .task-detail-value-row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.125rem;
+  }
+}
+
+@container (min-width: 27rem) {
+  .task-detail-overview {
+    grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+  }
+
+  .task-detail-overview > :first-child {
+    grid-column: auto;
+  }
+}
+
 .task-search-combined {
   min-width: 0;
 }

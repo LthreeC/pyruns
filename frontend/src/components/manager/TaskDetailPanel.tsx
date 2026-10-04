@@ -660,8 +660,10 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
             )}
           />
         </button>
-        <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-3">
-          <StatusBadge status={task.status as TaskStatus} />
+        <div className="flex flex-wrap items-center gap-2 px-5 pb-2 pt-4">
+          <div className="order-2 w-full sm:order-none sm:w-auto">
+            <StatusBadge status={task.status as TaskStatus} />
+          </div>
 
           <div className="min-w-0 flex-1">
             {renaming ? (
@@ -704,7 +706,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="min-w-0 select-text break-all text-sm font-medium text-txt-primary">{task.name}</span>
+                <span className="min-w-0 select-text break-all text-base font-semibold text-txt-primary">{task.name}</span>
                 <button
                   type="button"
                   onClick={() => setRenaming(true)}
@@ -730,7 +732,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
           </button>
         </div>
 
-        <div role="tablist" aria-label="Task detail sections" className="grid grid-cols-4 gap-1 border-b border-border-subtle px-3 py-2">
+        <div role="tablist" aria-label="Task detail sections" className="grid grid-cols-4 gap-2 border-b border-border-subtle px-5 sm:flex sm:gap-5">
           {tabs.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
@@ -755,10 +757,10 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 panelRef.current?.querySelector<HTMLElement>(`#task-detail-tab-${nextTab}`)?.focus()
               }}
               className={clsx(
-                'touch-target flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-xs font-medium transition-colors sm:min-h-9 sm:gap-1.5 sm:px-3 sm:py-1.5',
+                'touch-target -mb-px flex min-h-11 min-w-0 items-center justify-center gap-1 border-b-2 px-1 py-2.5 text-xs font-medium transition-colors sm:gap-1.5 sm:px-2',
                 tab === key
-                  ? 'bg-surface-overlay text-txt-primary'
-                  : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
+                  ? 'border-accent text-txt-primary'
+                  : 'border-transparent text-txt-secondary hover:border-border hover:text-txt-primary'
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -772,7 +774,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
           id={`task-detail-panel-${tab}`}
           role="tabpanel"
           aria-labelledby={`task-detail-tab-${tab}`}
-          className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"
+          className="task-detail-body min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:py-6"
         >
           {tab === 'info' && <InfoTab task={task} />}
           {tab === 'config' && <ConfigTab task={task} />}
@@ -834,7 +836,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               )}
 
               {envPairs.length === 0 && (
-                <div className="rounded-lg border border-dashed border-border bg-surface-base px-3 py-6 text-center text-xs text-txt-secondary">
+                <div className="px-3 py-8 text-center text-xs text-txt-secondary">
                   No environment variables
                 </div>
               )}
@@ -846,7 +848,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                   || Boolean(normalizedKey && !ENV_NAME_PATTERN.test(normalizedKey))
 
                 return (
-                <div key={pair.id} className="grid grid-cols-[minmax(0,1fr)_44px] items-start gap-2 rounded-lg border border-border bg-surface-base p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)_36px] sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
+                <div key={pair.id} className="grid grid-cols-[minmax(0,1fr)_44px] items-start gap-2 border-b border-border-subtle pb-4 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)_36px] sm:border-0 sm:pb-0">
                   <label className="min-w-0 space-y-1">
                     <span className="text-xs font-medium text-txt-secondary sm:hidden">Key</span>
                     <input
@@ -1079,8 +1081,8 @@ function InfoValueRow({
   mono?: boolean
 }) {
   return (
-    <div className="grid grid-cols-[88px_minmax(0,1fr)] items-start gap-3 border-b border-border-subtle py-2.5 last:border-b-0 sm:grid-cols-[112px_minmax(0,1fr)]">
-      <span className="text-xs font-medium leading-6 text-txt-secondary">{label}</span>
+    <div className="task-detail-value-row grid grid-cols-[88px_minmax(0,1fr)] items-start gap-3 py-1.5 sm:grid-cols-[112px_minmax(0,1fr)]">
+      <span className="text-xs leading-6 text-txt-secondary">{label}</span>
       <div className="flex min-w-0 items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className={clsx('whitespace-pre-wrap text-xs leading-6 text-txt-primary [overflow-wrap:anywhere]', mono && 'font-mono')}>
@@ -1098,7 +1100,7 @@ function InfoValueRow({
 
 function RunMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 bg-surface-raised px-3 py-2.5">
+    <div className="min-w-0">
       <dt className="text-xs text-txt-secondary">{label}</dt>
       <dd className="mt-1 break-words text-xs font-medium tabular-nums text-txt-primary" title={value}>
         {value}
@@ -1175,16 +1177,11 @@ function InfoTab({ task }: { task: Task }) {
     return () => window.clearInterval(interval)
   }, [live, task.name])
 
-  const rows: [string, string][] = [
+  const overview: [string, string][] = [
     ['Created', task.created_at],
     ['Mode', getTaskMode(task)],
     ['Recorded Runs', String(runs.length)],
-    ['Directory', task.dir],
   ]
-
-  if (task._load_error) {
-    rows.push(['Load Error', task._load_error])
-  }
 
   const queuedRunIndex = Number(task.gpu_wait?.run_index || 0)
   const displayedRunIndex = task.status === 'queued'
@@ -1245,13 +1242,13 @@ function InfoTab({ task }: { task: Task }) {
   ]
 
   return (
-    <div className="space-y-6">
+    <div className="task-detail-info space-y-5">
       {currentMetrics.length > 0 && (
         <section className="space-y-2" aria-labelledby="task-current-run-heading">
           <h3 id="task-current-run-heading" className="text-sm font-semibold text-txt-primary">
             {task.status === 'running' ? 'Current Run' : 'Scheduled Run'}
           </h3>
-          <dl className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-px overflow-hidden rounded-md border border-border-subtle bg-border-subtle">
+          <dl className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-x-6 gap-y-4 py-1">
             {currentMetrics.map(([label, value]) => <RunMetric key={label} label={label} value={value} />)}
           </dl>
         </section>
@@ -1259,16 +1256,12 @@ function InfoTab({ task }: { task: Task }) {
 
       <section className="space-y-2" aria-labelledby="task-overview-heading">
         <h3 id="task-overview-heading" className="text-sm font-semibold text-txt-primary">Task</h3>
-        <div className="rounded-lg border border-border px-3">
-          {rows.map(([label, value]) => (
-            <InfoValueRow
-              key={label}
-              label={label}
-              value={value}
-              mono={label === 'Directory'}
-              copyLabel={label === 'Directory' ? 'Copy task directory' : undefined}
-            />
-          ))}
+        <dl className="task-detail-overview gap-x-6 gap-y-3 py-1">
+          {overview.map(([label, value]) => <RunMetric key={label} label={label} value={value} />)}
+        </dl>
+        <div className="pt-1">
+          <InfoValueRow label="Directory" value={task.dir} mono copyLabel="Copy task directory" />
+          {task._load_error && <InfoValueRow label="Load Error" value={task._load_error} />}
         </div>
       </section>
 
@@ -1276,9 +1269,9 @@ function InfoTab({ task }: { task: Task }) {
         <section className="space-y-2" aria-label="Run environment">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-txt-primary">Run Environment</h3>
-            {displayedRunIndex > 0 && <span className="rounded-md bg-surface-overlay px-2 py-1 text-xs font-medium text-txt-secondary">Run #{displayedRunIndex}</span>}
+            {displayedRunIndex > 0 && <span className="text-xs tabular-nums text-txt-secondary">Run #{displayedRunIndex}</span>}
           </div>
-          <div className="rounded-lg border border-border px-3">
+          <div>
             {task.status === 'queued' ? (
               <div className="py-3 text-xs text-txt-secondary">Environment will be recorded when this run starts.</div>
             ) : <RunEnvironmentRows environment={displayedRun?.environment} />}
@@ -1292,22 +1285,22 @@ function InfoTab({ task }: { task: Task }) {
       <section className="space-y-2" aria-labelledby="task-execution-heading">
         <h3 id="task-execution-heading" className="text-sm font-semibold text-txt-primary">Execution</h3>
         {command ? (
-          <div className="overflow-hidden rounded-lg border border-border bg-surface-base">
-            <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-overlay px-3 py-1.5">
+          <div className="overflow-hidden rounded-md bg-surface-base">
+            <div className="flex items-center justify-between gap-2 px-3 pt-2">
               <span className="text-xs font-medium text-txt-secondary">{commandLabel}</span>
               <CopyButton value={command} label={`Copy ${commandLabel.toLowerCase()}`} size="xs" />
             </div>
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-xs leading-relaxed text-txt-primary">
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all px-3 pb-3 pt-1 font-mono text-xs leading-relaxed text-txt-primary">
               {command}
             </pre>
           </div>
         ) : (
-          <div className="border-b border-border-subtle py-2 text-xs text-txt-secondary">
+          <div className="py-2 text-xs text-txt-secondary">
             Launch command was not recorded for this run.
           </div>
         )}
         {executionRows.length > 0 && (
-          <div className="rounded-lg border border-border px-3">
+          <div>
             {executionRows.map(([label, value, copyLabel]) => (
               <InfoValueRow key={label} label={label} value={value} copyLabel={copyLabel} mono={['Working Directory', 'Script', 'Shell', 'Runner ID'].includes(label)} />
             ))}
@@ -1322,7 +1315,7 @@ function InfoTab({ task }: { task: Task }) {
             No runs recorded yet.
           </div>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
+          <div>
             {runs.map(run => (
               <details
                 key={run.index}
@@ -1341,21 +1334,21 @@ function InfoTab({ task }: { task: Task }) {
                 }}
                 className="group border-b border-border-subtle last:border-b-0 [content-visibility:auto] [contain-intrinsic-size:48px]"
               >
-                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-surface-overlay focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-xs transition-colors hover:bg-surface-overlay focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 -rotate-90 text-txt-secondary transition-transform group-open:rotate-0" />
                   <span className="font-medium text-txt-primary">Run #{run.index}</span>
                   <span className="text-txt-secondary">{run.status || (run.index === task.run_index ? task.status : '')}</span>
                   <span className="ml-auto tabular-nums text-txt-secondary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
-                  <ChevronDown className="h-3.5 w-3.5 text-txt-secondary transition-transform group-open:rotate-180" />
                 </summary>
-                <div className="border-t border-border-subtle px-3 pb-2">
+                <div className="mb-3 ml-1.5 border-l border-border-subtle py-1 pl-4">
                   <InfoValueRow label="Start" value={formatScalarValue(run.start)} />
                   <InfoValueRow label="Finish" value={formatScalarValue(run.finish)} />
                   <InfoValueRow label="PID" value={formatScalarValue(run.pid)} />
                   <InfoValueRow label="Exit Code" value={formatScalarValue(run.exitCode)} />
                   {run.source && <InfoValueRow label="Source" value={run.source} mono copyLabel={`Copy source state for run ${run.index}`} />}
                   {run.index !== displayedRunIndex && (
-                    <div className="my-3 rounded-md border border-border bg-surface-base px-3">
-                      <h4 className="border-b border-border-subtle py-2.5 text-xs font-semibold text-txt-primary">Environment</h4>
+                    <div className="my-3 border-t border-border-subtle pt-3">
+                      <h4 className="pb-1 text-xs font-semibold text-txt-primary">Environment</h4>
                       <RunEnvironmentRows environment={run.environment} />
                     </div>
                   )}
@@ -1383,18 +1376,18 @@ function ConfigTab({ task }: { task: Task }) {
   const title = shell ? 'Script' : 'Configuration'
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border bg-surface-base" aria-label={title}>
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-overlay px-3 py-2">
+    <section className="space-y-3" aria-label={title}>
+      <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-txt-primary">{title}</h3>
         {content && (
           <CopyButton value={content} label={shell ? 'Copy script' : 'Copy configuration'} size="xs" />
         )}
       </div>
       {content ? (
-        <pre className="whitespace-pre-wrap p-3 font-mono text-xs leading-relaxed text-txt-primary [overflow-wrap:anywhere]">
+        <pre className="whitespace-pre-wrap rounded-md bg-surface-base p-4 font-mono text-xs leading-relaxed text-txt-primary [overflow-wrap:anywhere]">
           {content}
         </pre>
-      ) : <p className="p-3 text-xs text-txt-secondary">No {shell ? 'script' : 'configuration'} recorded for this task.</p>}
+      ) : <p className="py-3 text-xs text-txt-secondary">No {shell ? 'script' : 'configuration'} recorded for this task.</p>}
     </section>
   )
 }

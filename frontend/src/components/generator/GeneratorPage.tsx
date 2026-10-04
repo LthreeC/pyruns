@@ -2118,8 +2118,8 @@ function TreeParameterExplorer({
         />
       )}
 
-      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-surface-raised">
-        <div className="border-b border-border bg-surface-raised px-3 py-2">
+      <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-surface-raised">
+        <div className="border-b border-border-subtle px-3 py-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             {outlineCollapsed && (
               <button
@@ -2192,7 +2192,7 @@ function TreeParameterExplorer({
               {[...data].filter(([key, value]) => (
                 !String(key).startsWith('_meta') && !isNestedGroup(value) && !pinnedRowKeys.has(configPathId([key]))
               )).length > 0 && (
-                <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface-raised/40 p-3 shadow-sm">
+                <div className="space-y-2.5 px-2.5 py-2">
                   <div className="flex items-center gap-1.5 text-2xs font-bold uppercase tracking-[0.16em] text-txt-tertiary">
                     <Workflow className="h-3.5 w-3.5" />
                     <span>Global Parameters</span>
@@ -2472,10 +2472,8 @@ function NestedSection({
       className={clsx(
         'relative box-border transition-colors',
         treeSection
-          ? 'overflow-hidden rounded-md border border-transparent bg-transparent'
+          ? 'overflow-hidden bg-transparent'
           : 'relative',
-        treeSection && depth === 0 && 'border-border bg-surface-raised shadow-sm',
-        treeSection && depth > 0 && 'rounded-none',
         !treeSection && depth === 0 && 'overflow-hidden rounded-md border border-border bg-surface-raised shadow-sm',
         !treeSection && depth > 0 && 'border-l-2 border-border pl-3',
       )}
@@ -2492,7 +2490,7 @@ function NestedSection({
           treeSection
             ? 'px-2.5 py-1.5 hover:bg-surface-overlay/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/25'
             : 'px-2.5 py-1.5 hover:bg-surface-overlay',
-          treeSection && depth === 0 && open && 'border-b border-border bg-surface-overlay/50',
+          treeSection && depth === 0 && open && 'border-b border-border-subtle',
           treeSection && depth > 0 && 'rounded-md',
           !treeSection && depth === 0 && open && 'border-b border-border bg-surface-overlay/55',
           !treeSection && depth > 0 && 'rounded-md bg-surface-base',
