@@ -27,6 +27,7 @@ let monitorLogController: AbortController | null = null
 let launcherRequestSeq = 0
 let runtimeRequestSeq = 0
 let dashboardRequestSeq = 0
+let generatorTemplateListRequestSeq = 0
 let generatorTemplateRequestSeq = 0
 let generatorDraftVersion = 0
 let workspaceRequestSeq = 0
@@ -195,6 +196,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   monitorRequestSeq += 1
   runtimeRequestSeq += 1
   dashboardRequestSeq += 1
+  generatorTemplateListRequestSeq += 1
   generatorTemplateRequestSeq += 1
   generatorDraftVersion += 1
   useTaskStore.setState({
@@ -1123,10 +1125,10 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   dirty: false,
   loading: false,
   async fetchTemplates() {
-    const requestId = ++generatorTemplateRequestSeq
+    const requestId = ++generatorTemplateListRequestSeq
     const workspaceKey = currentWorkspaceKey()
     const res = await api.getTemplates()
-    if (requestId === generatorTemplateRequestSeq && workspaceKey === currentWorkspaceKey()) {
+    if (requestId === generatorTemplateListRequestSeq && workspaceKey === currentWorkspaceKey()) {
       set({ templates: res.items })
     }
   },

@@ -245,6 +245,18 @@ export default function ManagerPage() {
 
   useEffect(() => {
     detailRequestSeqRef.current += 1
+    dragCandidateRef.current = null
+    draggedTaskNameRef.current = ''
+    dragOverTargetRef.current = null
+    dropIntentRef.current = null
+    pendingDragPointRef.current = null
+    if (dragFrameRef.current != null) {
+      window.cancelAnimationFrame(dragFrameRef.current)
+      dragFrameRef.current = null
+    }
+    setDraggedTaskName('')
+    setDragOverTarget(null)
+    setDropIntent(null)
     setDeleteConfirm(false)
     setDeleteTask(null)
     setCancelTask(null)
@@ -564,6 +576,8 @@ export default function ManagerPage() {
   }, [fetchTasks, setSortMode])
 
   const handleTaskDrop = useCallback(async (intent: DropIntent, taskName = draggedTaskNameRef.current) => {
+    const isCurrentWorkspace = () => workspaceEpoch === useWorkspaceStore.getState().workspaceEpoch
+    if (!isCurrentWorkspace()) return
     const task = tasks.find(item => item.name === taskName)
     setDragOverTarget(null)
     setDropIntent(null)
@@ -589,6 +603,7 @@ export default function ManagerPage() {
         compact: true,
         sort: sortMode,
       })
+      if (!isCurrentWorkspace()) return
       if (rejectIncompleteReorder(allTasks)) {
         return
       }
@@ -603,6 +618,7 @@ export default function ManagerPage() {
       }
 
       await api.reorderTasks(items)
+      if (!isCurrentWorkspace()) return
       if (movedItem.pinned !== task.pinned) {
         setTaskActionMessage(movedItem.pinned ? `Pinned ${task.name}.` : `Moved ${task.name} back to Tasks.`)
       } else {
@@ -610,13 +626,15 @@ export default function ManagerPage() {
       }
       await refreshManualOrder()
     } catch (err) {
-      notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
+      if (isCurrentWorkspace()) notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
     } finally {
-      finishTaskAction(task.name)
+      if (isCurrentWorkspace()) finishTaskAction(task.name)
     }
-  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction])
+  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction, workspaceEpoch])
 
   const handleMoveTask = useCallback(async (task: Task, direction: -1 | 1) => {
+    const isCurrentWorkspace = () => workspaceEpoch === useWorkspaceStore.getState().workspaceEpoch
+    if (!isCurrentWorkspace()) return
     if (!beginTaskAction(task.name, 'move')) return
     try {
       const visibleSectionTasks = tasks.filter(item => Boolean(item.pinned) === Boolean(task.pinned))
@@ -637,6 +655,7 @@ export default function ManagerPage() {
         compact: true,
         sort: sortMode,
       })
+      if (!isCurrentWorkspace()) return
       if (rejectIncompleteReorder(allTasks)) {
         return
       }
@@ -652,14 +671,15 @@ export default function ManagerPage() {
         return
       }
       await api.reorderTasks(items)
+      if (!isCurrentWorkspace()) return
       setTaskActionMessage(`Moved ${task.name} ${direction < 0 ? 'earlier' : 'later'}.`)
       await refreshManualOrder()
     } catch (err) {
-      notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
+      if (isCurrentWorkspace()) notify({ tone: 'error', title: 'Could not move task', detail: errorMessage(err) })
     } finally {
-      finishTaskAction(task.name)
+      if (isCurrentWorkspace()) finishTaskAction(task.name)
     }
-  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction])
+  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction, workspaceEpoch])
 
   useEffect(() => {
     const applyDropIntent = (intent: DropIntent | null) => {

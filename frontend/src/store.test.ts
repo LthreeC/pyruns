@@ -529,6 +529,54 @@ describe('workspace-scoped stores', () => {
     expect(useGeneratorStore.getState().shellText).toBe('echo old')
   })
 
+  it.each(['list-first', 'content-first'])('keeps generator list and content requests independent (%s)', async order => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const list = deferred<any>()
+    const content = deferred<any>()
+    const items = [{ value: 'fresh.yaml', label: 'Fresh' }]
+    vi.mocked(api.getTemplates).mockReturnValueOnce(list.promise)
+    vi.mocked(api.getTemplateContent).mockReturnValueOnce(content.promise)
+    const start = {
+      list: () => useGeneratorStore.getState().fetchTemplates(),
+      content: () => useGeneratorStore.getState().loadTemplate('fresh.yaml'),
+    }
+    const pending = order === 'list-first'
+      ? [start.list(), start.content()]
+      : [start.content(), start.list()]
+    list.resolve({ items })
+    content.resolve({ content: 'value: fresh', mode_hint: 'yaml' })
+    await Promise.all(pending)
+
+    expect(useGeneratorStore.getState()).toMatchObject({
+      templates: items, selectedTemplate: 'fresh.yaml', yamlText: 'value: fresh', loading: false,
+    })
+  })
+
+  it('ignores obsolete generator lists after a newer refresh or workspace replacement', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const old = deferred<any>()
+    const next = deferred<any>()
+    const pendingWorkspace = deferred<any>()
+    vi.mocked(api.getTemplates)
+      .mockReturnValueOnce(old.promise)
+      .mockReturnValueOnce(next.promise)
+      .mockReturnValueOnce(pendingWorkspace.promise)
+    const oldFetch = useGeneratorStore.getState().fetchTemplates()
+    const nextFetch = useGeneratorStore.getState().fetchTemplates()
+    const items = [{ value: 'fresh.yaml', label: 'Fresh' }]
+    next.resolve({ items })
+    await nextFetch
+    old.resolve({ items: [{ value: 'old.yaml', label: 'Old' }] })
+    await oldFetch
+    expect(useGeneratorStore.getState().templates).toEqual(items)
+
+    const workspaceFetch = useGeneratorStore.getState().fetchTemplates()
+    useWorkspaceStore.getState().setWorkspace(workspace('B'))
+    pendingWorkspace.resolve({ items })
+    await workspaceFetch
+    expect(useGeneratorStore.getState().templates).toEqual([])
+  })
+
   it('tracks generator edits and clears dirty state after loading a template', async () => {
     useWorkspaceStore.getState().setWorkspace(workspace('A'))
 

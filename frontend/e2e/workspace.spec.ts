@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 test('idle UI update confirms, waits for a new instance, and reloads', async ({ page, isMobile }) => {
   let restarted = false
@@ -2098,7 +2098,18 @@ test('a stale session cookie is recovered after the UI process restarts', async 
   expect(recoveryRequests).toBe(1)
 })
 
+async function mockReadyShellWorkspace(page: Page) {
+  await page.route('**/api/workspace', async route => {
+    const response = await route.fetch()
+    await route.fulfill({
+      response,
+      json: { ...await response.json(), workspace_kind: 'shell', workspace_ready: true, script_name: 'Shell' },
+    })
+  })
+}
+
 test('template picker keeps the current option active when reopened', async ({ page }) => {
+  await mockReadyShellWorkspace(page)
   await page.addInitScript(() => {
     const testWindow = window as typeof window & { __templateScrollTargets?: string[] }
     testWindow.__templateScrollTargets = []
@@ -2160,6 +2171,7 @@ test('template picker keeps the current option active when reopened', async ({ p
 })
 
 test('template list load failure has a retry that clears the error', async ({ page }) => {
+  await mockReadyShellWorkspace(page)
   let attempts = 0
   const templates = [{ value: 'task-a', label: 'Task A' }]
   await page.route('**/api/templates', route => {

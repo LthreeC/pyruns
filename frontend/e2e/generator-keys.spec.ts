@@ -212,3 +212,58 @@ test('generator batch previews retain numeric values and key types from saved ta
     }
   })
 })
+
+test('generator finishes a template switch while task creation refreshes the template list', async ({ page }) => {
+  let releaseCreate!: () => void
+  let releaseTemplate!: () => void
+  const createGate = new Promise<void>(resolve => { releaseCreate = resolve })
+  const templateGate = new Promise<void>(resolve => { releaseTemplate = resolve })
+  let createReady = false
+  let templateRequested = false
+  const alternative = { value: 'alternative.yaml', label: 'Alternative config' }
+  await page.route('**/api/templates', async route => {
+    const response = await route.fetch()
+    const list = await response.json()
+    await route.fulfill({ response, json: { ...list, items: [...list.items, alternative] } })
+  })
+  await page.route('**/api/templates/content?*', async route => {
+    if (new URL(route.request().url()).searchParams.get('value') !== alternative.value) {
+      await route.continue()
+      return
+    }
+    templateRequested = true
+    await templateGate
+    await route.fulfill({ json: {
+      ...alternative, path: '/alternative.yaml', content: 'value: alternative\n',
+      parsed_config: { value: 'alternative' }, read_only: false, mode_hint: 'yaml',
+    } })
+  })
+  await page.route('**/api/generator/create', async route => {
+    const response = await route.fetch()
+    createReady = true
+    await createGate
+    await route.fulfill({ response })
+  })
+
+  await withGeneratorWorkspace(page, 'value: original\n', async () => {
+    try {
+      const field = page.getByRole('textbox', { name: 'value parameter value', exact: true })
+      await expect(field).toHaveValue('original')
+      await page.getByRole('button', { name: 'Generate Tasks', exact: true }).click()
+      await expect.poll(() => createReady).toBe(true)
+      await page.locator('button[aria-haspopup="listbox"]').click()
+      await page.getByRole('option', { name: alternative.label, exact: true }).click()
+      await expect.poll(() => templateRequested).toBe(true)
+      await expect(page.getByText('Loading template...', { exact: true })).toBeVisible()
+      releaseCreate()
+      await expect(page.getByText('Created 1 python task', { exact: true })).toBeVisible()
+      releaseTemplate()
+      await expect(field).toHaveValue('alternative')
+      await expect(page.getByRole('button', { name: alternative.label, exact: true })).toBeVisible()
+      await expect(page.getByText('Loading template...', { exact: true })).toBeHidden()
+    } finally {
+      releaseCreate()
+      releaseTemplate()
+    }
+  })
+})
