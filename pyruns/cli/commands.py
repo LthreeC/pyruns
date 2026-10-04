@@ -1903,14 +1903,17 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
         raise CliUsageError("log accepts either --follow or --path, not both")
     if context.json_output and not args.path:
         raise CliUsageError("--json is only supported by log together with --path")
+    log_info = None
     if selected_run is not None:
-        _selected_run_record(task, selected_run)
+        # Historical log selection needs run metadata, never metric curves.
+        log_info = load_task_metadata(task["dir"], raise_error=True)
+        _selected_run_record(task, selected_run, info=log_info)
     identity: _TaskRunIdentity | None = None
     if args.follow:
         identity = _capture_task_run_identity(task)
         if _bound_task_record(task, identity)["status"] == "pending":
             raise CliError(f"cannot follow pending task: {task['name']}")
-    reference = _resolve_log_reference(task, run_index=selected_run)
+    reference = _resolve_log_reference(task, run_index=selected_run, info=log_info)
     if not os.path.isfile(reference.path):
         raise CliError(f"log does not exist: {_normalized_path(reference.path)}")
     if args.path:

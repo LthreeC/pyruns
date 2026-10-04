@@ -2893,6 +2893,51 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert "available runs: 1-2" in missing.stderr
 
 
+@pytest.mark.parametrize("selector", [["history@1"], ["history", "--run", "1"]])
+def test_historical_logs_do_not_depend_on_metric_storage(tmp_path, monkeypatch, capsys, selector):
+    from pyruns.core.task_generator import TaskGenerator
+    from pyruns.utils import track_store
+
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    task = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task("history", "echo ok\n")
+    monkeypatch.setattr(track_store, "INLINE_TRACK_POINTS", 1)
+    update_task_info(task["dir"], lambda info: info.update(
+        status="completed", run_index=2, exit_codes=[0, 0],
+        run_statuses=["completed", "completed"], tracks=[{"loss": [1, 2]}, {"loss": [3]}],
+    ))
+    logs = Path(task["dir"]) / RUN_LOGS_DIR
+    logs.mkdir(exist_ok=True)
+    first_log = logs / "run1.log"
+    first_log.write_text("first run\n", encoding="utf-8")
+    (logs / "run2.log").write_text("second run\n", encoding="utf-8")
+    metric_reads = []
+    original_read = track_store.read_tracks
+
+    def read_tracks(*args, **kwargs):
+        metric_reads.append(True)
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(track_store, "read_tracks", read_tracks)
+    capsys.readouterr()
+    for damaged in (False, True):
+        if damaged:
+            (Path(task["dir"]) / track_store.TRACK_STORE_FILENAME).write_bytes(b"damaged SQLite")
+        assert main(["-w", str(workspace), "log", *selector, "--path", "--json"]) == 0
+        result = capsys.readouterr()
+        assert not result.err
+        assert json.loads(result.out)["path"] == str(first_log).replace("\\", "/")
+        assert main(["-w", str(workspace), "log", *selector]) == 0
+        result = capsys.readouterr()
+        assert result.out == "first run\n"
+        assert not result.err
+    assert not metric_reads
+
+    assert main(["-w", str(workspace), "log", "history@3"]) == 1
+    result = capsys.readouterr()
+    assert "available runs: 1-2" in result.err
+    assert not result.out
+
+
 def test_show_reports_the_selected_historical_run_status(tmp_path):
     workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
     from pyruns.core.task_generator import TaskGenerator
