@@ -71,9 +71,12 @@ jobs:
           python -m pip install "pip-audit>=2.9,<3"
           pip-audit --progress-spinner off .
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: ${{ !cancelled() }}
         with:
           node-version: 24
-      - name: Audit Node dependencies
-        run: |
-          npm audit --audit-level=moderate
-          npm --prefix frontend audit --audit-level=moderate
+      - name: Audit documentation dependencies
+        if: ${{ !cancelled() }}
+        run: npm audit --audit-level=moderate
+      - name: Audit frontend dependencies
+        if: ${{ !cancelled() }}
+        run: npm --prefix frontend audit --audit-level=moderate
