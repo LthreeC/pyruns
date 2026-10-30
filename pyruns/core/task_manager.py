@@ -178,6 +178,10 @@ class TaskManager:
         self._shutdown_cleanup_done = False
         self._shutdown_cleanup_in_progress = False
         self.owns_task_lifecycle = bool(owns_task_lifecycle)
+        # Read-only observers normally leave lifecycle recovery to the owning
+        # manager.  One-shot CLI readers can opt into the same local stale-run
+        # check without starting a scheduler thread.
+        self.reconcile_unowned_running = self.owns_task_lifecycle
 
         self._observers: List[Callable[[], None]] = []
         self._reactive_watchers = 0
@@ -1082,7 +1086,7 @@ class TaskManager:
         raise_on_error: bool = False,
     ) -> tuple[Dict[str, Any], bool]:
         if (
-            not self.owns_task_lifecycle
+            not self.reconcile_unowned_running
             or info.get("status") != "running"
             or task_name in self._running_ids
         ):

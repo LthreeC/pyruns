@@ -360,6 +360,7 @@ def _task_manager(workspace: str, *, lazy_scan: bool | None = False) -> Iterator
         lazy_scan=lazy_scan,
         owns_task_lifecycle=False,
     )
+    manager.reconcile_unowned_running = True
     try:
         yield manager
     finally:
