@@ -340,7 +340,12 @@ def _workspace_kind(workspace: str) -> str:
 
 
 @contextmanager
-def _task_manager(workspace: str, *, lazy_scan: bool | None = False) -> Iterator[TaskManager]:
+def _task_manager(
+    workspace: str,
+    *,
+    lazy_scan: bool | None = False,
+    reconcile_unowned_running: bool = True,
+) -> Iterator[TaskManager]:
     tasks_dir = os.path.join(workspace, TASKS_DIR)
     try:
         validate_workspace_directory(workspace)
@@ -359,8 +364,8 @@ def _task_manager(workspace: str, *, lazy_scan: bool | None = False) -> Iterator
         tasks_dir=tasks_dir,
         lazy_scan=lazy_scan,
         owns_task_lifecycle=False,
+        reconcile_unowned_running=reconcile_unowned_running,
     )
-    manager.reconcile_unowned_running = True
     try:
         yield manager
     finally:
@@ -2850,7 +2855,14 @@ def dispatch(context: Any, args: Any) -> int:
         return cmd_run_dry_run(context, args, workspace)
 
     lazy_scan = None if handler in {"run"} else False
-    with _task_manager(workspace, lazy_scan=lazy_scan) as manager:
+    with _task_manager(
+        workspace,
+        lazy_scan=lazy_scan,
+        # stop must inspect the original active record first; request_task_cancel
+        # performs the ownership check and reconciles an expired local runner so
+        # it can return the expected cancellation result.
+        reconcile_unowned_running=handler != "stop",
+    ) as manager:
         if handler == "add":
             return cmd_add(context, args, manager, workspace)
         if handler == "run":

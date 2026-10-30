@@ -148,6 +148,7 @@ class TaskManager:
         runner_token: str | None = None,
         *,
         owns_task_lifecycle: bool = True,
+        reconcile_unowned_running: bool | None = None,
     ):
         if tasks_dir is None:
             from pyruns._config import ROOT_DIR
@@ -180,8 +181,14 @@ class TaskManager:
         self.owns_task_lifecycle = bool(owns_task_lifecycle)
         # Read-only observers normally leave lifecycle recovery to the owning
         # manager.  One-shot CLI readers can opt into the same local stale-run
-        # check without starting a scheduler thread.
-        self.reconcile_unowned_running = self.owns_task_lifecycle
+        # check without starting a scheduler thread.  ``None`` keeps this
+        # setting linked to ``owns_task_lifecycle`` for callers that adjust
+        # ownership after construction; an explicit bool is an override.
+        self.reconcile_unowned_running = (
+            None
+            if reconcile_unowned_running is None
+            else bool(reconcile_unowned_running)
+        )
 
         self._observers: List[Callable[[], None]] = []
         self._reactive_watchers = 0
@@ -1085,8 +1092,13 @@ class TaskManager:
         *,
         raise_on_error: bool = False,
     ) -> tuple[Dict[str, Any], bool]:
+        reconcile_running = (
+            self.owns_task_lifecycle
+            if self.reconcile_unowned_running is None
+            else self.reconcile_unowned_running
+        )
         if (
-            not self.reconcile_unowned_running
+            not reconcile_running
             or info.get("status") != "running"
             or task_name in self._running_ids
         ):
