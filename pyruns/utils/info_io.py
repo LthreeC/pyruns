@@ -62,6 +62,23 @@ _RUN_HISTORY_KEYS = (
     "records",
     "tracks",
 )
+_TASK_STATUSES = frozenset({
+    "pending",
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+})
+
+
+def normalize_task_status(value: Any) -> Any:
+    """Canonicalize known lifecycle states without hiding malformed values."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TASK_STATUSES:
+            return normalized
+    return value
 
 
 def namespace_operation_is_live(operation: Any, *, local_host: str = _LOCK_OWNER_HOST) -> bool:
@@ -647,6 +664,8 @@ def load_task_metadata(
                 if info.get("env") is not None and not isinstance(info["env"], dict):
                     raise ValueError("Invalid task environment: expected an object")
                 info.pop("id", None)
+                if "status" in info:
+                    info["status"] = normalize_task_status(info["status"])
                 normalize_run_history(info)
                 return info
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -814,6 +833,8 @@ def update_task_info(
         )
 
         info.pop("id", None)
+        if "status" in info:
+            info["status"] = normalize_task_status(info["status"])
         normalize_run_history(info)
         from pyruns.utils.track_store import TRACK_STORE_KEY, read_tracks
 

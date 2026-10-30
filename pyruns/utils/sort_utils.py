@@ -63,7 +63,7 @@ def _timestamp_weight(task: Mapping[str, object]) -> int:
 
 def task_sort_key(task: Mapping[str, object]) -> tuple:
     """Sort active tasks first, then by latest activity, then by status priority."""
-    status = str(task.get("status", "pending") or "pending")
+    status = str(task.get("status", "pending") or "pending").strip().lower()
     active_rank = 1 if status in _ACTIVE_STATUSES else 0
     time_rank = _timestamp_weight(task)
     inactive_tie = _INACTIVE_TIE_PRIORITIES.get(status, 0)
@@ -177,9 +177,12 @@ def _config_search_text(config: Any) -> str:
 
 def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All") -> list[_Task]:
     """Apply status and multiline deep-search filtering."""
+    status_text = str(status_mode or "").strip()
+    status_key = "All" if status_text.lower() == "all" else status_text.lower()
     tasks = [
         task for task in all_tasks
-        if status_mode == "All" or status_mode.lower() == task.get("status", "")
+        if status_key == "All"
+        or status_key == str(task.get("status", "") or "").strip().lower()
     ]
     if not query:
         return tasks

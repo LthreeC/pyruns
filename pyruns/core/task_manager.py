@@ -47,6 +47,7 @@ from pyruns.utils.info_io import (
     ensure_run_slot,
     load_task_info,
     load_task_metadata,
+    normalize_task_status,
     namespace_operation_is_live,
     prepare_task_log_path,
     run_slot_count,
@@ -102,7 +103,7 @@ _GPU_WAIT_REASON_NORMALIZERS = (
 def active_task_run_index(info: Dict[str, Any]) -> int:
     """Return the run number represented by one active task snapshot."""
 
-    status = str(info.get("status", "") or "").lower()
+    status = normalize_task_status(info.get("status", ""))
     try:
         current = int(info.get("run_index", 0) or 0)
     except (TypeError, ValueError, OverflowError):
@@ -517,7 +518,8 @@ class TaskManager:
             count = sum(
                 1 for task in self.tasks
                 if task is not None
-                and str(task.get("status", "") or "").lower() in {"queued", "running"}
+                and str(normalize_task_status(task.get("status", "")) or "").strip().lower()
+                in {"queued", "running"}
             )
             return count or int(bool(self.is_processing))
 
@@ -630,10 +632,13 @@ class TaskManager:
             )
             for task in self.tasks:
                 if task is not None:
-                    task_status = str(task.get("status", "pending") or "pending").lower()
+                    task_status = str(
+                        normalize_task_status(task.get("status", "pending")) or "pending"
+                    ).strip().lower()
                     counts[task_status] = counts.get(task_status, 0) + 1
             self._task_page_counts = counts
-        status_key = "All" if status == "All" else status.lower()
+        status_text = str(status or "").strip()
+        status_key = "All" if status_text.lower() == "all" else status_text.lower()
         key = (sort_mode, status_key)
         ordered = self._task_page_cache.get(key)
         if ordered is None:
@@ -642,7 +647,12 @@ class TaskManager:
             if ordered is None:
                 candidates = [
                     task for task in self.tasks
-                    if task is not None and (status_key == "All" or status_key == task.get("status", "pending"))
+                    if task is not None and (
+                        status_key == "All"
+                        or status_key == str(
+                            normalize_task_status(task.get("status", "pending")) or "pending"
+                        ).strip().lower()
+                    )
                 ]
                 if query:
                     # A cold selective search should sort its matches only.
@@ -655,7 +665,12 @@ class TaskManager:
                 # workspace full of historical tasks before returning its page.
                 ordered = sort_tasks_for_manager(candidates, sort_mode)
             elif status_key != "All":
-                ordered = [task for task in ordered if status_key == task.get("status", "pending")]
+                ordered = [
+                    task for task in ordered
+                    if status_key == str(
+                        normalize_task_status(task.get("status", "pending")) or "pending"
+                    ).strip().lower()
+                ]
             self._task_page_cache[key] = ordered
             while len(self._task_page_cache) > _TASK_PAGE_CACHE_SIZE:
                 self._task_page_cache.popitem(last=False)
@@ -1099,7 +1114,7 @@ class TaskManager:
         )
         if (
             not reconcile_running
-            or info.get("status") != "running"
+            or normalize_task_status(info.get("status")) != "running"
             or task_name in self._running_ids
         ):
             return info, False
@@ -1396,7 +1411,9 @@ class TaskManager:
             "dir": task_dir.replace("\\", "/"),
             "task_identity": task_identity,
             "name": task_name,
-            "status": info.get("status", "failed" if metadata_error else "pending"),
+            "status": normalize_task_status(
+                info.get("status", "failed" if metadata_error else "pending")
+            ),
             "created_at": info.get("created_at"),
             "config": config_data,
             "config_text": config_text,
@@ -3405,7 +3422,7 @@ class TaskManager:
             for index, task in enumerate(self.tasks)
             if (
                 task
-                and task.get("status") == "queued"
+                and str(normalize_task_status(task.get("status")) or "").strip().lower() == "queued"
                 and not self._is_foreign_live_runner(task)
                 and (not independent_only or task.get("_queued_independent"))
             )
@@ -5303,7 +5320,8 @@ class TaskManager:
             )
 
         def _apply(task_info: Dict[str, Any]) -> None:
-            original_status = str(task_info.get("status", "") or "").lower()
+            original_status = normalize_task_status(task_info.get("status", ""))
+            original_status = str(original_status or "").strip().lower()
             if not task_attempt_matches(task_info, expected_attempt_id):
                 raise TaskStateConflict("task attempt changed before stop request")
             if expected_statuses is not None and original_status not in expected_statuses:
@@ -5381,7 +5399,8 @@ class TaskManager:
     ) -> tuple[str, bool]:
         """Finalize an active task-info payload while its file lock is held."""
 
-        original_status = str(task_info.get("status", "") or "").lower()
+        original_status = normalize_task_status(task_info.get("status", ""))
+        original_status = str(original_status or "").strip().lower()
         slot_count = (
             self._realized_run_slot_count(task_info)
             if original_status == "queued"
@@ -5433,7 +5452,8 @@ class TaskManager:
             )
 
         def _apply(task_info: Dict[str, Any]) -> None:
-            original_status = str(task_info.get("status", "") or "").lower()
+            original_status = normalize_task_status(task_info.get("status", ""))
+            original_status = str(original_status or "").strip().lower()
             if not task_attempt_matches(task_info, expected_attempt_id):
                 raise TaskStateConflict("task attempt changed before terminal update")
             if expected_statuses is not None and original_status not in expected_statuses:
@@ -5584,7 +5604,9 @@ class TaskManager:
         task.update(
             {
                 "name": os.path.basename(os.path.normpath(task["dir"])),
-                "status": info.get("status", task.get("status", "pending")),
+                "status": normalize_task_status(
+                    info.get("status", task.get("status", "pending"))
+                ),
                 "progress": info.get("progress", task.get("progress", 0.0)),
                 "env": info.get("env", task.get("env", {})),
                 "pinned": info.get("pinned", task.get("pinned", False)),
@@ -5682,5 +5704,10 @@ class TaskManager:
     def _recompute_processing_flag_locked(self) -> None:
         """Sleep the scheduler when nothing is queued or running."""
         self.is_processing = bool(
-            self._running_ids or any(task and task.get("status") == "queued" for task in self.tasks)
+            self._running_ids
+            or any(
+                task
+                and str(normalize_task_status(task.get("status")) or "").strip().lower() == "queued"
+                for task in self.tasks
+            )
         )
