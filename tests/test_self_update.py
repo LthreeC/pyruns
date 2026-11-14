@@ -88,6 +88,45 @@ def test_update_coordinator_requires_idle_runtime_and_gates_new_starts():
     assert shutdowns == ["idle"]
 
 
+@pytest.mark.parametrize("completion", ["matching", "missing", "another"])
+def test_follower_resumes_only_after_its_update_finishes_before_it_drains(tmp_path, completion):
+    state_dir = str(tmp_path / "coordination")
+    shutdowns = []
+    follower = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append("follower"), shared=True, state_dir=state_dir,
+    )
+    runtime = _Runtime(1)
+    store = _publish_update_request(
+        state_dir, "a" * 32, "b" * 32, stage="draining", operation="upgrade",
+    )
+    follower.attach(runtime)
+    try:
+        follower._monitor_tick()
+        assert follower.requested
+        with store.locked():
+            if completion == "missing":
+                os.remove(store.request_path)
+            else:
+                request = store.read_request_locked()
+                request.update(stage="completed", result={"ok": False, "exit_code": 1})
+                if completion == "another":
+                    request["request_id"] = "c" * 32
+                store.write_request_locked(request)
+        follower._monitor_tick()
+        if completion == "matching":
+            assert follower.state == "idle"
+            with follower.task_start_guard():
+                pass
+        else:
+            assert follower.state == "restarting"
+            with pytest.raises(UpdateInProgressError):
+                with follower.task_start_guard():
+                    pass
+        assert shutdowns == []
+    finally:
+        follower.close()
+
+
 def test_update_coordinator_fails_closed_when_idle_check_fails():
     class BrokenRuntime:
         def active_task_count(self):
@@ -1310,9 +1349,12 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch, hidden_flags):
         "pip",
         "install",
         "--upgrade",
-        "pyruns",
+        "--no-input",
+        "--disable-pip-version-check",
+        "pyruns>=0.4.0",
     ]
-    assert calls[0][1] == {
+    assert calls[0][1]["stderr"].closed
+    assert {key: value for key, value in calls[0][1].items() if key != "stderr"} == {
         "check": False,
         "timeout": self_update.PIP_UPGRADE_TIMEOUT_SECONDS,
         **hidden_flags,
@@ -1359,6 +1401,7 @@ def test_run_pip_upgrade_failure_keeps_relaunch_result(monkeypatch):
         "previous_version": "0.3.0",
         "installed_version": "0.3.0",
         "exit_code": 1,
+        "error": "Could not start pip: offline",
     }
 
 
@@ -1377,7 +1420,42 @@ def test_run_pip_upgrade_timeout_keeps_relaunch_result(monkeypatch):
         "previous_version": "0.3.0",
         "installed_version": "0.3.0",
         "exit_code": 124,
+        "error": "pip did not finish within 300 seconds.",
     }
+
+
+def test_pip_failure_details_survive_restart_result(monkeypatch):
+    detail = "ERROR: No matching distribution found for pyruns>=0.4.0"
+
+    def fake_run(command, **kwargs):
+        if "pip" in command:
+            kwargs["stderr"].write(("warning\n" * 300 + detail).encode())
+            return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0, stdout="0.3.0\n")
+
+    monkeypatch.setattr(self_update.subprocess, "run", fake_run)
+    result = self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")
+    assert result["ok"] is False
+    assert len(result["error"]) <= 1024
+    assert result["error"].endswith(detail)
+    monkeypatch.setenv(self_update.UI_UPDATE_RESULT_ENV, json.dumps(result))
+    assert self_update.read_update_result() == result
+
+
+def test_waiter_preserves_coordination_failure_details(tmp_path):
+    detail = "Timed out waiting for ui@worker pid=42 phase=draining"
+    result = {
+        "ok": False, "previous_version": "0.3.0", "installed_version": "0.3.0",
+        "exit_code": 1,
+    }
+    store = _publish_update_request(
+        tmp_path / "coordination", "a" * 32, "b" * 32,
+        stage="completed", result=result, error=detail,
+    )
+    assert self_update.wait_for_coordinated_update(
+        state_dir=store.state_dir, request_id="b" * 32,
+        instance_id="c" * 32, previous_version="0.3.0",
+    ) == {**result, "error": detail}
 
 
 def test_process_replacements_keep_token_out_of_command_line(monkeypatch):
@@ -1660,6 +1738,7 @@ def test_incomplete_waiter_arguments_never_run_upgrade(monkeypatch):
         "previous_version": "0.3.0",
         "installed_version": "0.3.0",
         "exit_code": 1,
+        "error": "A shared update waiter requires request, instance, and state identifiers.",
     }
 
 

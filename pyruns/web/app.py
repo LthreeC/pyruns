@@ -2205,6 +2205,7 @@ def main(
             proxy_headers=False,
             access_log=False,
             log_level="warning",
+            timeout_graceful_shutdown=10,
         )
         server_returned = True
     finally:

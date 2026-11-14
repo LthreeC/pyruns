@@ -213,6 +213,7 @@ export interface UiUpdateResult {
   previous_version: string
   installed_version: string
   exit_code: number
+  error?: string
 }
 
 export interface SystemInfo {

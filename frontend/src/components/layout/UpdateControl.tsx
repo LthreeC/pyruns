@@ -147,11 +147,13 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
         detail: result.installed_version || info.version,
       })
     } else {
-      const detail = result.exit_code === 0
-        ? t('pip completed without installing the confirmed release; version {{version}} was restarted.', { version: info.version })
-        : result.exit_code === 124
-          ? t('The update timed out; version {{version}} was restarted.', { version: info.version })
-          : t('pip exited with code {{code}}; version {{version}} was restarted.', { code: result.exit_code, version: info.version })
+      const detail = result.error
+        ? t('Update failed: {{error}} Version {{version}} was restarted.', { error: result.error, version: info.version })
+        : result.exit_code === 0
+          ? t('pip completed without installing the confirmed release; version {{version}} was restarted.', { version: info.version })
+          : result.exit_code === 124
+            ? t('The update timed out; version {{version}} was restarted.', { version: info.version })
+            : t('pip exited with code {{code}}; version {{version}} was restarted.', { code: result.exit_code, version: info.version })
       notify({
         tone: 'error',
         title: t('Pyruns update failed'),
@@ -234,18 +236,23 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     const startedAt = Date.now()
     while (Date.now() - startedAt < UPDATE_RESTART_TIMEOUT_MS) {
       await wait(RESTART_POLL_MS)
+      let info: SystemInfo | undefined
       try {
-        const info = await requestWithTimeout(
+        info = await requestWithTimeout(
           signal => api.getSystemInfo(signal),
           RESTART_REQUEST_TIMEOUT_MS,
           t('Pyruns status check timed out.'),
         )
-        if (info.instance_id !== previousInstanceId) {
-          window.location.reload()
-          return
-        }
       } catch {
         // A connection failure is expected while the old process is replaced.
+      }
+      if (info && info.instance_id !== previousInstanceId) {
+        window.location.reload()
+        return
+      }
+      if (info && ['idle', 'restart_required'].includes(info.update_state)) {
+        setSystemInfo(info)
+        throw new Error(t('Pyruns stopped the update before restarting. Check the terminal details and try again.'))
       }
       if (Date.now() - startedAt >= SLOW_UPDATE_MS) {
         setTakingLong(true)

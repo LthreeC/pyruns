@@ -4988,20 +4988,34 @@ def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch
     assert restart["state_dir"]
 
 
-def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
+@pytest.mark.parametrize("slow_request", [False, True])
+def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path, slow_request):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
 
     token = "live-update-smoke-token"
-    code = (
-        "import faulthandler, json; "
-        "faulthandler.dump_traceback_later(5, repeat=True); "
-        "from pyruns.web import app; "
-        "app.replace_process_with_updater = "
-        "lambda **kwargs: print('REPLACED=' + json.dumps(kwargs, sort_keys=True), flush=True); "
-        f"app.main(open_browser=False, port={port}, access_token={token!r})"
-    )
+    code = f"""
+import asyncio, faulthandler, json
+from fastapi.responses import StreamingResponse
+from pyruns.web import app
+faulthandler.dump_traceback_later(5, repeat=True)
+original_create_app = app.create_app
+def create_app(*args, **kwargs):
+    result = original_create_app(*args, **kwargs)
+    @result.get('/api/slow-update-test')
+    async def slow_response():
+        async def chunks():
+            yield b'started\\n'
+            await asyncio.sleep(60)
+        return StreamingResponse(chunks())
+    result.router.routes.insert(0, result.router.routes.pop())
+    return result
+app.create_app = create_app
+app.replace_process_with_updater = lambda **kwargs: print(
+    'REPLACED=' + json.dumps(kwargs, sort_keys=True), flush=True)
+app.main(open_browser=False, port={port}, access_token={token!r})
+"""
     environment = os.environ.copy()
     environment[ENV_KEY_ROOT] = str(tmp_path)
     process = subprocess.Popen(
@@ -5012,6 +5026,7 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
+    pending_response = None
     try:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -5025,9 +5040,15 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
         assert process.poll() is None
 
         opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
         )
         opener.open(f"http://127.0.0.1:{port}/?token={token}", timeout=5).read()
+        if slow_request:
+            pending_response = opener.open(
+                f"http://127.0.0.1:{port}/api/slow-update-test", timeout=5,
+            )
+            assert pending_response.read(1) == b"s"
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/system/update",
             data=b"",
@@ -5044,6 +5065,8 @@ def test_live_web_server_gracefully_hands_idle_update_to_replacer(tmp_path):
             stdout, stderr = process.communicate(timeout=5)
             pytest.fail(f"UI handoff exceeded 15 seconds.\nstdout:\n{stdout}\nstderr:\n{stderr}")
     finally:
+        if pending_response is not None:
+            pending_response.close()
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=5)

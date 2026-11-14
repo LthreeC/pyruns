@@ -9,6 +9,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -475,8 +476,22 @@ class UiUpdateCoordinator:
     def _monitor_tick(self) -> None:
         if self._store is None:
             return
-        with self._store.locked():
-            request = self._store.active_request_locked(recover=True)
+        # Match prepare's lock order so a completed request cannot clear a
+        # newly accepted update while this monitor is reading shared state.
+        with self._lock:
+            with self._store.locked():
+                request = self._store.active_request_locked(recover=True)
+                if request is None and self._requested and not self._shutdown_triggered:
+                    completed = self._store.read_request_locked()
+                    # Missing/stale NFS reads are not proof that pip stopped.
+                    if (
+                        completed is not None
+                        and completed.get("request_id") == self._request_id
+                        and completed.get("stage") == "completed"
+                    ):
+                        self._requested = False
+                        self._request_id = ""
+                        self._target_version = ""
         if request is not None:
             self._join_request(request)
             self._heartbeat_request_if_owner()
@@ -619,14 +634,17 @@ def read_update_result() -> dict[str, Any] | None:
         return None
     try:
         exit_code = int(payload.get("exit_code", 1))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return {
+    result = {
         "ok": payload["ok"],
         "previous_version": str(payload.get("previous_version", "") or ""),
         "installed_version": str(payload.get("installed_version", "") or ""),
         "exit_code": exit_code,
     }
+    if isinstance(payload.get("error"), str) and payload["error"]:
+        result["error"] = payload["error"][-1024:]
+    return result
 
 
 def _replace_current_process(command: list[str], environment: dict[str, str]) -> None:
@@ -754,18 +772,35 @@ def run_pip_upgrade(
 ) -> dict[str, Any]:
     """Run the requested pip operation and return a relaunch-safe result."""
 
-    command = [sys.executable, "-m", "pip", "install", "--upgrade", "pyruns"]
+    requirement = f"pyruns>={Version(target_version)}" if target_version else "pyruns"
+    command = [
+        sys.executable, "-m", "pip", "install", "--upgrade",
+        "--no-input", "--disable-pip-version-check", requirement,
+    ]
+    error = ""
     print(f"[pyruns] Running: {subprocess.list2cmdline(command)}", flush=True)
     try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            timeout=PIP_UPGRADE_TIMEOUT_SECONDS,
-            **hidden_subprocess_kwargs(),
-        )
+        # A file keeps error output bounded in memory and avoids waiting for
+        # inherited pipe handles in pip's build children after a timeout.
+        with tempfile.TemporaryFile() as error_log:
+            completed = subprocess.run(
+                command,
+                check=False,
+                timeout=PIP_UPGRADE_TIMEOUT_SECONDS,
+                stderr=error_log,
+                **hidden_subprocess_kwargs(),
+            )
+            error_log.seek(0, os.SEEK_END)
+            error_log.seek(max(0, error_log.tell() - 8192))
+            stderr = error_log.read().decode("utf-8", errors="replace").strip()
         exit_code = int(completed.returncode)
+        if stderr:
+            print(stderr, file=sys.stderr, flush=True)
+            if exit_code:
+                error = stderr[-1024:]
     except subprocess.TimeoutExpired:
         exit_code = 124
+        error = f"pip did not finish within {PIP_UPGRADE_TIMEOUT_SECONDS:g} seconds."
         print(
             f"[pyruns] pip did not finish within {PIP_UPGRADE_TIMEOUT_SECONDS:g} seconds; "
             "restarting the available version.",
@@ -774,6 +809,7 @@ def run_pip_upgrade(
         )
     except OSError as exc:
         exit_code = 1
+        error = f"Could not start pip: {exc}"
         print(f"[pyruns] Could not start pip: {exc}", file=sys.stderr, flush=True)
 
     installed_version = _query_installed_version(previous_version)
@@ -804,12 +840,15 @@ def run_pip_upgrade(
             file=sys.stderr,
             flush=True,
         )
-    return {
+    result = {
         "ok": ok,
         "previous_version": str(previous_version),
         "installed_version": installed_version,
         "exit_code": exit_code,
     }
+    if error:
+        result["error"] = error[-1024:]
+    return result
 
 
 def _coordinated_instance_payload(
@@ -1120,6 +1159,9 @@ def wait_for_coordinated_update(
                     ),
                     "exit_code": exit_code,
                 }
+                error = raw_result.get("error") or request.get("error")
+                if isinstance(error, str) and error:
+                    result["error"] = error[-1024:]
             else:
                 result = {
                     "ok": False,
@@ -1169,13 +1211,16 @@ def relaunch_ui(*, port: int, token: str, result: dict[str, Any]) -> None:
     _replace_current_process(command, environment)
 
 
-def _coordination_failure_result(previous_version: str) -> dict[str, Any]:
-    return {
+def _coordination_failure_result(previous_version: str, error: str = "") -> dict[str, Any]:
+    result = {
         "ok": False,
         "previous_version": str(previous_version),
         "installed_version": _query_installed_version(previous_version),
         "exit_code": 1,
     }
+    if error:
+        result["error"] = error[-1024:]
+    return result
 
 
 def _finish_failed_coordination(
@@ -1240,7 +1285,7 @@ def restart_ui_after_handoff(
             )
     except Exception as exc:
         print(f"[pyruns] Restart coordination failed: {exc}", file=sys.stderr, flush=True)
-        result = _coordination_failure_result(previous_version)
+        result = _coordination_failure_result(previous_version, str(exc))
         _finish_failed_coordination(
             state_dir=state_dir,
             request_id=request_id,
@@ -1316,7 +1361,7 @@ def main(args: list[str] | None = None) -> int:
             )
     except Exception as exc:
         print(f"[pyruns] Update coordination failed: {exc}", file=sys.stderr, flush=True)
-        result = _coordination_failure_result(options.previous_version)
+        result = _coordination_failure_result(options.previous_version, str(exc))
         if options.request_id and options.instance_id and options.state_dir:
             _finish_failed_coordination(
                 state_dir=options.state_dir,

@@ -73,6 +73,48 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
   expect(updateRequests).toBe(1)
 })
 
+test('update wait stops immediately when shared coordination aborts', async ({ page }) => {
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: '0.3.0', installed_version: '0.3.0', restart_required: false,
+      instance_id: 'same-instance', update_supported: true, update_state: 'idle', last_update: null,
+    },
+  }))
+  await page.route('**/api/system/update/check', route => route.fulfill({
+    json: { current_version: '0.3.0', latest_version: '0.4.0', update_available: true },
+  }))
+  await page.route('**/api/system/update', route => route.fulfill({
+    status: 202,
+    json: { ok: true, instance_id: 'same-instance', version: '0.3.0', state: 'restarting' },
+  }))
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const button = page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ })
+  await button.click()
+  await page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' })
+    .getByRole('button', { name: 'Update and Restart' }).click()
+  await expect(page.getByText('Could not update Pyruns')).toBeVisible()
+  await expect(page.getByText(/stopped the update before restarting/)).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Updating Pyruns' })).toBeHidden()
+  await expect(button).toBeEnabled()
+})
+
+test('failed update shows the installer reason after restarting', async ({ page }) => {
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: '0.3.0', installed_version: '0.3.0', restart_required: false,
+      instance_id: 'failed-instance', update_supported: true, update_state: 'idle',
+      last_update: {
+        ok: false, previous_version: '0.3.0', installed_version: '0.3.0', exit_code: 1,
+        error: 'No matching distribution found for pyruns>=0.4.0',
+      },
+    },
+  }))
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await expect(page.getByText('Pyruns update failed')).toBeVisible()
+  await expect(page.getByText(/No matching distribution found/)).toBeVisible()
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates/ })).toBeEnabled()
+})
+
 test('update wait exits with a retryable error when the backend never restarts', async ({ page }) => {
   await page.clock.install({ time: new Date('2026-08-31T00:00:00Z') })
   let updateStarted = false
@@ -89,7 +131,7 @@ test('update wait exits with a retryable error when the backend never restarts',
         restart_required: false,
         instance_id: 'stuck-instance',
         update_supported: true,
-        update_state: 'idle',
+      update_state: updateStarted ? 'restarting' : 'idle',
         last_update: null,
       },
     })
@@ -129,6 +171,9 @@ test('update wait exits with a retryable error when the backend never restarts',
   await expect(progress).toBeHidden()
   await expect(page.getByText('Could not update Pyruns')).toBeVisible()
   await expect(page.getByText(/did not restart within 8 minutes/)).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Restarting Pyruns', exact: true })).toBeDisabled()
+  updateStarted = false
+  await page.clock.fastForward(5_000)
   await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.3/ })).toBeEnabled()
 })
 

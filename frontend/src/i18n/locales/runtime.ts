@@ -233,6 +233,8 @@ export default {
   'The update timed out; version {{version}} was restarted.': '更新超时，已重启版本 {{version}}。',
   'pip exited with code {{code}}; version {{version}} was restarted.': 'pip 以退出码 {{code}} 结束，已重启版本 {{version}}。',
   'Pyruns update failed': 'Pyruns 更新失败',
+  'Update failed: {{error}} Version {{version}} was restarted.': '更新失败：{{error}} 已重启版本 {{version}}。',
+  'Pyruns stopped the update before restarting. Check the terminal details and try again.': 'Pyruns 在重启前已中止更新，请查看终端中的具体原因后重试。',
   'Pyruns status check timed out.': 'Pyruns 状态检查超时。',
   'Pyruns did not restart within 8 minutes. Check the terminal status, then try again.': 'Pyruns 未在 8 分钟内重启，请检查终端状态后重试。',
   'The Pyruns update check did not respond within 10 seconds. Try again.': 'Pyruns 更新检查未在 10 秒内响应，请重试。',
