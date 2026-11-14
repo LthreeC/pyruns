@@ -2457,9 +2457,9 @@ def test_cancel_reconciliation_uses_the_locked_run_index(tmp_path):
         manager.shutdown()
 
     info = load_task_info(task["dir"])
-    assert info["status"] == "failed"
+    assert info["status"] == "cancelled"
     assert info["run_index"] == 2
-    assert info["run_statuses"] == ["completed", "failed"]
+    assert info["run_statuses"] == ["completed", "cancelled"]
 
 
 def test_partial_submission_is_reported_and_worker_count_is_bounded(tmp_path, monkeypatch, capsys):

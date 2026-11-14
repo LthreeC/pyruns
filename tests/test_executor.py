@@ -1754,12 +1754,12 @@ def test_executor_runtime_source_and_summary_helpers_cover_edge_paths(tmp_path, 
     assert "assigned_gpus=0" in error_text
 
     save_task_info(str(task_dir), {"name": "task", "_pending_stop_summary": {"run_index": 3, "reason": "stop"}})
-    assert executor._consume_pending_stop_summary(str(task_dir), 2) is None
-    assert executor._consume_pending_stop_summary(str(task_dir), 3)["reason"] == "stop"
-    assert "_pending_stop_summary" not in executor.load_task_metadata(str(task_dir))
+    assert executor._read_pending_stop_summary(str(task_dir), 2) is None
+    assert executor._read_pending_stop_summary(str(task_dir), 3)["reason"] == "stop"
+    assert executor.load_task_metadata(str(task_dir))["_pending_stop_summary"]["reason"] == "stop"
 
     save_task_info(str(task_dir), {"name": "task", "_pending_stop_summary": "bad"})
-    assert executor._consume_pending_stop_summary(str(task_dir), 3) is None
+    assert executor._read_pending_stop_summary(str(task_dir), 3) is None
 
     assert executor._build_run_source_state(task_dir=str(task_dir), script_path=None, workdir=str(tmp_path)).startswith("git ")
 
@@ -1921,6 +1921,118 @@ def test_run_task_worker_success(mock_popen, mock_emit, mock_detect, tmp_path):
     # Check emit was called
     assert mock_emit.called
     assert all(call.kwargs.get("log_file_name") == "run1.log" for call in mock_emit.call_args_list)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_worker_result_survives_terminal_metadata_lock_failure(tmp_path, monkeypatch, cancelled):
+    from pyruns.core.task_manager import TaskManager
+
+    task_dir = _write_worker_task_info(tmp_path / "tasks" / "shared", "shared")
+    executor.update_task_metadata(task_dir, lambda info: info.update(
+        status="running", run_index=1, runner_id="worker:123:token", runner_host="worker",
+        _attempt_id="attempt-one", run_attempt_ids=["attempt-one"],
+    ))
+    process = MagicMock(pid=987654321, returncode=0)
+    process.stdout.read1.return_value = b""
+    original_update = executor.update_task_metadata
+    failures = []
+
+    def wait():
+        if cancelled:
+            original_update(task_dir, lambda info: info.update(
+                cancel_requested_at="2026-11-14_00-00-01",
+                _pending_stop_summary={"run_index": 1, "reason": "cancelled_by_user"},
+            ))
+        return 0
+
+    def busy_final_metadata(directory, updater, **kwargs):
+        if updater.__name__ == "_mark_finished":
+            failures.append(updater.__name__)
+            raise TimeoutError("shared task lock busy")
+        return original_update(directory, updater, **kwargs)
+
+    process.wait.side_effect = wait
+    monkeypatch.setattr(executor, "_build_command", lambda *_args, **_kwargs: ([sys.executable], task_dir, []))
+    monkeypatch.setattr(executor, "_spawn_captured_process", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(executor, "_build_run_source_state", lambda **_kwargs: "test source")
+    monkeypatch.setattr(executor, "collect_run_environment", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(executor, "update_task_metadata", busy_final_metadata)
+    result = run_task_worker(task_dir, "shared", "now", {}, runner_id="worker:123:token",
+                             runner_host="worker", attempt_id="attempt-one")
+
+    expected_status = "cancelled" if cancelled else "completed"
+    assert result["status"] == expected_status
+    assert failures == ["_mark_finished"] * 3
+    assert executor.load_task_metadata(task_dir)["status"] == "running"
+    assert len(list(Path(task_dir).glob(".run-result-*.json"))) == 1
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    reader = TaskManager(tasks_dir=str(tmp_path / "tasks"), lazy_scan=False, owns_task_lifecycle=False)
+    try:
+        assert reader.get_task("shared")["status"] == expected_status
+        assert executor.load_task_metadata(task_dir)["status"] == expected_status
+    finally:
+        reader.shutdown()
+
+
+def test_finish_log_failure_does_not_lose_successful_exit(tmp_path, monkeypatch):
+    task_dir = _write_worker_task_info(tmp_path, "log-failure")
+    process = MagicMock(pid=987654321, returncode=0)
+    process.wait.return_value = 0
+    process.stdout.read1.return_value = b""
+    original_append = executor._append_run_log_text
+
+    def fail_finish_log(path, text, **kwargs):
+        if "[PYRUNS] Exit code:" in text:
+            raise OSError("finish log unavailable")
+        return original_append(path, text, **kwargs)
+
+    monkeypatch.setattr(executor, "_build_command", lambda *_args, **_kwargs: ([sys.executable], task_dir, []))
+    monkeypatch.setattr(executor, "_spawn_captured_process", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(executor, "_append_run_log_text", fail_finish_log)
+    result = run_task_worker(task_dir, "log-failure", "now", {})
+    assert result["status"] == "completed"
+    assert executor.load_task_metadata(task_dir)["exit_codes"] == [0]
+
+
+def test_worker_accepts_cancellation_replayed_by_another_reader(tmp_path, monkeypatch):
+    from pyruns.utils.run_result import recover_run_result
+
+    task_dir = _write_worker_task_info(tmp_path, "shared-result")
+    executor.update_task_metadata(task_dir, lambda info: info.update(
+        status="running", run_index=1, runner_id="worker", _attempt_id="attempt-one",
+        run_attempt_ids=["attempt-one"],
+    ))
+    process = MagicMock(pid=987654321, returncode=0)
+    process.wait.return_value = 0
+    process.stdout.read1.return_value = b""
+
+    def cancel_and_recover(_name, text, **_kwargs):
+        if "[PYRUNS] Exit code:" in text:
+            info = executor.update_task_metadata(task_dir, lambda current: current.update(
+                cancel_requested_at="2026-11-14_00-00-01",
+            ))
+            _, recovered = recover_run_result(task_dir, info)
+            assert recovered
+
+    monkeypatch.setattr(executor, "_build_command", lambda *_args, **_kwargs: ([sys.executable], task_dir, []))
+    monkeypatch.setattr(executor, "_spawn_captured_process", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(executor.log_emitter, "emit", cancel_and_recover)
+    result = run_task_worker(task_dir, "shared-result", "now", {}, runner_id="worker", attempt_id="attempt-one")
+    assert result["status"] == "cancelled"
+    assert executor.load_task_metadata(task_dir)["status"] == "cancelled"
+
+
+def test_worker_error_preserves_durable_cancellation(tmp_path, monkeypatch):
+    task_dir = _write_worker_task_info(tmp_path, "cancel-error")
+    executor.update_task_metadata(task_dir, lambda info: info.update(cancel_requested_at="2026-11-14_00-00-01"))
+
+    def fail_launch(*_args, **_kwargs):
+        raise RuntimeError("launch interrupted after cancellation")
+
+    monkeypatch.setattr(executor, "_build_command", fail_launch)
+    result = run_task_worker(task_dir, "cancel-error", "now", {})
+    assert result["status"] == "cancelled"
+    assert executor.load_task_metadata(task_dir)["status"] == "cancelled"
 
 
 @patch("pyruns.utils.parse_utils.detect_config_source_fast")

@@ -60,6 +60,7 @@ from pyruns.utils.info_io import (
     validate_workspace_directory,
 )
 from pyruns.utils.native_lock import LOCK_PROTOCOL
+from pyruns.utils.run_result import recover_run_result
 from pyruns.utils.process_utils import (
     get_process_create_time,
     is_pid_running,
@@ -1107,6 +1108,16 @@ class TaskManager:
         *,
         raise_on_error: bool = False,
     ) -> tuple[Dict[str, Any], bool]:
+        try:
+            info, recovered = recover_run_result(task_dir, info)
+        except (OSError, ValueError) as exc:
+            if raise_on_error:
+                raise
+            return self._info_with_pending_terminal_write(
+                info, f"Could not persist final task metadata: {exc}",
+            ), True
+        if recovered:
+            return info, True
         reconcile_running = (
             self.owns_task_lifecycle
             if self.reconcile_unowned_running is None
@@ -1137,25 +1148,19 @@ class TaskManager:
         except (OSError, ValueError) as exc:
             if raise_on_error:
                 raise
-            return self._failed_info_with_error(
+            return self._info_with_pending_terminal_write(
                 info, f"Could not persist final task metadata: {exc}",
             ), True
         updated = load_task_metadata(task_dir) or info
-        logger.warning("%s: local process identity is no longer live; marked failed", task_name)
+        logger.warning("%s: local process identity is no longer live; marked %s", task_name, updated.get("status"))
         return updated, True
 
-    def _failed_info_with_error(self, info: Dict[str, Any], message: str) -> Dict[str, Any]:
-        """Represent a verified finished process when its terminal write fails."""
-        failed = copy.deepcopy(info)
-        self._apply_terminal_status_to_info(
-            failed,
-            run_index=active_task_run_index(info),
-            finish_now=get_now_str(),
-            final_status="failed",
-        )
-        failed["_load_error"] = message
-        failed["_terminal_write_pending"] = True
-        return failed
+    def _info_with_pending_terminal_write(self, info: Dict[str, Any], message: str) -> Dict[str, Any]:
+        """Keep the shared status authoritative while a terminal write retries."""
+        pending = copy.deepcopy(info)
+        pending["_load_error"] = message
+        pending["_terminal_write_pending"] = True
+        return pending
 
     @staticmethod
     def _same_task_dir(left: str | None, right: str | None) -> bool:
@@ -1625,39 +1630,8 @@ class TaskManager:
                 if (
                     not force_all and task.get("_info_signature") == info_signature
                     and not payload_changed and not task.get("_terminal_write_pending")
+                    and task.get("status") not in {"running", "queued"}
                 ):
-                    if task.get("status") == "running" and task.get("name") not in self._running_ids:
-                        task_identity = self._task_identity_token(task["dir"])
-                        info = load_task_metadata(task["dir"])
-                        if not info:
-                            continue
-                        info = self._strip_queued_placeholder_run(info)
-                        info, failed = self._fail_unowned_running_info_if_needed(
-                            task["name"], task["dir"], info, raise_on_error=raise_on_error,
-                        )
-                        if failed:
-                            try:
-                                info_stat = os.stat(info_path)
-                                mtime_ns = info_stat.st_mtime_ns
-                                info_signature = self._stat_signature(info_stat)
-                            except OSError:
-                                mtime_ns = 0
-                                info_signature = None
-                            with self._lock:
-                                existing = self._tasks_by_name.get(task["name"])
-                                if existing is task and task.get("_registry_revision", 0) == revision:
-                                    before = self._task_snapshot(existing)
-                                    self._apply_info_to_task(
-                                        existing, info, mtime_ns=mtime_ns,
-                                        info_signature=info_signature,
-                                        task_identity=task_identity,
-                                    )
-                                    self._clear_running_locked(task["name"])
-                                    self.gpu_scheduler.release(task["name"])
-                                    self._recompute_processing_flag_locked()
-                                    processing_checked = True
-                                    after = self._task_snapshot(existing)
-                                    has_changed |= before != after
                     continue
                 try:
                     task_identity = self._task_identity_token(task["dir"])
@@ -1685,10 +1659,12 @@ class TaskManager:
                         str(task.get("name", "") or ""),
                     )
                 info = self._strip_queued_placeholder_run(info)
-                if task.get("_terminal_write_pending"):
+                if task.get("_info_signature") == info_signature or task.get("_terminal_write_pending"):
                     info, _ = self._fail_unowned_running_info_if_needed(
                         task["name"], task["dir"], info, raise_on_error=raise_on_error,
                     )
+                else:
+                    info, _ = recover_run_result(task["dir"], info)
 
                 with self._lock:
                     existing = self._tasks_by_name.get(task["name"])
@@ -1701,6 +1677,9 @@ class TaskManager:
                         info_signature=info_signature,
                         task_identity=task_identity,
                     )
+                    if existing.get("status") not in {"running", "queued"}:
+                        self._clear_running_locked(task["name"])
+                        self.gpu_scheduler.release(task["name"])
                     if not processing_checked or was_queued != (existing.get("status") == "queued"):
                         self._recompute_processing_flag_locked()
                         processing_checked = True
@@ -2684,7 +2663,7 @@ class TaskManager:
                     request_context["action"] = "cancel_expired_local"
                 return
 
-            final_status = "cancelled" if status == "queued" else "failed"
+            final_status = "cancelled"
             _, finalized_run_slot = self._apply_terminal_status_to_info(
                 info,
                 run_index=current_run_index,
@@ -2746,11 +2725,11 @@ class TaskManager:
                     int(updated.get("run_index", 0) or 0),
                     1,
                 )
-                title = f"Run #{display_run_index} failed at {requested_at}"
+                title = f"Run #{display_run_index} {updated['status']} at {requested_at}"
             elif status == "queued":
                 title = f"Queued task stopped at {requested_at}"
             else:
-                title = f"Task failed at {requested_at}"
+                title = f"Task {updated['status']} at {requested_at}"
             self._append_error_summary(
                 task_dir,
                 title=title,
@@ -3888,7 +3867,13 @@ class TaskManager:
         except Exception:
             info = None
 
+        persistence_error = None
         if info:
+            try:
+                info, _ = recover_run_result(task_dir, info)
+            except (OSError, ValueError) as exc:
+                persistence_error = exc
+                logger.warning("Could not replay task completion for %s: %s", task_id, exc)
             info = self._strip_queued_placeholder_run(info)
             disk_status = str(info.get("status", "") or "").lower()
             same_run = active_task_run_index(info) == expected_run_index
@@ -3901,8 +3886,7 @@ class TaskManager:
             disk_status = ""
             same_generation = False
 
-        persistence_error = None
-        if error and same_generation and disk_status in {"queued", "running"}:
+        if error and persistence_error is None and same_generation and disk_status in {"queued", "running"}:
             try:
                 self._mark_failed_on_disk(
                     {
@@ -3952,13 +3936,13 @@ class TaskManager:
                         else "Final task metadata could not be read"
                     )
                     self._apply_info_to_task(
-                        current, self._failed_info_with_error(current, error_message),
+                        current, self._info_with_pending_terminal_write(current, error_message),
                     )
                 current_status = str(current.get("status", "") or "").lower()
                 if (
                     active_task_run_index(current) == expected_run_index
                     and task_attempt_matches(current, expected_attempt_id)
-                    and current_status not in {"queued", "running"}
+                    and (current_status not in {"queued", "running"} or current.get("_terminal_write_pending"))
                 ):
                     self._clear_running_locked(task_id)
                     self._clear_gpu_schedule_state(current)
@@ -5479,7 +5463,10 @@ class TaskManager:
                 task_info,
                 run_index=run_index,
                 finish_now=finish_now,
-                final_status=final_status,
+                final_status=(
+                    "cancelled" if require_no_live_owner and task_info.get("cancel_requested_at")
+                    else final_status
+                ),
             )
             failure_context["original_status"] = original_status
             failure_context["finalized_run_slot"] = should_finalize_slot

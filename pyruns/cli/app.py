@@ -1065,8 +1065,8 @@ def build_parser(
             "Persist a cancellation request for each exact queued or running task and wait for its\n"
             "owning runner to finish cancellation. If the runner has expired, Pyruns can stop a\n"
             "local process after verifying its identity. Remote or unverifiable live work keeps\n"
-            "the cancellation request pending. Work with no live owner is reconciled: queued tasks\n"
-            "become 'cancelled', and running tasks become 'failed'."
+            "the cancellation request pending. Once the local process is confirmed gone,\n"
+            "the cancellation request is finalized as 'cancelled'."
         ),
         epilog=_example_block(
             program,

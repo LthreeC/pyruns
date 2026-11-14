@@ -130,8 +130,8 @@ def test_expired_local_run_does_not_signal_a_reused_pid(expired_run, monkeypatch
     assert manager.request_task_cancel("orphan") is True
 
     info = load_task_metadata(str(task_dir))
-    assert info["status"] == "failed"
-    assert info["run_statuses"] == ["failed"]
+    assert info["status"] == "cancelled"
+    assert info["run_statuses"] == ["cancelled"]
 
 
 def test_expired_run_stop_write_failure_keeps_the_request_retryable(expired_run, monkeypatch):

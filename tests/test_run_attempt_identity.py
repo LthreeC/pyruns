@@ -142,7 +142,7 @@ def test_old_worker_does_not_consume_replacement_stop_request(tmp_path):
         "status": "running", "run_index": 1, "_attempt_id": "replacement",
         "_pending_stop_summary": {"run_index": 1, "reason": "cancelled_by_user"},
     })
-    assert executor._consume_pending_stop_summary(
+    assert executor._read_pending_stop_summary(
         str(task_dir), 1, expected_attempt_id="old-worker",
     ) is None
     assert load_task_metadata(str(task_dir))["_pending_stop_summary"]["reason"] == "cancelled_by_user"

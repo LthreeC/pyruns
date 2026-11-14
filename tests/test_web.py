@@ -3813,8 +3813,8 @@ def test_background_refresh_limits_history_io_and_targeted_invalidations(tmp_pat
     try:
         runtime.ensure_tasks_loaded()
         manager = runtime.task_manager
-        # Model a locally owned run; the unchanged disk signature must not
-        # cause the refresh to mistake it for an orphaned external process.
+        # Publish the same owned run to disk and memory before refreshing.
+        update_task_info(str(workspace / TASKS_DIR / "active"), lambda info: info.update(status="running"))
         manager._tasks_by_name["active"]["status"] = "running"
         manager._running_ids.add("active")
         changed_config = workspace / TASKS_DIR / "history" / CONFIG_FILENAME
@@ -5210,9 +5210,9 @@ def test_cancel_task_endpoint_reconciles_expired_local_runner(tmp_path):
         response = client.post("/api/tasks/alpha/cancel")
 
     assert response.status_code == 200, response.text
-    assert response.json()["task"]["status"] == "failed"
+    assert response.json()["task"]["status"] == "cancelled"
     info = load_task_info(str(task_dir))
-    assert info["status"] == "failed"
+    assert info["status"] == "cancelled"
     assert info["cancel_requested_at"]
     assert "runner_id" not in info
     kill_process.assert_not_called()
@@ -7713,6 +7713,7 @@ def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
         ) as websocket:
             assert polled.wait(2)
             assert get_logs.call_count == 1
+            update_task_info(str(task_dir), lambda info: info.update(status="running", run_index=1))
             with runtime.task_manager._lock:
                 current = runtime.task_manager._tasks_by_name["alpha"]
                 current["status"] = "running"
@@ -7745,6 +7746,7 @@ def test_logs_websocket_drains_queue_log_before_run_emitter(tmp_path, log_stream
             assert idle.wait(2)
             with queue_log.open("a", encoding="utf-8") as handle:
                 handle.write("assigned\n")
+            update_task_info(str(task_dir), lambda info: info.update(status="running", run_index=1))
             with runtime.task_manager._lock:
                 current = runtime.task_manager._tasks_by_name["alpha"]
                 current["status"] = "running"
@@ -7827,6 +7829,7 @@ def test_logs_websocket_stream_switches_from_queue_log_to_active_run_log(tmp_pat
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
         assert initialized.wait(2)
+        update_task_info(str(task_dir), lambda info: info.update(status="running", run_index=1))
         with runtime.task_manager._lock:
             current = runtime.task_manager._tasks_by_name["alpha"]
             current["status"] = "running"
@@ -7853,6 +7856,7 @@ def test_logs_websocket_stream_accepts_run_log_emitter_chunk_after_queue_offset(
 
     with client.websocket_connect("/api/tasks/alpha/logs/stream") as websocket:
         assert initialized.wait(2)
+        update_task_info(str(task_dir), lambda info: info.update(status="running", run_index=1))
         with runtime.task_manager._lock:
             current = runtime.task_manager._tasks_by_name["alpha"]
             current["status"] = "running"

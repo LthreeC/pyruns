@@ -55,6 +55,7 @@ from pyruns.utils.info_io import (
     update_task_metadata,
 )
 from pyruns.utils.log_io import normalize_log_newlines
+from pyruns.utils.run_result import write_run_result
 from pyruns.utils.process_utils import (
     get_process_create_time,
     hidden_subprocess_kwargs,
@@ -1483,12 +1484,14 @@ def _append_error_summary(
         return
 
 
-def _consume_pending_stop_summary(
+def _read_pending_stop_summary(
     task_dir: str, run_index: int, *, expected_attempt_id: str | None = None,
 ) -> Dict[str, Any] | None:
-    """Pop one pending stop summary for the finished run, if present."""
+    """Read a cancellation marker; consume it with the terminal state write."""
 
     current = load_task_metadata(task_dir)
+    if not task_attempt_matches(current, expected_attempt_id):
+        return None
     raw_current = current.get("_pending_stop_summary") if isinstance(current, dict) else None
     if not isinstance(raw_current, dict):
         return None
@@ -1499,22 +1502,7 @@ def _consume_pending_stop_summary(
     if raw_index != int(run_index):
         return None
 
-    captured: Dict[str, Any] = {}
-
-    def _apply(info: Dict[str, Any]) -> None:
-        if not task_attempt_matches(info, expected_attempt_id):
-            return
-        raw = info.get("_pending_stop_summary")
-        if not isinstance(raw, dict):
-            return
-        raw_index = int(raw.get("run_index", 0) or 0)
-        if raw_index != int(run_index):
-            return
-        captured.update(raw)
-        info.pop("_pending_stop_summary", None)
-
-    update_task_metadata(task_dir, _apply)
-    return captured or None
+    return dict(raw_current)
 
 
 def _terminate_started_process(
@@ -1625,6 +1613,7 @@ def run_task_worker(
     output_capture_errors: List[Exception] = []
     output_detached = threading.Event()
     output_lock = threading.Lock()
+    terminal_recorded = False
 
     def _owns_current_run(info: Dict[str, Any]) -> bool:
         if not task_attempt_matches(info, attempt_id):
@@ -1757,6 +1746,48 @@ def run_task_worker(
         create_times[slot] = process_create_time
         info["pid_create_times"] = create_times
 
+    def _commit_terminal_result(updater: Callable[[Dict[str, Any]], None], *, finish_log: str = "") -> None:
+        nonlocal terminal_recorded, status, progress
+        # This independent atomic receipt survives contention on task_info.json
+        # and lets another host finish the same attempt after this runner exits.
+        result = {
+            "run_index": int(run_index), "runner_id": runner_id,
+            "attempt_id": str(attempt_id if attempt_id is not None else task_meta.get("_attempt_id", "") or ""),
+            "status": status, "start_time": start_str, "finish_time": end_str,
+            "pid": proc.pid if proc is not None else None,
+            "pid_create_time": process_create_time,
+            "duration_seconds": duration_seconds, "exit_code": exit_code,
+        }
+        try:
+            write_run_result(task_dir, result)
+            terminal_recorded = True
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not save recovery result for %s: %s", name, exc)
+        if finish_log:
+            try:
+                _append_owned_run_log(finish_log, clean_boundary=True)
+            except Exception as exc:
+                logger.warning("Could not append finish log for %s: %s", name, exc)
+        for retry in range(3):
+            try:
+                updated = update_task_metadata(task_dir, updater)
+                if (
+                    updated.get("run_index") == run_index
+                    and task_attempt_matches(updated, attempt_id)
+                    and updated.get("status") in {"completed", "failed", "cancelled"}
+                ):
+                    status = updated["status"]
+                    progress = updated.get("progress", 0.0)
+                terminal_recorded = True
+                return
+            except OSError as exc:
+                if retry == 2:
+                    if not terminal_recorded:
+                        raise
+                    logger.warning("Final metadata for %s awaits result recovery: %s", name, exc)
+                else:
+                    time.sleep(0.05 * (retry + 1))
+
     def _terminate_and_wait_for_started_process(reason: str) -> tuple[bool, bool]:
         """Do not publish a terminal state while the owned child is alive."""
 
@@ -1849,8 +1880,9 @@ def run_task_worker(
             _store_process_identity(info, slot)
             _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
+            info.pop("_pending_stop_summary", None)
 
-        update_task_metadata(task_dir, _mark_stopped)
+        _commit_terminal_result(_mark_stopped)
 
         detail_lines = [f"reason={summary.get('reason', 'stopped')}"]
         detail_lines.extend(list(summary.get("detail_lines", []) or []))
@@ -1874,7 +1906,7 @@ def run_task_worker(
         return {"status": status, "progress": progress}
 
     try:
-        stop_summary = _consume_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
+        stop_summary = _read_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
         if stop_summary:
             return _finish_stopped_run(
                 stop_summary,
@@ -1949,7 +1981,7 @@ def run_task_worker(
         if isinstance(command, str):
             command = shlex.split(command, posix=not _is_windows())
 
-        stop_summary = _consume_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
+        stop_summary = _read_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
         if stop_summary:
             return _finish_stopped_run(
                 stop_summary,
@@ -2028,7 +2060,7 @@ def run_task_worker(
             else shlex.join(str(part) for part in command)
         )
 
-        stop_summary = _consume_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
+        stop_summary = _read_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
         if stop_summary:
             process_terminated, _survived = _terminate_and_wait_for_started_process("stop request")
             return _finish_stopped_run(
@@ -2243,7 +2275,7 @@ def run_task_worker(
                 for error in output_capture_errors
             )
             raise RuntimeError(f"Task output capture failed: {detail}") from output_capture_errors[0]
-        stop_summary = _consume_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
+        stop_summary = _read_pending_stop_summary(task_dir, run_index, expected_attempt_id=attempt_id)
         if stop_summary:
             status = "cancelled"
             progress = 0.0
@@ -2256,8 +2288,6 @@ def run_task_worker(
             + f"[PYRUNS] Exit code: {exit_code}\n"
             + f"[PYRUNS] Duration: {duration_seconds:.3f}s\n"
         )
-        _append_owned_run_log(finish_log, clean_boundary=True)
-
         def _mark_finished(info: Dict[str, Any]) -> None:
             nonlocal progress, status, stop_summary
             if not _owns_current_run(info):
@@ -2273,6 +2303,9 @@ def run_task_worker(
                     info.pop("_pending_stop_summary", None)
                     status = "cancelled"
                     progress = 0.0
+            if info.get("cancel_requested_at"):
+                status = "cancelled"
+                progress = 0.0
             elif status == "completed" and str(info.get("status", "") or "").lower() in {
                 "failed",
                 "cancelled",
@@ -2294,7 +2327,7 @@ def run_task_worker(
                 info[TRACKS_KEY] = []
             _clear_runner_lease(info, runner_id)
 
-        update_task_metadata(task_dir, _mark_finished)
+        _commit_terminal_result(_mark_finished, finish_log=finish_log)
 
         if status == "cancelled":
             final_status_payload = "[PYRUNS] Final status: cancelled\n"
@@ -2345,6 +2378,12 @@ def run_task_worker(
         }
 
     except Exception as exc:
+        if terminal_recorded:
+            logger.warning("Task %s finished with status %s; post-run reporting failed: %s", name, status, exc)
+            return {
+                "status": status, "progress": progress,
+                "duration_seconds": duration_seconds, "exit_code": exit_code,
+            }
         traceback_text = traceback.format_exc()
         end_str = get_now_str()
         child_process_terminated, child_process_survived = _terminate_and_wait_for_started_process(
@@ -2362,13 +2401,19 @@ def run_task_worker(
         if reader_thread is not None:
             reader_thread.join(timeout=5)
 
+        status = "failed"
+        progress = 0.0
+
         def _mark_error(info: Dict[str, Any]) -> None:
+            nonlocal status
             if not _owns_current_run(info):
                 return
+            if info.get("cancel_requested_at"):
+                status = "cancelled"
             slot = ensure_run_slot(info, run_index)
-            info["status"] = "failed"
+            info["status"] = status
             info["progress"] = 0.0
-            info["run_statuses"][slot] = "failed"
+            info["run_statuses"][slot] = status
             if start_str and not info["start_times"][slot]:
                 info["start_times"][slot] = start_str
             if end_str:
@@ -2377,7 +2422,7 @@ def run_task_worker(
             _store_process_metrics(info, slot)
             _clear_runner_lease(info, runner_id)
 
-        update_task_metadata(task_dir, _mark_error)
+        _commit_terminal_result(_mark_error)
 
         detail_lines = [
             f"exception={type(exc).__name__}: {exc}",
@@ -2408,7 +2453,7 @@ def run_task_worker(
             logger.error("Failed to write run log for %s: %s", name, log_exc)
         logger.error("%s", block)
         return {
-            "status": "failed",
+            "status": status,
             "progress": 0.0,
             "duration_seconds": duration_seconds,
             "exit_code": exit_code,

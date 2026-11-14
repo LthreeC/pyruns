@@ -3775,7 +3775,7 @@ def test_stop_unstarted_batch_task_keeps_other_submitted_runs_alive(tmp_path):
 
 @pytest.mark.parametrize(
     ("initial_status", "final_status", "return_code"),
-    [("queued", "cancelled", 0), ("running", "failed", 1)],
+    [("queued", "cancelled", 0), ("running", "cancelled", 0)],
 )
 def test_stop_reconciles_tasks_from_expired_local_runner(
     tmp_path,

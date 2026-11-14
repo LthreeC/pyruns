@@ -20,6 +20,24 @@ _DOMAIN = hashlib.blake2b(
 LOCK_PROTOCOL = f"guard-v2:{_DOMAIN}"
 
 
+def compatible_lock_protocol(protocol: str, host: str) -> bool:
+    """Recognize a peer's POSIX guard while preserving Windows/WSL isolation.
+
+    The v2 token includes the hostname even though POSIX native locks on a
+    shared filesystem interoperate across hosts. A held native guard proves
+    an ordinary POSIX peer released its lock without probing its remote PID.
+    """
+    if protocol == LOCK_PROTOCOL:
+        return True
+    if os.name == "nt" or not host:
+        return False
+    peer_domain = hashlib.blake2b(
+        "\0".join((os.name, sys.platform, host.lower(), "")).encode("utf-8"),
+        digest_size=16,
+    ).hexdigest()
+    return protocol == f"guard-v2:{peer_domain}"
+
+
 class NativeFileGuard:
     """Keep the same inode locked; never remove its permanent guard file."""
 

@@ -28,7 +28,7 @@ from pyruns._config import (
 )
 from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
 from pyruns.utils.file_boundary import validate_open_file
-from pyruns.utils.native_lock import LOCK_PROTOCOL as _LOCK_PROTOCOL, NativeFileGuard
+from pyruns.utils.native_lock import LOCK_PROTOCOL as _LOCK_PROTOCOL, NativeFileGuard, compatible_lock_protocol
 
 # Active holders and waiters keep strong references; idle task paths can retire.
 _TASK_FILE_LOCKS: WeakValueDictionary[str, threading.RLock] = WeakValueDictionary()
@@ -171,7 +171,10 @@ def _remove_stale_lock_file(lock_path: str, *, native_guard: bool = False) -> bo
     owner_parts = snapshot[1].split()
     if owner_parts[-1:] == [b"released"]:
         owner_parts.pop()
-    if len(owner_parts) != 5 or owner_parts[-1] != _LOCK_PROTOCOL.encode("ascii"):
+    if len(owner_parts) != 5 or not compatible_lock_protocol(
+        owner_parts[-1].decode("ascii", errors="replace"),
+        owner_parts[2].decode("utf-8", errors="replace"),
+    ):
         # Windows and WSL native locks do not interoperate on DrvFS. An old
         # marker or another lock domain cannot be proven orphaned by this
         # guard, even if its numeric PID happens not to exist on this host.

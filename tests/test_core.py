@@ -4915,7 +4915,7 @@ def test_task_manager_failed_submission_finalizes_or_retries_metadata(
     assert "alpha" not in manager._batch_running_ids
     assert manager.is_processing is False
     current = manager.get_task("alpha")
-    assert current["status"] == "failed"
+    assert current["status"] == ("running" if final_write_fails else "failed")
     if final_write_fails:
         assert "read-only task metadata" in current["_load_error"]
     else:
@@ -4954,7 +4954,7 @@ def test_task_manager_rejected_submission_cannot_execute_later(
         with patch.object(threading.Thread, "start", side_effect=RuntimeError("cannot start thread")):
             manager._submit_task(manager._tasks_by_name["alpha"], 1, independent=independent)
 
-        assert manager.get_task("alpha")["status"] == "failed"
+        assert manager.get_task("alpha")["status"] == ("running" if final_write_fails else "failed")
         assert "alpha" not in manager._running_ids
         # Starting another worker must drain the rejected item without launching it.
         pool.submit(lambda: None).result(timeout=5)
@@ -4990,7 +4990,7 @@ def test_task_manager_claim_write_error_does_not_hold_a_worker_slot(tmp_path, mo
     assert "alpha" not in manager._running_ids
     assert "alpha" not in manager._batch_running_ids
     assert load_task_info(task["dir"])["status"] == disk_status
-    assert manager.get_task("alpha")["status"] != "running"
+    assert manager.get_task("alpha")["status"] == disk_status
     monkeypatch.setattr(task_manager_module, "update_task_metadata", original_update)
     if disk_status == "queued":
         picked, next_run = manager._pick_queued_task(independent_only=independent)
@@ -5511,7 +5511,7 @@ def test_task_manager_worker_error_releases_resources_when_final_write_fails(tmp
     assert manager.is_processing is False
     assert released == ["alpha"]
     current = manager.get_task("alpha")
-    assert current["status"] == "failed"
+    assert current["status"] == "running"
     assert str(failure) in current["_load_error"]
     assert load_task_info(task["dir"])["status"] == "running"
     manager._sync_gpu_reservations_from_running_tasks()
@@ -5546,7 +5546,7 @@ def test_task_manager_final_write_failure_keeps_concurrent_updates(tmp_path, mon
     current = manager.get_task("alpha")
     if concurrent_change == "notes":
         assert current["notes"] == "latest notes"
-        assert current["status"] == "failed"
+        assert current["status"] == "running"
         assert "alpha" not in manager._running_ids
     else:
         assert current["run_index"] == 2
@@ -5607,9 +5607,9 @@ def test_task_manager_retries_failed_completion_when_storage_recovers(tmp_path, 
         manager.load_task_by_name("alpha")
     else:
         manager.refresh_from_disk(check_all=True)
-    assert manager.get_task("alpha")["status"] == "failed"
+    assert manager.get_task("alpha")["status"] == "running"
     assert "read-only metadata" in manager.get_task("alpha")["_load_error"]
-    assert manager.get_task("alpha")["run_statuses"] == ["failed"]
+    assert manager.get_task("alpha")["run_statuses"] == load_task_info(task["dir"])["run_statuses"]
     assert "_terminal_write_pending" not in manager.get_task("alpha")
     with pytest.raises(PermissionError, match="read-only metadata"):
         manager.refresh_from_disk(raise_on_error=True)
@@ -5736,7 +5736,7 @@ def test_task_manager_worker_done_releases_slot_when_metadata_unreadable(
     assert manager.is_processing is False
     assert released == ["alpha"]
     current = manager.get_task("alpha")
-    assert current["status"] == "failed"
+    assert current["status"] == "running"
     assert "metadata" in current["_load_error"].lower()
     if metadata_state == "corrupt":
         assert info_path.read_text(encoding="utf-8") == "{broken"
