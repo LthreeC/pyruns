@@ -1,3 +1,2 @@
-*.sh text eol=lf
-frontend/index.html text eol=lf
-pyruns/web/static/index.html text eol=lf
+# Use LF for text files on every platform; keep binary files unchanged.
+* text=auto eol=lf
