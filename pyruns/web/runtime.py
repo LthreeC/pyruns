@@ -553,15 +553,35 @@ class PyrunsRuntime:
 
         active_count = 0
         for manager in managers:
-            manager.refresh_from_disk(
-                force_all=force_all,
-                check_all=not force_all,
-                discover=True,
-                raise_on_error=force_all,
-                check_payload=force_all,
-            )
-            active_count += manager.active_task_count()
+            if force_all:
+                active_count += self._strict_manager_active_task_count(manager)
+            else:
+                manager.refresh_from_disk(check_all=True, discover=True, check_payload=False)
+                active_count += manager.active_task_count()
         return active_count
+
+    @staticmethod
+    def _strict_manager_active_task_count(manager: TaskManager) -> int:
+        """Retry changing snapshots, but never interpret an unreadable workspace as idle."""
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                manager.refresh_from_disk(force_all=True, discover=True, raise_on_error=True)
+                return manager.active_task_count()
+            except Exception as exc:
+                if isinstance(exc, TaskStateConflict):
+                    # Heartbeats can prevent a stable read of an active task.
+                    # A positive cached count safely refuses an update; zero
+                    # must still be verified by a successful strict refresh.
+                    active_count = manager.active_task_count()
+                    if active_count:
+                        return active_count
+                    if attempts < 3:
+                        continue
+                raise RuntimeError(
+                    f"Workspace '{os.path.dirname(manager.tasks_dir)}': {type(exc).__name__}: {exc}"
+                ) from exc
 
     @_with_stable_workspace
     def active_task_count(self) -> int:

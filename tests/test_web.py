@@ -340,11 +340,144 @@ def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
         assert runtime.active_task_count() == 0
         manager_b.is_processing = True
         assert runtime.active_task_count() == 1
+        assert runtime.strict_active_task_count() == 0
         manager_b.is_processing = False
 
         (workspace_b / TASKS_DIR / "external" / TASK_INFO_FILENAME).write_text("{broken", encoding="utf-8")
-        with pytest.raises(ValueError):
+        with pytest.raises(RuntimeError, match="JSONDecodeError"):
             runtime.strict_active_task_count()
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("operation", ["update", "restart"])
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_system_update_reports_busy_during_active_metadata_writes(tmp_path, monkeypatch, operation, status):
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "active", status=status)
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    shutdowns = []
+    coordinator = UiUpdateCoordinator(lambda: shutdowns.append(True), current_version="0.3.0")
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: "0.4.0")
+    try:
+        runtime.ensure_tasks_loaded()
+        manager = runtime.task_manager
+        probe = manager._probe_refresh_task
+
+        def probe_then_heartbeat(task, **kwargs):
+            result = probe(task, **kwargs)
+            update_task_info(task["dir"], lambda info: info.update(lease_heartbeat=time.time()))
+            return result
+
+        monkeypatch.setattr(manager, "_probe_refresh_task", probe_then_heartbeat)
+        client = TestClient(create_app(runtime, update_coordinator=coordinator))
+        response = client.post(f"/api/system/{operation}")
+
+        assert response.status_code == 409, response.text
+        assert "queued or running task" in response.json()["detail"]
+        assert coordinator.requested is False
+        assert shutdowns == []
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("next_status,expected_response", [("completed", 202), ("running", 409)])
+def test_system_update_rechecks_metadata_that_changes_during_idle_check(
+    tmp_path, monkeypatch, next_status, expected_response,
+):
+    from pyruns.core import task_manager as task_manager_module
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "changing", status="completed")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    shutdowns = []
+    coordinator = UiUpdateCoordinator(lambda: shutdowns.append(True))
+    try:
+        runtime.ensure_tasks_loaded()
+        original_load = task_manager_module.load_task_metadata
+        reads = 0
+
+        def load_then_replace(task_dir, **kwargs):
+            nonlocal reads
+            info = original_load(task_dir, **kwargs)
+            reads += 1
+            if reads == 1:
+                update_task_info(task_dir, lambda current: current.update(status=next_status, notes="changed"))
+            return info
+
+        monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_replace)
+        client = TestClient(create_app(runtime, update_coordinator=coordinator))
+        response = client.post("/api/system/update")
+
+        assert response.status_code == expected_response, response.text
+        assert reads >= 2
+        assert coordinator.requested is (next_status == "completed")
+        assert shutdowns == ([True] if next_status == "completed" else [])
+    finally:
+        runtime.shutdown()
+
+
+def test_system_update_bounds_idle_check_retries_and_explains_conflict(tmp_path, monkeypatch):
+    from pyruns.core import task_manager as task_manager_module
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "changing", status="completed")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    shutdowns = []
+    coordinator = UiUpdateCoordinator(lambda: shutdowns.append(True))
+    try:
+        runtime.ensure_tasks_loaded()
+        original_load = task_manager_module.load_task_metadata
+        reads = 0
+
+        def load_then_replace(task_dir, **kwargs):
+            nonlocal reads
+            info = original_load(task_dir, **kwargs)
+            reads += 1
+            update_task_info(task_dir, lambda current: current.update(notes=f"changed-{reads}"))
+            return info
+
+        monkeypatch.setattr(task_manager_module, "load_task_metadata", load_then_replace)
+        client = TestClient(create_app(runtime, update_coordinator=coordinator))
+        response = client.post("/api/system/update")
+
+        assert response.status_code == 503
+        assert reads == 3
+        detail = response.json()["detail"]
+        assert str(workspace) in detail
+        assert "TaskStateConflict" in detail
+        assert "changing" in detail
+        assert coordinator.requested is False
+        assert shutdowns == []
+    finally:
+        runtime.shutdown()
+
+
+def test_system_update_explains_unreadable_workspace_without_allowing_update(tmp_path):
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "broken", status="completed")
+    task_dir = workspace / TASKS_DIR / "broken"
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    shutdowns = []
+    coordinator = UiUpdateCoordinator(lambda: shutdowns.append(True))
+    try:
+        runtime.ensure_tasks_loaded()
+        (task_dir / TASK_INFO_FILENAME).write_text("{broken", encoding="utf-8")
+        client = TestClient(create_app(runtime, update_coordinator=coordinator))
+        response = client.post("/api/system/update")
+
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert str(workspace) in detail
+        assert "JSONDecodeError" in detail
+        assert coordinator.requested is False
+        assert shutdowns == []
     finally:
         runtime.shutdown()
 

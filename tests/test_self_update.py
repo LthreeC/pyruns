@@ -134,7 +134,7 @@ def test_update_coordinator_fails_closed_when_idle_check_fails():
 
     coordinator = self_update.UiUpdateCoordinator(lambda: None)
 
-    with pytest.raises(self_update.UpdateCheckError, match="Could not verify"):
+    with pytest.raises(self_update.UpdateCheckError, match="disk unavailable"):
         coordinator.prepare(BrokenRuntime())
     assert coordinator.requested is False
 

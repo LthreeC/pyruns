@@ -157,8 +157,12 @@ class UiUpdateCoordinator:
             return max(0, int(counter()))
         except Exception as exc:
             if strict:
+                detail = str(exc).strip() or type(exc).__name__
                 raise UpdateCheckError(
-                    "Could not verify that every managed workspace is idle."
+                    "Could not verify that every managed workspace is idle. "
+                    f"{detail[:1600]} "
+                    "Retry after task state settles; "
+                    "if this persists, check the reported workspace and file access."
                 ) from exc
             return 1
 
