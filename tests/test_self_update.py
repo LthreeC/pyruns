@@ -425,6 +425,9 @@ def test_shared_update_refuses_remote_ui_and_cli_activity(tmp_path):
         with EnvironmentActivityLease("cli-runner", state_dir=str(state_dir)):
             with pytest.raises(self_update.ActiveTasksError, match="queued or running task"):
                 owner.prepare(_Runtime(0))
+        assert owner.requested is False
+        assert owner.prepare(_Runtime(0)) is True
+        assert owner.requested is True
     finally:
         remote.close()
         owner.close(failed_handoff=True)

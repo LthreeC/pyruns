@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import copy
 import dataclasses
+import math
 import os
 import re
 import secrets
@@ -71,7 +72,7 @@ from pyruns.utils.settings import load_settings
 from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.events import event_sys
 from pyruns.utils.config_utils import to_container
-from pyruns.utils.sort_utils import TASK_SORT_MODES, sort_tasks_for_manager, task_sort_key
+from pyruns.utils.sort_utils import TASK_SORT_MODES, sort_tasks_for_manager, task_sort_key, task_status_matches
 from pyruns.utils.task_files import (
     TaskPayloadSignature,
     TaskSearchResult,
@@ -353,6 +354,10 @@ class TaskManager:
         "notes",
         "run_index",
         "queued_at",
+        "runner_host",
+        "lease_until",
+        "lease_heartbeat",
+        "cancel_requested_at",
         "gpu_wait",
         "preview_text",
         "search_text",
@@ -441,7 +446,22 @@ class TaskManager:
             data.pop("gpu_wait", None)
         else:
             data["gpu_wait"] = gpu_wait
+        data["runner_lease_expired"] = cls._runner_lease_expired(data)
         return data
+
+    @staticmethod
+    def _runner_lease_expired(task: Dict[str, Any]) -> bool | None:
+        """Describe the recorded lease using server time, never infer task death."""
+        if task.get("status") not in {"running", "queued"}:
+            return None
+        raw_deadline = task.get("lease_until")
+        if raw_deadline is None:
+            return None
+        try:
+            deadline = float(raw_deadline)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return deadline < time.time() if math.isfinite(deadline) and deadline > 0 else None
 
     @staticmethod
     @overload
@@ -501,6 +521,11 @@ class TaskManager:
                 "notes": task.get("notes", ""),
                 "run_index": task.get("run_index", 0),
                 "queued_at": task.get("queued_at"),
+                "runner_host": task.get("runner_host"),
+                "lease_until": task.get("lease_until"),
+                "lease_heartbeat": task.get("lease_heartbeat"),
+                "cancel_requested_at": task.get("cancel_requested_at"),
+                "runner_lease_expired": TaskManager._runner_lease_expired(task),
                 "gpu_wait": TaskManager._serialized_gpu_wait(task),
                 "preview_text": task.get("preview_text", ""),
                 "search_text": task.get("search_text", ""),
@@ -648,11 +673,8 @@ class TaskManager:
             if ordered is None:
                 candidates = [
                     task for task in self.tasks
-                    if task is not None and (
-                        status_key == "All"
-                        or status_key == str(
-                            normalize_task_status(task.get("status", "pending")) or "pending"
-                        ).strip().lower()
+                    if task is not None and task_status_matches(
+                        normalize_task_status(task.get("status", "pending")) or "pending", status_key,
                     )
                 ]
                 if query:
@@ -668,9 +690,7 @@ class TaskManager:
             elif status_key != "All":
                 ordered = [
                     task for task in ordered
-                    if status_key == str(
-                        normalize_task_status(task.get("status", "pending")) or "pending"
-                    ).strip().lower()
+                    if task_status_matches(normalize_task_status(task.get("status", "pending")) or "pending", status_key)
                 ]
             self._task_page_cache[key] = ordered
             while len(self._task_page_cache) > _TASK_PAGE_CACHE_SIZE:
@@ -1986,6 +2006,7 @@ class TaskManager:
         max_workers: int | None = None,
         expected_run_indices: Dict[str, int] | None = None,
         gpu_wait_rule: str | None = None,
+        expected_task_identities: Dict[str, str] | None = None,
     ) -> List[str]:
         """Queue a batch of tasks for scheduler-driven execution."""
 
@@ -1997,6 +2018,7 @@ class TaskManager:
                 max_workers=max_workers,
                 expected_run_indices=expected_run_indices,
                 gpu_wait_rule=gpu_wait_rule,
+                expected_task_identities=expected_task_identities,
             )
 
     def _start_batch_tasks(
@@ -2005,6 +2027,7 @@ class TaskManager:
         max_workers: int | None = None,
         expected_run_indices: Dict[str, int] | None = None,
         gpu_wait_rule: str | None = None,
+        expected_task_identities: Dict[str, str] | None = None,
     ) -> List[str]:
         """Queue tasks while the lifecycle lock prevents concurrent shutdown."""
 
@@ -2031,6 +2054,12 @@ class TaskManager:
                     logger.info("Skip queuing active task %s", task["name"])
                     continue
                 expected_status = str(task.get("status", "pending") or "pending")
+                if expected_task_identities is not None and (
+                    expected_status != "pending"
+                    or not expected_task_identities.get(str(task["name"]))
+                    or task.get("task_identity") != expected_task_identities[str(task["name"])]
+                ):
+                    continue
                 run_index = self._next_run_index(task)
                 expected_run_index = None
                 if expected_run_indices is not None:
@@ -2110,6 +2139,8 @@ class TaskManager:
                 gpu_wait=item.get("gpu_wait"),
                 gpu_wait_rule=gpu_wait_rule,
                 attempt_id=self._submission_attempt_id if expected_run_indices is not None else None,
+                **({"expected_task_identity": expected_task_identities[task_name]}
+                   if expected_task_identities is not None else {}),
             )
             if not synced:
                 continue
@@ -4432,6 +4463,7 @@ class TaskManager:
         gpu_wait: Dict[str, Any] | None = None,
         gpu_wait_rule: str | None = None,
         attempt_id: str | None = None,
+        expected_task_identity: str | None = None,
     ) -> bool:
         """Persist transient queue/running status changes."""
         with self._lock:
@@ -4446,6 +4478,8 @@ class TaskManager:
         next_status = str(status or "").lower()
 
         def _apply(task_info: Dict[str, Any]) -> None:
+            if expected_task_identity is not None:
+                self._require_task_identity(task_dir, expected_task_identity)
             if task_info.get("_creation_rollback"):
                 raise TaskStateConflict("task is being rolled back after failed creation")
             self._guard_namespace_operation(task_info)

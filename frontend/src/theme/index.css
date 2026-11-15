@@ -19,7 +19,7 @@
 
   --text-primary: #202938;
   --text-secondary: #505d70;
-  --text-tertiary: #667489;
+  --text-tertiary: #5c6a7e;
   --accent-ink: #4b58bb;
 
   --card-bg: #ffffff;
@@ -114,7 +114,7 @@ summary::-webkit-details-marker {
 /* A single quiet surface for each work area; nested data stays flat. */
 .panel-surface {
   border: 1px solid var(--border-subtle);
-  border-radius: 0.375rem;
+  border-radius: 0.75rem;
   background: var(--surface-raised);
 }
 
@@ -573,4 +573,108 @@ summary::-webkit-details-marker {
 /* Dialog backdrop */
 dialog::backdrop {
   background: rgba(0, 0, 0, 0.5);
+}
+
+/* Experiment workspaces: shared hierarchy, with compact controls beside search. */
+.workspace-heading {
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+  letter-spacing: -0.025em;
+}
+.manager-status-tabs {
+  margin-left: -0.5rem;
+}
+.manager-heading { gap: 1rem; }
+.manager-heading > :first-child { margin-right: auto; }
+.manager-heading .manager-search { width: 20rem; }
+.manager-toolbar {
+  margin-top: 0.625rem;
+}
+.manager-search .task-search-control-row { border-radius: 0.625rem; background: var(--surface-overlay); }
+.manager-search .task-search-control-row > .touch-input { border-color: transparent; background: transparent; }
+.manager-search .search-input-icon { display: block; }
+.manager-search .task-search-filter-trigger { border: 0; background: transparent; margin-right: 3px; }
+.manager-search .task-search-filter-trigger[data-active] { color: var(--accent-ink); background: color-mix(in srgb, var(--accent-ink) 10%, transparent); }
+.manager-search .task-search-filter-popover { border-radius: 0.75rem; padding: 0.75rem; }
+.manager-view-tools { position: relative; }
+.manager-view-tools .manager-view-options { position: static; }
+.manager-options-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 40;
+  width: min(19rem, calc(100vw - 6rem));
+  max-height: calc(100dvh - 16rem);
+  overflow-y: auto;
+  padding: 1rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.875rem;
+  background: var(--surface-raised);
+  box-shadow: 0 12px 36px rgb(0 0 0 / 12%);
+}
+.manager-option-label { display: block; margin: 0.75rem 0 0.375rem; font-size: 0.75rem; color: var(--text-secondary); }
+.manager-options-panel select { width: 100%; padding-left: 0.75rem; border-radius: 0.5rem; }
+.manager-tasks-content { container: manager-content / inline-size; }
+.task-card-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.task-card-preview { min-height: 3.5rem; }
+.task-card-meta { font-variant-numeric: tabular-nums; }
+.task-card-main { cursor: pointer; }
+.manager-page[data-view="list"] .task-card { contain-intrinsic-size: auto 150px; }
+
+@media (max-width: 700px) {
+  .manager-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }
+  .manager-heading .workspace-heading { font-size: 1.125rem; }
+  .manager-heading .manager-search { grid-column: 1 / -1; grid-row: 2; width: 100%; margin-top: 0.25rem; }
+  .manager-status-tabs { width: 100%; margin: 0; justify-content: space-between; gap: 0; }
+  .manager-status-tab { flex-direction: column; flex: 1; gap: 0.125rem; padding: 0.25rem; white-space: nowrap; }
+  .manager-heading .manager-select-action { grid-column: 2; grid-row: 1; width: 44px; margin: 0; }
+  .manager-select-action > span { display: none; }
+  .manager-toolbar { margin-top: 0.625rem; }
+  .manager-view-tools { width: 100%; justify-content: space-between; gap: 0.25rem; }
+  .manager-options-trigger { max-width: 100%; text-align: left; }
+  .manager-options-trigger svg { flex-shrink: 0; }
+  .manager-view-options { min-width: 0; }
+  .manager-view-toggle { flex-shrink: 0; }
+  .generator-toolbar { padding-top: 0.5rem; }
+}
+
+/* Lists reuse card actions and selection, so switching views changes no task behavior. */
+@container manager-content (min-width: 56rem) {
+  .manager-page[data-view="list"] .task-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 13.75rem;
+    border-radius: 0.75rem;
+  }
+  .manager-page[data-view="list"] .task-card[data-selection-mode="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .manager-page[data-view="list"] .task-card-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    grid-template-areas: 'status preview' 'name preview' 'meta execution' 'gpu error';
+    column-gap: 1.5rem;
+    padding: 0.875rem 1rem;
+  }
+  .manager-page[data-view="list"] .task-card-status { grid-area: status; }
+  .manager-page[data-view="list"] .task-card-name { grid-area: name; margin-top: 0.375rem; }
+  .manager-page[data-view="list"] .task-card-preview { grid-area: preview; margin: 0; align-self: center; }
+  .manager-page[data-view="list"] .task-card-meta { grid-area: meta; margin-top: 0.375rem; }
+  .manager-page[data-view="list"] .task-card-execution { grid-area: execution; margin-top: 0.375rem; }
+  .manager-page[data-view="list"] .task-card-gpu { grid-area: gpu; }
+  .manager-page[data-view="list"] .task-card-error { grid-area: error; }
+  .manager-page[data-view="list"] .task-card-actions {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    padding: 2.5rem 0.75rem 0.75rem;
+    border-top: 0;
+    border-left: 1px solid var(--border-subtle);
+    align-items: end;
+  }
+  .manager-page[data-view="list"] .task-card-matches { grid-column: 1 / -1; }
 }

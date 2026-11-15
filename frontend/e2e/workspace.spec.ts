@@ -73,6 +73,57 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
   expect(updateRequests).toBe(1)
 })
 
+test('busy update is refused without waiting and can be retried after tasks finish', async ({ page }) => {
+  await page.clock.install()
+  let active = true
+  let restarted = false
+  let updateRequests = 0
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: restarted ? '0.4.0' : '0.3.0',
+      installed_version: restarted ? '0.4.0' : '0.3.0',
+      restart_required: false,
+      instance_id: restarted ? 'new-instance' : 'old-instance',
+      update_supported: true, update_state: 'idle', last_update: null,
+    },
+  }))
+  await page.route('**/api/system/update/check', route => route.fulfill({
+    json: { current_version: '0.3.0', latest_version: '0.4.0', update_available: true },
+  }))
+  await page.route('**/api/system/update', route => {
+    updateRequests++
+    if (active) return route.fulfill({
+      status: 409,
+      json: { detail: 'Pyruns can update or restart only while idle; 2 queued or running tasks remain. Wait for them to finish, then retry. No update or restart has been scheduled.' },
+    })
+    restarted = true
+    return route.fulfill({
+      status: 202,
+      json: { ok: true, instance_id: 'old-instance', version: '0.3.0', state: 'restarting' },
+    })
+  })
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ }).click()
+  const confirmation = page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' })
+  await expect(confirmation).toContainText('retry once they finish')
+  await confirmation.getByRole('button', { name: 'Update and Restart' }).click()
+  const failure = page.getByRole('dialog', { name: 'Could not update Pyruns' })
+  await expect(failure).toContainText('2 queued or running tasks')
+  await expect(failure).toContainText('No update or restart has been scheduled')
+  await expect(page.getByRole('dialog', { name: 'Updating Pyruns' })).toBeHidden()
+  expect(restarted).toBe(false)
+
+  active = false
+  await page.clock.fastForward(10_000)
+  await expect(failure).toBeVisible()
+  expect(updateRequests).toBe(1)
+  expect(restarted).toBe(false)
+  await failure.getByRole('button', { name: 'Retry', exact: true }).click()
+  await confirmation.getByRole('button', { name: 'Update and Restart' }).click()
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
+  expect(updateRequests).toBe(2)
+})
+
 test('update wait stops immediately when shared coordination aborts', async ({ page }) => {
   await page.route('**/api/system/info', route => route.fulfill({
     json: {
@@ -95,10 +146,20 @@ test('update wait stops immediately when shared coordination aborts', async ({ p
   await expect(page.getByText('Could not update Pyruns')).toBeVisible()
   await expect(page.getByText(/stopped the update before restarting/)).toBeVisible()
   await expect(page.getByRole('dialog', { name: 'Updating Pyruns' })).toBeHidden()
-  await expect(button).toBeEnabled()
+  await page.getByRole('dialog', { name: 'Could not update Pyruns' }).getByRole('button', { name: 'Close', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'View update failure details' })).toBeEnabled()
 })
 
-test('failed update shows the installer reason after restarting', async ({ page }) => {
+test('failed update keeps copyable details across closing and reload, then allows retry', async ({ page }, testInfo) => {
+  await page.clock.install()
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (value: string) => { (window as any).copiedFailure = value } } })
+  })
+  let checks = 0
+  await page.route('**/api/system/update/check', route => {
+    checks++
+    return route.fulfill({ json: { current_version: '0.3.0', latest_version: '0.3.0', update_available: false } })
+  })
   await page.route('**/api/system/info', route => route.fulfill({
     json: {
       version: '0.3.0', installed_version: '0.3.0', restart_required: false,
@@ -112,7 +173,26 @@ test('failed update shows the installer reason after restarting', async ({ page 
   await page.goto('/?token=pyruns-e2e-access-token')
   await expect(page.getByText('Pyruns update failed')).toBeVisible()
   await expect(page.getByText(/No matching distribution found/)).toBeVisible()
+  const failure = page.getByRole('dialog', { name: 'Pyruns update failed' })
+  await page.clock.fastForward(7_000)
+  await expect(failure).toBeVisible()
+  await failure.getByRole('button', { name: 'Copy failure details' }).click()
+  await expect.poll(() => page.evaluate(() => (window as any).copiedFailure)).toContain('No matching distribution found')
+  await page.screenshot({ path: testInfo.outputPath('update-failure.png') })
+  await failure.getByRole('button', { name: 'Close', exact: true }).click()
+  const details = page.getByRole('button', { name: 'View update failure details' })
+  await expect(details).toBeFocused()
+  await details.click()
+  await expect(failure).toBeVisible()
+  await page.reload()
+  await expect(details).toBeVisible()
+  await expect(failure).toBeHidden()
+  await details.click()
+  await expect(failure.getByText(/No matching distribution found/)).toBeVisible()
+  await failure.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(page.getByText('Pyruns is up to date', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /Check for Pyruns updates/ })).toBeEnabled()
+  expect(checks).toBe(1)
 })
 
 test('update wait exits with a retryable error when the backend never restarts', async ({ page }) => {
@@ -171,10 +251,44 @@ test('update wait exits with a retryable error when the backend never restarts',
   await expect(progress).toBeHidden()
   await expect(page.getByText('Could not update Pyruns')).toBeVisible()
   await expect(page.getByText(/did not restart within 8 minutes/)).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Restarting Pyruns', exact: true })).toBeDisabled()
+  const failure = page.getByRole('dialog', { name: 'Could not update Pyruns' })
+  await expect(failure.getByRole('button', { name: 'Retry', exact: true })).toBeDisabled()
+  await failure.getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByRole('button', { name: 'View update failure details' }).click()
+  await expect(failure).toBeVisible()
   updateStarted = false
   await page.clock.fastForward(5_000)
-  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.3/ })).toBeEnabled()
+  await expect(failure.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled()
+})
+
+test('update progress shows acknowledged and disconnected stages with elapsed time', async ({ page }, testInfo) => {
+  await page.clock.install()
+  let started = false
+  let disconnected = false
+  await page.route('**/api/system/info', route => disconnected ? route.abort('connectionrefused') : route.fulfill({ json: {
+    version: '0.3.0', installed_version: '0.3.0', restart_required: false,
+    instance_id: 'progress-instance', update_supported: true,
+    update_state: started ? 'restarting' : 'idle', last_update: null,
+  } }))
+  await page.route('**/api/system/update/check', route => route.fulfill({ json: {
+    current_version: '0.3.0', latest_version: '0.4.0', update_available: true,
+  } }))
+  await page.route('**/api/system/update', route => {
+    started = true
+    return route.fulfill({ status: 202, json: { ok: true, instance_id: 'progress-instance', state: 'restarting' } })
+  })
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: /Check for Pyruns updates/ }).click()
+  await page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' }).getByRole('button', { name: 'Update and Restart' }).click()
+  const progress = page.getByRole('dialog', { name: 'Updating Pyruns' })
+  await expect(progress.getByText('Request accepted. Waiting for the interfaces to restart…')).toBeVisible()
+  disconnected = true
+  await page.clock.fastForward(1_000)
+  await expect(progress.getByText('The service is temporarily unreachable. Waiting to reconnect…')).toBeVisible()
+  await page.clock.fastForward(91_000)
+  await expect(progress.getByRole('button', { name: 'Reload interface' })).toBeVisible()
+  await expect(progress.getByText(/Target v0\.4\.0 · Waited \d+s/)).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('update-progress.png') })
 })
 
 test('update control reports the current PyPI release without restarting', async ({ page }) => {
@@ -707,9 +821,18 @@ test('runtime GPU preview cancels hidden requests and recovers from timeout', as
 test('long error notifications remain readable while focused', async ({ page }, testInfo) => {
   await page.clock.install()
   const detail = 'Cannot contact the package index. '.repeat(25) + 'Check the connection and retry.'
-  await page.route('**/api/system/update/check', route => route.fulfill({ status: 503, json: { detail } }))
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [{ name: 'error-task', status: 'pending', created_at: '2026-11-15_12-00-00',
+      task_kind: 'shell', dir: '/tmp/error-task', config_file: 'config.sh', config_text: 'echo test',
+      config: {}, env: {}, notes: '', progress: 0, run_index: 0,
+      start_times: [], finish_times: [], pids: [], records: [], tracks: [],
+    }],
+    total: 1, offset: 0, limit: 50, has_more: false,
+    status_counts: { pending: 1, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 },
+  } }))
+  await page.route('**/api/tasks/error-task?*', route => route.fulfill({ status: 503, json: { detail } }))
   await page.goto('/manager?token=pyruns-e2e-access-token')
-  await page.getByRole('button', { name: /Check for Pyruns updates/ }).click()
+  await page.getByRole('button', { name: 'Open details for error-task' }).click()
   const notification = page.getByRole('alert').filter({ hasText: detail })
   const content = notification.locator('[aria-label="Notification details"]')
   await expect(content).toHaveText(detail)
@@ -1207,7 +1330,7 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(page.getByRole('textbox', { name: 'Environment variable value' })).toHaveValue('review')
   await page.getByRole('tab', { name: 'Info' }).click()
   await expect(page.getByRole('region', { name: 'Run History', exact: true })).toContainText('cancelled')
-  await expect(page.getByText('recorded-host', { exact: true })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Task details for alpha' }).getByText('recorded-host', { exact: true })).toBeVisible()
   await page.getByRole('region', { name: 'Run History', exact: true }).locator('summary').filter({ hasText: 'Run #1' }).click()
   await expect(page.getByText('2026-08-09T00:01:00Z')).toBeVisible()
   await expect(page.getByText('1234')).toBeVisible()
@@ -2462,6 +2585,7 @@ test('manager applies and remembers the selected card order', async ({ page }) =
 
   await page.goto('/manager?token=pyruns-e2e-access-token')
   const sortSelect = page.getByRole('combobox', { name: 'Sort task cards' })
+  await page.getByRole('button', { name: 'View options', exact: true }).click()
   await expect.poll(() => sortSelect.evaluate(element => {
     const select = element as HTMLSelectElement
     const style = window.getComputedStyle(select)
@@ -2482,5 +2606,6 @@ test('manager applies and remembers the selected card order', async ({ page }) =
 
   await page.getByRole('link', { name: 'Generator' }).click()
   await page.getByRole('link', { name: 'Manager' }).click()
+  await page.getByRole('button', { name: 'View options', exact: true }).click()
   await expect(page.getByRole('combobox', { name: 'Sort task cards' })).toHaveValue('name_desc')
 })

@@ -16,6 +16,7 @@ import {
 import clsx from 'clsx'
 import { stringify as yamlStringify } from 'yaml'
 import StatusBadge from '@/components/shared/StatusBadge'
+import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CopyButton from '@/components/shared/CopyButton'
 import ActionButton from '@/components/shared/ActionButton'
@@ -1303,6 +1304,7 @@ function InfoTab({ task }: { task: Task }) {
 
   return (
     <div className="task-detail-info space-y-3">
+        <TaskExecutionInfo task={task} showRecordedHost={false} />
       {currentMetrics.length > 0 && (
         <section className="space-y-2" aria-labelledby="task-current-run-heading">
           <h3 id="task-current-run-heading" className="text-sm font-semibold text-txt-primary">

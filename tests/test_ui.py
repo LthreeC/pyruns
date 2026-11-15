@@ -618,7 +618,6 @@ def test_react_manager_batch_run_sends_only_worker_count():
     assert "setMaxWorkersInput(String(maxWorkers))" in manager
     assert "await api.batchRunTasks(names, maxWorkers)" in manager
     assert "value={maxWorkersInput}" in manager
-    assert "body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers })" in api
     assert "execution_mode" not in api
 
 
@@ -777,7 +776,7 @@ def test_react_secondary_mobile_controls_keep_usable_touch_targets():
     pagination = FRONTEND_PAGINATION.read_text(encoding="utf-8")
     toast_host = FRONTEND_TOAST_HOST.read_text(encoding="utf-8")
 
-    assert "'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11" in manager
+    assert "'task-card-pin touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11" in manager
     assert "'touch-target inline-flex h-11 w-11 items-center justify-center" in manager
     assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in confirm_dialog
     assert "min-h-11" in confirm_dialog

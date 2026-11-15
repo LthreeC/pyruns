@@ -209,7 +209,7 @@ export const previewTasks = (payload: {
 }) => request<GeneratorPreview>('/api/generator/preview', { method: 'POST', body: JSON.stringify(payload) })
 
 export const getDashboard = (refresh = true, recentLimit = 6, signal?: AbortSignal) =>
-  request<Dashboard>(`/api/dashboard?refresh=${refresh}&recent_limit=${recentLimit}`, { signal })
+  request<Dashboard>(`/api/dashboard?refresh=${refresh}&recent_limit=${recentLimit}&include_workspace=false`, { signal })
 
 export const getTasks = (params: {
   query?: string
@@ -332,10 +332,10 @@ export function createTaskEventStream(): WebSocket {
   return createWorkspaceStream('/api/tasks/events')
 }
 
-export const batchRunTasks = (taskNames: string[], maxWorkers?: number) =>
+export const batchRunTasks = (taskNames: string[], maxWorkers?: number, createdTaskIdentities?: Record<string, string>) =>
   request<{ count: number; items: Task[]; skipped: string[] }>('/api/tasks/batch/run?include_tracks=false', {
     method: 'POST',
-    body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers }),
+    body: JSON.stringify({ task_names: taskNames, max_workers: maxWorkers, created_task_identities: createdTaskIdentities }),
   })
 
 export const batchDeleteTasks = (taskNames: string[]) =>

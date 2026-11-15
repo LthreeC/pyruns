@@ -28,7 +28,7 @@ import { formatElapsedDuration } from '@/utils/taskRuntime'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import { gpuFreeMemoryMb, gpuMemoryUsedPercent, summarizeGpuMetrics } from '@/utils/gpuMetrics'
 import { errorMessage } from '@/utils/errors'
-import type { GPUMetric, GPUProcessDetails, GPUProcessInfo, Task, SystemMetrics } from '@/types'
+import type { GPUMetric, GPUProcessDetails, GPUProcessInfo, Task } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
 import { t, useTranslation } from '@/i18n'
@@ -44,9 +44,9 @@ const DASHBOARD_REQUEST_TIMEOUT_MS = 10_000
 const GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 const PROCESS_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 
-interface DashboardRefreshResult {
-  dashboardOk: boolean
-  metricsOk: boolean
+interface DashboardRead {
+  controller: AbortController
+  promise: Promise<boolean>
 }
 
 interface ProcessDetailLoadState {
@@ -57,66 +57,46 @@ interface ProcessDetailLoadState {
 
 export default function DashboardPage() {
   useTranslation()
-  const { data, loading, error: dashboardError, fetch } = useDashboardStore()
+  const {
+    data, loading, error: dashboardError, fetch,
+    metrics, metricsLoading, metricsError, metricsUpdatedAt, fetchMetrics,
+  } = useDashboardStore()
   const workspace = useWorkspaceStore(s => s.workspace)
   const notify = useToastStore(state => state.notify)
   const navigate = useNavigate()
-  const [metrics, setMetrics] = useState<SystemMetrics | null>(null)
-  const [metricsError, setMetricsError] = useState('')
   const [activeGpu, setActiveGpu] = useState<GPUMetric | null>(null)
   const [gpuDetailsLoading, setGpuDetailsLoading] = useState(false)
   const [gpuDetailsError, setGpuDetailsError] = useState('')
   const gpuDialogTriggerRef = useRef<HTMLElement | null>(null)
   const gpuDetailsRequestSeqRef = useRef(0)
   const gpuDetailsAbortControllerRef = useRef<AbortController | null>(null)
-  const metricsRefreshSeqRef = useRef(0)
-  const dashboardRefreshPromiseRef = useRef<Promise<DashboardRefreshResult> | null>(null)
-  const dashboardRefreshControllerRef = useRef<AbortController | null>(null)
+  const dashboardLifecycleRef = useRef(0)
+  const dashboardReadsRef = useRef<Partial<Record<'summary' | 'metrics', DashboardRead>>>({})
   const [manualRefreshing, setManualRefreshing] = useState(false)
   const refreshIntervalRaw = Number(workspace?.settings?.header_refresh_interval ?? 3)
   const refreshIntervalSec = Number.isFinite(refreshIntervalRaw) ? Math.max(1, refreshIntervalRaw) : 3
 
-  const refreshDashboard = useCallback(() => {
-    if (dashboardRefreshPromiseRef.current) {
-      return dashboardRefreshPromiseRef.current
+  const refreshDashboardPart = useCallback((part: 'summary' | 'metrics') => {
+    const pending = dashboardReadsRef.current[part]
+    if (pending) {
+      return pending.promise
     }
 
-    const requestId = ++metricsRefreshSeqRef.current
     const controller = new AbortController()
-    dashboardRefreshControllerRef.current = controller
     const timeoutId = window.setTimeout(() => {
       controller.abort(new DOMException(t('Dashboard refresh timed out. Check the connection and retry.'), 'TimeoutError'))
     }, DASHBOARD_REQUEST_TIMEOUT_MS)
-    const refreshPromise = Promise.allSettled([
-      fetch(controller.signal),
-      api.getMetrics({}, controller.signal),
-    ]).then(([dashboardResult, metricsResult]) => {
-      if (requestId === metricsRefreshSeqRef.current) {
-        if (metricsResult.status === 'fulfilled') {
-          const nextMetrics = metricsResult.value
-          setMetrics(nextMetrics)
-          setMetricsError('')
-        } else {
-          setMetricsError(errorMessage(metricsResult.reason, t('System metrics unavailable.')))
+    // Publish and poll each resource independently: task metadata can be slow on NFS.
+    const promise = (part === 'summary' ? fetch : fetchMetrics)(controller.signal)
+      .then(() => true, () => false).finally(() => {
+        window.clearTimeout(timeoutId)
+        if (dashboardReadsRef.current[part]?.controller === controller) {
+          delete dashboardReadsRef.current[part]
         }
-      }
-      return {
-        dashboardOk: dashboardResult.status === 'fulfilled',
-        metricsOk: metricsResult.status === 'fulfilled',
-      }
-    })
-    const trackedPromise: Promise<DashboardRefreshResult> = refreshPromise.finally(() => {
-      window.clearTimeout(timeoutId)
-      if (dashboardRefreshControllerRef.current === controller) {
-        dashboardRefreshControllerRef.current = null
-      }
-      if (dashboardRefreshPromiseRef.current === trackedPromise) {
-        dashboardRefreshPromiseRef.current = null
-      }
-    })
-    dashboardRefreshPromiseRef.current = trackedPromise
-    return trackedPromise
-  }, [fetch])
+      })
+    dashboardReadsRef.current[part] = { controller, promise }
+    return promise
+  }, [fetch, fetchMetrics])
 
   const openTaskInMonitor = useCallback((task: Task) => {
     void useMonitorStore.getState().selectTask(task.name)
@@ -186,63 +166,69 @@ export default function DashboardPage() {
   }, [])
 
   const handleManualRefresh = useCallback(async () => {
+    const lifecycle = dashboardLifecycleRef.current
     setManualRefreshing(true)
     try {
-      const pending = refreshDashboard()
-      const controller = dashboardRefreshControllerRef.current
-      const result = await pending
-      if (controller?.signal.aborted && controller.signal.reason?.name !== 'TimeoutError') return
-      if (result.dashboardOk && result.metricsOk) {
+      const [dashboardOk, metricsOk] = await Promise.all([
+        refreshDashboardPart('summary'), refreshDashboardPart('metrics'),
+      ])
+      if (lifecycle !== dashboardLifecycleRef.current) return
+      if (dashboardOk && metricsOk) {
         notify({
           tone: 'success',
           title: t('Dashboard refreshed'),
           detail: t('Task summary and system metrics are up to date.'),
         })
-      } else if (result.dashboardOk || result.metricsOk) {
+      } else if (dashboardOk || metricsOk) {
         notify({
           tone: 'info',
           title: t('Dashboard partially refreshed'),
-          detail: result.dashboardOk
-            ? t('Task summary is current; system metrics are showing the last available values.')
+          detail: dashboardOk
+            ? useDashboardStore.getState().metrics
+              ? t('Task summary is current; system metrics are showing the last available values.')
+              : t('Task summary is current; system metrics are unavailable.')
             : t('System metrics are current; task summary could not be refreshed.'),
         })
       } else {
         notify({ tone: 'error', title: t('Could not refresh dashboard'), detail: t('Task summary and system metrics are unavailable.') })
       }
     } catch (err) {
-      notify({ tone: 'error', title: t('Could not refresh dashboard'), detail: errorMessage(err) })
+      if (lifecycle === dashboardLifecycleRef.current) {
+        notify({ tone: 'error', title: t('Could not refresh dashboard'), detail: errorMessage(err) })
+      }
     } finally {
-      setManualRefreshing(false)
+      if (lifecycle === dashboardLifecycleRef.current) setManualRefreshing(false)
     }
-  }, [notify, refreshDashboard])
+  }, [notify, refreshDashboardPart])
 
   usePolling(async () => {
-    await refreshDashboard()
+    await refreshDashboardPart('summary')
+  }, refreshIntervalSec * 1000, true, false)
+
+  usePolling(async () => {
+    await refreshDashboardPart('metrics')
   }, refreshIntervalSec * 1000, true, false)
 
   useEffect(() => {
-    metricsRefreshSeqRef.current += 1
+    dashboardLifecycleRef.current += 1
     gpuDetailsRequestSeqRef.current += 1
     gpuDetailsAbortControllerRef.current?.abort()
     gpuDetailsAbortControllerRef.current = null
-    dashboardRefreshPromiseRef.current = null
-    setMetrics(null)
-    setMetricsError('')
     setActiveGpu(null)
     setGpuDetailsLoading(false)
     setGpuDetailsError('')
     setManualRefreshing(false)
-    void refreshDashboard()
+    void refreshDashboardPart('summary')
+    void refreshDashboardPart('metrics')
     return () => {
-      metricsRefreshSeqRef.current += 1
-      dashboardRefreshControllerRef.current?.abort()
-      dashboardRefreshControllerRef.current = null
-      dashboardRefreshPromiseRef.current = null
+      dashboardLifecycleRef.current += 1
+      for (const read of Object.values(dashboardReadsRef.current)) read.controller.abort()
+      dashboardReadsRef.current = {}
       gpuDetailsRequestSeqRef.current += 1
       gpuDetailsAbortControllerRef.current?.abort()
       gpuDetailsAbortControllerRef.current = null
     }
-  }, [refreshDashboard, workspace?.run_root])
+  }, [refreshDashboardPart, workspace?.run_root])
 
   const summary = data?.summary
   const workspaceReady = workspace?.workspace_ready === true
@@ -275,11 +261,11 @@ export default function DashboardPage() {
   return (
     <>
       <div className="h-full overflow-y-auto bg-surface-base">
-        <div className="dashboard-content flex min-h-full w-full flex-col gap-3 px-4 py-3">
-          <header className="dashboard-header shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border-subtle pb-2.5">
+        <div className="dashboard-content flex min-h-full w-full flex-col gap-3 px-4 py-4 sm:px-5">
+          <header className="dashboard-header workspace-header shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border-subtle pb-3">
             <div className="min-w-0 flex-1 basis-full sm:basis-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="mr-2 text-lg font-semibold text-txt-primary">{t('Dashboard')}</h1>
+                <h1 className="workspace-heading mr-2 text-lg font-semibold text-txt-primary">{t('Dashboard')}</h1>
                 <span className="inline-flex items-center rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
                   {workspaceKindLabel}
                 </span>
@@ -295,7 +281,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={() => void handleManualRefresh()}
-                disabled={manualRefreshing || loading}
+                disabled={manualRefreshing || loading || metricsLoading}
                 className="touch-target inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-2 py-2 text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-8 sm:px-3"
                 aria-label={t('Refresh dashboard')}
                 title={t('Refresh dashboard now')}
@@ -329,10 +315,17 @@ export default function DashboardPage() {
             <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pb-2">
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
                 <h2 className="text-sm font-semibold text-txt-primary">{t('GPU & System')}</h2>
+                {metrics?.host && <span className="min-w-0 break-all text-2xs text-txt-secondary">{t('Resource host: {{host}}', { host: metrics.host })}</span>}
                 <p className="text-2xs text-txt-tertiary">{t('Refreshes every {{seconds}}s. Process details load on demand.', { seconds: refreshIntervalSec })}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-2xs">
-                <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>
+                {metricsUpdatedAt != null && (
+                  <span className="text-txt-tertiary" title={new Date(metricsUpdatedAt).toLocaleString()}>
+                    {t('Last updated {{time}}', { time: new Date(metricsUpdatedAt).toLocaleTimeString() })}
+                    {metricsLoading && ` · ${t('Refreshing')}`}
+                  </span>
+                )}
+                {metrics && <SummaryPill>{gpuCount} GPU{gpuCount === 1 ? '' : 's'}</SummaryPill>}
               </div>
             </div>
 
@@ -348,7 +341,7 @@ export default function DashboardPage() {
                     </div>
                   )}
                   {metricsError && (
-                    <div className="mb-3 flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-2xs text-amber-800 dark:text-amber-300">
+                    <div role="alert" className="mb-3 flex items-center gap-2 rounded-md bg-amber-500/10 px-3 py-2 text-2xs text-amber-800 dark:text-amber-300">
                       <AlertTriangle className="h-3.5 w-3.5 flex-none" />
                       <span className="min-w-0 break-words">{t('Metrics refresh failed. Showing last values.')}</span>
                     </div>
@@ -366,13 +359,16 @@ export default function DashboardPage() {
                 </>
               ) : (
                 <div
+                  role={metricsError ? 'alert' : 'status'}
                   className={clsx(
                     'flex items-center gap-2 rounded-md px-3 py-4 text-2xs',
                     metricsError ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300' : 'bg-surface-overlay/50 text-txt-tertiary',
                   )}
                 >
                   {metricsError && <AlertTriangle className="h-3.5 w-3.5 flex-none" />}
-                  <span className="min-w-0 break-words">{metricsError || t('Loading system metrics...')}</span>
+                  <span className="min-w-0 break-words">
+                    {metricsError ? `${t('System metrics unavailable.')} ${metricsError}` : t('Loading system metrics...')}
+                  </span>
                 </div>
               )}
             </div>
@@ -388,11 +384,11 @@ export default function DashboardPage() {
                     />
                   ))}
                 </div>
-              ) : (
+              ) : metrics ? (
                 <div className="flex items-center justify-center px-3 py-5 text-center text-2xs text-txt-tertiary">
-                  {metricsError && !metrics ? t('System metrics unavailable.') : t('No NVIDIA GPU metrics detected.')}
+                  {t('No NVIDIA GPU metrics detected.')}
                 </div>
-              )}
+              ) : null}
             </div>
           </section>
 

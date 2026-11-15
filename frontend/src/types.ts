@@ -112,6 +112,9 @@ export interface Task {
   shell_kind?: string | null
   runner_id?: string | null
   runner_host?: string | null
+  runner_lease_expired?: boolean | null
+  lease_heartbeat?: number | null
+  cancel_requested_at?: number | string | null
   lease_until?: number | string | null
   queued_at?: string | number | null
   launch_command?: string | null
@@ -265,10 +268,10 @@ export interface DashboardSummary {
 }
 
 export interface Dashboard {
-  workspace: WorkspaceInfo
+  workspace?: WorkspaceInfo
   summary: DashboardSummary
   recent_tasks: Task[]
-  template_count: number
+  template_count?: number
   active_task: Task | null
 }
 
@@ -368,6 +371,7 @@ export interface GPUMetric {
 }
 
 export interface SystemMetrics {
+  host?: string
   cpu_percent: number
   mem_percent: number
   gpus: GPUMetric[]

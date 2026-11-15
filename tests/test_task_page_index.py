@@ -34,6 +34,30 @@ def names(page):
     return [task["name"] for task in page[0]]
 
 
+@pytest.mark.parametrize("warm_index", [False, True])
+def test_active_group_filters_cached_and_cold_pages_without_changing_global_totals(manager, warm_index):
+    from pyruns.utils.sort_utils import filter_tasks
+
+    with manager._lock:
+        for task, status in zip(manager.tasks, ("running", "queued", "completed")):
+            task["status"] = status
+        manager._rebuild_indexes_locked()
+    expected = {task["name"] for task in manager.tasks if task["status"] in {"running", "queued"}}
+    if warm_index:
+        manager.get_task_page(status="All", summary=True)
+    page = manager.get_task_page(status="active", limit=1, summary=True)
+    second = manager.get_task_page(status="active", offset=1, limit=1, summary=True)
+    assert set(names(page) + names(second)) == expected
+    assert page[1] == second[1] == 2
+    assert page[2] == {
+        "pending": 0, "queued": 1, "running": 1,
+        "completed": 1, "failed": 0, "cancelled": 0,
+    }
+    selected_name = next(iter(expected))
+    assert names(manager.get_task_page(status="active", query=selected_name, search_field="name", summary=True)) == [selected_name]
+    assert {task["name"] for task in filter_tasks(manager.tasks, "", "Active")} == expected
+
+
 def test_repeated_pages_share_sort_counts_and_copy_only_selected_tasks(manager):
     class CountedTasks(list):
         iterations = 0

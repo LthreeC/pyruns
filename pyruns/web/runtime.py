@@ -1427,7 +1427,9 @@ class PyrunsRuntime:
             self._log_search.slots.release()
 
     @_with_stable_workspace
-    def get_dashboard(self, *, refresh: bool = True, recent_limit: int = 6) -> Dict[str, Any]:
+    def get_dashboard(
+        self, *, refresh: bool = True, recent_limit: int = 6, include_workspace: bool = True,
+    ) -> Dict[str, Any]:
         """Return lightweight dashboard data for the Home page."""
 
         page = self.list_tasks(limit=max(1, recent_limit), refresh=refresh, summary=True)
@@ -1446,13 +1448,15 @@ class PyrunsRuntime:
             ),
             page.items[0] if page.items else None,
         )
-        return {
-            "workspace": self.get_workspace_info(),
+        dashboard: Dict[str, Any] = {
             "summary": summary,
             "recent_tasks": page.items,
-            "template_count": len(self.list_templates()),
             "active_task": active_task,
         }
+        if include_workspace:
+            workspace = self.get_workspace_info()
+            dashboard.update(workspace=workspace, template_count=len(workspace["templates"]))
+        return dashboard
 
     @_with_stable_workspace
     def get_task(
@@ -1625,6 +1629,7 @@ class PyrunsRuntime:
         *,
         max_workers: int | None = None,
         include_tracks: bool = True,
+        created_task_identities: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         """Queue multiple tasks and return their updated snapshots."""
         self.ensure_tasks_loaded(full_refresh=False)
@@ -1637,6 +1642,11 @@ class PyrunsRuntime:
             task = self.require_task(task_name, refresh=False, summary=True)
             if task.get("_load_error"):
                 raise ValueError(str(task["_load_error"]))
+            if created_task_identities is not None and (
+                not created_task_identities.get(task_name)
+                or task.get("task_identity") != created_task_identities[task_name]
+            ):
+                raise ValueError(f"Task '{task_name}' changed since creation. Review it in Manager.")
             normalized_names.append(task_name)
             seen.add(task_name)
 
@@ -1647,6 +1657,10 @@ class PyrunsRuntime:
         claimed_names = self.task_manager.start_batch_tasks(
             normalized_names,
             max_workers=max_workers,
+            **({
+                "expected_run_indices": {name: 1 for name in normalized_names},
+                "expected_task_identities": created_task_identities,
+            } if created_task_identities is not None else {}),
         )
         if not claimed_names:
             raise ValueError("None of the selected tasks could be started.")

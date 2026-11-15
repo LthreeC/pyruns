@@ -33,6 +33,7 @@ function taskSearchDescription(field: TaskSearchScope, workspaceKind?: Workspace
 interface Props extends Omit<ComponentProps<typeof SearchInput>, 'className' | 'placeholder' | 'trailingControls'> {
   workspaceKind?: WorkspaceKind
   compact?: boolean
+  minimal?: boolean
   searching: boolean
   onRefresh: () => void
   onCancel: () => void
@@ -47,6 +48,7 @@ interface Props extends Omit<ComponentProps<typeof SearchInput>, 'className' | '
 export default function TaskSearchInput({
   workspaceKind,
   compact = false,
+  minimal = false,
   searching,
   onRefresh,
   onCancel,
@@ -98,6 +100,10 @@ export default function TaskSearchInput({
   const searchFields = SEARCH_FIELDS.filter(option => option.value !== (workspaceKind === 'shell' ? 'config' : 'script'))
   const selectedField = SEARCH_FIELDS.find(option => option.value === searchField) ?? SEARCH_FIELDS[0]
   const searchActive = Boolean(props.value)
+  const activeFilters = [
+    ...(searchField === 'all' ? [] : [t(selectedField.label)]),
+    ...MATCH_OPTIONS.filter(option => searchOptions[option.key]).map(option => t(option.label)),
+  ]
   const refreshLabel = searching && searchActive ? 'Cancel search' : searchActive ? 'Refresh search results' : 'Refresh tasks'
   const matchOptions = (
     <div
@@ -214,7 +220,7 @@ export default function TaskSearchInput({
             : searchField === 'all'
               ? t(compact ? 'Search tasks' : 'Search tasks and full logs')
               : t('Search {{field}}', { field: t(selectedField.label).toLowerCase() })}
-          trailingControls={<div style={{ display: filtersOpen ? 'none' : undefined }} className="task-search-inline-filters flex h-full flex-none items-stretch">{filterControls}</div>}
+          trailingControls={minimal ? undefined : <div style={{ display: filtersOpen ? 'none' : undefined }} className="task-search-inline-filters flex h-full flex-none items-stretch">{filterControls}</div>}
         />
         <div ref={filterMenuRef} className="task-search-filter-menu flex-none">
           <button
@@ -223,7 +229,8 @@ export default function TaskSearchInput({
             aria-label={t('Search filters')}
             aria-expanded={filtersOpen}
             aria-haspopup="true"
-            title={t('Search filters')}
+            title={[t('Search filters'), ...activeFilters].join(' · ')}
+            data-active={activeFilters.length > 0 || undefined}
             onClick={() => setFiltersOpen(open => !open)}
             className="task-search-filter-trigger touch-target inline-flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface-overlay text-txt-secondary transition-colors hover:bg-surface-hover hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:h-9 sm:w-9"
           >
@@ -267,6 +274,7 @@ export default function TaskSearchInput({
       )}
       {searchActive && <span className="sr-only" role="status">{t(searching ? 'Searching…' : taskSearchDescription(searchField, workspaceKind))}</span>}
     </div>
+    {minimal && activeFilters.length > 0 && <p className="mt-1 text-2xs text-txt-secondary">{activeFilters.join(' · ')}</p>}
     {limitHit && <p role="status" className="mt-2 text-xs text-txt-secondary">
       {t('Match limit reached. More results may exist.')} {' '}
       <button type="button" className="text-accent hover:underline" onClick={() => settings.update({ maxResults: null })}>{t('Search without limit')}</button>

@@ -52,7 +52,8 @@ class ActiveTasksError(RuntimeError):
         self.active_count = max(1, int(active_count))
         super().__init__(
             f"Pyruns can update or restart only while idle; {self.active_count} queued or running "
-            f"task{'s' if self.active_count != 1 else ''} remain."
+            f"task{'s' if self.active_count != 1 else ''} remain. "
+            "Wait for them to finish, then retry. No update or restart has been scheduled."
         )
 
 

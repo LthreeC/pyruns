@@ -291,6 +291,7 @@ class TaskBatchActionRequest(RequestModel):
 
     task_names: list[str] = Field(default_factory=list)
     max_workers: int | None = Field(default=None, ge=1, le=MAX_UI_WORKERS)
+    created_task_identities: dict[str, str] | None = None
 
 
 class TaskBatchDeleteRequest(RequestModel):
@@ -907,8 +908,11 @@ def create_app(
     def get_dashboard(
         refresh: bool = True,
         recent_limit: int = Query(default=6, ge=1, le=50),
+        include_workspace: bool = True,
     ) -> dict[str, Any]:
-        return get_runtime().get_dashboard(refresh=refresh, recent_limit=recent_limit)
+        return get_runtime().get_dashboard(
+            refresh=refresh, recent_limit=recent_limit, include_workspace=include_workspace,
+        )
 
     @app.get("/api/launcher/scripts")
     def get_launcher_scripts() -> dict[str, Any]:
@@ -1153,6 +1157,8 @@ def create_app(
                     payload.task_names,
                     max_workers=payload.max_workers,
                     include_tracks=include_tracks,
+                    **({"created_task_identities": payload.created_task_identities}
+                       if payload.created_task_identities is not None else {}),
                 )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
@@ -2035,10 +2041,11 @@ def create_app(
         include_processes: bool = False,
         detail: bool = False,
     ) -> dict[str, Any]:
-        return get_runtime().get_metrics(
+        metrics = get_runtime().get_metrics(
             include_processes=include_processes,
             detail=detail,
         )
+        return {**metrics, "host": socket.gethostname()}
 
     @app.get("/api/system/processes/{pid}")
     def get_process_details(pid: int) -> dict[str, Any]:

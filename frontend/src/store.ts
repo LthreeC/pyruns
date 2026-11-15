@@ -5,6 +5,7 @@ import type {
   GeneratorMode,
   RuntimeInfo,
   ScriptCandidate,
+  SystemMetrics,
   Task,
   TaskPage,
   TaskSearchMatch,
@@ -29,6 +30,7 @@ let launcherRequestSeq = 0
 let launcherReadController: AbortController | null = null
 let runtimeRequestSeq = 0
 let dashboardRequestSeq = 0
+let metricsRequestSeq = 0
 let generatorTemplateListRequestSeq = 0
 let generatorTemplateListController: AbortController | null = null
 let generatorTemplateRequestSeq = 0
@@ -42,6 +44,7 @@ let confirmationResolver: ((confirmed: boolean) => void) | null = null
 const THEME_STORAGE_KEY = 'pyruns_theme'
 const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
+const MANAGER_VIEW_STORAGE_KEY = 'pyruns_manager_view'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
 export const MONITOR_TASK_PAGE_SIZE = 200
@@ -199,6 +202,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   monitorRequestSeq += 1
   runtimeRequestSeq += 1
   dashboardRequestSeq += 1
+  metricsRequestSeq += 1
   generatorTemplateListRequestSeq += 1
   generatorTemplateListController?.abort()
   generatorTemplateListController = null
@@ -248,7 +252,10 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     loading: false,
     exportIds: new Set(),
   })
-  useDashboardStore.setState({ data: null, loading: false, error: null })
+  useDashboardStore.setState({
+    data: null, loading: false, error: null,
+    metrics: null, metricsLoading: false, metricsError: null, metricsUpdatedAt: null,
+  })
   useGeneratorStore.setState({
     templates: [],
     selectedTemplate: '',
@@ -698,6 +705,8 @@ interface TaskState {
   searchOptions: TaskSearchOptions
   statusFilter: string
   sortMode: TaskSortMode
+  viewMode: 'cards' | 'list'
+  setViewMode: (mode: 'cards' | 'list') => void
   selectedIds: Set<string>
   loading: boolean
   error: string | null
@@ -770,6 +779,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   searchOptions: { ...DEFAULT_SEARCH_OPTIONS },
   statusFilter: 'All',
   sortMode: readStoredTaskSortMode(),
+  viewMode: readLocalStorage(MANAGER_VIEW_STORAGE_KEY) === 'list' ? 'list' : 'cards',
+  setViewMode(viewMode) {
+    writeLocalStorage(MANAGER_VIEW_STORAGE_KEY, viewMode)
+    set({ viewMode })
+  },
   selectedIds: new Set(),
   loading: false,
   error: null,
@@ -1061,29 +1075,62 @@ interface DashboardState {
   loading: boolean
   error: string | null
   fetch: (signal?: AbortSignal) => Promise<void>
+  metrics: SystemMetrics | null
+  metricsLoading: boolean
+  metricsError: string | null
+  metricsUpdatedAt: number | null
+  fetchMetrics: (signal?: AbortSignal) => Promise<void>
 }
 
 export const useDashboardStore = create<DashboardState>((set) => ({
   data: null,
   loading: false,
   error: null,
+  metrics: null,
+  metricsLoading: false,
+  metricsError: null,
+  metricsUpdatedAt: null,
   async fetch(signal) {
     const requestId = ++dashboardRequestSeq
     const workspaceKey = currentWorkspaceKey()
     set({ loading: true, error: null })
     try {
       const d = await api.getDashboard(true, 6, signal)
+      signal?.throwIfAborted()
       if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ data: d, error: null })
       }
     } catch (err) {
-      if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
+      if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()
+        && (!signal?.aborted || signal.reason?.name === 'TimeoutError')) {
         set({ error: err instanceof Error ? err.message : 'Could not load dashboard' })
       }
       throw err
     } finally {
       if (requestId === dashboardRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ loading: false })
+      }
+    }
+  },
+  async fetchMetrics(signal) {
+    const requestId = ++metricsRequestSeq
+    const workspaceKey = currentWorkspaceKey()
+    set({ metricsLoading: true })
+    try {
+      const metrics = await api.getMetrics({}, signal)
+      signal?.throwIfAborted()
+      if (requestId === metricsRequestSeq && workspaceKey === currentWorkspaceKey()) {
+        set({ metrics, metricsError: null, metricsUpdatedAt: Date.now() })
+      }
+    } catch (err) {
+      if (requestId === metricsRequestSeq && workspaceKey === currentWorkspaceKey()
+        && (!signal?.aborted || signal.reason?.name === 'TimeoutError')) {
+        set({ metricsError: err instanceof Error ? err.message : translate('System metrics unavailable.') })
+      }
+      throw err
+    } finally {
+      if (requestId === metricsRequestSeq && workspaceKey === currentWorkspaceKey()) {
+        set({ metricsLoading: false })
       }
     }
   },

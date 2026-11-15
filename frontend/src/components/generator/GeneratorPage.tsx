@@ -40,9 +40,10 @@ import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import CodeTextEditor from '@/components/shared/CodeTextEditor'
 import ToggleSwitch from '@/components/shared/ToggleSwitch'
+import CreatedTasksDialog from './CreatedTasksDialog'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
-import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
+import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo, Task } from '@/types'
 import { parseConfigYaml, parseIntegerInput, stringifyConfigYaml } from '@/utils/configYaml'
 import {
   configPathId, configPathFromId, formatConfigPath, getConfigValue,
@@ -68,6 +69,8 @@ interface CreatedTaskResult {
   count: number
   taskKind: string
   firstTaskName: string
+  tasks: Task[]
+  submission?: string
 }
 
 type GenerationPayload = Readonly<{
@@ -604,6 +607,7 @@ export default function GeneratorPage() {
   const [generating, setGenerating] = useState(false)
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
   const [createdSummary, setCreatedSummary] = useState<CreatedTaskResult | null>(null)
+  const [createdTasksOpen, setCreatedTasksOpen] = useState(false)
   const [error, setError] = useState('')
   const [templateLoadError, setTemplateLoadError] = useState('')
   const [templateListLoading, setTemplateListLoading] = useState(false)
@@ -961,6 +965,7 @@ export default function GeneratorPage() {
     setGenerationStatus('idle')
     setCreatedSummary(null)
     setError('')
+    setCreatedTasksOpen(false)
   }, [workspaceEpoch])
   const setAllTreeSections = useCallback((open: boolean) => {
     setTreeOpenValue(open)
@@ -1024,6 +1029,7 @@ export default function GeneratorPage() {
         count: result.count,
         taskKind: result.task_kind === 'shell' ? 'shell task' : 'python task',
         firstTaskName: result.items[0]?.name || '',
+        tasks: result.items,
       })
       setGenerationStatus('created')
       // The tasks already exist. Refreshing available templates must not delay
@@ -1083,8 +1089,12 @@ export default function GeneratorPage() {
   }, [currentGenerationPayload, doCreate, editorMode, generationInputKey, hasBatchSyntax, previewOpen])
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div data-tour="generator-controls" className="flex flex-col gap-2 border-b border-border-subtle bg-surface-raised px-3 py-2 min-[701px]:flex-row min-[701px]:items-center">
+    <div className="generator-page flex h-full flex-col overflow-hidden">
+      <header className="workspace-header flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1 bg-surface-raised px-3 pb-1 pt-4 sm:px-5">
+        <h1 className="workspace-heading font-semibold text-txt-primary">{t('Task Generator')}</h1>
+        <p className="text-xs text-txt-secondary">{t('Prepare a task, or build a batch from one configuration.')}</p>
+      </header>
+      <div data-tour="generator-controls" className="generator-toolbar flex flex-col gap-2 border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-5 min-[701px]:flex-row min-[701px]:items-center">
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 min-[701px]:flex-1">
           {!isShellWorkspace ? (
             <TemplatePicker
@@ -1125,7 +1135,7 @@ export default function GeneratorPage() {
           {!isShellWorkspace && templateContent?.read_only && (
             <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-2xs text-amber-800 dark:text-amber-300">
               <AlertTriangle className="h-3 w-3" />
-              <span>{t('Read-only')}</span>
+              <span title={t('The source template is read-only. Your task draft remains editable.')}>{t('Read-only source template')}</span>
             </span>
           )}
 
@@ -1401,6 +1411,7 @@ export default function GeneratorPage() {
               <GenerationFeedback
                 status={generationStatus}
                 createdSummary={createdSummary}
+                onViewBatch={() => setCreatedTasksOpen(true)}
                 defaultText={
                   editorMode === 'form' && hasBatchSyntax
                     ? batchHintText
@@ -1420,6 +1431,9 @@ export default function GeneratorPage() {
         </aside>
       </div>
 
+      {createdTasksOpen && createdSummary && <CreatedTasksDialog tasks={createdSummary.tasks} submission={createdSummary.submission}
+        onSubmitted={(tasks, submission) => setCreatedSummary(current => current && { ...current, tasks, submission })}
+        onClose={() => setCreatedTasksOpen(false)} />}
       <ConfirmDialog
         open={previewOpen}
         title={t('Batch Preview')}
@@ -1453,11 +1467,13 @@ function GenerationFeedback({
   createdSummary,
   defaultText,
   onOpenManager,
+  onViewBatch,
 }: {
   status: GenerationStatus
   createdSummary: CreatedTaskResult | null
   defaultText: string
   onOpenManager: () => void
+  onViewBatch: () => void
 }) {
   if (status === 'creating') {
     return (
@@ -1478,7 +1494,7 @@ function GenerationFeedback({
   }
 
   if (status === 'created' && createdSummary) {
-    return <CreatedTaskSummary summary={createdSummary} onOpenManager={onOpenManager} />
+    return <CreatedTaskSummary summary={createdSummary} onOpenManager={onOpenManager} onViewBatch={onViewBatch} />
   }
 
   return <div className="mt-2 text-center text-2xs text-txt-tertiary">{defaultText}</div>
@@ -1487,9 +1503,11 @@ function GenerationFeedback({
 function CreatedTaskSummary({
   summary,
   onOpenManager,
+  onViewBatch,
 }: {
   summary: CreatedTaskResult
   onOpenManager: () => void
+  onViewBatch: () => void
 }) {
   return (
     <div className="mt-2 space-y-2 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-2 text-2xs text-emerald-700 dark:text-emerald-300">
@@ -1513,6 +1531,9 @@ function CreatedTaskSummary({
       >
         {t('Open in Manager')}
       </button>
+      <ActionButton variant="secondary" className="w-full" onClick={onViewBatch}>
+        {t('View and run this batch ({{count}})', { count: summary.count })}
+      </ActionButton>
     </div>
   )
 }

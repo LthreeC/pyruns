@@ -26,6 +26,7 @@ vi.mock('./api', () => ({
   getTasks: vi.fn(),
   getTaskLogs: vi.fn(),
   getDashboard: vi.fn(),
+  getMetrics: vi.fn(),
   getTemplates: vi.fn(),
   getTemplateContent: vi.fn(),
   openLauncherWorkspace: vi.fn(),
@@ -252,6 +253,78 @@ describe('workspace-scoped stores', () => {
 
     expect(useDashboardStore.getState().data).toBe(snapshot)
     expect(useDashboardStore.getState().error).toBe('offline')
+  })
+
+  it('publishes system metrics independently of an outstanding task summary', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const summary = deferred<any>()
+    vi.mocked(api.getDashboard).mockReturnValueOnce(summary.promise)
+    const snapshot = { cpu_percent: 5, mem_percent: 10, gpus: [] }
+    vi.mocked(api.getMetrics).mockResolvedValueOnce(snapshot)
+    const pending = useDashboardStore.getState().fetch()
+    await useDashboardStore.getState().fetchMetrics()
+    expect(useDashboardStore.getState()).toMatchObject({ data: null, loading: true, metrics: snapshot, metricsLoading: false, metricsError: null })
+    expect(useDashboardStore.getState().metricsUpdatedAt).toEqual(expect.any(Number))
+    summary.resolve({ summary: { total: 3 }, recent_tasks: [] })
+    await pending
+    expect(useDashboardStore.getState().loading).toBe(false)
+  })
+
+  it('retains the last metrics and timestamp through refresh failures and same-workspace updates', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const snapshot = { cpu_percent: 5, mem_percent: 10, gpus: [] }
+    vi.mocked(api.getMetrics).mockResolvedValueOnce(snapshot)
+    await useDashboardStore.getState().fetchMetrics()
+    const updatedAt = useDashboardStore.getState().metricsUpdatedAt
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    vi.mocked(api.getMetrics).mockRejectedValueOnce(new Error('offline'))
+    await expect(useDashboardStore.getState().fetchMetrics()).rejects.toThrow('offline')
+    expect(useDashboardStore.getState()).toMatchObject({ metrics: snapshot, metricsUpdatedAt: updatedAt, metricsError: 'offline', metricsLoading: false })
+    const recovered = { ...snapshot, cpu_percent: 30 }
+    vi.mocked(api.getMetrics).mockResolvedValueOnce(recovered)
+    await useDashboardStore.getState().fetchMetrics()
+    expect(useDashboardStore.getState()).toMatchObject({ metrics: recovered, metricsError: null, metricsLoading: false })
+  })
+
+  it('clears metrics on workspace replacement and rejects a late response even after returning to the same root', async () => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    vi.mocked(api.getMetrics).mockResolvedValueOnce({ cpu_percent: 5, mem_percent: 10, gpus: [] })
+    await useDashboardStore.getState().fetchMetrics()
+    const stale = deferred<any>()
+    vi.mocked(api.getMetrics).mockReturnValueOnce(stale.promise)
+    const oldRead = useDashboardStore.getState().fetchMetrics()
+    useWorkspaceStore.getState().setWorkspace(workspace('B'))
+    expect(useDashboardStore.getState()).toMatchObject({ metrics: null, metricsUpdatedAt: null, metricsError: null, metricsLoading: false })
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const current = deferred<any>()
+    vi.mocked(api.getMetrics).mockReturnValueOnce(current.promise)
+    const newRead = useDashboardStore.getState().fetchMetrics()
+    stale.resolve({ cpu_percent: 99, mem_percent: 99, gpus: [] })
+    await oldRead
+    expect(useDashboardStore.getState()).toMatchObject({ metrics: null, metricsLoading: true })
+    current.resolve({ cpu_percent: 10, mem_percent: 20, gpus: [] })
+    await newRead
+    expect(useDashboardStore.getState()).toMatchObject({ metrics: { cpu_percent: 10 }, metricsLoading: false })
+  })
+
+  it.each(['summary', 'metrics'])('ignores cancelled %s responses but exposes timeout errors', async part => {
+    useWorkspaceStore.getState().setWorkspace(workspace('A'))
+    const deferredRead = deferred<any>()
+    const readApi = part === 'summary' ? api.getDashboard : api.getMetrics
+    const fetch = part === 'summary' ? useDashboardStore.getState().fetch : useDashboardStore.getState().fetchMetrics
+    vi.mocked(readApi).mockReturnValueOnce(deferredRead.promise)
+    const controller = new AbortController()
+    const pending = fetch(controller.signal)
+    controller.abort()
+    deferredRead.resolve({ cpu_percent: 99, mem_percent: 99, gpus: [] })
+    await expect(pending).rejects.toThrow()
+    expect(useDashboardStore.getState()).toMatchObject({ data: null, error: null, loading: false, metrics: null, metricsError: null, metricsLoading: false })
+
+    const timeout = new AbortController()
+    timeout.abort(new DOMException('Read timed out', 'TimeoutError'))
+    vi.mocked(readApi).mockRejectedValueOnce(timeout.signal.reason)
+    await expect(fetch(timeout.signal)).rejects.toThrow('Read timed out')
+    expect(useDashboardStore.getState()[part === 'summary' ? 'error' : 'metricsError']).toBe('Read timed out')
   })
 
   it('preserves manager results and selection after refresh failure', async () => {

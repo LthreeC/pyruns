@@ -45,6 +45,7 @@ import { usePageVisible } from '@/hooks/usePageVisible'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
+import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
@@ -1835,6 +1836,7 @@ export default function MonitorPage() {
       )}
 
       <div className="monitor-terminal-shell flex min-h-0 min-w-0 max-w-full flex-1 flex-col border-l border-border-subtle">
+        {selectedTask && <TaskExecutionInfo task={selectedTask} className="shrink-0 bg-surface-raised px-3 pt-1" />}
         <div className="monitor-header flex shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-1">
           {selectedTask ? (
             <div className="monitor-header-content flex min-w-0 flex-1 items-center justify-between gap-3">
@@ -1868,7 +1870,7 @@ export default function MonitorPage() {
                   <span
                     role="status"
                     aria-live="polite"
-                    title={streamStatus === 'reconnecting' ? t("Live stream disconnected; incremental polling remains active while reconnecting.") : undefined}
+                    title={streamStatus === 'reconnecting' ? t("Live stream disconnected; incremental polling remains active while reconnecting.") : t('Log connection status; task execution is reported separately.')}
                     className={clsx(
                       'inline-flex flex-none items-center gap-1 rounded-md px-2 py-1 text-2xs font-medium',
                       streamStatus === 'live'

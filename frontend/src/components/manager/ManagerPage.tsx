@@ -3,6 +3,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -11,7 +12,7 @@ import {
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, Cpu, GripVertical, Loader2, MousePointer2, Pin, Play,
+  AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, Cpu, GripVertical, LayoutGrid, List, Loader2, SquareCheck, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -19,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { useTaskRefresh } from '@/hooks/useTaskRefresh'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
+import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
 import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import Pagination from '@/components/shared/Pagination'
@@ -33,7 +35,7 @@ import { errorMessage } from '@/utils/errors'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import * as api from '@/api'
 
-const STATUS_OPTIONS = ['All', ...ALL_STATUSES]
+const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES]
 const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string }[] = [
   { value: 'priority', label: 'Smart priority' },
   { value: 'manual', label: 'Manual order' },
@@ -45,7 +47,6 @@ const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string }[] = [
 type DragTarget = 'pinned' | 'tasks'
 type DragPlacement = 'before' | 'after'
 type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
-type ManagerMetricTone = 'neutral' | 'amber' | 'emerald' | 'rose'
 const DRAG_START_DISTANCE = 8
 const REORDER_TASK_LIMIT = 10_000
 
@@ -73,13 +74,6 @@ const MANAGER_STATUS_DOTS: Record<TaskStatus, string> = {
   completed: 'bg-emerald-600 dark:bg-emerald-400',
   failed: 'bg-rose-600 dark:bg-rose-400',
   cancelled: 'bg-slate-500 dark:bg-slate-400',
-}
-
-const MANAGER_METRIC_STYLES: Record<ManagerMetricTone, string> = {
-  neutral: 'border-border-subtle bg-surface-overlay text-txt-primary',
-  amber: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300',
-  emerald: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300',
-  rose: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300',
 }
 
 interface DropIntent {
@@ -191,7 +185,7 @@ function hasReorderChanges(tasks: Task[], items: { name: string; pinned: boolean
 export default function ManagerPage() {
   useTranslation()
   const {
-    tasks, total, statusCounts, offset, limit, query, statusFilter, sortMode, selectedIds, loading, error, columns,
+    tasks, total, statusCounts, offset, limit, query, statusFilter, sortMode, selectedIds, loading, error, columns, viewMode, setViewMode,
     setQuery, searchField, setSearchField, setStatusFilter, setSortMode, setOffset, setColumns, fetchTasks,
     searchOptions, setSearchOptions, searchLimitHit,
     toggleSelect, selectAll, clearSelection,
@@ -199,6 +193,7 @@ export default function ManagerPage() {
     tasks: state.tasks, total: state.total, statusCounts: state.statusCounts,
     offset: state.offset, limit: state.limit, query: state.query,
     statusFilter: state.statusFilter, sortMode: state.sortMode,
+    viewMode: state.viewMode, setViewMode: state.setViewMode,
     selectedIds: state.selectedIds, loading: state.loading, error: state.error, columns: state.columns,
     setQuery: state.setQuery, searchField: state.searchField, setSearchField: state.setSearchField,
     setStatusFilter: state.setStatusFilter, setSortMode: state.setSortMode,
@@ -215,6 +210,28 @@ export default function ManagerPage() {
   const [cancelTask, setCancelTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
+  const [viewOptionsOpen, setViewOptionsOpen] = useState(false)
+  const viewOptionsRef = useRef<HTMLDivElement>(null)
+  const viewOptionsTriggerRef = useRef<HTMLButtonElement>(null)
+  const viewOptionsId = useId()
+  useEffect(() => {
+    if (!viewOptionsOpen) return
+    viewOptionsRef.current?.querySelector('select')?.focus()
+    const closeOutside = (event: PointerEvent) => {
+      if (!viewOptionsRef.current?.contains(event.target as Node)) setViewOptionsOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setViewOptionsOpen(false)
+      viewOptionsTriggerRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [viewOptionsOpen])
   const [draggedTaskName, setDraggedTaskName] = useState('')
   const [dragOverTarget, setDragOverTarget] = useState<DragTarget | null>(null)
   const [dropIntent, setDropIntent] = useState<DropIntent | null>(null)
@@ -879,12 +896,12 @@ export default function ManagerPage() {
   }, [searchParams, setSearchParams])
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-surface-base">
-      <header data-tour="manager-controls" className="flex-none border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-4">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+    <div className="manager-page flex h-full flex-col overflow-hidden bg-surface-base" data-view={viewMode}>
+      <header data-tour="manager-controls" className="workspace-header flex-none border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-5">
+        <div className="manager-heading flex flex-wrap items-center gap-x-6 gap-y-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold tracking-tight text-txt-primary">{t("Task Manager")}</h1>
+              <h1 className="workspace-heading text-lg font-semibold tracking-tight text-txt-primary">{t("Task Manager")}</h1>
               <button
                 type="button"
                 aria-label={loading && query
@@ -910,27 +927,11 @@ export default function ManagerPage() {
                   : <RefreshCw aria-hidden="true" className="h-4 w-4" />}
               </button>
             </div>
-            <p className="mt-0.5 text-xs text-txt-secondary">
-              {t("Review, organize, and run workspace tasks from one queue.")}
-            </p>
           </div>
 
-          <div
-            className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap sm:justify-end"
-            aria-label={t("Workspace task totals")}
-            title={t("Workspace totals are independent of the current search, status filter, and page.")}
-          >
-            <ManagerMetric label={t("All tasks")} value={summary?.total ?? '—'} />
-            <ManagerMetric label={t("Active")} value={summary?.active ?? '—'} tone="amber" />
-            <ManagerMetric label={t("Done")} value={summary?.completed ?? '—'} tone="emerald" />
-            <ManagerMetric label={t("Failed")} value={summary?.failed ?? '—'} tone="rose" />
-          </div>
-        </div>
-
-        <div className="mt-3 flex flex-col gap-3 xl:flex-row xl:items-start">
-          <div className="w-full min-w-0 xl:max-w-[44rem] xl:flex-1">
+          <div className="manager-search min-w-0">
             <TaskSearchInput
-              compact
+              compact minimal
               workspaceKind={workspaceKind}
               value={query}
               onChange={setQuery}
@@ -945,10 +946,52 @@ export default function ManagerPage() {
               ariaLabel={t("Search tasks")}
             />
           </div>
+          {!selectMode && (
+            <ActionButton
+              icon={<SquareCheck className="h-4 w-4" />}
+              variant="ghost"
+              size="sm"
+              className="manager-select-action min-h-11 sm:min-h-9"
+              aria-label={t("Select tasks")}
+              disabled={tasks.length === 0 || anyTaskActionPending || Boolean(bulkAction)}
+              title={anyTaskActionPending ? t("Wait for the current task action to finish") : t("Select tasks")}
+              onClick={() => setSelectMode(true)}
+            >
+              {t("Select tasks")}
+            </ActionButton>
+          )}
+        </div>
 
-          <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap xl:ml-auto xl:flex-none">
+        <div className="manager-toolbar flex flex-wrap items-center justify-between gap-2">
+          <div
+            className="manager-status-tabs flex min-w-0 items-center gap-1"
+            role="group"
+            aria-label={t("Workspace task totals")}
+            title={t("Workspace totals are independent of the current search, status filter, and page.")}
+          >
+            <ManagerMetric label={t("All tasks")} value={summary?.total ?? '—'} selected={statusFilter === 'All'} onClick={() => setStatusFilter('All')} />
+            <ManagerMetric label={t("Active")} value={summary?.active ?? '—'} selected={statusFilter === 'active'} onClick={() => setStatusFilter('active')} />
+            <ManagerMetric label={t("Done")} value={summary?.completed ?? '—'} selected={statusFilter === 'completed'} onClick={() => setStatusFilter('completed')} />
+            <ManagerMetric label={t("Failed")} value={summary?.failed ?? '—'} selected={statusFilter === 'failed'} onClick={() => setStatusFilter('failed')} />
+          </div>
+
+          <div className="manager-view-tools flex items-center gap-3">
+            <div className="manager-view-options relative" ref={viewOptionsRef} onBlur={event => {
+              if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setViewOptionsOpen(false)
+            }}>
+              <button type="button" ref={viewOptionsTriggerRef} aria-label={t('View options')} aria-haspopup="dialog" aria-expanded={viewOptionsOpen} aria-controls={viewOptionsId}
+                className="manager-options-trigger touch-target inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs text-txt-secondary hover:bg-surface-overlay sm:min-h-9"
+                onClick={() => setViewOptionsOpen(open => !open)}>
+                <ArrowUpDown aria-hidden="true" className="h-3.5 w-3.5" />
+                <span>{!['All', 'active', 'completed', 'failed'].includes(statusFilter) && `${t(STATUS_LABELS[statusFilter as TaskStatus])} · `}{t(TASK_SORT_OPTIONS.find(option => option.value === sortMode)!.label)}</span>
+                <ChevronDown aria-hidden="true" className="h-3 w-3" />
+              </button>
+              {viewOptionsOpen && <div id={viewOptionsId} role="dialog" aria-label={t('View options')} className="manager-options-panel">
+              <h2 className="mb-3 text-sm font-semibold text-txt-primary">{t('View options')}</h2>
+              <label className="manager-option-label" htmlFor={`${viewOptionsId}-status`}>{t('Filter by status')}</label>
             <div className="relative min-w-0 sm:flex-none">
               <select
+                id={`${viewOptionsId}-status`}
                 value={statusFilter}
                 onChange={event => setStatusFilter(event.target.value)}
                 aria-label={t("Filter tasks by status")}
@@ -957,16 +1000,17 @@ export default function ManagerPage() {
               >
                 {STATUS_OPTIONS.map(option => (
                   <option key={option} value={option}>
-                    {option === 'All' ? t("All statuses") : t(STATUS_LABELS[option as TaskStatus])}
+                    {option === 'All' ? t("All statuses") : option === 'active' ? t('Active') : t(STATUS_LABELS[option as TaskStatus])}
                   </option>
                 ))}
               </select>
               <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
             </div>
 
-            <div className="relative col-span-2 row-start-2 min-w-0 sm:flex-none">
-              <ArrowUpDown className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary sm:left-2.5" />
+              <label className="manager-option-label" htmlFor={`${viewOptionsId}-sort`}>{t('Sort task cards')}</label>
+            <div className="manager-sort-control relative min-w-0 sm:flex-none">
               <select
+                id={`${viewOptionsId}-sort`}
                 value={sortMode}
                 onChange={event => setSortMode(event.target.value as TaskSortMode)}
                 aria-label={t("Sort task cards")}
@@ -982,8 +1026,11 @@ export default function ManagerPage() {
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary sm:right-2.5" />
             </div>
 
-            <div className="relative col-start-2 row-start-1 min-w-0 sm:flex-none">
+            {viewMode === 'cards' && <>
+              <label className="manager-option-label" htmlFor={`${viewOptionsId}-columns`}>{t('Maximum cards per row')}</label>
+              <div className="relative min-w-0 sm:flex-none">
               <select
+                id={`${viewOptionsId}-columns`}
                 value={columns}
                 onChange={event => setColumns(Number(event.target.value))}
                 aria-label={t("Maximum cards per row")}
@@ -995,21 +1042,17 @@ export default function ManagerPage() {
                 ))}
               </select>
               <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+            </div></>}
+              </div>}
             </div>
-
-            {!selectMode && (
-              <ActionButton
-                icon={<MousePointer2 className="h-4 w-4" />}
-                variant="primary"
-                size="sm"
-                className="col-span-2 row-start-3 h-11 justify-self-start sm:h-auto"
-                disabled={tasks.length === 0 || anyTaskActionPending || Boolean(bulkAction)}
-                title={anyTaskActionPending ? t("Wait for the current task action to finish") : undefined}
-                onClick={() => setSelectMode(true)}
-              >
-                {t("Select tasks")}
-              </ActionButton>
-            )}
+            <div role="group" aria-label={t('Task view')} className="manager-view-toggle flex items-center gap-0.5 rounded-lg bg-surface-overlay p-0.5">
+              {([{ mode: 'cards', label: 'Card view', icon: LayoutGrid }, { mode: 'list', label: 'List view', icon: List }] as const).map(({ mode, label, icon: Icon }) => (
+                <button key={mode} type="button" aria-label={t(label)} title={t(label)} aria-pressed={viewMode === mode}
+                  onClick={() => setViewMode(mode)} className={clsx('touch-target flex h-10 w-10 items-center justify-center rounded-md sm:h-7 sm:w-8', viewMode === mode ? 'bg-surface-raised text-txt-primary shadow-sm' : 'text-txt-tertiary hover:text-txt-primary')}>
+                  <Icon aria-hidden="true" className="h-4 w-4" />
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -1095,7 +1138,7 @@ export default function ManagerPage() {
       </header>
 
       <section
-        className="flex-1 overflow-y-auto p-3 sm:p-4"
+        className="manager-tasks-content min-h-0 flex-1 overflow-y-auto p-3 sm:p-5"
         aria-label={t("Task list")}
         aria-busy={loading || undefined}
       >
@@ -1122,7 +1165,7 @@ export default function ManagerPage() {
         )}
 
         {loading && tasks.length === 0 ? (
-          <ManagerLoadingState columns={columns} />
+          <ManagerLoadingState columns={viewMode === 'list' ? 1 : columns} />
         ) : tasks.length === 0 ? (
           error ? null : (
             <ManagerEmptyState
@@ -1159,7 +1202,7 @@ export default function ManagerPage() {
                   ) : (
                     <TaskGrid
                       tasks={pinnedTasks}
-                      columns={columns}
+                      columns={viewMode === 'list' ? 1 : columns}
                       query={query}
                       draggedTaskName={draggedTaskName}
                       dropIntent={dropIntent}
@@ -1195,7 +1238,7 @@ export default function ManagerPage() {
             >
               <TaskGrid
                 tasks={otherTasks}
-                columns={columns}
+                columns={viewMode === 'list' ? 1 : columns}
                 query={query}
                 draggedTaskName={draggedTaskName}
                 dropIntent={dropIntent}
@@ -1331,7 +1374,7 @@ function TaskGrid({
     <div
       data-task-grid="true"
       data-task-grid-columns={columns}
-      className="grid gap-2"
+      className="manager-task-grid grid gap-2"
       style={{
         gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${(columns - 1) * 8}px) / ${columns}))), 1fr))`,
       }}
@@ -1403,6 +1446,7 @@ const TaskCard = memo(function TaskCard({
   useTranslation()
   const actionBtn = getActionButton(task)
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
+  const createdAtLabel = task.created_at?.replace(/^(\d{4}-\d{2}-\d{2})[_T](\d{2})[-:](\d{2}).*$/, '$1 · $2:$3')
   const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
   const cardDescription = task._load_error || task.preview_text || t("No preview available.")
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
@@ -1418,12 +1462,13 @@ const TaskCard = memo(function TaskCard({
     <article
       data-task-card={task.name}
       data-task-card-pinned={task.pinned ? 'true' : 'false'}
+      data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
       className={clsx(
-        'group relative rounded-md border bg-surface-raised [contain-intrinsic-size:220px] [content-visibility:auto] transition-[border-color,box-shadow,background-color,opacity,transform] duration-150 ease-out focus-within:border-accent',
+        'task-card group relative flex flex-col rounded-xl border bg-surface-raised [contain-intrinsic-size:220px] [content-visibility:auto] transition-[border-color,box-shadow,background-color,opacity] duration-150 ease-out focus-within:border-accent',
         selected ? 'border-accent bg-accent/8 ring-1 ring-accent/20' : 'border-border-subtle hover:border-border',
         task.pinned && !selected && 'border-accent/20',
-        !selected && !dragging && 'hover:-translate-y-0.5 hover:shadow-[0_8px_22px_rgba(15,23,42,0.07)]',
+        !selected && !dragging && 'hover:shadow-[0_4px_16px_rgba(15,23,42,0.05)]',
         dragging && 'scale-[0.985] border-accent/35 bg-accent/5 opacity-70 shadow-[0_10px_30px_rgba(15,23,42,0.14)] ring-1 ring-accent/35',
         dropPlacement && !dragging && 'border-accent/35 bg-accent/5 ring-1 ring-accent/25',
       )}
@@ -1435,7 +1480,7 @@ const TaskCard = memo(function TaskCard({
           aria-hidden="true"
           onPointerDown={event => onPointerDown(task, event)}
           className={clsx(
-            'touch-target absolute left-0.5 top-0.5 z-10 flex h-11 w-11 cursor-grab touch-none items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity] active:cursor-grabbing sm:left-2 sm:top-2 sm:h-7 sm:w-7',
+            'task-card-drag touch-target absolute left-0.5 top-0.5 z-10 flex h-11 w-11 cursor-grab touch-none items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity] active:cursor-grabbing sm:left-2 sm:top-2 sm:h-7 sm:w-7',
             'group-hover:bg-surface-overlay group-hover:text-txt-secondary',
             dragging && 'bg-accent/10 text-accent',
             (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
@@ -1458,7 +1503,7 @@ const TaskCard = memo(function TaskCard({
           aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: task.name })}
           aria-busy={pendingAction === 'pin' || undefined}
           className={clsx(
-            'touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
+            'task-card-pin touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
             task.pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
           )}
         >
@@ -1482,11 +1527,11 @@ const TaskCard = memo(function TaskCard({
           ? t('{{action}} {{name}}', { action: selected ? t("Deselect") : t("Select"), name: task.name })
           : t('Open details for {{name}}', { name: task.name })}
         aria-pressed={selectMode ? selected : undefined}
-        className="block w-full rounded-md px-3 pb-2 pt-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
+        className="task-card-main block w-full min-w-0 flex-1 rounded-xl px-3 pb-3 pt-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
       >
-        <div className="flex items-center gap-2 pl-11 pr-11 sm:pl-5 sm:pr-7">
+        <div className="task-card-status flex items-center gap-2 pl-11 pr-11 sm:pl-5 sm:pr-7">
           <ManagerStatusBadge status={task.status as TaskStatus} />
-          <span className="text-2xs uppercase tracking-[0.16em] text-txt-tertiary">
+          <span className="text-2xs uppercase tracking-[0.08em] text-txt-tertiary">
             {taskKindLabel}
           </span>
           {taskPending && pendingAction !== 'pin' && (
@@ -1497,19 +1542,20 @@ const TaskCard = memo(function TaskCard({
           )}
         </div>
 
-        <div className="mt-1.5 pr-11 text-sm font-semibold text-txt-primary sm:pr-7" title={task.name}>
+        <div className="task-card-name mt-3 text-sm font-semibold leading-6 text-txt-primary [overflow-wrap:anywhere]" title={task.name}>
           {task.name}
         </div>
 
-        <div className="mt-1 min-h-[30px] text-2xs leading-5 text-txt-secondary" title={cardDescription}>
-          <div className={clsx('truncate-2', task._load_error && 'text-rose-700 dark:text-rose-300')}>
+        <div className="task-card-preview mt-2 rounded-lg bg-surface-base px-2.5 py-2 font-mono text-2xs leading-5 text-txt-secondary" title={cardDescription}>
+          <div className={clsx('truncate-2 whitespace-pre-wrap [overflow-wrap:anywhere]', task._load_error && 'text-rose-700 dark:text-rose-300')}>
             {cardDescription}
           </div>
         </div>
 
+        <TaskExecutionInfo task={task} className="task-card-execution mt-2" />
         {gpuWait && (
           <div
-            className="mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-2xs font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-950/45 dark:text-blue-300"
+            className="task-card-gpu mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-2xs font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-950/45 dark:text-blue-300"
             title={gpuWait.reason || t("Waiting for GPU capacity")}
           >
             <Cpu className="h-3 w-3 flex-none" aria-hidden="true" />
@@ -1517,26 +1563,26 @@ const TaskCard = memo(function TaskCard({
           </div>
         )}
 
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
-          <span title={task.created_at}>{task.created_at}</span>
+        <div className="task-card-meta mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
+          <span title={task.created_at}>{createdAtLabel}</span>
           <span title={t('Run #{{index}}', { index: Math.max(task.run_index || 1, 1) })}>{t('Run #{{index}}', { index: Math.max(task.run_index || 1, 1) })}</span>
-          <span className="truncate" title={folderName}>{folderName}</span>
+          {folderName !== task.name && <span className="truncate" title={task.dir}>{folderName}</span>}
         </div>
 
 
         {task._load_error && (
-          <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs font-medium text-rose-700 dark:text-rose-300" title={task._load_error}>
+          <div className="task-card-error mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs font-medium text-rose-700 dark:text-rose-300" title={task._load_error}>
             <AlertTriangle className="h-3 w-3" />
             <span className="truncate">{t("Task load error")}</span>
           </div>
         )}
       </div>
 
-      {query && <div className="mx-3 mb-2 border-t border-border-subtle pt-1">
+      {query && <div className="task-card-matches mx-3 mb-2 border-t border-border-subtle pt-1">
         <TaskSearchMatches task={task} onSelect={() => onCardClick(task)} exportMode={selectMode} action={selectMode ? t("Select") : t("View")} />
       </div>}
       {!selectMode && (
-        <div className="mx-3 flex items-center justify-between gap-2 border-t border-border-subtle pb-2 pt-1.5">
+        <div className="task-card-actions mx-3 flex items-center justify-between gap-2 border-t border-border-subtle pb-2 pt-1.5">
           <div className="flex items-center gap-0.5" aria-label={t('Reorder {{name}}', { name: task.name })}>
             <TaskIconButton
               label={t('Move {{name}} earlier', { name: task.name })}
@@ -1598,21 +1644,24 @@ const TaskCard = memo(function TaskCard({
 function ManagerMetric({
   label,
   value,
-  tone = 'neutral',
+  selected,
+  onClick,
 }: {
   label: string
   value: number | string
-  tone?: ManagerMetricTone
+  selected: boolean
+  onClick: () => void
 }) {
   useTranslation()
+  const countId = useId()
   return (
-    <div className={clsx(
-      'flex min-w-[7.25rem] items-center justify-between gap-3 rounded-md border px-2.5 py-1.5 text-2xs sm:min-w-0',
-      MANAGER_METRIC_STYLES[tone],
+    <button type="button" onClick={onClick} aria-pressed={selected} aria-label={t('Filter tasks: {{status}}', { status: label })} aria-describedby={countId} className={clsx(
+      'manager-status-tab touch-target flex min-h-11 shrink-0 items-center justify-between gap-2 rounded-lg px-3 py-1.5 text-xs transition-colors sm:min-h-9',
+      selected ? 'bg-surface-overlay text-txt-primary' : 'text-txt-secondary hover:bg-surface-overlay',
     )}>
-      <span className="font-medium uppercase tracking-[0.12em] opacity-80">{t(label)}</span>
-      <span className="font-semibold tabular-nums">{value}</span>
-    </div>
+      <span className="font-medium">{t(label)}</span>
+      <span id={countId} className="text-txt-tertiary tabular-nums">{value}</span>
+    </button>
   )
 }
 

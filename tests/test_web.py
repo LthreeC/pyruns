@@ -268,20 +268,35 @@ def test_system_update_gates_generator_task_creation():
     assert "new tasks are disabled" in response.json()["detail"]
 
 
-def test_system_update_refuses_active_tasks_without_stopping_server():
+@pytest.mark.parametrize("operation", ["update", "restart"])
+def test_system_update_refuses_active_tasks_then_accepts_idle_retry(monkeypatch, operation):
     from pyruns.web.self_update import UiUpdateCoordinator
 
     shutdowns = []
     runtime = _RouteRuntime({"active_task_count": 2})
-    coordinator = UiUpdateCoordinator(lambda: shutdowns.append("shutdown"))
+    coordinator = UiUpdateCoordinator(
+        lambda: shutdowns.append("shutdown"), current_version="0.3.0"
+    )
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: "0.4.0")
     client = TestClient(create_app(runtime, update_coordinator=coordinator))
 
-    response = client.post("/api/system/update")
+    response = client.post(f"/api/system/{operation}")
 
     assert response.status_code == 409
     assert "2 queued or running tasks" in response.json()["detail"]
+    assert "then retry" in response.json()["detail"]
     assert coordinator.requested is False
     assert shutdowns == []
+
+    runtime.results["active_task_count"] = 0
+    assert client.get("/api/system/info").status_code == 200
+    assert coordinator.requested is False
+    assert shutdowns == []
+
+    retry = client.post(f"/api/system/{operation}")
+    assert retry.status_code == 202
+    assert coordinator.requested is True
+    assert shutdowns == ["shutdown"]
 
 
 def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
@@ -2561,6 +2576,36 @@ def test_dashboard_endpoint_returns_summary_and_recent_tasks(tmp_path):
     assert payload["recent_tasks"][0]["name"] in {"alpha", "beta", "gamma"}
 
 
+@pytest.mark.parametrize("include_workspace", [True, False])
+def test_dashboard_avoids_unused_and_duplicate_shell_template_reads(tmp_path, include_workspace):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    try:
+        runtime.open_shell_workspace()
+        for name in ("alpha", "beta", "gamma"):
+            runtime.task_generator.create_shell_task(name, "echo example\n")
+        runtime.ensure_tasks_loaded()
+        client = TestClient(create_app(runtime))
+        params = {"refresh": "false", "recent_limit": 1}
+        if not include_workspace:
+            params["include_workspace"] = "false"
+        with patch.object(runtime, "list_templates", wraps=runtime.list_templates) as templates:
+            response = client.get("/api/dashboard", params=params)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["total"] == 3
+        assert len(payload["recent_tasks"]) == 1
+        assert templates.call_count == int(include_workspace)
+        if include_workspace:
+            assert payload["template_count"] == 3
+            assert len(payload["workspace"]["templates"]) == 3
+        else:
+            assert "workspace" not in payload
+            assert "template_count" not in payload
+    finally:
+        runtime.shutdown()
+
+
 def test_tasks_endpoint_can_return_lightweight_summaries(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="completed")
@@ -2729,6 +2774,27 @@ def test_tasks_endpoint_status_counts_are_global_before_filters_and_pagination(t
     assert [item["name"] for item in payload["items"]] == ["alpha"]
     assert payload["status_counts"]["completed"] == 1
     assert payload["status_counts"]["failed"] == 1
+
+
+@pytest.mark.parametrize("query,field", [("", "all"), ("active-", "name"), ("needle", "log")])
+def test_active_task_filter_includes_queued_and_running_in_pages_and_search(tmp_path, query, field):
+    workspace = _make_workspace(tmp_path, "main")
+    for name, status in (("active-running", "running"), ("active-queued", "queued"), ("active-done", "completed")):
+        _add_task(workspace, name, status=status, log_text="needle\n")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    try:
+        client = TestClient(create_app(runtime))
+        params = {"status": "Active", "query": query, "search_field": field, "limit": 1, "summary": True}
+        first = client.get("/api/tasks", params=params)
+        second = client.get("/api/tasks", params={**params, "offset": 1})
+        assert first.status_code == second.status_code == 200
+        pages = [first.json(), second.json()]
+        assert {item["name"] for page in pages for item in page["items"]} == {"active-running", "active-queued"}
+        assert all(page["total"] == 2 for page in pages)
+        assert pages[0]["has_more"] is True and pages[1]["has_more"] is False
+        assert all(page["status_counts"]["completed"] == 1 for page in pages)
+    finally:
+        runtime.shutdown()
 
 
 def test_compact_task_search_returns_field_context_without_scanning_logs(tmp_path):
@@ -7930,6 +7996,7 @@ def test_metrics_endpoint_returns_sampler_payload(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["cpu_percent"] == 10.0
+    assert response.json()["host"] == socket.gethostname()
     runtime.metrics_sampler.sample.assert_called_once_with(
         include_processes=False,
         detail=False,
@@ -8775,3 +8842,136 @@ def test_runtime_launcher_picker_error_branches(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="Shell folder does not exist"):
         runtime.open_shell_workspace_at(str(tmp_path / "missing-dir"))
+
+
+@pytest.mark.parametrize("summary,compact", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("deadline,expired", [(900, True), (1100, False), (None, None),
+                                            ("invalid", None), (float("nan"), None),
+                                            (float("inf"), None), (0, None)])
+def test_task_snapshots_expose_execution_source_without_changing_status(monkeypatch, summary, compact, deadline, expired):
+    monkeypatch.setattr("pyruns.core.task_manager.time.time", lambda: 1000)
+    task = {"name": "remote", "status": "running", "runner_host": "worker-a",
+            "lease_until": deadline, "lease_heartbeat": 800, "cancel_requested_at": 850}
+    snapshot = TaskManager._snapshot_task_for_api(task, summary=summary, compact=compact)
+    payload = TaskManager.serialize_task(snapshot, summary=summary, compact=compact)
+    assert payload["runner_host"] == "worker-a"
+    assert payload["lease_heartbeat"] == 800
+    assert payload["cancel_requested_at"] == 850
+    assert payload["runner_lease_expired"] is expired
+    assert payload["status"] == task["status"] == "running"
+    assert "runner_lease_expired" not in task
+    task["status"] = "completed"
+    assert TaskManager.serialize_task(task, summary=summary)["runner_lease_expired"] is None
+
+
+def test_created_batch_only_starts_its_first_attempt_and_reports_skips(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("alpha", "beta", "previous", "active", "alpha_unrelated"):
+        _add_task(workspace, name)
+    update_task_info(str(workspace / TASKS_DIR / "previous"), lambda info: info.update(
+        start_times=["2026-10-15_12-00-00"], finish_times=["2026-10-15_12-00-01"],
+        run_statuses=["completed"], run_index=1,
+    ))
+    update_task_info(str(workspace / TASKS_DIR / "active"), lambda info: info.update(
+        status="queued", runner_id="other-runner", runner_host="other-host", lease_until=time.time() + 600,
+    ))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+    names = ["alpha", "beta", "previous", "active"]
+    payload = {"task_names": names, "created_task_identities": {
+        name: runtime.get_task(name)["task_identity"] for name in names
+    }}
+    try:
+        with patch.object(runtime.task_manager, "_submit_task"):
+            response = client.post("/api/tasks/batch/run", json=payload)
+            assert response.status_code == 200
+            assert response.json()["count"] == 2
+            assert {item["name"] for item in response.json()["items"]} == {"alpha", "beta"}
+            assert set(response.json()["skipped"]) == {"previous", "active"}
+            assert runtime.get_task("alpha_unrelated")["status"] == "pending"
+            assert client.post("/api/tasks/batch/run", json=payload).status_code == 400
+            for name in ("alpha", "beta"):
+                update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update(
+                    status="completed", start_times=["2026-10-15_12-00-00"],
+                    finish_times=["2026-10-15_12-00-01"], run_statuses=["completed"],
+                ))
+                runtime.get_task(name, refresh=True)
+            assert client.post("/api/tasks/batch/run", json=payload).status_code == 400
+            assert runtime.get_task("alpha")["run_index"] == 1
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("identity", [None, "old-directory-identity"])
+def test_created_batch_rejects_missing_or_changed_identity_before_any_start(tmp_path, identity):
+    workspace = _make_workspace(tmp_path, "main")
+    for name in ("alpha", "beta"):
+        _add_task(workspace, name)
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    identities = {"alpha": runtime.get_task("alpha")["task_identity"]}
+    if identity is not None:
+        identities["beta"] = identity
+    try:
+        with patch.object(runtime.task_manager, "_submit_task") as submit:
+            response = TestClient(create_app(runtime)).post("/api/tasks/batch/run", json={
+                "task_names": ["alpha", "beta"], "created_task_identities": identities,
+            })
+        assert response.status_code == 400
+        assert "changed since creation" in response.json()["detail"]
+        submit.assert_not_called()
+        assert runtime.get_task("alpha")["status"] == "pending"
+    finally:
+        runtime.shutdown()
+
+
+def test_created_batch_rechecks_directory_identity_at_claim_time(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    identity = runtime.get_task("alpha")["task_identity"]
+    original_sync = runtime.task_manager._sync_status_to_disk
+
+    def replace_before_claim(*args, **kwargs):
+        (workspace / TASKS_DIR / "alpha").rename(workspace / TASKS_DIR / "original")
+        _add_task(workspace, "alpha")
+        return original_sync(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.task_manager, "_sync_status_to_disk", replace_before_claim)
+    try:
+        with patch.object(runtime.task_manager, "_submit_task") as submit:
+            response = TestClient(create_app(runtime)).post("/api/tasks/batch/run", json={
+                "task_names": ["alpha"], "created_task_identities": {"alpha": identity},
+            })
+        assert response.status_code == 400
+        submit.assert_not_called()
+        assert load_task_info(str(workspace / TASKS_DIR / "alpha"))["status"] == "pending"
+    finally:
+        runtime.shutdown()
+
+
+@pytest.mark.parametrize("shell", [False, True])
+def test_generator_response_can_submit_its_exact_created_batch(tmp_path, shell):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+    try:
+        if shell:
+            assert client.post("/api/workspace/shell").status_code == 200
+        created = client.post("/api/generator/create", json={
+            "name_prefix": "generated", "append_timestamp": False,
+            "mode": "shell" if shell else "form",
+            "shell_text": "echo test", "yaml_text": "epochs: 1:4:1\n",
+        })
+        assert created.status_code == 200
+        items = created.json()["items"]
+        identities = {task["name"]: task["task_identity"] for task in items}
+        assert all(identities.values())
+        with patch.object(runtime.task_manager, "_submit_task"):
+            response = client.post("/api/tasks/batch/run", json={
+                "task_names": list(identities), "created_task_identities": identities,
+            })
+        assert response.status_code == 200
+        assert response.json()["count"] == (1 if shell else 3)
+        assert {task["name"] for task in response.json()["items"]} == set(identities)
+    finally:
+        runtime.shutdown()

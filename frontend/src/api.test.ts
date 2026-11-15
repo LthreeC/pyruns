@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
   beginAuthorizationAttempt,
+  batchRunTasks,
   checkPyrunsUpdate,
   createLogStream,
   createTaskEventStream,
   exportTasksCsv,
+  getDashboard,
   getTasks,
   getSystemInfo,
   getWorkspace,
@@ -24,6 +26,28 @@ afterEach(() => {
   setWorkspaceContext('')
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+it('Home requests only dashboard data and preserves cancellation', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response('{}'))
+  vi.stubGlobal('fetch', fetchMock)
+  const controller = new AbortController()
+  await getDashboard(true, 6, controller.signal)
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/dashboard?refresh=true&recent_limit=6&include_workspace=false',
+    expect.objectContaining({ signal: controller.signal }),
+  )
+})
+
+it('batch run preserves Manager options and only binds identities for newly created batches', async () => {
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')))
+  vi.stubGlobal('fetch', fetchMock)
+  await batchRunTasks(['existing'], 3)
+  await batchRunTasks(['created'], undefined, { created: 'creation-identity' })
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ task_names: ['existing'], max_workers: 3 })
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    task_names: ['created'], created_task_identities: { created: 'creation-identity' },
+  })
 })
 
 describe('workspace request context', () => {

@@ -175,14 +175,20 @@ def _config_search_text(config: Any) -> str:
         return str(config)
 
 
+def task_status_matches(status: object, status_mode: str) -> bool:
+    """Match a single state or the queued/running Active group."""
+    selected = str(status_mode or "").strip().lower()
+    value = str(status or "").strip().lower()
+    return selected == "all" or value == selected or (selected == "active" and value in {"queued", "running"})
+
+
 def filter_tasks(all_tasks: Iterable[_Task], query: str, status_mode: str = "All") -> list[_Task]:
     """Apply status and multiline deep-search filtering."""
     status_text = str(status_mode or "").strip()
     status_key = "All" if status_text.lower() == "all" else status_text.lower()
     tasks = [
         task for task in all_tasks
-        if status_key == "All"
-        or status_key == str(task.get("status", "") or "").strip().lower()
+        if task_status_matches(task.get("status"), status_key)
     ]
     if not query:
         return tasks

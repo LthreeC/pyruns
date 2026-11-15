@@ -141,6 +141,7 @@ test('Manager cancels obsolete lists and preserves results through timeout and r
   await stall(true)
   await refresh.click()
   await expect.poll(snapshot).toMatchObject({ reads: 2, aborts: 0 })
+  await page.getByRole('button', { name: 'View options', exact: true }).click()
   await page.getByRole('combobox', { name: 'Filter tasks by status' }).selectOption('completed')
   await expect.poll(snapshot).toMatchObject({ reads: 3, aborts: 1 })
   await page.clock.runFor(10_001)
@@ -431,19 +432,27 @@ for (const stalledEndpoint of ['dashboard', 'metrics']) {
     await expect(refresh).toBeEnabled()
     await expect.poll(snapshot).toMatchObject({ aborts: 1 })
     await expect(refreshError).toBeVisible()
+    await expect(page.getByText('Dashboard partially refreshed', { exact: true })).toBeVisible()
+    const afterTimeout = await snapshot()
+    expect(afterTimeout[stalledEndpoint as 'dashboard' | 'metrics']).toBe(2)
+    // The healthy resource keeps polling while the other read waits for its timeout.
+    expect(afterTimeout[stalledEndpoint === 'dashboard' ? 'metrics' : 'dashboard']).toBeGreaterThan(2)
     await stall('')
     await refresh.click()
     await expect(refresh).toBeEnabled()
-    await expect.poll(snapshot).toMatchObject({ dashboard: 3, metrics: 3 })
+    await expect.poll(snapshot).toMatchObject({ dashboard: afterTimeout.dashboard + 1, metrics: afterTimeout.metrics + 1 })
     await expect(refreshError).toBeHidden()
+    await expect(page.getByText('Dashboard refreshed', { exact: true })).toBeVisible()
 
     await stall(stalledEndpoint)
     await refresh.click()
-    await expect.poll(snapshot).toMatchObject({ dashboard: 4, metrics: 4 })
+    const finalReads = { dashboard: afterTimeout.dashboard + 2, metrics: afterTimeout.metrics + 2 }
+    await expect.poll(snapshot).toMatchObject(finalReads)
     await page.getByRole('link', { name: 'Manager', exact: true }).click()
     await expect.poll(snapshot).toMatchObject({ aborts: 2 })
     await page.clock.runFor(30_001)
-    expect(await snapshot()).toMatchObject({ dashboard: 4, metrics: 4 })
+    expect(await snapshot()).toMatchObject(finalReads)
+    await expect(page.getByText('Could not refresh dashboard', { exact: true })).toBeHidden()
   })
 }
 
