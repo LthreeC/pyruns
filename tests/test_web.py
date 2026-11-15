@@ -448,7 +448,7 @@ def test_system_update_bounds_idle_check_retries_and_explains_conflict(tmp_path,
         assert response.status_code == 503
         assert reads == 3
         detail = response.json()["detail"]
-        assert str(workspace) in detail
+        assert workspace.as_posix() in detail.replace("\\", "/")
         assert "TaskStateConflict" in detail
         assert "changing" in detail
         assert coordinator.requested is False
@@ -474,7 +474,7 @@ def test_system_update_explains_unreadable_workspace_without_allowing_update(tmp
 
         assert response.status_code == 503
         detail = response.json()["detail"]
-        assert str(workspace) in detail
+        assert workspace.as_posix() in detail.replace("\\", "/")
         assert "JSONDecodeError" in detail
         assert coordinator.requested is False
         assert shutdowns == []
