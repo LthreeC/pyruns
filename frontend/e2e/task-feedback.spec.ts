@@ -3,60 +3,39 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-test('created batch submits exact identities once and preserves the result when reopened', async ({ page }, testInfo) => {
+test('generator saves a batch to the selected device and opens it in Manager', async ({ page }, testInfo) => {
   const root = await mkdtemp(join(tmpdir(), 'pyruns-created-batch-'))
   const script = join(root, 'train.py'), config = join(root, 'input.yaml')
   await writeFile(script, 'import pyruns\nconfig = pyruns.load()\n')
   await writeFile(config, 'value: original\n')
   await page.goto('/?token=pyruns-e2e-access-token')
   const original = await (await page.request.get('/api/workspace')).json()
-  const tasks = ['batch-first', 'batch-second', 'unrelated-prefix'].map((name, index) => ({
-    name, status: 'pending', task_identity: `created-${index}`, task_kind: 'config',
-    created_at: '2026-11-15_12-00-00', run_index: 0,
-  }))
-  let requests = 0
-  let release!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
   try {
     const opened = await page.request.post('/api/launcher/open', { data: { script_path: script, config_path: config } })
     expect(opened.ok()).toBe(true)
-    await page.route('**/api/generator/create', route => route.fulfill({ json: { count: tasks.length, items: tasks, task_kind: 'config' } }))
-    await page.route('**/api/tasks/batch/run?*', async route => {
-      requests++
-      expect(route.request().postDataJSON()).toEqual({
-        task_names: tasks.map(task => task.name),
-        created_task_identities: Object.fromEntries(tasks.map(task => [task.name, task.task_identity])),
-      })
-      await gate
-      await route.fulfill({ json: { count: 2, items: tasks.slice(0, 2).map(task => ({ ...task, status: 'queued' })), skipped: [tasks[2].name] } })
-    })
     await page.goto('/generator')
-    await expect(page.getByRole('textbox', { name: 'value parameter value', exact: true })).toHaveValue('original')
+    const target = page.getByRole('group', { name: 'Save this batch to' })
+    await expect(target.getByRole('radio', { name: 'Common tasks' })).toBeChecked()
+    await target.getByText('This device', { exact: true }).click()
+    await expect(target.getByRole('radio', { name: 'This device' })).toBeChecked()
+    await page.getByRole('textbox', { name: 'value parameter value', exact: true }).fill('left | right')
     await page.screenshot({ path: testInfo.outputPath('generator-workspace.png') })
-    await page.getByRole('button', { name: 'Generate Tasks', exact: true }).click()
-    const view = page.getByRole('button', { name: 'View and run this batch (3)' })
-    await view.click()
-    const batch = page.getByRole('dialog', { name: 'Created batch · 3 tasks' })
-    for (const task of tasks) await expect(batch.getByText(task.name, { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Preview Batch Tasks' }).click()
+    const created = page.waitForResponse(response => response.url().endsWith('/api/generator/create'))
+    await page.getByRole('button', { name: 'Generate All' }).click()
+    const result = await (await created).json()
+    expect(result.count).toBe(2)
+    for (const task of result.items) {
+      expect(task.task_source).toBe('local')
+      expect(task.status).toBe('pending')
+    }
+    await expect(target.getByRole('radio', { name: 'Common tasks' })).toBeChecked()
+    await expect(page.getByRole('button', { name: /run this batch/i })).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('created-batch.png') })
-    // Two clicks in the same event loop must still make only one request.
-    await batch.getByRole('button', { name: 'Run 3 pending tasks' }).evaluate((button: HTMLButtonElement) => { button.click(); button.click() })
-    await expect.poll(() => requests).toBe(1)
-    await expect(batch.getByRole('button', { name: 'Submitting…' })).toBeDisabled()
-    await expect(batch.getByRole('button', { name: 'Close created batch' })).toBeDisabled()
-    await page.keyboard.press('Escape')
-    await expect(batch).toBeVisible()
-    release()
-    await expect(batch.getByRole('status')).toContainText('Submitted 2 tasks; 1 were not started.')
-    await expect(batch.getByRole('button', { name: 'Batch submitted' })).toBeDisabled()
-    await batch.getByRole('button', { name: 'Close', exact: true }).click()
-    await view.click()
-    await expect(batch.getByRole('button', { name: 'Batch submitted' })).toBeDisabled()
-    await expect(batch.getByRole('status')).toContainText('Submitted 2 tasks; 1 were not started.')
-    expect(requests).toBe(1)
-    await batch.getByRole('button', { name: 'Close', exact: true }).click()
+    await page.getByRole('button', { name: 'Open in Manager' }).click()
+    await expect(page.getByRole('button', { name: 'Close task details' })).toBeVisible()
+    await expect(page.getByText(result.items[0].name, { exact: true }).first()).toBeVisible()
   } finally {
-    release()
     await page.request.post('/api/workspace/run-root', { data: { path: original.run_root } })
     await rm(root, { recursive: true, force: true })
   }
@@ -115,7 +94,7 @@ test('task source and uncertainty remain distinct from running and log connectiv
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
 
-test('source checkboxes filter both task views and allow an empty selection', async ({ page }) => {
+test('source checkboxes filter both task views and allow an empty selection', async ({ page }, testInfo) => {
   const remote = 'tasks-gpu-production-aaaaaaaaaaaa'
   const sources = [{ id: 'shared', host: '' }, { id: 'local', host: 'laptop' }, { id: remote, host: 'gpu-production' }]
   await page.route('**/api/tasks/gpu-production/logs?*', route => route.fulfill({ json: {
@@ -135,10 +114,11 @@ test('source checkboxes filter both task views and allow an empty selection', as
   const all = page.getByRole('checkbox', { name: 'Select all sources' })
   await expect(page.getByRole('button', { name: 'Open details for gpu-production' })).toBeVisible()
   await trigger.click()
-  await all.uncheck()
+  const width = (await all.boundingBox())!.width
+  await all.click({ position: { x: width - 3, y: 14 } })
   await expect(page.locator('[data-task-card]')).toHaveCount(0)
-  await page.getByRole('checkbox', { name: 'gpu-production' }).check()
-  await expect(all).toHaveJSProperty('indeterminate', true)
+  await page.getByRole('checkbox', { name: 'gpu-production' }).getByText('gpu-production').click()
+  await expect(all).toHaveAttribute('aria-checked', 'mixed')
   await expect(page.locator('[data-task-card]')).toHaveCount(1)
   await page.keyboard.press('Escape')
   await expect(trigger).toBeFocused()
@@ -148,7 +128,11 @@ test('source checkboxes filter both task views and allow an empty selection', as
   await trigger.click()
   await expect(page.getByRole('checkbox', { name: 'gpu-production' })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'Common tasks' })).not.toBeChecked()
-  await all.check()
+  await page.getByRole('checkbox', { name: /This device/ }).click({ position: { x: width - 3, y: 14 } })
+  await expect(page.getByRole('checkbox', { name: /This device/ })).toBeChecked()
+  await page.screenshot({ path: testInfo.outputPath('monitor-sources.png') })
+  await all.focus()
+  await page.keyboard.press('Space')
   await expect(page.getByRole('checkbox', { name: 'Common tasks' })).toBeChecked()
   await all.uncheck()
   await expect(terminal).toHaveCount(0)

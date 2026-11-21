@@ -268,6 +268,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     shellText: '',
     namePrefix: 'task',
     appendTimestamp: true,
+    storageOverride: null,
     dirty: false,
     loading: false,
   })
@@ -1167,6 +1168,7 @@ interface GeneratorState {
   shellText: string
   namePrefix: string
   appendTimestamp: boolean
+  storageOverride: 'shared' | 'local' | null
   columns: number
   pinnedParams: string[]
   dirty: boolean
@@ -1179,6 +1181,7 @@ interface GeneratorState {
   setShellText: (t: string) => void
   setNamePrefix: (n: string) => void
   setAppendTimestamp: (b: boolean) => void
+  setStorageOverride: (storage: 'shared' | 'local' | null) => void
   setDirty: (dirty: boolean) => void
   setColumns: (n: number) => void
   togglePin: (key: string) => void
@@ -1193,6 +1196,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   shellText: '',
   namePrefix: 'task',
   appendTimestamp: true,
+  storageOverride: null,
   columns: readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8),
   pinnedParams: readLocalStorage(PINNED_PARAMS_STORAGE_KEY) !== null
     ? readStoredStringArray(PINNED_PARAMS_STORAGE_KEY)
@@ -1275,6 +1279,11 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     if (b === get().appendTimestamp) return
     generatorDraftVersion += 1
     set({ appendTimestamp: b, dirty: true })
+  },
+  setStorageOverride(storageOverride) {
+    if (storageOverride === get().storageOverride) return
+    generatorDraftVersion += 1
+    set({ storageOverride, dirty: true })
   },
   setDirty(dirty) { set({ dirty }) },
   setColumns(n) {

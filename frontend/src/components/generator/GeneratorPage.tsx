@@ -15,9 +15,11 @@ import {
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowRight,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Check,
   CheckCircle2,
   FileCode,
   FoldVertical,
@@ -33,17 +35,16 @@ import {
   Workflow,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { requestConfirmation, useGeneratorStore, useThemeStore, useWorkspaceStore } from '@/store'
+import { requestConfirmation, useGeneratorStore, useTaskStore, useThemeStore, useWorkspaceStore } from '@/store'
 import EmptyState from '@/components/shared/EmptyState'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import CodeTextEditor from '@/components/shared/CodeTextEditor'
 import ToggleSwitch from '@/components/shared/ToggleSwitch'
-import CreatedTasksDialog from './CreatedTasksDialog'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
-import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo, Task } from '@/types'
+import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
 import { parseConfigYaml, parseIntegerInput, stringifyConfigYaml } from '@/utils/configYaml'
 import {
   configPathId, configPathFromId, formatConfigPath, getConfigValue,
@@ -62,15 +63,14 @@ const MIN_TREE_OUTLINE_WIDTH = 200
 const MAX_TREE_OUTLINE_WIDTH = 380
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
 type FormLayoutMode = 'grid' | 'tree'
-type GeneratorDisplayMode = FormLayoutMode | 'yaml' | 'shell'
+type GeneratorDisplayMode = FormLayoutMode | 'yaml'
 const GeneratorDraftEditContext = createContext<() => void>(() => undefined)
 
 interface CreatedTaskResult {
   count: number
   taskKind: string
   firstTaskName: string
-  tasks: Task[]
-  submission?: string
+  source: string
 }
 
 type GenerationPayload = Readonly<{
@@ -80,6 +80,7 @@ type GenerationPayload = Readonly<{
   shell_text: string
   template_value?: string
   append_timestamp: boolean
+  task_storage: 'shared' | 'local'
 }>
 
 interface PreviewSnapshot {
@@ -584,6 +585,8 @@ export default function GeneratorPage() {
     shellText,
     namePrefix,
     appendTimestamp,
+    storageOverride,
+    setStorageOverride,
     columns,
     pinnedParams,
     dirty,
@@ -607,7 +610,6 @@ export default function GeneratorPage() {
   const [generating, setGenerating] = useState(false)
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>('idle')
   const [createdSummary, setCreatedSummary] = useState<CreatedTaskResult | null>(null)
-  const [createdTasksOpen, setCreatedTasksOpen] = useState(false)
   const [error, setError] = useState('')
   const [templateLoadError, setTemplateLoadError] = useState('')
   const [templateListLoading, setTemplateListLoading] = useState(false)
@@ -693,7 +695,7 @@ export default function GeneratorPage() {
     compactGeneratorLayout ? 'min-h-[20rem] flex-none' : 'flex-1',
   )
   const generatorSettingsClassName = clsx(
-    'flex flex-col gap-2.5 overflow-y-auto bg-surface-raised p-2.5',
+    'flex flex-col gap-3 overflow-y-auto bg-surface-raised p-3.5',
     compactGeneratorLayout ? 'w-full flex-none border-t border-border-subtle' : 'flex-none border-l border-border-subtle',
   )
 
@@ -922,6 +924,8 @@ export default function GeneratorPage() {
     ? t('Batch syntax detected. {{count}} tasks will be created after confirmation.', { count: previewData.count })
     : t('Batch syntax detected. A preview opens before creating multiple tasks.')
   const generationBusy = generating || generationStatus === 'previewing'
+  const defaultStorage = workspace?.settings?.task_storage === 'local' ? 'local' : 'shared'
+  const taskStorage = storageOverride ?? defaultStorage
   const currentGenerationPayload = useMemo<GenerationPayload>(() => Object.freeze({
     name_prefix: namePrefix || 'task',
     mode: editorMode,
@@ -929,7 +933,8 @@ export default function GeneratorPage() {
     shell_text: editorMode === 'shell' ? shellText : '',
     template_value: isShellWorkspace ? undefined : selectedTemplate,
     append_timestamp: appendTimestamp,
-  }), [appendTimestamp, editorMode, isShellWorkspace, namePrefix, selectedTemplate, shellText, yamlText])
+    task_storage: taskStorage,
+  }), [appendTimestamp, editorMode, isShellWorkspace, namePrefix, selectedTemplate, shellText, yamlText, taskStorage])
   const generationInputKey = useMemo(
     () => JSON.stringify(currentGenerationPayload),
     [currentGenerationPayload],
@@ -965,17 +970,12 @@ export default function GeneratorPage() {
     setGenerationStatus('idle')
     setCreatedSummary(null)
     setError('')
-    setCreatedTasksOpen(false)
   }, [workspaceEpoch])
   const setAllTreeSections = useCallback((open: boolean) => {
     setTreeOpenValue(open)
     setTreeOpenSignal(signal => signal + 1)
   }, [])
   const handleDisplayModeChange = useCallback((mode: GeneratorDisplayMode) => {
-    if (mode === 'shell') {
-      setViewMode('shell')
-      return
-    }
     if (mode === 'yaml') {
       setViewMode('yaml')
       return
@@ -1019,7 +1019,7 @@ export default function GeneratorPage() {
         generationInputKeyRef.current === requestInputKey
         && generationDraftRevisionRef.current === requestDraftRevision
       ) {
-        setDirty(false)
+        useGeneratorStore.setState({ dirty: false, storageOverride: null })
       }
       setPreviewOpen(false)
       setPreviewData(null)
@@ -1029,7 +1029,7 @@ export default function GeneratorPage() {
         count: result.count,
         taskKind: result.task_kind === 'shell' ? 'shell task' : 'python task',
         firstTaskName: result.items[0]?.name || '',
-        tasks: result.items,
+        source: result.items[0]?.task_source ?? payload.task_storage,
       })
       setGenerationStatus('created')
       // The tasks already exist. Refreshing available templates must not delay
@@ -1046,7 +1046,7 @@ export default function GeneratorPage() {
         setGenerating(false)
       }
     }
-  }, [currentGenerationPayload, fetchTemplates, setDirty, workspace?.run_root])
+  }, [currentGenerationPayload, fetchTemplates, workspace?.run_root])
 
   const handleGenerate = useCallback(async () => {
     setError('')
@@ -1092,7 +1092,6 @@ export default function GeneratorPage() {
     <div className="generator-page flex h-full flex-col overflow-hidden">
       <header className="workspace-header flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-1 bg-surface-raised px-3 pb-1 pt-4 sm:px-5">
         <h1 className="workspace-heading font-semibold text-txt-primary">{t('Task Generator')}</h1>
-        <p className="text-xs text-txt-secondary">{t('Prepare a task, or build a batch from one configuration.')}</p>
       </header>
       <div data-tour="generator-controls" className="generator-toolbar flex flex-col gap-2 border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-5 min-[701px]:flex-row min-[701px]:items-center">
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 min-[701px]:flex-1">
@@ -1162,12 +1161,10 @@ export default function GeneratorPage() {
           )}
         </div>
 
-        <div className="flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto">
+        {!isShellWorkspace && <div className="flex w-full flex-wrap items-center justify-end gap-2 min-[701px]:ml-auto min-[701px]:w-auto">
           <div aria-label={t('Editor view')} className="inline-flex w-full overflow-hidden rounded-md border border-border-subtle bg-surface-overlay min-[701px]:w-auto">
-            {(isShellWorkspace ? ['shell'] : ['grid', 'tree', 'yaml'] as GeneratorDisplayMode[]).map(mode => {
-              const active = mode === 'shell'
-                ? editorMode === 'shell'
-                : mode === 'yaml'
+            {(['grid', 'tree', 'yaml'] as const).map(mode => {
+              const active = mode === 'yaml'
                   ? editorMode === 'yaml'
                   : editorMode === 'form' && formLayoutMode === mode
               return (
@@ -1175,7 +1172,7 @@ export default function GeneratorPage() {
                   key={mode}
                   type="button"
                   aria-pressed={active}
-                  onClick={() => handleDisplayModeChange(mode as GeneratorDisplayMode)}
+                  onClick={() => handleDisplayModeChange(mode)}
                   className={clsx(
                     'touch-target inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 border-l border-border-subtle px-3 py-1.5 text-xs font-medium transition-colors first:border-l-0 min-[701px]:min-h-0 min-[701px]:flex-none',
                     active
@@ -1186,7 +1183,6 @@ export default function GeneratorPage() {
                   {mode === 'grid' && <LayoutGrid className="h-3 w-3" />}
                   {mode === 'tree' && <Workflow className="h-3 w-3" />}
                   {mode === 'yaml' && <FileCode className="h-3 w-3" />}
-                  {mode === 'shell' && <Terminal className="h-3 w-3" />}
                   <span>{mode === 'yaml' ? 'YAML' : t(mode.charAt(0).toUpperCase() + mode.slice(1))}</span>
                 </button>
               )
@@ -1210,7 +1206,7 @@ export default function GeneratorPage() {
             </div>
           )}
 
-        </div>
+        </div>}
       </div>
 
       {templateLoadError && (
@@ -1304,95 +1300,112 @@ export default function GeneratorPage() {
           className={generatorSettingsClassName}
           style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}
         >
-          <CompactSection title={t('Naming')} bodyClassName="space-y-2.5 p-2">
-            <div>
-              <label htmlFor="task-prefix" className="block text-2xs uppercase tracking-[0.16em] text-txt-tertiary">{t('Task Prefix')}</label>
-              <input
-                id="task-prefix"
-                value={namePrefix}
-                onChange={event => setNamePrefix(event.target.value)}
-                placeholder="task"
-                className="mt-1.5 h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-base font-medium text-txt-primary outline-none transition-colors focus:border-border min-[701px]:h-auto min-[701px]:text-sm"
-              />
-            </div>
-            <label className="inline-flex min-h-11 items-center gap-2 text-xs text-txt-secondary min-[701px]:min-h-0">
-              <input
-                type="checkbox"
-                checked={appendTimestamp}
-                onChange={event => setAppendTimestamp(event.target.checked)}
-                className="h-3.5 w-3.5 rounded border-border accent-accent"
-              />
-              <span>{t('Append timestamp')}</span>
-            </label>
-          </CompactSection>
-
-          {editorMode === 'form' && batchParams.length > 0 && (
-            <CompactSection
-              title={t('Pinned Batch Inputs')}
-              icon={<Pin className="h-3.5 w-3.5 text-accent" />}
-              accent
-              bodyClassName="space-y-1.5 p-2"
-            >
-              <div className="text-2xs text-accent">
-                {t(batchParams.length > 1 ? '{{count}} batch-sensitive fields' : '{{count}} batch-sensitive field', { count: batchParams.length })}
+          <div className={clsx('generator-fields space-y-3', !compactGeneratorLayout && 'min-h-0 flex-1 overflow-y-auto')}>
+            <CompactSection title={t('Naming')} bodyClassName="space-y-2">
+              <div>
+                <label htmlFor="task-prefix" className="block text-xs text-txt-secondary">{t('Task Prefix')}</label>
+                <input
+                  id="task-prefix"
+                  value={namePrefix}
+                  onChange={event => setNamePrefix(event.target.value)}
+                  placeholder="task"
+                  className="mt-1.5 h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-base font-medium text-txt-primary outline-none transition-colors focus:border-border min-[701px]:h-auto min-[701px]:text-sm"
+                />
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {batchTriggerDetails.map(param => (
-                  <span
-                    key={param.key}
-                    className="rounded-md border border-accent/20 bg-accent/8 px-1.5 py-0.5 font-mono text-2xs text-accent"
-                    title={param.label}
-                  >
-                    {param.label}
-                  </span>
+              <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-txt-secondary min-[701px]:min-h-8">
+                <input
+                  type="checkbox"
+                  checked={appendTimestamp}
+                  onChange={event => setAppendTimestamp(event.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-border accent-accent"
+                />
+                <span>{t('Append timestamp')}</span>
+              </label>
+            </CompactSection>
+
+            {editorMode === 'form' && batchParams.length > 0 && (
+              <CompactSection
+                title={t('Pinned Batch Inputs')}
+                icon={<Pin className="h-3.5 w-3.5 text-accent" />}
+                count={batchParams.length}
+                bodyClassName="pt-1"
+              >
+                <div className="flex flex-wrap gap-1.5">
+                  {batchTriggerDetails.map(param => (
+                    <span
+                      key={param.key}
+                      className="rounded-md border border-accent/20 bg-accent/8 px-1.5 py-0.5 font-mono text-2xs text-accent"
+                      title={param.label}
+                    >
+                      {param.label}
+                    </span>
+                  ))}
+                </div>
+              </CompactSection>
+            )}
+
+            {editorMode === 'form' && (
+              <details className="group text-xs text-txt-secondary">
+                <summary className="flex min-h-9 cursor-pointer items-center justify-between font-medium text-txt-primary">
+                  {t('Batch Syntax')} <ChevronDown aria-hidden="true" className="size-3.5 group-open:rotate-180" />
+                </summary>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 py-1 text-2xs">
+                  <dt>{t('Product')}</dt><dd><code>lr: 0.001 | 0.01 | 0.1</code></dd>
+                  <dt>{t('Zip')}</dt><dd><code>seed: (1 | 2 | 3)</code></dd>
+                  <dt>{t('Range')}</dt><dd><code>epoch: 10:100:1</code></dd>
+                </dl>
+              </details>
+            )}
+
+            {editorMode === 'yaml' && (
+              <CompactSection title={t('YAML Mode')} bodyClassName="space-y-1.5 p-2">
+                <div className="text-2xs leading-relaxed text-txt-secondary">
+                  {t('YAML mode creates exactly one config.yaml task.')}
+                </div>
+                <div className="text-2xs leading-relaxed text-txt-secondary">
+                  {t('Batch syntax is disabled here. Switch to Grid or Tree for batch expansion and parameter pinning.')}
+                </div>
+                {yamlContainsBatchSyntax && (
+                  <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-2xs text-amber-800 dark:text-amber-300">
+                    {t('Batch syntax was detected in YAML mode, but YAML mode only creates one task. Use Grid or Tree mode if you want batch generation.')}
+                  </div>
+                )}
+              </CompactSection>
+            )}
+
+            {editorMode === 'shell' && (
+              <ShellRuntimePanel runtime={shellRuntime} runRoot={workspace?.run_root} />
+            )}
+
+            {error && (
+              <CompactSection title={t('Status')} bodyClassName="space-y-1.5 p-2">
+                <div role="alert" className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" title={translateMessage(error)}>
+                  {translateMessage(error)}
+                </div>
+              </CompactSection>
+            )}
+
+          </div>
+          <div data-tour="generator-create" className="mt-auto shrink-0 border-t border-border-subtle bg-surface-raised pt-3">
+            <fieldset className="mb-3" disabled={generationBusy}>
+              <legend className="mb-1.5 text-xs font-semibold text-txt-primary">{t('Save this batch to')}</legend>
+              <div className="grid grid-cols-2 border border-border">
+                {(['shared', 'local'] as const).map(storage => (
+                  <label key={storage} className="relative flex min-h-11 cursor-pointer items-center justify-center border-border text-xs font-medium last:border-l sm:min-h-9">
+                    <input className="peer sr-only" type="radio" name="batch-storage" value={storage}
+                      checked={taskStorage === storage}
+                      onChange={() => setStorageOverride(storage === defaultStorage ? null : storage)} />
+                    <span className="absolute inset-0 flex items-center justify-center gap-1.5 text-txt-secondary hover:bg-surface-overlay peer-checked:bg-accent/10 peer-checked:text-accent-ink peer-focus-visible:ring-2 peer-focus-visible:ring-inset peer-focus-visible:ring-accent">
+                      {taskStorage === storage && <Check aria-hidden="true" className="size-3.5" />}
+                      {t(storage === 'shared' ? 'Common tasks' : 'This device')}
+                    </span>
+                  </label>
                 ))}
               </div>
-            </CompactSection>
-          )}
-
-          {editorMode === 'form' && (
-            <CompactSection title={t('Batch Syntax')} bodyClassName="space-y-1.5 p-2">
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                <span className="text-txt-primary">{t('Product')}</span>: `lr: 0.001 | 0.01 | 0.1`
-              </div>
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                <span className="text-txt-primary">{t('Zip')}</span>: `seed: (1 | 2 | 3)`
-              </div>
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                <span className="text-txt-primary">{t('Range')}</span>: `epoch: 10:100:1`
-              </div>
-            </CompactSection>
-          )}
-
-          {editorMode === 'yaml' && (
-            <CompactSection title={t('YAML Mode')} bodyClassName="space-y-1.5 p-2">
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                {t('YAML mode creates exactly one config.yaml task.')}
-              </div>
-              <div className="text-2xs leading-relaxed text-txt-secondary">
-                {t('Batch syntax is disabled here. Switch to Grid or Tree for batch expansion and parameter pinning.')}
-              </div>
-              {yamlContainsBatchSyntax && (
-                <div className="rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-2xs text-amber-800 dark:text-amber-300">
-                  {t('Batch syntax was detected in YAML mode, but YAML mode only creates one task. Use Grid or Tree mode if you want batch generation.')}
-                </div>
-              )}
-            </CompactSection>
-          )}
-
-          {editorMode === 'shell' && (
-            <ShellRuntimePanel runtime={shellRuntime} runRoot={workspace?.run_root} />
-          )}
-
-          {error && (
-            <CompactSection title={t('Status')} bodyClassName="space-y-1.5 p-2">
-              <div role="alert" className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300" title={translateMessage(error)}>
-                {translateMessage(error)}
-              </div>
-            </CompactSection>
-          )}
-
-          <div data-tour="generator-create" className="sticky bottom-0 mt-auto border-t border-border-subtle bg-surface-raised pt-3">
+              <p className="mt-1.5 break-words text-2xs text-txt-secondary">
+                {taskStorage === 'local' ? t('Runs only on {{host}}.', { host: workspace?.device_host || t('the Pyruns server') }) : t('Available to all devices in this workspace.')}
+              </p>
+            </fieldset>
             <ActionButton
               icon={generationBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               variant="primary"
@@ -1411,7 +1424,6 @@ export default function GeneratorPage() {
               <GenerationFeedback
                 status={generationStatus}
                 createdSummary={createdSummary}
-                onViewBatch={() => setCreatedTasksOpen(true)}
                 defaultText={
                   editorMode === 'form' && hasBatchSyntax
                     ? batchHintText
@@ -1423,6 +1435,10 @@ export default function GeneratorPage() {
                 }
                 onOpenManager={() => {
                   const taskName = createdSummary?.firstTaskName
+                  const { selectedSources, setSelectedSources } = useTaskStore.getState()
+                  if (createdSummary && selectedSources && !selectedSources.includes(createdSummary.source)) {
+                    setSelectedSources([...selectedSources, createdSummary.source])
+                  }
                   navigate(taskName ? `/manager?task=${encodeURIComponent(taskName)}` : '/manager')
                 }}
               />
@@ -1431,9 +1447,6 @@ export default function GeneratorPage() {
         </aside>
       </div>
 
-      {createdTasksOpen && createdSummary && <CreatedTasksDialog tasks={createdSummary.tasks} submission={createdSummary.submission}
-        onSubmitted={(tasks, submission) => setCreatedSummary(current => current && { ...current, tasks, submission })}
-        onClose={() => setCreatedTasksOpen(false)} />}
       <ConfirmDialog
         open={previewOpen}
         title={t('Batch Preview')}
@@ -1467,13 +1480,11 @@ function GenerationFeedback({
   createdSummary,
   defaultText,
   onOpenManager,
-  onViewBatch,
 }: {
   status: GenerationStatus
   createdSummary: CreatedTaskResult | null
   defaultText: string
   onOpenManager: () => void
-  onViewBatch: () => void
 }) {
   if (status === 'creating') {
     return (
@@ -1494,7 +1505,7 @@ function GenerationFeedback({
   }
 
   if (status === 'created' && createdSummary) {
-    return <CreatedTaskSummary summary={createdSummary} onOpenManager={onOpenManager} onViewBatch={onViewBatch} />
+    return <CreatedTaskSummary summary={createdSummary} onOpenManager={onOpenManager} />
   }
 
   return <div className="mt-2 text-center text-2xs text-txt-tertiary">{defaultText}</div>
@@ -1503,22 +1514,21 @@ function GenerationFeedback({
 function CreatedTaskSummary({
   summary,
   onOpenManager,
-  onViewBatch,
 }: {
   summary: CreatedTaskResult
   onOpenManager: () => void
-  onViewBatch: () => void
 }) {
   return (
-    <div className="mt-2 space-y-2 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-2 text-2xs text-emerald-700 dark:text-emerald-300">
+    <div className="mt-2 border-t border-border-subtle pt-2 text-xs text-txt-primary">
       <div className="flex items-start gap-1.5">
-        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 flex-none" />
+        <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 flex-none text-emerald-700 dark:text-emerald-400" />
         <div className="min-w-0">
           <div className="font-medium">
-            {t(summary.count > 1 ? 'Created {{count}} {{kind}}s' : 'Created {{count}} {{kind}}', { count: summary.count, kind: t(summary.taskKind) })}
+            <span>{t(summary.count > 1 ? 'Created {{count}} {{kind}}s' : 'Created {{count}} {{kind}}', { count: summary.count, kind: t(summary.taskKind) })}</span>
+            <span className="ml-1.5 text-2xs font-normal text-txt-secondary">{t(summary.source === 'local' ? 'This device' : 'Common tasks')}</span>
           </div>
           {summary.firstTaskName && (
-            <div className="mt-0.5 truncate font-mono text-[11px]" title={summary.firstTaskName}>
+            <div className="mt-0.5 truncate font-mono text-2xs text-txt-secondary" title={summary.firstTaskName}>
               {summary.firstTaskName}
             </div>
           )}
@@ -1527,13 +1537,10 @@ function CreatedTaskSummary({
       <button
         type="button"
         onClick={onOpenManager}
-        className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-emerald-700 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-800 min-[701px]:min-h-0"
+        className="ml-5 inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-accent-ink hover:underline sm:min-h-8"
       >
-        {t('Open in Manager')}
+        {t('Open in Manager')} <ArrowRight className="size-3.5" aria-hidden="true" />
       </button>
-      <ActionButton variant="secondary" className="w-full" onClick={onViewBatch}>
-        {t('View and run this batch ({{count}})', { count: summary.count })}
-      </ActionButton>
     </div>
   )
 }
@@ -1684,17 +1691,14 @@ function ShellRuntimePanel({
   return (
     <CompactSection
       title={t('Shell Runtime')}
-      icon={<Terminal className="h-3.5 w-3.5 text-accent" />}
-      accent
-      bodyClassName="space-y-2 p-2.5"
+      icon={<Terminal className="h-3.5 w-3.5 text-txt-secondary" />}
+      bodyClassName="space-y-1.5"
     >
       <ShellRuntimeRow label={t('Current shell')} value={currentShell} />
       <ShellRuntimeRow label={t('Resolved file')} value={getShellConfigFilename(runtime)} mono />
       <ShellRuntimeRow label={t('Workspace folder')} value={pathLeaf(runRoot) || '_shell_'} mono />
       <ShellRuntimeRow label={t('Mode')} value={mode} />
-      <div className="truncate rounded-md bg-surface-overlay px-2.5 py-2 font-mono text-2xs text-txt-tertiary" title={executable}>
-        {executable}
-      </div>
+      <ShellRuntimeRow label={t('Executable')} value={executable} mono />
     </CompactSection>
   )
 }

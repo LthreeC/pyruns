@@ -5,6 +5,13 @@ export default {
   darkMode: 'class',
   theme: {
     extend: {
+      borderRadius: {
+        DEFAULT: '2px',
+        md: '2px',
+        lg: '2px',
+        xl: '2px',
+        '2xl': '4px',
+      },
       fontFamily: {
         sans: ['var(--font-sans)'],
         mono: ['var(--font-mono)'],

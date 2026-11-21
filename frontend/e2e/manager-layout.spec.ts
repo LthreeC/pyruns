@@ -101,11 +101,16 @@ test('manager combines quick filters with persistent views and keeps every task 
   if (!isMobile) {
     expect((await row.boundingBox())!.height).toBeLessThan(180)
   }
-  await page.getByRole('button', { name: 'Select tasks', exact: true }).click()
+  const select = page.getByRole('button', { name: 'Select tasks', exact: true })
+  const position = await select.boundingBox()
+  await select.click()
+  const cancel = page.locator('.manager-heading').getByRole('button', { name: 'Cancel', exact: true })
+  expect(await cancel.boundingBox()).toEqual(position)
   await page.getByRole('button', { name: `Select ${state.first}`, exact: true }).click()
   await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await expect(page.getByRole('button', { name: `Deselect ${state.first}`, exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await page.getByRole('region', { name: 'Current page selection actions' }).getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.screenshot({ path: testInfo.outputPath('manager-selection.png') })
+  await cancel.click()
   await page.getByRole('button', { name: 'List view', exact: true }).click()
   await page.reload()
   await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true')

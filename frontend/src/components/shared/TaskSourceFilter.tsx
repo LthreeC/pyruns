@@ -1,7 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { ChevronDown, ListFilter } from 'lucide-react'
+import { Check, ChevronDown, ListFilter, Minus } from 'lucide-react'
 import { useTranslation } from '@/i18n'
 import { useTaskStore } from '@/store'
+
+function Checkmark({ checked }: { checked: boolean | 'mixed' }) {
+  return <span aria-hidden="true" className={`flex size-4 shrink-0 items-center justify-center border ${checked ? 'border-accent bg-accent text-white' : 'border-border-strong'}`}>
+    {checked === 'mixed' ? <Minus size={12} /> : checked && <Check size={12} strokeWidth={3} />}
+  </span>
+}
 
 export default function TaskSourceFilter() {
   const { t } = useTranslation()
@@ -12,7 +18,7 @@ export default function TaskSourceFilter() {
   const [position, setPosition] = useState({ left: 0, top: 0 })
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
-  const allBox = useRef<HTMLInputElement>(null)
+  const allBox = useRef<HTMLButtonElement>(null)
   const id = useId()
   const checked = sources.filter(source => selected === null || selected.includes(source.id))
   const all = checked.length === sources.length
@@ -30,10 +36,6 @@ export default function TaskSourceFilter() {
     return () => window.removeEventListener('resize', place)
   }, [open])
 
-  useLayoutEffect(() => {
-    if (allBox.current) allBox.current.indeterminate = mixed
-  }, [open, mixed])
-
   useEffect(() => {
     if (!open) return
     const outside = (event: PointerEvent) => {
@@ -49,7 +51,7 @@ export default function TaskSourceFilter() {
       setOpen(false)
       trigger.current?.focus()
     }
-  }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false) }}>
+  }} onBlur={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false) }}>
     <button ref={trigger} type="button" aria-label={t('Task sources')} aria-expanded={open}
       aria-controls={open ? id : undefined} title={t('Task sources')} onClick={() => setOpen(value => !value)}
       className="inline-flex h-9 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-txt-secondary hover:bg-surface-overlay focus-visible:ring-2 focus-visible:ring-accent sm:h-8">
@@ -58,26 +60,28 @@ export default function TaskSourceFilter() {
       <ChevronDown className="size-3" aria-hidden="true" />
     </button>
     {open && <div id={id} role="group" aria-label={t('Task sources')} style={{ ...position, maxHeight: `calc(100dvh - ${position.top + 8}px)` }}
-      className="fixed z-50 w-60 max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl border border-border-subtle bg-surface-raised p-1.5 text-sm text-txt-primary shadow-lg">
-      <label className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 hover:bg-surface-overlay">
-        <input ref={allBox} type="checkbox" checked={all} onChange={() => change(all ? [] : null)} />
+      className="fixed z-50 w-60 max-w-[calc(100vw-16px)] overflow-y-auto border border-border bg-surface-raised text-sm text-txt-primary shadow-md">
+      <button ref={allBox} type="button" role="checkbox" aria-checked={mixed ? 'mixed' : all}
+        className="source-option border-b border-border-subtle font-medium" onClick={() => change(all ? [] : null)}>
+        <Checkmark checked={mixed ? 'mixed' : all} />
         {t('Select all sources')}
-      </label>
-      <div className="my-1 border-t border-border-subtle" />
+      </button>
       {sources.map(source => {
         const label = source.id === 'shared' ? t('Common tasks') : source.id === 'local' ? t('This device') : source.host
         const duplicate = sources.some(other => other.id !== source.id && other.host === source.host)
-        return <label key={source.id} title={source.id === 'shared' ? 'tasks/' : source.id === 'local' ? source.host : source.id}
-          className="flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 hover:bg-surface-overlay">
-          <input type="checkbox" checked={selected === null || selected.includes(source.id)} onChange={event => {
+        const active = selected === null || selected.includes(source.id)
+        return <button key={source.id} type="button" role="checkbox" aria-checked={active}
+          title={source.id === 'shared' ? 'tasks/' : source.id === 'local' ? source.host : source.id}
+          className="source-option" onClick={() => {
             const next = checked.map(item => item.id).filter(item => item !== source.id)
-            if (event.target.checked) next.push(source.id)
+            if (!active) next.push(source.id)
             change(next.length === sources.length ? null : next)
-          }} />
+          }}>
+          <Checkmark checked={active} />
           <span className="min-w-0 truncate">{label}</span>
-          {source.id === 'local' && <small className="truncate text-txt-tertiary">{source.host}</small>}
+          {source.id === 'local' && <small className="ml-auto truncate text-txt-secondary">{source.host}</small>}
           {duplicate && source.id.startsWith('tasks-') && <small className="font-mono text-txt-secondary">{source.id.slice(-12)}</small>}
-        </label>
+        </button>
       })}
     </div>}
   </div>

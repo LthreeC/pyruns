@@ -13,7 +13,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, Cpu, GripVertical, LayoutGrid, List, Loader2, SquareCheck, Pin, Play,
-  RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2,
+  RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2, X,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useShallow } from 'zustand/react/shallow'
@@ -57,15 +57,6 @@ function isOrderMutation(action: PendingTaskAction) {
 
 function hasPendingOrderMutation(actions: Map<string, PendingTaskAction>) {
   return [...actions.values()].some(isOrderMutation)
-}
-
-const MANAGER_STATUS_STYLES: Record<TaskStatus, string> = {
-  pending: 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-200',
-  queued: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950/45 dark:text-blue-300',
-  running: 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/45 dark:text-amber-300',
-  completed: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/45 dark:text-emerald-300',
-  failed: 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/45 dark:text-rose-300',
-  cancelled: 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-300',
 }
 
 const MANAGER_STATUS_DOTS: Record<TaskStatus, string> = {
@@ -952,20 +943,19 @@ export default function ManagerPage() {
               ariaLabel={t("Search tasks")}
             />
           </div>
-          {!selectMode && (
-            <ActionButton
-              icon={<SquareCheck className="h-4 w-4" />}
-              variant="ghost"
-              size="sm"
-              className="manager-select-action min-h-11 sm:min-h-9"
-              aria-label={t("Select tasks")}
-              disabled={mutableCount === 0 || anyTaskActionPending || Boolean(bulkAction)}
-              title={anyTaskActionPending ? t("Wait for the current task action to finish") : t("Select tasks")}
-              onClick={() => setSelectMode(true)}
-            >
-              {t("Select tasks")}
-            </ActionButton>
-          )}
+          <ActionButton
+            icon={selectMode ? <X className="size-4" /> : <SquareCheck className="size-4" />}
+            variant={selectMode ? 'secondary' : 'ghost'}
+            className="manager-select-action min-h-11 sm:min-h-9"
+            aria-label={t(selectMode ? 'Cancel' : 'Select tasks')}
+            aria-expanded={selectMode}
+            aria-controls={selectMode ? 'manager-selection-actions' : undefined}
+            disabled={Boolean(bulkAction) || (!selectMode && (mutableCount === 0 || anyTaskActionPending))}
+            title={anyTaskActionPending ? t('Wait for the current task action to finish') : t(selectMode ? 'Cancel' : 'Select tasks')}
+            onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
+          >
+            {t(selectMode ? 'Cancel' : 'Select tasks')}
+          </ActionButton>
         </div>
 
         <div className="manager-toolbar flex flex-wrap items-center justify-between gap-2">
@@ -1066,7 +1056,7 @@ export default function ManagerPage() {
           <div
             role="status"
             aria-live="polite"
-            className="mt-2 rounded-md border border-accent/20 bg-accent/8 px-3 py-2 text-xs font-medium text-accent"
+            className="mt-2 border-l-2 border-accent/40 pl-2.5 text-xs text-txt-secondary"
             title={taskActionMessage}
           >
             {taskActionMessage}
@@ -1075,23 +1065,20 @@ export default function ManagerPage() {
 
         {selectMode && (
           <div
-            className="mt-3 flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5 xl:flex-row xl:items-center"
+            id="manager-selection-actions"
+            className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border-subtle pt-2"
             role="region"
             aria-label={t("Current page selection actions")}
           >
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-txt-primary" aria-live="polite">
+            <div className="text-xs font-medium tabular-nums text-txt-primary" aria-live="polite"
+              title={t("Selection is page-scoped and resets when you change the page, search, or status filter.")}>
                 {t('{{selected}} of {{total}} selected on this page', { selected: visibleSelectedCount, total: mutableCount })}
-              </div>
-              <div className="mt-0.5 text-2xs text-txt-secondary">
-                {t("Selection is page-scoped and resets when you change the page, search, or status filter.")}
-              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <ActionButton
                 icon={<SelectionIndicator selected={allPageSelected} />}
-                variant="accentTint"
+                variant="ghost"
                 className="min-h-11 sm:min-h-9"
                 disabled={Boolean(bulkAction)}
                 onClick={() => (allPageSelected ? clearSelection() : selectAll())}
@@ -1116,7 +1103,7 @@ export default function ManagerPage() {
 
               <ActionButton
                 icon={bulkAction === 'run' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                variant="success"
+                variant="primary"
                 className="min-h-11 sm:min-h-9"
                 onClick={handleRunSelected}
                 disabled={visibleSelectedCount === 0 || Boolean(bulkAction)}
@@ -1127,17 +1114,14 @@ export default function ManagerPage() {
 
               <ActionButton
                 icon={<Trash2 className="h-3.5 w-3.5" />}
-                variant="danger"
-                className="min-h-11 sm:min-h-9"
+                variant="ghost"
+                className="min-h-11 text-rose-700 dark:text-rose-300 sm:min-h-9"
                 onClick={() => visibleSelectedCount > 0 && setDeleteConfirm(true)}
                 disabled={visibleSelectedCount === 0 || Boolean(bulkAction)}
               >
                 {t("Delete")}
               </ActionButton>
 
-              <ActionButton className="min-h-11 sm:min-h-9" variant="ghost" disabled={Boolean(bulkAction)} onClick={exitSelectMode}>
-                {t("Cancel")}
-              </ActionButton>
             </div>
           </div>
         )}
@@ -1199,8 +1183,7 @@ export default function ManagerPage() {
                   count={pinnedTasks.length}
                   icon={<Pin className="h-3.5 w-3.5 text-accent" />}
                   accent
-                  className="rounded-md border border-accent/20 bg-accent/5 p-2"
-                  bodyClassName="pt-0"
+                  bodyClassName="pt-1"
                 >
                   {pinnedTasks.length === 0 ? (
                     <div className="px-2 py-5 text-center text-xs font-medium text-accent">
@@ -1241,7 +1224,7 @@ export default function ManagerPage() {
               title={t("Tasks")}
               subtitle={dragOverTarget === 'tasks' ? t("Drop to reorder") : t('{{count}} on this page · {{total}} matching', { count: otherTasks.length, total })}
               icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
-              bodyClassName="p-2"
+              bodyClassName="pt-1"
             >
               <TaskGrid
                 tasks={otherTasks}
@@ -1473,10 +1456,9 @@ const TaskCard = memo(function TaskCard({
       data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
       className={clsx(
-        'task-card group relative flex flex-col rounded-xl border bg-surface-raised [contain-intrinsic-size:220px] [content-visibility:auto] transition-[border-color,box-shadow,background-color,opacity] duration-150 ease-out focus-within:border-accent',
+        'task-card group relative flex flex-col border bg-surface-raised [contain-intrinsic-size:220px] [content-visibility:auto] transition-colors duration-150 ease-out focus-within:border-accent',
         selected ? 'border-accent bg-accent/8 ring-1 ring-accent/20' : 'border-border-subtle hover:border-border',
         task.pinned && !selected && 'border-accent/20',
-        !selected && !dragging && 'hover:shadow-[0_4px_16px_rgba(15,23,42,0.05)]',
         dragging && 'scale-[0.985] border-accent/35 bg-accent/5 opacity-70 shadow-[0_10px_30px_rgba(15,23,42,0.14)] ring-1 ring-accent/35',
         dropPlacement && !dragging && 'border-accent/35 bg-accent/5 ring-1 ring-accent/25',
       )}
@@ -1554,7 +1536,7 @@ const TaskCard = memo(function TaskCard({
           {task.name}
         </div>
 
-        <div className="task-card-preview mt-2 rounded-lg bg-surface-base px-2.5 py-2 font-mono text-2xs leading-5 text-txt-secondary" title={cardDescription}>
+        <div className="task-card-preview mt-2 border-l-2 border-border pl-2.5 font-mono text-2xs leading-5 text-txt-secondary" title={cardDescription}>
           <div className={clsx('truncate-2 whitespace-pre-wrap [overflow-wrap:anywhere]', task._load_error && 'text-rose-700 dark:text-rose-300')}>
             {cardDescription}
           </div>
@@ -1573,7 +1555,7 @@ const TaskCard = memo(function TaskCard({
 
         <div className="task-card-meta mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
           <span title={task.created_at}>{createdAtLabel}</span>
-          <span title={t('Run #{{index}}', { index: Math.max(task.run_index || 1, 1) })}>{t('Run #{{index}}', { index: Math.max(task.run_index || 1, 1) })}</span>
+          {task.run_index > 0 && <span>{t('Run #{{index}}', { index: task.run_index })}</span>}
           {folderName !== task.name && <span className="truncate" title={task.dir}>{folderName}</span>}
         </div>
 
@@ -1677,10 +1659,7 @@ function ManagerStatusBadge({ task }: { task: Task }) {
   const status = task.status
   useTranslation()
   return (
-    <span className={clsx(
-      'inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-2xs font-semibold',
-      MANAGER_STATUS_STYLES[status],
-    )}>
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-txt-primary">
       <span className={clsx('h-1.5 w-1.5 rounded-full', MANAGER_STATUS_DOTS[status])} aria-hidden="true" />
       {t(taskStatusLabel(task))}
     </span>
