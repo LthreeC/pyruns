@@ -387,6 +387,7 @@ class GeneratorCreateRequest(RequestModel):
     shell_text: str = Field(default="", max_length=MAX_API_REQUEST_BYTES)
     template_value: str = Field(default="", max_length=MAX_PATH_CHARS)
     append_timestamp: bool = True
+    task_storage: Literal["shared", "local"] | None = None
 
 
 class GeneratorPreviewRequest(RequestModel):
@@ -882,6 +883,7 @@ def create_app(
                     shell_text=payload.shell_text,
                     template_value=payload.template_value,
                     append_timestamp=payload.append_timestamp,
+                    task_storage=payload.task_storage,
                 )
         except UpdateInProgressError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

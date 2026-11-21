@@ -6364,6 +6364,32 @@ def test_yaml_mode_rejects_batch_syntax_without_expanding(tmp_path, monkeypatch)
         )
 
 
+@pytest.mark.parametrize("mode,count", [("yaml", 1), ("shell", 1), ("form", 2)])
+@pytest.mark.parametrize("default,override", [("shared", "local"), ("local", "shared")])
+def test_generator_storage_override_applies_only_to_this_creation(tmp_path, mode, count, default, override):
+    from pyruns.utils.task_storage import new_task_root
+
+    runtime = _build_runtime(_make_workspace(tmp_path, "main"), owns_task_lifecycle=False)
+    with TestClient(create_app(runtime)) as client:
+        if mode == "shell":
+            assert client.post("/api/workspace/shell").is_success
+        assert client.patch("/api/runtime", json={"task_storage": default}).is_success
+        payload = {"mode": mode, "name_prefix": "trial", "append_timestamp": False,
+                   "yaml_text": "x: 1 | 2" if mode == "form" else "x: 1", "shell_text": "echo hello"}
+        assert client.post("/api/generator/create", json={**payload, "task_storage": "../elsewhere"}).status_code == 422
+        for chosen, extra in [(override, {"task_storage": override}), (default, {})]:
+            result = client.post("/api/generator/create", json={**payload, **extra})
+            assert result.is_success, result.text
+            items = result.json()["items"]
+            assert len(items) == count
+            for item in items:
+                path = Path(item["dir"])
+                assert path.parent == Path(new_task_root(runtime.tasks_dir, chosen))
+                assert (path / item["config_file"]).is_file()
+                assert runtime.get_task(item["name"])["task_source"] == chosen
+        assert client.get("/api/runtime").json()["task_storage"] == default
+
+
 def test_generator_range_syntax_survives_yaml_parsing(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)

@@ -145,6 +145,7 @@ export type TaskStatusCounts = Record<Task['status'], number>
 
 export interface WorkspaceInfo {
   run_root: string
+  device_host?: string
   working_root?: string
   native_file_picker?: boolean
   tasks_dir: string

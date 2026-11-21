@@ -84,6 +84,7 @@ from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
+from pyruns.utils.runner_device import local_runner_host
 from pyruns.utils.task_storage import new_task_root, task_source, task_storage_scope, visible_task_roots
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchBudget, SearchQuery
 from pyruns.utils.task_files import (
@@ -690,6 +691,7 @@ class PyrunsRuntime:
             "run_root": self.root_dir,
             "working_root": working_root,
             "native_file_picker": native_picker_available(),
+            "device_host": local_runner_host(),
             "tasks_dir": self.tasks_dir,
             "script_path": script_path,
             "script_name": str(script_info.get("script_name", "") or ""),
@@ -2136,6 +2138,7 @@ class PyrunsRuntime:
         shell_text: str = "",
         template_value: str = "",
         append_timestamp: bool = True,
+        task_storage: str | None = None,
     ) -> Dict[str, Any]:
         """Create one or many tasks from script-yaml or shell input."""
 
@@ -2143,11 +2146,15 @@ class PyrunsRuntime:
         if append_timestamp:
             normalized_prefix = f"{normalized_prefix}_{get_now_str()}"
 
-        err = validate_task_name(normalized_prefix, self.tasks_dir)
+        default_storage = self.settings.get("task_storage", "shared")
+        storage = default_storage if task_storage is None else task_storage
+        root = new_task_root(self.tasks_dir, storage)
+        err = validate_task_name(normalized_prefix, root)
         if err:
             raise ValueError(err)
 
-        workspace_kind = self.get_workspace_info().get("workspace_kind", _cfg.WORKSPACE_KIND_SCRIPT)
+        generator = self.task_generator if storage == default_storage else self._task_generator_factory(root)
+        workspace_kind = self.get_workspace_info(include_templates=False).get("workspace_kind", _cfg.WORKSPACE_KIND_SCRIPT)
         editor_mode = str(mode or "form").strip().lower()
 
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
@@ -2156,7 +2163,7 @@ class PyrunsRuntime:
             content = _require_bounded_editor_text(shell_text, label="Shell content")
             if not content.strip():
                 raise ValueError("Shell mode requires non-empty script content.")
-            task = self.task_generator.create_shell_task(normalized_prefix, content)
+            task = generator.create_shell_task(normalized_prefix, content)
             self.invalidate_cache()
             self.task_manager.add_task(task)
             page = self.list_tasks(limit=12, refresh=False, summary=True)
@@ -2199,7 +2206,7 @@ class PyrunsRuntime:
             if err_msg:
                 raise ValueError(err_msg)
 
-        tasks = self.task_generator.create_tasks(
+        tasks = generator.create_tasks(
             configs,
             normalized_prefix,
             task_kind=TASK_KIND_CONFIG,

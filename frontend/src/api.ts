@@ -202,6 +202,7 @@ export const createTasks = (payload: {
   shell_text?: string
   template_value?: string
   append_timestamp?: boolean
+  task_storage?: 'shared' | 'local'
 }) => request<GeneratorResult>('/api/generator/create', { method: 'POST', body: JSON.stringify(payload) })
 
 export const previewTasks = (payload: {
