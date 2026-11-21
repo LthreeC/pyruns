@@ -31,6 +31,46 @@ test('monitor releases terminal window listeners when leaving the page', async (
   }
 })
 
+test('monitor loads a bounded tail and expands history for the selected log', async ({ page }) => {
+  const tasks = ['long-history', 'short-history'].map(name => ({
+    name, status: 'completed', run_index: 1, task_kind: 'shell',
+  }))
+  const previewBytes = 256 * 1024
+  const expandedBytes = 4 * 1024 * 1024
+  const requested: number[] = []
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: tasks, total: tasks.length, offset: 0, limit: 200, has_more: false,
+  } }))
+  for (const task of tasks) {
+    await page.route(`**/api/tasks/${task.name}/logs?*`, route => {
+      const limit = Number(new URL(route.request().url()).searchParams.get('tail_bytes'))
+      const long = task.name === 'long-history'
+      if (long) requested.push(limit)
+      return route.fulfill({ json: {
+        selected_log: 'run1.log', available_logs: ['run1.log'],
+        content: !long ? 'Short log\n' : limit === expandedBytes ? 'Older lines\nLatest lines\n' : 'Latest lines\n',
+        offset: long ? expandedBytes + 10 : 10, log_identity: task.name,
+        tail_truncated: long, tail_limit_bytes: limit,
+      } })
+    })
+  }
+
+  await page.goto('/monitor?task=long-history&token=pyruns-e2e-access-token')
+  const rows = page.locator('.xterm-rows')
+  const expand = page.getByRole('button', { name: 'Load more history' })
+  await expect(rows).toContainText('Latest lines')
+  await expect(rows).not.toContainText('Older lines')
+  await expand.click()
+  await expect(rows).toContainText('Older lines')
+  await expect(expand).toBeHidden()
+  expect(requested).toEqual([previewBytes, expandedBytes])
+
+  await page.getByRole('button', { name: 'View short-history, completed', exact: true }).click()
+  await expect(rows).toContainText('Short log')
+  await expect(rows).not.toContainText('Older lines')
+  await expect(expand).toBeHidden()
+})
+
 for (const emptyLog of [false, true]) {
   test(`monitor discards queued output when switching to ${emptyLog ? 'an empty' : 'another'} log`, async ({ page }) => {
     const now = new Date()

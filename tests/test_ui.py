@@ -632,9 +632,9 @@ def test_react_icon_only_buttons_have_accessible_names():
     assert 'aria-label={t("Rename task")}' in task_detail
     assert 'aria-label={t("Close task details")}' in task_detail
     assert "aria-label={t('Close dialog')}" in confirm_dialog
-    assert "aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: task.name })}" in manager
+    assert "aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}" in manager
     assert "label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}" in manager
-    assert "label={t('View logs for {{name}}', { name: task.name })}" in manager
+    assert "label={t('View logs for {{name}}', { name: accessibleName })}" in manager
     assert "label={t('Delete {{name}}', { name: task.name })}" in manager
     assert "aria-label={label}" in manager
     assert "aria-label={t('Previous page')}" in pagination
@@ -909,7 +909,7 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
 
     assert "renderedLogRef" in source
     assert "monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })" in source
-    assert "term.write(nextChunk)" in source
+    assert "writeTerminalLog(term, nextChunk)" in source
     assert "normalize_log_newlines" not in source
 
 
@@ -1029,10 +1029,13 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "checked={gpuSchedulerEnabled}" in runtime_panel
     assert 'role="switch"' in toggle_switch
     assert "aria-checked={checked}" in toggle_switch
-    assert "Advanced scheduling rules" in runtime_panel
-    assert "Auto pick" in runtime_panel
-    assert "Specific indices" in runtime_panel
-    assert "GPU indices" in runtime_panel
+    assert "disabled={!gpuSchedulerEnabled}" in runtime_panel
+    assert "Advanced scheduling rules" not in runtime_panel
+    assert "Use CUDA_VISIBLE_DEVICES" in runtime_panel
+    assert "Fixed GPU indices" in runtime_panel
+    assert "Edit Env" not in runtime_panel
+    assert "Auto pick" not in runtime_panel
+    assert "Specific indices" not in runtime_panel
     assert "Maximum memory use" not in runtime_panel
     assert "Tasks per GPU" not in runtime_panel
     assert "GPUs required" in runtime_panel
@@ -1051,8 +1054,7 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "free is not possible" in runtime_panel
     assert "loadGpuMetrics" in runtime_panel
     assert "passingGpuCount" in runtime_panel
-    assert "GPU UUIDs and MIG IDs are validated" in runtime_panel
-    assert "aria-pressed={gpuSelectionMode === item.id}" in runtime_panel
+    assert "setGpuRespectCudaVisibleDevices(true)" in runtime_panel
     assert "min={1}" in runtime_panel
     assert "selection_mode: gpuSelectionMode" in runtime_panel
     assert "gpus_per_task: requestedGpuCount" in runtime_panel
@@ -1061,7 +1063,8 @@ def test_react_runtime_panel_exposes_gpu_scheduler_settings():
     assert "require_same_gpu_model: gpuRequireSameModel" in runtime_panel
     assert "Require the same model for multi-GPU tasks" in runtime_panel
     assert "sample_interval_seconds" not in runtime_panel
-    assert "disabled={saving || !runtimeDirtyPages.gpu || gpuValidationIssues.length > 0}" in runtime_panel
+    assert "!runtimeDirtyPages[activePage]" in runtime_panel
+    assert "activePage === 'gpu' && Boolean(gpuValidationMessage)" in runtime_panel
     assert "applyWorkspaceRuntimeSettings(workspaceSettings)" in runtime_panel
     assert "gpu_scheduler:" in runtime_panel
     assert "GpuSchedulerSettings" in types

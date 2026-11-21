@@ -1,13 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, ListFilter, Minus } from 'lucide-react'
+import { ChevronDown, ListFilter } from 'lucide-react'
 import { useTranslation } from '@/i18n'
 import { useTaskStore } from '@/store'
-
-function Checkmark({ checked }: { checked: boolean | 'mixed' }) {
-  return <span aria-hidden="true" className={`flex size-4 shrink-0 items-center justify-center border ${checked ? 'border-accent bg-accent text-white' : 'border-border-strong'}`}>
-    {checked === 'mixed' ? <Minus size={12} /> : checked && <Check size={12} strokeWidth={3} />}
-  </span>
-}
+import SelectionIndicator from './SelectionIndicator'
 
 export default function TaskSourceFilter() {
   const { t } = useTranslation()
@@ -54,7 +49,7 @@ export default function TaskSourceFilter() {
   }} onBlur={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false) }}>
     <button ref={trigger} type="button" aria-label={t('Task sources')} aria-expanded={open}
       aria-controls={open ? id : undefined} title={t('Task sources')} onClick={() => setOpen(value => !value)}
-      className="inline-flex h-9 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-txt-secondary hover:bg-surface-overlay focus-visible:ring-2 focus-visible:ring-accent sm:h-8">
+      className="touch-target inline-flex h-9 items-center justify-center gap-1 rounded-md px-1.5 text-xs font-medium text-txt-secondary hover:bg-surface-overlay focus-visible:ring-2 focus-visible:ring-accent aria-expanded:bg-accent/10 aria-expanded:text-accent-ink sm:h-8">
       <ListFilter className="size-4" aria-hidden="true" />
       {!all && <span className="tabular-nums text-accent">{checked.length}</span>}
       <ChevronDown className="size-3" aria-hidden="true" />
@@ -63,7 +58,7 @@ export default function TaskSourceFilter() {
       className="fixed z-50 w-60 max-w-[calc(100vw-16px)] overflow-y-auto border border-border bg-surface-raised text-sm text-txt-primary shadow-md">
       <button ref={allBox} type="button" role="checkbox" aria-checked={mixed ? 'mixed' : all}
         className="source-option border-b border-border-subtle font-medium" onClick={() => change(all ? [] : null)}>
-        <Checkmark checked={mixed ? 'mixed' : all} />
+        <SelectionIndicator selected={mixed ? 'mixed' : all} />
         {t('Select all sources')}
       </button>
       {sources.map(source => {
@@ -77,7 +72,7 @@ export default function TaskSourceFilter() {
             if (!active) next.push(source.id)
             change(next.length === sources.length ? null : next)
           }}>
-          <Checkmark checked={active} />
+          <SelectionIndicator selected={active} />
           <span className="min-w-0 truncate">{label}</span>
           {source.id === 'local' && <small className="ml-auto truncate text-txt-secondary">{source.host}</small>}
           {duplicate && source.id.startsWith('tasks-') && <small className="font-mono text-txt-secondary">{source.id.slice(-12)}</small>}

@@ -1,6 +1,7 @@
 import { expect, test, type WebSocketRoute } from '@playwright/test'
 
-test('GPU rules use free GiB and idle percent and retain fractional wait hours', async ({ page }, testInfo) => {
+test('GPU rules use free GiB and idle percent and retain fractional wait hours', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 320, height: 640 })
   await page.route('**/api/system/metrics**', route => route.fulfill({ json: {
     cpu_percent: 5, mem_percent: 10,
     gpus: [
@@ -11,16 +12,33 @@ test('GPU rules use free GiB and idle percent and retain fractional wait hours',
     ],
   } }))
   await page.goto('/?token=pyruns-e2e-access-token')
+  await expect(await page.request.patch('/api/runtime?refresh_providers=false', { data: {
+    gpu_scheduler: { enabled: false, selection_mode: 'auto', device_ids: [], respect_cuda_visible_devices: true },
+  } })).toBeOK()
+  await page.reload()
   await page.getByRole('button', { name: 'Runtime', exact: true }).click()
   const panel = page.getByRole('dialog', { name: 'Runtime settings' })
   await panel.getByRole('tab', { name: 'GPU', exact: true }).click()
+  const panelBounds = (await panel.boundingBox())!
+  const closeBounds = (await panel.getByRole('button', { name: 'Close runtime panel' }).boundingBox())!
+  expect(closeBounds.x + closeBounds.width).toBeLessThanOrEqual(panelBounds.x + panelBounds.width)
   const enabled = panel.getByRole('switch', { name: 'GPU scheduling', exact: true })
-  if (await enabled.getAttribute('aria-checked') !== 'true') await enabled.click()
+  await expect(enabled).toHaveAttribute('aria-checked', 'false')
+  const maximumWait = panel.getByLabel('Maximum wait', { exact: false })
+  const freeMemory = panel.getByLabel('Minimum free memory', { exact: false })
+  await expect(maximumWait).toBeVisible()
+  await expect(maximumWait).toBeDisabled()
+  await expect(freeMemory).toBeVisible()
+  await expect(panel.getByRole('checkbox', { name: 'Require the same model for multi-GPU tasks' })).toBeVisible()
+  await expect(panel.getByText('CUDA_VISIBLE_DEVICES', { exact: true })).toHaveCount(0)
+  await expect(panel.getByRole('button', { name: 'Edit Env', exact: true })).toHaveCount(0)
+  await expect(panel.getByText('Advanced scheduling rules', { exact: true })).toHaveCount(0)
+  await expect(panel.getByRole('tab', { name: 'Env', exact: true })).toBeVisible()
+  await enabled.click()
   await panel.getByLabel('GPUs required', { exact: false }).fill('2')
-  await panel.getByLabel('Minimum free memory', { exact: false }).fill('8')
+  await freeMemory.fill('8')
   await panel.getByLabel('Minimum GPU idle', { exact: false }).fill('70')
   await panel.getByLabel('Stable for', { exact: false }).fill('0')
-  const maximumWait = panel.getByLabel('Maximum wait', { exact: false })
   await maximumWait.fill('-1')
   await expect(maximumWait).toHaveValue('-1')
   await expect(maximumWait).toHaveAttribute('aria-invalid', 'true')
@@ -34,6 +52,14 @@ test('GPU rules use free GiB and idle percent and retain fractional wait hours',
   await maximumWait.pressSequentially('0.25')
   await expect(maximumWait).toHaveValue('0.25')
   const preview = panel.getByRole('button', { name: /GPU 0 · GPU rule preview/ })
+  await enabled.click()
+  await expect(maximumWait).toBeVisible()
+  await expect(maximumWait).toHaveValue('0.25')
+  await expect(maximumWait).toBeDisabled()
+  await expect(preview).toBeVisible()
+  await enabled.click()
+  await expect(maximumWait).toBeEnabled()
+  await expect(maximumWait).toHaveValue('0.25')
   await expect(preview).toContainText('Pass')
   await panel.getByLabel('Minimum GPU idle', { exact: false }).fill('90')
   await expect(preview).toContainText('Blocked')
@@ -55,7 +81,7 @@ test('GPU rules use free GiB and idle percent and retain fractional wait hours',
   await page.screenshot({ path: testInfo.outputPath('gpu-fixed-units.png'), fullPage: true })
 })
 
-test('GPU auto selection clears hidden indices and checks the same-model group', async ({ page }) => {
+test('GPU rules preserve old policies until migrated to CUDA_VISIBLE_DEVICES', async ({ page }) => {
   await page.route('**/api/system/metrics**', route => route.fulfill({ json: {
     cpu_percent: 5, mem_percent: 10,
     gpus: [
@@ -66,36 +92,76 @@ test('GPU auto selection clears hidden indices and checks the same-model group',
     ],
   } }))
   await page.goto('/?token=pyruns-e2e-access-token')
+  const runtimePath = '/api/runtime?refresh_providers=false'
+  const seeded = await page.request.patch(runtimePath, { data: {
+    global_env: { CUDA_VISIBLE_DEVICES: '0,1' },
+    gpu_scheduler: {
+      enabled: true, selection_mode: 'specified', device_ids: [0], gpus_per_task: 1,
+      task_mode: 'single', min_free_memory_gb: 8, min_idle_pct: 70, respect_cuda_visible_devices: false,
+    },
+  } })
+  await expect(seeded).toBeOK()
+  await page.reload()
   await page.getByRole('button', { name: 'Runtime', exact: true }).click()
   const panel = page.getByRole('dialog', { name: 'Runtime settings' })
   await panel.getByRole('tab', { name: 'GPU', exact: true }).click()
-  const enabled = panel.getByRole('switch', { name: 'GPU scheduling', exact: true })
-  if (await enabled.getAttribute('aria-checked') !== 'true') await enabled.click()
-  await panel.getByLabel('GPUs required', { exact: false }).fill('1')
-  await panel.getByLabel('Minimum free memory', { exact: false }).fill('8')
-  await panel.getByLabel('Minimum GPU idle', { exact: false }).fill('70')
-  await panel.getByText('Advanced scheduling rules', { exact: true }).click()
-  await panel.getByRole('button', { name: 'Specific indices', exact: true }).click()
-  await panel.getByLabel('GPU indices', { exact: true }).fill('0')
+  const migration = panel.getByRole('button', { name: 'Use CUDA_VISIBLE_DEVICES' })
+  const save = panel.getByRole('button', { name: 'Save', exact: true })
+  const waitForSave = () => page.waitForResponse(response => response.url().includes('/api/runtime') && response.request().method() === 'PATCH')
+  await expect(panel.getByText('Fixed GPU indices 0', { exact: true })).toBeVisible()
+  await expect(panel.getByText('Ignores CUDA_VISIBLE_DEVICES', { exact: true })).toBeVisible()
+  await expect(panel.getByRole('button', { name: /GPU 0 · Model A/ })).toBeVisible()
   await expect(panel.getByRole('button', { name: /GPU 1 · Model B/ })).toHaveCount(0)
-  await panel.getByRole('button', { name: 'Auto pick', exact: true }).click()
+  const idle = panel.getByLabel('Minimum GPU idle', { exact: false })
+  await idle.fill('60')
+  await expect(idle).toHaveValue('60')
+  await expect(idle).toBeFocused()
+  const legacySave = waitForSave()
+  await save.click()
+  const legacy = await (await legacySave).json()
+  expect(legacy.gpu_scheduler).toMatchObject({
+    selection_mode: 'specified', device_ids: [0], respect_cuda_visible_devices: false, min_idle_pct: 60,
+  })
+  await expect(panel.getByText('GPU scheduler saved', { exact: true })).toBeVisible()
+
+  const gpuTab = panel.getByRole('tab', { name: /^GPU/ })
+  const envTab = panel.getByRole('tab', { name: /^Env/ })
+  await gpuTab.press('ArrowLeft')
+  await expect(envTab).toBeFocused()
+  await expect(envTab).toHaveAttribute('aria-selected', 'true')
+  const editor = panel.getByRole('textbox', { name: 'Workspace environment variables editor' })
+  await expect(editor).toHaveText('CUDA_VISIBLE_DEVICES=0,1')
+  await editor.fill('CUDA_VISIBLE_DEVICES=1,0')
+  const envSave = waitForSave()
+  await save.click()
+  expect((await (await envSave).json()).global_env.CUDA_VISIBLE_DEVICES).toBe('1,0')
+  await expect(panel.getByText('Workspace env saved', { exact: true })).toBeVisible()
+  await gpuTab.click()
+  await expect(panel.getByText('1,0', { exact: true })).toHaveCount(0)
+  await migration.click()
+  await expect(gpuTab).toBeFocused()
+  await expect(migration).toBeHidden()
   await panel.getByLabel('GPUs required', { exact: false }).fill('2')
+  await expect(panel.getByRole('button', { name: 'Specific indices', exact: true })).toHaveCount(0)
+  await expect(panel.getByRole('checkbox', { name: /Respect.*CUDA_VISIBLE_DEVICES/ })).toHaveCount(0)
   const sameModel = panel.getByRole('checkbox', { name: 'Require the same model for multi-GPU tasks' })
   await sameModel.check()
   await expect(panel.getByText('Need 2 ready GPUs of the same model; the largest group has 1.', { exact: true })).toBeVisible()
-  await expect(panel.getByText('Tasks would wait', { exact: true })).toBeVisible()
-  await expect(panel.getByText('Candidate GPUs ready', { exact: true })).toHaveCount(0)
-  await expect(panel.getByText('Preview checks memory, idle and model.', { exact: false })).toContainText('task CUDA_VISIBLE_DEVICES, reservations and stability')
+  await expect(panel.getByText('Thresholds unmet', { exact: true })).toBeVisible()
+  await panel.getByRole('button', { name: /GPU 0 · Model A/ }).click()
+  await expect(panel.getByText('16 GiB free / 24 GiB total', { exact: true })).toBeVisible()
   await sameModel.uncheck()
-  await expect(panel.getByText('Candidate GPUs ready', { exact: true })).toBeVisible()
-  const saved = page.waitForResponse(response => response.url().includes('/api/runtime') && response.request().method() === 'PATCH')
-  await panel.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(panel.getByText('Thresholds met', { exact: true })).toBeVisible()
+  const saved = waitForSave()
+  await save.click()
   const response = await saved
   expect(response.ok()).toBe(true)
   const runtime = await response.json()
-  expect(runtime.gpu_scheduler.selection_mode).toBe('auto')
-  expect(runtime.gpu_scheduler.gpus_per_task).toBe(2)
-  expect(runtime.gpu_scheduler.device_ids).toEqual([])
+  expect(runtime.gpu_scheduler).toMatchObject({
+    selection_mode: 'auto', gpus_per_task: 2, device_ids: [], respect_cuda_visible_devices: true,
+  })
+  expect(runtime.global_env.CUDA_VISIBLE_DEVICES).toBe('1,0')
+  await expect(await page.request.patch(runtimePath, { data: { global_env: {} } })).toBeOK()
 })
 
 test('GPU workspace fallback preserves legacy utilization limits when runtime loading fails', async ({ page }) => {
@@ -122,9 +188,8 @@ test('GPU workspace fallback preserves legacy utilization limits when runtime lo
   await expect(panel.getByLabel('GPUs required', { exact: false })).toHaveValue('2')
   await expect(panel.getByLabel('Minimum GPU idle', { exact: false })).toHaveValue('90')
   await expect(panel.getByLabel('Maximum wait', { exact: false })).toHaveValue('0.25')
-  await panel.getByText('Advanced scheduling rules', { exact: true }).click()
-  await expect(panel.getByRole('button', { name: 'Specific indices', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await expect(panel.getByLabel('GPU indices', { exact: true })).toHaveValue('0,1')
+  await expect(panel.getByText('Fixed GPU indices 0, 1', { exact: true })).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Use CUDA_VISIBLE_DEVICES' })).toBeVisible()
   await panel.getByLabel('Minimum GPU idle', { exact: false }).fill('80')
   await panel.getByRole('button', { name: 'Reset', exact: true }).click()
   await expect(panel.getByLabel('Minimum GPU idle', { exact: false })).toHaveValue('90')

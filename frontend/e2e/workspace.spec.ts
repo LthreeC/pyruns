@@ -2359,7 +2359,7 @@ test('template picker keeps the current option active when reopened', async ({ p
 
   await page.getByRole('button', { name: 'Task B' }).click()
   const templateSearch = page.getByRole('combobox', { name: /^Search (tasks|templates)$/ })
-  const options = page.getByRole('option')
+  const options = page.getByRole('listbox').getByRole('option')
   await expect(options).toHaveCount(3)
   expect(await options.evaluateAll(elements => elements.every(element => element.tabIndex === -1))).toBe(true)
 
@@ -2599,6 +2599,7 @@ test('manager applies and remembers the selected card order', async ({ page }) =
     return widestOption <= availableWidth
   })).toBe(true)
   await sortSelect.selectOption('name_desc')
+  await expect(sortSelect).toHaveAccessibleDescription(/run10 comes before run2/)
   await expect(page.locator('[data-task-card]')).toHaveCount(3)
   await expect.poll(() => page.locator('[data-task-card]').evaluateAll(cards => (
     cards.map(card => card.getAttribute('data-task-card'))

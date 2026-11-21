@@ -133,6 +133,7 @@ function getEnvValidationMessage(envPairs: EnvPair[]): string {
 
 export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefresh }: Props) {
   useTranslation()
+  const displayName = task.display_name ?? task.name
   const [tab, setTab] = useState<Tab>('info')
   const [notes, setNotes] = useState(task.notes || '')
   const [envPairs, setEnvPairs] = useState(() => buildEnvPairs(task))
@@ -668,7 +669,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
           }}
           onClick={event => event.stopPropagation()}
         >
-        <span id="task-detail-title" className="sr-only">{t('Task details for {{name}}', { name: task.name })}</span>
+        <span id="task-detail-title" className="sr-only">{t('Task details for {{name}}', { name: displayName })}</span>
         <button
           type="button"
           role="separator"
@@ -739,7 +740,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="min-w-0 select-text break-all text-base font-semibold text-txt-primary">{task.name}</span>
+                <span className="min-w-0 select-text break-all text-base font-semibold text-txt-primary">{displayName}</span>
                 <button
                   type="button"
                   onClick={() => setRenaming(true)}

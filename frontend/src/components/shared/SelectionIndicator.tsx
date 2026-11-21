@@ -1,23 +1,20 @@
-import { Check } from 'lucide-react'
+import { Check, Minus } from 'lucide-react'
 import clsx from 'clsx'
 
 interface Props {
-  selected: boolean
-  className?: string
+  selected: boolean | 'mixed'
 }
 
-export default function SelectionIndicator({ selected, className }: Props) {
+export default function SelectionIndicator({ selected }: Props) {
   return (
     <span
+      aria-hidden="true"
       className={clsx(
-        'flex h-4.5 w-4.5 items-center justify-center rounded border transition-colors',
-        selected
-          ? 'border-accent bg-accent text-white'
-          : 'border-border-strong bg-surface-overlay text-transparent',
-        className,
+        'inline-flex size-[18px] shrink-0 items-center justify-center rounded border transition-colors',
+        selected ? 'border-accent bg-accent text-white' : 'border-border-strong bg-surface-raised',
       )}
     >
-      <Check className="h-3 w-3" />
+      {selected === 'mixed' ? <Minus className="size-3" strokeWidth={2.5} /> : selected && <Check className="size-3" strokeWidth={2.5} />}
     </span>
   )
 }

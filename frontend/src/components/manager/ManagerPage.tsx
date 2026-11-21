@@ -12,7 +12,7 @@ import {
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, Cpu, GripVertical, LayoutGrid, List, Loader2, SquareCheck, Pin, Play,
+  AlertTriangle, ArrowDown, ArrowDownWideNarrow, ArrowUp, ChevronDown, Cpu, GripVertical, LayoutGrid, List, ListChecks, Loader2, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2, X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -37,13 +37,14 @@ import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES]
-const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string }[] = [
-  { value: 'priority', label: 'Smart priority' },
-  { value: 'manual', label: 'Manual order' },
-  { value: 'activity_desc', label: 'Recent activity' },
-  { value: 'activity_asc', label: 'Oldest activity' },
-  { value: 'name_asc', label: 'Name A-Z' },
-  { value: 'name_desc', label: 'Name Z-A' },
+const ACTIVITY_SORT_DESCRIPTION = 'Activity uses the last run’s finish time, its start time, or the task’s creation time.'
+const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string; description: string }[] = [
+  { value: 'priority', label: 'Smart priority', description: 'Running and queued tasks lead each group. Tasks without a manual position show by recent activity, followed by manually ordered tasks.' },
+  { value: 'manual', label: 'Manual order', description: 'Tasks with a saved position come first in each group. Move or drag a task to save its position.' },
+  { value: 'activity_desc', label: 'Recent activity', description: ACTIVITY_SORT_DESCRIPTION },
+  { value: 'activity_asc', label: 'Oldest activity', description: ACTIVITY_SORT_DESCRIPTION },
+  { value: 'name_asc', label: 'Name A-Z', description: 'Sorts numbers in names numerically, so run2 comes before run10.' },
+  { value: 'name_desc', label: 'Name Z-A', description: 'Reverses name order, so run10 comes before run2.' },
 ]
 type DragTarget = 'pinned' | 'tasks'
 type DragPlacement = 'before' | 'after'
@@ -195,6 +196,7 @@ export default function ManagerPage() {
     selectAll: state.selectAll, clearSelection: state.clearSelection,
   })))
   const maxResults = useSearchSettingsStore(state => state.maxResults)
+  const sortOption = TASK_SORT_OPTIONS.find(option => option.value === sortMode)!
 
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
@@ -944,9 +946,9 @@ export default function ManagerPage() {
             />
           </div>
           <ActionButton
-            icon={selectMode ? <X className="size-4" /> : <SquareCheck className="size-4" />}
-            variant={selectMode ? 'secondary' : 'ghost'}
-            className="manager-select-action min-h-11 sm:min-h-9"
+            icon={selectMode ? <X aria-hidden="true" className="size-4" /> : <ListChecks aria-hidden="true" className="size-4" />}
+            variant={selectMode ? 'secondary' : 'accentTint'}
+            className={clsx('manager-select-action shrink-0', !selectMode && 'border border-accent/20')}
             aria-label={t(selectMode ? 'Cancel' : 'Select tasks')}
             aria-expanded={selectMode}
             aria-controls={selectMode ? 'manager-selection-actions' : undefined}
@@ -975,76 +977,68 @@ export default function ManagerPage() {
             <div className="manager-view-options relative" ref={viewOptionsRef} onBlur={event => {
               if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setViewOptionsOpen(false)
             }}>
-              <button type="button" ref={viewOptionsTriggerRef} aria-label={t('View options')} aria-haspopup="dialog" aria-expanded={viewOptionsOpen} aria-controls={viewOptionsId}
-                className="manager-options-trigger touch-target inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs text-txt-secondary hover:bg-surface-overlay sm:min-h-9"
+              <button type="button" ref={viewOptionsTriggerRef} aria-label={t('View options')} aria-haspopup="dialog" aria-expanded={viewOptionsOpen} aria-controls={viewOptionsOpen ? viewOptionsId : undefined}
+                className="manager-options-trigger touch-target inline-flex min-h-11 items-center gap-2 rounded-md px-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay aria-expanded:bg-accent/10 aria-expanded:text-accent-ink sm:min-h-9"
                 onClick={() => setViewOptionsOpen(open => !open)}>
-                <ArrowUpDown aria-hidden="true" className="h-3.5 w-3.5" />
-                <span>{!['All', 'active', 'completed', 'failed'].includes(statusFilter) && `${t(STATUS_LABELS[statusFilter as TaskStatus])} · `}{t(TASK_SORT_OPTIONS.find(option => option.value === sortMode)!.label)}</span>
-                <ChevronDown aria-hidden="true" className="h-3 w-3" />
+                <ArrowDownWideNarrow aria-hidden="true" className="size-4" />
+                <span>{!['All', 'active', 'completed', 'failed'].includes(statusFilter) && `${t(STATUS_LABELS[statusFilter as TaskStatus])} · `}{t(sortOption.label)}</span>
+                <ChevronDown aria-hidden="true" className="size-3.5" />
               </button>
-              {viewOptionsOpen && <div id={viewOptionsId} role="dialog" aria-label={t('View options')} className="manager-options-panel">
-              <h2 className="mb-3 text-sm font-semibold text-txt-primary">{t('View options')}</h2>
-              <label className="manager-option-label" htmlFor={`${viewOptionsId}-status`}>{t('Filter by status')}</label>
-            <div className="relative min-w-0 sm:flex-none">
-              <select
-                id={`${viewOptionsId}-status`}
-                value={statusFilter}
-                onChange={event => setStatusFilter(event.target.value)}
-                aria-label={t("Filter tasks by status")}
-                title={t("Filter by status")}
-                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
-              >
-                {STATUS_OPTIONS.map(option => (
-                  <option key={option} value={option}>
-                    {option === 'All' ? t("All statuses") : option === 'active' ? t('Active') : t(STATUS_LABELS[option as TaskStatus])}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
+              {viewOptionsOpen && (
+                <div id={viewOptionsId} role="dialog" aria-label={t('View options')} className="manager-options-panel">
+                  <h2 className="mb-2 text-sm font-semibold text-txt-primary">{t('View options')}</h2>
+                  <ManagerViewOption id={`${viewOptionsId}-sort`} label={t('Sort by')}>
+                    <select
+                      id={`${viewOptionsId}-sort`}
+                      value={sortMode}
+                      onChange={event => setSortMode(event.target.value as TaskSortMode)}
+                      aria-label={t('Sort task cards')}
+                      aria-describedby={`${viewOptionsId}-sort-description`}
+                    >
+                      {TASK_SORT_OPTIONS.map(option => (
+                        <option key={option.value} value={option.value}>{t(option.label)}</option>
+                      ))}
+                    </select>
+                  </ManagerViewOption>
+                  <p id={`${viewOptionsId}-sort-description`} className="px-0.5 pb-2 pt-1 text-2xs leading-5 text-txt-secondary">
+                    {t('Pinned tasks always appear first.')} {t(sortOption.description)}
+                  </p>
+                  <ManagerViewOption id={`${viewOptionsId}-status`} label={t('Status')}>
+                    <select
+                      id={`${viewOptionsId}-status`}
+                      value={statusFilter}
+                      onChange={event => setStatusFilter(event.target.value)}
+                      aria-label={t('Filter tasks by status')}
+                    >
+                      {STATUS_OPTIONS.map(option => (
+                        <option key={option} value={option}>
+                          {option === 'All' ? t('All statuses') : option === 'active' ? t('Active') : t(STATUS_LABELS[option as TaskStatus])}
+                        </option>
+                      ))}
+                    </select>
+                  </ManagerViewOption>
+                  {viewMode === 'cards' && (
+                    <ManagerViewOption id={`${viewOptionsId}-columns`} label={t('Cards per row')}>
+                      <select
+                        id={`${viewOptionsId}-columns`}
+                        value={columns}
+                        onChange={event => setColumns(Number(event.target.value))}
+                        aria-label={t('Maximum cards per row')}
+                        title={t('Maximum cards per row; narrow windows reduce the count automatically')}
+                      >
+                        {[1, 2, 3, 4, 5, 6, 7, 8].map(count => (
+                          <option key={count} value={count}>{t('{{count}} column(s)', { count })}</option>
+                        ))}
+                      </select>
+                    </ManagerViewOption>
+                  )}
+                </div>
+              )}
             </div>
-
-              <label className="manager-option-label" htmlFor={`${viewOptionsId}-sort`}>{t('Sort task cards')}</label>
-            <div className="manager-sort-control relative min-w-0 sm:flex-none">
-              <select
-                id={`${viewOptionsId}-sort`}
-                value={sortMode}
-                onChange={event => setSortMode(event.target.value as TaskSortMode)}
-                aria-label={t("Sort task cards")}
-                title={sortMode === 'priority'
-                  ? t("Pinned first, then active and recently added tasks")
-                  : t("Sort task cards")}
-                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay py-1.5 pl-7 pr-7 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto sm:pl-8 sm:pr-8"
-              >
-                {TASK_SORT_OPTIONS.map(option => (
-                  <option key={option.value} value={option.value}>{t(option.label)}</option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary sm:right-2.5" />
-            </div>
-
-            {viewMode === 'cards' && <>
-              <label className="manager-option-label" htmlFor={`${viewOptionsId}-columns`}>{t('Maximum cards per row')}</label>
-              <div className="relative min-w-0 sm:flex-none">
-              <select
-                id={`${viewOptionsId}-columns`}
-                value={columns}
-                onChange={event => setColumns(Number(event.target.value))}
-                aria-label={t("Maximum cards per row")}
-                title={t("Maximum cards per row; narrow windows reduce the count automatically")}
-                className="touch-target min-h-11 w-full appearance-none rounded-md border border-border-subtle bg-surface-overlay px-3 py-1.5 pr-8 text-xs text-txt-primary outline-none transition-colors focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/20 sm:min-h-9 sm:w-auto"
-              >
-                {[1, 2, 3, 4, 5, 6, 7, 8].map(count => (
-                  <option key={count} value={count}>{t('{{count}} column(s)', { count })}</option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-txt-tertiary" />
-            </div></>}
-              </div>}
-            </div>
-            <div role="group" aria-label={t('Task view')} className="manager-view-toggle flex items-center gap-0.5 rounded-lg bg-surface-overlay p-0.5">
+            <div role="group" aria-label={t('Task view')} className="manager-view-toggle flex items-center divide-x divide-border-subtle rounded-md border border-border-subtle">
               {([{ mode: 'cards', label: 'Card view', icon: LayoutGrid }, { mode: 'list', label: 'List view', icon: List }] as const).map(({ mode, label, icon: Icon }) => (
                 <button key={mode} type="button" aria-label={t(label)} title={t(label)} aria-pressed={viewMode === mode}
-                  onClick={() => setViewMode(mode)} className={clsx('touch-target flex h-10 w-10 items-center justify-center rounded-md sm:h-7 sm:w-8', viewMode === mode ? 'bg-surface-raised text-txt-primary shadow-sm' : 'text-txt-tertiary hover:text-txt-primary')}>
+                  onClick={() => setViewMode(mode)} className={clsx('touch-target flex h-10 w-10 items-center justify-center sm:h-8 sm:w-9', viewMode === mode ? 'bg-accent/10 text-accent-ink' : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary')}>
                   <Icon aria-hidden="true" className="h-4 w-4" />
                 </button>
               ))}
@@ -1436,6 +1430,8 @@ const TaskCard = memo(function TaskCard({
   useTranslation()
   const actionBtn = getActionButton(task)
   const readOnly = task.task_storage === 'remote'
+  const displayName = task.display_name ?? task.name
+  const accessibleName = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
   const createdAtLabel = task.created_at?.replace(/^(\d{4}-\d{2}-\d{2})[_T](\d{2})[-:](\d{2}).*$/, '$1 · $2:$3')
   const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
@@ -1490,7 +1486,7 @@ const TaskCard = memo(function TaskCard({
           onClick={() => void onPin(task)}
           disabled={readOnly || taskPending || reorderDisabled}
           title={task.pinned ? t("Unpin") : t("Pin")}
-          aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: task.name })}
+          aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}
           aria-busy={pendingAction === 'pin' || undefined}
           className={clsx(
             'task-card-pin touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
@@ -1514,8 +1510,8 @@ const TaskCard = memo(function TaskCard({
           }
         }}
         aria-label={selectMode
-          ? t('{{action}} {{name}}', { action: selected ? t("Deselect") : t("Select"), name: task.name })
-          : t('Open details for {{name}}', { name: task.name })}
+          ? t('{{action}} {{name}}', { action: selected ? t("Deselect") : t("Select"), name: accessibleName })
+          : t('Open details for {{name}}', { name: accessibleName })}
         aria-pressed={selectMode ? selected : undefined}
         className="task-card-main block w-full min-w-0 flex-1 rounded-xl px-3 pb-3 pt-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
       >
@@ -1532,8 +1528,8 @@ const TaskCard = memo(function TaskCard({
           )}
         </div>
 
-        <div className="task-card-name mt-3 text-sm font-semibold leading-6 text-txt-primary [overflow-wrap:anywhere]" title={task.name}>
-          {task.name}
+        <div className="task-card-name mt-3 text-sm font-semibold leading-6 text-txt-primary [overflow-wrap:anywhere]" title={displayName}>
+          {displayName}
         </div>
 
         <div className="task-card-preview mt-2 border-l-2 border-border pl-2.5 font-mono text-2xs leading-5 text-txt-secondary" title={cardDescription}>
@@ -1556,7 +1552,7 @@ const TaskCard = memo(function TaskCard({
         <div className="task-card-meta mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
           <span title={task.created_at}>{createdAtLabel}</span>
           {task.run_index > 0 && <span>{t('Run #{{index}}', { index: task.run_index })}</span>}
-          {folderName !== task.name && <span className="truncate" title={task.dir}>{folderName}</span>}
+          {folderName !== displayName && <span className="truncate" title={task.dir}>{folderName}</span>}
         </div>
 
 
@@ -1608,7 +1604,7 @@ const TaskCard = memo(function TaskCard({
               </TaskIconButton>
             )}
             <TaskIconButton
-              label={t('View logs for {{name}}', { name: task.name })}
+              label={t('View logs for {{name}}', { name: accessibleName })}
               title={t("View logs")}
               onClick={() => onMonitor(task)}
               className="text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary"
@@ -1630,6 +1626,18 @@ const TaskCard = memo(function TaskCard({
     </article>
   )
 })
+
+function ManagerViewOption({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  return (
+    <div className="manager-option-row">
+      <label htmlFor={id} className="text-xs font-medium text-txt-secondary">{label}</label>
+      <div className="relative min-w-0">
+        {children}
+        <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-txt-secondary" />
+      </div>
+    </div>
+  )
+}
 
 function ManagerMetric({
   label,

@@ -73,6 +73,7 @@ export interface RunEnvironment {
 
 export interface Task {
   name: string
+  display_name?: string
   status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   dir: string
   task_identity?: string | null
@@ -115,6 +116,7 @@ export interface Task {
   runner_location?: 'local' | 'remote' | 'unknown'
   task_storage?: 'shared' | 'local' | 'remote'
   task_source?: string
+  task_source_host?: string
   runner_lease_expired?: boolean | null
   lease_heartbeat?: number | null
   cancel_requested_at?: number | string | null

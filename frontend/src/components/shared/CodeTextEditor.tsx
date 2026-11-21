@@ -10,10 +10,10 @@ import CodeMirror from '@uiw/react-codemirror'
 import { yaml as yamlLanguage } from '@codemirror/lang-yaml'
 import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
 import type { Extension } from '@codemirror/state'
-import { EditorView, placeholder as editorPlaceholder } from '@codemirror/view'
+import { EditorView, keymap, placeholder as editorPlaceholder, type Command } from '@codemirror/view'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { tags as t } from '@lezer/highlight'
-import { WrapText } from 'lucide-react'
+import { Keyboard, WrapText } from 'lucide-react'
 import clsx from 'clsx'
 import CopyButton from '@/components/shared/CopyButton'
 import { useTranslation } from '@/i18n'
@@ -25,6 +25,7 @@ interface CodeTextEditorProps {
   value: string
   onChange: (value: string) => void
   language: CodeEditorLanguage
+  shellKind?: string
   theme: CodeEditorTheme
   className?: string
   wrapStorageKey?: string
@@ -86,69 +87,114 @@ const DARK_EDITOR_THEME = [
   }),
 ]
 
-const SHELL_LANGUAGE = StreamLanguage.define({
-  startState: () => ({ inString: null as '"' | "'" | null }),
-  token(stream, state) {
-    if (stream.sol()) {
-      state.inString = null
-    }
-    if (stream.eatSpace()) {
-      return null
-    }
-    if (stream.peek() === '#') {
-      stream.skipToEnd()
-      return 'comment'
-    }
-    if (state.inString) {
-      let escaped = false
-      while (!stream.eol()) {
-        const next = stream.next()
-        if (escaped) {
-          escaped = false
-          continue
-        }
-        if (next === '\\') {
-          escaped = true
-          continue
-        }
-        if (next === state.inString) {
-          state.inString = null
-          break
+const CMD_LINE_COMMENT = /^@?rem(?:[ \t]|$)/i
+
+function shellLanguage(cmd: boolean) {
+  return StreamLanguage.define({
+    languageData: cmd ? {} : { commentTokens: { line: '#' } },
+    startState: () => ({ inString: null as '"' | "'" | null }),
+    token(stream, state) {
+      if (stream.sol()) {
+        state.inString = null
+        if (cmd && CMD_LINE_COMMENT.test(stream.string.trimStart())) {
+          stream.skipToEnd()
+          return 'comment'
         }
       }
-      return 'string'
-    }
-    const quote = stream.peek()
-    if (quote === '"' || quote === "'") {
-      state.inString = quote
+      if (stream.eatSpace()) {
+        return null
+      }
+      if (state.inString) {
+        let escaped = false
+        while (!stream.eol()) {
+          const next = stream.next()
+          if (escaped) {
+            escaped = false
+            continue
+          }
+          if (next === '\\') {
+            escaped = true
+            continue
+          }
+          if (next === state.inString) {
+            state.inString = null
+            break
+          }
+        }
+        return 'string'
+      }
+      if (!cmd && stream.peek() === '#') {
+        stream.skipToEnd()
+        return 'comment'
+      }
+      const quote = stream.peek()
+      if (quote === '"' || quote === "'") {
+        state.inString = quote
+        stream.next()
+        return 'string'
+      }
+      if (stream.match(/^\$\{[^}]+\}/) || stream.match(/^\$[A-Za-z_][\w]*/)) {
+        return 'variableName'
+      }
+      if (stream.match(/^--?[A-Za-z][\w-]*/)) {
+        return 'attributeName'
+      }
+      if (stream.match(/^(?:&&|\|\||<<|>>|[|&;<>])/)) {
+        return 'operator'
+      }
+      if (stream.match(/^(?:\d+\.\d+|\d+)/)) {
+        return 'number'
+      }
+      if (stream.match(/^(?:if|then|elif|else|fi|for|while|until|do|done|case|esac|function|in)\b/)) {
+        return 'keyword'
+      }
+      if (stream.match(/^(?:alias|cd|conda|echo|eval|export|git|ls|mamba|mkdir|module|pip|python|pwd|set|source|test|touch|unset|uv)\b/)) {
+        return 'builtin'
+      }
+      if (stream.match(/^[A-Za-z_][\w-]*(?==)/)) {
+        return 'variableName.definition'
+      }
       stream.next()
-      return 'string'
+      return null
+    },
+  })
+}
+
+// CMD recognizes REM case-insensitively and only as a complete command.
+const toggleCmdLineComment: Command = view => {
+  const { state } = view
+  if (state.readOnly) return false
+
+  const lines = new Map<number, { from: number; commentLength: number }>()
+  for (const range of state.selection.ranges) {
+    const first = state.doc.lineAt(range.from).number
+    const last = state.doc.lineAt(range.empty ? range.to : range.to - 1).number
+    for (let n = first; n <= last; n++) {
+      const line = state.doc.line(n)
+      const content = line.text.trimStart()
+      if (!content && first !== last) continue
+      lines.set(n, {
+        from: line.to - content.length,
+        commentLength: content.match(CMD_LINE_COMMENT)?.[0].length ?? 0,
+      })
     }
-    if (stream.match(/^\$\{[^}]+\}/) || stream.match(/^\$[A-Za-z_][\w]*/)) {
-      return 'variableName'
-    }
-    if (stream.match(/^--?[A-Za-z][\w-]*/)) {
-      return 'attributeName'
-    }
-    if (stream.match(/^(?:&&|\|\||<<|>>|[|&;<>])/)) {
-      return 'operator'
-    }
-    if (stream.match(/^(?:\d+\.\d+|\d+)/)) {
-      return 'number'
-    }
-    if (stream.match(/^(?:if|then|elif|else|fi|for|while|until|do|done|case|esac|function|in)\b/)) {
-      return 'keyword'
-    }
-    if (stream.match(/^(?:alias|cd|conda|echo|eval|export|git|ls|mamba|mkdir|module|pip|python|pwd|set|source|test|touch|unset|uv)\b/)) {
-      return 'builtin'
-    }
-    if (stream.match(/^[A-Za-z_][\w-]*(?==)/)) {
-      return 'variableName.definition'
-    }
-    stream.next()
-    return null
-  },
-})
+  }
+  if (!lines.size) return false
+
+  const selected = Array.from(lines.values())
+  const uncomment = selected.every(line => line.commentLength > 0)
+  const changes = state.changes(selected.map(({ from, commentLength }) => (
+    uncomment ? { from, to: from + commentLength } : { from, insert: 'REM ' }
+  )))
+  view.dispatch({ changes, selection: state.selection.map(changes, 1), userEvent: 'input.comment' })
+  return true
+}
+
+const SHELL_LANGUAGE = shellLanguage(false)
+const CMD_EXTENSIONS = [
+  shellLanguage(true),
+  keymap.of([{ key: 'Mod-/', run: toggleCmdLineComment, preventDefault: true }]),
+]
 
 const LIGHT_EDITOR_HIGHLIGHT = syntaxHighlighting(HighlightStyle.define([
   { tag: [t.keyword, t.controlKeyword], color: '#0000ff' },
@@ -186,6 +232,7 @@ function getStoredWrap(storageKey: string | undefined, fallback: boolean) {
 
 function buildEditorExtensions(
   language: CodeEditorLanguage,
+  shellKind: string | undefined,
   theme: CodeEditorTheme,
   wrap: boolean,
   placeholderText?: string,
@@ -193,7 +240,7 @@ function buildEditorExtensions(
 ): Extension[] {
   const baseTheme = theme === 'dark' ? DARK_EDITOR_THEME : [LIGHT_EDITOR_THEME]
   const highlighting = theme === 'dark' ? DARK_EDITOR_HIGHLIGHT : LIGHT_EDITOR_HIGHLIGHT
-  const languageExtension = language === 'yaml' ? YAML_EXTENSION : SHELL_LANGUAGE
+  const languageExtension = language === 'yaml' ? YAML_EXTENSION : shellKind === 'cmd' ? CMD_EXTENSIONS : SHELL_LANGUAGE
   const extras: Extension[] = []
   if (placeholderText) {
     extras.push(editorPlaceholder(placeholderText))
@@ -206,10 +253,61 @@ function buildEditorExtensions(
     : [...baseTheme, languageExtension, highlighting, ...extras]
 }
 
+function ShellEditorShortcuts() {
+  const { t: translate } = useTranslation()
+  const apple = /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+  const mod = apple ? '⌘' : 'Ctrl'
+  const alt = apple ? '⌥' : 'Alt'
+  const shortcuts = [
+    ['Toggle line comment', `${mod} + /`],
+    ['Find and replace', `${mod} + F`],
+    ['Move lines', `${alt} + ↑ / ↓`],
+    ['Duplicate lines', `${alt} + Shift + ↑ / ↓`],
+    ['Delete lines', `${mod} + Shift + K`],
+    ['Indent / outdent', 'Tab / Shift + Tab'],
+    ['Undo / redo', apple ? '⌘ + Z / ⇧⌘ + Z' : 'Ctrl + Z / Ctrl + Y'],
+    ['Leave the editor', 'Esc, Tab'],
+  ]
+
+  return (
+    <details
+      className="group/shortcuts"
+      onBlur={event => {
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) {
+          event.currentTarget.open = false
+        }
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Escape' && event.currentTarget.open) {
+          event.currentTarget.open = false
+          event.stopPropagation()
+        }
+      }}
+    >
+      <summary
+        aria-label={translate('Shell editor shortcuts')}
+        title={translate('Shell editor shortcuts')}
+        className="touch-target flex size-6 cursor-pointer list-none items-center justify-center rounded-md text-txt-secondary hover:bg-surface-overlay group-open/shortcuts:bg-surface-overlay group-open/shortcuts:text-accent-ink"
+      >
+        <Keyboard aria-hidden="true" className="size-4" />
+      </summary>
+      <dl className="absolute right-2 top-full z-20 max-h-[42dvh] w-[19rem] max-w-[calc(100%_-_1rem)] divide-y divide-border-subtle overflow-y-auto border border-border bg-surface-raised px-2.5 text-xs shadow-md">
+        {shortcuts.map(([label, keys]) => (
+          <div key={label} className="flex flex-wrap items-baseline justify-between gap-x-2 py-1.5">
+            <dt className="text-txt-primary">{translate(label)}</dt>
+            <dd><kbd className="whitespace-nowrap font-mono text-2xs text-txt-secondary">{keys}</kbd></dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  )
+}
+
 export default function CodeTextEditor({
   value,
   onChange,
   language,
+  shellKind,
   theme,
   className,
   wrapStorageKey,
@@ -222,8 +320,8 @@ export default function CodeTextEditor({
   const [wrap, setWrap] = useState(() => getStoredWrap(wrapStorageKey, defaultWrap))
   const editorViewRef = useRef<EditorView | null>(null)
   const extensions = useMemo(
-    () => buildEditorExtensions(language, theme, wrap, placeholder, ariaLabel),
-    [ariaLabel, language, placeholder, theme, wrap],
+    () => buildEditorExtensions(language, shellKind, theme, wrap, placeholder, ariaLabel),
+    [ariaLabel, language, placeholder, shellKind, theme, wrap],
   )
 
   useEffect(() => {
@@ -256,16 +354,16 @@ export default function CodeTextEditor({
       )}
     >
       {!compactToolbar && (
-        <div className="flex min-h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/25 px-2.5">
-          <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
+        <div className="relative flex min-h-8 flex-none items-center gap-2 border-b border-border-subtle bg-surface-overlay/25 px-2.5">
+          <span className="mr-auto rounded-md bg-surface-raised px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-txt-tertiary">
             {language === 'yaml' ? 'YAML' : 'Shell'}
           </span>
+          {language === 'shell' && <ShellEditorShortcuts />}
           <CopyButton
             value={value}
             label={translate('Copy {{language}} content', { language: language === 'yaml' ? 'YAML' : 'shell' })}
             size="xs"
             onMouseDown={event => event.preventDefault()}
-            className="ml-auto"
           />
           <button
             type="button"

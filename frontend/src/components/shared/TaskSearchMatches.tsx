@@ -25,10 +25,11 @@ export default function TaskSearchMatches({ task, onSelect, onSelectMatch, actio
   const { t } = useTranslation()
   const [preview, setPreview] = useState<TaskSearchMatch | null>(null)
   const matches = task.search_matches ?? []
+  const displayName = task.display_name ?? task.name
   const groups = useMemo(() => groupTaskSearchMatches(matches, match =>
     match.log_file || `${t(LABELS[match.field])}${match.location ? `: ${match.location}` : ''}`), [matches, t])
   const count = Math.max(matches.length, task.search_match_count ?? 0)
-  return <div aria-label={t('Matches in {{name}}', { name: task.name })} className="min-w-0">
+  return <div aria-label={t('Matches in {{name}}', { name: displayName })} className="min-w-0">
     {Array.from(groups, ([source, rows]) => <details key={source} open className="group/search border-l border-border-subtle">
       <summary className="touch-target flex min-h-8 cursor-pointer list-none items-center gap-1 px-2 text-2xs text-txt-tertiary hover:bg-surface-overlay">
         <ChevronRight className="h-3 w-3 flex-none group-open/search:rotate-90" aria-hidden="true" />
@@ -37,7 +38,7 @@ export default function TaskSearchMatches({ task, onSelect, onSelectMatch, actio
         <span className="tabular-nums" title={t('{{count}} previewed matches', { count: rows.length })}>{rows.length}</span>
       </summary>
       {rows.map((match, index) => <button key={index} type="button"
-        aria-label={t('{{action}} {{field}} match in {{name}}{{location}}: {{snippet}}', { action: t(action), field: t(LABELS[match.field]), name: task.name, location: match.location ? t(' at {{location}}', { location: match.location }) : '', snippet: match.snippet })}
+        aria-label={t('{{action}} {{field}} match in {{name}}{{location}}: {{snippet}}', { action: t(action), field: t(LABELS[match.field]), name: displayName, location: match.location ? t(' at {{location}}', { location: match.location }) : '', snippet: match.snippet })}
         className="touch-target block w-full min-w-0 border-l-2 border-transparent py-1 pl-5 pr-2 text-left hover:border-accent/50 hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
         onClick={() => {
           if (exportMode) onSelect()
@@ -55,6 +56,7 @@ export default function TaskSearchMatches({ task, onSelect, onSelectMatch, actio
 
 function LogMatchDialog({ task, match, onClose }: { task: Task; match: TaskSearchMatch; onClose: () => void }) {
   const { t } = useTranslation()
+  const displayName = task.display_name ?? task.name
   const dialog = useRef<HTMLDialogElement>(null)
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(true)
@@ -84,11 +86,11 @@ function LogMatchDialog({ task, match, onClose }: { task: Task; match: TaskSearc
       .finally(() => { window.clearTimeout(timeout); if (controller.signal.reason?.name !== 'AbortError') setLoading(false) })
     return () => { window.clearTimeout(timeout); controller.abort() }
   }, [task.name, match.log_file, match.log_identity, match.offset, retry])
-  return <dialog ref={dialog} aria-label={t('Log match in {{name}}', { name: task.name })} onCancel={event => { event.preventDefault(); onClose() }}
+  return <dialog ref={dialog} aria-label={t('Log match in {{name}}', { name: displayName })} onCancel={event => { event.preventDefault(); onClose() }}
     className="fixed inset-0 z-50 m-auto max-h-[calc(100dvh-1.5rem)] w-[calc(100vw-1.5rem)] max-w-3xl overflow-hidden rounded-md border border-border-subtle bg-surface-raised p-0 text-txt-primary shadow-md backdrop:bg-black/50">
     <div className="flex max-h-[calc(100dvh-1.5rem)] flex-col">
       <div className="flex flex-none items-center gap-2 border-b border-border-subtle px-3 py-2">
-        <div className="min-w-0 flex-1"><h3 className="truncate text-sm font-medium">{match.log_file}:{match.line}</h3><p className="truncate text-2xs text-txt-tertiary">{task.name} · {t('Log context at match')}</p></div>
+        <div className="min-w-0 flex-1"><h3 className="truncate text-sm font-medium">{match.log_file}:{match.line}</h3><p className="truncate text-2xs text-txt-tertiary">{displayName} · {t('Log context at match')}</p></div>
         <CopyButton value={content} disabled={loading || Boolean(error)} label={t('Copy log context')} />
         <button type="button" className="touch-target rounded-md p-2 hover:bg-surface-overlay" aria-label={t('Close log preview')} onClick={onClose}><X className="h-4 w-4" /></button>
       </div>

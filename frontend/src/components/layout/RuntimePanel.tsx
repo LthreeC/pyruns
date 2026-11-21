@@ -1,9 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
   ChevronDown,
-  CircleGauge,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -17,6 +16,7 @@ import { errorMessage } from '@/utils/errors'
 import { gpuFreeMemoryMb, gpuMemoryUsedPercent } from '@/utils/gpuMetrics'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import ToggleSwitch from '@/components/shared/ToggleSwitch'
+import ActionButton from '@/components/shared/ActionButton'
 import { t, useTranslation } from '@/i18n'
 import { useOnboardingStore } from '@/components/onboarding/store'
 
@@ -277,6 +277,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const [expandedGpuKey, setExpandedGpuKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveMessage, setSaveMessage] = useState('')
   const [error, setError] = useState('')
   const [runtimeDirtyPages, setRuntimeDirtyPages] = useState<RuntimeDirtyPages>(cleanRuntimeDirtyPages)
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false)
@@ -285,6 +286,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const markRuntimeDirty = (page: RuntimePage) => {
     runtimeLoadSeqRef.current += 1
     setLoading(false)
+    setSaveMessage('')
     runtimePageRevisionsRef.current[page] += 1
     runtimeDirtyPagesRef.current = { ...runtimeDirtyPagesRef.current, [page]: true }
     setRuntimeDirtyPages(current => current[page] ? current : { ...current, [page]: true })
@@ -327,6 +329,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }, [runtime, condaEnv])
   const requestedGpuCount = numberInputValue(gpuCount, 1, 1)
   const selectedGpuIds = useMemo(() => parseDeviceIds(gpuDeviceIds), [gpuDeviceIds])
+  const hasLegacyGpuPolicy = gpuSelectionMode === 'specified' || !gpuRespectCudaVisibleDevices
   const candidateGpus = useMemo(() => {
     const allGpus = gpuMetrics?.gpus || []
     if (gpuSelectionMode !== 'specified') {
@@ -374,7 +377,6 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     const rawIdle = Number(gpuMinIdlePct)
     const rawStableSeconds = Number(gpuStableSeconds)
     const rawWaitHours = Number(gpuMaxWaitHours)
-    const rawDeviceTokens = gpuDeviceIds.split(',').map(item => item.trim()).filter(Boolean)
 
     if (!Number.isInteger(rawCount) || rawCount < 1) {
       issues.push(t('GPUs required must be a whole number of at least 1.'))
@@ -392,9 +394,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       issues.push(t('Maximum wait must be 0 hours or more (0 means unlimited).'))
     }
     if (gpuSelectionMode === 'specified') {
-      if (rawDeviceTokens.some(item => !/^\d+$/.test(item))) {
-        issues.push(t('GPU selection accepts comma-separated numeric indices, such as 0,1.'))
-      } else if (selectedGpuIds.length !== requestedGpuCount) {
+      if (selectedGpuIds.length !== requestedGpuCount) {
         issues.push(t('Choose exactly {{count}} unique GPU indices.', { count: requestedGpuCount }))
       } else if (unavailableSelectedGpuIds.length > 0) {
         const label = unavailableSelectedGpuIds.join(', ')
@@ -425,7 +425,6 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }, [
     candidateGpus,
     gpuCount,
-    gpuDeviceIds,
     gpuMinIdlePct,
     gpuMaxWaitHours,
     gpuMinFreeMemoryGb,
@@ -448,7 +447,6 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const maxWaitInvalid = gpuSchedulerEnabled && (
     !gpuMaxWaitHours.trim() || !Number.isFinite(Number(gpuMaxWaitHours)) || Number(gpuMaxWaitHours) < 0
   )
-  const gpuReadinessUnavailable = gpuSchedulerEnabled && !!gpuMetricsError && !gpuMetrics
   const gpuWaitingNow = gpuSchedulerEnabled
     && !!gpuMetrics
     && (passingGpuCount < requestedGpuCount || sameModelInsufficient)
@@ -528,6 +526,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     const loadSeq = runtimeLoadSeqRef.current + 1
     runtimeLoadSeqRef.current = loadSeq
     setLoading(true)
+    setSaveMessage('')
     setError('')
     try {
       const next = await fetchRuntime()
@@ -630,6 +629,15 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }, [open, runtimeDirty])
 
   useEffect(() => {
+    if (!open) return
+    const timer = window.setTimeout(() => {
+      if (useOnboardingStore.getState().phase === 'tour') return
+      panelRef.current?.querySelector<HTMLElement>('[data-runtime-initial-focus]')?.focus()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [open])
+
+  useEffect(() => {
     if (!open) {
       return
     }
@@ -695,7 +703,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         return
       }
       const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
       )).filter(element => !element.hasAttribute('hidden') && element.getClientRects().length > 0)
       if (!focusable.length) {
         event.preventDefault()
@@ -718,14 +726,9 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       document.addEventListener('pointerup', handleDocumentPointerUp)
       document.addEventListener('pointercancel', handleDocumentPointerCancel)
     }, 0)
-    const focusTimer = window.setTimeout(() => {
-      if (useOnboardingStore.getState().phase === 'tour') return
-      panelRef.current?.querySelector<HTMLElement>('[data-runtime-initial-focus]')?.focus()
-    }, 0)
     document.addEventListener('keydown', handleKeyDown)
     return () => {
       window.clearTimeout(pointerListenerTimer)
-      window.clearTimeout(focusTimer)
       document.removeEventListener('pointerdown', handleDocumentPointerDown)
       document.removeEventListener('pointermove', handleDocumentPointerMove)
       document.removeEventListener('pointerup', handleDocumentPointerUp)
@@ -758,6 +761,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       && workspaceKey === String(useWorkspaceStore.getState().workspace?.run_root || '')
     )
     setSaving(true)
+    setSaveMessage('')
     setError('')
     try {
       const next = await updateRuntime(payload, false)
@@ -769,7 +773,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         applyRuntimePageState(next, page)
         clearRuntimeDirtyPage(page)
       }
-      notify({ tone: 'success', title: successTitle })
+      setSaveMessage(successTitle)
       refreshWorkspaceInBackground()
     } catch (err) {
       if (!requestIsCurrent()) {
@@ -915,14 +919,14 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
       style={{ left, maxWidth: `calc(100vw - ${left + 12}px)` }}
       onClick={event => event.stopPropagation()}
     >
-      <div data-tour="runtime-controls" className="flex h-12 items-center gap-1.5 border-b border-border-subtle px-2 sm:h-10 sm:gap-2 sm:px-3">
+      <div data-tour="runtime-controls" className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border-subtle px-2 sm:h-11 sm:gap-2 sm:px-3">
         <div className="hidden min-w-0 flex-1 items-center gap-2 sm:flex">
           <div className="text-sm font-semibold text-txt-primary">{t('Runtime')}</div>
-          <div className="truncate rounded-md bg-surface-overlay px-2 py-0.5 text-2xs text-txt-secondary">
+          <div className="truncate border-l border-border-subtle pl-2 text-2xs text-txt-secondary" title={currentLabel}>
             {currentLabel}
           </div>
         </div>
-        <div role="tablist" aria-label={t('Runtime sections')} className="inline-flex rounded-md bg-surface-overlay p-0.5">
+        <div role="tablist" aria-label={t('Runtime sections')} className="inline-flex divide-x divide-border-subtle rounded-md border border-border-subtle">
           {RUNTIME_PAGES.map((page, pageIndex) => (
             <button
               key={page}
@@ -948,10 +952,10 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 window.requestAnimationFrame(() => document.getElementById(`runtime-tab-${nextPage}`)?.focus())
               }}
               className={clsx(
-                'touch-target inline-flex h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors sm:h-7 sm:min-w-0 sm:px-2.5',
+                'touch-target inline-flex h-11 min-w-11 items-center justify-center gap-1.5 px-1.5 text-xs font-medium transition-colors sm:h-8 sm:min-w-0 sm:px-2.5',
                 activePage === page
-                  ? 'bg-surface-raised text-accent shadow-sm'
-                  : 'text-txt-secondary hover:text-txt-primary'
+                  ? 'bg-accent/10 text-accent-ink'
+                  : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
               )}
             >
               {page === 'python' ? 'Python' : page === 'env' ? t('Env') : 'GPU'}
@@ -972,8 +976,9 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
           disabled={loading || runtimeLoading || gpuMetricsLoading || saving}
           className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50 sm:h-8 sm:w-8"
           aria-label={t('Reload runtime')}
+          title={t('Reload runtime')}
         >
-          {loading || runtimeLoading || gpuMetricsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          {loading || runtimeLoading || gpuMetricsLoading ? <Loader2 aria-hidden="true" className="size-4 motion-safe:animate-spin" /> : <RefreshCw aria-hidden="true" className="size-4" />}
         </button>
         <button
           type="button"
@@ -981,8 +986,9 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
           data-tour-close="runtime"
           className="touch-target inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
           aria-label={t('Close runtime panel')}
+          title={t('Close runtime panel')}
         >
-          <X className="h-4 w-4" />
+          <X aria-hidden="true" className="size-4" />
         </button>
       </div>
 
@@ -995,34 +1001,23 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
 
         {activePage === 'python' && (
           <section id="runtime-panel-python" role="tabpanel" aria-labelledby="runtime-tab-python" className="space-y-3">
-            <div className="flex items-center justify-between gap-3">
-              <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
-                {modeItems.map(item => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => chooseRuntimeMode(item.id)}
-                    className={clsx(
-                      'touch-target h-11 rounded-md px-3 text-xs font-medium transition-colors sm:h-auto sm:py-1.5',
-                      runtimeMode === item.id
-                        ? 'bg-surface-raised text-accent shadow-sm'
-                        : 'text-txt-secondary hover:text-txt-primary'
-                    )}
-                    aria-pressed={runtimeMode === item.id}
-                  >
-                    {item.title}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={savePythonRuntime}
-                disabled={saving || !runtimeDirtyPages.python}
-                className="touch-target inline-flex h-11 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50 sm:h-8"
-              >
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                  {t('Save')}
+            <div className="inline-flex divide-x divide-border-subtle rounded-md border border-border-subtle">
+              {modeItems.map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => chooseRuntimeMode(item.id)}
+                  className={clsx(
+                    'touch-target h-11 px-3 text-xs font-medium transition-colors sm:h-8',
+                    runtimeMode === item.id
+                      ? 'bg-accent/10 text-accent-ink'
+                      : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary'
+                  )}
+                  aria-pressed={runtimeMode === item.id}
+                >
+                  {item.title}
                 </button>
+              ))}
             </div>
 
             <label className="block text-xs font-medium text-txt-secondary">
@@ -1143,30 +1138,17 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                 placeholder="KEY=value"
               />
             </Suspense>
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                onClick={() => saveRuntime('env', { global_env_text: envText }, t('Workspace env saved'))}
-                disabled={saving || !runtimeDirtyPages.env}
-                className="touch-target inline-flex h-11 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50 sm:h-8"
-              >
-                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                  {t('Save')}
-                </button>
-            </div>
           </section>
         )}
 
         {activePage === 'gpu' && (
           <section id="runtime-panel-gpu" role="tabpanel" aria-labelledby="runtime-tab-gpu" className="space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <h2 id="gpu-scheduler-title" className="text-sm font-semibold text-txt-primary">{t('GPU scheduling')}</h2>
-                <p className="mt-0.5 text-xs text-txt-secondary">{t('Start tasks only when requested GPUs are ready.')}</p>
-              </div>
+            <div className="flex min-h-8 items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold text-txt-primary">{t('GPU scheduling')}</h2>
               <ToggleSwitch
                 checked={gpuSchedulerEnabled}
                 label={t('GPU scheduling')}
+                title={t('Start tasks only when requested GPUs are ready.')}
                 onChange={checked => {
                   setGpuSchedulerEnabled(checked)
                   markRuntimeDirty('gpu')
@@ -1174,283 +1156,159 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
               />
             </div>
 
-            {gpuSchedulerEnabled && gpuValidationMessage && (
-              <div role="alert" className="flex gap-2.5 rounded-md border border-rose-500/25 bg-rose-500/10 px-3 py-2.5 text-rose-700 dark:text-rose-300">
-                <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
-                <div className="min-w-0">
-                  <p className="text-xs font-medium leading-5">{gpuValidationMessage}</p>
-                  <p className="text-2xs opacity-80">{t('Adjust the highlighted rule before saving.')}</p>
+            <div className="space-y-1.5 border-t border-border-subtle pt-3">
+              <fieldset disabled={!gpuSchedulerEnabled} className="group min-w-0">
+                <legend className="sr-only">{t('GPU requirements')}</legend>
+                <div className="runtime-gpu-fields">
+                  <CompactNumberField label={t('GPUs required')} value={gpuCount} min={1} step={1}
+                    onChange={value => { setGpuCount(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label={t('Minimum free memory')} value={gpuMinFreeMemoryGb} suffix="GiB" min={0} invalid={freeMemoryInvalid}
+                    onChange={value => { setGpuMinFreeMemoryGb(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label={t('Minimum GPU idle')} value={gpuMinIdlePct} suffix="%" min={0} max={100}
+                    hint={t('Idle is 100% minus GPU utilization.')}
+                    onChange={value => { setGpuMinIdlePct(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label={t('Stable for')} value={gpuStableSeconds} suffix={t('sec')} min={0}
+                    hint={t('0 starts as soon as the thresholds pass.')}
+                    onChange={value => { setGpuStableSeconds(value); markRuntimeDirty('gpu') }} />
+                  <CompactNumberField label={t('Maximum wait')} value={gpuMaxWaitHours} suffix={t('hr')} min={0} invalid={maxWaitInvalid}
+                    hint={t('0 allows tasks to wait indefinitely.')}
+                    onChange={value => { setGpuMaxWaitHours(value); markRuntimeDirty('gpu') }} />
                 </div>
-              </div>
-            )}
-
-            {gpuWaitingNow && !gpuValidationMessage && (
-              <div className="flex gap-2 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none" />
-                <span>{sameModelInsufficient
-                  ? t('Need {{count}} ready GPUs of the same model; the largest group has {{available}}.', { count: requestedGpuCount, available: passingSameModelCount })
-                  : t('Too few GPUs pass the memory and idle thresholds. New tasks will wait visibly in Monitor.')}</span>
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-surface-overlay/70 px-3 py-2 text-xs">
-              <span className="inline-flex items-center gap-1.5 font-medium text-txt-primary">
-                <CircleGauge className="h-3.5 w-3.5 text-txt-tertiary" />
-                {!gpuSchedulerEnabled
-                  ? t('Scheduling is off')
-                  : gpuMetricsLoading && !gpuMetrics
-                    ? t('Checking live GPU thresholds…')
-                    : gpuMetricsError && !gpuMetrics
-                      ? t('Threshold preview unavailable')
-                      : t('{{passing}} of {{total}} pass memory and idle thresholds', { passing: passingGpuCount, total: candidateGpus.length })}
-              </span>
-              <span className="hidden h-4 w-px bg-border sm:block" />
-              <span className={clsx('text-2xs', gpuValidationIssues.length ? 'text-rose-700 dark:text-rose-300' : 'text-txt-tertiary')}>
-                {gpuValidationIssues.length
-                  ? t('{{count}} rules need attention', { count: gpuValidationIssues.length })
-                  : gpuReadinessUnavailable
-                    ? t('Cannot verify current GPUs')
-                    : gpuMetricsLoading && !gpuMetrics
-                      ? t('Checking current GPUs')
-                      : gpuWaitingNow
-                        ? t('Tasks would wait')
-                        : gpuSchedulerEnabled ? t('Candidate GPUs ready') : t('No GPU admission checks')}
-              </span>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-txt-secondary">{t('GPUs required')}</span>
+              </fieldset>
+              <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs font-medium text-txt-primary sm:min-h-9">
                 <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={gpuCount}
-                  disabled={!gpuSchedulerEnabled}
-                  onChange={event => {
-                    const value = event.target.value
-                    setGpuCount(value)
-                    markRuntimeDirty('gpu')
-                  }}
-                  className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-raised px-2.5 text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9"
+                  type="checkbox"
+                  checked={gpuRequireSameModel}
+                  onChange={event => { setGpuRequireSameModel(event.target.checked); markRuntimeDirty('gpu') }}
+                  className="size-4 shrink-0 accent-accent"
                 />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-txt-secondary">{t('Minimum free memory')}</span>
-                <div className={clsx(
-                  'touch-input flex h-11 overflow-hidden rounded-md border bg-surface-raised focus-within:ring-2 sm:h-9',
-                  freeMemoryInvalid
-                    ? 'border-rose-500 focus-within:border-rose-500 focus-within:ring-rose-500/15'
-                    : 'border-border-subtle focus-within:border-accent focus-within:ring-accent/15',
-                )}>
-                  <input
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={gpuMinFreeMemoryGb}
-                    disabled={!gpuSchedulerEnabled}
-                    onChange={event => { setGpuMinFreeMemoryGb(event.target.value); markRuntimeDirty('gpu') }}
-                    aria-invalid={freeMemoryInvalid}
-                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  <span className="flex w-11 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">GiB</span>
-                </div>
-              </label>
-              <CompactNumberField label={t('Minimum GPU idle')} value={gpuMinIdlePct} suffix="%" min={0} max={100} disabled={!gpuSchedulerEnabled} onChange={value => { setGpuMinIdlePct(value); markRuntimeDirty('gpu') }} />
-              <CompactNumberField label={t('Stable for')} value={gpuStableSeconds} suffix={t('sec')} min={0} disabled={!gpuSchedulerEnabled} onChange={value => { setGpuStableSeconds(value); markRuntimeDirty('gpu') }} />
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-txt-secondary">{t('Maximum wait')}</span>
-                <div className={clsx(
-                  'touch-input flex h-11 overflow-hidden rounded-md border bg-surface-raised focus-within:ring-2 sm:h-9',
-                  maxWaitInvalid
-                    ? 'border-rose-500 focus-within:border-rose-500 focus-within:ring-rose-500/15'
-                    : 'border-border-subtle focus-within:border-accent focus-within:ring-accent/15',
-                )}>
-                  <input
-                    type="number"
-                    min={0}
-                    step="any"
-                    value={gpuMaxWaitHours}
-                    disabled={!gpuSchedulerEnabled}
-                    onChange={event => { setGpuMaxWaitHours(event.target.value); markRuntimeDirty('gpu') }}
-                    aria-invalid={maxWaitInvalid}
-                    className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  <span className="flex w-11 items-center justify-center border-l border-border-subtle text-xs text-txt-tertiary">{t('hr')}</span>
-                </div>
+                <span>{t('Require the same model for multi-GPU tasks')}</span>
               </label>
             </div>
-            <p className="text-2xs leading-5 text-txt-tertiary">
-              {t('GPU idle is 100% minus utilization. Stable for 0 starts immediately; maximum wait 0 waits indefinitely.')}
-            </p>
-            <p className="text-2xs leading-5 text-txt-tertiary">
-              {t('Preview checks memory, idle and model. At launch, task CUDA_VISIBLE_DEVICES, reservations and stability also apply.')}
-            </p>
 
-            {gpuMetricsError && (
-              <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                <div className="min-w-0 break-words">
-                  <p>{gpuMetricsError}</p>
-                  <p className="mt-1">{gpuMetrics ? t('Showing the last available GPU values.') : t('GPU preview unavailable.')} {t('Saved rules will still apply.')}</p>
+            {hasLegacyGpuPolicy && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
+                <div className="min-w-0 space-y-1 text-xs text-txt-secondary">
+                  {gpuSelectionMode === 'specified' && (
+                    <p>{t('Fixed GPU indices')} <code>{selectedGpuIds.join(', ')}</code></p>
+                  )}
+                  {!gpuRespectCudaVisibleDevices && (
+                    <p>{t('Ignores CUDA_VISIBLE_DEVICES')}</p>
+                  )}
                 </div>
-                <button type="button" onClick={() => void loadGpuMetrics(true)} disabled={gpuMetricsLoading} className="touch-target flex-none rounded-md px-2 py-1 font-medium text-accent hover:bg-surface-overlay disabled:opacity-50">{t('Retry')}</button>
+                <ActionButton variant="accentTint" className="!rounded-none" disabled={saving}
+                  onClick={() => {
+                    setGpuSelectionMode('auto')
+                    setGpuRespectCudaVisibleDevices(true)
+                    markRuntimeDirty('gpu')
+                    window.requestAnimationFrame(() => document.getElementById('runtime-tab-gpu')?.focus())
+                  }}>
+                  {t('Use CUDA_VISIBLE_DEVICES')}
+                </ActionButton>
               </div>
             )}
-            <div className="overflow-hidden rounded-md border border-border-subtle" aria-busy={gpuMetricsLoading}>
-              {gpuMetricsLoading && !gpuMetrics ? (
-                <div className="flex items-center gap-2 px-3 py-3 text-xs text-txt-tertiary">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('Checking GPUs…')}</div>
-              ) : gpuMetricsError && !gpuMetrics ? null : gpuPreviewRows.length === 0 ? (
-                <div className="px-3 py-3 text-xs text-txt-tertiary">
-                  {gpuSelectionMode === 'specified' ? t('No configured GPU indices were found.') : t('No NVIDIA GPUs detected.')}
-                </div>
-              ) : (
-                <div className="divide-y divide-border-subtle">
-                  {gpuPreviewRows.map(({ gpu, reasons }) => {
-                    const key = gpuKey(gpu)
-                    const expanded = expandedGpuKey === key
-                    const freeGiB = gpuMemoryGiB(gpuFreeMemoryMb(gpu))
-                    return (
-                      <div key={key}>
-                        <button
-                          type="button"
-                          aria-expanded={expanded}
-                          onClick={() => setExpandedGpuKey(expanded ? null : key)}
-                          className="touch-target flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/30"
-                        >
-                          <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt-primary" title={gpu.name}>
-                            GPU {gpu.index} · {gpu.name}
-                          </span>
-                          <span className="hidden flex-none text-2xs tabular-nums text-txt-tertiary sm:inline">
-                            {formatGiB(freeGiB)} / {formatGiB(gpuMemoryGiB(gpu.mem_total))} {t('free')}
-                          </span>
-                          <span className={clsx(
-                            'flex-none text-xs font-medium',
-                            !gpuSchedulerEnabled
-                              ? 'text-txt-secondary'
-                              : reasons.length
-                                ? 'text-rose-700 dark:text-rose-300'
-                                : 'text-emerald-700 dark:text-emerald-300',
-                          )}>
-                            {!gpuSchedulerEnabled ? t('Preview') : reasons.length ? t('Blocked') : t('Pass')}
-                          </span>
-                          <ChevronDown className={clsx('h-3.5 w-3.5 flex-none text-txt-tertiary transition-transform', expanded && 'rotate-180')} />
-                        </button>
-                        {expanded && (
-                          <div className="border-t border-border-subtle bg-surface-overlay/45 px-3 py-2 text-2xs leading-5 text-txt-secondary">
-                            <div className="mb-1 tabular-nums sm:hidden">{formatGiB(freeGiB)} / {formatGiB(gpuMemoryGiB(gpu.mem_total))} {t('free')}</div>
-                            {reasons.length
-                              ? reasons.map(reason => <div key={reason}>• {reason}</div>)
-                              : !gpuSchedulerEnabled
-                                ? <div>{t('Memory and idle thresholds pass. Scheduling is off.')}</div>
-                                : <div>{t('Memory and idle thresholds pass. All requested GPUs must pass the launch checks.')}</div>}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+
+            {gpuValidationMessage && (
+              <div role="alert" className="flex items-start gap-2 border-l-2 border-rose-500 bg-rose-500/5 px-2.5 py-2 text-xs text-rose-700 dark:text-rose-300">
+                <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                <p className="min-w-0">{gpuValidationMessage}</p>
+              </div>
+            )}
+
+            <section aria-labelledby="runtime-gpu-preview" className="space-y-2 border-t border-border-subtle pt-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <h3 id="runtime-gpu-preview" className="text-xs font-semibold text-txt-primary">{t('GPU hardware preview')}</h3>
+                {gpuSchedulerEnabled && gpuMetrics && !gpuMetricsLoading && !gpuMetricsError && !gpuValidationMessage && (
+                  <p className={clsx('text-xs font-medium', gpuWaitingNow ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-700 dark:text-emerald-300')}>
+                    {t(gpuWaitingNow ? 'Thresholds unmet' : 'Thresholds met')}
+                  </p>
+                )}
+              </div>
+              {gpuWaitingNow && sameModelInsufficient && !gpuMetricsLoading && !gpuMetricsError && !gpuValidationMessage && (
+                <p className="text-xs text-txt-secondary">
+                  {t('Need {{count}} ready GPUs of the same model; the largest group has {{available}}.', { count: requestedGpuCount, available: passingSameModelCount })}
+                </p>
+              )}
+
+              {gpuMetricsError && (
+                <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                  <div className="min-w-0 break-words">
+                    <p>{gpuMetricsError}</p>
+                    {gpuMetrics && <p className="mt-1">{t('Showing the last available GPU values.')}</p>}
+                  </div>
+                  <button type="button" onClick={() => void loadGpuMetrics(true)} disabled={gpuMetricsLoading} className="touch-target flex-none rounded-md px-2 py-1 font-medium text-accent hover:bg-surface-overlay disabled:opacity-50">{t('Retry')}</button>
                 </div>
               )}
-            </div>
-
-            <details className="group rounded-md border border-border-subtle bg-surface-raised">
-              <summary className="touch-target flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium text-txt-primary hover:bg-surface-overlay">
-                <span>{t('Advanced scheduling rules')}</span>
-                <span className="flex items-center gap-2 text-2xs font-normal text-txt-tertiary">
-                  <span className="hidden sm:inline">{t('Selection and visibility')}</span>
-                  <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-                </span>
-              </summary>
-              <div className="space-y-3 border-t border-border-subtle p-3">
-                <div>
-                  <div className="mb-1 text-xs font-medium text-txt-secondary">{t('GPU selection')}</div>
-                  <div className="inline-flex rounded-md bg-surface-overlay p-0.5">
-                    {[
-                      { id: 'auto' as GpuSelectionMode, label: t('Auto pick') },
-                      { id: 'specified' as GpuSelectionMode, label: t('Specific indices') },
-                    ].map(item => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => { setGpuSelectionMode(item.id); markRuntimeDirty('gpu') }}
-                        aria-pressed={gpuSelectionMode === item.id}
-                        className={clsx(
-                          'touch-target h-11 rounded-md px-2.5 text-xs font-medium transition-colors sm:h-7',
-                          gpuSelectionMode === item.id
-                            ? 'bg-surface-raised text-accent shadow-sm'
-                            : 'text-txt-secondary hover:text-txt-primary',
-                        )}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
+              <div className="divide-y divide-border-subtle" aria-busy={gpuMetricsLoading}>
+                {!gpuMetrics && !gpuMetricsError ? (
+                  <div role="status" className="flex items-center gap-2 px-2 py-2 text-xs text-txt-secondary">
+                    <Loader2 aria-hidden="true" className="size-4 motion-safe:animate-spin" /> {t('Checking GPUs…')}</div>
+                ) : !gpuMetrics ? null : gpuPreviewRows.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-txt-secondary">
+                    {gpuSelectionMode === 'specified' ? t('No configured GPU indices were found.') : t('No NVIDIA GPUs detected.')}
                   </div>
-                </div>
-
-                {gpuSelectionMode === 'specified' && (
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-txt-secondary">{t('GPU indices')}</span>
-                    <input
-                      value={gpuDeviceIds}
-                      onChange={event => { setGpuDeviceIds(event.target.value); markRuntimeDirty('gpu') }}
-                      className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 font-mono text-sm text-txt-primary outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 sm:h-9"
-                      placeholder="0,1"
-                    />
-                  </label>
-                )}
-
-                <label className="touch-target flex items-start gap-2 text-xs text-txt-secondary">
-                  <input
-                    type="checkbox"
-                    checked={gpuRespectCudaVisibleDevices}
-                    onChange={event => { setGpuRespectCudaVisibleDevices(event.target.checked); markRuntimeDirty('gpu') }}
-                    className="mt-0.5 h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
-                  />
-                  <span>
-                    {t('Respect task CUDA_VISIBLE_DEVICES')}
-                    <span className="mt-0.5 block text-2xs leading-4 text-txt-tertiary">
-                      {t('Indices, GPU UUIDs and MIG IDs are validated. Invalid identifiers never bypass scheduling safeguards.')}
-                    </span>
-                  </span>
-                </label>
-
-                <label className="touch-target flex items-center gap-2 text-xs text-txt-secondary">
-                  <input
-                    type="checkbox"
-                    checked={gpuRequireSameModel}
-                    onChange={event => { setGpuRequireSameModel(event.target.checked); markRuntimeDirty('gpu') }}
-                    className="h-4 w-4 rounded border-border-subtle bg-surface-overlay text-accent focus:ring-accent/25"
-                  />
-                  <span>{t('Require the same model for multi-GPU tasks')}</span>
-                </label>
+                ) : gpuPreviewRows.map(({ gpu, reasons }) => {
+                  const key = gpuKey(gpu)
+                  const expanded = expandedGpuKey === key
+                  const free = formatGiB(gpuMemoryGiB(gpuFreeMemoryMb(gpu)))
+                  const total = formatGiB(gpuMemoryGiB(gpu.mem_total))
+                  return (
+                    <div key={key}>
+                      <button
+                        type="button"
+                        aria-expanded={expanded}
+                        onClick={() => setExpandedGpuKey(expanded ? null : key)}
+                        className="touch-target flex w-full items-center gap-2.5 px-2 py-2 text-left transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/30"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium text-txt-primary" title={gpu.name}>
+                          GPU {gpu.index} · {gpu.name}
+                        </span>
+                        <span className="hidden flex-none text-2xs tabular-nums text-txt-secondary sm:inline">
+                          {t('{{free}} free', { free })}
+                        </span>
+                        {gpuSchedulerEnabled && (
+                          <span className={clsx('flex-none text-xs font-medium', reasons.length ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-700 dark:text-emerald-300')}>
+                            {t(reasons.length ? 'Blocked' : 'Pass')}
+                          </span>
+                        )}
+                        <ChevronDown aria-hidden="true" className={clsx('size-3.5 flex-none text-txt-secondary transition-transform', expanded && 'rotate-180')} />
+                      </button>
+                      {expanded && (
+                        <div className="space-y-1 border-l-2 border-border-subtle px-2 py-2 text-xs leading-5 text-txt-secondary">
+                          <p className="tabular-nums">{t('{{free}} free / {{total}} total', { free, total })}</p>
+                          {reasons.map(reason => <div key={reason}>• {reason}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
-            </details>
+            </section>
 
-            <div className="flex items-end justify-between gap-3 border-t border-border-subtle pt-3">
-              <button
-                type="button"
-                onClick={resetGpuScheduler}
-                disabled={saving}
-                className="touch-target inline-flex h-11 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary disabled:opacity-50 sm:h-8"
-              >
-                <RotateCcw className="h-3.5 w-3.5" /> {t('Reset')}</button>
-              <div className="text-right">
-                <button
-                  type="button"
-                  onClick={saveGpuScheduler}
-                  disabled={saving || !runtimeDirtyPages.gpu || gpuValidationIssues.length > 0}
-                  className="touch-target inline-flex h-11 min-w-20 items-center justify-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-txt-tertiary sm:h-8"
-                >
-                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                  {t('Save')}
-                </button>
-                {gpuValidationIssues.length > 0 && (
-                  <div className="mt-1 text-2xs text-txt-tertiary">{t('Fix {{count}} rules', { count: gpuValidationIssues.length })}</div>
-                )}
-              </div>
-            </div>
           </section>
         )}
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border-subtle bg-surface-raised px-4 py-2">
+        {activePage === 'gpu' && (
+          <ActionButton variant="ghost" icon={<RotateCcw aria-hidden="true" className="size-4" />}
+            onClick={resetGpuScheduler} disabled={saving}>
+            {t('Reset')}
+          </ActionButton>
+        )}
+        <p role="status" className="min-w-0 flex-1 text-right text-xs text-txt-secondary">{saveMessage}</p>
+        <ActionButton
+          variant="primary"
+          className="runtime-save-button min-w-20"
+          icon={saving ? <Loader2 aria-hidden="true" className="size-4 motion-safe:animate-spin" /> : <Check aria-hidden="true" className="size-4" />}
+          disabled={saving || !runtimeDirtyPages[activePage] || (activePage === 'gpu' && Boolean(gpuValidationMessage))}
+          onClick={() => {
+            if (activePage === 'python') savePythonRuntime()
+            else if (activePage === 'gpu') saveGpuScheduler()
+            else void saveRuntime('env', { global_env_text: envText }, t('Workspace env saved'))
+          }}
+        >
+          {t('Save')}
+        </ActionButton>
       </div>
       <ConfirmDialog
         open={discardConfirmOpen}
@@ -1476,33 +1334,47 @@ function CompactNumberField({
   suffix,
   min,
   max,
-  disabled = false,
+  step = 'any',
+  invalid = false,
+  hint,
   onChange,
 }: {
   label: string
   value: string
-  suffix: string
+  suffix?: string
   min: number
   max?: number
-  disabled?: boolean
+  step?: number | 'any'
+  invalid?: boolean
+  hint?: string
   onChange: (value: string) => void
 }) {
+  const hintId = useId()
   return (
-    <label className="block">
-      <span className="mb-1 block text-xs font-medium text-txt-secondary">{label}</span>
-      <div className="touch-input flex h-11 overflow-hidden rounded-md border border-border-subtle bg-surface-overlay focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15 sm:h-9">
-        <input
-          type="number"
-          min={min}
-          max={max}
-          step="any"
-          disabled={disabled}
-          value={value}
-          onChange={event => onChange(event.target.value)}
-          className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-txt-primary outline-none"
-        />
-        <span className="flex min-w-11 items-center justify-center border-l border-border-subtle px-2 text-xs text-txt-tertiary">{suffix}</span>
-      </div>
-    </label>
+    <div className="min-w-0">
+      <label className="block" title={hint}>
+        <span className="mb-1.5 block text-xs text-txt-secondary">{label}</span>
+        <span className={clsx(
+          'touch-input flex h-11 items-center border bg-surface-raised focus-within:ring-2 group-disabled:bg-surface-overlay sm:h-9',
+          invalid
+            ? 'border-rose-500 focus-within:ring-rose-500/15'
+            : 'border-border focus-within:border-accent focus-within:ring-accent/15',
+        )}>
+          <input
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            aria-invalid={invalid || undefined}
+            aria-describedby={hint ? hintId : undefined}
+            onChange={event => onChange(event.target.value)}
+            className="h-full min-w-0 flex-1 bg-transparent px-2.5 text-base tabular-nums text-txt-primary outline-none disabled:text-txt-secondary sm:text-sm"
+          />
+          {suffix && <span className="shrink-0 pr-2.5 text-xs text-txt-secondary">{suffix}</span>}
+        </span>
+      </label>
+      {hint && <span id={hintId} className="sr-only">{hint}</span>}
+    </div>
   )
 }

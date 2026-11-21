@@ -19,7 +19,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Check,
   CheckCircle2,
   FileCode,
   FoldVertical,
@@ -29,7 +28,6 @@ import {
   Loader2,
   Pin,
   Search,
-  Sparkles,
   Terminal,
   UnfoldVertical,
   Workflow,
@@ -920,12 +918,13 @@ export default function GeneratorPage() {
 
   const hasBatchSyntax = editorMode === 'form' && batchParams.length > 0
   const yamlContainsBatchSyntax = editorMode === 'yaml' && hasBatchExpression(yamlText)
-  const batchHintText = previewData?.count
-    ? t('Batch syntax detected. {{count}} tasks will be created after confirmation.', { count: previewData.count })
-    : t('Batch syntax detected. A preview opens before creating multiple tasks.')
   const generationBusy = generating || generationStatus === 'previewing'
   const defaultStorage = workspace?.settings?.task_storage === 'local' ? 'local' : 'shared'
   const taskStorage = storageOverride ?? defaultStorage
+  const deviceHost = workspace?.device_host
+  const storageDescription = taskStorage === 'local'
+    ? t('Runs only on {{host}}.', { host: deviceHost || t('the Pyruns server') })
+    : t('Available to all devices in this workspace.')
   const currentGenerationPayload = useMemo<GenerationPayload>(() => Object.freeze({
     name_prefix: namePrefix || 'task',
     mode: editorMode,
@@ -1266,6 +1265,7 @@ export default function GeneratorPage() {
             <div className="h-full p-3">
               <CodeTextEditor
                 language="shell"
+                shellKind={shellRuntime?.terminal_kind}
                 value={shellText}
                 onChange={setShellText}
                 theme={codeMirrorTheme}
@@ -1301,15 +1301,15 @@ export default function GeneratorPage() {
           style={compactGeneratorLayout ? undefined : { width: generatorSettingsWidth }}
         >
           <div className={clsx('generator-fields space-y-3', !compactGeneratorLayout && 'min-h-0 flex-1 overflow-y-auto')}>
-            <CompactSection title={t('Naming')} bodyClassName="space-y-2">
+            <div className="space-y-1.5">
               <div>
-                <label htmlFor="task-prefix" className="block text-xs text-txt-secondary">{t('Task Prefix')}</label>
+                <label htmlFor="task-prefix" className="block text-sm font-medium text-txt-primary">{t('Task Prefix')}</label>
                 <input
                   id="task-prefix"
                   value={namePrefix}
                   onChange={event => setNamePrefix(event.target.value)}
                   placeholder="task"
-                  className="mt-1.5 h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-base font-medium text-txt-primary outline-none transition-colors focus:border-border min-[701px]:h-auto min-[701px]:text-sm"
+                  className="mt-1.5 h-11 w-full rounded-md border border-border bg-surface-overlay px-2.5 py-1.5 text-base text-txt-primary outline-none transition-colors focus:border-accent focus-visible:ring-1 focus-visible:ring-accent/30 min-[701px]:h-9 min-[701px]:text-sm"
                 />
               </div>
               <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-txt-secondary min-[701px]:min-h-8">
@@ -1321,7 +1321,7 @@ export default function GeneratorPage() {
                 />
                 <span>{t('Append timestamp')}</span>
               </label>
-            </CompactSection>
+            </div>
 
             {editorMode === 'form' && batchParams.length > 0 && (
               <CompactSection
@@ -1387,27 +1387,30 @@ export default function GeneratorPage() {
 
           </div>
           <div data-tour="generator-create" className="mt-auto shrink-0 border-t border-border-subtle bg-surface-raised pt-3">
-            <fieldset className="mb-3" disabled={generationBusy}>
-              <legend className="mb-1.5 text-xs font-semibold text-txt-primary">{t('Save this batch to')}</legend>
-              <div className="grid grid-cols-2 border border-border">
-                {(['shared', 'local'] as const).map(storage => (
-                  <label key={storage} className="relative flex min-h-11 cursor-pointer items-center justify-center border-border text-xs font-medium last:border-l sm:min-h-9">
-                    <input className="peer sr-only" type="radio" name="batch-storage" value={storage}
-                      checked={taskStorage === storage}
-                      onChange={() => setStorageOverride(storage === defaultStorage ? null : storage)} />
-                    <span className="absolute inset-0 flex items-center justify-center gap-1.5 text-txt-secondary hover:bg-surface-overlay peer-checked:bg-accent/10 peer-checked:text-accent-ink peer-focus-visible:ring-2 peer-focus-visible:ring-inset peer-focus-visible:ring-accent">
-                      {taskStorage === storage && <Check aria-hidden="true" className="size-3.5" />}
-                      {t(storage === 'shared' ? 'Common tasks' : 'This device')}
-                    </span>
-                  </label>
-                ))}
+            <div className="mb-2.5 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
+              <label htmlFor="generator-task-storage" className="text-sm font-medium text-txt-primary">{t('Save to')}</label>
+              <div className="relative min-w-0">
+                <select
+                  id="generator-task-storage"
+                  aria-describedby="generator-task-storage-description"
+                  title={storageDescription}
+                  value={taskStorage}
+                  disabled={generationBusy}
+                  onChange={event => {
+                    const storage = event.target.value === 'local' ? 'local' : 'shared'
+                    setStorageOverride(storage === defaultStorage ? null : storage)
+                  }}
+                  className="h-11 w-full appearance-none truncate rounded-md border border-border bg-surface-raised pl-2.5 pr-7 text-base text-txt-primary outline-none hover:bg-surface-overlay focus:border-accent focus-visible:ring-1 focus-visible:ring-accent/30 disabled:opacity-60 min-[701px]:h-9 min-[701px]:text-sm"
+                >
+                  <option value="shared">{t('Common tasks')}</option>
+                  <option value="local">{deviceHost ? t('This device · {{host}}', { host: deviceHost }) : t('This device')}</option>
+                </select>
+                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-txt-secondary" />
+                <span id="generator-task-storage-description" className="sr-only">{storageDescription}</span>
               </div>
-              <p className="mt-1.5 break-words text-2xs text-txt-secondary">
-                {taskStorage === 'local' ? t('Runs only on {{host}}.', { host: workspace?.device_host || t('the Pyruns server') }) : t('Available to all devices in this workspace.')}
-              </p>
-            </fieldset>
+            </div>
             <ActionButton
-              icon={generationBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              icon={generationBusy ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : undefined}
               variant="primary"
               size="md"
               className="w-full"
@@ -1421,27 +1424,17 @@ export default function GeneratorPage() {
                   : editorMode === 'shell' ? t('Create Shell Task') : hasBatchSyntax ? t('Preview Batch Tasks') : t('Generate Tasks')}
             </ActionButton>
             <div role="status" aria-live="polite" aria-atomic="true">
-              <GenerationFeedback
-                status={generationStatus}
-                createdSummary={createdSummary}
-                defaultText={
-                  editorMode === 'form' && hasBatchSyntax
-                    ? batchHintText
-                    : editorMode === 'yaml' && yamlContainsBatchSyntax
-                      ? t('YAML mode does not expand batch syntax. Switch to Grid or Tree mode.')
-                    : editorMode === 'shell'
-                      ? t('Creates one shell task immediately.')
-                      : t('Creates one task immediately.')
-                }
-                onOpenManager={() => {
-                  const taskName = createdSummary?.firstTaskName
+              {generationBusy && <span className="sr-only">{t(generating ? 'Writing task folders...' : 'Preparing batch preview...')}</span>}
+              {generationStatus === 'created' && createdSummary && (
+                <CreatedTaskSummary summary={createdSummary} onOpenManager={() => {
+                  const { firstTaskName, source } = createdSummary
                   const { selectedSources, setSelectedSources } = useTaskStore.getState()
-                  if (createdSummary && selectedSources && !selectedSources.includes(createdSummary.source)) {
-                    setSelectedSources([...selectedSources, createdSummary.source])
+                  if (selectedSources && !selectedSources.includes(source)) {
+                    setSelectedSources([...selectedSources, source])
                   }
-                  navigate(taskName ? `/manager?task=${encodeURIComponent(taskName)}` : '/manager')
-                }}
-              />
+                  navigate(firstTaskName ? `/manager?task=${encodeURIComponent(firstTaskName)}` : '/manager')
+                }} />
+              )}
             </div>
           </div>
         </aside>
@@ -1475,42 +1468,6 @@ export default function GeneratorPage() {
   )
 }
 
-function GenerationFeedback({
-  status,
-  createdSummary,
-  defaultText,
-  onOpenManager,
-}: {
-  status: GenerationStatus
-  createdSummary: CreatedTaskResult | null
-  defaultText: string
-  onOpenManager: () => void
-}) {
-  if (status === 'creating') {
-    return (
-      <div className="mt-2 flex items-center justify-center gap-1.5 rounded-md bg-accent/8 px-2.5 py-2 text-2xs font-medium text-accent">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        {t('Writing task folders...')}
-      </div>
-    )
-  }
-
-  if (status === 'previewing') {
-    return (
-      <div className="mt-2 flex items-center justify-center gap-1.5 rounded-md bg-accent/8 px-2.5 py-2 text-2xs font-medium text-accent">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        {t('Preparing batch preview...')}
-      </div>
-    )
-  }
-
-  if (status === 'created' && createdSummary) {
-    return <CreatedTaskSummary summary={createdSummary} onOpenManager={onOpenManager} />
-  }
-
-  return <div className="mt-2 text-center text-2xs text-txt-tertiary">{defaultText}</div>
-}
-
 function CreatedTaskSummary({
   summary,
   onOpenManager,
@@ -1519,28 +1476,21 @@ function CreatedTaskSummary({
   onOpenManager: () => void
 }) {
   return (
-    <div className="mt-2 border-t border-border-subtle pt-2 text-xs text-txt-primary">
-      <div className="flex items-start gap-1.5">
-        <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 flex-none text-emerald-700 dark:text-emerald-400" />
-        <div className="min-w-0">
-          <div className="font-medium">
-            <span>{t(summary.count > 1 ? 'Created {{count}} {{kind}}s' : 'Created {{count}} {{kind}}', { count: summary.count, kind: t(summary.taskKind) })}</span>
-            <span className="ml-1.5 text-2xs font-normal text-txt-secondary">{t(summary.source === 'local' ? 'This device' : 'Common tasks')}</span>
-          </div>
-          {summary.firstTaskName && (
-            <div className="mt-0.5 truncate font-mono text-2xs text-txt-secondary" title={summary.firstTaskName}>
-              {summary.firstTaskName}
-            </div>
-          )}
-        </div>
+    <div className="mt-2.5 flex items-start gap-1.5 border-t border-border-subtle pt-2 text-xs text-txt-primary">
+      <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 flex-none text-emerald-700 dark:text-emerald-400" />
+      <div className="min-w-0">
+        <p className="font-medium" title={summary.firstTaskName || undefined}>
+          <span>{t(summary.count > 1 ? 'Created {{count}} {{kind}}s' : 'Created {{count}} {{kind}}', { count: summary.count, kind: t(summary.taskKind) })}</span>
+          <span className="font-normal text-txt-secondary"> · {t(summary.source === 'local' ? 'This device' : 'Common tasks')}</span>
+        </p>
+        <button
+          type="button"
+          onClick={onOpenManager}
+          className="inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-accent-ink hover:underline sm:min-h-8"
+        >
+          {t('Open in Manager')} <ArrowRight className="size-3.5" aria-hidden="true" />
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={onOpenManager}
-        className="ml-5 inline-flex min-h-11 items-center gap-1.5 text-xs font-medium text-accent-ink hover:underline sm:min-h-8"
-      >
-        {t('Open in Manager')} <ArrowRight className="size-3.5" aria-hidden="true" />
-      </button>
     </div>
   )
 }
@@ -1682,24 +1632,25 @@ function ShellRuntimePanel({
   runtime?: ShellRuntimeInfo
   runRoot?: string
 }) {
-  const currentShell = runtime?.mode === 'custom'
-    ? t('Custom shell')
-    : runtime?.display_name || t('Follow current terminal')
+  const currentShell = t(runtime?.display_name || 'Follow current terminal')
   const executable = runtime?.executable || t('Auto-detect')
   const mode = runtime?.mode === 'custom' ? t('Custom') : t('Follow')
 
   return (
-    <CompactSection
-      title={t('Shell Runtime')}
-      icon={<Terminal className="h-3.5 w-3.5 text-txt-secondary" />}
-      bodyClassName="space-y-1.5"
-    >
-      <ShellRuntimeRow label={t('Current shell')} value={currentShell} />
-      <ShellRuntimeRow label={t('Resolved file')} value={getShellConfigFilename(runtime)} mono />
-      <ShellRuntimeRow label={t('Workspace folder')} value={pathLeaf(runRoot) || '_shell_'} mono />
-      <ShellRuntimeRow label={t('Mode')} value={mode} />
-      <ShellRuntimeRow label={t('Executable')} value={executable} mono />
-    </CompactSection>
+    <details className="group">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-xs min-[701px]:min-h-8">
+        <Terminal aria-hidden="true" className="size-4 shrink-0 text-txt-secondary" />
+        <span className="shrink-0 font-medium text-txt-primary">{t('Shell Runtime')}</span>
+        <span className="ml-auto truncate text-txt-secondary" title={currentShell}>{currentShell}</span>
+        <ChevronDown aria-hidden="true" className="size-3.5 shrink-0 text-txt-secondary group-open:rotate-180" />
+      </summary>
+      <div className="space-y-1.5 py-1.5">
+        <ShellRuntimeRow label={t('Resolved file')} value={getShellConfigFilename(runtime)} mono />
+        <ShellRuntimeRow label={t('Workspace folder')} value={pathLeaf(runRoot) || '_shell_'} mono />
+        <ShellRuntimeRow label={t('Mode')} value={mode} />
+        <ShellRuntimeRow label={t('Executable')} value={executable} mono />
+      </div>
+    </details>
   )
 }
 

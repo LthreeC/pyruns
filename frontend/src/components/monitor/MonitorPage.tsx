@@ -63,6 +63,7 @@ import * as api from '@/api'
 import {
   DEFAULT_MONITOR_LINE_HEIGHT,
   DEFAULT_MONITOR_SCROLLBACK,
+  MAX_MONITOR_CHUNK_SIZE,
   resolveMonitorChunkSize,
   resolveMonitorLineHeight,
   resolveMonitorScrollback,
@@ -95,6 +96,16 @@ const TASK_DETAIL_REQUEST_TIMEOUT_MS = 10_000
 // Cancel any incomplete escape sequence, then reset in xterm's write queue.
 // A synchronous reset can be overtaken by pending writes from the previous log.
 const TERMINAL_RESET_SEQUENCE = '\x18\x1bc'
+const TERMINAL_WRITE_CHARS = 32 * 1024
+
+function writeTerminalLog(term: XTerminal, text: string) {
+  // xterm yields between writes. A single multi-megabyte write can block input
+  // even when the request and response have already completed.
+  for (let offset = 0; offset < text.length; offset += TERMINAL_WRITE_CHARS) {
+    term.write(text.slice(offset, offset + TERMINAL_WRITE_CHARS))
+  }
+}
+
 // Keep this aligned with the fields blanked by the server's compact Monitor payload.
 const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'config',
@@ -886,7 +897,7 @@ export default function MonitorPage() {
     const needsFreshRender = !previous || previous.key !== renderKey
 
     if (needsFreshRender) {
-      term.write(TERMINAL_RESET_SEQUENCE + (logContent || (
+      writeTerminalLog(term, TERMINAL_RESET_SEQUENCE + (logContent || (
         shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
       )))
       renderedLogRef.current = { key: renderKey, logTextVersion, logTextEnd }
@@ -896,10 +907,10 @@ export default function MonitorPage() {
     const nextChunk = monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })
     if (nextChunk !== null) {
       if (nextChunk) {
-        term.write(nextChunk)
+        writeTerminalLog(term, nextChunk)
       }
     } else {
-      term.write(TERMINAL_RESET_SEQUENCE + (logContent || (
+      writeTerminalLog(term, TERMINAL_RESET_SEQUENCE + (logContent || (
         shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
       )))
     }
@@ -1543,7 +1554,7 @@ export default function MonitorPage() {
     }
   }, [clearExport, exportIds, notify])
 
-  const handleSelectLogFile = useCallback((logName: string) => {
+  const handleSelectLogFile = useCallback((logName: string, tailBytes?: number) => {
     const taskName = selectedTaskNameRef.current
     const liveLog = liveLogNameRef.current
     const taskStatus = useTaskStore.getState().monitorTasks.find(task => task.name === taskName)?.status
@@ -1556,7 +1567,7 @@ export default function MonitorPage() {
     if (selectingHistory) {
       queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
     }
-    void selectLogFile(logName)
+    void selectLogFile(logName, tailBytes)
       .catch(err => notify({ tone: 'error', title: t("Could not load log file"), detail: errorMessage(err) }))
   }, [notify, selectLogFile, selectedTaskSnapshot?.status])
 
@@ -1785,8 +1796,9 @@ export default function MonitorPage() {
                   type="button"
                   onClick={() => setExportSelected(filteredTasks.map(task => task.name), !allExportSelected)}
                   disabled={monitorLoading}
-                  className="touch-target text-accent transition-colors hover:text-accent-hover"
+                  className="touch-target inline-flex items-center gap-1.5 text-accent-ink transition-colors hover:underline"
                 >
+                  <SelectionIndicator selected={allExportSelected} />
                   {allExportSelected ? t("Deselect page") : t("Select page")}
                 </button>
                 <span className="text-txt-tertiary">{t('{{count}} selected', { count: exportIds.size })}</span>
@@ -1857,8 +1869,8 @@ export default function MonitorPage() {
                 )}
                 <StatusBadge task={selectedTask} />
                 <div className="monitor-task-title min-w-0 flex-1">
-                  <div className="truncate text-xs font-semibold text-txt-primary" title={selectedTask.name}>
-                    {selectedTask.name}
+                  <div className="truncate text-xs font-semibold text-txt-primary" title={selectedTask.display_name ?? selectedTask.name}>
+                    {selectedTask.display_name ?? selectedTask.name}
                   </div>
                   <div className="monitor-log-name truncate font-mono text-[11px] text-txt-tertiary" title={selectedLog || liveLogName || t("latest log")}>
                     {selectedLog || liveLogName || t("latest log")}
@@ -2022,7 +2034,16 @@ export default function MonitorPage() {
             <span>
               {t('Showing the latest {{size}} of this log to keep the monitor responsive.', { size: formatBytes(logTailLimitBytes) })}
             </span>
-            <span className="text-amber-700/80 dark:text-amber-300/80">{t("New output continues live.")}</span>
+            {isLive && <span className="text-amber-700/80 dark:text-amber-300/80">{t("New output continues live.")}</span>}
+            {selectedLog && logTailLimitBytes < MAX_MONITOR_CHUNK_SIZE && (
+              <button type="button" className="touch-target shrink-0 font-medium text-accent hover:underline"
+                onClick={() => {
+                  handleSelectLogFile(selectedLog, MAX_MONITOR_CHUNK_SIZE)
+                  xtermRef.current?.focus()
+                }}>
+                {t("Load more history")}
+              </button>
+            )}
           </div>
         )}
 
@@ -2033,7 +2054,7 @@ export default function MonitorPage() {
                 ref={termContainerRef}
                 className="monitor-terminal-shell h-full w-full"
                 role="region"
-                aria-label={t('Read-only logs for {{name}}', { name: selectedTaskName })}
+                aria-label={t('Read-only logs for {{name}}', { name: selectedTask?.display_name ?? selectedTaskName })}
               />
               {loading && (
                 <div className="monitor-loading-overlay pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-xs text-[#cbd5e1]" role="status">
@@ -2307,6 +2328,9 @@ const SidebarItem = memo(function SidebarItem({
   onSelect: (task: Task) => void
 }) {
   useTranslation()
+  const displayName = task.display_name ?? task.name
+  const title = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
+  const status = taskStatusLabel(task)
   return (
     <button
       type="button"
@@ -2314,7 +2338,10 @@ const SidebarItem = memo(function SidebarItem({
       onClick={() => onSelect(task)}
       aria-current={!exportMode && active ? 'true' : undefined}
       aria-pressed={exportMode ? exportSelected : undefined}
-      aria-label={t('{{action}} {{name}}, {{status}}', { action: exportMode ? (exportSelected ? t("Deselect") : t("Select")) : t("View"), name: task.name, status: task.status })}
+      aria-label={t('{{action}} {{name}}, {{status}}', {
+        action: exportMode ? (exportSelected ? t("Deselect") : t("Select")) : t("View"),
+        name: title, status: t(status).toLocaleLowerCase(),
+      })}
       className={clsx(
         'flex min-h-8 w-full items-center rounded-md border px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
@@ -2322,7 +2349,7 @@ const SidebarItem = memo(function SidebarItem({
           ? 'border-accent/25 bg-accent/10'
           : 'border-transparent hover:border-border-subtle hover:bg-surface-overlay'
       )}
-      title={task.name}
+      title={title}
       style={{ contentVisibility: 'auto', containIntrinsicSize: '32px' }}
     >
       <span className="flex w-full min-w-0 items-center gap-1.5">
@@ -2332,9 +2359,10 @@ const SidebarItem = memo(function SidebarItem({
           'min-w-0 flex-1 truncate whitespace-nowrap text-xs leading-4',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
         )}>
-          {task.name}
+          {displayName}
         </span>
-        {taskStatusLabel(task) === 'Running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
+        {task.task_source_host && <span className="max-w-[40%] shrink-0 truncate text-2xs text-txt-secondary">{task.task_source_host}</span>}
+        {status === 'Running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
       </span>
     </button>
   )
@@ -2358,6 +2386,7 @@ const SearchResultGroup = memo(function SearchResultGroup({
   const matchCount = Math.max(matches.length, task.search_match_count ?? 0)
   const action = exportMode ? (exportSelected ? t("Deselect") : t("Select")) : t("View")
   const [expanded, setExpanded] = useState(true)
+  const displayName = task.display_name ?? task.name
 
   return (
     <details
@@ -2371,7 +2400,7 @@ const SearchResultGroup = memo(function SearchResultGroup({
           'flex min-h-9 cursor-pointer list-none items-center gap-1.5 px-1.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35',
           active ? 'bg-accent/10' : 'hover:bg-surface-overlay',
         )}
-        title={task.name}
+        title={task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName}
       >
         <ChevronDown className="h-3.5 w-3.5 flex-none -rotate-90 text-txt-tertiary transition-transform group-open:rotate-0" aria-hidden="true" />
         {exportMode && <SelectionIndicator selected={exportSelected} />}
@@ -2380,8 +2409,9 @@ const SearchResultGroup = memo(function SearchResultGroup({
           'min-w-0 flex-1 truncate text-xs leading-4',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary',
         )}>
-          {task.name}
+          {displayName}
         </span>
+        {task.task_source_host && <span className="max-w-[35%] shrink-0 truncate text-2xs text-txt-secondary">{task.task_source_host}</span>}
         <span className="flex-none rounded bg-surface-overlay px-1.5 py-0.5 text-2xs tabular-nums text-txt-tertiary">
           {matchCount.toLocaleString()}
         </span>

@@ -17,7 +17,7 @@ const VARIANT_STYLES: Record<ActionButtonVariant, string> = {
   danger: 'bg-rose-700 text-white hover:bg-rose-800',
   secondary: 'border border-border bg-surface-raised text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
   ghost: 'bg-transparent text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary',
-  accentTint: 'bg-accent/8 text-accent hover:bg-accent/12',
+  accentTint: 'bg-accent/[0.08] text-accent-ink hover:bg-accent/[0.14]',
 }
 
 const SIZE_STYLES: Record<ActionButtonSize, string> = {

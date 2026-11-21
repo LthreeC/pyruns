@@ -17,7 +17,7 @@ import type {
   WorkspaceInfo,
 } from './types'
 import * as api from './api'
-import { monitorLogTailLines, resolveMonitorScrollback } from './utils/monitorSettings'
+import { MONITOR_INITIAL_TAIL_BYTES, monitorLogTailLines, resolveMonitorScrollback } from './utils/monitorSettings'
 import { configPathId } from './utils/configPaths'
 import { retainTaskSnapshots } from './utils/taskSnapshots'
 import { t as translate } from './i18n'
@@ -1339,7 +1339,7 @@ interface MonitorState extends MonitorLogText {
   loading: boolean
   exportIds: Set<string>
   selectTask: (name: string, match?: TaskSearchMatch) => Promise<void>
-  selectLogFile: (name: string) => Promise<void>
+  selectLogFile: (name: string, tailBytes?: number) => Promise<void>
   appendLog: (text: string) => void
   clearLog: () => void
   clearTask: () => void
@@ -1396,7 +1396,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         logIdentity: logMatch.log_identity,
         offset: logMatch.offset ?? 0,
         chunkSize: 32 * 1024,
-      } : { tailLines: currentMonitorScrollback() }, controller.signal)
+      } : { tailLines: currentMonitorScrollback(), tailBytes: MONITOR_INITIAL_TAIL_BYTES }, controller.signal)
       if (
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== name
@@ -1433,7 +1433,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       }
     }
   },
-  async selectLogFile(logName: string) {
+  async selectLogFile(logName: string, tailBytes = MONITOR_INITIAL_TAIL_BYTES) {
     const { selectedTaskName } = get()
     if (!selectedTaskName) return
     const requestId = ++monitorRequestSeq
@@ -1461,6 +1461,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       const logs = await api.getTaskLogs(selectedTaskName, {
         logFileName: logName,
         tailLines: currentMonitorScrollback(),
+        tailBytes,
       }, controller.signal)
       if (
         requestId !== monitorRequestSeq
