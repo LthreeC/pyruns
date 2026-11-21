@@ -7,6 +7,7 @@ import pytest
 
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
+from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.info_io import load_task_metadata, update_task_info
 
 
@@ -67,6 +68,7 @@ def test_whitespace_running_status_is_reconciled_when_local_process_is_gone(tmp_
                 "pids": [987654321],
                 "runner_id": "stale-runner",
                 "runner_host": socket.gethostname().lower(),
+                "runner_device": local_runner_device(),
                 "lease_until": time.time() - 60,
             }
         ),

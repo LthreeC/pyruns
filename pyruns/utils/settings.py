@@ -44,6 +44,7 @@ from pyruns.utils.config_utils import load_config_text, to_container
 
 
 SETTINGS_DEFAULTS: Dict[str, Any] = {
+    "task_storage": "shared",
     # Server
     "ui_port": DEFAULT_UI_PORT,
     # Header
@@ -83,6 +84,9 @@ SETTINGS_TEMPLATE = f"""\
 # Pyruns Workspace Settings
 # Auto-generated on first launch. Edit freely.
 # Delete this file to reset all values to defaults.
+
+# New task folders: shared (tasks/) or local (tasks-<host>-<device>/)
+task_storage: shared
 
 # Server
 ui_port: {SETTINGS_DEFAULTS.get("ui_port")}                    # preferred start port; busy ports auto-increment

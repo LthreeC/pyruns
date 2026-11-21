@@ -14,7 +14,7 @@ import sys
 import time
 import unicodedata
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time as datetime_time
 from pathlib import Path
@@ -86,6 +86,9 @@ from pyruns.utils.process_utils import (
     hidden_subprocess_kwargs,
     kill_process,
 )
+from pyruns.utils.runner_device import runner_location
+from pyruns.utils.run_result import recover_run_result
+from pyruns.utils.task_storage import new_task_root, task_storage_scope, visible_task_roots
 from pyruns.utils.settings import (
     SETTINGS_DEFAULTS,
     _settings_path,
@@ -570,6 +573,21 @@ def _resolve_log_reference(
     return _LogReference(run_path, selected_run, "run")
 
 
+def _activity_label(record: dict[str, Any]) -> str:
+    status = record["status"]
+    if status not in _ACTIVE_STATUSES:
+        return status
+    location = record.get("runner_location")
+    if record.get("runner_lease_expired") is not False or location == "unknown":
+        label = f"last reported {status}"
+    elif location == "remote":
+        label = f"remote {status}"
+    else:
+        return status
+    host = record.get("runner_host")
+    return f"{label} ({host})" if host else label
+
+
 def _task_record(
     task: dict[str, Any],
     *,
@@ -583,6 +601,8 @@ def _task_record(
         if info_snapshot is not None
         else ((load_task_info(task_dir, raise_error=True) if detailed else load_task_metadata(task_dir)) or {})
     )
+    if detailed and info.get("status") == "running":
+        info, _ = recover_run_result(task_dir, info, read_only=True)
     status = str(info.get("status", task.get("status", "pending")) or "pending")
     kind = str(info.get("task_kind", task.get("task_kind", "config")) or "config")
     run_index = _latest_run_index(task, info)
@@ -597,6 +617,10 @@ def _task_record(
     record: dict[str, Any] = {
         "name": str(task.get("name", "") or os.path.basename(task_dir)),
         "status": status,
+        "runner_location": runner_location(info),
+        "task_storage": task_storage_scope(task_dir),
+        "runner_host": info.get("runner_host"),
+        "runner_lease_expired": TaskManager._runner_lease_expired(info),
         "kind": kind,
         "pinned": bool(info.get("pinned", task.get("pinned", False))),
         "created_at": info.get("created_at", task.get("created_at", "")),
@@ -655,16 +679,16 @@ def _print_human_task_table(records: list[dict[str, Any]]) -> None:
     if not records:
         print("No tasks found.")
         return
-    status_width = max(6, max(len(str(item["status"])) for item in records))
-    name_width = max(4, min(48, max(len(str(item["name"])) for item in records)))
+    status_width = max(6, max(len(_activity_label(item)) for item in records))
+    name_width = max(4, min(48, max(len(str(item.get("trash_name", item["name"]))) for item in records)))
     print(f"PIN  {'STATUS':<{status_width}}  {'NAME':<{name_width}}  CREATED")
     for item in records:
-        name = str(item["name"])
+        name = str(item.get("trash_name", item["name"]))
         if len(name) > name_width:
             name = name[: name_width - 3] + "..."
         print(
             f"{'*' if item.get('pinned') else '':<3}  "
-            f"{str(item['status']):<{status_width}}  "
+            f"{_activity_label(item):<{status_width}}  "
             f"{name:<{name_width}}  "
             f"{str(item.get('created_at', ''))}"
         )
@@ -891,6 +915,8 @@ def _bound_task_record(
     name = str(task.get("name", "") or "")
     if not info:
         raise CliError(f"cannot read task state: {name}")
+    if info.get("status") == "running":
+        info, _ = recover_run_result(task_dir, info, read_only=True)
 
     observed_attempt = read_run_attempt_id(info, identity.run_index) or str(info.get("_attempt_id", "") or "")
     if identity.attempt_id is not None and observed_attempt != identity.attempt_id:
@@ -1551,7 +1577,7 @@ def _load_task_config_batch(
 def _task_name_plan(tasks_dir: str, requested_name: str, *, exact: bool) -> dict[str, Any]:
     """Describe whether the next task can retain its requested name."""
 
-    available = not os.path.exists(os.path.join(tasks_dir, requested_name))
+    available = not any(os.path.lexists(os.path.join(root, requested_name)) for root in visible_task_roots(tasks_dir))
     return {
         "requested_name": requested_name,
         "planned_name": requested_name if available else None,
@@ -1571,7 +1597,7 @@ def _create_tasks(
         config_path,
         name_prefix,
     )
-    generator = TaskGenerator(root_dir=manager.tasks_dir)
+    generator = TaskGenerator(root_dir=new_task_root(manager.tasks_dir, load_settings(workspace)["task_storage"]))
     try:
         tasks = generator.create_tasks(configs, prefix)
     except ValueError as exc:
@@ -1749,7 +1775,7 @@ def cmd_exec(context: Any, args: Any) -> int:
                 name_error = validate_task_name(requested_name, manager.tasks_dir)
                 if name_error:
                     raise CliError(name_error)
-            generator = TaskGenerator(root_dir=manager.tasks_dir)
+            generator = TaskGenerator(root_dir=new_task_root(manager.tasks_dir, load_settings(workspace)["task_storage"]))
             try:
                 task = generator.create_shell_task(
                     requested_name,
@@ -1861,9 +1887,25 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
 
 
 def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
-    trash_dir = Path(manager.tasks_dir) / TRASH_DIR
+    records = [record for root in visible_task_roots(manager.tasks_dir) for record in _trash_records_in(root)]
+    names = set()
+    duplicates = set()
+    for record in records:
+        name = record["trash_name"]
+        if name in names:
+            duplicates.add(name)
+        names.add(name)
+    for record in records:
+        if record["trash_name"] in duplicates:
+            # '@' is reserved in physical task names, so this cannot shadow a folder.
+            record["trash_name"] += "@" + record["task_storage"]
+    return records
+
+
+def _trash_records_in(root: str) -> list[dict[str, Any]]:
+    trash_dir = Path(root) / TRASH_DIR
     try:
-        validate_tasks_root(manager.tasks_dir)
+        validate_tasks_root(root)
         validate_tasks_root(str(trash_dir))
     except ValueError as exc:
         raise CliError(f"unsafe workspace trash: {exc}") from exc
@@ -1884,6 +1926,7 @@ def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
             {
                 "name": str(info.get("name", "") or path.name),
                 "trash_name": path.name,
+                "task_storage": task_storage_scope(str(path.parent.parent / path.name)),
                 "status": str(info.get("status", "unknown") or "unknown"),
                 "created_at": info.get("created_at", ""),
                 "directory": _normalized_path(str(path)),
@@ -1968,11 +2011,22 @@ def cmd_status(context: Any, manager: TaskManager, workspace: str) -> int:
         status = str(task.get("status", "pending") or "pending")
         counts[status] = counts.get(status, 0) + 1
     info = load_script_info(workspace)
-    active = [
-        str(task.get("name", ""))
-        for task in tasks
-        if str(task.get("status", "")) in _ACTIVE_STATUSES
-    ]
+    active = []
+    local_active = []
+    reported_activity = {}
+    for task in tasks:
+        if task.get("status") not in _ACTIVE_STATUSES:
+            continue
+        name = str(task.get("name", ""))
+        active.append(name)
+        label = _activity_label({
+            "status": task["status"], "runner_host": task.get("runner_host"),
+            "runner_location": runner_location(task), "runner_lease_expired": TaskManager._runner_lease_expired(task),
+        })
+        if label == task["status"]:
+            local_active.append(name)
+        else:
+            reported_activity[name] = label
     payload = {
         "workspace": _normalized_path(workspace),
         "name": _workspace_label(workspace),
@@ -1981,6 +2035,8 @@ def cmd_status(context: Any, manager: TaskManager, workspace: str) -> int:
         "total": len(tasks),
         "counts": counts,
         "active": active,
+        "local_active": local_active,
+        "reported_activity": reported_activity,
     }
     if context.json_output:
         _json_dump(payload)
@@ -1991,11 +2047,12 @@ def cmd_status(context: Any, manager: TaskManager, workspace: str) -> int:
             print(f"Script:    {payload['script']}")
         print(f"Tasks:     {payload['total']}")
         print(
-            "Status:    "
+            "Recorded:  "
             + "  ".join(f"{status}={counts.get(status, 0)}" for status in sorted(_VALID_STATUSES))
         )
-        if active:
-            print("Active:    " + ", ".join(active))
+        print("Local active: " + (", ".join(local_active) or "none"))
+        for name, label in reported_activity.items():
+            print(f"Reported:  {name}  {label}")
     return 0
 
 
@@ -2009,7 +2066,8 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
         _json_dump(record)
         return 0
     print(f"Name:       {record['name']}")
-    print(f"Status:     {record['status']}")
+    print(f"Status:     {_activity_label(record)}")
+    print(f"Storage:    {record['task_storage']}")
     if record.get("gpu_wait_rule") is not None:
         print(f"GPU rule:   {record['gpu_wait_rule']}")
     if record.get("gpu_wait"):
@@ -2264,8 +2322,6 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
 
     restore_plan: list[dict[str, Any]] = []
     target_names: set[str] = set()
-    tasks_root = os.path.abspath(manager.tasks_dir)
-    trash_dir = os.path.join(tasks_root, TRASH_DIR)
     for record in selected:
         target_name = str(record["name"])
         name_error = validate_task_name(target_name)
@@ -2275,6 +2331,7 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
             raise CliError(f"cannot restore '{target_name}': multiple trash entries have that name")
         target_names.add(target_name)
         source = str(record["directory"])
+        tasks_root = os.path.dirname(os.path.dirname(os.path.abspath(source)))
         destination = os.path.abspath(os.path.join(tasks_root, target_name))
         try:
             inside_tasks_root = os.path.commonpath([tasks_root, destination]) == tasks_root
@@ -2298,7 +2355,8 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
             "destination": destination,
         })
 
-    generator = TaskGenerator(root_dir=tasks_root)
+    # Both stores reserve exact names in the common namespace.
+    generator = TaskGenerator(root_dir=manager.tasks_dir)
     reservations: list[tuple[str, tuple[str, int, tuple[int, int]]]] = []
     moved: list[dict[str, Any]] = []
     rollback_errors: list[str] = []
@@ -2306,11 +2364,10 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
     try:
         # Serialize the trash namespace with delete, and keep every exact task
         # name reserved until the complete batch either commits or rolls back.
-        with task_info_lock(trash_dir, create_dir=False):
+        with ExitStack() as locks:
+            for trash_dir in sorted({os.path.dirname(item["source"]) for item in restore_plan}):
+                locks.enter_context(task_info_lock(trash_dir, create_dir=False))
             try:
-                validate_tasks_root(tasks_root)
-                validate_tasks_root(trash_dir)
-
                 for item in restore_plan:
                     target_name = str(item["name"])
                     source = str(item["source"])
@@ -2353,8 +2410,8 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
                     source = str(item["source"])
                     destination = str(item["destination"])
                     reservation = reservation_by_name[target_name]
-                    validate_tasks_root(tasks_root)
-                    validate_tasks_root(trash_dir)
+                    validate_tasks_root(os.path.dirname(destination))
+                    validate_tasks_root(os.path.dirname(source))
                     validate_task_directory(source)
                     if not generator.owns_task_name_reservation(reservation):
                         raise CliError(
@@ -2382,8 +2439,8 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
                     source = str(item["source"])
                     destination = str(item["destination"])
                     try:
-                        validate_tasks_root(tasks_root)
-                        validate_tasks_root(trash_dir)
+                        validate_tasks_root(os.path.dirname(destination))
+                        validate_tasks_root(os.path.dirname(source))
                         validate_task_directory(destination)
                         if generator.task_directory_identity(destination) != item["identity"]:
                             raise OSError("restored task identity changed before rollback")
@@ -2498,6 +2555,7 @@ def cmd_export(args: Any, manager: TaskManager) -> int:
 _SETTING_CHOICES: dict[str, set[str]] = {
     "log_level": {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"},
     "shell_mode": {"follow", "custom"},
+    "task_storage": {"shared", "local"},
     "gpu_scheduler_task_mode": {"single", "multi"},
     "gpu_scheduler_selection_mode": {"auto", "specified"},
 }

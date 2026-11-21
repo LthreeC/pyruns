@@ -364,6 +364,5 @@ def test_reservation_sync_skips_unchanged_locally_queued_task_files(tmp_path, mo
     assert loaded == ["running", "remote", "unknown"]
     assert manager.gpu_scheduler._reservations == {
         "running": [0],
-        "remote": [2],
         "unknown": [1],
     }

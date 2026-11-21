@@ -383,9 +383,11 @@ def list_template_files(run_root: str) -> Dict[str, str]:
         options[default_path] = "config_default.yaml"
 
     # config.yaml inside each task subfolder
-    actual_tasks_dir = os.path.join(run_root, TASKS_DIR)
-    
-    if os.path.isdir(actual_tasks_dir):
+    from pyruns.utils.task_storage import visible_task_roots
+
+    for actual_tasks_dir in visible_task_roots(os.path.join(run_root, TASKS_DIR)):
+        if not os.path.isdir(actual_tasks_dir):
+            continue
         try:
             task_entries: List[Dict[str, Any]] = []
             for dir_name in sorted(os.listdir(actual_tasks_dir)):
@@ -406,7 +408,7 @@ def list_template_files(run_root: str) -> Dict[str, str]:
                         except OSError:
                             fallback_mtime = 0.0
 
-                    rel_path = os.path.join(TASKS_DIR, dir_name, CONFIG_FILENAME).replace("\\", "/")
+                    rel_path = os.path.join(os.path.basename(actual_tasks_dir), dir_name, CONFIG_FILENAME).replace("\\", "/")
                     task_entries.append(
                         {
                             "name": dir_name,

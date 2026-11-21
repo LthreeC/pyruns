@@ -13,6 +13,7 @@ from pyruns.core import task_manager as task_manager_module
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.info_io import load_task_metadata, update_task_metadata
+from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.process_utils import is_pid_running, kill_process, process_identity_matches
 
 
@@ -37,6 +38,7 @@ def expired_run(tmp_path, monkeypatch):
             pid_create_times=[1000.0],
             runner_id="expired-runner",
             runner_host=manager.runner_host,
+            runner_device=local_runner_device(),
             lease_until=time.time() - 60,
         ),
     )

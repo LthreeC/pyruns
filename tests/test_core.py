@@ -44,6 +44,7 @@ from pyruns.core.gpu_scheduler import GpuAssignment, GpuDecision, GpuDevice, Gpu
 from pyruns.core.system_metrics import SystemMonitor
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager, TaskStateConflict
+from pyruns.utils.runner_device import local_runner_device
 from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
@@ -1059,6 +1060,7 @@ def test_task_manager_expired_local_lease_uses_process_identity(
             "tracks": [],
             "runner_id": "old-runner",
             "runner_host": socket.gethostname().lower(),
+            "runner_device": local_runner_device(),
             "lease_until": time.time() - 60,
         },
     )
@@ -1105,6 +1107,7 @@ def test_task_manager_does_not_fail_runner_that_renews_during_stale_reconciliati
             "tracks": [],
             "runner_id": "other-host:123:abcdef",
             "runner_host": socket.gethostname().lower(),
+            "runner_device": local_runner_device(),
             "lease_until": time.time() - 60,
         },
     )
@@ -1460,7 +1463,8 @@ def test_task_manager_gpu_scheduler_respects_foreign_running_assignment(tmp_path
             "status": "running",
             "run_index": 1,
             "runner_id": "other-host:123:abcdef",
-            "runner_host": "other-host",
+            "runner_host": socket.gethostname().lower(),
+            "runner_device": local_runner_device(),
             "lease_until": time.time() + 60,
             "pids": [12345],
             "_scheduled_env": {"CUDA_VISIBLE_DEVICES": "0", "PYRUNS_ASSIGNED_GPUS": "0"},
@@ -1526,7 +1530,8 @@ def test_task_manager_gpu_scheduler_respects_undiscovered_foreign_assignment(tmp
             "status": "running",
             "run_index": 1,
             "runner_id": "other-host:123:abcdef",
-            "runner_host": "other-host",
+            "runner_host": socket.gethostname().lower(),
+            "runner_device": local_runner_device(),
             "lease_until": time.time() + 60,
             "pids": [12345],
             "_scheduled_env": {"CUDA_VISIBLE_DEVICES": "0", "PYRUNS_ASSIGNED_GPUS": "0"},

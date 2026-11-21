@@ -9,12 +9,13 @@ import math
 import os
 import re
 import secrets
-import socket
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
+from functools import lru_cache
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, overload
 
@@ -62,6 +63,8 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.native_lock import LOCK_PROTOCOL
 from pyruns.utils.run_result import recover_run_result
+from pyruns.utils.runner_device import local_runner_host, record_runner_device, runner_location
+from pyruns.utils.task_storage import git_tracks_task, task_storage_scope, visible_task_roots
 from pyruns.utils.process_utils import (
     get_process_create_time,
     is_pid_running,
@@ -160,6 +163,11 @@ class TaskManager:
 
         validate_tasks_root(tasks_dir)
         self.tasks_dir = tasks_dir
+        self._task_roots = visible_task_roots(tasks_dir)
+        self._scanned_paths: dict[str, str] = {}
+        tasks_path = Path(tasks_dir).resolve()
+        self._in_git_worktree = any((path / ".git").exists() for path in (tasks_path, *tasks_path.parents))
+        self._legacy_queue_in_git = lru_cache(maxsize=1024)(git_tracks_task)
         self.tasks: List[Dict[str, Any]] = []
         self._tasks_by_name: Dict[str, Dict[str, Any]] = {}
         self._search_view_cache: dict[str, tuple[tuple, Mapping[str, Any]]] = {}
@@ -198,7 +206,7 @@ class TaskManager:
         self._executor = None
         self._independent_executor = None
         self._executor_workers = 0
-        self.runner_host = socket.gethostname().lower()
+        self.runner_host = local_runner_host()
         token = str(runner_token or uuid.uuid4().hex[:8])
         self._submission_attempt_id = str(runner_token or "") or None
         self.runner_id = f"{self.runner_host}:{os.getpid()}:{token}"
@@ -355,6 +363,7 @@ class TaskManager:
         "run_index",
         "queued_at",
         "runner_host",
+        "runner_device",
         "lease_until",
         "lease_heartbeat",
         "cancel_requested_at",
@@ -447,6 +456,9 @@ class TaskManager:
         else:
             data["gpu_wait"] = gpu_wait
         data["runner_lease_expired"] = cls._runner_lease_expired(data)
+        data["runner_location"] = runner_location(data)
+        data["task_storage"] = task_storage_scope(data["dir"])
+        data.pop("runner_device", None)
         return data
 
     @staticmethod
@@ -522,6 +534,8 @@ class TaskManager:
                 "run_index": task.get("run_index", 0),
                 "queued_at": task.get("queued_at"),
                 "runner_host": task.get("runner_host"),
+                "runner_location": runner_location(task),
+                "task_storage": task_storage_scope(str(task.get("dir", ""))),
                 "lease_until": task.get("lease_until"),
                 "lease_heartbeat": task.get("lease_heartbeat"),
                 "cancel_requested_at": task.get("cancel_requested_at"),
@@ -548,6 +562,18 @@ class TaskManager:
                 in {"queued", "running"}
             )
             return count or int(bool(self.is_processing))
+
+    def local_activity_counts(self) -> dict[str, int]:
+        """Count recent activity from this execution device for the Home page."""
+        counts = {"running": 0, "queued": 0}
+        now = time.time()
+        with self._lock:
+            for task in self.tasks:
+                if not task or task.get("status") not in counts or not self._lease_active(task, now=now):
+                    continue
+                if runner_location(task, self.runner_host) == "local" or self._is_current_runner(task):
+                    counts[task["status"]] += 1
+        return counts
 
     def list_tasks(self, *, summary: bool = False) -> List[Dict[str, Any]]:
         """Return detached copies of the current task list."""
@@ -818,6 +844,7 @@ class TaskManager:
 
     def scan_disk(self) -> None:
         """Fully rebuild the in-memory task list from disk."""
+        self._legacy_queue_in_git.cache_clear()
         if not self.tasks_dir or not os.path.exists(self.tasks_dir):
             logger.warning("root_dir does not exist: %s", self.tasks_dir)
             with self._lock:
@@ -875,6 +902,18 @@ class TaskManager:
         """Return task folder names ordered by directory mtime, newest first."""
         _ok, names = self._scan_task_dir_names()
         return names
+
+    def task_directory(self, name: str) -> str:
+        """Resolve an observable task, including folders created since the last scan."""
+        if validate_task_name(name):
+            raise ValueError("Invalid task name")
+        if path := self._scanned_paths.get(name):
+            return path
+        if len(self._task_roots) > 1:
+            local = os.path.join(self._task_roots[-1], name)
+            if os.path.isdir(local):
+                return local
+        return os.path.join(self.tasks_dir, name)
 
     @staticmethod
     def _parallel_loading_worthwhile(elapsed: float, cpu_time: float) -> bool:
@@ -943,7 +982,6 @@ class TaskManager:
             return True, []
 
         try:
-            validate_tasks_root(self.tasks_dir)
             def inspect_entry(entry: os.DirEntry) -> tuple[str, int] | None:
                 if not entry.is_dir(follow_symlinks=False):
                     return None
@@ -963,18 +1001,34 @@ class TaskManager:
                     mtime_ns = 0
                 return entry.name, mtime_ns
 
-            with os.scandir(self.tasks_dir) as it:
-                # Hidden names are Pyruns internals or foreign metadata.
-                candidates = [
-                    entry for entry in it
-                    if not entry.name.startswith(".") and entry.name != TRASH_DIR
-                ]
-                entries = [
-                    result for result in self._map_task_disk_io(candidates, inspect_entry)
-                    if result is not None
-                ]
-            entries.sort(key=lambda x: x[1], reverse=True)
-            return True, [name for name, _ in entries]
+            entries = []
+            for root in reversed(self._task_roots):
+                if root != self.tasks_dir and not os.path.lexists(root):
+                    continue
+                validate_tasks_root(root)
+                with os.scandir(root) as it:
+                    candidates = [entry for entry in it if not entry.name.startswith(".")]
+                    for result in self._map_task_disk_io(candidates, inspect_entry):
+                        if result:
+                            name, mtime = result
+                            entries.append((name, mtime, root))
+            # A Git pull can introduce a common task with the name of a local one.
+            physical_names = {name for name, _, _ in entries}
+            paths: dict[str, str] = {}
+            ordered = []
+            for name, mtime, root in entries:
+                label = name
+                if label in paths:
+                    suffix = 1
+                    label = f"{name[:180]} (shared)"
+                    while label in physical_names or label in paths:
+                        suffix += 1
+                        label = f"{name[:180]} (shared {suffix})"
+                paths[label] = os.path.join(root, name)
+                ordered.append((label, mtime))
+            self._scanned_paths = paths
+            ordered.sort(key=lambda x: x[1], reverse=True)
+            return True, [name for name, _ in ordered]
         except (OSError, ValueError) as exc:
             if raise_on_error:
                 raise
@@ -1011,8 +1065,12 @@ class TaskManager:
 
         disk_name_set = set(disk_names)
         known_names = set(known_tasks)
-        missing_names = known_names - disk_name_set
-        new_names = [name for name in disk_names if name not in known_names]
+        relocated = {
+            name for name in disk_name_set & known_names
+            if name in self._scanned_paths and not self._same_task_dir(known_tasks[name][0]["dir"], self._scanned_paths[name])
+        }
+        missing_names = (known_names - disk_name_set) | relocated
+        new_names = [name for name in disk_names if name not in known_names or name in relocated]
         if not missing_names and not new_names:
             return False
 
@@ -1087,7 +1145,27 @@ class TaskManager:
         return bool(runner_id and runner_id != self.runner_id and self._lease_active(info))
 
     def _is_current_runner(self, info: Dict[str, Any]) -> bool:
-        return str(info.get("runner_id", "") or "") == self.runner_id
+        return info.get("runner_id") == self.runner_id and runner_location(info, self.runner_host) != "remote"
+
+    def _queue_owned_elsewhere(self, info: Dict[str, Any], task_dir: str | None = None) -> bool:
+        if self._is_current_runner(info):
+            return False
+        if not any(info.get(key) for key in ("runner_id", "runner_host", "runner_device")):
+            if not self._in_git_worktree:
+                return False
+            # Keep untracked legacy queues runnable. Always recheck the index
+            # before mutating disk, even when scheduling used a cached answer.
+            if task_dir is not None:
+                return git_tracks_task(task_dir)
+            return not info.get("dir") or self._legacy_queue_in_git(info["dir"])
+        return self._lease_active(info) or runner_location(info, self.runner_host) != "local"
+
+    def _is_git_snapshot(self, info: Dict[str, Any], task_dir: str) -> bool:
+        return (
+            self._in_git_worktree and not self._is_current_runner(info)
+            and runner_location(info, self.runner_host) != "local"
+            and git_tracks_task(task_dir)
+        )
 
     def _should_kill_task_process(self, info: Dict[str, Any] | None) -> bool:
         """Only terminate processes this TaskManager explicitly claimed."""
@@ -1107,8 +1185,7 @@ class TaskManager:
 
         pid, created_at = self._current_process_identity(info)
         foreign_runner_live = self._is_foreign_live_runner(info)
-        runner_host = str(info.get("runner_host", "") or "").strip().lower()
-        owner_may_be_remote = not runner_host or runner_host != self.runner_host
+        owner_may_be_remote = not self._is_current_runner(info) and runner_location(info, self.runner_host) != "local"
         local_process_live = bool(
             not owner_may_be_remote
             and pid
@@ -1129,7 +1206,7 @@ class TaskManager:
         raise_on_error: bool = False,
     ) -> tuple[Dict[str, Any], bool]:
         try:
-            info, recovered = recover_run_result(task_dir, info)
+            info, recovered = recover_run_result(task_dir, info, read_only=lambda: self._is_git_snapshot(info, task_dir))
         except (OSError, ValueError) as exc:
             if raise_on_error:
                 raise
@@ -1379,7 +1456,7 @@ class TaskManager:
         """Load one task folder into the normalized task dict shape."""
         if validate_task_name(dir_name) is not None:
             return None
-        task_dir = os.path.join(self.tasks_dir, dir_name)
+        task_dir = self.task_directory(dir_name)
         task_identity = self._task_identity_token(task_dir)
         info_path = os.path.join(task_dir, TASK_INFO_FILENAME)
         try:
@@ -1394,7 +1471,7 @@ class TaskManager:
         # parent anchor. Recheck current ancestors and the actual payload file.
         parent_boundary: dict[str, str | None] = (
             {_workspace_abspath(self.tasks_dir): _tasks_root_boundary}
-            if _tasks_root_boundary is not None else {}
+            if _tasks_root_boundary is not None and os.path.dirname(task_dir) == self.tasks_dir else {}
         )
         resolved_paths: dict[str, str | None] | None = dict(parent_boundary)
         try:
@@ -1479,6 +1556,7 @@ class TaskManager:
             "notes": info.get("notes", ""),
             "runner_id": info.get("runner_id"),
             "runner_host": info.get("runner_host"),
+            "runner_device": info.get("runner_device"),
             "lease_until": info.get("lease_until"),
             "lease_heartbeat": info.get("lease_heartbeat"),
             "cancel_requested_at": info.get("cancel_requested_at"),
@@ -1684,7 +1762,9 @@ class TaskManager:
                         task["name"], task["dir"], info, raise_on_error=raise_on_error,
                     )
                 else:
-                    info, _ = recover_run_result(task["dir"], info)
+                    info, _ = recover_run_result(
+                        task["dir"], info, read_only=lambda current=info, path=task["dir"]: self._is_git_snapshot(current, path),
+                    )
 
                 with self._lock:
                     existing = self._tasks_by_name.get(task["name"])
@@ -2560,13 +2640,13 @@ class TaskManager:
             if new_name == target["name"]:
                 return True, target["name"]
 
-            err = validate_task_name(new_name, self.tasks_dir)
+            err = validate_task_name(new_name)
             if err:
                 return False, err
 
             old_dir = target["dir"]
-            new_dir = os.path.join(self.tasks_dir, new_name)
-            if os.path.exists(new_dir):
+            new_dir = os.path.join(os.path.dirname(old_dir), new_name)
+            if any(os.path.lexists(os.path.join(root, new_name)) for root in self._task_roots):
                 return False, f"Task name '{new_name}' already exists in the current workspace"
 
             try:
@@ -2576,7 +2656,7 @@ class TaskManager:
                 disk_info = load_task_metadata(old_dir, raise_error=True)
                 move_token = self._begin_namespace_operation(
                     old_dir,
-                    str(target["name"]),
+                    os.path.basename(old_dir),
                     kind="rename",
                     expected_run_index=active_task_run_index(disk_info),
                     expected_identity=source_identity,
@@ -2667,6 +2747,8 @@ class TaskManager:
             status = str(info.get("status", "") or "").lower()
             if status not in {"queued", "running"}:
                 raise TaskStateConflict(f"task is not active: {status}")
+            if self._is_git_snapshot(info, task_dir):
+                raise TaskStateConflict("cancel this recorded task on its execution host")
             current_run_index = active_task_run_index(info)
             if expected_run_index is not None:
                 if current_run_index != expected_run_index:
@@ -2681,16 +2763,15 @@ class TaskManager:
             if self._is_current_runner(info):
                 request_context["action"] = "cancel_local"
                 return
-            if self._is_foreign_live_runner(info):
+            if self._is_foreign_live_runner(info) or (status == "queued" and self._queue_owned_elsewhere(info, task_dir)):
                 request_context["action"] = "request_foreign"
                 return
             if status == "running" and self._running_info_has_live_owner(info):
                 # An expired heartbeat does not prove that a workload stopped.
                 # Only this host can verify and stop its recorded process tree.
                 request_context["action"] = "request_foreign"
-                runner_host = str(info.get("runner_host", "") or "").strip().lower()
                 pid, created_at = self._current_process_identity(info)
-                if runner_host == self.runner_host and pid and created_at is not None:
+                if runner_location(info, self.runner_host) == "local" and pid and created_at is not None:
                     request_context["action"] = "cancel_expired_local"
                 return
 
@@ -2796,7 +2877,7 @@ class TaskManager:
                 or active_task_run_index(latest) != run_index
                 or not task_attempt_matches(latest, attempt_id)
                 or self._current_process_identity(latest) != (pid, created_at)
-                or str(latest.get("runner_host", "") or "").strip().lower() != self.runner_host
+                or runner_location(latest, self.runner_host) != "local"
             ):
                 return False
             if self._is_foreign_live_runner(latest):
@@ -2902,7 +2983,7 @@ class TaskManager:
             return False
         if (
             (disk_status == "running" and not self._is_current_runner(disk_info))
-            or (disk_status == "queued" and self._is_foreign_live_runner(disk_info))
+            or (disk_status == "queued" and self._queue_owned_elsewhere(disk_info, target_ref["dir"]))
         ):
             self._refresh_memory_task_from_disk_info(target_name, target_ref["dir"], disk_info)
             self.trigger_update()
@@ -3060,11 +3141,12 @@ class TaskManager:
             return []
 
         # Validate trash before stopping or otherwise mutating any selected task.
-        trash_dir = os.path.join(self.tasks_dir, TRASH_DIR)
-        validate_tasks_root(self.tasks_dir)
-        validate_tasks_root(trash_dir)
-        os.makedirs(trash_dir, exist_ok=True)
-        validate_tasks_root(trash_dir)
+        for root in {os.path.dirname(candidate["dir"]) for candidate in candidates}:
+            trash_dir = os.path.join(root, TRASH_DIR)
+            validate_tasks_root(root)
+            validate_tasks_root(trash_dir)
+            os.makedirs(trash_dir, exist_ok=True)
+            validate_tasks_root(trash_dir)
 
         targets: list[Dict[str, Any]] = []
         for candidate in candidates:
@@ -3081,7 +3163,7 @@ class TaskManager:
             disk_status = str((disk_info or {}).get("status", candidate.get("status", "")) or "").lower()
             if (
                 (disk_status == "running" and not self._is_current_runner(disk_info or {}))
-                or (disk_status == "queued" and self._is_foreign_live_runner(disk_info or {}))
+                or (disk_status == "queued" and self._queue_owned_elsewhere(disk_info or {}, candidate["dir"]))
             ):
                 logger.info("Delete skipped for %s because another runner owns it", candidate["name"])
                 if disk_info:
@@ -3239,13 +3321,14 @@ class TaskManager:
         deleted_names: list[str] = []
         for target in targets:
             folder = os.path.basename(target["dir"])
+            trash_dir = os.path.join(os.path.dirname(target["dir"]), TRASH_DIR)
             moved = False
             destination = ""
             move_token = ""
             try:
                 move_token = self._begin_namespace_operation(
                     target["dir"],
-                    str(target["name"]),
+                    folder,
                     kind="delete",
                     expected_run_index=int(target["run_index"]),
                     expected_identity=target["identity"],
@@ -3433,7 +3516,7 @@ class TaskManager:
             if (
                 task
                 and str(normalize_task_status(task.get("status")) or "").strip().lower() == "queued"
-                and not self._is_foreign_live_runner(task)
+                and not self._queue_owned_elsewhere(task)
                 and (not independent_only or task.get("_queued_independent"))
             )
         ]
@@ -3511,7 +3594,7 @@ class TaskManager:
                         if (
                             not candidate
                             or candidate.get("status") != "queued"
-                            or self._is_foreign_live_runner(candidate)
+                            or self._queue_owned_elsewhere(candidate)
                             or (independent_only and not candidate.get("_queued_independent"))
                         ):
                             continue
@@ -4001,7 +4084,7 @@ class TaskManager:
     def _perform_shutdown_cleanup(self) -> bool:
         """Perform one cleanup attempt and report whether it completed."""
 
-        logger.info("System shutting down; cleaning up stuck task states...")
+        logger.debug("Task manager shutting down; checking tasks owned by this runner.")
         acquired = self._lock.acquire(timeout=2.0)
         if not acquired:
             logger.warning("Skip shutdown cleanup: task manager lock not acquired in time.")
@@ -4245,6 +4328,7 @@ class TaskManager:
         now = time.time()
         info["runner_id"] = self.runner_id
         info["runner_host"] = self.runner_host
+        record_runner_device(info)
         info["lease_heartbeat"] = now
         info["lease_until"] = now + max(1, int(self.lease_seconds))
 
@@ -4271,7 +4355,7 @@ class TaskManager:
                     task.get("_attempt_id"),
                 )
                 for task in self.tasks
-                if task and task.get("status") == "queued" and not self._is_foreign_live_runner(task)
+                if task and task.get("status") == "queued" and not self._queue_owned_elsewhere(task)
             ]
 
         for task, revision, task_name, task_dir, run_index, queued_at, gpu_wait, attempt_id in queued:
@@ -4284,6 +4368,7 @@ class TaskManager:
                 queued_at: float = queued_at,
                 gpu_wait: Dict[str, Any] | None = gpu_wait,
                 attempt_id: str | None = attempt_id,
+                task_dir: str = task_dir,
             ) -> None:
                 if not task_attempt_matches(info, attempt_id):
                     raise TaskStateConflict("task attempt changed before lease renewal")
@@ -4291,7 +4376,7 @@ class TaskManager:
                     raise TaskStateConflict("task is no longer queued")
                 if self._next_run_index(info) != run_index or self._queue_started_at_value(info) != queued_at:
                     raise TaskStateConflict("task queue changed before lease renewal")
-                if self._is_foreign_live_runner(info):
+                if self._queue_owned_elsewhere(info, task_dir):
                     raise TaskClaimConflict("queued task already owned by another runner")
                 self._set_runner_lease_fields(info)
                 if isinstance(gpu_wait, dict):
@@ -4351,7 +4436,7 @@ class TaskManager:
 
     @staticmethod
     def _clear_runner_lease_fields(info: Dict[str, Any]) -> None:
-        for key in ("runner_id", "runner_host", "lease_heartbeat", "lease_until", "_gpu_wait_override"):
+        for key in ("runner_id", "runner_host", "runner_device", "lease_heartbeat", "lease_until", "_gpu_wait_override"):
             info.pop(key, None)
 
     def _claim_task_for_run(
@@ -4389,7 +4474,7 @@ class TaskManager:
                 if active_task_run_index(info) != run_index:
                     raise TaskStateConflict("task run changed before claim")
             elif status == "queued":
-                if self._is_foreign_live_runner(info):
+                if self._queue_owned_elsewhere(info, task_dir):
                     raise TaskClaimConflict("queued task already owned by another runner")
                 if self._next_run_index(info) != run_index:
                     raise TaskStateConflict("queued task run changed before claim")
@@ -4499,8 +4584,11 @@ class TaskManager:
                 raise TaskStateConflict(
                     f"expected next run {run_index}, found {actual_next_run}"
                 )
-            if next_status in {"queued", "running"} and current_status == "running" and self._is_foreign_live_runner(task_info):
-                raise TaskClaimConflict("task already owned by another live runner")
+            if next_status in {"queued", "running"} and (
+                (current_status == "running" and not self._is_current_runner(task_info))
+                or (current_status == "queued" and self._queue_owned_elsewhere(task_info, task_dir))
+            ):
+                raise TaskClaimConflict("task already owned by another runner")
             if next_status in {"queued", "running"} and current_status not in {"queued", "running"}:
                 # Stop markers belong to the previous attempt. Preserve any
                 # current request when dispatching an already queued run.
@@ -4686,7 +4774,7 @@ class TaskManager:
         def _apply(info: Dict[str, Any]) -> None:
             if str(info.get("status", "") or "").lower() != "queued":
                 raise TaskStateConflict("task is no longer queued")
-            if self._is_foreign_live_runner(info):
+            if self._queue_owned_elsewhere(info, task_dir):
                 raise TaskClaimConflict("queued task already owned by another runner")
             persisted_wait = info.get("gpu_wait")
             if isinstance(persisted_wait, dict) and (
@@ -4898,7 +4986,7 @@ class TaskManager:
         if scan_ok:
             task_refs: List[tuple[str, str]] = []
             for task_name in disk_names:
-                task_dir = os.path.join(self.tasks_dir, task_name)
+                task_dir = self.task_directory(task_name)
                 known = known_tasks.get(task_name)
                 if known is not None and known["status"] == "running" and known["local_live"]:
                     local_gpu_ids = self._gpu_ids_from_assignment(known["gpu_assignment"])
@@ -4951,7 +5039,7 @@ class TaskManager:
                         and active_task_run_index(current) == active_task_run_index(info)
                     ):
                         continue
-            elif not self._running_info_has_live_owner(info):
+            elif runner_location(info, self.runner_host) != "local" or not self._running_info_has_live_owner(info):
                 continue
             gpu_ids = self._gpu_ids_from_assignment(info.get("_gpu_assignment"))
             if gpu_ids:
@@ -5480,7 +5568,7 @@ class TaskManager:
                 raise TaskClaimConflict("task already owned by another runner")
             if require_no_live_owner:
                 if original_status == "queued":
-                    has_live_owner = self._is_foreign_live_runner(task_info)
+                    has_live_owner = self._queue_owned_elsewhere(task_info, task_dir)
                 else:
                     has_live_owner = self._running_info_has_live_owner(task_info)
                 if has_live_owner:
@@ -5566,6 +5654,7 @@ class TaskManager:
             task.get("_load_error"),
             task.get("runner_id"),
             task.get("runner_host"),
+            task.get("runner_device"),
             task.get("lease_until"),
             task.get("cancel_requested_at"),
             task.get("queued_at"),
@@ -5624,7 +5713,7 @@ class TaskManager:
             task["task_identity"] = cls._task_identity_token(task["dir"])
         task.update(
             {
-                "name": os.path.basename(os.path.normpath(task["dir"])),
+                "name": task.get("name") or os.path.basename(os.path.normpath(task["dir"])),
                 "status": normalize_task_status(
                     info.get("status", task.get("status", "pending"))
                 ),
@@ -5672,6 +5761,7 @@ class TaskManager:
                 "run_index": int(info.get("run_index", info.get("_run_index", task.get("run_index", 0))) or 0),
                 "runner_id": info.get("runner_id"),
                 "runner_host": info.get("runner_host"),
+                "runner_device": info.get("runner_device"),
                 "lease_until": info.get("lease_until"),
                 "lease_heartbeat": info.get("lease_heartbeat"),
                 "cancel_requested_at": info.get("cancel_requested_at"),
@@ -5729,6 +5819,7 @@ class TaskManager:
             or any(
                 task
                 and str(normalize_task_status(task.get("status")) or "").strip().lower() == "queued"
+                and (runner_location(task, self.runner_host) == "local" or not self._queue_owned_elsewhere(task))
                 for task in self.tasks
             )
         )

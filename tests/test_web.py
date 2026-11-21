@@ -37,6 +37,7 @@ from pyruns._config import (
 )
 from pyruns.core.executor import _build_command, _resolve_python_runtime
 from pyruns.core.task_manager import TaskManager, active_task_run_index
+from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
@@ -5420,6 +5421,7 @@ def test_cancel_task_endpoint_reconciles_expired_local_runner(tmp_path):
             {
                 "runner_id": f"{runtime.task_manager.runner_host}:123:expired",
                 "runner_host": runtime.task_manager.runner_host,
+                "runner_device": local_runner_device(),
                 "lease_heartbeat": time.time() - 120,
                 "lease_until": time.time() - 60,
                 "pids": [987654321],

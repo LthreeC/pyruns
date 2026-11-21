@@ -10,6 +10,7 @@ from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.info_io import load_task_metadata, update_task_metadata
 from pyruns.utils import run_result
+from pyruns.utils.runner_device import local_runner_device
 
 
 @pytest.fixture
@@ -21,7 +22,7 @@ def shared_run(tmp_path, monkeypatch):
         status="running", run_index=1, run_statuses=["running"],
         start_times=["2026-11-14_00-00-00"], finish_times=[""],
         pids=[987654321], pid_create_times=[1000.0],
-        runner_host="worker-host", runner_id="worker-host:123:token",
+        runner_host="worker-host", runner_id="worker-host:123:token", runner_device=local_runner_device(),
         lease_until=time.time() - 60, _attempt_id="attempt-one",
         run_attempt_ids=["attempt-one"],
     ))

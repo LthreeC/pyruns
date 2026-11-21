@@ -56,6 +56,7 @@ import Pagination from '@/components/shared/Pagination'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
+import { taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 import {
@@ -1856,7 +1857,7 @@ export default function MonitorPage() {
                     {t("Search results")}
                   </ActionButton>
                 )}
-                <StatusBadge status={selectedTask.status as TaskStatus} />
+                <StatusBadge task={selectedTask} />
                 <div className="monitor-task-title min-w-0 flex-1">
                   <div className="truncate text-xs font-semibold text-txt-primary" title={selectedTask.name}>
                     {selectedTask.name}
@@ -2328,14 +2329,14 @@ const SidebarItem = memo(function SidebarItem({
     >
       <span className="flex w-full min-w-0 items-center gap-1.5">
         {exportMode && <SelectionIndicator selected={exportSelected} />}
-        <StatusDot status={task.status as TaskStatus} />
+        <StatusDot task={task} />
         <span className={clsx(
           'min-w-0 flex-1 truncate whitespace-nowrap text-xs leading-4',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
         )}>
           {task.name}
         </span>
-        {task.status === 'running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
+        {taskStatusLabel(task) === 'Running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
       </span>
     </button>
   )
@@ -2376,7 +2377,7 @@ const SearchResultGroup = memo(function SearchResultGroup({
       >
         <ChevronDown className="h-3.5 w-3.5 flex-none -rotate-90 text-txt-tertiary transition-transform group-open:rotate-0" aria-hidden="true" />
         {exportMode && <SelectionIndicator selected={exportSelected} />}
-        <StatusDot status={task.status as TaskStatus} />
+        <StatusDot task={task} />
         <span className={clsx(
           'min-w-0 flex-1 truncate text-xs leading-4',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary',
@@ -2393,7 +2394,7 @@ const SearchResultGroup = memo(function SearchResultGroup({
 })
 
 
-function StatusDot({ status }: { status: TaskStatus }) {
+function StatusDot({ task }: { task: Task }) {
   const colors: Record<TaskStatus, string> = {
     pending: 'bg-gray-500',
     queued: 'bg-blue-500',
@@ -2403,5 +2404,5 @@ function StatusDot({ status }: { status: TaskStatus }) {
     cancelled: 'bg-slate-500',
   }
 
-  return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[status])} aria-hidden="true" />
+  return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[task.status])} role="img" aria-label={t(taskStatusLabel(task))} />
 }

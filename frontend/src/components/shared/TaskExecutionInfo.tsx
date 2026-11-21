@@ -1,4 +1,4 @@
-import { AlertTriangle, Server } from 'lucide-react'
+import { AlertTriangle, Folder, Server } from 'lucide-react'
 import clsx from 'clsx'
 import type { Task } from '@/types'
 import { useTranslation } from '@/i18n'
@@ -11,9 +11,11 @@ export default function TaskExecutionInfo({ task, className, showRecordedHost = 
   const host = active ? task.runner_host : showRecordedHost ? task.run_environments?.at(-1)?.host : null
   const cancelling = active && Boolean(task.cancel_requested_at)
   const expired = active && task.runner_lease_expired === true
-  if (!host && !cancelling && !expired) return null
+  const localFolder = task.task_storage === 'local'
+  if (!host && !cancelling && !expired && !localFolder) return null
 
   return <div role="group" className={clsx('flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-secondary', className)} aria-label={t('Execution source')}>
+    {localFolder && <span className="inline-flex items-center gap-1"><Folder aria-hidden="true" className="h-3 w-3" />{t('Device folder')}</span>}
     {host && <span className="inline-flex min-w-0 items-center gap-1" title={t('Execution host: {{host}}', { host })}>
       <Server aria-hidden="true" className="h-3 w-3 shrink-0" /><span className="truncate font-mono">{host}</span>
     </span>}

@@ -255,6 +255,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(cachedRuntime)
   const [envText, setEnvText] = useState('')
   const [pythonPath, setPythonPath] = useState('')
+  const [taskStorage, setTaskStorage] = useState<'shared' | 'local'>('shared')
   const [condaEnv, setCondaEnv] = useState('')
   const [condaExecutable, setCondaExecutable] = useState('conda')
   const [runtimeMode, setRuntimeMode] = useState<PythonRuntimeMode>('follow')
@@ -453,6 +454,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     && (passingGpuCount < requestedGpuCount || sameModelInsufficient)
 
   const applyPythonRuntimeState = (next: RuntimeInfo) => {
+    setTaskStorage(next.task_storage || 'shared')
     setPythonPath(next.python_executable)
     setCondaEnv(next.conda_env)
     setCondaExecutable(next.conda_executable || 'conda')
@@ -514,6 +516,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     setRuntime(null)
     setEnvText(formatEnv(settings?.global_env || {}))
     setPythonPath(cleanSettingText(settings?.python_executable))
+    setTaskStorage(settings?.task_storage === 'local' ? 'local' : 'shared')
     setCondaEnv(cleanSettingText(settings?.conda_env))
     setCondaExecutable(cleanSettingText(settings?.conda_executable) || 'conda')
     setRuntimeMode(modeFromSettings(settings))
@@ -783,6 +786,8 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
   }
 
   const savePythonRuntime = () => {
+    const storageUpdate = taskStorage !== (runtime?.task_storage ?? workspaceSettings?.task_storage ?? 'shared')
+      ? { task_storage: taskStorage } : {}
     if (runtimeMode === 'conda') {
       if (!condaEnv) {
         const message = t('Choose a conda environment before saving.')
@@ -791,6 +796,7 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
         return
       }
       void saveRuntime('python', {
+        ...storageUpdate,
         conda_env: condaEnv,
         conda_executable: condaExecutable,
         python_executable: '',
@@ -799,12 +805,14 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
     }
     if (runtimeMode === 'python') {
       void saveRuntime('python', {
+        ...storageUpdate,
         python_executable: pythonPath,
         conda_env: '',
       }, t('Python runtime saved'))
       return
     }
     void saveRuntime('python', {
+      ...storageUpdate,
       conda_env: '',
       python_executable: '',
     }, t('Python runtime saved'))
@@ -1016,6 +1024,19 @@ export default function RuntimePanel({ open, left, onClose }: RuntimePanelProps)
                   {t('Save')}
                 </button>
             </div>
+
+            <label className="block text-xs font-medium text-txt-secondary">
+              {t('Save new tasks to')}
+              <select className="mt-1 block w-full rounded-md border border-border-subtle bg-surface-overlay p-2 text-sm text-txt-primary"
+                value={taskStorage} onChange={event => {
+                  setTaskStorage(event.target.value === 'local' ? 'local' : 'shared')
+                  markRuntimeDirty('python')
+                }}>
+                <option value="shared">{t('Shared tasks folder')}</option>
+                <option value="local">{t('This device’s tasks folder')}</option>
+              </select>
+              <span className="mt-1 block font-normal text-txt-tertiary">{t('Existing tasks stay in their original folders.')}</span>
+            </label>
 
             {runtimeMode === 'follow' && (
               <div className="space-y-1 border-l border-border-subtle pl-3">

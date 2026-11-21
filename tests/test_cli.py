@@ -34,6 +34,7 @@ from pyruns._config import (
 from pyruns.cli.app import build_parser, main
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.utils.info_io import load_task_info, update_task_info
+from pyruns.utils.runner_device import local_runner_device
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -2586,6 +2587,25 @@ def test_exec_rejects_an_explicit_duplicate_name(tmp_path):
     assert [path.name for path in tasks_dir.iterdir() if path.is_dir()] == ["duplicate"]
 
 
+def test_cli_storage_switch_keeps_existing_local_task_runnable(tmp_path):
+    from pyruns.utils.runner_device import device_tasks_folder
+
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    for name, mode in (("device-job", "local"), ("shared-job", "shared")):
+        configured = _run_cli(tmp_path, "config", "set", "task_storage", mode)
+        assert configured.returncode == 0, configured.stderr
+        ran = _run_cli(tmp_path, "exec", "--name", name, "-c", _command_string([sys.executable, "-V"]))
+        assert ran.returncode == 0, ran.stderr
+    local = workspace / device_tasks_folder() / "device-job"
+    assert load_task_info(str(local))["status"] == "completed"
+    assert (workspace / TASKS_DIR / "shared-job").is_dir()
+    rerun = _run_cli(tmp_path, "run", "device-job")
+    assert rerun.returncode == 0, rerun.stderr
+    assert load_task_info(str(local))["run_statuses"] == ["completed", "completed"]
+    listing = _run_cli(tmp_path, "ls", "--json")
+    assert {task["name"] for task in json.loads(listing.stdout)["tasks"]} == {"device-job", "shared-job"}
+
+
 def test_exec_without_name_creates_timestamped_task(tmp_path):
     result = _run_cli(tmp_path, "exec", "-c", _command_string([sys.executable, "-V"]))
 
@@ -3796,6 +3816,7 @@ def test_stop_reconciles_tasks_from_expired_local_runner(
                 "status": initial_status,
                 "runner_id": f"{socket.gethostname().lower()}:123:expired",
                 "runner_host": socket.gethostname().lower(),
+                "runner_device": local_runner_device(),
                 "lease_heartbeat": time.time() - 120,
                 "lease_until": time.time() - 60,
             }

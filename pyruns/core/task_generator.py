@@ -33,6 +33,7 @@ from pyruns.utils.lock_owner import RELEASED_LOCK_SUFFIX, mark_json_lock_release
 from pyruns.utils.native_lock import LOCK_PROTOCOL, NativeFileGuard
 from pyruns.utils.shell_runtime import get_shell_config_filename_for_workspace
 from pyruns.utils.temp_paths import create_inherited_temp_dir
+from pyruns.utils.task_storage import new_task_root, visible_task_roots
 from pyruns.utils.task_files import (
     build_task_preview_and_search,
     is_known_task_kind,
@@ -142,10 +143,16 @@ class TaskGenerator:
     def __init__(self, root_dir: str | None = None):
         if root_dir is None:
             from pyruns._config import ROOT_DIR, TASKS_DIR
+            from pyruns.utils.settings import load_settings
 
-            root_dir = os.path.join(ROOT_DIR, TASKS_DIR)
+            root_dir = new_task_root(os.path.join(ROOT_DIR, TASKS_DIR), load_settings(ROOT_DIR)["task_storage"])
 
         self.root_dir = root_dir
+        self._visible_roots = visible_task_roots(root_dir)
+        self._reservation_root = self._visible_roots[0]
+        if self._reservation_root != self.root_dir:
+            validate_tasks_root(self._reservation_root)
+            os.makedirs(self._reservation_root, exist_ok=True)
         validate_tasks_root(self.root_dir)
         os.makedirs(self.root_dir, exist_ok=True)
         validate_tasks_root(self.root_dir)
@@ -270,7 +277,7 @@ class TaskGenerator:
 
     def _task_name_lock_path(self, task_name: str) -> str:
         return os.path.join(
-            self.root_dir,
+            self._reservation_root,
             f"{_TASK_NAME_LOCK_PREFIX}{task_name}{_TASK_NAME_LOCK_SUFFIX}",
         )
 
@@ -324,7 +331,7 @@ class TaskGenerator:
         lock_path: str,
         expected: tuple[tuple[int, int, int, int], bytes],
     ) -> bool:
-        validate_tasks_root(self.root_dir)
+        validate_tasks_root(self._reservation_root)
         if self._task_name_lock_snapshot(lock_path) != expected:
             return False
         quarantine_path = (
@@ -378,12 +385,15 @@ class TaskGenerator:
     def _task_name_guard(self) -> NativeFileGuard:
         # Only namespace edits are serialized; building different tasks may
         # proceed concurrently while their individual reservations stay live.
+        validate_tasks_root(self._reservation_root)
         return NativeFileGuard(
-            os.path.join(self.root_dir, _TASK_NAME_GUARD_FILENAME),
-            self.root_dir, label="Task name reservation guard",
+            os.path.join(self._reservation_root, _TASK_NAME_GUARD_FILENAME),
+            self._reservation_root, label="Task name reservation guard",
         )
 
     def _reserve_task_name_locked(self, task_name: str) -> tuple[str, int, tuple[int, int]] | None:
+        if any(os.path.lexists(os.path.join(root, task_name)) for root in self._visible_roots if root != self.root_dir):
+            return None
         lock_path = self._task_name_lock_path(task_name)
         flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
         flags |= int(getattr(os, "O_BINARY", 0))
@@ -447,7 +457,7 @@ class TaskGenerator:
     ) -> bool:
         lock_path, _fd, identity = reservation
         try:
-            validate_tasks_root(self.root_dir)
+            validate_tasks_root(self._reservation_root)
             return self._path_identity(lock_path) == identity
         except (OSError, ValueError):
             return False
@@ -496,7 +506,7 @@ class TaskGenerator:
     def _remove_task_name_reservation(self, lock_path: str, identity: tuple[int, int]) -> None:
         for attempt in range(_TASK_NAME_LOCK_RELEASE_ATTEMPTS):
             try:
-                validate_tasks_root(self.root_dir)
+                validate_tasks_root(self._reservation_root)
                 if self._path_identity(lock_path) != identity:
                     logger.warning("Refusing to remove replaced task reservation: %s", lock_path)
                     return

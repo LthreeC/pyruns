@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
-from typing import Any
+from typing import Any, Callable
 
 from pyruns.utils.info_io import (
     _load_json_object,
@@ -33,7 +34,7 @@ def write_run_result(task_dir: str, result: dict[str, Any]) -> None:
 
 
 def recover_run_result(
-    task_dir: str, info: dict[str, Any], *, timeout_sec: float = 1.0,
+    task_dir: str, info: dict[str, Any], *, timeout_sec: float = 1.0, read_only: bool | Callable[[], bool] = False,
 ) -> tuple[dict[str, Any], bool]:
     """Replay only the current running attempt, checking identity under its lock."""
     if info.get("status") != "running":
@@ -88,11 +89,16 @@ def recover_run_result(
             if result.get(key) is not None:
                 current[field][slot] = result[key]
         for key in (
-            "runner_id", "runner_host", "lease_until", "lease_heartbeat", "_pending_stop_summary",
+            "runner_id", "runner_host", "runner_device", "lease_until", "lease_heartbeat", "_pending_stop_summary",
             "_scheduled_env", "_gpu_assignment", "_gpu_wait_override",
         ):
             current.pop(key, None)
         recovered = True
 
-    updated = update_task_metadata(task_dir, apply, timeout_sec=timeout_sec)
+    snapshot_only = read_only() if callable(read_only) else read_only
+    if snapshot_only:
+        updated = copy.deepcopy(info)
+        apply(updated)
+    else:
+        updated = update_task_metadata(task_dir, apply, timeout_sec=timeout_sec)
     return updated, recovered

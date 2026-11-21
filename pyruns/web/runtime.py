@@ -84,6 +84,7 @@ from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
+from pyruns.utils.task_storage import new_task_root, visible_task_roots
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchBudget, SearchQuery
 from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
@@ -886,6 +887,7 @@ class PyrunsRuntime:
             global_env = {}
         gpu_config = GpuSchedulerConfig.from_settings(settings)
         runtime = {
+            "task_storage": settings.get("task_storage", "shared"),
             "python_executable": self._clean_setting_text(settings.get("python_executable")),
             "conda_env": self._clean_setting_text(settings.get("conda_env")),
             "conda_executable": self._clean_setting_text(settings.get("conda_executable")) or "conda",
@@ -919,7 +921,7 @@ class PyrunsRuntime:
     def update_runtime_settings(self, payload: Dict[str, Any], *, refresh_providers: bool = False) -> Dict[str, Any]:
         """Persist runtime settings and return the refreshed runtime info."""
 
-        allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text", "gpu_scheduler"}
+        allowed = {"python_executable", "conda_env", "conda_executable", "global_env", "global_env_text", "gpu_scheduler", "task_storage"}
         current_conda_executable = self._clean_setting_text(self.settings.get("conda_executable")) or "conda"
         provider_settings_changed = False
         updates: Dict[str, Any] = {}
@@ -930,6 +932,8 @@ class PyrunsRuntime:
                 continue
             if key == "conda_executable":
                 provider_settings_changed = (self._clean_setting_text(value) or "conda") != current_conda_executable
+            if key == "task_storage" and value not in ("shared", "local"):
+                raise ValueError("task_storage must be shared or local")
             if key == "gpu_scheduler":
                 if not isinstance(value, dict):
                     raise ValueError("gpu_scheduler must be an object")
@@ -945,6 +949,9 @@ class PyrunsRuntime:
         save_settings_for_root(self.root_dir, updates)
 
         self.settings = load_settings(self.root_dir)
+        if "task_storage" in updates:
+            with self._lock:
+                self._task_generator = None
         if provider_settings_changed:
             self._conda_envs_cache = None
         return self.get_runtime_info(refresh_providers=refresh_providers)
@@ -971,8 +978,10 @@ class PyrunsRuntime:
 
         items: List[Dict[str, str]] = []
 
-        tasks_dir = os.path.join(self.root_dir, TASKS_DIR)
-        if os.path.isdir(tasks_dir):
+        for tasks_dir in visible_task_roots(self.tasks_dir):
+            validate_tasks_root(tasks_dir)
+            if not os.path.isdir(tasks_dir):
+                continue
             task_entries: List[Dict[str, Any]] = []
             for dir_name in sorted(os.listdir(tasks_dir)):
                 if dir_name.startswith("."):
@@ -1002,7 +1011,7 @@ class PyrunsRuntime:
                 if not payload_name:
                     continue
 
-                value = os.path.join(TASKS_DIR, dir_name, payload_name).replace("\\", "/")
+                value = os.path.join(os.path.basename(tasks_dir), dir_name, payload_name).replace("\\", "/")
                 try:
                     fallback_mtime = os.path.getmtime(os.path.join(task_dir, _cfg.TASK_INFO_FILENAME))
                 except OSError:
@@ -1147,7 +1156,8 @@ class PyrunsRuntime:
     def task_generator(self) -> TaskGenerator:
         with self._lock:
             if self._task_generator is None:
-                self._task_generator = self._task_generator_factory(self.tasks_dir)
+                root = new_task_root(self.tasks_dir, self.settings.get("task_storage", "shared"))
+                self._task_generator = self._task_generator_factory(root)
             return self._task_generator
 
     @property
@@ -1470,6 +1480,7 @@ class PyrunsRuntime:
         )
         dashboard: Dict[str, Any] = {
             "summary": summary,
+            "local_activity": self.task_manager.local_activity_counts(),
             "recent_tasks": page.items,
             "active_task": active_task,
         }
@@ -1536,7 +1547,7 @@ class PyrunsRuntime:
             error = validate_task_name(name)
             if error:
                 raise ValueError(error)
-            task_dir = os.path.join(self.tasks_dir, name)
+            task_dir = self.task_manager.task_directory(name)
             if name not in metadata:
                 try:
                     metadata[name] = load_task_metadata(task_dir, raise_error=True)

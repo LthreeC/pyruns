@@ -62,6 +62,26 @@ test('created batch submits exact identities once and preserves the result when 
   }
 })
 
+test('new-task storage persists across a reload', async ({ page }) => {
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const initial = await (await page.request.get('/api/runtime')).json()
+  const next = initial.task_storage === 'local' ? 'shared' : 'local'
+  const openPanel = async () => {
+    await page.getByRole('button', { name: 'Runtime', exact: true }).click()
+    return page.getByRole('dialog', { name: 'Runtime settings' })
+  }
+  try {
+    const panel = await openPanel()
+    await panel.getByRole('combobox', { name: /Save new tasks to/ }).selectOption(next)
+    await panel.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect.poll(async () => (await (await page.request.get('/api/runtime')).json()).task_storage).toBe(next)
+    await page.reload()
+    await expect((await openPanel()).getByRole('combobox', { name: /Save new tasks to/ })).toHaveValue(next)
+  } finally {
+    await page.request.patch('/api/runtime', { data: { task_storage: initial.task_storage } })
+  }
+})
+
 test('task source and uncertainty remain distinct from running and log connectivity', async ({ page }, testInfo) => {
   const task = {
     name: 'remote-task', status: 'running', task_kind: 'shell', task_identity: 'remote-original',
@@ -85,7 +105,7 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await expect(page.getByText('gpu-worker-02', { exact: true })).toBeVisible()
   await expect(page.getByText('Runner status awaiting confirmation', { exact: true })).toBeVisible()
   await expect(page.getByTitle('The recorded runner lease has expired. This does not confirm that the process stopped; waiting for a verified result.')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open details for remote-task' })).toContainText('Running')
+  await expect(page.getByRole('button', { name: 'Open details for remote-task' })).toContainText('Last reported running')
   await page.screenshot({ path: testInfo.outputPath('task-source.png') })
   task.cancel_requested_at = Date.now() / 1000
   await page.goto('/monitor?task=remote-task')

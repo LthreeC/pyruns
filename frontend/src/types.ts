@@ -112,6 +112,8 @@ export interface Task {
   shell_kind?: string | null
   runner_id?: string | null
   runner_host?: string | null
+  runner_location?: 'local' | 'remote' | 'unknown'
+  task_storage?: 'shared' | 'local'
   runner_lease_expired?: boolean | null
   lease_heartbeat?: number | null
   cancel_requested_at?: number | string | null
@@ -192,6 +194,7 @@ export interface GpuSchedulerSettings {
 }
 
 export interface RuntimeInfo {
+  task_storage?: 'shared' | 'local'
   python_executable: string
   conda_env: string
   conda_executable: string
@@ -270,6 +273,7 @@ export interface DashboardSummary {
 export interface Dashboard {
   workspace?: WorkspaceInfo
   summary: DashboardSummary
+  local_activity?: { running: number; queued: number }
   recent_tasks: Task[]
   template_count?: number
   active_task: Task | null

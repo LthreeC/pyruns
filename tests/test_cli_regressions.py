@@ -29,6 +29,7 @@ from pyruns.cli.submission_protocol import (
 )
 from pyruns.launcher import bootstrap_shell_workspace, bootstrap_workspace
 from pyruns.core.task_generator import TaskGenerator
+from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.info_io import ensure_run_slot, load_task_info, save_task_info, update_task_info
 from pyruns.update_coordination import (
     UPDATE_STATE_DIR_ENV,
@@ -2437,6 +2438,7 @@ def test_cancel_reconciliation_uses_the_locked_run_index(tmp_path):
                 "run_index": 2,
                 "runner_id": dead_runner,
                 "runner_host": manager.runner_host,
+                "runner_device": local_runner_device(),
                 "run_statuses": ["completed", "running"],
             }
         ),

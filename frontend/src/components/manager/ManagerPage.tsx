@@ -30,7 +30,7 @@ import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from './TaskDetailPanel'
 import type { Task, TaskSortMode } from '@/types'
 import type { TaskStatus } from '@/theme/tokens'
-import { ALL_STATUSES, STATUS_LABELS } from '@/theme/tokens'
+import { ALL_STATUSES, STATUS_LABELS, taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import * as api from '@/api'
@@ -1530,7 +1530,7 @@ const TaskCard = memo(function TaskCard({
         className="task-card-main block w-full min-w-0 flex-1 rounded-xl px-3 pb-3 pt-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
       >
         <div className="task-card-status flex items-center gap-2 pl-11 pr-11 sm:pl-5 sm:pr-7">
-          <ManagerStatusBadge status={task.status as TaskStatus} />
+          <ManagerStatusBadge task={task} />
           <span className="text-2xs uppercase tracking-[0.08em] text-txt-tertiary">
             {taskKindLabel}
           </span>
@@ -1665,7 +1665,8 @@ function ManagerMetric({
   )
 }
 
-function ManagerStatusBadge({ status }: { status: TaskStatus }) {
+function ManagerStatusBadge({ task }: { task: Task }) {
+  const status = task.status
   useTranslation()
   return (
     <span className={clsx(
@@ -1673,7 +1674,7 @@ function ManagerStatusBadge({ status }: { status: TaskStatus }) {
       MANAGER_STATUS_STYLES[status],
     )}>
       <span className={clsx('h-1.5 w-1.5 rounded-full', MANAGER_STATUS_DOTS[status])} aria-hidden="true" />
-      {t(STATUS_LABELS[status])}
+      {t(taskStatusLabel(task))}
     </span>
   )
 }

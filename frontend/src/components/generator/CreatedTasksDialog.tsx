@@ -79,7 +79,7 @@ export default function CreatedTasksDialog({ tasks: createdTasks, submission, on
       {tasks.slice(offset, offset + PAGE_SIZE).map(task => <li key={task.name}>
         <button type="button" disabled={busy} onClick={() => { onClose(); navigate(`/manager?task=${encodeURIComponent(task.name)}`) }}
           className="flex min-h-11 w-full items-center gap-3 rounded px-2 py-2 text-left text-sm hover:bg-surface-overlay disabled:opacity-50">
-          <StatusBadge status={task.status} /><span className="min-w-0 break-all">{task.name}</span>
+          <StatusBadge task={task} /><span className="min-w-0 break-all">{task.name}</span>
         </button>
       </li>)}
     </ul>

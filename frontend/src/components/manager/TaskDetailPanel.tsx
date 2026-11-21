@@ -23,7 +23,6 @@ import ActionButton from '@/components/shared/ActionButton'
 import RunInputView from './RunInputView'
 import { useTaskDetailDraftStore, useToastStore } from '@/store'
 import type { RunEnvironment, Task } from '@/types'
-import type { TaskStatus } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { formatElapsedDuration, formatStoredCommand, parseTaskTimestampMillis } from '@/utils/taskRuntime'
 import { summarizeGpuWait } from '@/utils/gpuWait'
@@ -696,7 +695,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
         </button>
         <div className="flex flex-wrap items-center gap-2 px-4 py-2">
           <div className="order-2 w-full sm:order-none sm:w-auto">
-            <StatusBadge status={task.status as TaskStatus} />
+            <StatusBadge task={task} />
           </div>
 
           <div className="min-w-0 flex-1">

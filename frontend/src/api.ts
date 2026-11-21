@@ -177,6 +177,7 @@ export const openShellWorkspace = () =>
   request<WorkspaceInfo>('/api/workspace/shell', { method: 'POST' })
 export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')
 export const updateRuntimeInfo = (payload: Partial<{
+  task_storage: 'shared' | 'local'
   python_executable: string
   conda_env: string
   conda_executable: string

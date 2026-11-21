@@ -339,6 +339,7 @@ class RuntimeUpdateRequest(RequestModel):
     """Workspace runtime settings update payload."""
 
     python_executable: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
+    task_storage: Literal["local", "shared"] | None = None
     conda_env: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
     conda_executable: str | None = Field(default=None, max_length=MAX_PATH_CHARS)
     global_env: dict[str, Any] | None = None

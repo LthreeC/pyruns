@@ -29,13 +29,12 @@ import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import { gpuFreeMemoryMb, gpuMemoryUsedPercent, summarizeGpuMetrics } from '@/utils/gpuMetrics'
 import { errorMessage } from '@/utils/errors'
 import type { GPUMetric, GPUProcessDetails, GPUProcessInfo, Task } from '@/types'
-import type { TaskStatus } from '@/theme/tokens'
 import * as api from '@/api'
 import { t, useTranslation } from '@/i18n'
 
 const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string }[] = [
   { key: 'total', label: 'Total Tasks', icon: Layers, color: 'text-txt-secondary' },
-  { key: 'running', label: 'Running', icon: Activity, color: 'text-amber-700 dark:text-amber-300' },
+  { key: 'running', label: 'Running on this device', icon: Activity, color: 'text-amber-700 dark:text-amber-300' },
   { key: 'completed', label: 'Completed', icon: CheckCircle2, color: 'text-emerald-700 dark:text-emerald-300' },
   { key: 'failed', label: 'Failed', icon: XCircle, color: 'text-rose-700 dark:text-rose-300' },
 ]
@@ -253,8 +252,8 @@ export default function DashboardPage() {
     && configuredMinFreeGiB > 0
     && largestGpuGiB != null
     && configuredMinFreeGiB > largestGpuGiB
-  const queuedCount = summary?.queued ?? 0
-  const runningCount = summary?.running ?? 0
+  const queuedCount = data?.local_activity?.queued ?? 0
+  const runningCount = data?.local_activity?.running ?? 0
   const pendingCount = summary?.pending ?? 0
   const activeCount = runningCount + queuedCount
 
@@ -399,7 +398,7 @@ export default function DashboardPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="text-lg font-semibold leading-6 tabular-nums text-txt-primary">
-                      {loading && !data ? '--' : (summary as Record<string, number> | undefined)?.[key] ?? 0}
+                      {loading && !data ? '--' : key === 'running' ? runningCount : (summary as Record<string, number> | undefined)?.[key] ?? 0}
                     </span>
                     <span className="truncate text-xs text-txt-secondary">{t(label)}</span>
                   </div>
@@ -421,7 +420,7 @@ export default function DashboardPage() {
             <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle pb-2">
               <h2 className="text-sm font-semibold text-txt-primary">{t('Recent Tasks')}</h2>
               <div className="flex flex-wrap items-center gap-2">
-                <SummaryPill>{t('{{count}} active', { count: activeCount })}</SummaryPill>
+                <SummaryPill>{t('{{count}} active locally', { count: activeCount })}</SummaryPill>
                 <SummaryPill>{t('{{count}} pending', { count: pendingCount })}</SummaryPill>
                 <button
                   type="button"
@@ -469,7 +468,7 @@ function TaskRow({ task, onClick }: { task: Task; onClick: () => void }) {
       className="grid min-h-11 w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] lg:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto]"
     >
       <div className="flex-none">
-        <StatusBadge status={task.status as TaskStatus} />
+        <StatusBadge task={task} />
       </div>
       <span className="min-w-0 truncate text-sm font-medium text-txt-primary" title={task.name}>{task.name}</span>
       <span className="hidden rounded-md bg-surface-overlay px-1.5 py-0.5 text-2xs uppercase tracking-[0.14em] text-txt-tertiary sm:inline">

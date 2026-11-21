@@ -601,11 +601,14 @@ CSV 与 JSON 使用相同语义：每个任务的每次运行各占一条记录�
 pyr config list
 pyr config get monitor_scrollback
 pyr config set monitor_scrollback 200000
+pyr config set task_storage local
 pyr config unset monitor_scrollback
 pyr config path
 ```
 
 `config set` 将值解析为 YAML，并根据已知配置项的类型验证。未知 key 或类型错误不会静默写入。
+
+`task_storage` 控制新任务保存位置。默认 `shared` 写入 `tasks/`；使用 `local` 写入本机专属的同级目录。两种模式下 `pyr ls` 均可查看通用任务和本机任务。
 批量运行的并发数不是项目配置；需要时在每次运行中用 `run -j/--jobs` 显式指定。
 
 ## 14. 系统快照：`metrics`

@@ -56,6 +56,7 @@ from pyruns.utils.info_io import (
 )
 from pyruns.utils.log_io import normalize_log_newlines
 from pyruns.utils.run_result import write_run_result
+from pyruns.utils.runner_device import record_runner_device
 from pyruns.utils.process_utils import (
     get_process_create_time,
     hidden_subprocess_kwargs,
@@ -787,6 +788,7 @@ def _set_runner_lease(
     info["runner_id"] = runner_id
     if runner_host:
         info["runner_host"] = runner_host
+    record_runner_device(info)
     now = time.time()
     info["lease_heartbeat"] = now
     info["lease_until"] = now + max(1, int(lease_seconds or DEFAULT_RUNNER_LEASE_SECONDS))
@@ -798,6 +800,7 @@ def _clear_runner_lease(info: Dict[str, Any], runner_id: str) -> None:
     for key in (
         "runner_id",
         "runner_host",
+        "runner_device",
         "lease_heartbeat",
         "lease_until",
         "_scheduled_env",

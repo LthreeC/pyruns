@@ -175,6 +175,8 @@ Manager 是任务的调度台。
 
 任务卡片、详情和 Monitor 会在有记录时显示执行主机。共享 NFS 工作区中，“取消待确认”表示已提交取消请求但还没有最终结果；“执行器状态待确认”表示记录的租约已过期，不代表远端进程已经停止。这些提示不会直接把任务改成完成或失败。Monitor 的连接标记描述日志连接，任务状态单独展示；首页系统资源则标明实际采集主机，不代表所有执行机器的汇总。
 
+在运行环境面板的 Python 页签，通过「新任务保存位置」选择「通用任务目录」或「本机专属任务目录」，然后保存。默认使用通用目录。选择本机目录适合多台设备通过 Git 同步同一项目且各自独立运行实验的情况。列表同时显示通用任务与当前设备的专属任务。首页的「本机运行中」只统计归属本机且心跳有效的任务。该选项也可通过 `pyr config set task_storage local` 或 `pyr config set task_storage shared` 设置。
+
 ![Manager 全页界面](https://raw.githubusercontent.com/LthreeC/pyruns/main/docs/assets/tab_manager.png)
 
 ### 你可以做什么
