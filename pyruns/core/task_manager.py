@@ -64,7 +64,9 @@ from pyruns.utils.info_io import (
 from pyruns.utils.native_lock import LOCK_PROTOCOL
 from pyruns.utils.run_result import recover_run_result
 from pyruns.utils.runner_device import local_runner_host, record_runner_device, runner_location
-from pyruns.utils.task_storage import discover_device_roots, git_tracks_task, task_source, task_storage_scope, visible_task_roots
+from pyruns.utils.task_storage import (
+    device_folder_host, discover_device_roots, git_tracks_task, task_source, task_storage_scope, visible_task_roots,
+)
 from pyruns.utils.process_utils import (
     get_process_create_time,
     is_pid_running,
@@ -465,10 +467,15 @@ class TaskManager:
 
     @staticmethod
     def _task_origin(task: Dict[str, Any]) -> dict[str, str]:
-        source = task_source(str(task.get("dir") or ""))
+        task_dir = str(task.get("dir") or "")
+        source = task_source(task_dir)
         storage = source if source in {"shared", "local"} else "remote"
-        return {"task_source": source, "task_storage": storage,
-                "runner_location": "remote" if storage == "remote" else runner_location(task)}
+        origin = {"task_source": source, "task_storage": storage,
+                  "runner_location": "remote" if storage == "remote" else runner_location(task)}
+        if storage == "remote":
+            origin["display_name"] = os.path.basename(task_dir)
+            origin["task_source_host"] = device_folder_host(source)
+        return origin
 
     @staticmethod
     def _runner_lease_expired(task: Dict[str, Any]) -> bool | None:
@@ -608,7 +615,7 @@ class TaskManager:
         return [
             {"id": "shared", "host": ""},
             {"id": "local", "host": self.runner_host},
-            *({"id": folder, "host": folder[6:].rsplit("-", 1)[0]}
+            *({"id": folder, "host": device_folder_host(folder)}
               for folder in map(os.path.basename, self._remote_roots)),
         ]
 
@@ -775,6 +782,7 @@ class TaskManager:
         )
         starts = tuple((task.get("start_times") or ())[-1:])
         finishes = tuple((task.get("finish_times") or ())[-1:])
+        display_name = task.get("display_name")
         config = task.get("config", self._SEARCH_CONFIG_MISSING)
         env_items = tuple((task.get("env") or {}).items())
         # Equal numbers/bools can have different searchable text.
@@ -787,7 +795,7 @@ class TaskManager:
             id(task) if task.get("_info_signature") is None else None,
         )
         signature = (
-            scalars, starts, finishes, id(config), env_items, value_types,
+            scalars, display_name, starts, finishes, id(config), env_items, value_types,
             identity,
         )
         previous = self._search_view_cache.get(name)
@@ -797,6 +805,7 @@ class TaskManager:
                 "start_times": starts, "finish_times": finishes,
                 "config": {} if config is self._SEARCH_CONFIG_MISSING else config,
                 "env": MappingProxyType(dict(env_items)),
+                **({"display_name": display_name} if display_name else {}),
             })
             previous = (signature, view)
             if not self._shutdown_event.is_set():
@@ -837,6 +846,7 @@ class TaskManager:
                     "notes": task.get("notes", ""),
                     "env": dict(task.get("env", {}) or {}),
                     "search_text": task.get("search_text", ""),
+                    **({"display_name": task["display_name"]} if task.get("display_name") else {}),
                     "task_kind": task.get("task_kind"),
                     "config": task.get("config", {}),
                     "config_text": task.get("config_text", ""),
@@ -5861,11 +5871,17 @@ class TaskManager:
 
     @staticmethod
     def _refresh_derived_fields(task: Dict[str, Any]) -> None:
+        task_name = str(task.get("name", "") or "")
+        task_dir = str(task.get("dir", "") or "")
+        if task_storage_scope(task_dir) == "remote":
+            task_name = task["display_name"] = os.path.basename(task_dir)
+        else:
+            task.pop("display_name", None)
         preview_text, search_text = build_task_preview_and_search(
             task_kind=str(task.get("task_kind", TASK_KIND_CONFIG) or TASK_KIND_CONFIG),
             config=task.get("config", {}) or {},
             config_text=str(task.get("config_text", "") or ""),
-            task_name=str(task.get("name", "") or ""),
+            task_name=task_name,
             notes=str(task.get("notes", "") or ""),
         )
         task["preview_text"] = preview_text

@@ -31,6 +31,11 @@ def task_source(task_dir: str) -> str:
     return folder if _DEVICE_FOLDER.fullmatch(folder) else "shared"
 
 
+def device_folder_host(folder: str) -> str:
+    match = _DEVICE_FOLDER.fullmatch(folder)
+    return match[1] if match else ""
+
+
 def git_tracks_task(task_dir: str) -> bool:
     """Check ambiguous mutations in a worktree without taking a Git index lock."""
     try:

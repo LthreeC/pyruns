@@ -12,7 +12,7 @@ import pytest
 from pyruns.cli.commands import cmd_restore
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
-from pyruns.utils import task_storage
+from pyruns.utils import runner_device, task_storage
 from pyruns.utils.info_io import update_task_metadata
 from pyruns.utils.runner_device import local_runner_host
 from pyruns.utils.run_result import write_run_result
@@ -30,6 +30,14 @@ def git(repo, *args):
 @pytest.mark.parametrize("old_device", [None, "server-device"])
 def test_git_pull_never_claims_another_devices_tasks(tmp_path, monkeypatch, old_device):
     monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    with monkeypatch.context() as hardware:
+        hardware.setattr(runner_device, "local_runner_host", lambda: "worker")
+        hardware.setattr(runner_device, "_machine_fingerprint", lambda: "1" * 64)
+        source_store = runner_device.device_tasks_folder.__wrapped__()
+        hardware.setattr(runner_device, "_machine_fingerprint", lambda: "2" * 64)
+        checkout_store = runner_device.device_tasks_folder.__wrapped__()
+    assert source_store == "tasks-worker-111111111111"
+    assert checkout_store == "tasks-worker-222222222222"
     source = tmp_path / "server"
     source.mkdir()
     git(source, "init")
@@ -49,13 +57,13 @@ def test_git_pull_never_claims_another_devices_tasks(tmp_path, monkeypatch, old_
         run_index=1, runner_id="other:123:token", attempt_id="", status="completed",
         finish_time="2026-11-21_12-00-00", exit_code=0,
     ))
-    monkeypatch.setattr(task_storage, "device_tasks_folder", lambda: "tasks-server-111")
+    monkeypatch.setattr(task_storage, "device_tasks_folder", lambda: source_store)
     TaskGenerator(task_storage.new_task_root(str(root), "local")).create_task("same-name", {"source": 1})
     git(source, "add", "workspace")
     git(source, "commit", "-m", "server snapshot")
     checkout = tmp_path / "laptop"
     git(tmp_path, "clone", "--local", str(source), str(checkout))
-    monkeypatch.setattr(task_storage, "device_tasks_folder", lambda: "tasks-laptop-222")
+    monkeypatch.setattr(task_storage, "device_tasks_folder", lambda: checkout_store)
     laptop = checkout / "workspace" / "tasks"
     manager = TaskManager(str(laptop), lazy_scan=False)
     try:
@@ -74,7 +82,7 @@ def test_git_pull_never_claims_another_devices_tasks(tmp_path, monkeypatch, old_
 
         local = TaskGenerator(task_storage.new_task_root(str(laptop), "local"))
         local.create_task("same-name", {"source": 2})
-        git(checkout, "add", "workspace/tasks-laptop-222")
+        git(checkout, "add", f"workspace/{checkout_store}")
         git(checkout, "commit", "-m", "local task with the same name")
         # The source also adds a common task with this name after the clone.
         TaskGenerator(str(root)).create_task("same-name", {"source": 3}, exact_name=True)
@@ -86,6 +94,36 @@ def test_git_pull_never_claims_another_devices_tasks(tmp_path, monkeypatch, old_
         assert manager.get_task("snapshot")["status"] == "completed"
         assert manager.get_task("same-name")["config"]["source"] == 2
         assert manager.get_task("same-name (shared)")["config"]["source"] == 3
+        assert (checkout / "workspace" / source_store / "same-name").is_dir()
+        assert (checkout / "workspace" / checkout_store / "same-name").is_dir()
+        assert not git(checkout, "status", "--porcelain", "--untracked-files=no")
+    finally:
+        manager.shutdown()
+
+
+def test_same_device_uses_the_same_task_store_in_another_git_checkout(tmp_path, monkeypatch):
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    source = tmp_path / "source"
+    source.mkdir()
+    git(source, "init")
+    monkeypatch.chdir(source)
+    tasks = source / "workspace" / "tasks"
+    TaskGenerator(str(tasks)).create_task("legacy", {})
+    local = Path(task_storage.new_task_root(str(tasks), "local"))
+    TaskGenerator(str(local)).create_task("trial", {})
+    git(source, "add", "workspace")
+    git(source, "commit", "-m", "local tasks")
+    checkout = tmp_path / "checkout"
+    git(tmp_path, "clone", "--local", str(source), str(checkout))
+    monkeypatch.chdir(checkout)
+    cloned_tasks = checkout / "workspace" / "tasks"
+    cloned_local = Path(task_storage.new_task_root(str(cloned_tasks), "local"))
+    assert cloned_local.relative_to(checkout) == local.relative_to(source)
+    manager = TaskManager(str(cloned_tasks), lazy_scan=False)
+    try:
+        assert manager.get_task("legacy", summary=True)["task_source"] == "shared"
+        assert manager.get_task("trial", summary=True)["task_source"] == "local"
+        assert Path(manager.task_directory("trial")) == cloned_local / "trial"
         assert not git(checkout, "status", "--porcelain", "--untracked-files=no")
     finally:
         manager.shutdown()
@@ -163,13 +201,19 @@ def test_web_observes_other_stores_without_claiming_them(tmp_path, monkeypatch):
         assert runtime.list_tasks(sources={"shared"}).items[0]["dir"] == Path(shared["dir"]).as_posix()
         task = runtime.list_tasks(sources={remote}, status="running").items[0]
         assert task["task_source"] == remote and task["runner_location"] == "remote"
+        assert task["name"] != task["display_name"] == "trial"
+        assert task["task_source_host"] == "render-farm-node"
         assert runtime.get_task_logs(task["name"], log_file_name="run1.log")["content"].strip() == "device-specific-output"
+        exact_name = runtime.search_tasks(query="^trial$", search_field="name", use_regex=True, sources={remote},
+                                          cancelled=threading.Event(), refresh=False)
+        assert [item["name"] for item in exact_name.items] == [task["name"]]
         def search(sources):
             return runtime.search_tasks(query="device-specific-output", search_field="log", sources=sources,
                                         cancelled=threading.Event(), refresh=False)
         assert search({remote}).items[0]["name"] == task["name"]
         assert search({"shared"}).total == 0
         manager = runtime.task_manager
+        assert manager.get_task(task["name"], summary=True, compact=True)["task_source_host"] == task["task_source_host"]
         assert manager._pick_queued_task()[0] is None
         assert manager.active_task_count() == 0
         assert not manager.request_task_cancel(task["name"])

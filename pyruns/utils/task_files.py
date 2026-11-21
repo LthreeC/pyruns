@@ -324,7 +324,7 @@ def _build_task_search_snippet(
 
 def _task_search_sources(task: Mapping[str, Any], search_field: str = "all", *, include_payload: bool = True,
                          multiline: bool = False):
-    name = str(task.get("name", "") or "")
+    name = str(task.get("display_name") or task.get("name") or "")
     if name and search_field in {"all", "name"}:
         yield "name", "", name
 
