@@ -255,7 +255,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'title={t("Current Task")}',
             '!sidebarSearchActive',
             '/not found/i.test(errorMessage(error))',
-            'selectedTaskName: null',
+            'useMonitorStore.getState().clearTask()',
             'Math.min(35, Math.max(10, sidebarWidthRaw))',
             'clampMonitorSidebarWidth',
             'startMonitorSidebarResize',

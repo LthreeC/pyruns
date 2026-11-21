@@ -113,7 +113,8 @@ export interface Task {
   runner_id?: string | null
   runner_host?: string | null
   runner_location?: 'local' | 'remote' | 'unknown'
-  task_storage?: 'shared' | 'local'
+  task_storage?: 'shared' | 'local' | 'remote'
+  task_source?: string
   runner_lease_expired?: boolean | null
   lease_heartbeat?: number | null
   cancel_requested_at?: number | string | null
@@ -128,6 +129,7 @@ export interface Task {
 }
 
 export interface TaskPage {
+  task_sources?: { id: string; host: string }[]
   search_errors?: string[]
   search_limit_hit?: boolean
   search_complete?: boolean

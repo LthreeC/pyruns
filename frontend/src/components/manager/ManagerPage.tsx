@@ -20,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { useTaskRefresh } from '@/hooks/useTaskRefresh'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
+import TaskSourceFilter from '@/components/shared/TaskSourceFilter'
 import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
 import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
@@ -207,6 +208,7 @@ export default function ManagerPage() {
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [deleteTask, setDeleteTask] = useState<Task | null>(null)
+  const selectedSources = useTaskStore(state => state.selectedSources)
   const [cancelTask, setCancelTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
@@ -299,7 +301,7 @@ export default function ManagerPage() {
   useEffect(() => {
     void fetchTasks()
     return () => useTaskStore.getState().cancelTaskSearch()
-  }, [query, searchField, searchOptions, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch, maxResults])
+  }, [query, searchField, searchOptions, statusFilter, sortMode, offset, fetchTasks, workspaceEpoch, maxResults, selectedSources])
 
   useEffect(() => {
     detailRequestSeqRef.current += 1
@@ -374,7 +376,8 @@ export default function ManagerPage() {
     ),
     0,
   )
-  const allPageSelected = tasks.length > 0 && visibleSelectedCount === tasks.length
+  const mutableCount = tasks.filter(task => task.task_storage !== 'remote').length
+  const allPageSelected = mutableCount > 0 && visibleSelectedCount === mutableCount
   const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
   const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
   const draggedTask = useMemo(
@@ -662,6 +665,7 @@ export default function ManagerPage() {
 
     try {
       const allTasks = await api.getTasks({
+        sources: ['shared', 'local'],
         limit: REORDER_TASK_LIMIT,
         refresh: false,
         compact: true,
@@ -701,7 +705,7 @@ export default function ManagerPage() {
     if (!isCurrentWorkspace()) return
     if (!beginTaskAction(task.name, 'move')) return
     try {
-      const visibleSectionTasks = tasks.filter(item => Boolean(item.pinned) === Boolean(task.pinned))
+      const visibleSectionTasks = tasks.filter(item => item.task_storage !== 'remote' && Boolean(item.pinned) === Boolean(task.pinned))
       const currentIndex = visibleSectionTasks.findIndex(item => item.name === task.name)
       const targetTask = visibleSectionTasks[currentIndex + direction]
       if (currentIndex < 0 || !targetTask) {
@@ -714,6 +718,7 @@ export default function ManagerPage() {
       }
 
       const allTasks = await api.getTasks({
+        sources: ['shared', 'local'],
         limit: REORDER_TASK_LIMIT,
         refresh: false,
         compact: true,
@@ -874,7 +879,7 @@ export default function ManagerPage() {
   }
 
   const handleCardClick = useCallback((task: Task) => {
-    if (selectMode) {
+    if (selectMode && task.task_storage !== 'remote') {
       toggleSelect(task.name)
       return
     }
@@ -902,6 +907,7 @@ export default function ManagerPage() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="workspace-heading text-lg font-semibold tracking-tight text-txt-primary">{t("Task Manager")}</h1>
+              <TaskSourceFilter />
               <button
                 type="button"
                 aria-label={loading && query
@@ -953,7 +959,7 @@ export default function ManagerPage() {
               size="sm"
               className="manager-select-action min-h-11 sm:min-h-9"
               aria-label={t("Select tasks")}
-              disabled={tasks.length === 0 || anyTaskActionPending || Boolean(bulkAction)}
+              disabled={mutableCount === 0 || anyTaskActionPending || Boolean(bulkAction)}
               title={anyTaskActionPending ? t("Wait for the current task action to finish") : t("Select tasks")}
               onClick={() => setSelectMode(true)}
             >
@@ -1075,7 +1081,7 @@ export default function ManagerPage() {
           >
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold text-txt-primary" aria-live="polite">
-                {t('{{selected}} of {{total}} selected on this page', { selected: visibleSelectedCount, total: tasks.length })}
+                {t('{{selected}} of {{total}} selected on this page', { selected: visibleSelectedCount, total: mutableCount })}
               </div>
               <div className="mt-0.5 text-2xs text-txt-secondary">
                 {t("Selection is page-scoped and resets when you change the page, search, or status filter.")}
@@ -1169,10 +1175,11 @@ export default function ManagerPage() {
         ) : tasks.length === 0 ? (
           error ? null : (
             <ManagerEmptyState
-              filtered={Boolean(query) || statusFilter !== 'All'}
+              filtered={Boolean(query) || statusFilter !== 'All' || selectedSources !== null}
               onClear={() => {
                 setQuery('')
                 setStatusFilter('All')
+                if (selectedSources !== null) useTaskStore.getState().setSelectedSources(null)
               }}
             />
           )
@@ -1445,6 +1452,7 @@ const TaskCard = memo(function TaskCard({
 }) {
   useTranslation()
   const actionBtn = getActionButton(task)
+  const readOnly = task.task_storage === 'remote'
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
   const createdAtLabel = task.created_at?.replace(/^(\d{4}-\d{2}-\d{2})[_T](\d{2})[-:](\d{2}).*$/, '$1 · $2:$3')
   const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
@@ -1474,7 +1482,7 @@ const TaskCard = memo(function TaskCard({
       )}
     >
       {dropIndicator}
-      {!selectMode && (
+      {!selectMode && !readOnly && (
         <span
           data-task-drag-handle="true"
           aria-hidden="true"
@@ -1498,7 +1506,7 @@ const TaskCard = memo(function TaskCard({
         <button
           type="button"
           onClick={() => void onPin(task)}
-          disabled={taskPending || reorderDisabled}
+          disabled={readOnly || taskPending || reorderDisabled}
           title={task.pinned ? t("Unpin") : t("Pin")}
           aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: task.name })}
           aria-busy={pendingAction === 'pin' || undefined}
@@ -1587,7 +1595,7 @@ const TaskCard = memo(function TaskCard({
             <TaskIconButton
               label={t('Move {{name}} earlier', { name: task.name })}
               title={t("Move earlier")}
-              disabled={taskPending || reorderDisabled}
+              disabled={readOnly || taskPending || reorderDisabled}
               onClick={() => void onMove(task, -1)}
             >
               <ArrowUp className="h-3.5 w-3.5" />
@@ -1595,7 +1603,7 @@ const TaskCard = memo(function TaskCard({
             <TaskIconButton
               label={t('Move {{name}} later', { name: task.name })}
               title={t("Move later")}
-              disabled={taskPending || reorderDisabled}
+              disabled={readOnly || taskPending || reorderDisabled}
               onClick={() => void onMove(task, 1)}
             >
               <ArrowDown className="h-3.5 w-3.5" />
@@ -1628,7 +1636,7 @@ const TaskCard = memo(function TaskCard({
             <TaskIconButton
               label={t('Delete {{name}}', { name: task.name })}
               title={t("Delete task")}
-              disabled={taskPending}
+              disabled={readOnly || taskPending}
               onClick={() => onDelete(task)}
               className="text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
             >
@@ -1793,7 +1801,7 @@ function DropIndicator({ placement, axis }: { placement: DragPlacement; axis: 'h
 
 
 function getActionButton(task: Task) {
-  if (task._load_error) {
+  if (task._load_error || task.task_storage === 'remote') {
     return null
   }
 

@@ -170,7 +170,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
-export const getWorkspace = () => withConnectionTimeout(signal => request<WorkspaceInfo>('/api/workspace', { signal }))
+export const getWorkspace = () => withConnectionTimeout(signal => request<WorkspaceInfo>('/api/workspace', {
+  signal, headers: { 'X-Pyruns-Include-Templates': 'false' },
+}))
 export const setRunRoot = (path: string) =>
   request<WorkspaceInfo>('/api/workspace/run-root', { method: 'POST', body: JSON.stringify({ path }) })
 export const openShellWorkspace = () =>
@@ -215,6 +217,7 @@ export const getDashboard = (refresh = true, recentLimit = 6, signal?: AbortSign
 export const getTasks = (params: {
   query?: string
   status?: string
+  sources?: string[] | null
   offset?: number
   limit?: number
   refresh?: boolean
@@ -231,6 +234,7 @@ export const getTasks = (params: {
   const sp = new URLSearchParams()
   if (params.query) sp.set('query', params.query)
   if (params.status && params.status !== 'All') sp.set('status', params.status)
+  if (params.sources != null) sp.set('sources', params.sources.join(','))
   if (params.offset != null) sp.set('offset', String(params.offset))
   if (params.limit != null) sp.set('limit', String(params.limit))
   if (params.refresh != null) sp.set('refresh', String(params.refresh))

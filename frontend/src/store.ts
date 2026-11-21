@@ -49,6 +49,7 @@ const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
 export const MONITOR_TASK_PAGE_SIZE = 200
 const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
+const DEFAULT_SOURCES = [{ id: 'shared', host: '' }, { id: 'local', host: '' }]
 const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
 const TASK_SORT_MODES = new Set<TaskSortMode>([
   'priority',
@@ -209,6 +210,8 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   generatorTemplateRequestSeq += 1
   generatorDraftVersion += 1
   useTaskStore.setState({
+    sources: DEFAULT_SOURCES,
+    selectedSources: null,
     tasks: [],
     total: 0,
     statusCounts: null,
@@ -681,6 +684,9 @@ function currentMonitorScrollback() {
 }
 
 interface TaskState {
+  sources: NonNullable<TaskPage['task_sources']>
+  selectedSources: string[] | null
+  setSelectedSources: (ids: string[] | null) => void
   cancelTaskSearch: () => void
   cancelMonitorSearch: () => void
   tasks: Task[]
@@ -743,6 +749,18 @@ let taskSearchController: AbortController | null = null
 let monitorSearchController: AbortController | null = null
 
 export const useTaskStore = create<TaskState>((set, get) => ({
+  sources: DEFAULT_SOURCES,
+  selectedSources: null,
+  setSelectedSources(selectedSources) {
+    taskSearchController?.abort()
+    monitorSearchController?.abort()
+    taskRequestSeq += 1
+    monitorTaskRequestSeq += 1
+    set({ selectedSources, selectedIds: new Set(), offset: 0, monitorOffset: 0,
+      tasks: [], monitorTasks: [], total: 0, monitorTotal: 0, hasMore: false,
+      statusCounts: null, monitorStatusCounts: null, loading: false, monitorLoading: false })
+    useMonitorStore.getState().clearExport()
+  },
   cancelTaskSearch() {
     const wasSearching = Boolean(taskSearchController && get().loading && get().query)
     taskSearchController?.abort()
@@ -877,10 +895,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     } : undefined
     set(options.background ? { error: null } : { loading: true, error: null, searchLimitHit: false })
     try {
-      const page = await api.getTasks({ query, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, refresh: options.refresh, forceRefresh: options.forceRefresh, maxResults, onProgress }, controller.signal)
+      const page = await api.getTasks({ query, sources: get().selectedSources, searchField, searchOptions, status: statusFilter, sort: sortMode, offset, limit, summary: true, includeLogs: true, refresh: options.refresh, forceRefresh: options.forceRefresh, maxResults, onProgress }, controller.signal)
       if (!isCurrentRequest()) {
         return
       }
+      if (page.task_sources) set({ sources: page.task_sources })
       if (limit > 0 && offset > 0 && page.items.length === 0) {
         const nextOffset = page.total > 0
           ? Math.max(0, Math.floor((page.total - 1) / limit) * limit)
@@ -890,6 +909,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           set({ offset: nextOffset })
           const retryPage = await api.getTasks({
             query,
+            sources: get().selectedSources,
             searchField,
             searchOptions,
             status: statusFilter,
@@ -992,6 +1012,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     try {
       const requestPage = () => api.getTasks({
         query,
+        sources: current.selectedSources,
         searchField,
         searchOptions,
         offset: requestedOffset,
@@ -1024,6 +1045,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       set({
         monitorTasks: retainTaskSnapshots(get().monitorTasks, page.items),
+        sources: page.task_sources ?? get().sources,
         monitorSearchLimitHit: Boolean(page.search_limit_hit),
         monitorTotal: page.total,
         monitorOffset: requestedOffset,
@@ -1064,7 +1086,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({ selectedIds: ids })
   },
   selectAll() {
-    set({ selectedIds: new Set(get().tasks.map(t => t.name)) })
+    set({ selectedIds: new Set(get().tasks.filter(task => task.task_storage !== 'remote').map(task => task.name)) })
   },
   clearSelection() { set({ selectedIds: new Set() }) },
   setSelectedIds(ids) { set({ selectedIds: ids }) },
@@ -1311,6 +1333,7 @@ interface MonitorState extends MonitorLogText {
   selectLogFile: (name: string) => Promise<void>
   appendLog: (text: string) => void
   clearLog: () => void
+  clearTask: () => void
   toggleExport: (name: string) => void
   setExportSelected: (names: string[], selected: boolean) => void
   clearExport: () => void
@@ -1468,6 +1491,12 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   },
   clearLog() {
     set({ ...replaceMonitorLogContent(get(), ''), logOffset: 0, logIdentity: '', logTailTruncated: false, logTailLimitBytes: 0 })
+  },
+  clearTask() {
+    monitorLogController?.abort()
+    set({ ...replaceMonitorLogContent(get(), ''), selectedTaskName: null, logMatch: null, logError: '',
+      logGeneration: ++monitorRequestSeq, logOffset: 0, logIdentity: '', availableLogs: [], selectedLog: '',
+      logTailTruncated: false, logTailLimitBytes: 0, loading: false })
   },
   toggleExport(name) {
     const ids = new Set(get().exportIds)

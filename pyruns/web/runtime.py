@@ -84,7 +84,7 @@ from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
-from pyruns.utils.task_storage import new_task_root, visible_task_roots
+from pyruns.utils.task_storage import new_task_root, task_source, task_storage_scope, visible_task_roots
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchBudget, SearchQuery
 from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
@@ -430,6 +430,7 @@ class TaskPage:
     search_errors: List[str] = field(default_factory=list)
     search_limit_hit: bool = False
     search_complete: bool = True
+    task_sources: List[Dict[str, str]] = field(default_factory=list)
 
 
 class PyrunsRuntime:
@@ -446,7 +447,7 @@ class PyrunsRuntime:
         self._task_manager_factory = (
             task_manager_factory
             if task_manager_factory is not None
-            else lambda tasks_dir: TaskManager(tasks_dir=tasks_dir, lazy_scan=None)
+            else lambda tasks_dir: TaskManager(tasks_dir=tasks_dir, lazy_scan=None, include_other_devices=True)
         )
         self._task_generator_factory = (
             task_generator_factory
@@ -542,6 +543,7 @@ class PyrunsRuntime:
         tasks = list(getattr(task_manager, "tasks", []) or [])
         return any(
             str((task or {}).get("status", "") or "").lower() in {"queued", "running"}
+            and task_storage_scope((task or {}).get("dir", "")) != "remote"
             for task in tasks
         )
 
@@ -663,7 +665,7 @@ class PyrunsRuntime:
         return self.get_workspace_info()
 
     @_with_stable_workspace
-    def get_workspace_info(self) -> Dict[str, Any]:
+    def get_workspace_info(self, *, include_templates: bool = True) -> Dict[str, Any]:
         """Return current workspace metadata for the frontend."""
         script_info = load_script_info(self.root_dir)
         script_path = str(script_info.get("script_path", "") or "")
@@ -698,7 +700,7 @@ class PyrunsRuntime:
             "workspace_ready": workspace_ready,
             "settings": dict(self.settings),
             "shell_runtime": get_shell_runtime_for_workspace(self.root_dir),
-            "templates": self.list_templates(),
+            "templates": self.list_templates() if include_templates else [],
         }
 
     @staticmethod
@@ -1247,6 +1249,7 @@ class PyrunsRuntime:
         compact: bool = False,
         sort_mode: str = "priority",
         search_field: str = "all",
+        sources: set[str] | None = None,
     ) -> TaskPage:
         """Return tasks in the same logical order as the Manager page."""
         self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
@@ -1255,6 +1258,7 @@ class PyrunsRuntime:
         items, total, status_counts = self.task_manager.get_task_page(
             query=query, status=status, offset=safe_offset, limit=safe_limit,
             sort_mode=sort_mode, search_field=search_field, summary=summary, compact=compact,
+            sources=sources,
         )
         if summary:
             if query and items:
@@ -1286,6 +1290,7 @@ class PyrunsRuntime:
             limit=safe_limit,
             has_more=has_more,
             status_counts=status_counts,
+            task_sources=self.task_manager.task_sources(),
         )
 
     @contextmanager
@@ -1306,7 +1311,7 @@ class PyrunsRuntime:
     def search_tasks(self, *, query, status="All", offset=0, limit=50, sort_mode="priority", search_field="all",
                      match_case=False, whole_word=False, use_regex=False, include_logs=True, summary=True,
                      refresh=True, force_refresh=False, cancelled, max_results=DEFAULT_MAX_SEARCH_RESULTS,
-                     on_progress=None, compact=False):
+                     on_progress=None, compact=False, sources=None):
         """Search metadata and all log files without holding task/workspace locks during I/O."""
         matcher = SearchQuery(query, match_case=match_case, whole_word=whole_word, use_regex=use_regex, cancelled=cancelled)
         while not self._log_search.slots.acquire(timeout=0.1):
@@ -1320,8 +1325,9 @@ class PyrunsRuntime:
                 epoch = self._workspace_epoch
                 self.ensure_tasks_loaded(full_refresh=refresh, force_refresh=force_refresh)
                 manager = self.task_manager
-                sources = manager._get_task_search_views()
-            tasks = list(sources.values())
+                views = manager._get_task_search_views()
+                task_sources = manager.task_sources()
+            tasks = [task for task in views.values() if sources is None or task_source(task["dir"]) in sources]
             counts = dict.fromkeys(("pending", "queued", "running", "completed", "failed", "cancelled"), 0)
             for task in tasks:
                 task_status = str(task.get("status") or "pending").lower()
@@ -1335,7 +1341,7 @@ class PyrunsRuntime:
                 for task in candidates:
                     if cancelled.is_set():
                         raise CancelledError()
-                    found = task_search_found(sources.get(task["name"], task), matcher, search_field)
+                    found = task_search_found(task, matcher, search_field)
                     if all(needle in found for needle in needles):
                         matched.append(task)
                 candidates = matched
@@ -1356,6 +1362,7 @@ class PyrunsRuntime:
                 return TaskPage(
                     found_items, found_total, offset, limit, offset + len(found_items) < found_total, counts,
                     found_errors, budget.limit_hit, complete and not budget.limit_hit and not found_errors,
+                    task_sources=task_sources,
                 )
 
             last_progress = None

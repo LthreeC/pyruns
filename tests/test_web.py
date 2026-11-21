@@ -135,6 +135,20 @@ def test_web_app_version_matches_package_version():
     assert app.version == __version__
 
 
+def test_browser_workspace_greeting_defers_template_scan(tmp_path, monkeypatch):
+    runtime = PyrunsRuntime(str(tmp_path))
+    calls = []
+    monkeypatch.setattr(runtime, "list_templates", lambda: calls.append(1) or [{"value": "old", "label": "Old"}])
+    try:
+        client = TestClient(create_app(runtime))
+        assert client.get("/api/workspace", headers={"X-Pyruns-Include-Templates": "false"}).json()["templates"] == []
+        assert not calls
+        assert client.get("/api/workspace").json()["templates"][0]["value"] == "old"
+        assert calls == [1]
+    finally:
+        runtime.shutdown()
+
+
 def test_system_info_exposes_instance_and_disables_updates_without_coordinator(monkeypatch):
     from pyruns.web import self_update
 

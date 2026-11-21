@@ -43,6 +43,7 @@ import { usePolling } from '@/hooks/usePolling'
 import { useTaskRefresh } from '@/hooks/useTaskRefresh'
 import { usePageVisible } from '@/hooks/usePageVisible'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
+import TaskSourceFilter from '@/components/shared/TaskSourceFilter'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
 import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
@@ -200,6 +201,7 @@ export default function MonitorPage() {
     fetchMonitorTasks: state.fetchMonitorTasks, updateMonitorTask: state.updateMonitorTask,
   })))
   const maxResults = useSearchSettingsStore(state => state.maxResults)
+  const selectedSources = useTaskStore(state => state.selectedSources)
   const workspace = useWorkspaceStore(state => state.workspace)
   const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
   const pageVisible = usePageVisible()
@@ -382,18 +384,7 @@ export default function MonitorPage() {
         && workspaceKeyRef.current === requestedWorkspaceKey
       ) {
         setSelectedTaskSnapshot(null)
-        useMonitorStore.setState({
-          selectedTaskName: null,
-          logMatch: null,
-          logError: '',
-          ...replaceMonitorLogContent(useMonitorStore.getState(), ''),
-          logOffset: 0,
-          logIdentity: '',
-          availableLogs: [],
-          selectedLog: '',
-          logTailTruncated: false,
-          logTailLimitBytes: 0,
-        })
+        useMonitorStore.getState().clearTask()
       }
       // Keep the selected log visible for transient transport failures.
     } finally {
@@ -591,7 +582,13 @@ export default function MonitorPage() {
       })
     })
     return () => useTaskStore.getState().cancelMonitorSearch()
-  }, [notify, refreshMonitorTasks, maxResults])
+  }, [notify, refreshMonitorTasks, maxResults, selectedSources])
+
+  useEffect(() => {
+    if (selectedTask && selectedSources && !selectedSources.includes(selectedTask.task_source ?? 'shared')) {
+      useMonitorStore.getState().clearTask()
+    }
+  }, [selectedSources, selectedTask])
 
   useEffect(() => {
     if (selectedTaskName || monitorLoading || monitorTasks.length === 0) {
@@ -1189,14 +1186,14 @@ export default function MonitorPage() {
       activeLog = messageLog
       useTaskStore.setState(state => ({
         monitorTasks: state.monitorTasks.map(task => (
-          task.name === activeTaskName && task.status === 'queued'
+          task.name === activeTaskName && taskStatusLabel(task) === 'Queued'
             ? { ...task, status: 'running' }
             : task
         )),
       }))
       selectedTaskSnapshotWorkspaceKeyRef.current = activeWorkspaceKey
       setSelectedTaskSnapshot(current => (
-        current?.name === activeTaskName && current.status === 'queued'
+        current?.name === activeTaskName && taskStatusLabel(current) === 'Queued'
           ? { ...current, status: 'running' }
           : current
       ))
@@ -1589,6 +1586,7 @@ export default function MonitorPage() {
           <div className="mb-2 flex min-h-7 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <h1 className="text-sm font-semibold tracking-tight text-txt-primary">{t("Monitor")}</h1>
+              <TaskSourceFilter />
               <span className="rounded-md bg-surface-overlay px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-txt-secondary" title={t('{{count}} tasks', { count: monitorTotal.toLocaleString() })}>
                 {monitorTotal.toLocaleString()}
               </span>
@@ -1741,7 +1739,7 @@ export default function MonitorPage() {
               >
                 {otherTasks.length === 0 && pinnedTasks.length === 0 ? (
                   <div className="px-2 py-5 text-center text-2xs text-txt-tertiary">
-                    {monitorLoading ? t("Loading tasks...") : t("No tasks")}
+                    {monitorLoading ? t("Loading tasks...") : t(selectedSources?.length === 0 ? "No task sources selected" : "No tasks")}
                   </div>
                 ) : otherTasks.map(task => (
                   <SidebarItem
@@ -1935,7 +1933,7 @@ export default function MonitorPage() {
                   className="bg-transparent"
                 />
 
-                {(selectedTask.status === 'pending'
+                {selectedTask.task_storage !== 'remote' && (selectedTask.status === 'pending'
                   || selectedTask.status === 'failed'
                   || selectedTask.status === 'completed'
                   || selectedTask.status === 'cancelled') && (
@@ -1951,7 +1949,7 @@ export default function MonitorPage() {
                   </ActionButton>
                 )}
 
-                {(selectedTask.status === 'running' || selectedTask.status === 'queued') && (
+                {selectedTask.task_storage !== 'remote' && (selectedTask.status === 'running' || selectedTask.status === 'queued') && (
                   <ActionButton
                     icon={taskActionPending === 'cancel'
                       ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
@@ -2404,5 +2402,8 @@ function StatusDot({ task }: { task: Task }) {
     cancelled: 'bg-slate-500',
   }
 
-  return <span className={clsx('h-2 w-2 flex-none rounded-full', colors[task.status])} role="img" aria-label={t(taskStatusLabel(task))} />
+  const label = taskStatusLabel(task)
+  const recorded = label !== 'Running' && label !== 'Queued' && (task.status === 'running' || task.status === 'queued')
+  return <span className={clsx('h-2 w-2 flex-none rounded-full', recorded ? 'border border-current text-txt-secondary' : colors[task.status])}
+    role="img" title={t(label)} aria-label={t(label)} />
 }

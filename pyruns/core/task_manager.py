@@ -64,7 +64,7 @@ from pyruns.utils.info_io import (
 from pyruns.utils.native_lock import LOCK_PROTOCOL
 from pyruns.utils.run_result import recover_run_result
 from pyruns.utils.runner_device import local_runner_host, record_runner_device, runner_location
-from pyruns.utils.task_storage import git_tracks_task, task_storage_scope, visible_task_roots
+from pyruns.utils.task_storage import discover_device_roots, git_tracks_task, task_source, task_storage_scope, visible_task_roots
 from pyruns.utils.process_utils import (
     get_process_create_time,
     is_pid_running,
@@ -155,6 +155,7 @@ class TaskManager:
         *,
         owns_task_lifecycle: bool = True,
         reconcile_unowned_running: bool | None = None,
+        include_other_devices: bool = False,
     ):
         if tasks_dir is None:
             from pyruns._config import ROOT_DIR
@@ -164,6 +165,8 @@ class TaskManager:
         validate_tasks_root(tasks_dir)
         self.tasks_dir = tasks_dir
         self._task_roots = visible_task_roots(tasks_dir)
+        self._include_other_devices = include_other_devices
+        self._remote_roots: tuple[str, ...] = ()
         self._scanned_paths: dict[str, str] = {}
         tasks_path = Path(tasks_dir).resolve()
         self._in_git_worktree = any((path / ".git").exists() for path in (tasks_path, *tasks_path.parents))
@@ -456,10 +459,16 @@ class TaskManager:
         else:
             data["gpu_wait"] = gpu_wait
         data["runner_lease_expired"] = cls._runner_lease_expired(data)
-        data["runner_location"] = runner_location(data)
-        data["task_storage"] = task_storage_scope(data["dir"])
+        data.update(cls._task_origin(data))
         data.pop("runner_device", None)
         return data
+
+    @staticmethod
+    def _task_origin(task: Dict[str, Any]) -> dict[str, str]:
+        source = task_source(str(task.get("dir") or ""))
+        storage = source if source in {"shared", "local"} else "remote"
+        return {"task_source": source, "task_storage": storage,
+                "runner_location": "remote" if storage == "remote" else runner_location(task)}
 
     @staticmethod
     def _runner_lease_expired(task: Dict[str, Any]) -> bool | None:
@@ -534,8 +543,7 @@ class TaskManager:
                 "run_index": task.get("run_index", 0),
                 "queued_at": task.get("queued_at"),
                 "runner_host": task.get("runner_host"),
-                "runner_location": runner_location(task),
-                "task_storage": task_storage_scope(str(task.get("dir", ""))),
+                **TaskManager._task_origin(task),
                 "lease_until": task.get("lease_until"),
                 "lease_heartbeat": task.get("lease_heartbeat"),
                 "cancel_requested_at": task.get("cancel_requested_at"),
@@ -558,6 +566,7 @@ class TaskManager:
             count = sum(
                 1 for task in self.tasks
                 if task is not None
+                and task_storage_scope(task.get("dir", "")) != "remote"
                 and str(normalize_task_status(task.get("status", "")) or "").strip().lower()
                 in {"queued", "running"}
             )
@@ -569,7 +578,8 @@ class TaskManager:
         now = time.time()
         with self._lock:
             for task in self.tasks:
-                if not task or task.get("status") not in counts or not self._lease_active(task, now=now):
+                if (not task or task.get("status") not in counts or not self._lease_active(task, now=now)
+                        or task_storage_scope(task.get("dir", "")) == "remote"):
                     continue
                 if runner_location(task, self.runner_host) == "local" or self._is_current_runner(task):
                     counts[task["status"]] += 1
@@ -592,6 +602,14 @@ class TaskManager:
                 if snapshot is not None
             )
             if serialized is not None
+        ]
+
+    def task_sources(self) -> list[dict[str, str]]:
+        return [
+            {"id": "shared", "host": ""},
+            {"id": "local", "host": self.runner_host},
+            *({"id": folder, "host": folder[6:].rsplit("-", 1)[0]}
+              for folder in map(os.path.basename, self._remote_roots)),
         ]
 
     def get_task(
@@ -634,6 +652,7 @@ class TaskManager:
         search_field: str = "all",
         summary: bool = False,
         compact: bool = False,
+        sources: set[str] | None = None,
     ) -> tuple[List[Dict[str, Any]], int, Dict[str, int]]:
         """Select a page under the lock, copying payloads only for its tasks."""
         safe_offset = max(0, int(offset))
@@ -643,6 +662,13 @@ class TaskManager:
                 sort_mode, status, query=query, search_field=search_field,
                 include_payload=not summary or search_field in {"config", "script"},
             )
+            if sources is not None:
+                ordered = [task for task in ordered if task_source(task.get("dir", "")) in sources]
+                status_counts = dict.fromkeys(status_counts, 0)
+                for task in self.tasks:
+                    if task and task_source(task.get("dir", "")) in sources:
+                        key = normalize_task_status(task.get("status")) or "pending"
+                        status_counts[key] = status_counts.get(key, 0) + 1
             total = len(ordered)
             selected = (
                 ordered[safe_offset:safe_offset + safe_limit]
@@ -976,8 +1002,9 @@ class TaskManager:
         self,
         *,
         raise_on_error: bool = False,
+        local_paths: dict[str, str] | None = None,
     ) -> tuple[bool, list[str]]:
-        """Try to list task folder names ordered by directory mtime."""
+        """List tasks by mtime. A local_paths sink requests only schedulable roots."""
         if not self.tasks_dir:
             return True, []
 
@@ -1002,7 +1029,8 @@ class TaskManager:
                 return entry.name, mtime_ns
 
             entries = []
-            for root in reversed(self._task_roots):
+            remote_roots = discover_device_roots(self.tasks_dir) if self._include_other_devices and local_paths is None else ()
+            for root in (*reversed(self._task_roots), *remote_roots):
                 if root != self.tasks_dir and not os.path.lexists(root):
                     continue
                 validate_tasks_root(root)
@@ -1013,20 +1041,27 @@ class TaskManager:
                             name, mtime = result
                             entries.append((name, mtime, root))
             # A Git pull can introduce a common task with the name of a local one.
-            physical_names = {name for name, _, _ in entries}
+            physical_names = {name for name, _, root in entries if root not in remote_roots}
             paths: dict[str, str] = {}
             ordered = []
             for name, mtime, root in entries:
                 label = name
-                if label in paths:
+                if label in paths or root in remote_roots:
+                    folder = os.path.basename(root)
+                    origin = folder[6:] if root in remote_roots else "shared"
+                    stem = name[:min(180, 190 - len(origin))]
                     suffix = 1
-                    label = f"{name[:180]} (shared)"
+                    label = f"{stem} ({origin})"
                     while label in physical_names or label in paths:
                         suffix += 1
-                        label = f"{name[:180]} (shared {suffix})"
+                        label = f"{stem} ({origin} {suffix})"
                 paths[label] = os.path.join(root, name)
                 ordered.append((label, mtime))
-            self._scanned_paths = paths
+            if local_paths is None:
+                self._scanned_paths = paths
+                self._remote_roots = remote_roots
+            else:
+                local_paths.update(paths)
             ordered.sort(key=lambda x: x[1], reverse=True)
             return True, [name for name, _ in ordered]
         except (OSError, ValueError) as exc:
@@ -1057,6 +1092,7 @@ class TaskManager:
                 name: (task, task.get("_registry_revision", 0))
                 for name, task in self._tasks_by_name.items()
             }
+        previous_roots = self._remote_roots
         scan_ok, disk_names = self._scan_task_dir_names(
             raise_on_error=raise_on_error,
         )
@@ -1072,7 +1108,7 @@ class TaskManager:
         missing_names = (known_names - disk_name_set) | relocated
         new_names = [name for name in disk_names if name not in known_names or name in relocated]
         if not missing_names and not new_names:
-            return False
+            return previous_roots != self._remote_roots
 
         new_tasks = self._load_task_dirs(new_names, raise_on_error=raise_on_error)
         if raise_on_error:
@@ -1148,6 +1184,8 @@ class TaskManager:
         return info.get("runner_id") == self.runner_id and runner_location(info, self.runner_host) != "remote"
 
     def _queue_owned_elsewhere(self, info: Dict[str, Any], task_dir: str | None = None) -> bool:
+        if task_storage_scope(task_dir or info.get("dir", "")) == "remote":
+            return True
         if self._is_current_runner(info):
             return False
         if not any(info.get(key) for key in ("runner_id", "runner_host", "runner_device")):
@@ -1161,7 +1199,7 @@ class TaskManager:
         return self._lease_active(info) or runner_location(info, self.runner_host) != "local"
 
     def _is_git_snapshot(self, info: Dict[str, Any], task_dir: str) -> bool:
-        return (
+        return task_storage_scope(task_dir) == "remote" or (
             self._in_git_worktree and not self._is_current_runner(info)
             and runner_location(info, self.runner_host) != "local"
             and git_tracks_task(task_dir)
@@ -1221,7 +1259,7 @@ class TaskManager:
             else self.reconcile_unowned_running
         )
         if (
-            not reconcile_running
+            not reconcile_running or task_storage_scope(task_dir) == "remote"
             or normalize_task_status(info.get("status")) != "running"
             or task_name in self._running_ids
         ):
@@ -1776,6 +1814,12 @@ class TaskManager:
                         existing, info, mtime_ns=mtime_ns,
                         info_signature=info_signature,
                         task_identity=task_identity,
+                        reuse_payload=(not force_all and not raise_on_error and not payload_changed
+                                       and existing.get("_info_signature") == info_signature
+                                       and existing.get("task_identity") == task_identity
+                                       and existing.get("_payload_signature") is not None
+                                       and existing.get("status") == info.get("status")
+                                       and not existing.get("_load_error")),
                     )
                     if existing.get("status") not in {"running", "queued"}:
                         self._clear_running_locked(task["name"])
@@ -1825,6 +1869,11 @@ class TaskManager:
             revision = before.get("_registry_revision", 0) if before else 0
 
         task = self._load_task_dir(task_name)
+        if task is None and self._include_other_devices and not self._disk_scan_complete and task_name.endswith(")"):
+            # A bookmarked disambiguated name needs the directory index on a cold server.
+            self._scan_task_dir_names()
+            if task_name in self._scanned_paths:
+                task = self._load_task_dir(task_name)
 
         with self._lock:
             existing = self._tasks_by_name.get(task_name)
@@ -4095,6 +4144,7 @@ class TaskManager:
                 task
                 for task in self.tasks
                 if task and task.get("status") in ("running", "queued")
+                and task_storage_scope(task.get("dir", "")) != "remote"
             ]
         finally:
             self._lock.release()
@@ -4272,9 +4322,11 @@ class TaskManager:
                 logger.debug("Executor shutdown failed: %s", exc)
 
     def _resolve_identifier_locked(self, identifier: str | None) -> Dict[str, Any] | None:
+        """Resolve a mutable task. Other devices' stores are observational."""
         if not identifier:
             return None
-        return self._tasks_by_name.get(identifier)
+        task = self._tasks_by_name.get(identifier)
+        return task if task and task_storage_scope(task.get("dir", "")) != "remote" else None
 
     @staticmethod
     def _latest_pid(info: Dict[str, Any]) -> Any:
@@ -4979,14 +5031,21 @@ class TaskManager:
                 }
                 for task in self.tasks
                 if task and str(task.get("name", "") or "")
+                and task_storage_scope(task.get("dir", "")) != "remote"
             }
 
-        scan_ok, disk_names = self._scan_task_dir_names()
+        # GPU admission scans more often than UI discovery and only reserves
+        # GPUs on this host. Keep the full UI path index intact.
+        local_paths: dict[str, str] = {}
+        if self._include_other_devices:
+            scan_ok, disk_names = self._scan_task_dir_names(local_paths=local_paths)
+        else:
+            scan_ok, disk_names = self._scan_task_dir_names()
         reservations: Dict[str, List[int]] = {}
         if scan_ok:
             task_refs: List[tuple[str, str]] = []
             for task_name in disk_names:
-                task_dir = self.task_directory(task_name)
+                task_dir = local_paths.get(task_name) or self.task_directory(task_name)
                 known = known_tasks.get(task_name)
                 if known is not None and known["status"] == "running" and known["local_live"]:
                     local_gpu_ids = self._gpu_ids_from_assignment(known["gpu_assignment"])
@@ -5669,6 +5728,7 @@ class TaskManager:
         mtime_ns: int | None = None,
         info_signature: tuple[int, ...] | None = None,
         task_identity: str | None = None,
+        reuse_payload: bool = False,
     ) -> None:
         """Refresh under the registry lock, retaining indexes on payload-only edits."""
         registered = self._tasks_by_name.get(task.get("name", "")) is task
@@ -5676,7 +5736,7 @@ class TaskManager:
         try:
             self._apply_info_to_task_fields(
                 task, info, mtime_ns=mtime_ns, info_signature=info_signature,
-                task_identity=task_identity,
+                task_identity=task_identity, reuse_payload=reuse_payload,
             )
         finally:
             # A failed payload load can still have copied new lifecycle fields.
@@ -5699,8 +5759,10 @@ class TaskManager:
         mtime_ns: int | None = None,
         info_signature: tuple[int, ...] | None = None,
         task_identity: str | None = None,
+        reuse_payload: bool = False,
     ) -> None:
         """Copy task_info.json fields used by UI and scheduler."""
+        previous_payload = (task.get("config_file"), task.get("task_kind"))
         if "track_store" in info:
             task["track_store"] = copy.deepcopy(info["track_store"])
         else:
@@ -5773,13 +5835,17 @@ class TaskManager:
         # A stat here could tag old info with a newer writer's file identity,
         # causing every subsequent refresh to skip that writer's changes.
         task["_info_signature"] = info_signature
-        loaded_kind, loaded_config, loaded_text, load_error, payload_signature = read_task_payload_snapshot(
-            task["dir"], {**info, "config_file": task["config_file"]}, config_view=True,
-        )
-        task["_payload_signature"] = payload_signature
-        task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
-        task["config"] = loaded_config
-        task["config_text"] = loaded_text
+        load_error = ""
+        # Active metadata must be read even with cached NFS attributes. A state
+        # poll can still reuse the parsed payload until its next content probe.
+        if not reuse_payload or previous_payload != (task["config_file"], task["task_kind"]):
+            loaded_kind, loaded_config, loaded_text, load_error, payload_signature = read_task_payload_snapshot(
+                task["dir"], {**info, "config_file": task["config_file"]}, config_view=True,
+            )
+            task["_payload_signature"] = payload_signature
+            task["task_kind"] = loaded_kind or task.get("task_kind", TASK_KIND_CONFIG)
+            task["config"] = loaded_config
+            task["config_text"] = loaded_text
         task["_load_error"] = "; ".join(
             message for message in (info.get("_load_error"), load_error) if message
         )
@@ -5819,6 +5885,7 @@ class TaskManager:
             or any(
                 task
                 and str(normalize_task_status(task.get("status")) or "").strip().lower() == "queued"
+                and task_storage_scope(task.get("dir", "")) != "remote"
                 and (runner_location(task, self.runner_host) == "local" or not self._queue_owned_elsewhere(task))
                 for task in self.tasks
             )

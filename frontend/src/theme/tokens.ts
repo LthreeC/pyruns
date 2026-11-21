@@ -20,13 +20,13 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 
 export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled']
 
-export function taskStatusLabel(task: { status: TaskStatus; runner_location?: string; runner_lease_expired?: boolean | null }) {
+export function taskStatusLabel(task: { status: TaskStatus; runner_location?: string; runner_lease_expired?: boolean | null; task_storage?: string }) {
   if (task.status === 'running' || task.status === 'queued') {
-    if (task.runner_lease_expired === true || task.runner_location === 'unknown' ||
+    if (task.task_storage === 'remote' || task.runner_lease_expired === true || task.runner_location === 'unknown' ||
       (task.runner_location && task.runner_lease_expired == null)) {
       return task.status === 'running' ? 'Last reported running' : 'Last reported queued'
     }
-    if (task.runner_location === 'remote') return task.status === 'running' ? 'Remote running' : 'Remote queued'
+    if (task.runner_location === 'remote') return task.status === 'running' ? 'Remote reports running' : 'Remote reports queued'
   }
   return STATUS_LABELS[task.status]
 }

@@ -823,7 +823,9 @@ def create_app(
         return None
 
     @app.get("/api/workspace")
-    def get_workspace() -> dict[str, Any]:
+    def get_workspace(request: Request) -> dict[str, Any]:
+        if request.headers.get("X-Pyruns-Include-Templates") == "false":
+            return get_runtime().get_workspace_info(include_templates=False)
         return get_runtime().get_workspace_info()
 
     @app.post("/api/workspace/run-root")
@@ -994,6 +996,7 @@ def create_app(
         request: Request,
         query: str = Query(default="", max_length=MAX_QUERY_CHARS),
         status: str = Query(default="All", max_length=32),
+        sources: str | None = None,
         offset: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=MAX_TASK_PAGE_SIZE),
         refresh: bool = True,
@@ -1018,11 +1021,14 @@ def create_app(
     ) -> dict[str, Any] | Response:
         runtime = get_runtime()
 
+        selected_sources = None if sources is None else set(filter(None, sources.split(",")))
+
         def serialize_page(page):
             return {
                 "items": [_compact_monitor_task(item) for item in page.items] if compact else page.items,
                 "total": page.total, "offset": page.offset, "limit": page.limit,
                 "has_more": page.has_more, "status_counts": page.status_counts,
+                "task_sources": page.task_sources,
                 "search_errors": page.search_errors, "search_limit_hit": page.search_limit_hit,
                 "search_complete": page.search_complete,
             }
@@ -1041,6 +1047,7 @@ def create_app(
 
             pending = asyncio.create_task(asyncio.to_thread(
                 runtime.search_tasks, query=query, status=status, offset=offset,
+                sources=selected_sources,
                 limit=limit, sort_mode=sort, search_field=search_field, cancelled=cancelled,
                 match_case=match_case, whole_word=whole_word, use_regex=use_regex, include_logs=include_logs,
                 summary=summary, compact=compact, refresh=refresh, force_refresh=force_refresh,
@@ -1085,6 +1092,7 @@ def create_app(
         else:
             page = await run_in_threadpool(
                 runtime.list_tasks, query=query, status=status, offset=offset,
+                sources=selected_sources,
                 limit=limit, refresh=refresh, force_refresh=force_refresh,
                 summary=summary, compact=compact, sort_mode=sort, search_field=search_field,
             )

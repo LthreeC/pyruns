@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -133,3 +134,64 @@ def test_git_tracking_between_queue_selection_and_claim_is_rechecked(tmp_path, m
         assert not git(tmp_path, "diff", "--name-only")
     finally:
         manager.shutdown()
+
+
+def test_web_observes_other_stores_without_claiming_them(tmp_path, monkeypatch):
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(tmp_path))
+    try:
+        shared = runtime.task_generator.create_task("trial", {})
+        remote = "tasks-render-farm-node-aaaaaaaaaaaa"
+        generator = TaskGenerator(str(tmp_path / remote))
+        replica = Path(generator.create_task("trial", {})["dir"])
+        queued = generator.create_task("other", {})
+        update_task_metadata(queued["dir"], lambda info: info.update(status="queued"))
+        update_task_metadata(str(replica), lambda info: info.update(
+            status="running", run_index=1, runner_host=local_runner_host(),
+            runner_id="remote-runner", lease_until=time.time() + 3600, pids=[os.getpid()],
+        ))
+        logs = replica / "run_logs"
+        logs.mkdir(exist_ok=True)
+        (logs / "run1.log").write_text("device-specific-output\n", encoding="utf-8")
+        before = (replica / "task_info.json").read_bytes()
+        (tmp_path / "tasks-unrelated").mkdir()
+        page = runtime.list_tasks(summary=True, sources={remote}, limit=1)
+        assert page.total == 2 and page.has_more
+        assert page.status_counts["running"] == page.status_counts["queued"] == 1
+        assert [source["id"] for source in page.task_sources] == ["shared", "local", remote]
+        assert runtime.list_tasks(sources=set()).total == 0
+        assert runtime.list_tasks(sources={"shared"}).items[0]["dir"] == Path(shared["dir"]).as_posix()
+        task = runtime.list_tasks(sources={remote}, status="running").items[0]
+        assert task["task_source"] == remote and task["runner_location"] == "remote"
+        assert runtime.get_task_logs(task["name"], log_file_name="run1.log")["content"].strip() == "device-specific-output"
+        def search(sources):
+            return runtime.search_tasks(query="device-specific-output", search_field="log", sources=sources,
+                                        cancelled=threading.Event(), refresh=False)
+        assert search({remote}).items[0]["name"] == task["name"]
+        assert search({"shared"}).total == 0
+        manager = runtime.task_manager
+        assert manager._pick_queued_task()[0] is None
+        assert manager.active_task_count() == 0
+        assert not manager.request_task_cancel(task["name"])
+        assert not manager.delete_tasks([task["name"]])
+        assert manager.local_activity_counts() == {"running": 0, "queued": 0}
+        with monkeypatch.context() as checks:
+            checks.setattr("pyruns.core.task_manager.discover_device_roots", lambda *_: pytest.fail("GPU scan read remote roots"))
+            manager._sync_gpu_reservations_from_running_tasks()
+        assert Path(manager.task_directory(task["name"])) == replica
+        with monkeypatch.context() as checks:
+            def unexpected_read(*args, **kwargs):
+                pytest.fail("state poll reopened an unchanged task payload")
+            checks.setattr("pyruns.core.task_manager.read_task_payload_snapshot", unexpected_read)
+            manager.refresh_from_disk()
+        write_run_result(str(replica), dict(run_index=1, runner_id="remote-runner", attempt_id="", status="completed",
+                                            finish_time="2026-11-21_12-00-00", exit_code=0))
+        manager.refresh_from_disk()
+        assert manager.get_task(task["name"])["status"] == "completed"
+        assert (replica / "task_info.json").read_bytes() == before
+        second = "tasks-render-farm-node-bbbbbbbbbbbb"
+        (tmp_path / second).mkdir()
+        assert manager.sync_task_dirs_from_disk()
+        assert manager.task_sources()[-1] == {"id": second, "host": "render-farm-node"}
+    finally:
+        runtime.shutdown()

@@ -743,6 +743,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 <button
                   type="button"
                   onClick={() => setRenaming(true)}
+                  disabled={task.task_storage === 'remote'}
                   title={t("Rename task")}
                   aria-label={t("Rename task")}
                   className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
@@ -816,6 +817,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               <label htmlFor="task-notes" className="text-sm font-semibold text-txt-primary">{t("Notes")}</label>
               <textarea
                 id="task-notes"
+                readOnly={task.task_storage === 'remote'}
                 value={notes}
                 onChange={event => {
                   notesDraftRevisionRef.current += 1
@@ -887,6 +889,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     <input
                       ref={node => { envKeyInputRefs.current[pair.id] = node }}
                       value={pair.key}
+                      readOnly={task.task_storage === 'remote'}
                       onChange={event => {
                         setEnvPairs(current => current.map(envPair => (
                           envPair.id === pair.id ? { ...envPair, key: event.target.value } : envPair
@@ -907,6 +910,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     <span className="text-xs font-medium text-txt-secondary sm:hidden">{t("Value")}</span>
                     <input
                       value={pair.value}
+                      readOnly={task.task_storage === 'remote'}
                       onChange={event => {
                         setEnvPairs(current => current.map(envPair => (
                           envPair.id === pair.id ? { ...envPair, value: event.target.value } : envPair
@@ -926,6 +930,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     }}
                     className="touch-target col-start-2 row-start-1 inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50 dark:hover:text-rose-300 sm:col-auto sm:row-auto sm:h-9 sm:w-9"
                     title={t("Remove variable")}
+                    disabled={task.task_storage === 'remote'}
                     aria-label={t('Remove {{name}}', { name: pair.key.trim() || t("environment variable") })}
                   >
                     <X className="h-3.5 w-3.5" />
@@ -937,6 +942,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle bg-surface-raised py-3">
                 <ActionButton
                   onClick={addEnvPair}
+                  disabled={task.task_storage === 'remote'}
                   variant="secondary"
                   icon={<Plus className="h-3.5 w-3.5" />}
                   aria-label={t("Add environment variable")}

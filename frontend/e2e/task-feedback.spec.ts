@@ -114,3 +114,43 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await expect(page.getByTitle('Log connection status; task execution is reported separately.')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
+
+test('source checkboxes filter both task views and allow an empty selection', async ({ page }) => {
+  const remote = 'tasks-gpu-production-aaaaaaaaaaaa'
+  const sources = [{ id: 'shared', host: '' }, { id: 'local', host: 'laptop' }, { id: remote, host: 'gpu-production' }]
+  await page.route('**/api/tasks/gpu-production/logs?*', route => route.fulfill({ json: {
+    task_name: 'gpu-production', selected_log: 'run1.log', available_logs: ['run1.log'], content: 'remote output\n', offset: 14,
+  } }))
+  await page.route('**/api/tasks?*', route => {
+    const selected = new URL(route.request().url()).searchParams.get('sources')?.split(',')
+    const items = sources.filter(source => !selected || selected.includes(source.id)).map(source => ({
+      name: source.host || 'common-trial', task_source: source.id, dir: '/runs/' + source.id + '/trial',
+      task_storage: source.id === remote ? 'remote' : source.id, status: 'completed', run_index: 1,
+      config_file: 'config.sh', env: {}, notes: '', records: [], start_times: [], finish_times: [],
+    }))
+    return route.fulfill({ json: { items, total: items.length, offset: 0, limit: 50, has_more: false, task_sources: sources } })
+  })
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const trigger = page.getByRole('button', { name: 'Task sources' })
+  const all = page.getByRole('checkbox', { name: 'Select all sources' })
+  await expect(page.getByRole('button', { name: 'Open details for gpu-production' })).toBeVisible()
+  await trigger.click()
+  await all.uncheck()
+  await expect(page.locator('[data-task-card]')).toHaveCount(0)
+  await page.getByRole('checkbox', { name: 'gpu-production' }).check()
+  await expect(all).toHaveJSProperty('indeterminate', true)
+  await expect(page.locator('[data-task-card]')).toHaveCount(1)
+  await page.keyboard.press('Escape')
+  await expect(trigger).toBeFocused()
+  await page.getByRole('link', { name: 'Monitor', exact: true }).first().click()
+  const terminal = page.getByRole('region', { name: 'Read-only logs for gpu-production' })
+  await expect(terminal).toContainText('remote output')
+  await trigger.click()
+  await expect(page.getByRole('checkbox', { name: 'gpu-production' })).toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Common tasks' })).not.toBeChecked()
+  await all.check()
+  await expect(page.getByRole('checkbox', { name: 'Common tasks' })).toBeChecked()
+  await all.uncheck()
+  await expect(terminal).toHaveCount(0)
+  await expect(page.getByText('No task sources selected')).toBeVisible()
+})

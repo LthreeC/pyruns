@@ -29,4 +29,9 @@ describe('pickInitialMonitorTask', () => {
   it('returns no selection when there are no tasks', () => {
     expect(pickInitialMonitorTask([])).toBeUndefined()
   })
+
+  it('prefers local work to a remote running snapshot', () => {
+    const remote = { ...task('synced', 'running'), runner_location: 'remote', runner_lease_expired: false }
+    expect(pickInitialMonitorTask([remote, task('local', 'queued')])?.name).toBe('local')
+  })
 })
