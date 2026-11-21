@@ -40,7 +40,7 @@ from pyruns.core.task_manager import TaskManager, active_task_run_index
 from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
-from pyruns.utils.info_io import load_task_info, save_task_info, update_task_info
+from pyruns.utils.info_io import get_log_entries, load_task_info, save_task_info, update_task_info
 from pyruns.web.app import create_app as _create_app
 from pyruns.web.runtime import (
     PyrunsRuntime,
@@ -2419,8 +2419,12 @@ def test_runtime_get_task_logs_prefers_latest_run_when_gpu_task_completed(tmp_pa
     queue_log = task_dir / "run_logs" / "queue.log"
     queue_log.write_text("[PYRUNS] queue summary\n", encoding="utf-8")
     runtime = _build_runtime(workspace)
+    runtime.ensure_tasks_loaded()
 
-    payload = runtime.get_task_logs("gpu_done", tail_lines=20)
+    with patch("pyruns.utils.info_io.get_log_entries", wraps=get_log_entries) as scan_logs:
+        payload = runtime.get_task_logs("gpu_done", tail_lines=20)
+        scan_logs.assert_called_once()
+        assert Path(scan_logs.call_args.args[0]) == task_dir
 
     assert payload["selected_log"] == "run1.log"
     assert payload["available_logs"][0] == "queue.log"

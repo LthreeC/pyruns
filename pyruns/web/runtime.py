@@ -1956,7 +1956,7 @@ class PyrunsRuntime:
             available_logs.insert(0, selected_name)
 
         if not selected_name:
-            selected_path = resolve_log_path(task_dir)
+            selected_path = resolve_log_path(task_dir, options=log_options)
             selected_name = os.path.basename(selected_path) if selected_path else ""
 
         if strict and not selected_path and selected_name:

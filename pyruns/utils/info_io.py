@@ -1052,9 +1052,11 @@ def get_log_options(task_dir: str) -> Dict[str, str]:
     return {name: path for name, (path, _) in get_log_entries(task_dir).items()}
 
 
-def resolve_log_path(task_dir: str, log_file_name: Optional[str] = None) -> Optional[str]:
+def resolve_log_path(
+    task_dir: str, log_file_name: Optional[str] = None, *, options: Dict[str, str] | None = None,
+) -> Optional[str]:
     """Resolve which log file to display for a task."""
-    opts = get_log_options(task_dir)
+    opts = get_log_options(task_dir) if options is None else options
     if log_file_name:
         return opts.get(log_file_name)
     if opts:
