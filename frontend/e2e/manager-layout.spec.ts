@@ -7,16 +7,25 @@ async function fixture(page: Page) {
     script_path: '', script_name: 'Shell', native_file_picker: false, settings: {}, templates: [],
   } }))
   const variants = ['library16', 'diverse', 'bounded', 'support2', 'feedback6']
+  const origins = [
+    { runner_host: 'local-worker', runner_location: 'local', runner_lease_expired: false },
+    { runner_host: 'gpu-worker-02', runner_location: 'remote', runner_lease_expired: true },
+    { runner_host: 'local-worker', runner_location: 'local', runner_lease_expired: false },
+    {},
+    {},
+    { runner_host: 'gpu-worker-03', runner_location: 'remote', runner_lease_expired: false },
+    { task_storage: 'remote', task_source_host: 'gpu-worker-04', runner_location: 'remote' },
+  ]
   let tasks = Array.from({ length: 50 }, (_, index) => {
     const name = `ours_lamp5_scholarly_title_${variants[index % variants.length]}_2026-11-15_17-${String(index).padStart(2, '0')}-08`
     return {
       name, dir: `/shared/experiments/tasks/${name}`, task_identity: `task-${index}`,
       task_kind: 'shell', config_file: 'config.sh', config_text: 'python train.py',
       preview_text: `export CUDA_VISIBLE_DEVICES=${index % 4}\npython train.py --seed ${index} --dataset LaMP-5`,
-      status: ['running', 'queued', 'pending', 'cancelled'][index] ?? (index % 8 === 0 ? 'failed' : 'completed'),
+      status: ['running', 'running', 'queued', 'pending', 'cancelled', 'running', 'queued'][index] ?? (index % 8 === 0 ? 'failed' : 'completed'),
       created_at: `2026-11-15_17-${String(index).padStart(2, '0')}-09`,
       run_index: 1, start_times: [], finish_times: [], pids: [], records: [], tracks: [],
-      config: {}, env: {}, notes: '', progress: 0, pinned: false, runner_host: index < 2 ? 'gpu-worker-02' : null,
+      config: {}, env: {}, notes: '', progress: 0, pinned: false, ...origins[index],
     }
   })
   const requests: string[] = []
@@ -43,7 +52,7 @@ async function fixture(page: Page) {
     return route.fulfill({ json: { ok: true, task: tasks.find(task => task.name === name) } })
   })
   await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
-  return { requests, mutations, first: tasks[0].name, second: tasks[1].name }
+  return { requests, mutations, first: tasks[0].name, reported: tasks[1].name, remoteRunning: tasks[5].name, remoteQueued: tasks[6].name }
 }
 
 test('manager combines quick filters with persistent views and keeps every task action', async ({ page, isMobile }, testInfo) => {
@@ -56,40 +65,58 @@ test('manager combines quick filters with persistent views and keeps every task 
   await page.goto('/manager?token=pyruns-e2e-access-token')
   const cards = page.locator('[data-task-card]')
   await expect(cards).toHaveCount(50)
-  const cardColors = () => cards.evaluateAll(elements => Object.fromEntries(elements.map(element => [
-    element.getAttribute('data-task-status')!,
-    {
-      surface: getComputedStyle(element).backgroundColor,
-      status: getComputedStyle(element.querySelector('.task-card-status-label')!).backgroundColor,
-      frame: getComputedStyle(element, '::before').borderImageSource,
-    },
-  ] as const)))
-  const lightColors = await cardColors()
+  const cardAppearance = (list = false) => cards.evaluateAll((elements, list) => Object.fromEntries(elements.map(element => {
+    const card = getComputedStyle(element)
+    const label = getComputedStyle(element.querySelector('.task-card-status-label')!)
+    const icon = element.querySelector('.task-card-status-icon')!
+    return [element.getAttribute('data-task-tone')!, {
+      surface: card.backgroundColor,
+      stripe: list ? card.borderInlineStartColor : card.borderBlockStartColor,
+      label: label.color,
+      glyph: [...icon.classList].find(name => name.startsWith('lucide-')),
+    }] as const
+  })), list)
+  const lightColors = await cardAppearance()
   expect(new Set(Object.values(lightColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(255, 255, 255)']))
-  expect(new Set(Object.values(lightColors).map(({ status }) => status)).size).toBe(5)
-  expect(lightColors.pending.status).toBe(lightColors.cancelled.status)
-  const lightFrames = Object.values(lightColors).map(({ frame }) => frame)
-  expect(new Set(lightFrames).size).toBe(6)
-  expect(lightFrames.every(frame => frame.startsWith('linear-gradient('))).toBe(true)
-  const runningCard = page.locator('[data-task-card][data-task-status="running"]')
-  await expect(runningCard.getByText('Running', { exact: true })).toBeVisible()
-  await expect(runningCard).toHaveCSS('box-shadow', /0px 2px 0px/)
-  const frame = await runningCard.evaluate(element => {
-    const style = getComputedStyle(element, '::before')
-    return {
-      widths: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth],
-      edges: [style.top, style.right, style.bottom, style.left],
-      radius: style.borderRadius,
-      pointerEvents: style.pointerEvents,
-    }
+  expect(new Set(Object.values(lightColors).map(({ stripe }) => stripe)).size).toBe(7)
+  expect(Object.fromEntries(Object.entries(lightColors).map(([tone, { glyph }]) => [tone, glyph]))).toEqual({
+    running: 'lucide-activity', reported: 'lucide-circle-dashed', queued: 'lucide-clock3',
+    completed: 'lucide-check', failed: 'lucide-x', pending: 'lucide-circle', cancelled: 'lucide-ban',
   })
-  expect(frame.widths).toEqual(['3px', '3px', '3px', '3px'])
-  expect(frame.edges).toEqual(['0px', '0px', '0px', '0px'])
-  expect(frame.radius).toBe('0px')
-  expect(frame.pointerEvents).toBe('none')
+  const runningCard = page.locator(`[data-task-card="${state.first}"]`)
+  const reportedCard = page.locator(`[data-task-card="${state.reported}"]`)
+  const remoteRunningCard = page.locator(`[data-task-card="${state.remoteRunning}"]`)
+  const remoteQueuedCard = page.locator(`[data-task-card="${state.remoteQueued}"]`)
+  await expect(runningCard.getByText('Running', { exact: true })).toBeVisible()
+  await expect(reportedCard).toHaveAttribute('data-task-status', 'running')
+  await expect(reportedCard.getByRole('button', { name: `Open details for ${state.reported}`, exact: true }))
+    .toHaveAccessibleDescription('Last reported running')
+  await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', lightColors.reported.label)
+  await expect(remoteRunningCard.getByText('Remote reports running', { exact: true })).toBeVisible()
+  await expect(remoteRunningCard).toHaveAttribute('data-task-tone', 'reported')
+  await expect(remoteQueuedCard.getByText('Last reported queued', { exact: true })).toBeVisible()
+  await expect(remoteQueuedCard).toHaveAttribute('data-task-tone', 'reported')
+  await expect(runningCard).toHaveCSS('box-shadow', /0px 1px 1px/)
+  await expect(runningCard).toHaveCSS('border-inline-start-width', '1px')
+  await expect(runningCard).toHaveCSS('border-block-start-width', '5px')
+  await expect(runningCard).toHaveCSS('border-radius', '0px')
+  const preview = runningCard.locator('.task-card-preview')
+  await expect(preview).toHaveAttribute('title', 'export CUDA_VISIBLE_DEVICES=0\npython train.py --seed 0 --dataset LaMP-5')
+  expect((await preview.boundingBox())!.height).toBe(16)
+  expect((await reportedCard.boundingBox())!.height).toBeLessThanOrEqual(isMobile ? 232 : 208)
+  for (const card of [runningCard, reportedCard]) {
+    const label = (await card.locator('.task-card-status-label').boundingBox())!
+    const name = (await card.locator('.task-card-name').boundingBox())!
+    expect(label.height).toBe(18)
+    expect(label.y + label.height).toBeLessThanOrEqual(name.y)
+    expect(label.x).toBe(name.x)
+  }
   const pin = runningCard.getByRole('button', { name: `Pin ${state.first}`, exact: true })
   const unpin = runningCard.getByRole('button', { name: `Unpin ${state.first}`, exact: true })
   await expect(pin).toBeVisible()
+  const pinBox = (await pin.boundingBox())!
+  const nameBox = (await runningCard.locator('.task-card-name').boundingBox())!
+  expect(pinBox.y + pinBox.height).toBeLessThanOrEqual(nameBox.y)
   if (isMobile) {
     const controls = await runningCard.locator('.task-card-actions button').evaluateAll(buttons =>
       buttons.map(button => {
@@ -107,6 +134,12 @@ test('manager combines quick filters with persistent views and keeps every task 
   await page.screenshot({ path: testInfo.outputPath('manager-cards.png') })
   await page.locator('[data-tour="manager-controls"]').screenshot({ path: testInfo.outputPath('manager-toolbar.png') })
   if (!isMobile) {
+    const grid = (await page.locator('[data-task-grid]').boundingBox())!
+    const secondRow = (await cards.nth(9).boundingBox())!
+    await page.screenshot({
+      path: testInfo.outputPath('manager-status-preview.png'),
+      clip: { x: grid.x - 2, y: grid.y - 2, width: grid.width + 4, height: secondRow.y + secondRow.height - grid.y + 4 },
+    })
     await page.setViewportSize({ width: 2560, height: 1400 })
     await page.screenshot({ path: testInfo.outputPath('manager-wide.png') })
     await page.setViewportSize({ width: 1600, height: 1000 })
@@ -116,7 +149,7 @@ test('manager combines quick filters with persistent views and keeps every task 
   await unpin.click()
   await expect(runningCard).toHaveAttribute('data-task-card-pinned', 'false')
   await page.getByRole('button', { name: 'Filter tasks: Active' }).click()
-  await expect(page.locator('[data-task-card]')).toHaveCount(2)
+  await expect(cards).toHaveCount(5)
   const options = page.getByRole('button', { name: 'View options', exact: true })
   await options.click()
   await expect(page.getByRole('combobox', { name: 'Filter tasks by status' })).toHaveValue('active')
@@ -130,11 +163,11 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(options).toBeFocused()
   await options.click()
   await page.getByRole('combobox', { name: 'Filter tasks by status' }).selectOption('queued')
-  await expect(page.locator('[data-task-card]')).toHaveCount(1)
+  await expect(cards).toHaveCount(2)
   await page.keyboard.press('Escape')
   await expect(options).toContainText('Queued')
   await page.getByRole('button', { name: 'Filter tasks: Active' }).click()
-  await expect(page.locator('[data-task-card]')).toHaveCount(2)
+  await expect(cards).toHaveCount(5)
   expect(state.requests.at(-1)).toBe('active')
   const all = page.getByRole('button', { name: 'Filter tasks: All tasks' })
   await expect(all).toContainText('50')
@@ -171,15 +204,17 @@ test('manager combines quick filters with persistent views and keeps every task 
   await all.click()
   await expect(page.locator('[data-task-card]')).toHaveCount(50)
   await page.mouse.move(0, 0)
-  await expect.poll(cardColors).toEqual(lightColors)
-  expect(await row.evaluate(element => getComputedStyle(element, '::before').borderTopWidth)).toBe('1px')
-  await expect(row).not.toHaveCSS('box-shadow', /0px 2px 0px/)
+  await expect.poll(() => cardAppearance(true)).toEqual(lightColors)
+  await expect(row).toHaveCSS('border-inline-start-width', '4px')
+  await expect(row.locator('.task-card-preview .truncate-2')).toHaveCSS('-webkit-line-clamp', '2')
+  await expect(row).not.toHaveCSS('box-shadow', /0px 1px 1px/)
   await page.screenshot({ path: testInfo.outputPath('manager-list.png'), animations: 'disabled' })
   if (!isMobile) {
     expect((await row.boundingBox())!.height).toBeLessThan(180)
     const name = (await row.locator('.task-card-name').boundingBox())!
     const state = (await row.locator('.task-card-status-label').boundingBox())!
     expect(state.x).toBeGreaterThan(name.x + name.width)
+    expect((await remoteQueuedCard.locator('.task-card-status-label').boundingBox())!.x).toBe(state.x)
   }
   const select = page.getByRole('button', { name: 'Select tasks', exact: true })
   const position = await select.boundingBox()
@@ -190,10 +225,10 @@ test('manager combines quick filters with persistent views and keeps every task 
   await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await expect(page.getByRole('button', { name: `Deselect ${state.first}`, exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(runningCard).toHaveCSS('background-color', lightColors.running.surface)
-  await expect(runningCard.locator('.task-card-status-label')).toHaveCSS('background-color', lightColors.running.status)
+  await expect(runningCard.locator('.task-card-status-icon')).toHaveCSS('color', lightColors.running.label)
   await expect(runningCard).toHaveClass(/\bring-accent\b/)
-  await expect(runningCard).toHaveCSS('box-shadow', /0px 0px 0px 1px.*0px 2px 0px/)
-  expect((await cardColors()).running.frame).toBe(lightColors.running.frame)
+  await expect(runningCard).toHaveCSS('box-shadow', /0px 0px 0px 1px.*0px 1px 1px/)
+  await expect(runningCard).toHaveCSS('border-block-start-color', lightColors.running.stripe)
   await page.screenshot({ path: testInfo.outputPath('manager-selection.png') })
   await cancel.click()
   await page.getByRole('button', { name: 'List view', exact: true }).click()
@@ -201,20 +236,20 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('button', { name: 'Dark Mode', exact: true }).click()
   await expect(runningCard).toHaveCSS('background-color', 'rgb(28, 31, 40)')
-  const darkColors = await cardColors()
+  const darkColors = await cardAppearance(true)
   expect(new Set(Object.values(darkColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(28, 31, 40)']))
-  expect(new Set(Object.values(darkColors).map(({ status }) => status)).size).toBe(5)
-  expect(darkColors.pending.status).toBe(darkColors.cancelled.status)
-  expect(darkColors.running.status).not.toBe(lightColors.running.status)
-  expect(new Set(Object.values(darkColors).map(({ frame }) => frame)).size).toBe(6)
-  for (const [status, colors] of Object.entries(lightColors)) {
-    expect(darkColors[status].frame).not.toBe(colors.frame)
+  expect(new Set(Object.values(darkColors).map(({ stripe }) => stripe)).size).toBe(7)
+  for (const [tone, colors] of Object.entries(lightColors)) {
+    expect(darkColors[tone].label).not.toBe(colors.label)
+    expect(darkColors[tone].glyph).toBe(colors.glyph)
   }
+  await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', darkColors.reported.label)
   await page.screenshot({ path: testInfo.outputPath('manager-dark.png') })
   await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await page.screenshot({ path: testInfo.outputPath('manager-cards-dark.png') })
   await page.getByRole('button', { name: 'Switch to Chinese', exact: true }).click()
   await expect(page.getByRole('heading', { name: '任务管理', exact: true })).toBeVisible()
+  await expect(reportedCard.getByText('上次报告为运行中', { exact: true })).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('manager-zh.png') })
   await page.locator('[data-tour="manager-controls"]').screenshot({ path: testInfo.outputPath('manager-toolbar-dark-zh.png') })
   if (isMobile) {

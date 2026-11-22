@@ -14,7 +14,8 @@ import {
 import { createPortal } from 'react-dom'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowDown, ArrowDownWideNarrow, ArrowUp, ChevronDown, Cpu, Ellipsis, GripVertical, LayoutGrid, List, ListChecks, Loader2, Pin, Play,
+  Activity, AlertTriangle, ArrowDown, ArrowDownWideNarrow, ArrowUp, Ban, Check, ChevronDown, Circle, CircleDashed, Clock3,
+  Cpu, Ellipsis, GripVertical, LayoutGrid, List, ListChecks, Loader2, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2, X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -39,6 +40,15 @@ import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES]
+const TASK_STATUS_ICONS = {
+  pending: Circle,
+  queued: Clock3,
+  running: Activity,
+  completed: Check,
+  failed: X,
+  cancelled: Ban,
+  reported: CircleDashed,
+}
 const ACTIVITY_SORT_DESCRIPTION = 'Activity uses the last run’s finish time, its start time, or the task’s creation time.'
 const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string; description: string }[] = [
   { value: 'priority', label: 'Smart priority', description: 'Running and queued tasks lead each group. Tasks without a manual position show by recent activity, followed by manually ordered tasks.' },
@@ -1422,6 +1432,9 @@ const TaskCard = memo(function TaskCard({
   const actionBtn = getActionButton(task)
   const readOnly = task.task_storage === 'remote'
   const statusId = useId()
+  const statusLabel = taskStatusLabel(task)
+  const statusTone = statusLabel === STATUS_LABELS[task.status] ? task.status : 'reported'
+  const StatusIcon = TASK_STATUS_ICONS[statusTone]
   const displayName = task.display_name ?? task.name
   const accessibleName = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
@@ -1436,52 +1449,26 @@ const TaskCard = memo(function TaskCard({
     && typeof gpuWait.requested_gpu_count === 'number'
     ? t('{{eligible}}/{{requested}} eligible', { eligible: gpuWait.eligible_gpu_count, requested: gpuWait.requested_gpu_count })
     : ''
-  const status = (
-    <div className="task-card-state flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-      <span id={statusId} className="task-card-status-label min-w-0 max-w-full px-2 py-0.5 text-2xs font-medium [overflow-wrap:anywhere]">
-        {t(taskStatusLabel(task))}
-      </span>
-      {taskPending && (
-        <span className="inline-flex items-center gap-1 text-2xs text-txt-secondary" role="status">
-          <Loader2 aria-hidden="true" className="size-3 animate-spin" />
-          {pendingAction === 'move' ? t("Moving") : pendingAction === 'delete' ? t("Deleting") : t("Updating")}
-        </span>
-      )}
-    </div>
-  )
-
   return (
     <article
       data-task-card={task.name}
       data-task-status={task.status}
+      data-task-tone={statusTone}
       data-task-card-pinned={task.pinned ? 'true' : 'false'}
       data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
       className={clsx(
-        'task-card relative flex min-w-0 flex-col bg-surface-raised [contain-intrinsic-size:182px] [content-visibility:auto] transition-colors duration-150',
+        'task-card relative flex min-w-0 flex-col bg-surface-raised [contain-intrinsic-size:auto_176px] [content-visibility:auto] transition-colors duration-150',
         selected && 'z-[1] ring-1 ring-accent',
         dragging && 'scale-[0.985] opacity-70 ring-1 ring-accent/50',
         dropPlacement && !dragging && 'ring-1 ring-accent/35',
       )}
     >
       {dropIndicator}
-      {selectMode ? (
+      {selectMode && (
         <div className="task-card-corner task-card-control pointer-events-none flex items-center justify-center">
           <SelectionIndicator selected={selected} />
         </div>
-      ) : !readOnly && (
-        <span
-          data-task-drag-handle="true"
-          aria-hidden="true"
-          onPointerDown={event => onPointerDown(task, event)}
-          className={clsx(
-            'task-card-corner task-card-grip task-card-control touch-target flex cursor-grab touch-none items-center justify-center text-txt-tertiary transition-opacity hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing',
-            (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
-          )}
-          title={t("Drag to set manual order; keyboard users can use Move earlier and Move later")}
-        >
-          <GripVertical className="size-4" />
-        </span>
       )}
 
       <div
@@ -1501,6 +1488,18 @@ const TaskCard = memo(function TaskCard({
         aria-pressed={selectMode ? selected : undefined}
         className="task-card-main flex min-w-0 flex-1 flex-col gap-2 text-left focus-visible:outline-offset-[-2px]"
       >
+        <div className="task-card-state flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <span id={statusId} className="task-card-status-label inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs font-semibold leading-4 [overflow-wrap:anywhere]">
+            <StatusIcon aria-hidden="true" className="task-card-status-icon size-[1.125rem] shrink-0" />
+            <span>{t(statusLabel)}</span>
+          </span>
+          {taskPending && (
+            <span className="inline-flex items-center gap-1 text-2xs text-txt-secondary" role="status">
+              <Loader2 aria-hidden="true" className="size-3 animate-spin" />
+              {pendingAction === 'move' ? t("Moving") : pendingAction === 'delete' ? t("Deleting") : t("Updating")}
+            </span>
+          )}
+        </div>
         <div className="task-card-name text-base font-semibold leading-5 tracking-tight text-txt-primary [overflow-wrap:anywhere]" title={displayName}>
           {displayName}
         </div>
@@ -1533,13 +1532,25 @@ const TaskCard = memo(function TaskCard({
             </div>
           )}
         </div>
-        {selectMode && status}
       </div>
 
       {!selectMode && (
-        <div className="task-card-footer flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
-          {status}
-          <div className="task-card-actions ms-auto flex flex-none items-center">
+        <div className="task-card-footer flex min-w-0 items-center justify-end">
+          {!readOnly && (
+            <span
+              data-task-drag-handle="true"
+              aria-hidden="true"
+              onPointerDown={event => onPointerDown(task, event)}
+              className={clsx(
+                'task-card-grip task-card-control touch-target me-auto flex shrink-0 cursor-grab touch-none items-center justify-center text-txt-tertiary transition-opacity hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing',
+                (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
+              )}
+              title={t("Drag to set manual order; keyboard users can use Move earlier and Move later")}
+            >
+              <GripVertical className="size-4" />
+            </span>
+          )}
+          <div className="task-card-actions flex flex-none items-center">
             {!readOnly && (
               <TaskIconButton
                 label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}

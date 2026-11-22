@@ -30,6 +30,7 @@ export default function TaskExecutionInfo({ task, className, showRecordedHost = 
       <Server aria-hidden="true" className="h-3 w-3 shrink-0" /><span className="truncate font-mono">{host}</span>
     </span>}
     {(cancelling || expired) && <span className={clsx('inline-flex items-center gap-1 text-amber-800 dark:text-amber-300', singleLine && 'min-w-0 shrink-[4]')}
+      data-runner-warning={cancelling ? 'cancelling' : 'expired'}
       title={t(cancelling ? 'Cancellation was requested. Waiting for the runner to confirm the result.' : 'The recorded runner lease has expired. This does not confirm that the process stopped; waiting for a verified result.')}>
       <AlertTriangle aria-hidden="true" className="h-3 w-3 shrink-0" />
       <span className={singleLine ? 'monitor-execution-warning-text truncate' : undefined}>
