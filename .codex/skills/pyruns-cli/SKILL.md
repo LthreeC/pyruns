@@ -66,13 +66,13 @@ pyr -C path/to/project -w shell status
 
 ## Track A Terminal Command
 
-`exec` initializes the shell workspace automatically when needed. `--` ends Pyruns option parsing and passes every following item as an exact argument vector:
+`exec` initializes the shell workspace automatically when needed. Supply a complete quoted command with `-c` / `--command`, or a complete script with `--stdin`.
 
 ```bash
-pyr exec -- python -V
-pyr exec -nt env-check -- python -V
-pyr exec -n env-check -- python -V
-pyr exec -n smoke -- python train.py --epochs 1
+pyr exec -c "python -V"
+pyr exec -nt env-check -c "python -V"
+pyr exec -n env-check -c "python -V"
+pyr exec -n smoke -c "python train.py --epochs 1"
 ```
 
 Omitting the name generates `task_YYYY-MM-DD_HH-MM-SS`. Use `-nt PREFIX` or
@@ -81,26 +81,21 @@ Omitting the name generates `task_YYYY-MM-DD_HH-MM-SS`. Use `-nt PREFIX` or
 are mutually exclusive. Automatic names receive an additional unique suffix if they collide;
 an explicit duplicate exact name remains an error.
 
-This quoting-safe form is the default. `--` is a separator, not a shell-mode switch: pipes, redirects, variables, globs, and command chaining are not interpreted. Pyruns stores the argument vector as structured task metadata and reuses the creation working directory on every rerun. Changing the configured shell later does not reinterpret an argv task.
-
-Pass an existing shell script file as the first exact argument to select its interpreter automatically:
+Include the interpreter when tracking a call to an existing script. Reruns use the saved command and working directory to read that script again. Use `--stdin` to save the script text in the task.
 
 ```bash
-pyr exec -n setup -- ./scripts/setup.sh
-pyr exec -n setup-ps -- .\scripts\setup.ps1
-pyr exec -n setup-cmd -- .\scripts\setup.cmd
-pyr exec -n setup-bat -- .\scripts\setup.bat
+pyr exec -n setup -c "bash ./scripts/setup.sh arg1"
+pyr exec -n setup-ps -c "powershell -NoProfile -File .\scripts\setup.ps1"
+pyr exec -n setup-cmd -c "cmd.exe /d /c .\scripts\setup.cmd"
+pyr exec -n setup-bat -c "cmd.exe /d /c .\scripts\setup.bat"
 ```
 
-`.sh` uses an available Bash/sh without requiring an executable bit; `.ps1` uses non-interactive PowerShell; `.cmd` and `.bat` use `cmd.exe` on Windows. Any values after the file path are arguments for that script, not Pyruns options. Paths and script arguments remain separate. This is the tracked replacement for direct `bash xxx.sh` execution: Pyruns keeps logs, elapsed time, the raw exit code, Git/source state, and the original absolute script path for reruns.
-
-Use `-c` / `--command` only when the command intentionally depends on shell syntax such as pipes, redirects, variable expansion, or command chaining:
+Put program options, pipes, redirects, and other shell syntax inside the quotes. Use the calling shell's quoting rules so it passes one command string to Pyruns. Pyruns runs that string through the workspace shell and stores the shell executable and working directory for reruns.
 
 ```bash
 pyr exec -n report -c "python eval.py > metrics.txt"
+pyr exec -n train -c 'python train.py --label "run one"'
 ```
-
-`-c` follows the familiar `sh -c` convention and consumes the remaining command text, so `-c echo hello` becomes `echo hello`. Expressions containing `;`, pipes, redirects, variables, globs, or command chains must be quoted according to the calling shell so they remain one argument until Pyruns starts. Pyruns does not install shell-specific line-editor hooks. It stores the resolved shell executable and creation working directory, then uses both for reruns. Use exact argv after `--` whenever shell syntax is not required.
 
 For multiline scripts, use `--stdin` with a file redirect, pipe, or heredoc:
 
@@ -117,29 +112,26 @@ pyr exec -n from-file --stdin < pipeline.sh
 pyr exec -n preview --dry-run --json --stdin < pipeline.sh
 ```
 
-Quote the heredoc marker and place its closing marker alone at the start of its line. `--stdin` reads the complete UTF-8 script (up to 4 MiB), preserves its text with CRLF normalized to LF, and saves it before starting the task. Detached runs and reruns use the saved text; later edits to the input file do not change it. It uses the workspace shell and stores that interpreter. A shebang does not override the workspace shell; submit Bash scripts from Bash or configure the workspace shell accordingly. Do not combine `--stdin` with `-c` or argv, or pass the script to `pyr exec -- bash -s`: task processes do not inherit the invoking stdin.
+Quote the heredoc marker and place its closing marker alone at the start of its line. `--stdin` reads the complete UTF-8 script (up to 4 MiB), preserves its text with CRLF normalized to LF, and saves it before starting the task. Detached runs and reruns use the saved text. The configured workspace shell interprets the script. Set that shell to match the script's syntax.
 
-`exec` requires a command or explicit `--stdin`. Omitting the command is a usage error in every terminal. `--stdin` requires redirected input and never opens an interactive script prompt. Pyruns does not strip triple quotes or Markdown fences from scripts. In PowerShell, use a single-quoted here-string piped to `pyr exec --stdin`.
+Choose either `-c` or `--stdin`. Feed `--stdin` with raw script text via a pipe, redirect, or heredoc. In PowerShell, use a single-quoted here-string piped to `pyr exec --stdin`.
 
 Shell tasks preserve terminal colors through one cross-platform pseudoterminal contract: Linux and macOS use the system PTY, while Windows explicitly uses native ConPTY without creating a visible console window. SGR colors are stored and replayed; screen clearing, cursor positioning, mode, and window-title controls are filtered. If terminal capture is unavailable, Pyruns falls back to ordinary stdout and stderr pipes.
 
 The START banner and source state are written to the run log before Pyruns copies command output, so framework metadata never appears between command output lines. Source collection runs concurrently with the child process while stdout/stderr is continuously drained into a disk-backed spool; ordering adds no sleep or child-process backpressure.
 
-If the OS cannot start the first exact-argv item directly, Pyruns retries the safely quoted stored
-payload through the workspace shell. This resolves shell aliases and built-ins while preserving the
-shell's original complete error output. Shell syntax in argv values remains quoted rather than being
-reinterpreted.
+Use `pyr run TASK` for existing tasks saved with a structured argument vector.
 
-Set a few task-local environment variables with one `-e` or `--env` followed by multiple `KEY=VALUE` entries. `--` marks the target-command boundary. Repeating the option remains supported:
+Set a few task-local environment variables with one `-e` or `--env` followed by multiple `KEY=VALUE` entries. Put these entries before `-c` or `--stdin`. You can also repeat `-e`.
 
 ```bash
-pyr exec -n train -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -- python train.py
+pyr exec -n train -e CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false SEED=42 -c "python train.py"
 ```
 
 Pyruns already sets `PYTHONUNBUFFERED=1`, `PYTHONIOENCODING=utf-8`, and `PYTHONUTF8=1` for child processes. For larger sets, load one or more UTF-8 files containing blank lines, whole-line `#` comments, and `KEY=VALUE` entries:
 
 ```bash
-pyr exec -n train --env-file .env.train -e SEED=42 -- python train.py
+pyr exec -n train --env-file .env.train -e SEED=42 -c "python train.py"
 ```
 
 Later env files override earlier files; command-line `-e` values override every file. Env files do not evaluate shell syntax or interpolation. Task-local environment values are persisted in `task_info.json` and shown by `show`; do not put secrets there.
@@ -149,7 +141,7 @@ Environment variables set on the invoking shell are inherited for that invocatio
 Foreground execution follows plain log output and returns the task result. Add `-d` or `--detach` only when the caller should return after the hidden runner accepts the task:
 
 ```bash
-pyr exec -n train -d -- python train.py --epochs 100
+pyr exec -n train -d -c "python train.py --epochs 100"
 pyr -w shell wait train
 ```
 
@@ -160,11 +152,11 @@ On Windows, detached runners and their managed task processes do not open new co
 Preview `exec` without creating a workspace or task and without starting the user command:
 
 ```bash
-pyr exec --dry-run -n smoke -- python -V
-pyr exec --dry-run -n smoke --json -- python -V
+pyr exec --dry-run -n smoke -c "python -V"
+pyr exec --dry-run -n smoke --json -c "python -V"
 ```
 
-The plan reports workspace creation, task-name availability, working directory, command mode and argv or shell expression, runtime, and environment. Treat `planned_name: null` as a signal that automatic timestamp naming needs an additional unique suffix. An explicit duplicate `--name` remains an error. Preview and detached execution are different operations, so `--dry-run` and `--detach` are rejected together.
+The plan reports workspace creation, task-name availability, working directory, shell command text, runtime, and environment. `planned_name: null` indicates that automatic timestamp naming needs an additional unique suffix. Choose `--dry-run` to preview or `--detach` to start in the background.
 
 ## Use A Python Script Workspace
 
