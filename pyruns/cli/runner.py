@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -25,10 +24,12 @@ from pyruns.cli.submission_protocol import (
 )
 from pyruns.utils.process_utils import get_process_create_time, kill_process
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
+from pyruns.update_release import current_release_root, module_command
 
 
 SubmissionStatus = Literal[
     "accepted",
+    "accepted_partial",
     "partial",
     "rejected",
     "aborted",
@@ -110,7 +111,7 @@ def _terminal_result_from_receipt(
     if receipt is None or receipt.status not in TERMINAL_RECEIPT_STATUSES:
         return None
     runner_id = None
-    if receipt.status == "accepted":
+    if receipt.status in {"accepted", "accepted_partial"}:
         runner_id = f"{socket.gethostname().lower()}:{receipt.runner_pid}:{token}"
     return _result_from_receipt(receipt, runner_id=runner_id, attempt_id=token if runner_id else None)
 
@@ -205,7 +206,7 @@ def _abort_submission(
                 known_claimed_set.add(name)
                 known_claimed.append(name)
 
-        if receipt.status not in TERMINAL_RECEIPT_STATUSES or receipt.status == "accepted":
+        if receipt.status not in TERMINAL_RECEIPT_STATUSES or receipt.status in {"accepted", "accepted_partial"}:
             return None
 
         # A later receipt may never forget ownership already reported by this runner.
@@ -325,9 +326,11 @@ def submit_cli_tasks(
     task_names: list[str],
     *,
     expected_runs: dict[str, int],
-    max_workers: int = 1,
+    max_workers: int | None = 1,
     startup_timeout: float | None = None,
     gpu_wait_rule: str | None = None,
+    web_batch: bool = False,
+    task_identities: dict[str, str] | None = None,
 ) -> SubmissionResult:
     """Start a hidden runner and wait for its exact ownership receipt."""
 
@@ -354,17 +357,18 @@ def submit_cli_tasks(
     submission_token = uuid.uuid4().hex
     receipt_file, abort_file = submission_control_paths(str(tm.tasks_dir), submission_token)
     payload_file = submission_payload_path(str(tm.tasks_dir), submission_token)
-    command = [
-        sys.executable,
-        "-m",
+    command = module_command(
         "pyruns.cli.detached_runner",
         "--workspace",
         workspace,
         "--jobs",
-        str(max(1, int(max_workers))),
+        str(max(1, int(max_workers)) if max_workers is not None else 0),
         "--submission-token",
         submission_token,
-    ]
+        release=current_release_root(),
+    )
+    if web_batch:
+        command.append("--web-batch")
 
     env = os.environ.copy()
     # A CLI process may have been launched by a Python test runner, an IDE,
@@ -400,6 +404,7 @@ def submit_cli_tasks(
                 names=names,
                 run_indices=run_indices,
                 gpu_wait_rule=gpu_wait_rule,
+                **({"task_identities": task_identities} if task_identities is not None else {}),
             )
         except (OSError, ValueError):
             remove_control_file(payload_file)

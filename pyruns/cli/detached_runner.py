@@ -36,6 +36,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--submission-token", required=True)
+    parser.add_argument("--web-batch", action="store_true")
     return parser.parse_args()
 
 
@@ -204,6 +205,7 @@ def _stop_and_report(
 
 def main() -> int:
     args = _parse_args()
+    web_batch = getattr(args, "web_batch", False)
     tm: TaskManager | None = None
     names: list[str] = []
     run_indices: list[int] = []
@@ -224,7 +226,7 @@ def main() -> int:
         names = list(payload.names)
         run_indices = list(payload.run_indices)
         remove_control_file(payload_file)
-        if not names or len(names) != len(set(names)) or args.jobs <= 0:
+        if not names or len(names) != len(set(names)) or args.jobs < (0 if web_batch else 1):
             return 2
 
         activity.start()
@@ -255,13 +257,12 @@ def main() -> int:
         tm = TaskManager(tasks_dir=tasks_dir, lazy_scan=False, runner_token=token)
 
         loaded = [tm.get_task(name) for name in names]
-        if any(
-            not task
-            or not str(task.get("dir", "") or "")
-            or task.get("_load_error")
-            or str(task.get("status", "") or "").lower() in _ACTIVE_STATUSES
-            for task in loaded
-        ):
+        selected = {
+            str(task["name"]): task for task in loaded
+            if task and task.get("dir") and not task.get("_load_error")
+            and str(task.get("status", "") or "").lower() not in _ACTIVE_STATUSES
+        }
+        if not selected or (not web_batch and len(selected) != len(names)):
             _report(
                 receipt_file,
                 token=token,
@@ -272,7 +273,6 @@ def main() -> int:
                 detail="one or more tasks are unavailable",
             )
             return 2
-        selected = {str(task["name"]): task for task in loaded if task}
 
         if abort_requested(abort_file, token=token):
             _report(
@@ -294,7 +294,21 @@ def main() -> int:
             status="claiming",
             claimed=claimed,
         )
-        for name, expected_run_index in zip(names, run_indices, strict=True):
+        expected_runs = dict(zip(names, run_indices, strict=True))
+        if web_batch:
+            claimed = tm.start_batch_tasks(
+                list(selected),
+                max_workers=args.jobs or None,
+                expected_run_indices=expected_runs,
+                expected_task_identities=payload.task_identities,
+            )
+            if not claimed:
+                _report(
+                    receipt_file, token=token, names=names, run_indices=run_indices,
+                    status="rejected", claimed=claimed, detail="no tasks could be claimed",
+                )
+                return 2
+        for name, expected_run_index in (() if web_batch else expected_runs.items()):
             if abort_requested(abort_file, token=token):
                 return _stop_and_report(
                     tm,
@@ -356,11 +370,11 @@ def main() -> int:
             token=token,
             names=names,
             run_indices=run_indices,
-            status="accepted",
+            status="accepted" if len(claimed) == len(names) else "accepted_partial",
             claimed=claimed,
         )
         accepted_reported = True
-        settled: dict[str, str | None] = {}
+        settled: dict[str, str | None] = {name: "skipped" for name in names if name not in claimed}
         expected_runner_id = str(getattr(tm, "runner_id", "") or "") or None
         poll_interval = _POLL_INTERVAL_SEC
         previous_settled_count = 0
@@ -403,7 +417,7 @@ def main() -> int:
                         stopped_status="aborted",
                         detail="accepted submission was aborted during handoff",
                     )
-                return 0 if all(status == "completed" for status in settled.values()) else 1
+                return 0 if all(status in {"completed", "skipped"} for status in settled.values()) else 1
             progressed = len(settled) != previous_settled_count
             previous_settled_count = len(settled)
             time.sleep(poll_interval)

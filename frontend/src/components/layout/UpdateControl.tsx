@@ -383,7 +383,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
 
     const confirmed = await requestConfirmation({
       title: t('Update Pyruns to v{{version}}?', { version: versionCheck.latest_version }),
-      description: t('Pyruns upgrades from v{{version}} and restarts the interfaces sharing this installation when the affected tasks finish. Save open drafts before restarting.', { version: versionCheck.current_version }),
+      description: t('The Web UI will briefly disconnect. Tasks continue running. Save open drafts before continuing.'),
       confirmLabel: t('Update and Restart'),
     })
     if (!confirmed) return
@@ -413,7 +413,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     const targetVersion = systemInfo.installed_version || systemInfo.version
     const confirmed = await requestConfirmation({
       title: t('Restart Pyruns to load v{{version}}?', { version: targetVersion }),
-      description: t('Pyruns restarts the interfaces sharing this installation when their active work finishes. Save open drafts before restarting.'),
+      description: t('The Web UI will briefly disconnect. Tasks continue running. Save open drafts before continuing.'),
       confirmLabel: t('Restart Interfaces'),
     })
     if (!confirmed) return

@@ -159,6 +159,7 @@ class TaskManager:
         runner_token: str | None = None,
         *,
         owns_task_lifecycle: bool = True,
+        watch_task_changes: bool = False,
         reconcile_unowned_running: bool | None = None,
         include_other_devices: bool = False,
     ):
@@ -240,9 +241,10 @@ class TaskManager:
             self.scan_disk()
 
         self._scheduler_thread: threading.Thread | None = None
-        if self.owns_task_lifecycle:
+        if self.owns_task_lifecycle or watch_task_changes:
             self._scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
             self._scheduler_thread.start()
+        if self.owns_task_lifecycle:
             atexit.register(self._atexit_callback)
             self._atexit_registered = True
 
@@ -3526,7 +3528,7 @@ class TaskManager:
                         payload_interval=30.0, background=True,
                     ) is not None
                 )
-                should_refresh = (
+                should_refresh = self.owns_task_lifecycle and (
                     self._running_ids or
                     self.is_processing or
                     (now - last_refresh >= 1.0)
@@ -3538,10 +3540,11 @@ class TaskManager:
                             last_trigger = now
                             self.trigger_update()
                     last_refresh = time.monotonic()
-                    self._refresh_queued_runner_leases()
-                    self._process_cancel_requests()
+                    if self.owns_task_lifecycle:
+                        self._refresh_queued_runner_leases()
+                        self._process_cancel_requests()
 
-                if not self.is_processing:
+                if not self.owns_task_lifecycle or not self.is_processing:
                     if self._shutdown_event.wait(0.5):
                         break
                     continue

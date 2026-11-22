@@ -21,7 +21,7 @@ RUNNER_CLEANUP_TIMEOUT_SEC = 15.0
 SUBMITTER_ABORT_TIMEOUT_SEC = RUNNER_CLEANUP_TIMEOUT_SEC + 10.0
 INTERMEDIATE_RECEIPT_STATUSES = frozenset({"starting", "claiming", "stopping"})
 TERMINAL_RECEIPT_STATUSES = frozenset(
-    {"accepted", "partial", "rejected", "aborted", "unresolved"}
+    {"accepted", "accepted_partial", "partial", "rejected", "aborted", "unresolved"}
 )
 RECEIPT_STATUSES = INTERMEDIATE_RECEIPT_STATUSES | TERMINAL_RECEIPT_STATUSES
 _TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}")
@@ -44,6 +44,7 @@ class SubmissionPayload:
     names: tuple[str, ...]
     run_indices: tuple[int, ...]
     gpu_wait_rule: str | None = None
+    task_identities: dict[str, str] | None = None
 
 
 def validate_submission_token(token: str) -> str:
@@ -304,6 +305,7 @@ def write_submission_payload(
     names: list[str] | tuple[str, ...],
     run_indices: list[int] | tuple[int, ...],
     gpu_wait_rule: str | None = None,
+    task_identities: dict[str, str] | None = None,
 ) -> None:
     """Write one bounded, token-bound task submission payload."""
 
@@ -333,6 +335,10 @@ def write_submission_payload(
     }
     if gpu_wait_rule is not None:
         payload["gpu_wait_rule"] = parse_gpu_wait_rule(gpu_wait_rule).canonical
+    if task_identities is not None:
+        if not _valid_task_identities(task_identities, normalized_names):
+            raise ValueError("invalid submission task identities")
+        payload["task_identities"] = task_identities
     encoded = json.dumps(
         payload,
         ensure_ascii=True,
@@ -363,10 +369,7 @@ def read_submission_payload(path: str, *, token: str) -> SubmissionPayload:
         raise ValueError("invalid submission payload") from exc
     if (
         not isinstance(payload, dict)
-        or set(payload) not in (
-            {"schema_version", "submission_token", "submissions"},
-            {"schema_version", "submission_token", "submissions", "gpu_wait_rule"},
-        )
+        or not set(payload) <= {"schema_version", "submission_token", "submissions", "gpu_wait_rule", "task_identities"}
         or type(payload.get("schema_version")) is not int
         or payload.get("schema_version") != SCHEMA_VERSION
         or payload.get("submission_token") != expected_token
@@ -395,7 +398,18 @@ def read_submission_payload(path: str, *, token: str) -> SubmissionPayload:
     rule = None
     if "gpu_wait_rule" in payload:
         rule = parse_gpu_wait_rule(payload["gpu_wait_rule"]).canonical
-    return SubmissionPayload(tuple(names), tuple(run_indices), rule)
+    identities = payload.get("task_identities")
+    if "task_identities" in payload and not _valid_task_identities(identities, names):
+        raise ValueError("invalid submission task identities")
+    return SubmissionPayload(tuple(names), tuple(run_indices), rule, identities)
+
+
+def _valid_task_identities(value: Any, names: list[str] | tuple[str, ...]) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == set(names)
+        and all(isinstance(identity, str) and identity for identity in value.values())
+    )
 
 
 def _is_string_list(value: Any) -> bool:
@@ -409,7 +423,7 @@ def _validate_status_partition(
 ) -> None:
     if status == "accepted" and (not claimed or unclaimed):
         raise ValueError("accepted receipt must claim every task")
-    if status == "partial" and (not claimed or not unclaimed):
+    if status in {"partial", "accepted_partial"} and (not claimed or not unclaimed):
         raise ValueError("partial receipt must split claimed and unclaimed tasks")
     if status == "rejected" and (claimed or not unclaimed):
         raise ValueError("rejected receipt cannot claim a task")

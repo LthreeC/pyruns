@@ -105,7 +105,7 @@ test('busy update is refused without waiting and can be retried after tasks fini
   await page.goto('/?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ }).click()
   const confirmation = page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' })
-  await expect(confirmation).toContainText('when the affected tasks finish')
+  await expect(confirmation).toContainText('Tasks continue running.')
   await confirmation.getByRole('button', { name: 'Update and Restart' }).click()
   const failure = page.getByRole('dialog', { name: 'Could not update Pyruns' })
   await expect(failure).toContainText('2 queued or running tasks')

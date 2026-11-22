@@ -11,7 +11,6 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator
 
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
@@ -24,7 +23,8 @@ UPDATE_LOCK_FILENAME = "coordination.lock"
 UPDATE_LOCK_GUARD_FILENAME = f"{UPDATE_LOCK_FILENAME}.guard"
 UPDATE_INSTANCES_DIRNAME = "instances"
 UPDATE_ACTIVITIES_DIRNAME = "activities"
-UPDATE_ACTIVE_STAGES = frozenset({"draining", "updating"})
+ISOLATED_UPGRADE_STAGE = "staging-release"
+UPDATE_ACTIVE_STAGES = frozenset({"draining", "updating", ISOLATED_UPGRADE_STAGE})
 UPDATE_HEARTBEAT_SECONDS = 1.0
 UPDATE_LEASE_TIMEOUT_SECONDS = 60.0
 UPDATE_REQUEST_TIMEOUT_SECONDS = 180.0
@@ -58,8 +58,9 @@ def coordination_state_dir(path: str | os.PathLike[str] | None = None) -> str:
     selected = path if path is not None else os.getenv(UPDATE_STATE_DIR_ENV)
     if selected:
         return os.path.abspath(os.path.expanduser(os.path.expandvars(os.fspath(selected))))
-    package_parent = Path(__file__).resolve().parent.parent
-    return str(package_parent / ".pyruns-update")
+    from pyruns.update_release import installation_root
+
+    return str(installation_root() / ".pyruns-update")
 
 
 def _bounded_json(
@@ -816,7 +817,8 @@ class EnvironmentActivityLease:
             return self
         try:
             with self.store.locked():
-                if self.store.active_request_locked(recover=True) is not None:
+                request = self.store.active_request_locked(recover=True)
+                if request is not None and request.get("stage") != ISOLATED_UPGRADE_STAGE:
                     raise UpdateInProgressError(
                         "Pyruns is updating; new tasks are disabled until every UI restarts."
                     )
@@ -833,6 +835,7 @@ class EnvironmentActivityLease:
             if (
                 self.store.request_is_active(request)
                 and request is not None
+                and request.get("stage") != ISOLATED_UPGRADE_STAGE
                 and not self.store.request_is_stale(request)
             ):
                 raise UpdateInProgressError(

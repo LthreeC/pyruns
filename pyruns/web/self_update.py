@@ -15,18 +15,27 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from importlib.metadata import PackageNotFoundError, version as distribution_version
+from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from packaging.version import InvalidVersion, Version
 
 from pyruns.update_coordination import (
+    ISOLATED_UPGRADE_STAGE,
     UPDATE_HEARTBEAT_SECONDS,
     CoordinationStore,
     UpdateCoordinationError,
     UpdateInProgressError,
     _coordination_write_is_denied,
     process_record,
+)
+from pyruns.update_release import (
+    create_release_directory,
+    current_release_root,
+    discard_unpublished_release,
+    module_command,
+    publish_release,
+    selected_release,
 )
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 
@@ -68,7 +77,7 @@ class LatestVersionCheckError(RuntimeError):
 
 
 class UiUpdateCoordinator:
-    """Gate starts and coordinate idle restarts across one shared installation."""
+    """Coordinate application updates across one shared installation."""
 
     def __init__(
         self,
@@ -77,6 +86,7 @@ class UiUpdateCoordinator:
         state_dir: str | None = None,
         shared: bool = False,
         current_version: str = "",
+        isolated_upgrades: bool = False,
     ) -> None:
         self._shutdown_callback = shutdown_callback
         self._lock = threading.RLock()
@@ -89,6 +99,8 @@ class UiUpdateCoordinator:
         self._target_version = ""
         self._request_id = ""
         self._operation = "upgrade"
+        self._isolated_upgrades = isolated_upgrades
+        self._isolated = False
         self._role = "owner"
         self._scheduled_operation: dict[str, str] | None = None
         self._next_scheduled_check = 0.0
@@ -186,6 +198,8 @@ class UiUpdateCoordinator:
             ) from exc
 
     def _serving_counts(self) -> tuple[int, int]:
+        if self._isolated_upgrades and getattr(self._runtime, "detached_task_runs", False):
+            return 0, 0
         try:
             active = max(0, int(self._runtime.active_task_count()))
             restart_active = active
@@ -249,6 +263,7 @@ class UiUpdateCoordinator:
             self._scheduled_operation = None
             self._request_id = str(request.get("request_id", "") or "")
             self._operation = str(request.get("operation", "upgrade") or "upgrade")
+            self._isolated = request.get("isolated") is True
             self._target_version = str(request.get("target_version", "") or "")
             self._role = (
                 "owner"
@@ -267,6 +282,8 @@ class UiUpdateCoordinator:
             active_count, restart_active_count = self._serving_counts()
             with self._store.locked():
                 request = self._store.active_request_locked(recover=True)
+                if request is not None and request.get("stage") == ISOLATED_UPGRADE_STAGE:
+                    request = None
                 if request is not None:
                     self._join_request(request)
                 self._write_instance(
@@ -332,7 +349,8 @@ class UiUpdateCoordinator:
             try:
                 lock_context.__enter__()
                 lock_acquired = True
-                if self._store.active_request_locked(recover=True) is not None:
+                request = self._store.active_request_locked(recover=True)
+                if request is not None and request.get("stage") != ISOLATED_UPGRADE_STAGE:
                     raise UpdateInProgressError(
                         "Pyruns is updating; new tasks are disabled until every UI restarts."
                     )
@@ -347,9 +365,14 @@ class UiUpdateCoordinator:
                     "Could not coordinate this task start with the shared Pyruns installation."
                 ) from exc
             try:
+                if self._isolated_upgrades:
+                    # The detached worker checks the gate when it claims tasks.
+                    # It cannot do so while the submitting UI holds this lock.
+                    lock_context.__exit__(None, None, None)
+                    lock_acquired = False
                 yield
             finally:
-                if sys.exc_info()[0] is None:
+                if lock_acquired and sys.exc_info()[0] is None:
                     try:
                         active_count, restart_active_count = self._serving_counts()
                         self._write_instance(
@@ -359,10 +382,11 @@ class UiUpdateCoordinator:
                         )
                     except (OSError, ValueError):
                         pass
-                lock_context.__exit__(*sys.exc_info())
+                if lock_acquired:
+                    lock_context.__exit__(*sys.exc_info())
 
     def prepare(self, runtime: Any, *, target_version: str = "", defer_if_busy: bool = False) -> bool:
-        """Publish an upgrade gate after every registered process is idle."""
+        """Coordinate an installation upgrade and UI relaunch."""
 
         target_version = str(target_version or "").strip()
         if target_version:
@@ -428,12 +452,13 @@ class UiUpdateCoordinator:
         """Check and publish the gate while the coordinator lock is held."""
 
         if self._requested:
-            return self._strict_active_count(restart_only=self._operation == "restart") == 0
+            return self._strict_active_count(restart_only=self._operation == "restart" or self._isolated) == 0
         if self._coordination_error:
             raise UpdateCheckError(
                 "Shared update coordination is unavailable for this installation."
             )
         restart_only = operation == "restart"
+        isolated = self._isolated_upgrades and not restart_only
         if self._store is None:
             active_count = self._strict_active_count(restart_only=restart_only)
             if active_count:
@@ -451,22 +476,35 @@ class UiUpdateCoordinator:
                 existing = self._store.active_request_locked(recover=True)
                 if existing is not None:
                     self._join_request(existing)
-                    active_count = self._strict_active_count(restart_only=self._operation == "restart")
+                    active_count = self._strict_active_count(
+                        restart_only=self._operation == "restart" or self._isolated,
+                    )
                     self._write_instance(phase="draining", active_count=active_count, request_id=self._request_id)
                     return active_count == 0
 
-                instances = self._store.live_records_locked("instances")
+                if isolated:
+                    installed = self.refresh_installed_version(force=True)
+                    if (
+                        installed and (not self._current_version or Version(installed) > Version(self._current_version))
+                        and (not target_version or Version(installed) >= Version(target_version))
+                    ):
+                        # The browser may have confirmed a target that another
+                        # host installed while the confirmation was open.
+                        self._prepare_local_restart(installed)
+                        return True
+
+                instances = [] if isolated else self._store.live_records_locked("instances")
                 count_key = "restart_active_count" if restart_only else "active_count"
                 active_count = sum(
                     max(0, int(item.get(count_key, item.get("active_count", 0)) or 0))
                     for item in instances
                     if str(item.get("id", "") or "") != self._instance_id
                 )
-                if not restart_only:
+                if not restart_only and not isolated:
                     active_count += len(self._store.live_records_locked("activities"))
                 if active_count:
                     raise ActiveTasksError(active_count)
-                active_count = self._strict_active_count(restart_only=restart_only)
+                active_count = self._strict_active_count(restart_only=restart_only or isolated)
                 if active_count:
                     raise ActiveTasksError(active_count)
                 if self._stop.is_set():
@@ -482,12 +520,14 @@ class UiUpdateCoordinator:
                         "request_id": request_id,
                         "owner_instance_id": self._instance_id,
                         "operation": operation,
-                        "stage": "draining",
+                        "stage": ISOLATED_UPGRADE_STAGE if isolated else "draining",
                         "previous_version": self._current_version,
                         "target_version": target_version,
                         "requested_at": time.time(),
                     }
                 )
+                if isolated:
+                    request["isolated"] = True
                 self._store.write_request_locked(request)
                 self._join_request(request)
                 self._write_instance(phase="draining", active_count=0, request_id=request_id)
@@ -550,14 +590,10 @@ class UiUpdateCoordinator:
 
     @staticmethod
     def _installed_version(fallback: str) -> str:
-        try:
-            value = str(distribution_version("pyruns") or "").strip()
-        except (PackageNotFoundError, OSError, ValueError):
-            return fallback
-        return value or fallback
+        return selected_release(fallback)[0]
 
     def _drain_once(self) -> None:
-        active_count = self._strict_active_count(restart_only=self._operation == "restart")
+        active_count = self._strict_active_count(restart_only=self._operation == "restart" or self._isolated)
         self._write_instance(
             phase="draining",
             active_count=active_count,
@@ -581,6 +617,36 @@ class UiUpdateCoordinator:
                     heartbeat_at=time.time(),
                 )
 
+    def _join_completed_restart(self, request: dict[str, Any] | None, installed: str) -> bool:
+        if request is None or request.get("stage") != "completed" or not request.get("request_id"):
+            return False
+        result = request.get("result")
+        if not isinstance(result, dict) or result.get("ok") is not True or result.get("installed_version") != installed:
+            return False
+        if self._stop.is_set() or self._strict_active_count(restart_only=True):
+            return False
+        # Reload this UI using the previous handoff without republishing the
+        # update gate or requesting another installation.
+        self._join_request(request)
+        self._role = "follower"
+        self._operation = "restart"
+        self._target_version = installed
+        return True
+
+    def _prepare_local_restart(self, installed: str) -> None:
+        active_count = self._strict_active_count(restart_only=True)
+        if active_count:
+            raise ActiveTasksError(active_count)
+        if self._stop.is_set():
+            raise UpdateCheckError("This Pyruns interface is already shutting down.")
+        self._requested = True
+        self._scheduled_operation = None
+        self._operation = "restart"
+        self._target_version = installed
+        self._role = "owner"
+        self._request_id = ""
+        self._isolated = False
+
     def _restart_after_shared_completion(self, installed: str) -> bool:
         """Join a successful shared update this UI missed while it was serving."""
 
@@ -595,30 +661,22 @@ class UiUpdateCoordinator:
             ):
                 return False
             self._next_shared_restart_check = now + SCHEDULED_OPERATION_RETRY_SECONDS
+            if self._isolated_upgrades:
+                version, release = selected_release(self._current_version)
+                if release is not None and version == installed:
+                    # The active release is durable even if a later request
+                    # replaced the completion record on the shared filesystem.
+                    try:
+                        self._prepare_local_restart(installed)
+                    except (ActiveTasksError, UpdateCheckError):
+                        return False
+                    return True
             with self._store.locked():
                 request = self._store.read_request_locked()
-                if request is None or request.get("stage") != "completed" or not request.get("request_id"):
-                    return False
-                result = request.get("result")
-                if (
-                    not isinstance(result, dict) or result.get("ok") is not True
-                    or result.get("installed_version") != installed
-                ):
-                    return False
                 try:
-                    if self._strict_active_count(restart_only=True):
-                        return False
+                    return self._join_completed_restart(request, installed)
                 except UpdateCheckError:
                     return False
-                if self._stop.is_set():
-                    return False
-                # Reuse the follower handoff with the existing completed request.
-                # Its restart must not publish a new gate or restart updated peers.
-                self._join_request(request)
-                self._role = "follower"
-                self._operation = "restart"
-                self._target_version = installed
-                return True
 
     def _monitor_tick(self) -> None:
         if self._store is None:
@@ -627,8 +685,18 @@ class UiUpdateCoordinator:
         # Match prepare's lock order so a completed request cannot clear a
         # newly accepted update while this monitor is reading shared state.
         with self._lock:
+            if self._requested and not self._request_id:
+                return
             with self._store.locked():
                 request = self._store.active_request_locked(recover=True)
+                if (
+                    request is not None
+                    and request.get("stage") == ISOLATED_UPGRADE_STAGE
+                    and request.get("owner_instance_id") != self._instance_id
+                    and not self._requested
+                ):
+                    # Other interfaces stay online until they can see the new files.
+                    request = None
                 if request is not None:
                     self._join_request(request)
                 elif self._requested and not self._shutdown_triggered:
@@ -825,6 +893,9 @@ def _replace_current_process(command: list[str], environment: dict[str, str]) ->
             exit_code = subprocess.call(
                 command,
                 env=environment,
+                stdin=sys.stdin,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
                 **hidden_subprocess_kwargs(),
             )
         except OSError as exc:
@@ -847,15 +918,14 @@ def replace_process_with_updater(
 ) -> None:
     """Replace the current UI process so package files are no longer in use."""
 
-    command = [
-        sys.executable,
-        "-m",
+    command = module_command(
         "pyruns.web.self_update",
         "--port",
         str(int(port)),
         "--previous-version",
         str(previous_version),
-    ]
+        release=current_release_root(),
+    )
     if request_id:
         command.extend(["--request-id", str(request_id)])
     if instance_id:
@@ -873,7 +943,7 @@ def replace_process_with_updater(
     message = (
         "[pyruns] Shared Pyruns files changed; restarting every idle UI."
         if restart_only
-        else "[pyruns] Every Pyruns UI is idle; starting the shared installation upgrade."
+        else "[pyruns] Starting the Pyruns upgrade."
     )
     print(message, flush=True)
     _replace_current_process(command, environment)
@@ -890,9 +960,7 @@ def replace_process_with_waiter(
 ) -> None:
     """Replace a stopped follower UI with a package-independent update waiter."""
 
-    command = [
-        sys.executable,
-        "-m",
+    command = module_command(
         "pyruns.web.self_update",
         "--wait",
         "--port",
@@ -905,7 +973,8 @@ def replace_process_with_waiter(
         str(instance_id),
         "--state-dir",
         str(state_dir),
-    ]
+        release=current_release_root(),
+    )
     environment = os.environ.copy()
     environment[UI_TOKEN_ENV] = str(token)
     print("[pyruns] Waiting for the shared Pyruns installation to finish updating.", flush=True)
@@ -933,18 +1002,45 @@ def _query_installed_version(fallback: str) -> str:
     return version_text if completed.returncode == 0 and version_text else fallback
 
 
+def _query_staged_version(root: Path) -> str:
+    if not (root / "pyruns" / "web" / "static" / "index.html").is_file():
+        raise ValueError("The staged package has no Web UI.")
+    completed = subprocess.run(
+        [
+            sys.executable, "-I", "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from pyruns import __version__; "
+            "import pyruns.update_release, pyruns.web.app, pyruns.cli.detached_runner; "
+            "print(__version__)",
+            str(root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=INSTALLED_VERSION_QUERY_TIMEOUT_SECONDS,
+        **hidden_subprocess_kwargs(),
+    )
+    if completed.returncode:
+        raise ValueError(completed.stderr.strip()[-1024:] or "The staged Pyruns package cannot start.")
+    return completed.stdout.strip()
+
+
 def run_pip_upgrade(
     previous_version: str,
     *,
     target_version: str = "",
+    install_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run the requested pip operation and return a relaunch-safe result."""
 
     requirement = f"pyruns>={Version(target_version)}" if target_version else "pyruns"
-    command = [
-        sys.executable, "-m", "pip", "install", "--upgrade",
-        "--no-input", "--disable-pip-version-check", requirement,
-    ]
+    command = [sys.executable, "-m", "pip", "install"]
+    if install_root is None:
+        command.append("--upgrade")
+    else:
+        command.extend(["--target", str(install_root), "--ignore-installed"])
+    command.extend(["--no-input", "--disable-pip-version-check", requirement])
+    environment = {**os.environ, "PIP_USER": "0"} if install_root is not None else None
     error = ""
     print(f"[pyruns] Running: {subprocess.list2cmdline(command)}", flush=True)
     try:
@@ -956,6 +1052,7 @@ def run_pip_upgrade(
                 check=False,
                 timeout=PIP_UPGRADE_TIMEOUT_SECONDS,
                 stderr=error_log,
+                env=environment,
                 **hidden_subprocess_kwargs(),
             )
             error_log.seek(0, os.SEEK_END)
@@ -980,7 +1077,15 @@ def run_pip_upgrade(
         error = f"Could not start pip: {exc}"
         print(f"[pyruns] Could not start pip: {exc}", file=sys.stderr, flush=True)
 
-    installed_version = _query_installed_version(previous_version)
+    installed_version = previous_version
+    if install_root is None:
+        installed_version = _query_installed_version(previous_version)
+    elif exit_code == 0:
+        try:
+            installed_version = _query_staged_version(install_root)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            exit_code = 1
+            error = str(exc)
     try:
         previous = Version(str(previous_version))
         installed = Version(str(installed_version))
@@ -1082,8 +1187,8 @@ def _wait_for_update_participants(
     instance_id: str,
     previous_version: str,
     restart_only: bool = False,
-) -> None:
-    """Wait until the UIs stop and, for a pip upgrade, CLI activity has ended."""
+) -> bool:
+    """Verify ownership and wait for other users of an in-place installation."""
 
     deadline = time.monotonic() + UPDATE_PARTICIPANT_WAIT_SECONDS
     next_report = 0.0
@@ -1093,9 +1198,10 @@ def _wait_for_update_participants(
             request = store.read_request_locked()
             if request is None or str(request.get("request_id", "") or "") != request_id:
                 raise UpdateCoordinationError("The shared Pyruns update request disappeared.")
+            isolated = not restart_only and request.get("isolated") is True
             owner = process_record(record_id=instance_id, kind="ui-update")
             ownership = {
-                "stage": "draining",
+                "stage": ISOLATED_UPGRADE_STAGE if isolated else "draining",
                 "heartbeat_at": time.time(),
                 "host": owner["host"],
                 "runner_device": owner.get("runner_device"),
@@ -1122,8 +1228,8 @@ def _wait_for_update_participants(
                     version=previous_version,
                 ),
             )
-            instances = store.live_records_locked("instances")
-            activities = [] if restart_only else store.live_records_locked("activities")
+            instances = [] if isolated else store.live_records_locked("instances")
+            activities = [] if restart_only or isolated else store.live_records_locked("activities")
             blockers = [
                 item
                 for item in instances
@@ -1134,7 +1240,7 @@ def _wait_for_update_participants(
                 )
             ]
         if not blockers and not activities:
-            return
+            return isolated
         now = time.monotonic()
         blocked = [*blockers, *activities]
         details = ", ".join(
@@ -1230,43 +1336,62 @@ def run_coordinated_update(
     """Drain shared users, run pip once, and publish the result atomically."""
 
     store = CoordinationStore(state_dir)
-    _wait_for_update_participants(
+    isolated = _wait_for_update_participants(
         store,
         request_id=request_id,
         instance_id=instance_id,
         previous_version=previous_version,
         restart_only=restart_only,
     )
-    with _CoordinationHeartbeat(
-        store,
-        request_id=request_id,
-        instance_id=instance_id,
-        previous_version=previous_version,
-        stage="updating",
-    ):
-        if restart_only:
-            result = {
-                "ok": True,
-                "previous_version": str(previous_version),
-                "installed_version": str(installed_version or previous_version),
-                "exit_code": 0,
-            }
-        else:
-            result = run_pip_upgrade(
-                previous_version,
-                target_version=target_version,
-            )
+    staging = None
+    published = False
+    result: dict[str, Any]
+    try:
+        with _CoordinationHeartbeat(
+            store,
+            request_id=request_id,
+            instance_id=instance_id,
+            previous_version=previous_version,
+            stage=ISOLATED_UPGRADE_STAGE if isolated else "updating",
+        ):
+            if restart_only:
+                result = {
+                    "ok": True,
+                    "previous_version": str(previous_version),
+                    "installed_version": str(installed_version or previous_version),
+                    "exit_code": 0,
+                }
+            else:
+                if isolated:
+                    staging = create_release_directory()
+                result = run_pip_upgrade(
+                    previous_version,
+                    target_version=target_version,
+                    **({"install_root": staging} if staging is not None else {}),
+                )
 
-    with store.locked():
-        updated = store.update_request_locked(
-            request_id,
-            stage="completed",
-            heartbeat_at=time.time(),
-            completed_at=time.time(),
-            result=result,
-        )
-        if updated is None:
-            raise UpdateCoordinationError("Could not publish the Pyruns update result.")
+        with store.locked():
+            if staging is not None and result["ok"]:
+                request = store.read_request_locked()
+                if (
+                    request is None or request.get("request_id") != request_id
+                    or request.get("stage") != ISOLATED_UPGRADE_STAGE
+                ):
+                    raise UpdateCoordinationError("The staged upgrade no longer owns its request.")
+                publish_release(staging, result["installed_version"])
+                published = True
+            updated = store.update_request_locked(
+                request_id,
+                stage="completed",
+                heartbeat_at=time.time(),
+                completed_at=time.time(),
+                result=result,
+            )
+            if updated is None:
+                raise UpdateCoordinationError("Could not publish the Pyruns update result.")
+    finally:
+        if staging is not None and not published:
+            discard_unpublished_release(staging)
     store.remove_record("instances", instance_id)
     return result
 
@@ -1335,7 +1460,8 @@ def wait_for_coordinated_update(
             # Seeing the completion marker on NFS does not prove this client
             # can see the updated package metadata yet.
             expected = result["installed_version"]
-            installed = _query_installed_version("")
+            isolated = request.get("isolated") is True or current_release_root() is not None
+            installed = selected_release("")[0] if isolated else _query_installed_version("")
             if installed and installed == expected:
                 break
             now = time.monotonic()
@@ -1378,14 +1504,14 @@ def wait_for_coordinated_update(
 def relaunch_ui(*, port: int, token: str, result: dict[str, Any]) -> None:
     """Replace the updater with a clean interpreter running the installed UI."""
 
-    command = [
-        sys.executable,
-        "-m",
+    _, release = selected_release(str(result.get("installed_version", "") or ""))
+    command = module_command(
         "pyruns.web.app",
         "--port",
         str(int(port)),
         "--no-browser",
-    ]
+        release=release,
+    )
     environment = os.environ.copy()
     environment[UI_PRODUCTION_RESTART_ENV] = "1"
     environment[UI_TOKEN_ENV] = str(token)
@@ -1441,6 +1567,15 @@ def restart_ui_after_handoff(
     owner: bool,
 ) -> None:
     """Finish a restart in loaded code, then launch the on-disk version."""
+
+    if not request_id:
+        relaunch_ui(port=port, token=token, result={
+            "ok": True,
+            "previous_version": previous_version,
+            "installed_version": installed_version,
+            "exit_code": 0,
+        })
+        return
 
     print(
         "[pyruns] Coordinating the shared Pyruns interface restart."

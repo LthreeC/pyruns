@@ -445,10 +445,18 @@ class PyrunsRuntime:
         task_generator_factory: TaskGeneratorFactory | None = None,
         metrics_factory: MetricsFactory | None = None,
     ) -> None:
+        self.detached_task_runs = False
         self._task_manager_factory = (
             task_manager_factory
             if task_manager_factory is not None
-            else lambda tasks_dir: TaskManager(tasks_dir=tasks_dir, lazy_scan=None, include_other_devices=True)
+            else lambda tasks_dir: TaskManager(
+                tasks_dir=tasks_dir,
+                lazy_scan=None,
+                include_other_devices=True,
+                owns_task_lifecycle=not self.detached_task_runs,
+                watch_task_changes=self.detached_task_runs,
+                reconcile_unowned_running=True,
+            )
         )
         self._task_generator_factory = (
             task_generator_factory
@@ -605,10 +613,14 @@ class PyrunsRuntime:
     @_with_stable_workspace
     def strict_restart_active_task_count(self) -> int:
         """Verify the work that must finish before this UI process exits."""
+        if self.detached_task_runs:
+            return 0
         return self._active_task_count(force_all=True, restart_only=True)
 
     def cached_restart_active_task_count(self) -> int:
         """Use the refreshed registry for the shared restart heartbeat."""
+        if self.detached_task_runs:
+            return 0
         return sum(manager.active_task_count(for_operation="restart") for manager in self._managed_task_managers())
 
     def _retire_task_manager_if_idle(self, manager_key: str, task_manager: TaskManager) -> None:
@@ -1620,7 +1632,10 @@ class PyrunsRuntime:
         if task.get("_load_error"):
             raise ValueError(str(task["_load_error"]))
         self.invalidate_cache([task_name])
-        started = self.task_manager.start_task_now(task_name)
+        started = (
+            bool(self._submit_detached_runs([task_name], max_workers=1))
+            if self.detached_task_runs else self.task_manager.start_task_now(task_name)
+        )
         if not started:
             raise ValueError(f"Task '{task_name}' could not be started")
         return self.get_task(task_name, include_tracks=include_tracks) or task
@@ -1706,14 +1721,19 @@ class PyrunsRuntime:
             raise ValueError("No valid tasks were provided for batch run.")
 
         self.invalidate_cache(normalized_names)
-        claimed_names = self.task_manager.start_batch_tasks(
-            normalized_names,
-            max_workers=max_workers,
-            **({
-                "expected_run_indices": {name: 1 for name in normalized_names},
-                "expected_task_identities": created_task_identities,
-            } if created_task_identities is not None else {}),
-        )
+        if self.detached_task_runs:
+            claimed_names = self._submit_detached_runs(
+                normalized_names, max_workers=max_workers, identities=created_task_identities,
+            )
+        else:
+            claimed_names = self.task_manager.start_batch_tasks(
+                normalized_names,
+                max_workers=max_workers,
+                **({
+                    "expected_run_indices": {name: 1 for name in normalized_names},
+                    "expected_task_identities": created_task_identities,
+                } if created_task_identities is not None else {}),
+            )
         if not claimed_names:
             raise ValueError("None of the selected tasks could be started.")
         claimed = set(claimed_names)
@@ -1727,6 +1747,33 @@ class PyrunsRuntime:
             "items": items,
             "skipped": [task_name for task_name in normalized_names if task_name not in claimed],
         }
+
+    def _submit_detached_runs(
+        self,
+        names: list[str],
+        *,
+        max_workers: int | None,
+        identities: dict[str, str] | None = None,
+    ) -> list[str]:
+        from pyruns.cli.runner import submit_cli_tasks
+
+        manager = self.task_manager
+        expected_runs = {}
+        for name in names:
+            task = self.require_task(name, refresh=False, summary=True)
+            info = load_task_metadata(str(task.get("dir", "") or "")) or task
+            expected_runs[name] = 1 if identities is not None else manager._next_run_index(info)
+        result = submit_cli_tasks(
+            manager,
+            names,
+            expected_runs=expected_runs,
+            max_workers=max_workers,
+            web_batch=True,
+            task_identities={name: identities[name] for name in names} if identities is not None else None,
+        )
+        if result.status == "unresolved":
+            raise ValueError("Pyruns could not confirm the runner's claims. Refresh task status before trying again.")
+        return list(result.claimed) if result.status in {"accepted", "accepted_partial"} else []
 
     @_with_stable_workspace
     def delete_tasks_batch(self, task_names: List[str]) -> Dict[str, Any]:

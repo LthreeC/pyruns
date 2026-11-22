@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import pyruns.update_coordination as update_coordination
+from pyruns import update_release
 from pyruns.update_coordination import (
     CoordinationStore,
     EnvironmentActivityLease,
@@ -27,6 +28,129 @@ class _Runtime:
 
     def active_task_count(self) -> int:
         return self.active_count
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_isolated_upgrade_does_not_wait_for_active_runners(tmp_path, monkeypatch, installed):
+    class DetachedRuntime(_Runtime):
+        def strict_restart_active_task_count(self) -> int:
+            return 0
+
+    state_dir = str(tmp_path / "state")
+    monkeypatch.setattr(update_release, "installation_root", lambda: tmp_path)
+    monkeypatch.setattr(self_update.UiUpdateCoordinator, "_start_monitor", lambda self: None)
+
+    def install(previous_version, *, target_version, install_root):
+        assert (previous_version, target_version) == ("0.3.19.1", "0.3.19.2")
+        package = install_root / "pyruns"
+        package.mkdir()
+        (package / "__init__.py").touch()
+        metadata = install_root / "pyruns-0.3.19.2.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text("Name: pyruns\nVersion: 0.3.19.2\n", encoding="utf-8")
+        return {
+            "ok": installed,
+            "previous_version": previous_version,
+            "installed_version": target_version if installed else previous_version,
+            "exit_code": 0 if installed else 1,
+        }
+
+    monkeypatch.setattr(self_update, "run_pip_upgrade", install)
+    leader = self_update.UiUpdateCoordinator(
+        lambda: None, shared=True, state_dir=state_dir,
+        current_version="0.3.19.1", isolated_upgrades=True,
+    )
+    peer = self_update.UiUpdateCoordinator(
+        lambda: None, shared=True, state_dir=state_dir,
+        current_version="0.3.19.1", isolated_upgrades=True,
+    )
+    runtime = DetachedRuntime(2)
+    leader.attach(runtime)
+    peer.attach(runtime)
+    try:
+        with EnvironmentActivityLease("cli-runner", state_dir=state_dir):
+            assert leader.prepare(runtime, target_version="0.3.19.2", defer_if_busy=True)
+            handoff = leader.handoff()
+            peer._monitor_tick()
+            assert not peer.requested
+            with EnvironmentActivityLease("cli-runner", state_dir=state_dir):
+                result = self_update.run_coordinated_update(
+                    state_dir=state_dir,
+                    request_id=handoff["request_id"],
+                    instance_id=handoff["instance_id"],
+                    previous_version="0.3.19.1",
+                    target_version="0.3.19.2",
+                )
+            assert result["ok"] is installed
+            version, release = update_release.selected_release("0.3.19.1")
+            if installed:
+                assert version == "0.3.19.2" and release is not None
+                assert peer.prepare(runtime, target_version="0.3.19.2")
+                assert peer.handoff()["operation"] == "restart"
+            else:
+                assert (version, release) == ("0.3.19.1", None)
+                assert not list((tmp_path / ".pyruns-releases").iterdir())
+    finally:
+        peer.close()
+        leader.close()
+
+
+def test_peer_loads_published_release_after_request_was_replaced(tmp_path, monkeypatch):
+    state_dir = str(tmp_path / "state")
+    store = CoordinationStore(state_dir)
+    monkeypatch.setattr(self_update.UiUpdateCoordinator, "_start_monitor", lambda self: None)
+    monkeypatch.setattr(self_update, "selected_release", lambda _fallback: ("0.3.21", tmp_path / "release"))
+
+    class Observer(_Runtime):
+        detached_task_runs = True
+
+        def strict_restart_active_task_count(self) -> int:
+            return 0
+
+    shutdown = []
+    peer = self_update.UiUpdateCoordinator(
+        lambda: shutdown.append(True), shared=True, state_dir=state_dir,
+        current_version="0.3.20", isolated_upgrades=True,
+    )
+    peer.attach(Observer(2))
+    try:
+        with store.locked():
+            store.write_request_locked({
+                "request_id": "later-failed",
+                "stage": "completed",
+                "result": {"ok": False, "installed_version": "0.3.21"},
+            })
+        peer._monitor_tick()
+        assert shutdown == [True]
+        handoff = peer.handoff()
+        assert handoff["operation"] == "restart"
+        assert handoff["target_version"] == "0.3.21"
+        assert handoff["request_id"] == ""
+    finally:
+        peer.close()
+
+
+def test_windows_release_launcher_leaves_interrupt_cleanup_to_cli(tmp_path, monkeypatch):
+    from pyruns.utils import terminal_capture
+
+    waits = []
+
+    class Child:
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            if timeout is None:
+                raise KeyboardInterrupt
+            return 130
+
+    monkeypatch.setattr(update_release, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(terminal_capture, "_windows_console_available", lambda: True)
+    def launch(_command, **kwargs):
+        assert kwargs == {"stdin": sys.stdin, "stdout": sys.stdout, "stderr": sys.stderr}
+        return Child()
+
+    monkeypatch.setattr(update_release.subprocess, "Popen", launch)
+    assert update_release.launch_cli_release(tmp_path, "pyr", ["run", "training"]) == 130
+    assert waits == [None, 30]
 
 
 class _PyPIResponse:
@@ -1535,6 +1659,7 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch, hidden_flags):
     assert {key: value for key, value in calls[0][1].items() if key != "stderr"} == {
         "check": False,
         "timeout": self_update.PIP_UPGRADE_TIMEOUT_SECONDS,
+        "env": None,
         **hidden_flags,
     }
     assert result == {
@@ -1717,7 +1842,13 @@ def test_windows_process_replacement_waits_for_hidden_child(monkeypatch):
     assert calls == [
         (
             ["python-test", "-m", "pyruns.web.self_update"],
-            {"env": {"PYRUNS_TEST": "1"}, **hidden_flags},
+            {
+                "env": {"PYRUNS_TEST": "1"},
+                "stdin": sys.stdin,
+                "stdout": sys.stdout,
+                "stderr": sys.stderr,
+                **hidden_flags,
+            },
         )
     ]
 

@@ -2150,11 +2150,13 @@ def main(
 ) -> None:
     """Launch the unified Pyruns API and frontend server."""
     runtime = PyrunsRuntime()
+    runtime.detached_task_runs = not reload
     token = str(access_token or secrets.token_urlsafe(32))
     update_coordinator = None if reload else UiUpdateCoordinator(
         _request_server_shutdown,
         shared=True,
         current_version=__version__,
+        isolated_upgrades=True,
     )
     if update_coordinator is not None:
         update_coordinator.attach(runtime)

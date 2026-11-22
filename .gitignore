@@ -22,6 +22,7 @@
 /test-results/
 .playwright-mcp/
 .pyruns-update/
+.pyruns-releases/
 *.egg-info/
 
 node_modules/

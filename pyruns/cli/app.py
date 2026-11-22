@@ -1536,6 +1536,12 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> int:
     """Parse and execute one Pyruns command without leaking pipe tracebacks."""
 
     try:
+        if argv is None and prog is None:
+            from pyruns.update_release import current_release_root, launch_cli_release, selected_release
+
+            _, release = selected_release(__version__)
+            if release is not None and release != current_release_root():
+                return launch_cli_release(release, _invoked_program(), list(sys.argv[1:]))
         return _main(argv, prog=prog)
     except BrokenPipeError:
         _silence_broken_pipe()
